@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "carcara"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
   { name="Leandro Seixas", email="leandro.fisica@gmail.com" },
 ]
-description = "fastatoms"
+description = "Machine-learned interatomic potentials (MLIP) framework"
 readme = "README.md"
 license = {file = "LICENSE"} 
 requires-python = ">=3.9"
