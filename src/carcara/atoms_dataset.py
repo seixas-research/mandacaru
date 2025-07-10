@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: data_loader.py
+# file: atoms_dataset.py
 
 # This code is part of Carcará. 
 # MIT License
@@ -25,10 +25,11 @@
 # SOFTWARE.
 
 import numpy as np
-from ase.io import read
 import torch
+from ase.io import read
+from torch.utils.data import Dataset
 
-class DataLoader:
+class AtomsDataset(Dataset):
     def __init__(self, dataset=None):
         """
         Initializes the data loader with a given dataset.
@@ -45,6 +46,13 @@ class DataLoader:
         if not isinstance(self.dataset, list):
             raise ValueError("Dataset must be a list of structures.")
         self.dataset_proc = [self._process_structure(structure) for structure in self.dataset]
+
+    # check what version make sense to use
+    def __initv2__(self, xyz_path, properties=('energy', 'forces')):
+        # read all frames from an extended XYZ file
+        self.atoms_list = read(xyz_path, index=':')
+        self.props = properties
+
 
     def _process_structure(self, structure):
         """
