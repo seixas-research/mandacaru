@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "carcara"
-version = "0.0.2"
+version = "0.0.3"
 authors = [
   { name="Leandro Seixas", email="leandro.fisica@gmail.com" },
 ]
@@ -15,7 +15,11 @@ requires-python = ">=3.9"
 dependencies = [
     'numpy',
     'pandas',
-    'ase'
+    'ase',
+    'torch',
+    'networkx',
+    'scipy',
+    'matplotlib'
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
