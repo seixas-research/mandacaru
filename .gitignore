@@ -11,6 +11,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+past_dist/
 downloads/
 eggs/
 .eggs/
@@ -206,7 +207,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-
-# Others
+#MacOS file
 .DS_Store
-past_dist/
+
+# VSCode
+.vscode/
