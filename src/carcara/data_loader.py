@@ -44,7 +44,7 @@ class DataLoader:
         self.dataset = read(dataset, index=':')
         if not isinstance(self.dataset, list):
             raise ValueError("Dataset must be a list of structures.")
-        self.dataset = [self._process_structure(structure) for structure in self.dataset]
+        self.dataset_proc = [self._process_structure(structure) for structure in self.dataset]
 
     def _process_structure(self, structure):
         """
@@ -72,8 +72,68 @@ class DataLoader:
         ''' Returns the number of structures in the dataset. '''
         return len(self.dataset)
     
-
+    def get_distance_matrices(self):
+        """
+        Computes the distance matrices for all structures in the dataset.
+        Returns:
+            list: A list of distance matrices, where each matrix corresponds to a structure in the dataset.
+        """
+        distance_matrices = []
+        for structure in self.dataset_proc:
+            positions = structure['positions']
+            dist_matrix = torch.cdist(positions.unsqueeze(0), positions.unsqueeze(0)).squeeze(0)
+            distance_matrices.append(dist_matrix)
+        return distance_matrices
+    
+    def get_unique_atomic_numbers(self):
+        """
+        Retrieves the unique atomic numbers from all structures in the dataset.
+        Returns:
+            list: A list of unique atomic numbers.
+        """
+        unique_atomic_numbers = set()
+        for structure in self.dataset_proc:
+            unique_atomic_numbers.update(structure['atomic_numbers'].unique().tolist())
+        return sorted(unique_atomic_numbers)
     
 
+    def onehot_enconding(self, atomic_numbers):
+        """
+        Converts atomic numbers to one-hot encoded vectors.
+        Args:
+            atomic_numbers (torch.LongTensor): Tensor of atomic numbers.
+        Returns:
+            torch.FloatTensor: One-hot encoded tensor of atomic numbers.
+        """
+        unique_atomic_numbers = self.get_unique_atomic_numbers()
+        num_elements = len(unique_atomic_numbers)
+        onehot = torch.zeros((len(atomic_numbers), num_elements), dtype=torch.float32)
+        
+        for i, atomic_number in enumerate(atomic_numbers):
+            if atomic_number in unique_atomic_numbers:
+                index = unique_atomic_numbers.index(atomic_number)
+                onehot[i, index] = 1.0
+        
+        return onehot
+    
+    def get_atomic_state(self):
+        """
+        Retrieves the atomic state for all structures in the dataset.
+        Returns:
+            list: A list of dictionaries, each containing:
+                - 'positions' (torch.FloatTensor): Tensor of atomic positions.
+                - 'atomic_numbers' (torch.LongTensor): Tensor of atomic numbers.
+                - 'onehot' (torch.FloatTensor): One-hot encoded tensor of atomic numbers.
+        """
+        atomic_states = []
+        for structure in self.dataset_proc:
+            onehot = self.onehot_enconding(structure['atomic_numbers'])
+            atomic_states.append({
+                'positions': structure['positions'],
+                'atomic_numbers': structure['atomic_numbers'],
+                'onehot': onehot
+            })
+        return atomic_states
+    
 
 
