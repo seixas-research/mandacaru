@@ -3,7 +3,7 @@
 <picture>
   <source srcset="https://raw.githubusercontent.com/leseixas/carcara/refs/heads/main/logo/logo_dark.png" media="(prefers-color-scheme: dark)">
   <source srcset="https://raw.githubusercontent.com/leseixas/carcara/refs/heads/main/logo/logo_light.png" media="(prefers-color-scheme: light)">
-  <img src="https://raw.githubusercontent.com/leseixas/carcara/refs/heads/main/logo/logo_light.png" style="max-height: 100px; height: auto; width: auto;" alt="Carcará logo">
+  <img src="https://raw.githubusercontent.com/leseixas/carcara/refs/heads/main/logo/logo_light.png" style="height: auto; width: auto; max-height: 100px; " alt="Carcará logo">
 </picture>
 </h1> 
 
@@ -17,16 +17,50 @@ Towards Explainable, Scalable, and Accurate Machine-Learned Interatomic Potentia
 
 # Installation
 
+## From Pip
 The easiest way to install Carcará is with pip:
 
 ```python
 pip install carcara
 ```
 
-# Usage
+## From Github
+
+```python
+
+git clone https://github.com/leseixas/carcara.git
+cd carcara
+pip install .
+
+```
+
+# Getting started
+
+## Training
+
+```yaml
+
+name: "my_model"
+training_dataset: "training.xyz"
+validation_dataset: "validation.xyz"
+test_dataset: "test.xyz"
+cutoff_radius: 6.0
+
+
+```
+
+## Evaluation
+
+```python
+
+# TODO
+
+```
 
 # License
 
+This is an open source code under [MIT License](LICENSE).
 
+# Acknowledgements
 
-
+We thank financial support from FAPESP (Grant No. 2022/14549-3), INCT Materials Informatics (Grant No. 406447/2022-5), and CNPq (Grant No. 311324/2020-7).
