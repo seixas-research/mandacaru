@@ -5,7 +5,15 @@
 
 # Carcará
 
+(Under development) Towards Explainable, Scalable, and Accurate Machine-Learned Interatomic Potentials
+
 # Installation
+
+The easiest way to install Carcará is with pip:
+
+```python
+pip install carcara
+```
 
 # Usage
 
