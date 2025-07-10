@@ -24,6 +24,7 @@ The easiest way to install Carcará is with pip:
 pip install carcara
 ```
 
+<!-- 
 ## From Github
 
 ```python
@@ -32,7 +33,7 @@ git clone https://github.com/leseixas/carcara.git
 cd carcara
 pip install .
 
-```
+``` -->
 
 # Getting started
 
@@ -45,7 +46,18 @@ training_dataset: "training.xyz"
 validation_dataset: "validation.xyz"
 test_dataset: "test.xyz"
 cutoff_radius: 6.0
-
+num_channels: 64
+l_max: 1
+mp_layers: 2
+manybody_correlation: 3
+energy_key: "REF_energy"
+forces_key: "REF_forces"
+stress_key: "REF_stress"
+energy_weight: 10
+forces_weight: 1000
+stress_weight: 1000
+seed: 42
+device: cpu
 
 ```
 
