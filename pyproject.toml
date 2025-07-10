@@ -17,9 +17,12 @@ dependencies = [
     'pandas',
     'ase',
     'torch',
+    'torch_geometric',
     'networkx',
     'scipy',
-    'matplotlib'
+    'matplotlib',
+    'pytest',
+    'pyyaml'
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
