@@ -3,7 +3,7 @@
 <picture>
   <source srcset="https://raw.githubusercontent.com/leseixas/carcara/refs/heads/main/logo/logo_dark.png" media="(prefers-color-scheme: dark)">
   <source srcset="https://raw.githubusercontent.com/leseixas/carcara/refs/heads/main/logo/logo_light.png" media="(prefers-color-scheme: light)">
-  <img src="https://raw.githubusercontent.com/leseixas/carcara/refs/heads/main/logo/logo_light.png" style="max-height: 120px; height: auto; width: auto;" alt="Carcará logo">
+  <img src="https://raw.githubusercontent.com/leseixas/carcara/refs/heads/main/logo/logo_light.png" style="max-height: 100px; height: auto; width: auto;" alt="Carcará logo">
 </picture>
 </h1> 
 
