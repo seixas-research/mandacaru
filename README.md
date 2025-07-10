@@ -24,23 +24,13 @@ The easiest way to install Carcará is with pip:
 pip install carcara
 ```
 
-<!-- 
-## From Github
-
-```python
-
-git clone https://github.com/leseixas/carcara.git
-cd carcara
-pip install .
-
-``` -->
-
 # Getting started
 
 ## Training
 
 ```yaml
 
+model: "MPNN"
 name: "my_model"
 training_dataset: "training.xyz"
 validation_dataset: "validation.xyz"
