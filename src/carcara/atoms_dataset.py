@@ -33,7 +33,7 @@ class AtomsDataset(Dataset):
     def __init__(self, dataset=None):
         """
         Initializes the data loader with a given dataset.
-        
+
         Parameters
         ----------
             dataset (str or list): The dataset to load. If a string is provided, it will be read and processed.
@@ -101,23 +101,20 @@ class AtomsDataset(Dataset):
         return sorted(unique_atomic_numbers)
     
 
-    def onehot_enconding(self, atomic_numbers):
+    def onehot_enconding(self):
         """
-        Converts atomic numbers to one-hot encoded vectors.
-        Args:
-            atomic_numbers (torch.LongTensor): Tensor of atomic numbers.
+        Generates a one-hot encoded tensor for the unique atomic numbers in the dataset.
         Returns:
-            torch.FloatTensor: One-hot encoded tensor of atomic numbers.
+            torch.Tensor: A 2D tensor of shape (num_unique_atomic_numbers, max_atomic_number),
+            where each row corresponds to the one-hot encoding of an atomic number.
         """
         unique_atomic_numbers = self.get_unique_atomic_numbers()
-        num_elements = len(unique_atomic_numbers)
-        onehot = torch.zeros((len(atomic_numbers), num_elements), dtype=torch.float32)
+        max_atomic_number = max(unique_atomic_numbers)
+        onehot = torch.zeros((len(unique_atomic_numbers), max_atomic_number), dtype=torch.float32)
         
-        for i, atomic_number in enumerate(atomic_numbers):
-            if atomic_number in unique_atomic_numbers:
-                index = unique_atomic_numbers.index(atomic_number)
-                onehot[i, index] = 1.0
-        
+        for i, atomic_number in enumerate(unique_atomic_numbers):
+            onehot[i, atomic_number - 1] = 1.0
+
         return onehot
     
     def get_atomic_state(self):
