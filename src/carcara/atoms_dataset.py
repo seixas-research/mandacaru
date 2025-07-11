@@ -33,10 +33,14 @@ class AtomsDataset(Dataset):
     def __init__(self, dataset=None):
         """
         Initializes the data loader with a given dataset.
-        Parameters:
+        
+        Parameters
+        ----------
             dataset (str or list): The dataset to load. If a string is provided, it will be read and processed.
                                    Must not be None.
-        Raises:
+
+        Raises
+        ----------
             ValueError: If the dataset is None.
             ValueError: If the loaded dataset is not a list of structures.
         """
@@ -44,12 +48,6 @@ class AtomsDataset(Dataset):
             raise ValueError("Dataset cannot be None.")
         self.dataset = read(dataset, index=':') # => Atoms objects (list of structures)
         self.dataset_proc = [self._process_structure(structure) for structure in self.dataset] # list of dicts with positions and atomic numbers
-
-    # check what version make sense to use
-    def __initv2__(self, xyz_path, properties=('energy', 'forces')):
-        # read all frames from an extended XYZ file
-        self.atoms_list = read(xyz_path, index=':')
-        self.props = properties
 
 
     def _process_structure(self, structure):
