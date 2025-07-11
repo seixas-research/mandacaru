@@ -42,10 +42,8 @@ class AtomsDataset(Dataset):
         """
         if dataset is None:
             raise ValueError("Dataset cannot be None.")
-        self.dataset = read(dataset, index=':')
-        if not isinstance(self.dataset, list):
-            raise ValueError("Dataset must be a list of structures.")
-        self.dataset_proc = [self._process_structure(structure) for structure in self.dataset]
+        self.dataset = read(dataset, index=':') # => Atoms objects (list of structures)
+        self.dataset_proc = [self._process_structure(structure) for structure in self.dataset] # list of dicts with positions and atomic numbers
 
     # check what version make sense to use
     def __initv2__(self, xyz_path, properties=('energy', 'forces')):
@@ -67,14 +65,14 @@ class AtomsDataset(Dataset):
         Raises:
             ValueError: If the structure contains no atoms (empty positions or atomic numbers).
         """
-        positions = structure.get_positions()
-        atomic_numbers = structure.get_atomic_numbers()
+        positions = structure.get_positions() # shape (N, 3) numpy array
+        atomic_numbers = structure.get_atomic_numbers() # shape (N,) numpy array
         if len(positions) == 0 or len(atomic_numbers) == 0:
             raise ValueError("Structure must contain at least one atom.")
         
-        positions = torch.tensor(positions, dtype=torch.float32)
-        atomic_numbers = torch.tensor(atomic_numbers, dtype=torch.int64)
-        return {'positions': positions, 'atomic_numbers': atomic_numbers}
+        positions = torch.tensor(positions, dtype=torch.float32) # convert to float32 tensor
+        atomic_numbers = torch.tensor(atomic_numbers, dtype=torch.int64) # convert to int64 tensor
+        return {'positions': positions, 'atomic_numbers': atomic_numbers} # dict with positions and atomic numbers
 
     def __len__(self):
         ''' Returns the number of structures in the dataset. '''
