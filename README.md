@@ -44,10 +44,8 @@ mp_layers: 2
 manybody_correlation: 3
 energy_key: "REF_energy"
 forces_key: "REF_forces"
-stress_key: "REF_stress"
 energy_weight: 10
 forces_weight: 1000
-stress_weight: 1000
 seed: 42
 device: cpu
 

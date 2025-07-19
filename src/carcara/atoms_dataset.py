@@ -30,6 +30,27 @@ from ase.io import read
 from torch.utils.data import Dataset
 
 class AtomsDataset(Dataset):
+    """AtomsDataset is a PyTorch-compatible dataset class for handling collections of atomic structures.
+    This class reads a dataset of atomic structures (e.g., from an ASE-readable file), processes each structure to extract atomic positions and atomic numbers, and provides utility methods for further processing such as distance matrix computation and one-hot encoding of atomic numbers.
+        Path to the dataset file or file-like object containing atomic structures. Must not be None.
+        List of dictionaries containing processed information (positions and atomic numbers) for each structure in the dataset.
+    Methods
+    __len__():
+        Returns the number of structures in the dataset.
+    get_distance_matrices():
+        Computes and returns the pairwise distance matrices for all structures in the dataset.
+    get_unique_atomic_numbers():
+        Retrieves a sorted list of unique atomic numbers present in the dataset.
+    onehot_enconding(dtype=torch.int8):
+        Generates a one-hot encoding tensor for the unique atomic numbers in the dataset.
+    get_atomic_state():
+        Returns a list of dictionaries for each structure, each containing positions, atomic numbers, and their one-hot encodings.
+    Notes
+    -----
+    - The dataset must be readable by ASE's `read` function.
+    - Each structure is expected to have `get_positions()` and `get_atomic_numbers()` methods.
+    - The class is designed for use in machine learning workflows involving atomic structures."""
+    
     def __init__(self, dataset=None):
         """
         Initializes the object with a dataset of atomic structures.
@@ -88,13 +109,16 @@ class AtomsDataset(Dataset):
     def get_distance_matrices(self):
         """
         Computes the distance matrices for all structures in the dataset.
-        Returns:
+        
+        Returns
+        -------
             list: A list of distance matrices, where each matrix corresponds to a structure in the dataset.
         """
         distance_matrices = []
         for structure in self.dataset_proc:
             positions = structure['positions']
-            dist_matrix = torch.cdist(positions.unsqueeze(0), positions.unsqueeze(0)).squeeze(0)
+            dist_matrix = torch.cdist(positions, positions, p=2)  # Compute pairwise distances
+            # dist_matrix = torch.cdist(positions.unsqueeze(0), positions.unsqueeze(0), p=2).squeeze(0)
             distance_matrices.append(dist_matrix)
         return distance_matrices
     
@@ -115,7 +139,7 @@ class AtomsDataset(Dataset):
         return sorted(unique_atomic_numbers)
     
 
-    def onehot_enconding(self):
+    def onehot_enconding(self, dtype=torch.int8):
         """
         Creates a one-hot encoding of the atomic numbers present in the dataset.
         This method generates a 2D tensor where each row corresponds to a unique atomic number,
@@ -139,14 +163,21 @@ class AtomsDataset(Dataset):
             A 2D tensor of shape (num_unique_atomic_numbers, max_atomic_number), where each row
             corresponds to the one-hot encoding of an atomic number.
         """
+        onehot_dtype = dtype
+
+        # Check if the dataset is empty
+        if not self.dataset_proc:
+            raise ValueError("Dataset is empty. Cannot create one-hot encoding.")
+        
+        # Get unique atomic numbers and their maximum value
         unique_atomic_numbers = self.get_unique_atomic_numbers() # example: [1, 6, 8]
         max_atomic_number = max(unique_atomic_numbers)           # example: 8
-        onehot = torch.zeros((len(unique_atomic_numbers), max_atomic_number), dtype=torch.float32) # example: shape (3, 8)
+        onehot = torch.zeros((len(unique_atomic_numbers), max_atomic_number), dtype=onehot_dtype) # example: shape (3, 8)
         
         for i, atomic_number in enumerate(unique_atomic_numbers): # example: i=1, atomic_number=6
             onehot[i, atomic_number - 1] = 1.0                    # example: onehot[1, 5] = 1.0 (for Carbon)
-
-        return torch.tensor(onehot, dtype=torch.float32)
+        
+        return onehot
     
     def get_atomic_state(self):
         """
