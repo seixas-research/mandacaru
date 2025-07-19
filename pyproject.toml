@@ -13,7 +13,7 @@ readme = "README.md"
 license = {file = "LICENSE"} 
 requires-python = ">=3.10"
 dependencies = [
-    'numpy',
+    'numpy>=2.0.0',
     'pandas',
     'ase',
     'torch',
@@ -22,7 +22,8 @@ dependencies = [
     'scipy',
     'matplotlib',
     'pytest',
-    'pyyaml'
+    'pyyaml',
+    'ml_dtypes'
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -34,3 +35,5 @@ classifiers = [
 
 [project.urls]
 "Homepage" = "https://github.com/seixasgroup/carcara"
+"Documentation" = "https://seixasgroup.github.io/carcara/"
+"Bug Tracker" = "https://github.com/seixasgroup/carcara/issues"
