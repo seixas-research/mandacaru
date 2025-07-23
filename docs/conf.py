@@ -23,8 +23,29 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 language = 'en'
 
 # -- Options for HTML output -------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
+# https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html
 
 html_theme = 'alabaster'
 html_static_path = ['_static']
 html_title = "Carcará Documentation"
+html_logo = '_static/images/logo.png'
+html_favicon = '_static/images/favicon.ico'
+
+
+# html_theme_options = {
+#     # path is relative to _static/
+#     'logo'       : 'images/logo.png',
+#     'logo_name'  : True,               # show project name under logo
+#     'description': 'My project subtitle'
+# }
+
+# HTML sidebar options
+# html_sidebars = {
+#     '**': [
+#         'about.html',
+#         'navigation.html',
+#         'relations.html',
+#         'searchbox.html',
+#         'donate.html',
+#     ]
+# }
