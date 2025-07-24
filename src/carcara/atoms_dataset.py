@@ -76,8 +76,14 @@ class AtomsDataset(Dataset):
         """
         if dataset is None:
             raise ValueError("Dataset cannot be None.")
+        
+        # Attributes
         self.dataset = read(dataset, index=':') # => Atoms objects (list of structures)
         self.dataset_proc = [self._process_structure(structure) for structure in self.dataset] # list of dicts with positions and atomic numbers
+        self.unique_atomic_numbers = self.get_unique_atomic_numbers() # list of unique atomic numbers
+        self.max_atomic_number = max(self.unique_atomic_numbers) # maximum atomic number in the dataset
+        self.onehot = self.onehot_enconding_basis() # one-hot encoding of atomic numbers
+    
 
 
     def _process_structure(self, structure):
@@ -139,7 +145,7 @@ class AtomsDataset(Dataset):
         return sorted(unique_atomic_numbers)
     
 
-    def onehot_enconding(self, dtype=torch.int8):
+    def onehot_enconding_basis(self, dtype=torch.int8):
         """
         Creates a one-hot encoding of the atomic numbers present in the dataset.
         This method generates a 2D tensor where each row corresponds to a unique atomic number,
@@ -170,15 +176,30 @@ class AtomsDataset(Dataset):
             raise ValueError("Dataset is empty. Cannot create one-hot encoding.")
         
         # Get unique atomic numbers and their maximum value
-        unique_atomic_numbers = self.get_unique_atomic_numbers() # example: [1, 6, 8]
-        max_atomic_number = max(unique_atomic_numbers)           # example: 8
-        onehot = torch.zeros((len(unique_atomic_numbers), max_atomic_number), dtype=onehot_dtype) # example: shape (3, 8)
+        max_atomic_number = max(self.unique_atomic_numbers)           # example: 8
+        onehot = torch.zeros((len(self.unique_atomic_numbers), max_atomic_number), dtype=onehot_dtype) # example: shape (3, 8)
         
-        for i, atomic_number in enumerate(unique_atomic_numbers): # example: i=1, atomic_number=6
+        for i, atomic_number in enumerate(self.unique_atomic_numbers): # example: i=1, atomic_number=6
             onehot[i, atomic_number - 1] = 1.0                    # example: onehot[1, 5] = 1.0 (for Carbon)
         
         return onehot
     
+    def onehot_enconding(self, structure, dtype=torch.int8):
+        atomic_numbers = structure['atomic_numbers']          # Example: tensor([1,1,8]) for H2O
+        max_atomic_number = self.max_atomic_number            # Example: 8 for H2O
+        onehot = torch.zeros(max_atomic_number, dtype=dtype)  # Example: [0, 0, 0, 0, 0, 0, 0, 0] for H2O
+        
+        counts = {Z: 0 for Z in atomic_numbers.unique().tolist()}  # Example: {1: 0, 6: 0, 8: 0} for H2O
+        
+        for atomic_number in atomic_numbers: # Example: atomic_number=1 for H2O
+            if atomic_number in counts:
+                counts[atomic_number] += 1   # Example: counts[1] += 2 for H2O (2 Hydrogens)
+
+        for Z, count in counts.items():  # Example: Z=1, count=2 for H2O
+            onehot[Z - 1] = count        # Example: onehot[0] = 2 for H2O (2 Hydrogens)
+
+        return onehot
+
     def get_atomic_state(self):
         """
         Retrieves the atomic state for all structures in the dataset.
@@ -202,3 +223,10 @@ class AtomsDataset(Dataset):
     
 
 
+# if __name__ == "__main__":
+    # Example usage
+    # dataset = AtomsDataset("data_test/my_data_15.xyz")
+    # print(f"Number of structures: {len(dataset)}")
+    # print(f"Unique atomic numbers: {dataset.get_unique_atomic_numbers()}")
+    # print(f"One-hot encoding shape: {dataset.onehot_enconding().shape}")
+    # print(f"Atomic state for first structure: {dataset.get_atomic_state()[0]}")
