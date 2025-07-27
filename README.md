@@ -19,12 +19,21 @@ Towards Explainable, Scalable, and Accurate Machine-Learned Interatomic Potentia
 
 # Installation
 
-## From Pip
+## From pip
 The easiest way to install Carcará is with pip:
 
 ```python
 pip install carcara
 ```
+
+## From github
+To install Carcará directly from the GitHub repository, run the following commands:
+
+```python
+pip install git+https://github.com/seixasgroup/carcara.git
+```
+
+
 
 # Getting started
 
@@ -32,20 +41,30 @@ pip install carcara
 
 ```yaml
 
-model: "MPNN"
+model: "MACE"
 name: "my_model"
-training_dataset: "training.xyz"
-validation_dataset: "validation.xyz"
-test_dataset: "test.xyz"
+
+datasets:
+  training: "training.xyz"
+  validation: "validation.xyz"
+  test: "test.xyz"
+
+e3nn_irreps:
+  num_channels: 64
+  l_max: 1
+
 cutoff_radius: 6.0
-num_channels: 64
-l_max: 1
-mp_layers: 2
+message_passing_layers: 2
 manybody_correlation: 3
-energy_key: "REF_energy"
-forces_key: "REF_forces"
-energy_weight: 10
-forces_weight: 1000
+
+training_attributes:
+  energy: "REF_energy"
+  forces: "REF_forces"
+
+weights:
+  energy: 10
+  forces: 1000
+
 seed: 42
 device: cpu
 
@@ -61,7 +80,7 @@ device: cpu
 
 # License
 
-This is an open source code under [MIT License](LICENSE).
+This is an open source code under [MIT License](https://raw.githubusercontent.com/seixasgroup/carcara/refs/heads/main/LICENSE).
 
 # Acknowledgements
 

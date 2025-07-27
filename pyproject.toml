@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "carcara"
-version = "25.7.0"
+version = "25.7.1"
 authors = [
   { name="Leandro Seixas", email="leandro.fisica@gmail.com" },
 ]
@@ -35,5 +35,5 @@ classifiers = [
 
 [project.urls]
 "Homepage" = "https://github.com/seixasgroup/carcara"
-"Documentation" = "https://seixasgroup.github.io/carcara/"
+# "Documentation" = "https://seixasgroup.github.io/carcara/"
 "Bug Tracker" = "https://github.com/seixasgroup/carcara/issues"
