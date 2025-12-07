@@ -15,7 +15,7 @@
 
 🚧 **(Under development)** 🚧
 
-Towards Explainable, Scalable, and Accurate Machine-Learned Interatomic Potentials
+Machine learning for atomistic simulations.
 
 # Installation
 
@@ -39,36 +39,6 @@ pip install git+https://github.com/seixasgroup/carcara.git
 
 ## Training
 
-```yaml
-
-model: "MACE"
-name: "my_model"
-
-datasets:
-  training: "training.xyz"
-  validation: "validation.xyz"
-  test: "test.xyz"
-
-e3nn_irreps:
-  num_channels: 64
-  l_max: 1
-
-cutoff_radius: 6.0
-message_passing_layers: 2
-manybody_correlation: 3
-
-training_attributes:
-  energy: "REF_energy"
-  forces: "REF_forces"
-
-weights:
-  energy: 10
-  forces: 1000
-
-seed: 42
-device: cpu
-
-```
 
 ## Evaluation
 

@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "carcara"
-version = "25.7.1"
+version = "25.12.0"
 authors = [
-  { name="Leandro Seixas", email="leandro.fisica@gmail.com" },
+  { name="Leandro Seixas", email="leandro.seixas@proton.me" },
 ]
-description = "Towards Explainable, Scalable, and Accurate Machine-Learned Interatomic Potentials"
+description = "Machine learning for atomistic simulations."
 readme = "README.md"
 license = {file = "LICENSE"} 
 requires-python = ">=3.10"
