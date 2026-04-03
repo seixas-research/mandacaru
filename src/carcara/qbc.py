@@ -1,0 +1,35 @@
+import numpy as np
+from ase import Atoms
+import pandas as pd
+from typing import Optional
+
+
+class QueryByCommittee:
+    def __init__(self,
+                 atoms: Atoms,
+                 number_of_committees: int = 5,
+                 seeds: Optional[list] = None,
+                 train_samples: Optional[list] = None,
+                 model_config: Optional[dict] = None):
+        self.atoms = atoms
+        self.number_of_committees = number_of_committees
+        self.seeds = seeds if seeds is not None else np.random.randint(0, 10000, size=number_of_committees).tolist()
+        self.train_samples = train_samples
+        self.model_config = model_config if model_config is not None else {}
+
+    def train_model(self, seeds: Optional[int] = None, model_config: Optional[dict] = None):
+        # train a MACE model with a seed and return the trained model
+        pass
+
+    def committee_predictions(self, models, samples):
+        # Given a set of models and a set of samples, return the standard deviation of the forces for each sample.
+        pass
+
+    def select_samples(self, samples, stds, num_samples_to_select: int = 10):
+        # Select the samples with the highest standard deviation in the predictions
+        selected_indices = np.argsort(stds)[-num_samples_to_select:]
+        selected_samples = [samples[i] for i in selected_indices]
+        return selected_samples
+
+
+    

@@ -49,6 +49,7 @@ class RandomNoise:
         self.scale_cell = scale_cell
         self.cell_type = cell_type
         self.relax_first = relax_first
+        self.relax_cell = relax_cell
         self.energy_ref = None
         self.samples = None
 
@@ -56,7 +57,7 @@ class RandomNoise:
             self.atoms = relax_structure(self.atoms, calculator=self.calculator, relax_cell=self.relax_cell, algorithm='BFGS', fmax=0.01)
             self.energy_ref = self.atoms.get_potential_energy()
 
-        def relax_structure(atoms, calculator, algorithm='BFGS', fmax=0.01, relax_cell=False, cell_mask=[1,1,1,1,1,1]) -> Atoms:
+        def relax_structure(atoms, calculator, algorithm='BFGS', fmax=0.01, relax_cell=self.relax_cell, cell_mask=[1,1,1,1,1,1], inplace: bool = False) -> Atoms:
             '''
             Relax the structure using the specified algorithm.
 
@@ -68,6 +69,7 @@ class RandomNoise:
                 - fmax: Maximum force criterion for convergence.
                 - relax_cell: Whether to relax the cell parameters during relaxation.
                 - cell_mask: Optional list to specify which cell parameters to relax (default is [1,1,1,1,1,1]).
+                - inplace: Whether to modify the input Atoms object in place or return a new relaxed Atoms object.
 
                 Returns:
                 ========
@@ -98,6 +100,9 @@ class RandomNoise:
                     raise ValueError(f"Unknown algorithm: {algorithm}")
             
             dyn.run(fmax=fmax)
+
+            if inplace:
+                self.atoms = atoms
 
             return atoms
         
