@@ -1,15 +1,15 @@
 <h1 align="center" style="margin-top:20px; margin-bottom:50px;">
 
-<a href="https://github.com/seixasgroup/carcara" target="_blank" rel="noopener noreferrer">
+<a href="https://github.com/seixas-research/carcara" target="_blank" rel="noopener noreferrer">
   <picture>
-    <source srcset="https://raw.githubusercontent.com/seixasgroup/carcara/refs/heads/main/logo/logo_dark.png" media="(prefers-color-scheme: dark)">
-    <source srcset="https://raw.githubusercontent.com/seixasgroup/carcara/refs/heads/main/logo/logo_light.png" media="(prefers-color-scheme: light)">
-    <img src="https://raw.githubusercontent.com/seixasgroup/carcara/refs/heads/main/logo/logo_light.png" alt="Carcará logo" style="height: auto; width: auto; max-height: 100px;">
+    <source srcset="https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/logo/logo_dark.png" media="(prefers-color-scheme: dark)">
+    <source srcset="https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/logo/logo_light.png" media="(prefers-color-scheme: light)">
+    <img src="https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/logo/logo_light.png" alt="Carcará logo" style="height: auto; width: auto; max-height: 100px;">
   </picture>
 </a>
 </h1> 
 
-[![License: MIT](https://img.shields.io/github/license/seixasgroup/carcara?color=green&style=for-the-badge)](LICENSE)    [![PyPI](https://img.shields.io/pypi/v/carcara?color=red&style=for-the-badge)](https://pypi.org/project/carcara/)
+[![License: MIT](https://img.shields.io/github/license/seixas-research/carcara?color=green&style=for-the-badge)](LICENSE)    [![PyPI](https://img.shields.io/pypi/v/carcara?color=red&style=for-the-badge)](https://pypi.org/project/carcara/)
 
 # Carcará
 
@@ -30,7 +30,7 @@ pip install carcara
 To install Carcará directly from the GitHub repository, run the following commands:
 
 ```python
-pip install git+https://github.com/seixasgroup/carcara.git
+pip install git+https://github.com/seixas-research/carcara.git
 ```
 
 
@@ -50,7 +50,7 @@ pip install git+https://github.com/seixasgroup/carcara.git
 
 # License
 
-This is an open source code under [MIT License](https://raw.githubusercontent.com/seixasgroup/carcara/refs/heads/main/LICENSE).
+This is an open source code under [MIT License](https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/LICENSE).
 
 # Acknowledgements
 

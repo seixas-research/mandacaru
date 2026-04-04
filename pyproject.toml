@@ -8,7 +8,7 @@ version = "26.4.3"
 authors = [
   { name="Leandro Seixas Rocha", email="leandro.rocha@ilum.cnpem.br" },
 ]
-description = "Advancing materials research through autonomous on-the-fly active learning frameworks"
+description = "For on-the-fly active learning of interatomic potentials."
 readme = "README.md"
 license = {file = "LICENSE"} 
 requires-python = ">=3.10"
@@ -33,6 +33,6 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/seixasgroup/carcara"
-# "Documentation" = "https://seixasgroup.github.io/carcara/"
-"Bug Tracker" = "https://github.com/seixasgroup/carcara/issues"
+"Homepage" = "https://github.com/seixas-research/carcara"
+# "Documentation" = "https://seixas-research.github.io/carcara/"
+"Bug Tracker" = "https://github.com/seixas-research/carcara/issues"
