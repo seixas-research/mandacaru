@@ -4,9 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "carcara"
-version = "26.4.1"
+version = "26.4.2"
 authors = [
-  { name="Leandro Seixas", email="leandro.seixas@proton.me" },
+  { name="Leandro Seixas Rocha", email="leandro.rocha@ilum.cnpem.br" },
 ]
 description = "For research on machine learning applications for materials"
 readme = "README.md"
