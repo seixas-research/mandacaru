@@ -1,0 +1,162 @@
+# -*- coding: utf-8 -*-
+# file: atoms_noise.py
+
+# This code is part of Carcará.
+# MIT License
+#
+# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br> 
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+
+import numpy as np
+from typing import Optional, List, Literal, Union, Dict, Type
+from ase import Atoms
+from ase.io import write
+from ase.optimize import BFGS, LBFGS, FIRE
+from ase.filters import UnitCellFilter
+
+class AtomsNoiseGenerator:
+    """
+    Generates a dataset of atomic structures with controlled noise applied to positions and cell parameters.
+
+    Parameters:
+    ===========
+    - atoms: Base Atoms object to generate samples from.
+    - calculator: Optional ASE calculator for computing reference energies and forces.
+    - noise_type: Type of noise to apply ('normal' or 'uniform').
+    - seed: Random seed for reproducibility.
+
+    Methods:
+    ========
+    - relax_structure: Optimizes the base structure using a specified algorithm.
+    - generate_samples: Creates multiple noisy samples based on the relaxed structure.
+    - save_to_xyz: Saves the generated samples to an XYZ file, optionally including reference energies and forces.
+    """
+    
+    # Optimizer options for structure relaxation
+    _OPTIMIZERS: Dict[str, Type] = {
+        "BFGS": BFGS,
+        "LBFGS": LBFGS,
+        "FIRE": FIRE
+    }
+
+    def __init__(
+        self,
+        atoms: Atoms,
+        calculator: Optional = None,
+        noise_type: Literal['normal', 'uniform'] = 'normal',
+        seed: int = 42
+    ):
+        self.atoms = atoms.copy()
+        self.calculator = calculator
+        self.noise_type = noise_type
+        self.rng = np.random.default_rng(seed)
+        self.samples: List[Atoms] = []
+
+        if self.calculator:
+            self.atoms.calc = self.calculator
+
+    def relax_structure(
+        self, 
+        fmax: float = 0.01, 
+        relax_cell: bool = False, 
+        algorithm: str = 'BFGS',
+        cell_mask: List[int] = [1, 1, 1, 1, 1, 1]
+    ) -> Atoms:
+        """
+        Relaxes the structure using the specified optimization algorithm.
+        Parameters:
+        - fmax: Maximum force criterion for convergence.
+        - relax_cell: Whether to allow cell relaxation.
+        - algorithm: Optimization algorithm to use ('BFGS', 'LBFGS', 'FIRE').
+        - cell_mask: Mask for cell relaxation (1 to relax, 0 to fix) in the order [a, b, c, alpha, beta, gamma].
+        """
+        if not self.calculator:
+            raise ValueError("Calculator is required for structure relaxation.")
+
+        target = UnitCellFilter(self.atoms, mask=cell_mask) if relax_cell else self.atoms
+        
+        opt_class = self._OPTIMIZERS.get(algorithm.upper())
+        if not opt_class:
+            raise ValueError(f"Unknown algorithm: {algorithm}. Use: {list(self._OPTIMIZERS.keys())}")
+
+        dyn = opt_class(target, logfile=None, trajectory=None)
+        dyn.run(fmax=fmax)
+        return self.atoms
+
+    def _apply_noise(self, array: np.ndarray, level: float) -> np.ndarray:
+        """Applies normal or uniform noise to a numpy array."""
+        if self.noise_type == 'normal':
+            return array + self.rng.normal(0, level, size=array.shape)
+        return array + self.rng.uniform(-level, level, size=array.shape)
+
+    def generate_samples(
+        self, 
+        num_samples: int = 100,
+        noise_level_pos: float = 0.02,
+        noise_level_cell: float = 0.02,
+        scale_cell: float = 1.0,
+        cell_mode: Literal['xy', 'all'] = 'all'
+    ) -> List[Atoms]:
+        """Generates multiple samples with noise applied to positions and cell."""
+        self.samples = []
+
+        for _ in range(num_samples):
+            new_atoms = self.atoms.copy()
+
+            # 1. Cell Scaling and Noise
+            new_cell = new_atoms.get_cell()
+            if cell_mode == 'xy':
+                new_cell[:2, :2] *= scale_cell
+                # Apply noise only to the upper 2x2 block (x, y)
+                noise_block = self.rng.normal(0, noise_level_cell, (2, 2)) if self.noise_type == 'normal' \
+                              else self.rng.uniform(-noise_level_cell, noise_level_cell, (2, 2))
+                new_cell[:2, :2] += noise_block
+            else:
+                new_cell *= scale_cell
+                new_cell = self._apply_noise(new_cell, noise_level_cell)
+            
+            new_atoms.set_cell(new_cell, scale_atoms=True)
+
+            # 2. Noise in Positions
+            new_pos = self._apply_noise(new_atoms.get_positions(), noise_level_pos)
+            new_atoms.set_positions(new_pos)
+
+            self.samples.append(new_atoms)
+
+        return self.samples
+
+    def save_to_xyz(self, filename: str = 'noisy_samples.xyz', compute_ref: bool = True):
+        """Saves the generated samples, optionally computing energy/forces."""
+        if not self.samples:
+            print("No samples generated. Call generate_samples() first.")
+            return          # Avoid writing an empty file
+
+        for atoms in self.samples:
+            atoms.info = {} # Clear old metadata
+            
+            if compute_ref and self.calculator:
+                atoms.calc = self.calculator
+                atoms.info['REF_energy'] = atoms.get_potential_energy()
+                atoms.set_array('REF_forces', atoms.get_forces())
+                atoms.calc = None # Remove the calculator to avoid large files/writing errors
+
+        write(filename, self.samples, format='extxyz')
+        print(f"Dataset saved successfully in {filename}")

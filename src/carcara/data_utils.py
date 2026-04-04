@@ -71,13 +71,13 @@ class AtomsDataHandler:
             print(f"Total configurations: {self.total_configs}")
         
         for name, configs in split_data.items():
-            fname = f"{name}.xyz"
+            fname = f"{name}_seed_{self.seed}.xyz"
             write(fname, configs, format="extxyz")
             if verbose:
                 print(f"{name.capitalize()} set: {len(configs)} configurations")
         
         if verbose:
-            files = ", ".join([f"{k}.xyz" for k in split_data.keys()])
+            files = ", ".join([f"{k}_seed_{self.seed}.xyz" for k in split_data.keys()])
             print(f"Files saved: {files}")
 
     def split(self, ratios: dict, verbose: bool = True) -> List[List[Atoms]]:
@@ -137,5 +137,5 @@ class AtomsDataHandler:
     
 
 if __name__ == "__main__":
-    handler = AtomsDataHandler("all_dataset.xyz")
+    handler = AtomsDataHandler("../../test/data/dataset.xyz")
     handler.train_test_split(train_ratio=0.8, verbose=True)
