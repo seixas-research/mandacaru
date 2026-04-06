@@ -64,12 +64,15 @@ class AtomsNoiseGenerator:
         noise_type: Literal['normal', 'uniform'] = 'normal',
         seed: int = 42
     ):
+        if noise_type not in ['normal', 'uniform']:
+            raise ValueError(f"Invalid noise type '{noise_type}'. Use 'normal' or 'uniform'.")
+        
         self.atoms = atoms.copy()
         self.calculator = calculator
         self.noise_type = noise_type
         self.rng = np.random.default_rng(seed)
         self.samples: List[Atoms] = []
-
+        
         if self.calculator:
             self.atoms.calc = self.calculator
 
@@ -121,6 +124,12 @@ class AtomsNoiseGenerator:
 
         if noise_type is not None:
             self.noise_type = noise_type
+
+        if self.noise_type not in ['normal', 'uniform']:
+            raise ValueError("Invalid noise type. Use 'normal' or 'uniform'.")
+
+        if cell_mode not in ['xy', 'all']:
+            raise ValueError("Invalid cell mode. Use 'xy' or 'all'.")
         
         for _ in range(num_samples):
             new_atoms = self.atoms.copy()
