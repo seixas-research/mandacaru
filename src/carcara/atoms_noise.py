@@ -110,6 +110,7 @@ class AtomsNoiseGenerator:
     def generate_samples(
         self, 
         num_samples: int = 100,
+        noise_type: Optional[Literal['normal', 'uniform']] = None,
         noise_level_pos: float = 0.02,
         noise_level_cell: float = 0.02,
         scale_cell: float = 1.0,
@@ -118,6 +119,9 @@ class AtomsNoiseGenerator:
         """Generates multiple samples with noise applied to positions and cell."""
         self.samples = []
 
+        if noise_type is not None:
+            self.noise_type = noise_type
+        
         for _ in range(num_samples):
             new_atoms = self.atoms.copy()
 

@@ -52,9 +52,8 @@ class MACETrainer:
     def __init__(
         self,
         name: str = "AL_iteration_0",              # name of the model and output files (e.g., "AL_iteration_0_stagetwo.model")
-        train_file: str = "train.xyz",             # path to training dataset (XYZ format)
-        test_file: str = "test.xyz",               # optional test set for evaluation during training (can be same as train_file)
-        valid_fraction: float = 0.10,              # fraction of training data to use for validation
+        train_file: str = "training.xyz",          # path to training dataset (XYZ format)
+        valid_file: str = "validation.xyz",        # optional validation set for evaluation during training (can be same as train_file)
         eval_interval: int = 5,                    # evaluate on validation set every N epochs (adjust based on dataset size and training time)
         max_num_epochs: int = 500,                 # maximum number of training epochs (adjust based on convergence behavior)
         batch_size: int = 5,                       # number of structures per batch (adjust based on GPU memory)
@@ -82,12 +81,11 @@ class MACETrainer:
         # Parameters prone to change during Active Learning iterations
         self._name = name
         self._train_file = train_file
+        self._valid_file = valid_file
         self._max_num_epochs = max_num_epochs
         self._restart_latest = restart_latest
         
         # Static model and environment parameters
-        self.test_file = test_file
-        self.valid_fraction = valid_fraction
         self.eval_interval = eval_interval
         self.batch_size = batch_size
         self.device = device
@@ -137,6 +135,19 @@ class MACETrainer:
 
 
     @property
+    def valid_file(self) -> str:
+        """Path to the validation XYZ dataset."""
+        return self._valid_file
+
+    
+    @valid_file.setter
+    def valid_file(self, value: str):
+        if not Path(value).exists():
+            print(f"Warning: Validation file '{value}' does not exist.")
+        self._valid_file = value
+
+
+    @property
     def max_num_epochs(self) -> int:
         """Maximum number of training epochs."""
         return self._max_num_epochs
@@ -169,8 +180,7 @@ class MACETrainer:
             "model": "MACE",
             "name": self._name,
             "train_file": self._train_file,
-            "test_file": self.test_file,
-            "valid_fraction": self.valid_fraction,
+            "valid_file": self._valid_file,
             "eval_interval": self.eval_interval,
             "max_num_epochs": self._max_num_epochs,
             "batch_size": self.batch_size,
