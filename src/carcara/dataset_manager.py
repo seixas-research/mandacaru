@@ -125,11 +125,25 @@ class DatasetManager:
         """
         Split the dataset into training and testing sets based on the specified ratio.
         """
-        ratios = {"train": train_ratio, "test": 1.0 - train_ratio}
+        test_fraction = 1.0 - train_ratio
+        if test_fraction <= 0:
+            raise ValueError("train_ratio must be less than 1.0 to have a valid test set.")
+        ratios = {"train": train_ratio, "test": test_fraction}
+        return tuple(self.split(ratios, verbose))
+    
+
+    def train_valid_split(self, train_ratio: float = 0.8, verbose: bool = True):
+        """
+        Split the dataset into training and validation sets based on the specified ratios.
+        """
+        valid_fraction = 1.0 - train_ratio
+        if valid_fraction <= 0:
+            raise ValueError("train_ratio must be less than 1.0 to have a valid validation set.")
+        ratios = {"train": train_ratio, "valid": valid_fraction}
         return tuple(self.split(ratios, verbose))
 
 
-    def train_validation_test_split(self, train_ratio: float = 0.8, valid_ratio: float = 0.1, verbose: bool = True):
+    def train_valid_test_split(self, train_ratio: float = 0.8, valid_ratio: float = 0.1, verbose: bool = True):
         """
         Split the dataset into training, validation, and testing sets based on the specified ratios.
         """
@@ -137,7 +151,7 @@ class DatasetManager:
         if test_ratio < 0:
             raise ValueError("The sum of train_ratio and valid_ratio cannot exceed 1.0")
             
-        ratios = {"train": train_ratio, "validation": valid_ratio, "test": test_ratio}
+        ratios = {"train": train_ratio, "valid": valid_ratio, "test": test_ratio}
         return tuple(self.split(ratios, verbose))
     
     

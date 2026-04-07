@@ -53,9 +53,9 @@ def test_train_test_split(setup_dataset):
     assert len(test) == dataset.total_configs - int(0.75 * dataset.total_configs)
 
 
-def test_train_validation_test_split(setup_dataset):
+def test_train_valid_test_split(setup_dataset):
     dataset = setup_dataset
-    train, valid, test = dataset.train_validation_test_split(train_ratio=0.6, valid_ratio=0.2, verbose=False)
+    train, valid, test = dataset.train_valid_test_split(train_ratio=0.6, valid_ratio=0.2, verbose=False)
     assert len(train) == int(0.6 * dataset.total_configs)
     assert len(valid) == int(0.2 * dataset.total_configs)
     assert len(test) == dataset.total_configs - int(0.6 * dataset.total_configs) - int(0.2 * dataset.total_configs)
