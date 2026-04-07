@@ -2,10 +2,10 @@ Modules
 =======
 
 
-carcara.atoms\_noise module
----------------------------
+carcara.random\_displacements module
+------------------------------------
 
-.. automodule:: carcara.atoms_noise
+.. automodule:: carcara.random_displacements
    :members:
    :show-inheritance:
    :undoc-members:

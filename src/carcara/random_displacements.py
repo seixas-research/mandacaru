@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: atoms_noise.py
+# file: random_displacements.py
 
 # This code is part of Carcará.
 # MIT License
@@ -32,7 +32,7 @@ from ase.io import write
 from ase.optimize import BFGS, LBFGS, FIRE
 from ase.filters import UnitCellFilter
 
-class AtomsNoiseGenerator:
+class RandomDisplacements:
     """
     Generates a dataset of atomic structures with controlled noise applied to positions and cell parameters.
 
