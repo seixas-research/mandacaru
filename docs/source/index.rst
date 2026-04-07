@@ -11,11 +11,11 @@ Carcará is a high-performance Python framework designed for atomistic simulatio
 
 * **Diverse Configuration Sampling**: Generate new training structures through multiple pathways:
 
-  - **Stochastic Perturbations**: Introduction of "Normal" or "Uniform" noise/displacements.
+  - **Random Displacements**: Introduce displacements in atomic positions and lattices randomly using "Normal" or "Uniform" distributions.
 
-  - **Molecular Dynamics (MD)**: Structural exploration via various ensembles.
+  - **Molecular Dynamics (MD)**: Structural exploration via various ensembles, such as NVT or NPT.
 
-  - **Minimum Energy Paths (MEP)**: Sampling through diffusion paths and transition states.
+  - **Minimum Energy Paths (MEP)**: Sampling through diffusion paths and transition states, using methods like Nudged Elastic Band (NEB), getting configurations along reaction coordinates for rare event sampling. 
 
 
 * **Active Learning & Uncertainty Quantification**: Utilize Machine Learning Committees (ensembles) to identify configurations with high model disagreement, targeting high-uncertainty regions for further training.
@@ -35,6 +35,7 @@ The hallmark of Carcará is its optimization for continuous, autonomous model ev
    about
    installation
    quick_start/index
+   cli
 
 .. toctree::
    :maxdepth: 2
