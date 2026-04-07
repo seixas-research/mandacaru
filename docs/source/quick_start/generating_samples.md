@@ -20,5 +20,13 @@ generator.generate_samples(num_samples=100,
                            cell_mode='all')
 generator.save_to_xyz("noisy_samples.xyz", compute_ref=True)
 
+```{figure} _static/noisy.gif
+---
+width: 300px
+name: Samples were generated with uniform noise of 0.4 angstroms for the positions of the atoms and 0.4 angstroms for the components of the unit cell vectors.
+alt: Noisy samples.
+align: center
+---
+
 ```
 
