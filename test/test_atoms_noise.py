@@ -176,6 +176,46 @@ def test_relax_structure_with_invalid_mask(setup_data, setup_calculator, seed=42
         generator.relax_structure(relax_cell=True, cell_mask=[True, False])
 
 
+def test_statistics_without_samples(setup_data, setup_calculator, seed=42, noise_type='normal'):
+    generator = AtomsNoiseGenerator(setup_data, calculator=setup_calculator, noise_type=noise_type, seed=seed)
+    stats = generator.statistics()
+    assert stats == {}, "Statistics should return an empty dictionary if no samples have been generated"
+
+
+def test_statistics(setup_data, setup_calculator, seed=42, noise_type='normal', energy_and_forces=False):
+    generator = AtomsNoiseGenerator(setup_data, calculator=setup_calculator, noise_type=noise_type, seed=seed)
+    generator.relax_structure()
+    generator.generate_samples(num_samples=100, noise_type=noise_type)
+    statistics = generator.statistics(energy_and_forces=energy_and_forces)
+    assert len(generator.samples) == statistics['num_samples'], "Statistics should report the correct number of samples"
+    assert isinstance(statistics['cell_deviation_mean'], np.float64), "Cell deviation mean should be a float"
+    assert isinstance(statistics['cell_deviation_std'], np.float64), "Cell deviation std should be a float"
+    assert isinstance(statistics['pos_deviation_mean'], np.float64), "Position deviation mean should be a float"
+    assert isinstance(statistics['pos_deviation_std'], np.float64), "Position deviation std should be a float"
+
+
+def test_statistics_with_energy_and_forces(setup_data, setup_calculator, seed=42, noise_type='normal'):
+    generator = AtomsNoiseGenerator(setup_data, calculator=setup_calculator, noise_type=noise_type, seed=seed)
+    generator.relax_structure()
+    generator.generate_samples(num_samples=100, noise_type=noise_type)
+    statistics = generator.statistics(energy_and_forces=True)
+    assert 'energy_mean' in statistics, "Statistics should include energy mean when energy_and_forces is True"
+    assert 'energy_std' in statistics, "Statistics should include energy std when energy_and_forces is True"
+    assert 'forces_mean' in statistics, "Statistics should include forces mean when energy_and_forces is True"
+    assert 'forces_std' in statistics, "Statistics should include forces std when energy_and_forces is True"
+    assert isinstance(statistics['energy_mean'], np.float64), "Energy mean should be a float"
+    assert isinstance(statistics['energy_std'], np.float64), "Energy std should be a float"
+    assert isinstance(statistics['forces_mean'], np.float64), "Forces mean should be a float"
+    assert isinstance(statistics['forces_std'], np.float64), "Forces std should be a float"
+
+
+def test_statistics_with_energy_and_forces_without_calculator(setup_data, seed=42, noise_type='normal'):
+    generator = AtomsNoiseGenerator(setup_data, noise_type=noise_type, seed=seed)
+    generator.generate_samples(num_samples=100, noise_type=noise_type)
+    with pytest.raises(ValueError):
+        generator.statistics(energy_and_forces=True)
+
+
 def test_save_xyz(setup_data, setup_calculator, tmp_path, seed=42, noise_type='uniform'):
     filename = str(tmp_path / "test_sample.xyz")
     generator = AtomsNoiseGenerator(setup_data, calculator=setup_calculator, noise_type=noise_type, seed=seed)
@@ -202,3 +242,4 @@ def test_save_xyz_with_multiple_samples(setup_data, setup_calculator, tmp_path, 
         assert len(original) == len(loaded), "Number of atoms should be the same for each sample after saving and loading"
         assert np.allclose(original.get_positions(), loaded.get_positions()), "Positions should be close for each sample after saving and loading"
         assert np.allclose(original.get_cell(), loaded.get_cell()), "Cell should be close for each sample after saving and loading"
+

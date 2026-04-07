@@ -171,6 +171,9 @@ class AtomsNoiseGenerator:
         if not self.samples:
             print("No samples generated. Call generate_samples() first.")
             return {}
+        
+        if energy_and_forces and not self.calculator:
+            raise ValueError("Calculator is required to compute energy and forces statistics.")
 
         cell_deviations = np.array([np.linalg.norm(atoms.get_cell() - self.atoms.get_cell()) for atoms in self.samples])
         pos_deviations = np.array([np.linalg.norm(atoms.get_positions() - self.atoms.get_positions()) for atoms in self.samples])
@@ -183,9 +186,9 @@ class AtomsNoiseGenerator:
             'pos_deviation_std': np.std(pos_deviations)
         }
 
-        if energy_and_forces:
-            energies = np.array([atoms.info['REF_energy'] for atoms in self.samples])
-            forces = np.array([atoms.get_array('REF_forces') for atoms in self.samples])
+        if energy_and_forces and self.calculator:
+            energies = np.array([atoms.info.get('REF_energy', np.nan) for atoms in self.samples])
+            forces = np.array([atoms.get_array('REF_forces') if 'REF_forces' in atoms.arrays else np.full(atoms.get_positions().shape, np.nan) for atoms in self.samples])
             dict['energy_mean'] = np.mean(energies)
             dict['energy_std'] = np.std(energies)
             dict['forces_mean'] = np.mean(forces)
