@@ -1,5 +1,11 @@
 import os
 import sys
+from unittest.mock import MagicMock
+
+if os.environ.get('READTHEDOCS') == 'True':
+    MOCK_MODULES = ['torch', 'torch.nn', 'ase', 'ase.build', 'mace', 'numpy']
+    sys.modules.update((mod_name, MagicMock()) for mod_name in MOCK_MODULES)
+    
 sys.path.insert(0, os.path.abspath('../../src')) # root
 
 # Configuration file for the Sphinx documentation builder.
