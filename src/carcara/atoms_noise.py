@@ -102,6 +102,7 @@ class AtomsNoiseGenerator:
 
         dyn = opt_class(target, logfile=None, trajectory=None)
         dyn.run(fmax=fmax)
+        self.atoms = target.copy()  # Update the base structure to the relaxed one
         return self.atoms
 
     def _apply_noise(self, array: np.ndarray, level: float) -> np.ndarray:
@@ -155,6 +156,42 @@ class AtomsNoiseGenerator:
             self.samples.append(new_atoms)
 
         return self.samples
+    
+    def statistics(self, energy_and_forces: bool = True) -> Dict[str, Union[float, np.ndarray]]:
+        """Computes statistics of the generated samples, including deviations and optionally energies/forces.
+        
+        Parameters:
+        ===========
+        - energy_and_forces: Whether to include energy and forces statistics (requires calculator).
+        
+        Returns:
+        ========
+        A dictionary containing mean and standard deviation of cell and position deviations, and optionally energies and forces.
+        """
+        if not self.samples:
+            print("No samples generated. Call generate_samples() first.")
+            return {}
+
+        cell_deviations = np.array([np.linalg.norm(atoms.get_cell() - self.atoms.get_cell()) for atoms in self.samples])
+        pos_deviations = np.array([np.linalg.norm(atoms.get_positions() - self.atoms.get_positions()) for atoms in self.samples])
+
+        dict = {
+            'num_samples': len(self.samples),
+            'cell_deviation_mean': np.mean(cell_deviations),
+            'cell_deviation_std': np.std(cell_deviations),
+            'pos_deviation_mean': np.mean(pos_deviations),
+            'pos_deviation_std': np.std(pos_deviations)
+        }
+
+        if energy_and_forces:
+            energies = np.array([atoms.info['REF_energy'] for atoms in self.samples])
+            forces = np.array([atoms.get_array('REF_forces') for atoms in self.samples])
+            dict['energy_mean'] = np.mean(energies)
+            dict['energy_std'] = np.std(energies)
+            dict['forces_mean'] = np.mean(forces)
+            dict['forces_std'] = np.std(forces)
+
+        return dict
 
     def save_to_xyz(self, filename: str = 'noisy_samples.xyz', compute_ref: bool = True):
         """Saves the generated samples, optionally computing energy/forces."""
