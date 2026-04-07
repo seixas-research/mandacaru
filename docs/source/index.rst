@@ -5,7 +5,9 @@ Carcará is a high-performance Python framework designed for atomistic simulatio
 
 **Key Features**
 
+
 * **On-the-Fly Training**: Automate the training cycle during simulations, reducing the need for manual dataset curation and ensuring the potential is accurate for the relevant phase space.
+
 
 * **Diverse Configuration Sampling**: Generate new training structures through multiple pathways:
 
@@ -15,9 +17,12 @@ Carcará is a high-performance Python framework designed for atomistic simulatio
 
   - **Minimum Energy Paths (MEP)**: Sampling through diffusion paths and transition states.
 
+
 * **Active Learning & Uncertainty Quantification**: Utilize Machine Learning Committees (ensembles) to identify configurations with high model disagreement, targeting high-uncertainty regions for further training.
 
+
 * **Scalable Sample Generation**: Efficiently produce large-scale datasets for ML training through continuous random displacements or extended MD trajectories.
+
 
 **Core Focus**
 
@@ -29,7 +34,7 @@ The hallmark of Carcará is its optimization for continuous, autonomous model ev
 
    about
    installation
-   usage/index
+   quick_start/index
 
 .. toctree::
    :maxdepth: 2
