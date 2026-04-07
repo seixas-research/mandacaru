@@ -31,7 +31,7 @@ import numpy as np
 from ase import Atoms
 from ase.io import read, write
 
-class AtomsDataHandler:
+class DatasetManager:
     """
     A class to handle datasets of atomic configurations stored in XYZ format. It provides methods to split the dataset into training, validation, and testing sets based on specified ratios. The splits are saved as separate XYZ files.
     
@@ -93,9 +93,14 @@ class AtomsDataHandler:
         ========
         - A list of lists of Atoms objects, ordered according to the keys in the ratios dictionary.
         """
+        for name, ratio in ratios.items():
+            if ratio < 0 or ratio > 1:
+                raise ValueError(f"Invalid ratio for '{name}': {ratio}. Ratios must be between 0 and 1.")
+            
         if not np.isclose(sum(ratios.values()), 1.0):
             raise ValueError("The ratios must sum to 1.0")
 
+        
         shuffled_atoms = self._get_shuffled_atoms()
         split_results = {}
         current_idx = 0
@@ -135,7 +140,4 @@ class AtomsDataHandler:
         ratios = {"train": train_ratio, "validation": valid_ratio, "test": test_ratio}
         return tuple(self.split(ratios, verbose))
     
-
-if __name__ == "__main__":
-    handler = AtomsDataHandler("../../test/data/dataset.xyz")
-    handler.train_test_split(train_ratio=0.8, verbose=True)
+    

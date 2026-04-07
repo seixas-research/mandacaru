@@ -5,7 +5,7 @@
 from ase.io import read, write
 import numpy as np
 
-class Dataset:
+class DatasetManager:
     def __init__(self, filename: str, seed: int = 42):
         self.filename = filename
         self.seed = seed

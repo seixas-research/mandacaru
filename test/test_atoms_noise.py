@@ -155,11 +155,13 @@ def test_relax_structure_with_invalid_algorithm(setup_data, setup_calculator, se
     with pytest.raises(ValueError):
         generator.relax_structure(algorithm='invalid_algorithm')
 
+
 def test_generate_samples_with_invalid_noise_type(setup_data, setup_calculator, seed=42):
     generator = AtomsNoiseGenerator(setup_data, calculator=setup_calculator, seed=seed)
     generator.relax_structure()
     with pytest.raises(ValueError):
         generator.generate_samples(num_samples=1, noise_type='invalid_noise_type')
+
 
 def test_generate_samples_with_invalid_cell_mode(setup_data, setup_calculator, seed=42, noise_type='normal'):
     generator = AtomsNoiseGenerator(setup_data, calculator=setup_calculator, noise_type=noise_type, seed=seed)
