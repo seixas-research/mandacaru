@@ -1,0 +1,24 @@
+# Generating samples
+
+## Generating samples with random noise
+
+To create samples to train our model, we need first to generate structures
+```python
+from carcara.atoms_noise import AtomsNoiseGenerator
+from ase.build import bulk
+from ase.calculator.emt import EMT
+
+atoms = bulk("Au", "fcc", a=4.08, cubic=True).repeat([2,2,2])
+calc = EMT()
+
+generator = AtomsNoiseGenerator(atoms=atoms, calculator=calculator, seed=42)
+generator.relax_structure(fmax=0.01, relax_cell=True)
+generator.generate_samples(num_samples=100,
+                           noise_type='uniform',
+                           noise_level_pos=0.4,
+                           noise_level_cell=0.4,
+                           cell_mode='all')
+generator.save_to_xyz("noisy_samples.xyz", compute_ref=True)
+
+```
+
