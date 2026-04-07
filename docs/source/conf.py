@@ -30,7 +30,6 @@ extensions = [
     'sphinx.ext.viewcode',     # Adiciona links para o código fonte
     'myst_parser',             # Se quiser usar arquivos .md
     'sphinx_rtd_theme'        # O tema do Read the Docs
-    # 'furo',             # O tema Furo, moderno e leve
 ]
 
 templates_path = ['_templates']
@@ -51,6 +50,9 @@ html_theme_options = {
 
 html_favicon = "_static/favicon.png"
 
-html_css_files = [
-    'custom.css',
-]
+html_css_files = ['custom.css']     
+
+copyright = 'Leandro Seixas Rocha, 2026'
+html_show_sphinx = False
+html_show_copyright = True
+html_show_sourcelink = False

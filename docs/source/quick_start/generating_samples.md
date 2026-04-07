@@ -31,6 +31,9 @@ align: center
 Figure 1: Sample generation using uniform noise (0.4 Å) for atomic positions and lattice components.
 ```
 
+## Calculating energies and forces with MACE
+
+
 ## Analyzing the diversity of the samples generated 
 
-## Calculating energies and forces with MACE
+

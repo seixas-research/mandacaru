@@ -5,3 +5,22 @@
     margin-left: auto;
     margin-right: auto;
 }
+
+/* Aumentar e centralizar o título na barra lateral */
+.sidebar-brand-text {
+    font-size: 3.0rem;    /* Aumenta o tamanho (o padrão é ~1rem) */
+    font-weight: bold;    /* Opcional: deixa em negrito para destacar mais */
+    text-align: center;   /* Centraliza o texto */
+    display: block;       /* Necessário para que a centralização funcione */
+    margin-top: 12px;     /* Adiciona um espaço entre o logo e o título */
+    line-height: 1.2;     /* Ajusta o espaçamento entre linhas se o título for longo */
+}
+
+/* Garante que o link que envolve o logo e o título também esteja centralizado */
+.sidebar-brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none !important; /* Remove sublinhados indesejados */
+}

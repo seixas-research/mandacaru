@@ -22,14 +22,14 @@ Machine learning for atomistic simulations.
 ## From pip
 The easiest way to install Carcará is with pip:
 
-```python
+```console
 pip install carcara
 ```
 
 ## From github
 To install Carcará directly from the GitHub repository, run the following commands:
 
-```python
+```console
 pip install git+https://github.com/seixas-research/carcara.git
 ```
 
