@@ -30,6 +30,7 @@ from typing import List, Tuple, Optional
 import numpy as np
 from ase import Atoms
 from ase.io import read, write
+from ase.parallel import parprint as print
 
 class DatasetManager:
     """
@@ -56,6 +57,8 @@ class DatasetManager:
         self.atoms: List[Atoms] = read(self.filename, index=":")
         self.total_configs = len(self.atoms)
         self.rng = np.random.default_rng(self.seed)
+        self.split_data = None
+
 
     def _get_shuffled_atoms(self) -> List[Atoms]:
         """
@@ -65,7 +68,8 @@ class DatasetManager:
         self.rng.shuffle(indices)
         return [self.atoms[i] for i in indices]
 
-    def _save_and_report(self, split_data: dict, verbose: bool):
+
+    def _save_and_report(self, split_data: dict, verbose: bool = True):
         """Helper to save files and print logs."""
         if verbose:
             print(f"Total configurations: {self.total_configs}")
@@ -80,27 +84,26 @@ class DatasetManager:
             files = ", ".join([f"{k}_seed_{self.seed}.xyz" for k in split_data.keys()])
             print(f"Files saved: {files}")
 
-    def split(self, ratios: dict, verbose: bool = True) -> List[List[Atoms]]:
+
+    def split(self, ratios: dict):
         """
         Generic method to split the dataset.
 
         Parameters:
         ===========
         - ratios: A dictionary where keys are split names (e.g., "train", "test") and values are the corresponding ratios (e.g., 0.8, 0.2). The ratios must sum to 1.0.
-        - verbose: If True, prints the number of configurations in each split and the total number of configurations. Also reports the files saved.
 
         Returns:
         ========
-        - A list of lists of Atoms objects, ordered according to the keys in the ratios dictionary.
+        - A dictionary where keys are split names (e.g., "train", "test") and values are lists of Atoms objects corresponding to each split.
         """
         for name, ratio in ratios.items():
             if ratio < 0 or ratio > 1:
                 raise ValueError(f"Invalid ratio for '{name}': {ratio}. Ratios must be between 0 and 1.")
             
-        if not np.isclose(sum(ratios.values()), 1.0):
-            raise ValueError("The ratios must sum to 1.0")
+        if not np.isclose(sum(ratios.values()), 1.0, atol=1e-4):
+            raise ValueError(f"The ratios must sum to 1.0. Current sum: {sum(ratios.values()):.4f}")
 
-        
         shuffled_atoms = self._get_shuffled_atoms()
         split_results = {}
         current_idx = 0
@@ -110,48 +113,87 @@ class DatasetManager:
         
         for i, name in enumerate(keys):
             # If it's the last element, take the rest to avoid rounding errors
+            
             if i == len(keys) - 1:
-                split_results[name] = shuffled_atoms[current_idx:]
+                split_results[name] = shuffled_atoms[current_idx:] # Example of split_results after first iteration: {"train": [Atoms1, Atoms2, ..., AtomsN]} where N is int(0.7 * total_configs)
             else:
                 n_configs = int(ratios[name] * self.total_configs)
                 split_results[name] = shuffled_atoms[current_idx : current_idx + n_configs]
                 current_idx += n_configs
 
-        self._save_and_report(split_results, verbose)
-        return [split_results[k] for k in keys]
+        self.split_data = split_results         # Example:
+                                                # Input:  ratios={"train": 0.7, "test": 0.3}, total_configs=100
+                                                # Output: self.split_data = {"train": [Atoms1, ..., Atoms70], "test": [Atoms71, ..., Atoms100]}
 
 
-    def train_test_split(self, train_ratio: float = 0.8, verbose: bool = True):
+    def train_test_split(self, train_ratio: float = 0.8) -> dict:
         """
         Split the dataset into training and testing sets based on the specified ratio.
         """
+        if train_ratio < 0 or train_ratio > 1:
+            raise ValueError("train_ratio must be between 0 and 1.")
+        
         test_fraction = 1.0 - train_ratio
-        if test_fraction <= 0:
+        if test_fraction < 0 or test_fraction > 1:
             raise ValueError("train_ratio must be less than 1.0 to have a valid test set.")
+        
         ratios = {"train": train_ratio, "test": test_fraction}
-        return tuple(self.split(ratios, verbose))
+        return self.split(ratios=ratios)
     
 
-    def train_valid_split(self, train_ratio: float = 0.8, verbose: bool = True):
+    def train_valid_split(self, train_ratio: float = 0.8) -> dict:
         """
         Split the dataset into training and validation sets based on the specified ratios.
         """
+        if train_ratio < 0 or train_ratio > 1:
+            raise ValueError("train_ratio must be between 0 and 1.")
+        
         valid_fraction = 1.0 - train_ratio
-        if valid_fraction <= 0:
-            raise ValueError("train_ratio must be less than 1.0 to have a valid validation set.")
+        if valid_fraction < 0 or valid_fraction > 1:
+            raise ValueError("train_ratio must be between 0 and 1 to have a valid validation set.")
+
         ratios = {"train": train_ratio, "valid": valid_fraction}
-        return tuple(self.split(ratios, verbose))
+        return self.split(ratios=ratios)
 
 
-    def train_valid_test_split(self, train_ratio: float = 0.8, valid_ratio: float = 0.1, verbose: bool = True):
+    def train_valid_test_split(self, train_ratio: float = 0.8, valid_ratio: float = 0.1) -> dict:
         """
         Split the dataset into training, validation, and testing sets based on the specified ratios.
         """
+        if train_ratio < 0 or train_ratio > 1:
+            raise ValueError("train_ratio must be between 0 and 1.")
+        
+        if valid_ratio < 0 or valid_ratio > 1:
+            raise ValueError("valid_ratio must be between 0 and 1.")
+        
         test_ratio = 1.0 - train_ratio - valid_ratio
-        if test_ratio < 0:
-            raise ValueError("The sum of train_ratio and valid_ratio cannot exceed 1.0")
+        if test_ratio < 0 or test_ratio > 1:
+            raise ValueError("test_ratio must be between 0 and 1. Check that train_ratio + valid_ratio is less than 1.")
             
         ratios = {"train": train_ratio, "valid": valid_ratio, "test": test_ratio}
-        return tuple(self.split(ratios, verbose))
+        return self.split(ratios=ratios)
     
+
+    def write_datasets(self, filenames: List[str] = None):
+        if self.split_data is None:
+            raise ValueError("No split data found. Please run the split method before writing datasets.")
+        
+        if len(filenames) != len(self.split_data):
+            raise ValueError(f"Number of filenames ({len(filenames)}) must match the number of splits ({len(self.split_data)}).")
+        
+        if len(set(filenames)) != len(filenames):
+            raise ValueError("Filenames must be unique to avoid overwriting files.")
+        
+        if filenames is not None:
+            for name, fname in zip(self.split_data.keys(), filenames):
+                write(fname, self.split_data[name], format="extxyz")
+                print(f"{name.capitalize()} set: {len(self.split_data[name])} configurations")
+        else:
+            for name, configs in self.split_data.items():
+                fname = f"{name}_seed_{self.seed}.xyz"
+                write(fname, configs, format="extxyz")
+                print(f"{name.capitalize()} set: {len(configs)} configurations")
+
+        files = ", ".join([f"{k}_seed_{self.seed}.xyz" for k in self.split_data.keys()])
+        print(f"Files saved: {files}")
     
