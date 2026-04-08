@@ -62,20 +62,17 @@ class RandomDisplacements:
         self,
         atoms: Atoms,
         calculator: Optional = None,
-        noise_type: Literal['normal', 'uniform'] = 'normal',
         seed: int = 42
     ):
-        if noise_type not in ['normal', 'uniform']:
-            raise ValueError(f"Invalid noise type '{noise_type}'. Use 'normal' or 'uniform'.")
         
         self.atoms = atoms.copy()
         self.calculator = calculator
-        self.noise_type = noise_type
         self.rng = np.random.default_rng(seed)
         self.samples: List[Atoms] = []
         
         if self.calculator:
             self.atoms.calc = self.calculator
+
 
     def relax_structure(
         self, 
@@ -95,6 +92,9 @@ class RandomDisplacements:
         if not self.calculator:
             raise ValueError("Calculator is required for structure relaxation.")
 
+        if relax_cell and len(cell_mask) != 6:
+            raise ValueError("cell_mask must be a list of 6 integers (0 or 1) corresponding to [a, b, c, alpha, beta, gamma].")
+
         target = UnitCellFilter(self.atoms, mask=cell_mask) if relax_cell else self.atoms
         
         opt_class = self._OPTIMIZERS.get(algorithm.upper())
@@ -102,20 +102,27 @@ class RandomDisplacements:
             raise ValueError(f"Unknown algorithm: {algorithm}. Use: {list(self._OPTIMIZERS.keys())}")
 
         dyn = opt_class(target, logfile=None, trajectory=None)
+        
+
+        if fmax <= 0:
+            raise ValueError("fmax must be a positive value.")
+        
         dyn.run(fmax=fmax)
         self.atoms = target.copy()  # Update the base structure to the relaxed one
         return self.atoms
 
-    def _apply_noise(self, array: np.ndarray, level: float) -> np.ndarray:
+
+    def _apply_noise(self, array: np.ndarray, noise_type: str, level: float) -> np.ndarray:
         """Applies normal or uniform noise to a numpy array."""
-        if self.noise_type == 'normal':
+        if noise_type == 'normal':
             return array + self.rng.normal(0, level, size=array.shape)
         return array + self.rng.uniform(-level, level, size=array.shape)
+
 
     def generate_samples(
         self, 
         num_samples: int = 100,
-        noise_type: Optional[Literal['normal', 'uniform']] = None,
+        noise_type: Optional[Literal['normal', 'uniform']] = 'normal',
         noise_level_pos: float = 0.20,
         noise_level_cell: float = 0.20,
         scale_cell: float = 1.0,
@@ -124,14 +131,30 @@ class RandomDisplacements:
         write_xyz: Optional[str] = None,
         verbose: bool = False
     ) -> List[Atoms]:
-        """Generates multiple samples with noise applied to positions and cell."""
+        """Generates multiple samples with noise applied to positions and cell.
+        
+        Parameters:
+        ===========
+        - num_samples: Number of samples to generate.
+        - noise_type: Type of noise to apply ('normal' or 'uniform'). Overrides the default noise type if specified.
+        - noise_level_pos: Standard deviation (for normal) or range (for uniform) of noise applied to atomic positions.
+        - noise_level_cell: Standard deviation (for normal) or range (for uniform) of noise applied to cell parameters.
+        - scale_cell: Scaling factor for the cell dimensions before applying noise.
+        - cell_mode: Which cell parameters to modify ('xy' for a and b, 'all' for all cell parameters, 'fixed' for no cell modifications).
+        - compute_energy_and_forces: Whether to compute and store reference energies and forces for each sample (requires calculator).
+        - write_xyz: If specified, writes each generated sample to an XYZ file (appends if file exists). Can be a string filename or True for default 'random_samples.xyz'.
+        - verbose: Whether to print progress and statistics during sample generation.
+        
+        Returns:
+        ========
+        A list of Atoms objects representing the generated samples.
+        """
         self.samples = []
 
-        if noise_type is not None:
-            self.noise_type = noise_type
-
-        if self.noise_type not in ['normal', 'uniform']:
+        if noise_type not in ['normal', 'uniform']:
             raise ValueError("Invalid noise type. Use 'normal' or 'uniform'.")
+        
+        self.noise_type = noise_type
 
         if cell_mode not in ['xy', 'all', 'fixed']:
             raise ValueError("Invalid cell mode. Use 'xy', 'all', or 'fixed'.")
@@ -153,12 +176,12 @@ class RandomDisplacements:
                 new_cell[:2, :2] += noise_block
             elif cell_mode == 'all':
                 new_cell *= scale_cell
-                new_cell = self._apply_noise(new_cell, noise_level_cell)
+                new_cell = self._apply_noise(new_cell, self.noise_type, noise_level_cell)
             # If cell_mode is 'fixed', do not modify the cell
             new_atoms.set_cell(new_cell, scale_atoms=True)
 
             # 2. Noise in Positions
-            new_pos = self._apply_noise(new_atoms.get_positions(), noise_level_pos)
+            new_pos = self._apply_noise(new_atoms.get_positions(), self.noise_type, noise_level_pos)
             new_atoms.set_positions(new_pos)
 
             # 3. Compute energy and forces if requested
@@ -224,7 +247,25 @@ class RandomDisplacements:
 
         return dict
 
-    def save_to_xyz(self, filename: str = 'random_samples.xyz'):
+
+    def summary(self, energy_and_forces: bool = True) -> None:
+        """Prints a summary of the generated samples, including statistics and optionally energy/forces."""
+        stats = self.statistics(energy_and_forces=energy_and_forces)
+        if not stats:
+            return
+        
+        print(f"Generated {stats['num_samples']} samples.")
+        print(f"Cell deviation: mean = {stats['cell_deviation_mean']:.4f}, std = {stats['cell_deviation_std']:.4f}")
+        print(f"Position deviation: mean = {stats['pos_deviation_mean']:.4f}, std = {stats['pos_deviation_std']:.4f}")
+        
+        if energy_and_forces and 'energy_mean' in stats:
+            print(f"Energy: mean = {stats['energy_mean']:.4f} eV, std = {stats['energy_std']:.4f} eV")
+        
+        if energy_and_forces and 'forces_mean' in stats:
+            print(f"Forces: mean = {stats['forces_mean']:.4f} eV/Å, std = {stats['forces_std']:.4f} eV/Å")
+
+    
+    def save_to_xyz(self, filename: str = 'random_samples.xyz') -> None:
         """Saves the generated samples."""
         if not self.samples:
             print("No samples generated. Call generate_samples() first.")

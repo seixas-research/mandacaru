@@ -15,8 +15,9 @@
 
 **Carcará** is a high-performance Python framework designed for atomistic simulations powered by on-the-fly machine learning interatomic potentials (OTF-MLIP). It streamlines the integration of first-principles accuracy with the efficiency of classical force fields, enabling the automated development of robust potentials during the simulation process.
 
-**Key Features**
+|
 
+**Key Features**
 
 * **On-the-Fly Training**: Automate the training cycle during simulations, reducing the need for manual dataset curation and ensuring the potential is accurate for the relevant phase space.
 
@@ -35,6 +36,7 @@
 
 * **Scalable Sample Generation**: Efficiently produce large-scale datasets for ML training through continuous random displacements or extended MD trajectories.
 
+|
 
 **Core Focus**
 
