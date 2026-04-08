@@ -34,5 +34,5 @@ classifiers = [
 
 [project.urls]
 "Homepage" = "https://github.com/seixas-research/carcara"
-# "Documentation" = "https://seixas-research.github.io/carcara/"
+"Documentation" = "https://carcara.readthedocs.io/en/latest/"
 "Bug Tracker" = "https://github.com/seixas-research/carcara/issues"
