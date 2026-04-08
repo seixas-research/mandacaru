@@ -121,6 +121,7 @@ class RandomDisplacements:
         scale_cell: float = 1.0,
         cell_mode: Literal['xy', 'all', 'fixed'] = 'all',
         compute_energy_and_forces: bool = False,
+        write_xyz: Optional[str] = None,
         verbose: bool = False
     ) -> List[Atoms]:
         """Generates multiple samples with noise applied to positions and cell."""
@@ -173,7 +174,12 @@ class RandomDisplacements:
                 if verbose:
                     print(f"Sample {i+1}/{num_samples} generated.", flush=True)
 
-            # 4. Store the new sample
+            # 4. Write to XYZ if requested
+            if write_xyz is not None:
+                filename = write_xyz if isinstance(write_xyz, str) else 'random_samples.xyz'
+                write(filename, new_atoms, format='extxyz', append=True)
+
+            # 5. Store the new sample
             self.samples.append(new_atoms)
 
         return self.samples
