@@ -178,11 +178,8 @@ class DatasetManager:
         if self.split_data is None:
             raise ValueError("No split data found. Please run the split method before writing datasets.")
         
-        if len(filenames) != len(self.split_data):
+        if filenames is not None and len(filenames) != len(self.split_data):
             raise ValueError(f"Number of filenames ({len(filenames)}) must match the number of splits ({len(self.split_data)}).")
-        
-        if len(set(filenames)) != len(filenames):
-            raise ValueError("Filenames must be unique to avoid overwriting files.")
         
         if filenames is not None:
             for name, fname in zip(self.split_data.keys(), filenames):
