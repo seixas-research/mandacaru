@@ -174,21 +174,26 @@ class DatasetManager:
         return self.split(ratios=ratios)
     
 
-    def write_datasets(self, filenames: List[str] = None):
+    def write_datasets(self, directory: str = ".", filenames: List[str] = None):
         if self.split_data is None:
             raise ValueError("No split data found. Please run the split method before writing datasets.")
         
         if filenames is not None and len(filenames) != len(self.split_data):
             raise ValueError(f"Number of filenames ({len(filenames)}) must match the number of splits ({len(self.split_data)}).")
         
+        path = Path(directory)
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
         if filenames is not None:
             for name, fname in zip(self.split_data.keys(), filenames):
-                write(fname, self.split_data[name], format="extxyz")
+                if not fname.endswith(".xyz"):
+                    fname += ".xyz"
+                write(path / fname, self.split_data[name], format="extxyz")
                 print(f"{name.capitalize()} set: {len(self.split_data[name])} configurations")
         else:
             for name, configs in self.split_data.items():
                 fname = f"{name}_seed_{self.seed}.xyz"
-                write(fname, configs, format="extxyz")
+                write(path / fname, configs, format="extxyz")
                 print(f"{name.capitalize()} set: {len(configs)} configurations")
 
         files = ", ".join([f"{k}_seed_{self.seed}.xyz" for k in self.split_data.keys()])
