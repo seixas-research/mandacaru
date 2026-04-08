@@ -1,5 +1,5 @@
 import numpy as np
-from carcara.random_displacements import RandomDisplacements
+from carcara.sampler.random_displacements import RandomDisplacements
 from ase.build import bulk
 from ase.io import read
 from ase.calculators.emt import EMT

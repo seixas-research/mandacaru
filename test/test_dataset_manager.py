@@ -1,13 +1,13 @@
-from carcara.dataset_manager import DatasetManager
+from carcara.core.dataset_manager import DatasetManager
 import pytest
 
 @pytest.fixture
 def setup_dataset():
-    dataset = DatasetManager(filename="test/samples.xyz", seed=123)
+    dataset = DatasetManager(filename="test/data/samples.xyz", seed=123)
     return dataset
 
 
-def test_dataset_manager_initialization(setup_dataset, filename="test/samples.xyz", seed=123):
+def test_dataset_manager_initialization(setup_dataset, filename="test/data/samples.xyz", seed=123):
     dataset = setup_dataset
     assert dataset.filename == filename
     assert dataset.seed == seed
@@ -63,7 +63,7 @@ def test_train_valid_test_split(setup_dataset):
 
 def test_different_samples_with_different_seeds(setup_dataset):
     dataset1 = setup_dataset
-    dataset2 = DatasetManager(filename="test/samples.xyz", seed=456)
+    dataset2 = DatasetManager(filename="test/data/samples.xyz", seed=456)
     
     train1, test1 = dataset1.train_test_split(train_ratio=0.8, verbose=False)
     train2, test2 = dataset2.train_test_split(train_ratio=0.8, verbose=False)
@@ -76,7 +76,7 @@ def test_different_samples_with_different_seeds(setup_dataset):
 
 def test_same_samples_with_same_seeds(setup_dataset):
     dataset1 = setup_dataset
-    dataset2 = DatasetManager(filename="test/samples.xyz", seed=123)
+    dataset2 = DatasetManager(filename="test/data/samples.xyz", seed=123)
     
     train1, test1 = dataset1.train_test_split(train_ratio=0.8, verbose=False)
     train2, test2 = dataset2.train_test_split(train_ratio=0.8, verbose=False)

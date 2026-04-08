@@ -4,7 +4,7 @@
 
 To create samples to train our model, we need first to generate structures
 ```python
-from carcara.random_displacements import RandomDisplacements
+from carcara.sampler.random_displacements import RandomDisplacements
 from ase.build import bulk
 from ase.calculator.emt import EMT
 

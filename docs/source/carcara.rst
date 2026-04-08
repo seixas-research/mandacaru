@@ -49,11 +49,3 @@ carcara.trainer module
    :members:
    :show-inheritance:
    :undoc-members:
-
-Module contents
----------------
-
-.. automodule:: carcara
-   :members:
-   :show-inheritance:
-   :undoc-members:

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from carcara.trainer import MACETrainer
+from carcara.core.trainer import MACETrainer
 from ase.build import bulk
 from ase.calculators.emt import EMT
 
