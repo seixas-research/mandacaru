@@ -27,7 +27,3 @@
 import numpy as np
 import pandas as pd
 from typing import Optional
-
-class StochasticProcess:
-    def __init__(self, seed: Optional[int] = None):
-        pass

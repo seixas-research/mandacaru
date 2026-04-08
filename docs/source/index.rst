@@ -32,13 +32,15 @@ The hallmark of Carcará is its optimization for continuous, autonomous model ev
    :maxdepth: 2
    :hidden:
 
-   about
-   installation
-   quick_start/index
-   cli
+   Home <https://github.com/seixas-research/carcara>
+   PyPI <https://pypi.org/project/carcara/>
 
 .. toctree::
    :maxdepth: 2
    :hidden:
+   :caption: Getting Started
 
-   carcara
+   installation
+   tutorial/index
+   cli
+   about

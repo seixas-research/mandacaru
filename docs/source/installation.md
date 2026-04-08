@@ -7,7 +7,7 @@ The easiest way to install Carcará is with pip:
 pip install carcara
 ```
 
-## From github repository
+## From GitHub repository
 
 ```console
 pip install git+https://github.com/seixas-research/carcara.git

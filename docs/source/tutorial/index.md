@@ -1,4 +1,4 @@
-# Quick Start
+# Tutorial
 
 ```{toctree}
 :maxdepth: 1
