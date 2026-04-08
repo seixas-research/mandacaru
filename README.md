@@ -13,9 +13,7 @@
 
 # Carcará
 
-🚧 **(Under development)** 🚧
-
-Machine learning for atomistic simulations.
+Carcará is a high-performance Python framework designed for atomistic simulations powered by on-the-fly (OTF) machine learning interatomic potentials. It streamlines the integration of first-principles accuracy with the efficiency of classical force fields, enabling the automated development of robust potentials during the simulation process.
 
 # Installation
 
@@ -34,19 +32,8 @@ pip install git+https://github.com/seixas-research/carcara.git
 ```
 
 
-
 # Getting started
 
-## Training
-
-
-## Evaluation
-
-```python
-
-# TODO
-
-```
 
 # License
 
@@ -54,4 +41,4 @@ This is an open source code under [MIT License](https://raw.githubusercontent.co
 
 # Acknowledgements
 
-We thank financial support from FAPESP (Grant No. 2022/14549-3), INCT Materials Informatics (Grant No. 406447/2022-5), and CNPq (Grant No. 311324/2020-7).
+We thank financial support from INCT Materials Informatics (Grant No. 406447/2022-5), and CNPq (Grant No. 311324/2020-7).
