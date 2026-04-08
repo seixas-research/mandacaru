@@ -31,6 +31,7 @@ from ase import Atoms
 from ase.io import write
 from ase.optimize import BFGS, LBFGS, FIRE
 from ase.filters import UnitCellFilter
+from ase.parallel import parprint as print
 
 class RandomDisplacements:
     """
@@ -115,10 +116,10 @@ class RandomDisplacements:
         self, 
         num_samples: int = 100,
         noise_type: Optional[Literal['normal', 'uniform']] = None,
-        noise_level_pos: float = 0.02,
-        noise_level_cell: float = 0.02,
+        noise_level_pos: float = 0.20,
+        noise_level_cell: float = 0.00,
         scale_cell: float = 1.0,
-        cell_mode: Literal['xy', 'all'] = 'all'
+        cell_mode: Literal['xy', 'all', 'fixed'] = 'all'
     ) -> List[Atoms]:
         """Generates multiple samples with noise applied to positions and cell."""
         self.samples = []
@@ -129,8 +130,8 @@ class RandomDisplacements:
         if self.noise_type not in ['normal', 'uniform']:
             raise ValueError("Invalid noise type. Use 'normal' or 'uniform'.")
 
-        if cell_mode not in ['xy', 'all']:
-            raise ValueError("Invalid cell mode. Use 'xy' or 'all'.")
+        if cell_mode not in ['xy', 'all', 'fixed']:
+            raise ValueError("Invalid cell mode. Use 'xy', 'all', or 'fixed'.")
         
         for _ in range(num_samples):
             new_atoms = self.atoms.copy()
@@ -143,9 +144,10 @@ class RandomDisplacements:
                 noise_block = self.rng.normal(0, noise_level_cell, (2, 2)) if self.noise_type == 'normal' \
                               else self.rng.uniform(-noise_level_cell, noise_level_cell, (2, 2))
                 new_cell[:2, :2] += noise_block
-            else:
+            elif cell_mode == 'all':
                 new_cell *= scale_cell
                 new_cell = self._apply_noise(new_cell, noise_level_cell)
+            # If cell_mode is 'fixed', do not modify the cell
             
             new_atoms.set_cell(new_cell, scale_atoms=True)
 
@@ -156,6 +158,22 @@ class RandomDisplacements:
             self.samples.append(new_atoms)
 
         return self.samples
+    
+
+    def compute_energy_and_forces(self, verbose: bool = False):
+        """Computes energy and forces for each sample using the provided calculator."""
+        if not self.calculator:
+            raise ValueError("Calculator is required to compute energy and forces.")
+        
+        for atoms in self.samples:
+            atoms.calc = self.calculator
+            atoms.info['REF_energy'] = atoms.get_potential_energy()
+            atoms.set_array('REF_forces', atoms.get_forces())
+            atoms.calc = None  # Remove the calculator to avoid large files/writing errors
+            if verbose:
+                print(f"Computed energy: {atoms.info['REF_energy']} eV")
+                print(f"Mean force magnitude: {np.mean(np.linalg.norm(atoms.get_array('REF_forces'), axis=1))} eV/Å")
+        
     
     def statistics(self, energy_and_forces: bool = True) -> Dict[str, Union[float, np.ndarray]]:
         """Computes statistics of the generated samples, including deviations and optionally energies/forces.
@@ -206,10 +224,8 @@ class RandomDisplacements:
             atoms.info = {} # Clear old metadata
             
             if compute_ref and self.calculator:
-                atoms.calc = self.calculator
-                atoms.info['REF_energy'] = atoms.get_potential_energy()
-                atoms.set_array('REF_forces', atoms.get_forces())
-                atoms.calc = None # Remove the calculator to avoid large files/writing errors
+                self.compute_energy_and_forces(verbose=False)  # Compute energy and forces for each sample
+
 
         write(filename, self.samples, format='extxyz')
         print(f"Dataset saved successfully in {filename}")
