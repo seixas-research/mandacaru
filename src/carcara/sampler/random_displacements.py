@@ -119,7 +119,9 @@ class RandomDisplacements:
         noise_level_pos: float = 0.20,
         noise_level_cell: float = 0.00,
         scale_cell: float = 1.0,
-        cell_mode: Literal['xy', 'all', 'fixed'] = 'all'
+        cell_mode: Literal['xy', 'all', 'fixed'] = 'all',
+        compute_energy_and_forces: bool = False,
+        verbose: bool = False
     ) -> List[Atoms]:
         """Generates multiple samples with noise applied to positions and cell."""
         self.samples = []
@@ -133,7 +135,7 @@ class RandomDisplacements:
         if cell_mode not in ['xy', 'all', 'fixed']:
             raise ValueError("Invalid cell mode. Use 'xy', 'all', or 'fixed'.")
         
-        for _ in range(num_samples):
+        for i in range(num_samples):
             new_atoms = self.atoms.copy()
 
             # 1. Cell Scaling and Noise
@@ -148,32 +150,29 @@ class RandomDisplacements:
                 new_cell *= scale_cell
                 new_cell = self._apply_noise(new_cell, noise_level_cell)
             # If cell_mode is 'fixed', do not modify the cell
-            
             new_atoms.set_cell(new_cell, scale_atoms=True)
 
             # 2. Noise in Positions
             new_pos = self._apply_noise(new_atoms.get_positions(), noise_level_pos)
             new_atoms.set_positions(new_pos)
 
+            # 3. Compute energy and forces if requested
+            if compute_energy_and_forces and self.calculator:
+                new_atoms.calc = self.calculator
+                new_atoms.info['REF_energy'] = new_atoms.get_potential_energy()
+                new_atoms.set_array('REF_forces', new_atoms.get_forces())
+                new_atoms.calc = None  # Remove the calculator to avoid large files/writing errors
+                if verbose:
+                    print(f"Sample {i+1}/{num_samples}: Energy = {new_atoms.info['REF_energy']:.4f} eV")
+            else:
+                if verbose:
+                    print(f"Sample {i+1}/{num_samples} generated.")
+
+            # 4. Store the new sample
             self.samples.append(new_atoms)
 
         return self.samples
     
-
-    def compute_energy_and_forces(self, verbose: bool = False):
-        """Computes energy and forces for each sample using the provided calculator."""
-        if not self.calculator:
-            raise ValueError("Calculator is required to compute energy and forces.")
-        
-        for atoms in self.samples:
-            atoms.calc = self.calculator
-            atoms.info['REF_energy'] = atoms.get_potential_energy()
-            atoms.set_array('REF_forces', atoms.get_forces())
-            atoms.calc = None  # Remove the calculator to avoid large files/writing errors
-            if verbose:
-                print(f"Computed energy: {atoms.info['REF_energy']} eV")
-                print(f"Mean force magnitude: {np.mean(np.linalg.norm(atoms.get_array('REF_forces'), axis=1))} eV/Å")
-        
     
     def statistics(self, energy_and_forces: bool = True) -> Dict[str, Union[float, np.ndarray]]:
         """Computes statistics of the generated samples, including deviations and optionally energies/forces.
@@ -214,18 +213,11 @@ class RandomDisplacements:
 
         return dict
 
-    def save_to_xyz(self, filename: str = 'noisy_samples.xyz', compute_ref: bool = True):
-        """Saves the generated samples, optionally computing energy/forces."""
+    def save_to_xyz(self, filename: str = 'noisy_samples.xyz'):
+        """Saves the generated samples."""
         if not self.samples:
             print("No samples generated. Call generate_samples() first.")
             return          # Avoid writing an empty file
-
-        for atoms in self.samples:
-            atoms.info = {} # Clear old metadata
-            
-            if compute_ref and self.calculator:
-                self.compute_energy_and_forces(verbose=False)  # Compute energy and forces for each sample
-
-
+        
         write(filename, self.samples, format='extxyz')
         print(f"Dataset saved successfully in {filename}")
