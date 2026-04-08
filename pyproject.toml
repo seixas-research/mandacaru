@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "carcara"
-version = "26.4.20"
+dynamic = ["version"]
 authors = [
   { name="Leandro Seixas Rocha", email="leandro.rocha@ilum.cnpem.br" },
 ]
@@ -36,3 +36,6 @@ classifiers = [
 "Homepage" = "https://github.com/seixas-research/carcara"
 "Documentation" = "https://carcara.readthedocs.io/en/latest/"
 # "Bug Tracker" = "https://github.com/seixas-research/carcara/issues"
+
+[tool.hatch.version]
+path = "src/carcara/_version.py"
