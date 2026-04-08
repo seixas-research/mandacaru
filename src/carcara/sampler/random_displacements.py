@@ -117,7 +117,7 @@ class RandomDisplacements:
         num_samples: int = 100,
         noise_type: Optional[Literal['normal', 'uniform']] = None,
         noise_level_pos: float = 0.20,
-        noise_level_cell: float = 0.00,
+        noise_level_cell: float = 0.20,
         scale_cell: float = 1.0,
         cell_mode: Literal['xy', 'all', 'fixed'] = 'all',
         compute_energy_and_forces: bool = False,
@@ -134,7 +134,11 @@ class RandomDisplacements:
 
         if cell_mode not in ['xy', 'all', 'fixed']:
             raise ValueError("Invalid cell mode. Use 'xy', 'all', or 'fixed'.")
-        
+
+        if cell_mode == 'fixed':
+            noise_level_cell = 0.0  # No noise if cell is fixed
+            scale_cell = 1.0        # No scaling if cell is fixed
+
         for i in range(num_samples):
             new_atoms = self.atoms.copy()
 
@@ -163,10 +167,11 @@ class RandomDisplacements:
                 new_atoms.set_array('REF_forces', new_atoms.get_forces())
                 new_atoms.calc = None  # Remove the calculator to avoid large files/writing errors
                 if verbose:
-                    print(f"Sample {i+1}/{num_samples}: Energy = {new_atoms.info['REF_energy']:.4f} eV")
+                    mean_forces = np.mean(np.linalg.norm(new_atoms.get_array('REF_forces'), axis=1))
+                    print(f"Sample {i+1}/{num_samples}: Energy = {new_atoms.info['REF_energy']:.4f} eV. Mean forces = {mean_forces:.4f} eV/Å", flush=True)
             else:
                 if verbose:
-                    print(f"Sample {i+1}/{num_samples} generated.")
+                    print(f"Sample {i+1}/{num_samples} generated.", flush=True)
 
             # 4. Store the new sample
             self.samples.append(new_atoms)
@@ -213,7 +218,7 @@ class RandomDisplacements:
 
         return dict
 
-    def save_to_xyz(self, filename: str = 'noisy_samples.xyz'):
+    def save_to_xyz(self, filename: str = 'random_samples.xyz'):
         """Saves the generated samples."""
         if not self.samples:
             print("No samples generated. Call generate_samples() first.")

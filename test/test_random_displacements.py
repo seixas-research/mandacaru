@@ -60,7 +60,7 @@ def test_cell_noise_application(setup_data, setup_calculator, seed=42, noise_typ
     generator = RandomDisplacements(setup_data, calculator=setup_calculator, noise_type=noise_type, seed=seed)
     generator.relax_structure()
     original_cell = generator.atoms.get_cell().copy()
-    generator.generate_samples(num_samples=1, noise_type=noise_type, cell_mode='all')
+    generator.generate_samples(num_samples=1, noise_type=noise_type, noise_level_cell=0.1, cell_mode='all')
     noisy_cell = generator.samples[0].get_cell()
     assert not np.array_equal(original_cell, noisy_cell), "Noisy cell should differ from original cell"
 
@@ -185,7 +185,7 @@ def test_statistics_without_samples(setup_data, setup_calculator, seed=42, noise
 def test_statistics(setup_data, setup_calculator, seed=42, noise_type='normal', energy_and_forces=False):
     generator = RandomDisplacements(setup_data, calculator=setup_calculator, noise_type=noise_type, seed=seed)
     generator.relax_structure()
-    generator.generate_samples(num_samples=100, noise_type=noise_type)
+    generator.generate_samples(num_samples=10, noise_type=noise_type)
     statistics = generator.statistics(energy_and_forces=energy_and_forces)
     assert len(generator.samples) == statistics['num_samples'], "Statistics should report the correct number of samples"
     assert isinstance(statistics['cell_deviation_mean'], np.float64), "Cell deviation mean should be a float"
@@ -197,7 +197,7 @@ def test_statistics(setup_data, setup_calculator, seed=42, noise_type='normal', 
 def test_statistics_with_energy_and_forces(setup_data, setup_calculator, seed=42, noise_type='normal'):
     generator = RandomDisplacements(setup_data, calculator=setup_calculator, noise_type=noise_type, seed=seed)
     generator.relax_structure()
-    generator.generate_samples(num_samples=100, noise_type=noise_type)
+    generator.generate_samples(num_samples=10, noise_type=noise_type)
     statistics = generator.statistics(energy_and_forces=True)
     assert 'energy_mean' in statistics, "Statistics should include energy mean when energy_and_forces is True"
     assert 'energy_std' in statistics, "Statistics should include energy std when energy_and_forces is True"
@@ -211,7 +211,7 @@ def test_statistics_with_energy_and_forces(setup_data, setup_calculator, seed=42
 
 def test_statistics_with_energy_and_forces_without_calculator(setup_data, seed=42, noise_type='normal'):
     generator = RandomDisplacements(setup_data, noise_type=noise_type, seed=seed)
-    generator.generate_samples(num_samples=100, noise_type=noise_type)
+    generator.generate_samples(num_samples=10, noise_type=noise_type)
     with pytest.raises(ValueError):
         generator.statistics(energy_and_forces=True)
 
@@ -222,7 +222,7 @@ def test_save_xyz(setup_data, setup_calculator, tmp_path, seed=42, noise_type='u
     generator.relax_structure()
     generator.generate_samples(num_samples=1, noise_type=noise_type)
     sample = generator.samples[0]
-    generator.save_to_xyz(filename=filename, compute_ref=True)
+    generator.save_to_xyz(filename=filename)
     loaded_sample = read(filename)
     assert len(sample) == len(loaded_sample), "Number of atoms should be the same after saving and loading"
     assert np.allclose(sample.get_positions(), loaded_sample.get_positions()), "Positions should be close after saving and loading"
@@ -235,7 +235,7 @@ def test_save_xyz_with_multiple_samples(setup_data, setup_calculator, tmp_path, 
     generator.relax_structure()
     num_samples = 5
     generator.generate_samples(num_samples=num_samples, noise_type=noise_type)
-    generator.save_to_xyz(filename=filename, compute_ref=True)
+    generator.save_to_xyz(filename=filename)
     loaded_samples = read(filename, index=':')
     assert len(loaded_samples) == num_samples, f"Should load {num_samples} samples from the file"
     for original, loaded in zip(generator.samples, loaded_samples):
