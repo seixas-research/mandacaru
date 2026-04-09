@@ -1,15 +1,23 @@
 import numpy as np
 import pytest
 from carcara.core.trainer import MACETrainer
-from ase.build import bulk
-from ase.calculators.emt import EMT
+from ase.io import read
 
 @pytest.fixture
-def setup_samples():
-
-    atoms = bulk("Au", "fcc", a=4.08, cubic=True).repeat((2, 2, 2))
-    calculator = EMT()
-    atoms.set_calculator(calculator)
-    energy = atoms.get_potential_energy()
-    forces = atoms.get_forces()
-    return [(atoms, energy, forces)]
+def setup_trainer():
+    # Create a simple MACETrainer instance for testing
+    trainer = MACETrainer(
+        name="test_model",
+        train_file="data/train.xyz",
+        valid_file="data/valid.xyz",
+        max_num_epochs=10,
+        restart_latest=False,
+        num_channels=16,
+        max_L=0,
+        num_interaction=2,
+        correlation=2,
+        eval_interval=2,
+        batch_size=5,
+        valid_batch_size=10
+    )
+    return trainer

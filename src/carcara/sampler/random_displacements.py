@@ -27,6 +27,7 @@
 
 import numpy as np
 from typing import Optional, List, Literal, Union, Dict, Type
+from pathlib import Path
 from ase import Atoms
 from ase.io import write
 from ase.optimize import BFGS, LBFGS, FIRE
@@ -206,8 +207,8 @@ class RandomDisplacements:
             self.samples.append(new_atoms)
 
         return self.samples
-    
-    
+
+
     def statistics(self, energy_and_forces: bool = True) -> Dict[str, Union[float, np.ndarray]]:
         """Computes statistics of the generated samples, including deviations and optionally energies/forces.
         
@@ -265,11 +266,13 @@ class RandomDisplacements:
             print(f"Forces: mean = {stats['forces_mean']:.4f} eV/Å, std = {stats['forces_std']:.4f} eV/Å")
 
     
-    def save_to_xyz(self, filename: str = 'random_samples.xyz') -> None:
+    def write_xyz(self, filename: str = 'random_samples.xyz') -> None:
         """Saves the generated samples."""
         if not self.samples:
             print("No samples generated. Call generate_samples() first.")
             return          # Avoid writing an empty file
-        
+        output_path = Path(filename)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
         write(filename, self.samples, format='extxyz')
         print(f"Dataset saved successfully in {filename}")

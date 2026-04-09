@@ -218,26 +218,26 @@ def test_statistics_with_energy_and_forces_without_calculator(setup_data, seed=4
         generator.statistics(energy_and_forces=True)
 
 
-def test_save_xyz(setup_data, setup_calculator, tmp_path, seed=42, noise_type='uniform'):
+def test_write_xyz(setup_data, setup_calculator, tmp_path, seed=42, noise_type='uniform'):
     filename = str(tmp_path / "test_sample.xyz")
     generator = RandomDisplacements(setup_data, calculator=setup_calculator, seed=seed)
     generator.relax_structure()
     generator.generate_samples(num_samples=1, noise_type=noise_type)
     sample = generator.samples[0]
-    generator.save_to_xyz(filename=filename)
+    generator.write_xyz(filename=filename)
     loaded_sample = read(filename)
     assert len(sample) == len(loaded_sample), "Number of atoms should be the same after saving and loading"
     assert np.allclose(sample.get_positions(), loaded_sample.get_positions()), "Positions should be close after saving and loading"
     assert np.allclose(sample.get_cell(), loaded_sample.get_cell()), "Cell should be close after saving and loading"
 
 
-def test_save_xyz_with_multiple_samples(setup_data, setup_calculator, tmp_path, seed=42, noise_type='normal'):
+def test_write_xyz_with_multiple_samples(setup_data, setup_calculator, tmp_path, seed=42, noise_type='normal'):
     filename = str(tmp_path / "test_samples.xyz")
     generator = RandomDisplacements(setup_data, calculator=setup_calculator, seed=seed)
     generator.relax_structure()
     num_samples = 5
     generator.generate_samples(num_samples=num_samples, noise_type=noise_type)
-    generator.save_to_xyz(filename=filename)
+    generator.write_xyz(filename=filename)
     loaded_samples = read(filename, index=':')
     assert len(loaded_samples) == num_samples, f"Should load {num_samples} samples from the file"
     for original, loaded in zip(generator.samples, loaded_samples):
