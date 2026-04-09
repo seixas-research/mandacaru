@@ -41,4 +41,4 @@ This is an open source code under [MIT License](https://raw.githubusercontent.co
 
 # Acknowledgements
 
-We thank financial support from INCT Materials Informatics (Grant No. 406447/2022-5), and CNPq (Grant No. 311324/2020-7).
+We thank financial support from [INCT Materials Informatics](https://inct-mi.pesquisa.ufabc.edu.br/) (Grant No. 406447/2022-5), and CNPq (Grant No. 311324/2020-7).

@@ -37,5 +37,11 @@ classifiers = [
 "Documentation" = "https://carcara.readthedocs.io/en/latest/"
 # "Bug Tracker" = "https://github.com/seixas-research/carcara/issues"
 
+# [tool.hatch.version]
+# path = "src/carcara/_version.py"
+
 [tool.hatch.version]
-path = "src/carcara/_version.py"
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/carcara/_version.py"

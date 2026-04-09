@@ -24,4 +24,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# from importlib.metadata import version
+# __version__ = version("carcara")
+
 __version__ ="26.4.25"
