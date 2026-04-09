@@ -45,7 +45,7 @@ if hasattr(torch.serialization, 'add_safe_globals'):
 
 warnings.filterwarnings("ignore")
 
-class MACETrainer:
+class Trainer:
     """
     MACE Model Trainer for Active Learning workflows.
     All configuration parameters are explicitly defined in the constructor.
@@ -209,13 +209,16 @@ class MACETrainer:
         }
 
 
-    def run_train(self):
+    def run_train(self, output_file: Optional[str] = "stdout.txt"):
         """
         Triggers MACE training by generating a temporary config file
         and calling the main CLI entry point.
         """
         # Clear logging to avoid redundant console outputs
         logging.getLogger().handlers.clear()
+
+        logging.basicConfig(level=logging.INFO, filename=output_file, filemode="w")
+                            # format="%(asctime)s - %(levelname)s - %(message)s")
         
         config_data = self.to_dict()
         
@@ -224,12 +227,9 @@ class MACETrainer:
             yaml.dump(config_data, tmp)
             tmp_path = tmp.name
 
-        print(f"--- MACE TRAINING STARTED: {self._name} ---")
         sys.argv = ["mace_run_train", "--config", tmp_path]
         
-
         mace_run_train()
-        print(f"--- MACE TRAINING FINISHED: {self._name} ---")
 
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -244,7 +244,8 @@ class MACETrainer:
             if path.exists() and path.is_dir():
                 for file in path.glob("*"):
                     file.unlink()
-                print(f"Deleted all files in {path}")
+                path.rmdir()
+                print(f"Deleted directory {path}")
             else:
                 print(f"No directory found at {path}, skipping cleanup.")
 
@@ -293,12 +294,3 @@ class MACETrainer:
         except Exception as e:
             print(f"Error during evaluation: {e}")
 
-
-if __name__ == "__main__":
-    trainer = MACETrainer(
-        name="gen_0_model_0",
-        train_file="dataset_0.xyz",
-        E0s={42: -4.602, 16: -0.891}, # Mo and S isolated atom energies
-        max_num_epochs=100,
-        device="cpu"
-    )

@@ -1,12 +1,12 @@
 import numpy as np
 import pytest
-from carcara.core.trainer import MACETrainer
+from carcara.core.trainer import Trainer
 from ase.io import read
 
 @pytest.fixture
 def setup_trainer():
-    # Create a simple MACETrainer instance for testing
-    trainer = MACETrainer(
+    # Create a simple Trainer instance for testing
+    trainer = Trainer(
         name="test_model",
         train_file="data/train.xyz",
         valid_file="data/valid.xyz",
