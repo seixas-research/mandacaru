@@ -174,7 +174,15 @@ class DatasetManager:
         return self.split(ratios=ratios)
     
 
-    def write_datasets(self, directory: str = ".", filenames: List[str] = None):
+    def write_datasets(self, directory: str = ".", filenames: List[str] = None) -> None:
+        """
+        Save the split datasets to XYZ files in the specified directory. If filenames are provided, they will be used; otherwise, default names based on the split type and seed will be generated.
+
+        Parameters:
+        ===========
+        - directory: The directory where the split XYZ files will be saved. Defaults to the current directory.
+        - filenames: An optional list of filenames for the splits. The number of filenames must match the number of splits. If not provided, default filenames will be generated in the format "{split_name}_seed_{seed}.xyz".
+        """
         if self.split_data is None:
             raise ValueError("No split data found. Please run the split method before writing datasets.")
         

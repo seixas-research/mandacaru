@@ -1,2 +1,2 @@
-def pytest_sessionfinish(session, exitstatus):
-    print("\n\n FINISHING TESTS.")
+#def pytest_sessionfinish(session, exitstatus):
+#    print("\n\n FINISHING TESTS.")
