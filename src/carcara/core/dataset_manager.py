@@ -192,18 +192,21 @@ class DatasetManager:
         path = Path(directory)
         if not path.exists():
             path.mkdir(parents=True, exist_ok=True)
+        saved_files = []
         if filenames is not None:
             for name, fname in zip(self.split_data.keys(), filenames):
                 if not fname.endswith(".xyz"):
                     fname += ".xyz"
                 write(path / fname, self.split_data[name], format="extxyz")
+                saved_files.append(path / fname)
                 print(f"{name.capitalize()} set: {len(self.split_data[name])} configurations")
         else:
             for name, configs in self.split_data.items():
                 fname = f"{name}_seed_{self.seed}.xyz"
                 write(path / fname, configs, format="extxyz")
+                saved_files.append(path / fname)
                 print(f"{name.capitalize()} set: {len(configs)} configurations")
 
-        files = ", ".join([f"{k}_seed_{self.seed}.xyz" for k in self.split_data.keys()])
-        print(f"Files saved: {files}")
+        saved_files_str = ", ".join(str(f) for f in saved_files)
+        print(f"Files saved: {saved_files_str}")
     

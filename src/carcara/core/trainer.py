@@ -209,7 +209,7 @@ class Trainer:
         }
 
 
-    def run_train(self, output_file: Optional[str] = "stdout.txt"):
+    def run_train(self):
         """
         Triggers MACE training by generating a temporary config file
         and calling the main CLI entry point.
@@ -217,7 +217,7 @@ class Trainer:
         # Clear logging to avoid redundant console outputs
         logging.getLogger().handlers.clear()
 
-        logging.basicConfig(level=logging.INFO, filename=output_file, filemode="w")
+        # logging.basicConfig(level=logging.INFO, filename=output_file, filemode="w")
                             # format="%(asctime)s - %(levelname)s - %(message)s")
         
         config_data = self.to_dict()
@@ -250,10 +250,16 @@ class Trainer:
                 print(f"No directory found at {path}, skipping cleanup.")
 
 
-    def save_config(self, output_path: str):
+    def save_config(self, output_path = None):
         """
         Saves the current configuration parameters to a YAML file.
         """
+        if output_path is None:
+            raise ValueError("Output path must be provided to save the configuration.")
+        
+        if not isinstance(output_path, str):
+            raise ValueError("Output path must be a string.")
+        
         config_data = self.to_dict()
         with open(output_path, 'w') as f:
             yaml.dump(config_data, f)
