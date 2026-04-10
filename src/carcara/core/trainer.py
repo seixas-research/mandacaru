@@ -114,6 +114,7 @@ class Trainer:
         self.amsgrad = amsgrad
         self.save_cpu = save_cpu
         self.seed = seed
+        self.path = Path(".")
 
 
     # --- Setters and Getters for dynamic AL parameters ---
@@ -209,7 +210,7 @@ class Trainer:
         }
 
 
-    def run_train(self):
+    def run_train(self, path: str = "."):
         """
         Triggers MACE training by generating a temporary config file
         and calling the main CLI entry point.
@@ -221,8 +222,12 @@ class Trainer:
                             # format="%(asctime)s - %(levelname)s - %(message)s")
         
         config_data = self.to_dict()
-        
-        # MACE requires a file path for the configuration
+
+        self.path = Path(path)
+        os.makedirs(self.path, exist_ok=True)
+        os.chdir(self.path)
+
+        # MACE requires a file path for the configuration, created at directory path
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
             yaml.dump(config_data, tmp)
             tmp_path = tmp.name
@@ -234,13 +239,15 @@ class Trainer:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
+        os.chdir("..")  # Return to original directory after training
 
-    def clean_directories(self, directory: str = "."):
+
+    def clean_directories(self):
         """
         Utility method to clean logs, checkpoints, and results directories.
         """
         for subdir in ["logs", "checkpoints", "results"]:
-            path = Path(directory) / subdir
+            path = self.path / subdir
             if path.exists() and path.is_dir():
                 for file in path.glob("*"):
                     file.unlink()
