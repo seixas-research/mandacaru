@@ -17,18 +17,19 @@ generator.generate_samples(num_samples=100,
                            noise_type='uniform',
                            noise_level_pos=0.4,
                            noise_level_cell=0.4,
-                           cell_mode='all')
-generator.save_to_xyz("noisy_samples.xyz", compute_ref=True)
+                           cell_mode='all',
+                           compute_energy_and_forces=True)
+generator.write_xyz("noise_samples.xyz")
 
 ```
 
 ```{figure} ../_static/noisy.gif
 ---
 width: 400px
-name: Noisy samples.
+name: Samples with random displacements.
 align: center
 ---
-Figure 1: Sample generation using uniform noise (0.4 Å) for atomic positions and lattice components.
+Figure 1: Sample generation using uniform random displacements (0.4 Å) for atomic positions and lattice components.
 ```
 
 ## Calculating energies and forces with MACE
