@@ -124,12 +124,12 @@ class RandomDisplacements:
         self, 
         num_samples: int = 100,
         noise_type: Optional[Literal['normal', 'uniform']] = 'normal',
-        noise_level_pos: float = 0.20,
-        noise_level_cell: float = 0.20,
+        noise_level_pos: float = 0.10,
+        noise_level_cell: float = 0.10,
         scale_cell: float = 1.0,
         cell_mode: Literal['xy', 'all', 'fixed'] = 'all',
         compute_energy_and_forces: bool = False,
-        write_xyz: Optional[str] = None,
+        append_xyz: Optional[str] = None,
         verbose: bool = False
     ) -> List[Atoms]:
         """Generates multiple samples with noise applied to positions and cell.
@@ -143,7 +143,7 @@ class RandomDisplacements:
         - scale_cell: Scaling factor for the cell dimensions before applying noise.
         - cell_mode: Which cell parameters to modify ('xy' for a and b, 'all' for all cell parameters, 'fixed' for no cell modifications).
         - compute_energy_and_forces: Whether to compute and store reference energies and forces for each sample (requires calculator).
-        - write_xyz: If specified, writes each generated sample to an XYZ file (appends if file exists). Can be a string filename or True for default 'random_samples.xyz'.
+        - append_xyz: If specified, appends each generated sample to an XYZ file. Can be a string filename or True for default 'random_samples.xyz'.
         - verbose: Whether to print progress and statistics during sample generation.
         
         Returns:
@@ -199,8 +199,8 @@ class RandomDisplacements:
                     print(f"Sample {i+1}/{num_samples} generated.", flush=True)
 
             # 4. Write to XYZ if requested
-            if write_xyz is not None:
-                filename = write_xyz if isinstance(write_xyz, str) else 'random_samples.xyz'
+            if append_xyz is not None:
+                filename = append_xyz if isinstance(append_xyz, str) else 'random_samples.xyz'
                 write(filename, new_atoms, format='extxyz', append=True)
 
             # 5. Store the new sample

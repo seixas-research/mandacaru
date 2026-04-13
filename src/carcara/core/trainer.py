@@ -217,9 +217,6 @@ class Trainer:
         """
         # Clear logging to avoid redundant console outputs
         logging.getLogger().handlers.clear()
-
-        # logging.basicConfig(level=logging.INFO, filename=output_file, filemode="w")
-                            # format="%(asctime)s - %(levelname)s - %(message)s")
         
         config_data = self.to_dict()
 
