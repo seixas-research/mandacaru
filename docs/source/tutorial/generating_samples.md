@@ -14,9 +14,9 @@ calc = EMT()
 generator = RandomDisplacements(atoms=atoms, calculator=calculator, seed=42)
 generator.relax_structure(fmax=0.01, relax_cell=True)
 generator.generate_samples(num_samples=100,
-                           noise_type='uniform',
-                           noise_level_pos=0.4,
-                           noise_level_cell=0.4,
+                           noise_type='normal',
+                           noise_level_pos=0.2,
+                           noise_level_cell=0.2,
                            cell_mode='all',
                            compute_energy_and_forces=True)
 generator.write_xyz("noise_samples.xyz")
