@@ -44,8 +44,8 @@ html_theme = 'furo'                 # 'sphinx_rtd_theme', 'renku', 'shibuya'
 html_static_path = ['_static']
 
 html_theme_options = {
-    "light_logo": "menu_light.png", # arquivo em docs/source/_static/
-    "dark_logo": "menu_dark.png"   # arquivo em docs/source/_static/
+    "light_logo": "icon.png", # arquivo em docs/source/_static/
+    "dark_logo": "icon.png"   # arquivo em docs/source/_static/
 }
 
 html_favicon = "_static/favicon.png"
