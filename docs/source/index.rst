@@ -19,22 +19,17 @@
 
        <!-- Read the Docs -->
        <a href="https://carcara.readthedocs.io/">
-         <img src="https://readthedocs.org/projects/carcara/badge/?version=latest" alt="docs">
+         <img src="https://readthedocs.org/projects/carcara/badge/?version=latest&style=for-the-badge" alt="docs">
        </a>
 
        <!-- PyPI -->
        <a href="https://pypi.org/project/carcara/">
-         <img src="https://img.shields.io/pypi/v/carcara.svg" alt="pypi">
+         <img src="https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge" alt="pypi">
        </a>
 
        <!-- License -->
        <a href="https://github.com/seixas-research/carcara/blob/main/LICENSE">
-         <img src="https://img.shields.io/github/license/seixas-research/carcara" alt="license">
-       </a>
-
-       <!-- CI -->
-       <a href="https://github.com/seixas-research/carcara/actions">
-         <img src="https://img.shields.io/github/actions/workflow/status/seixas-research/carcara/ci.yml" alt="ci">
+         <img src="https://img.shields.io/github/license/seixas-research/carcara?style=for-the-badge" alt="license">
        </a>
 
      </p>
