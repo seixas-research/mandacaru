@@ -98,3 +98,21 @@ html[data-theme="dark"] body .sidebar-tree .toctree-l3.current > .reference {
 html[data-theme="dark"] body .sidebar-tree .current {
   background-color: #1e293b;
 }
+
+html[data-theme="dark"] body .sidebar {
+  --color-brand-primary: #ffcc00;
+  --color-brand-content: #ffcc00;
+}
+
+html[data-theme="dark"] body .sidebar .sidebar-tree a {
+  color: #ffcc00;
+}
+
+html[data-theme="dark"] body .sidebar .sidebar-tree a:hover {
+  color: #ffa602;
+}
+
+html[data-theme="dark"] body .sidebar .sidebar-tree .current > a {
+  color: #ffcc00;
+  font-weight: bold;
+}
