@@ -38,4 +38,4 @@ classifiers = [
 # "Bug Tracker" = "https://github.com/seixas-research/carcara/issues"
 
 [tool.hatch.version]
-path = "src/carcara/_version.py"
+path = "src/carcara/version.py"
