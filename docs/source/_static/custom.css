@@ -27,9 +27,52 @@
 
 :root {
   --color-brand-primary: #083563;
+  --color-brand-secondary: #ff6600;
+  --color-band-hover: #ffa602;
 }
 
+/* =========================
+   SIDEBAR — override completo
+   ========================= */
+
+/* Links gerais */
 .sidebar .sidebar-tree a {
-  color: #083563;
-  font-weight: bold;
+  color: var(--color-brand-primary);
+}
+
+/* Hover */
+.sidebar .sidebar-tree a:hover {
+  color: var(--color-band-hover);
+}
+
+/* Item atual (ativo) */
+.sidebar .sidebar-tree .current > a {
+  color: var(--color-band-hover);
+}
+
+/* Background do item atual */
+.sidebar .sidebar-tree .current {
+  background-color: #ececec;
+}
+
+/* Top-level (nível 1) */
+.sidebar .sidebar-tree .toctree-l1 > a {
+  color: var(--color-brand-primary);
+}
+
+/* Hover top-level */
+.sidebar .sidebar-tree .toctree-l1 > a:hover {
+  color: var(--color-band-hover);
+}
+
+/* Subníveis */
+.sidebar .sidebar-tree .toctree-l2 > a,
+.sidebar .sidebar-tree .toctree-l3 > a {
+  color: var(--color-brand-secondary);
+}
+
+/* Item ativo em subnível */
+.sidebar .sidebar-tree .toctree-l2.current > a,
+.sidebar .sidebar-tree .toctree-l3.current > a {
+  color: var(--color-brand-secondary);
 }
