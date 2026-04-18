@@ -54,3 +54,6 @@ copyright = 'Leandro Seixas Rocha, 2026'
 html_show_sphinx = False
 html_show_copyright = True
 html_show_sourcelink = False
+
+def setup(app):
+    app.add_css_file("custom.css", priority=1000)

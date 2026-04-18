@@ -38,6 +38,7 @@
 /* Links gerais */
 .sidebar .sidebar-tree a {
   color: var(--color-brand-primary);
+  font-weight: bold;
 }
 
 /* Hover */
