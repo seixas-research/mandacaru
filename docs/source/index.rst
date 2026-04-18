@@ -1,12 +1,12 @@
 
 | 
 
-.. image:: _static/carcara_light.png
+.. image:: _static/logo_light.png
    :width: 600px
    :align: center
    :class: only-light
 
-.. image:: _static/carcara_dark.png
+.. image:: _static/logo_dark.png
    :width: 600px
    :align: center
    :class: only-dark
