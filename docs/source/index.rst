@@ -1,17 +1,45 @@
 
-| 
+.. raw:: html
 
-.. image:: _static/logo_light.png
-   :width: 600px
-   :align: center
-   :class: only-light
+   <div style="text-align: center; margin-top: 20px; margin-bottom: 20px;">
 
-.. image:: _static/logo_dark.png
-   :width: 600px
-   :align: center
-   :class: only-dark
- 
-| 
+     <!-- LOGO -->
+     <a href="https://carcara.readthedocs.io/">
+       <img src="_static/logo_light.png" width="500px" class="only-light">
+       <img src="_static/logo_dark.png" width="500px" class="only-dark">
+     </a>
+
+     <!-- TAGLINE -->
+     <p style="font-size: 1.2em; margin-top: 10px;">
+       Computational Materials Science and Machine Learning for the Energy Transition
+     </p>
+
+     <!-- BADGES -->
+     <p>
+
+       <!-- Read the Docs -->
+       <a href="https://carcara.readthedocs.io/">
+         <img src="https://readthedocs.org/projects/carcara/badge/?version=latest" alt="docs">
+       </a>
+
+       <!-- PyPI -->
+       <a href="https://pypi.org/project/carcara/">
+         <img src="https://img.shields.io/pypi/v/carcara.svg" alt="pypi">
+       </a>
+
+       <!-- License -->
+       <a href="https://github.com/seixas-research/carcara/blob/main/LICENSE">
+         <img src="https://img.shields.io/github/license/seixas-research/carcara" alt="license">
+       </a>
+
+       <!-- CI -->
+       <a href="https://github.com/seixas-research/carcara/actions">
+         <img src="https://img.shields.io/github/actions/workflow/status/seixas-research/carcara/ci.yml" alt="ci">
+       </a>
+
+     </p>
+
+   </div>
 
 **Carcará** is a high-performance Python framework designed for atomistic simulations powered by on-the-fly machine learning interatomic potentials (OTF-MLIP). It streamlines the integration of first-principles accuracy with the efficiency of classical force fields, enabling the automated development of robust potentials during the simulation process.
 
