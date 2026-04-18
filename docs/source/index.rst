@@ -4,15 +4,10 @@
    <div style="text-align: center; margin-top: 20px; margin-bottom: 20px;">
 
      <!-- LOGO -->
-     <a href="https://carcara.readthedocs.io/">
-       <img src="_static/logo_light.png" width="500px" class="only-light">
-       <img src="_static/logo_dark.png" width="500px" class="only-dark">
+     <a align="center" href="https://carcara.readthedocs.io/">
+       <img src="_static/logo_light.png" width="800px" class="only-light">
+       <img src="_static/logo_dark.png" width="800px" class="only-dark">
      </a>
-
-     <!-- TAGLINE -->
-     <p style="font-size: 1.2em; margin-top: 10px;">
-       Computational Materials Science and Machine Learning for the Energy Transition
-     </p>
 
      <!-- BADGES -->
      <p>
@@ -31,7 +26,6 @@
        <a href="https://github.com/seixas-research/carcara/blob/main/LICENSE">
          <img src="https://img.shields.io/github/license/seixas-research/carcara?style=for-the-badge" alt="license">
        </a>
-
      </p>
 
    </div>
