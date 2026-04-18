@@ -37,7 +37,7 @@
 
 /* Links gerais */
 .sidebar .sidebar-tree a {
-  color: var(--color-brand-primary);
+  color: #083563;
   font-weight: bold;
 }
 
@@ -58,7 +58,7 @@
 
 /* Top-level (nível 1) */
 .sidebar .sidebar-tree .toctree-l1 > a {
-  color: var(--color-brand-primary);
+  color: #083563;
 }
 
 /* Hover top-level */
@@ -76,4 +76,21 @@
 .sidebar .sidebar-tree .toctree-l2.current > a,
 .sidebar .sidebar-tree .toctree-l3.current > a {
   color: var(--color-brand-secondary);
+}
+
+html body .sidebar {
+  --color-brand-primary: #083563;
+  --color-brand-content: #083563;
+}
+
+html body .sidebar .sidebar-tree a {
+  color: #083563;
+}
+
+html body .sidebar .sidebar-tree a:hover {
+  color: #ffcc00;
+}
+
+html body .sidebar .sidebar-tree .current > a {
+  color: #ff6600;
 }
