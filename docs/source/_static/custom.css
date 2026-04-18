@@ -25,46 +25,29 @@
     text-decoration: none !important; /* Remove sublinhados indesejados */
 }
 
-:root {
-  --color-brand-primary: #083563;
-  --color-brand-secondary: #ff6600;
-  --color-band-hover: #ffa602;
-}
-
 /* Top-level links */
-html body .sidebar-tree .toctree-l1 > .reference {
-  color: #083563;
-}
-
-/* Hover */
-html body .sidebar-tree .toctree-l1 > .reference:hover {
-  color: #a38300;
-}
-
-/* Item atual */
-html body .sidebar-tree .toctree-l1.current > .reference {
-  color: #083562;
-  font-weight: bold;
-}
-
-/* Subníveis */
+html body .sidebar-tree .toctree-l1 > .reference,
 html body .sidebar-tree .toctree-l2 > .reference,
 html body .sidebar-tree .toctree-l3 > .reference {
   color: #083563;
 }
 
-/* Hover subníveis */
+/* Hover */
+html body .sidebar-tree .toctree-l1 > .reference:hover,
 html body .sidebar-tree .toctree-l2 > .reference:hover,
 html body .sidebar-tree .toctree-l3 > .reference:hover {
-  color: #a38300;
-}
-
-/* Ativo subnível */
-html body .sidebar-tree .toctree-l2.current > .reference,
-html body .sidebar-tree .toctree-l3.current > .reference {
-  color: #ff6600;
+  color: #ffa602;
   font-weight: bold;
 }
+
+/* Item atual */
+html body .sidebar-tree .toctree-l1.current > .reference,
+html body .sidebar-tree .toctree-l2.current > .reference,
+html body .sidebar-tree .toctree-l3.current > .reference {
+  color: #083562;
+  font-weight: bold;
+}
+
 
 html body .sidebar {
   --color-brand-primary: #083563;
@@ -76,10 +59,10 @@ html body .sidebar .sidebar-tree a {
 }
 
 html body .sidebar .sidebar-tree a:hover {
-  color: #ffcc00;
+  color: #ffa602;
 }
 
 html body .sidebar .sidebar-tree .current > a {
-  color: #ff6600;
+  color: #083563;
   font-weight: bold;
 }
