@@ -26,43 +26,43 @@
 }
 
 /* Top-level links */
-html body .sidebar-tree .toctree-l1 > .reference,
-html body .sidebar-tree .toctree-l2 > .reference,
-html body .sidebar-tree .toctree-l3 > .reference {
+html[data-theme="light"] body .sidebar-tree .toctree-l1 > .reference,
+html[data-theme="light"] body .sidebar-tree .toctree-l2 > .reference,
+html[data-theme="light"] body .sidebar-tree .toctree-l3 > .reference {
   color: #083563;
 }
 
 /* Hover */
-html body .sidebar-tree .toctree-l1 > .reference:hover,
-html body .sidebar-tree .toctree-l2 > .reference:hover,
-html body .sidebar-tree .toctree-l3 > .reference:hover {
+html[data-theme="light"] body .sidebar-tree .toctree-l1 > .reference:hover,
+html[data-theme="light"] body .sidebar-tree .toctree-l2 > .reference:hover,
+html[data-theme="light"] body .sidebar-tree .toctree-l3 > .reference:hover {
   color: #ffa602;
   font-weight: bold;
 }
 
 /* Item atual */
-html body .sidebar-tree .toctree-l1.current > .reference,
-html body .sidebar-tree .toctree-l2.current > .reference,
-html body .sidebar-tree .toctree-l3.current > .reference {
+html[data-theme="light"] body .sidebar-tree .toctree-l1.current > .reference,
+html[data-theme="light"] body .sidebar-tree .toctree-l2.current > .reference,
+html[data-theme="light"] body .sidebar-tree .toctree-l3.current > .reference {
   color: #083562;
   font-weight: bold;
 }
 
 
-html body .sidebar {
+html[data-theme="light"] body .sidebar {
   --color-brand-primary: #083563;
   --color-brand-content: #083563;
 }
 
-html body .sidebar .sidebar-tree a {
+html[data-theme="light"] body .sidebar .sidebar-tree a {
   color: #083563;
 }
 
-html body .sidebar .sidebar-tree a:hover {
+html[data-theme="light"] body .sidebar .sidebar-tree a:hover {
   color: #ffa602;
 }
 
-html body .sidebar .sidebar-tree .current > a {
+html[data-theme="light"] body .sidebar .sidebar-tree .current > a {
   color: #083563;
   font-weight: bold;
 }
