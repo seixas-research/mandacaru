@@ -42,6 +42,7 @@ html_title = "Carcará"
 
 html_theme = 'furo'                 # 'sphinx_rtd_theme', 'renku', 'shibuya'
 html_static_path = ['_static']
+html_css_files = ['custom.css']   
 
 html_theme_options = {
     "light_logo": "icon.png", # arquivo em docs/source/_static/
@@ -49,9 +50,6 @@ html_theme_options = {
 }
 
 html_favicon = "_static/favicon.png"
-
-html_css_files = ['custom.css']     
-
 copyright = 'Leandro Seixas Rocha, 2026'
 html_show_sphinx = False
 html_show_copyright = True
