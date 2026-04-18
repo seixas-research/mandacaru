@@ -26,30 +26,10 @@
 }
 
 :root {
-  /* Links gerais */
-  --color-brand-primary: #a38300;
-  --color-brand-content: #a38300;
-
-  /* Sidebar */
-  --color-sidebar-link-text: #a38300;
-  --color-sidebar-link-text--top-level: #ffffff;
-  --color-sidebar-link-text--current: #ff6600;
-  --color-sidebar-item-background--current: #333333;
+  --color-brand-primary: #083563;
 }
 
-/* Opcional: hover */
-a:hover {
-  color: #ffcc00;
-}
-
-html[data-theme="dark"] {
-  --color-brand-primary: #ffcc00;
-  --color-brand-content: #ffcc00;
-  --color-sidebar-link-text: #bbbbbb;
-  --color-sidebar-link-text--current: #ffcc00;
-}
-
-/* força só onde o Furo “escapa” */
-.sidebar a {
-  color: var(--color-brand-primary);
+.sidebar .sidebar-tree a {
+  color: #083563;
+  font-weight: bold;
 }
