@@ -46,7 +46,8 @@ The hallmark of Carcará is its optimization for continuous, autonomous model ev
    :maxdepth: 2
    :hidden:
 
-   Home <https://github.com/seixas-research/carcara>
+   Home <self>
+   GitHub <https://github.com/seixas-research/carcara>
    PyPI <https://pypi.org/project/carcara/>
 
 .. toctree::
