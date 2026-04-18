@@ -24,3 +24,20 @@
     justify-content: center;
     text-decoration: none !important; /* Remove sublinhados indesejados */
 }
+
+/* Cor padrão dos links */
+:root {
+  --color-brand-primary: #a38300;   /* links principais */
+  --color-brand-content: #a38300;   /* links dentro do conteúdo */
+}
+
+/* Opcional: hover */
+a:hover {
+  --color-brand-primary: #ffcc00;   /* cor ao passar o mouse */
+  --color-brand-content: #ffcc00;   /* cor ao passar o mouse */
+}
+
+html[data-theme="dark"] {
+  --color-brand-primary: #ffcc00;
+  --color-brand-content: #ffcc00;
+}
