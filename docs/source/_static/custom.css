@@ -39,8 +39,7 @@
 
 /* Opcional: hover */
 a:hover {
-  --color-brand-primary: #ffcc00;   /* cor ao passar o mouse */
-  --color-brand-content: #ffcc00;   /* cor ao passar o mouse */
+  color: #ffcc00;
 }
 
 html[data-theme="dark"] {
@@ -48,4 +47,9 @@ html[data-theme="dark"] {
   --color-brand-content: #ffcc00;
   --color-sidebar-link-text: #bbbbbb;
   --color-sidebar-link-text--current: #ffcc00;
+}
+
+/* força só onde o Furo “escapa” */
+.sidebar a {
+  color: var(--color-brand-primary);
 }
