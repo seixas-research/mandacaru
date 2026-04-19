@@ -67,7 +67,9 @@ html body .sidebar .sidebar-tree .current > a {
   font-weight: bold;
 }
 
-html body .sidebar-tree .toctree-l1 > a.reference.internal {
+/* DARK-MODE */
+
+html[data-theme="dark"] body .sidebar-tree .toctree-l1 > a.reference.internal {
   color: #ffcc00;
 }
 
@@ -75,7 +77,6 @@ html[data-theme="dark"] body .sidebar-tree .toctree-l1 > a.reference.internal {
   color: #ffcc00;
 }
 
-/* Conteúdo no dark-mode */
 html[data-theme="dark"] body .content a.reference.internal,
 html[data-theme="dark"] body .content a.reference.external {
   color: #ffcc00;
