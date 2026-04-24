@@ -28,7 +28,9 @@ pip install carcara
 To install Carcará directly from the GitHub repository, run the following commands:
 
 ```console
-pip install git+https://github.com/seixas-research/carcara.git
+git clone https://github.com/seixas-research/carcara.git
+cd carcara
+pip install -e .
 ```
 
 

@@ -21,7 +21,6 @@ dependencies = [
     'matplotlib',
     'pytest',
     'pyyaml',
-    'ml_dtypes',
     'mace-torch'
 ]
 classifiers = [
