@@ -13,7 +13,7 @@
 
 # Carcará
 
-Carcará is a high-performance Python framework designed for atomistic simulations powered by on-the-fly (OTF) machine learning interatomic potentials. It streamlines the integration of first-principles accuracy with the efficiency of classical force fields, enabling the automated development of robust potentials during the simulation process.
+For fermionic quantum simulation.
 
 # Installation
 
