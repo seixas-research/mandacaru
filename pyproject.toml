@@ -34,7 +34,7 @@ classifiers = [
 
 [project.urls]
 "Homepage" = "https://github.com/seixas-research/carcara"
-# "Documentation" = "https://carcara.readthedocs.io/en/latest/"
+"Documentation" = "https://carcara.readthedocs.io/en/latest/"
 
 [tool.hatch.version]
 path = "src/carcara/version.py"
