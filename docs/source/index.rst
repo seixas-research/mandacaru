@@ -30,7 +30,7 @@
 
    </div>
 
-**Carcará** is 
+**Carcará** is a materials simulation framework that uses variational quantum algorithms
 
 |
 
