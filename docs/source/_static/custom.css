@@ -1,0 +1,128 @@
+.sidebar-logo {
+    width: 120px;
+    height: auto;
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+/* Aumentar e centralizar o título na barra lateral */
+.sidebar-brand-text {
+    font-size: 3.0rem;    /* Aumenta o tamanho (o padrão é ~1rem) */
+    font-weight: bold;    /* Opcional: deixa em negrito para destacar mais */
+    text-align: center;   /* Centraliza o texto */
+    display: block;       /* Necessário para que a centralização funcione */
+    margin-top: 12px;     /* Adiciona um espaço entre o logo e o título */
+    line-height: 1.2;     /* Ajusta o espaçamento entre linhas se o título for longo */
+}
+
+/* Garante que o link que envolve o logo e o título também esteja centralizado */
+.sidebar-brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none !important; /* Remove sublinhados indesejados */
+}
+
+/* Top-level links */
+html body .sidebar-tree .toctree-l1 > .reference,
+html body .sidebar-tree .toctree-l2 > .reference,
+html body .sidebar-tree .toctree-l3 > .reference {
+  color: #083563;
+}
+
+/* Hover */
+html body .sidebar-tree .toctree-l1 > .reference:hover,
+html body .sidebar-tree .toctree-l2 > .reference:hover,
+html body .sidebar-tree .toctree-l3 > .reference:hover {
+  color: #ffa602;
+  font-weight: bold;
+}
+
+/* Item atual */
+html body .sidebar-tree .toctree-l1.current > .reference,
+html body .sidebar-tree .toctree-l2.current > .reference,
+html body .sidebar-tree .toctree-l3.current > .reference {
+  color: #083562;
+  font-weight: bold;
+}
+
+
+html body .sidebar {
+  --color-brand-primary: #083563;
+  --color-brand-content: #083563;
+}
+
+html body .sidebar .sidebar-tree a {
+  color: #083563;
+}
+
+html body .sidebar .sidebar-tree a:hover {
+  color: #ffa602;
+}
+
+html body .sidebar .sidebar-tree .current > a {
+  color: #083563;
+  font-weight: bold;
+}
+
+/* DARK-MODE */
+
+html[data-theme="dark"] body .sidebar-tree .toctree-l1 > a.reference.internal {
+  color: #ffcc00;
+}
+
+html[data-theme="dark"] body .sidebar-tree .toctree-l1 > a.reference.internal {
+  color: #ffcc00;
+}
+
+html[data-theme="dark"] body .content a.reference.internal,
+html[data-theme="dark"] body .content a.reference.external {
+  color: #ffcc00;
+}
+
+html[data-theme="dark"] body .sidebar-tree .toctree-l1 > .reference,
+html[data-theme="dark"] body .sidebar-tree .toctree-l2 > .reference,
+html[data-theme="dark"] body .sidebar-tree .toctree-l3 > .reference {
+  color: #ffcc00;
+}
+
+/* Hover */
+html[data-theme="dark"] body .sidebar-tree .toctree-l1 > .reference:hover,
+html[data-theme="dark"] body .sidebar-tree .toctree-l2 > .reference:hover,
+html[data-theme="dark"] body .sidebar-tree .toctree-l3 > .reference:hover {
+  color: #ffa602;
+  font-weight: bold;
+}
+
+/* Item atual */
+html[data-theme="dark"] body .sidebar-tree .toctree-l1.current > .reference,
+html[data-theme="dark"] body .sidebar-tree .toctree-l2.current > .reference,
+html[data-theme="dark"] body .sidebar-tree .toctree-l3.current > .reference {
+  color: #ffcc00;
+  font-weight: bold;
+}
+
+html[data-theme="dark"] body .sidebar-tree .current {
+  background-color: #1e293b;
+}
+
+html[data-theme="dark"] body .sidebar {
+  --color-brand-primary: #ffcc00;
+  --color-brand-content: #ffcc00;
+}
+
+html[data-theme="dark"] body .sidebar .sidebar-tree a {
+  color: #ffcc00;
+}
+
+html[data-theme="dark"] body .sidebar .sidebar-tree a:hover {
+  color: #ffa602;
+}
+
+html[data-theme="dark"] body .sidebar .sidebar-tree .current > a {
+  color: #ffcc00;
+  font-weight: bold;
+}
+
