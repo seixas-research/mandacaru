@@ -213,3 +213,6 @@ __marimo__/
 
 # VSCode
 .vscode/
+
+# Claude
+.claude/
