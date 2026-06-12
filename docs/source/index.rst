@@ -11,12 +11,6 @@
 
      <!-- BADGES -->
      <p>
-
-       <!-- Read the Docs -->
-       <a href="https://carcara.readthedocs.io/">
-         <img src="https://readthedocs.org/projects/carcara/badge/?version=latest&style=for-the-badge" alt="docs">
-       </a>
-
        <!-- PyPI -->
        <a href="https://pypi.org/project/carcara/">
          <img src="https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge" alt="pypi">
@@ -50,5 +44,4 @@
 
    installation
    tutorial/index
-   cli
    about
