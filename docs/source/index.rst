@@ -17,16 +17,14 @@
        </a>
 
        <!-- License -->
-       <a href="https://github.com/seixas-research/carcara/blob/main/LICENSE">
-         <img src="https://img.shields.io/github/license/seixas-research/carcara?style=for-the-badge" alt="license">
+       <a href="https://github.com/seixas-research/carcara/blob/main/LICENSE"> 
+         <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license">
        </a>
      </p>
 
    </div>
 
 **Carcará** is a materials simulation framework that uses variational quantum algorithms
-
-|
 
 
 .. toctree::
