@@ -15,13 +15,15 @@ skeleton and defines milestones, deliverables, and acceptance criteria.
 Carcará provides an end-to-end pipeline for simulating fermionic systems
 (molecules and condensed-matter lattice models) on quantum computers:
 
-```
- Fermionic system  ──►  Second-quantized   ──►  Qubit (Pauli)  ──►  Parameterized
- (molecule / model)      Hamiltonian             Hamiltonian          ansatz |ψ(θ)⟩
-                                                                          │
-                                                                          ▼
- Result + observables ◄── Error mitigation ◄── QPU / simulator ◄── VQA optimization
-```
+1. Fermionic system (molecule / model)
+2. Second-quantized Hamiltonian
+3. Qubit (Pauli) Hamiltonian
+4. Parameterized ansatz |ψ(θ)⟩
+5. VQA optimization
+6. QPU / Simulator
+7. Error mitigation
+8. Result + observables
+
 
 **In scope:** Hamiltonian construction, fermion-to-qubit mappings, ansatz
 generation, variational solvers (VQE and variants), classical optimizers,

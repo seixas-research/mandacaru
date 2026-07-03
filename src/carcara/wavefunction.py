@@ -6,9 +6,32 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
+"""Atomic system front-end.
+
+``Wavefunction`` is now a thin *facade* over three decoupled pieces:
+
+* :class:`carcara.basis.HydrogenicOrbital` -- the single source of truth for the
+  hydrogen-like orbital math (previously duplicated in two methods here);
+* :class:`carcara.integrals.Grid` -- the shared real-space integration grid;
+* :class:`carcara.integrals.IntegralEngine` -- the basis-agnostic engine that
+  samples any basis and dispatches the heavy integrals to the parallel C
+  backend (with a NumPy fallback).
+
+This class keeps its historical, tested API (coordinate conversions, orbital
+evaluation, Coulomb potential, one-body integrals) but no longer implements the
+physics inline: it prepares geometry/grids and delegates.  Swapping hydrogenic
+orbitals for Wannier functions is a matter of feeding different
+:class:`~carcara.basis.base.BasisFunction` objects to the engine -- nothing in
+the integral core changes.
+"""
+
 import numpy as np
-from scipy import special, integrate
 from ase.io import read
+
+from .basis import HydrogenicOrbital
+from .integrals import Grid, IntegralEngine
+
+ANGSTROM_TO_BOHR = 1.8897259886
 
 
 class Wavefunction:
@@ -20,16 +43,14 @@ class Wavefunction:
         xyz_filename (str): Path to the .xyz file.
         atom_index (int): The index of the atom acting as the reference nucleus/origin.
         """
-        angstrom_to_bohr = 1.8897259886
-
         self.atoms = read(xyz_filename)
         self.atom_index = atom_index
         self.n_atoms = len(self.atoms)
 
         # Data for all atoms (positions in Bohr)
-        self.all_positions_bohr = self.atoms.positions * angstrom_to_bohr  # shape (N, 3)
-        self.all_numbers = self.atoms.numbers                               # shape (N,)
-        self.all_symbols = list(self.atoms.symbols)                         # length N
+        self.all_positions_bohr = self.atoms.positions * ANGSTROM_TO_BOHR  # (N, 3)
+        self.all_numbers = self.atoms.numbers                              # (N,)
+        self.all_symbols = list(self.atoms.symbols)                        # length N
 
         # Reference atom (nucleus/origin)
         self.origin_cart = self.all_positions_bohr[atom_index]
@@ -62,36 +83,22 @@ class Wavefunction:
         phi = np.arctan2(y, x)
         return np.array([r, theta, phi])
 
-    # --- Core Physics ---
+    # --- Orbital construction (single source of truth via HydrogenicOrbital) ---
+
+    def orbital(self, state, center=None, Z=None):
+        """Build a :class:`HydrogenicOrbital` for this system.
+
+        Centralizes orbital creation so no radial/angular formula is duplicated.
+        """
+        center = self.origin_cart if center is None else np.asarray(center, float)
+        Z = self.Z if Z is None else Z
+        n, l, m = state
+        return HydrogenicOrbital(n, l, m, Z=Z, center=center)
 
     def _psi_on_cart_grid(self, state, origin_cart, X_abs, Y_abs, Z_abs, Z_nuclear=None):
-        """Evaluates a hydrogen-like wavefunction on a Cartesian coordinate grid."""
-        if Z_nuclear is None:
-            Z_nuclear = self.Z
-
-        X_rel = X_abs - origin_cart[0]
-        Y_rel = Y_abs - origin_cart[1]
-        Z_rel = Z_abs - origin_cart[2]
-
-        r = np.sqrt(X_rel**2 + Y_rel**2 + Z_rel**2)
-        r = np.where(r < 1e-15, 1e-15, r)
-        theta = np.arccos(np.clip(Z_rel / r, -1.0, 1.0))
-        phi = np.arctan2(Y_rel, X_rel)
-
-        n, l, m = state
-        a0 = 1.0
-        rho = (2 * Z_nuclear * r) / (n * a0)
-
-        num = special.factorial(n - l - 1)
-        den = 2 * n * special.factorial(n + l)
-        radial_norm = np.sqrt((2 * Z_nuclear / (n * a0))**3 * num / den)
-
-        laguerre = special.genlaguerre(n - l - 1, 2 * l + 1)
-        R_nl = radial_norm * np.exp(-rho / 2) * (rho ** l) * laguerre(rho)
-
-        Y_lm = special.sph_harm_y(l, m, theta, phi)
-
-        return R_nl * Y_lm
+        """Evaluate a hydrogen-like wavefunction on a Cartesian coordinate grid."""
+        return self.orbital(state, center=origin_cart, Z=Z_nuclear).evaluate(
+            X_abs, Y_abs, Z_abs)
 
     def calculate_wavefunction(self, quantum_state, pos, origin=None):
         """
@@ -101,35 +108,14 @@ class Wavefunction:
         pos           : np.array [r, theta, phi] in absolute space
         origin        : np.array [r, theta, phi] override; defaults to self.origin_cart
         """
-        n, l, m = quantum_state
-
         if origin is None:
             nuclei_origin_cart = self.origin_cart
         else:
             nuclei_origin_cart = self.spherical_to_cartesian(origin)
 
         pos_cart = self.spherical_to_cartesian(pos)
-        if len(pos_cart.shape) > 1:
-            relative_cart = pos_cart - nuclei_origin_cart[:, np.newaxis, np.newaxis]
-        else:
-            relative_cart = pos_cart - nuclei_origin_cart
-
-        r, theta, phi = self.cartesian_to_spherical(relative_cart)
-        r = np.where(r == 0, 1e-15, r)
-
-        a0 = 1.0
-        rho = (2 * self.Z * r) / (n * a0)
-
-        num = special.factorial(n - l - 1)
-        den = 2 * n * special.factorial(n + l)
-        radial_norm = np.sqrt((2 * self.Z / (n * a0))**3 * num / den)
-
-        laguerre = special.genlaguerre(n - l - 1, 2 * l + 1)
-        R_nl = radial_norm * np.exp(-rho / 2) * (rho ** l) * laguerre(rho)
-
-        Y_lm = special.sph_harm_y(l, m, theta, phi)
-
-        return R_nl * Y_lm
+        orb = self.orbital(quantum_state, center=nuclei_origin_cart, Z=self.Z)
+        return orb.evaluate(pos_cart[0], pos_cart[1], pos_cart[2])
 
     def coulomb_potential(self, pos, origin=None):
         """Calculates the single-nucleus Coulomb potential V(r) = -Z / r."""
@@ -149,44 +135,50 @@ class Wavefunction:
 
         return -self.Z / r
 
+    # --- Potentials on a Cartesian grid (fed to the integral engine) ---
+
+    def electron_nuclear_potential(self, X, Y, Z):
+        """Electron-nuclear Coulomb potential summed over all nuclei, on a grid.
+
+        V(r) = sum_I (-Z_I / |r - R_I|).  This is exactly the kind of external
+        potential the basis-agnostic engine consumes.
+        """
+        V = np.zeros(np.broadcast(X, Y, Z).shape, dtype=float)
+        for i in range(self.n_atoms):
+            Rx, Ry, Rz = self.all_positions_bohr[i]
+            r = np.sqrt((X - Rx)**2 + (Y - Ry)**2 + (Z - Rz)**2)
+            r = np.where(r < 1e-15, 1e-15, r)
+            V -= self.all_numbers[i] / r
+        return V
+
+    # --- Integrals (prepared here, executed by the C backend) ---
+
     def integrate_potential_energy(self, quantum_state, origin=None, box_size=10, points=60):
         """Numerically integrates <psi | V | psi> over a 3D Cartesian grid."""
-        if origin is None:
-            center_cart = self.origin_cart
-        else:
-            center_cart = self.spherical_to_cartesian(origin)
+        center = self.origin_cart if origin is None \
+            else self.spherical_to_cartesian(origin)
+        grid = Grid(center=center, box_size=box_size, points=points)
 
-        grid_1d = np.linspace(-box_size, box_size, points)
-        dx = grid_1d[1] - grid_1d[0]
-        dV = dx**3
-
-        X_rel, Y_rel, Z_rel = np.meshgrid(grid_1d, grid_1d, grid_1d, indexing='ij')
-
-        X_abs = X_rel + center_cart[0]
-        Y_abs = Y_rel + center_cart[1]
-        Z_abs = Z_rel + center_cart[2]
-
-        r_abs = np.sqrt(X_abs**2 + Y_abs**2 + Z_abs**2)
-        theta_abs = np.arccos(np.clip(Z_abs / (r_abs + 1e-15), -1.0, 1.0))
-        phi_abs = np.arctan2(Y_abs, X_abs)
-
-        pos_grid = np.array([r_abs, theta_abs, phi_abs])
-
-        psi = self.calculate_wavefunction(quantum_state, pos_grid, origin)
-        V = self.coulomb_potential(pos_grid, origin)
+        orb = self.orbital(quantum_state, center=center, Z=self.Z)
+        psi = orb.evaluate(grid.X, grid.Y, grid.Z)
+        r = np.sqrt((grid.X - center[0])**2 + (grid.Y - center[1])**2
+                    + (grid.Z - center[2])**2)
+        r = np.where(r < 1e-15, 1e-15, r)
+        V = -self.Z / r
 
         integrand = np.conj(psi) * V * psi
-        return np.real(np.sum(integrand) * dV)
+        return float(np.real(np.sum(integrand) * grid.dV))
 
     def one_body_integral(self, state_a, state_b, origin_a=None, origin_b=None,
                           Z_a=None, Z_b=None, box_size=10, points=50):
         """
-        Computes one-body Hamiltonian matrix elements via numerical integration.
+        Computes one-body Hamiltonian matrix elements via the integral engine.
 
         T_ab = <psi_a | -1/2 nabla^2 | psi_b>                (kinetic energy)
         V_ab = <psi_a | sum_I (-Z_I / |r - R_I|) | psi_b>    (electron-nuclear Coulomb)
 
-        The Laplacian of psi_b is evaluated numerically using 6-point finite differences.
+        The heavy lifting (finite-difference Laplacian + grid reductions) runs in
+        the parallel C backend when available, otherwise in the NumPy fallback.
         The Coulomb potential sums over all nuclei loaded from the XYZ file.
 
         Parameters:
@@ -199,49 +191,20 @@ class Wavefunction:
         Returns:
         dict with keys 'kinetic', 'potential', 'total'
         """
-        center_a = self.origin_cart.copy() if origin_a is None else np.asarray(origin_a, dtype=float)
-        center_b = self.origin_cart.copy() if origin_b is None else np.asarray(origin_b, dtype=float)
+        center_a = self.origin_cart.copy() if origin_a is None else np.asarray(origin_a, float)
+        center_b = self.origin_cart.copy() if origin_b is None else np.asarray(origin_b, float)
+        Z_a = self.Z if Z_a is None else Z_a
+        Z_b = self.Z if Z_b is None else Z_b
 
-        if Z_a is None:
-            Z_a = self.Z
-        if Z_b is None:
-            Z_b = self.Z
-
-        # Place the grid midway between the two orbital centers
+        # Grid centered midway between the two orbital centers.
         center = (center_a + center_b) / 2.0
-        grid_1d = np.linspace(-box_size, box_size, points)
-        dx = grid_1d[1] - grid_1d[0]
-        dV = dx**3
+        grid = Grid(center=center, box_size=box_size, points=points)
 
-        X_rel, Y_rel, Z_rel = np.meshgrid(grid_1d, grid_1d, grid_1d, indexing='ij')
-        X_abs = X_rel + center[0]
-        Y_abs = Y_rel + center[1]
-        Z_abs = Z_rel + center[2]
+        basis = [self.orbital(state_a, center=center_a, Z=Z_a),
+                 self.orbital(state_b, center=center_b, Z=Z_b)]
+        engine = IntegralEngine(basis, grid)
 
-        psi_a = self._psi_on_cart_grid(state_a, center_a, X_abs, Y_abs, Z_abs, Z_a)
-        psi_b = self._psi_on_cart_grid(state_b, center_b, X_abs, Y_abs, Z_abs, Z_b)
-
-        # Laplacian of psi_b via central finite differences
-        lap_psi_b = (
-            self._psi_on_cart_grid(state_b, center_b, X_abs + dx, Y_abs,      Z_abs,      Z_b)
-          + self._psi_on_cart_grid(state_b, center_b, X_abs - dx, Y_abs,      Z_abs,      Z_b)
-          + self._psi_on_cart_grid(state_b, center_b, X_abs,      Y_abs + dx, Z_abs,      Z_b)
-          + self._psi_on_cart_grid(state_b, center_b, X_abs,      Y_abs - dx, Z_abs,      Z_b)
-          + self._psi_on_cart_grid(state_b, center_b, X_abs,      Y_abs,      Z_abs + dx, Z_b)
-          + self._psi_on_cart_grid(state_b, center_b, X_abs,      Y_abs,      Z_abs - dx, Z_b)
-          - 6.0 * psi_b
-        ) / dx**2
-
-        T_ab = np.real(np.sum(np.conj(psi_a) * (-0.5 * lap_psi_b)) * dV)
-
-        # Electron-nuclear Coulomb potential summed over all nuclei
-        V_en = np.zeros_like(X_abs, dtype=float)
-        for i in range(self.n_atoms):
-            Rx, Ry, Rz = self.all_positions_bohr[i]
-            r_eI = np.sqrt((X_abs - Rx)**2 + (Y_abs - Ry)**2 + (Z_abs - Rz)**2)
-            r_eI = np.where(r_eI < 1e-15, 1e-15, r_eI)
-            V_en -= self.all_numbers[i] / r_eI
-
-        V_ab = np.real(np.sum(np.conj(psi_a) * V_en * psi_b) * dV)
-
+        T, V = engine.one_body(self.electron_nuclear_potential)
+        T_ab = float(np.real(T[0, 1]))
+        V_ab = float(np.real(V[0, 1]))
         return {'kinetic': T_ab, 'potential': V_ab, 'total': T_ab + V_ab}
