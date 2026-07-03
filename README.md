@@ -55,6 +55,52 @@ pip install -e .
 
 # Getting started
 
+## One- and two-body integrals for H2
+
+The `carcara.integrals` module computes real-space one- and two-body integrals
+over any localized basis. The example below builds a minimal basis of one
+hydrogen 1s orbital on each proton and evaluates the core Hamiltonian and the
+electron-repulsion tensor. The full script lives in
+[`examples/h2_integrals.py`](examples/h2_integrals.py).
+
+```python
+import numpy as np
+
+from carcara.basis import HydrogenicOrbital
+from carcara.integrals import Grid, IntegralEngine
+
+# Geometry (atomic units): two protons at the H2 equilibrium bond length.
+Z, R = 1.0, 1.4
+nuclei = np.array([[0.0, 0.0, -R / 2], [0.0, 0.0, +R / 2]])
+
+def nuclear_potential(x, y, z):
+    v = np.zeros_like(x, dtype=float)
+    for Rx, Ry, Rz in nuclei:
+        r = np.sqrt((x - Rx) ** 2 + (y - Ry) ** 2 + (z - Rz) ** 2)
+        v -= Z / np.maximum(r, 1e-12)
+    return v
+
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, points=64)
+basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[0]),
+         HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[1])]
+
+engine = IntegralEngine(basis, grid)
+
+# One-body: kinetic T and nuclear attraction V -> core Hamiltonian.
+T, V = engine.one_body(nuclear_potential)
+h_core = T + V
+
+# Two-body electron-repulsion tensor (ab|cd) in chemists' notation.
+eri = engine.two_body(method="fft")
+
+print("Core Hamiltonian h = T + V (Ha):")
+print(h_core.real)
+print(f"(00|00) on-site repulsion = {eri[0, 0, 0, 0].real:.4f} Ha")
+```
+
+Running it prints the `2 x 2` core Hamiltonian and the on-site repulsion
+`(00|00) ~ 0.62 Ha`, in agreement with the exact hydrogen 1s value of `5/8 Ha`.
+
 # License
 
 This is an open source code under [MIT License](https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/LICENSE).

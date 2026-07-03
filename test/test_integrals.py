@@ -64,7 +64,7 @@ class TestPoissonSolverDirect:
         for i in range(n):
             d = np.sqrt((xg[i] - xg) ** 2 + (yg[i] - yg) ** 2
                         + (zg[i] - zg) ** 2)
-            kern = np.where(d > 0, np.divide(1.0, d, where=d > 0), G0)
+            kern = np.where(d > 0, np.divide(1.0, d, where=d > 0, out=None), G0)
             phi_ref[i] = np.sum(rho * kern) * grid.dV
 
         assert np.allclose(phi_fft, phi_ref, atol=1e-10)

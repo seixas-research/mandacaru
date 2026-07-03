@@ -20,7 +20,7 @@ dependencies = [
     'matplotlib',
     'pytest',
     'pyyaml',
-    'qiskit',
+    'qiskit', # IBM Qiskit
     'qiskit-nature',
     'qiskit-ibm-runtime'
 ]
@@ -32,6 +32,13 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics"
 ]
+
+[project.optional-dependencies]
+accel = [
+    'numba>=0.60',
+    'numpy<2.5',
+]
+#   conda install -c conda-forge libxc pylibxc
 
 [project.urls]
 "Homepage" = "https://github.com/seixas-research/carcara"
