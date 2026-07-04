@@ -61,7 +61,7 @@ The `carcara.integrals` module computes real-space one- and two-body integrals
 over any localized basis. The example below builds a minimal basis of one
 hydrogen 1s orbital on each proton and evaluates the core Hamiltonian and the
 electron-repulsion tensor. The full script lives in
-[`examples/h2_integrals.py`](examples/h2_integrals.py).
+[`examples/H2_integrals.py`](examples/H2_integrals.py).
 
 ```python
 import numpy as np
@@ -104,7 +104,7 @@ Running it prints the `2 x 2` core Hamiltonian and the on-site repulsion
 ## A heteronuclear molecule: LiH
 
 The same machinery scales to multi-orbital, heteronuclear systems. The example
-[`examples/lih_integrals.py`](examples/lih_integrals.py) builds a small minimal
+[`examples/LiH_integrals.py`](examples/LiH_integrals.py) builds a small minimal
 basis for LiH -- the Li 1s, 2s and 2p_z orbitals plus the H 1s -- using the
 *true* nuclear charges (`Z_Li = 3`, `Z_H = 1`) in the potential and *effective*
 (Slater) charges for the hydrogenic basis orbitals:
