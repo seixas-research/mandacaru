@@ -1,0 +1,99 @@
+# One- and two-body integrals for LiH
+
+The [H2 tutorial](h2_integrals.md) used a two-orbital homonuclear basis. Here we
+scale the same `carcara.integrals` machinery to a multi-orbital, *heteronuclear*
+system: lithium hydride, LiH. This introduces two new ingredients -- different
+nuclear charges on the two centers, and more than one orbital per atom.
+
+## Geometry and external potential
+
+We work in atomic units (Bohr, Hartree). Lithium and hydrogen sit along the
+z-axis about the origin at the equilibrium bond length `R = 3.015 a0`. Because
+the nuclei carry different charges, the external potential sums Coulomb wells
+with the *true* charges `Z_Li = 3` and `Z_H = 1`:
+
+```{math}
+V(\mathbf r) = -\sum_A \frac{Z_A}{|\mathbf r - \mathbf R_A|}.
+```
+
+```python
+import numpy as np
+
+Z_LI, Z_H, R = 3.0, 1.0, 3.015
+li_pos = np.array([0.0, 0.0, -R / 2])
+h_pos = np.array([0.0, 0.0, +R / 2])
+nuclei = [(Z_LI, li_pos), (Z_H, h_pos)]
+
+def nuclear_potential(x, y, z):
+    v = np.zeros_like(x, dtype=float)
+    for Z, (Rx, Ry, Rz) in nuclei:
+        r = np.sqrt((x - Rx) ** 2 + (y - Ry) ** 2 + (z - Rz) ** 2)
+        v -= Z / np.maximum(r, 1e-12)
+    return v
+```
+
+## Grid, basis and engine
+
+The minimal basis carries three orbitals on lithium -- the 1s core plus the 2s
+and 2p_z valence orbitals -- and one 1s orbital on hydrogen. A subtlety appears
+here: a hydrogenic Li 1s built with the bare charge `Z = 3` is extremely
+contracted and hard to resolve on a modest grid. We therefore give the *basis*
+orbitals *effective* (Slater) charges, while the *potential* above keeps the
+true nuclear charges.
+
+```python
+from carcara.basis import HydrogenicOrbital
+from carcara.integrals import Grid, IntegralEngine
+
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=9.0, points=72)
+
+labels = ["Li 1s", "Li 2s", "Li 2pz", "H 1s"]
+basis = [HydrogenicOrbital(1, 0, 0, Z=2.69, center=li_pos),   # Li 1s core
+         HydrogenicOrbital(2, 0, 0, Z=1.28, center=li_pos),   # Li 2s valence
+         HydrogenicOrbital(2, 1, 0, Z=1.28, center=li_pos),   # Li 2pz valence
+         HydrogenicOrbital(1, 0, 0, Z=1.00, center=h_pos)]    # H 1s
+
+engine = IntegralEngine(basis, grid)
+```
+
+## One-body integrals
+
+`IntegralEngine.one_body` returns the kinetic matrix
+`T[a,b] = <a| -1/2 nabla^2 |b>` and the nuclear-attraction matrix
+`V[a,b] = <a| V |b>`. With four basis functions both are `4 x 4`; their sum is
+the one-body core Hamiltonian.
+
+```python
+T, V = engine.one_body(nuclear_potential)
+h_core = T + V
+```
+
+## Two-body integrals
+
+`IntegralEngine.two_body` returns the electron-repulsion tensor `(ab|cd)` in the
+chemists' convention -- now a `4 x 4 x 4 x 4` array. The default `method="fft"`
+uses an O(N log N) FFT Poisson solver.
+
+```python
+eri = engine.two_body(method="fft")
+
+print("Core Hamiltonian h = T + V (Ha):")
+print(h_core.real)
+print(f"(00|00) Li 1s on-site  = {eri[0, 0, 0, 0].real:.4f} Ha")
+print(f"(33|33) H 1s on-site   = {eri[3, 3, 3, 3].real:.4f} Ha")
+print(f"(11|33) Li 2s - H 1s J = {eri[1, 1, 3, 3].real:.4f} Ha")
+```
+
+## Checking the result
+
+The hydrogen 1s on-site integral `(33|33)` is unaffected by its heteronuclear
+neighbour and recovers the exact self-repulsion `5/8 = 0.625 Ha` (the engine
+returns `~0.62 Ha`). The lithium core integral `(00|00)` is larger because the
+1s orbital is far more contracted, and the inter-site `(11|33)` term measures
+the Coulomb repulsion between the Li 2s and H 1s charge clouds. The complete
+runnable script is available in
+[`examples/lih_integrals.py`](https://github.com/seixas-research/carcara/blob/main/examples/lih_integrals.py).
+
+As in the H2 case, the resulting `T`, `V` and `(ab|cd)` arrays are exactly the
+inputs needed to assemble the fermionic Hamiltonian and map it to qubits for a
+VQE calculation.

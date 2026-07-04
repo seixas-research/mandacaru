@@ -101,6 +101,30 @@ print(f"(00|00) on-site repulsion = {eri[0, 0, 0, 0].real:.4f} Ha")
 Running it prints the `2 x 2` core Hamiltonian and the on-site repulsion
 `(00|00) ~ 0.62 Ha`, in agreement with the exact hydrogen 1s value of `5/8 Ha`.
 
+## A heteronuclear molecule: LiH
+
+The same machinery scales to multi-orbital, heteronuclear systems. The example
+[`examples/lih_integrals.py`](examples/lih_integrals.py) builds a small minimal
+basis for LiH -- the Li 1s, 2s and 2p_z orbitals plus the H 1s -- using the
+*true* nuclear charges (`Z_Li = 3`, `Z_H = 1`) in the potential and *effective*
+(Slater) charges for the hydrogenic basis orbitals:
+
+```python
+labels = ["Li 1s", "Li 2s", "Li 2pz", "H 1s"]
+basis = [HydrogenicOrbital(1, 0, 0, Z=2.69, center=li_pos),   # Li 1s core
+         HydrogenicOrbital(2, 0, 0, Z=1.28, center=li_pos),   # Li 2s valence
+         HydrogenicOrbital(2, 1, 0, Z=1.28, center=li_pos),   # Li 2pz valence
+         HydrogenicOrbital(1, 0, 0, Z=1.00, center=h_pos)]    # H 1s
+
+engine = IntegralEngine(basis, grid)
+T, V = engine.one_body(nuclear_potential)
+eri = engine.two_body(method="fft")
+```
+
+This yields the `4 x 4` one-body matrices and the `4 x 4 x 4 x 4`
+electron-repulsion tensor. The H 1s on-site integral `(33|33) ~ 0.62 Ha` again
+recovers the exact `5/8 Ha`.
+
 # License
 
 This is an open source code under [MIT License](https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/LICENSE).

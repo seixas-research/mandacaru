@@ -42,36 +42,32 @@ def nuclear_potential(x, y, z):
     return v
 
 
-def main():
-    # A cubic real-space grid large enough to contain both 1s tails.
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, points=64)
+# A cubic real-space grid large enough to contain both 1s tails.
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, points=64)
 
-    # Minimal basis: one 1s orbital centered on each proton.
-    basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[0]),
-             HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[1])]
+# Minimal basis: one 1s orbital centered on each proton.
+basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[0]),
+            HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[1])]
 
-    engine = IntegralEngine(basis, grid)
-    print(f"C backend in use: {engine.uses_c_backend}")
+engine = IntegralEngine(basis, grid)
+print(f"C backend in use: {engine.uses_c_backend}")
 
-    # One-body integrals: kinetic T[a,b] and nuclear attraction V[a,b].
-    T, V = engine.one_body(nuclear_potential)
-    h_core = T + V  # the one-body core Hamiltonian
+# One-body integrals: kinetic T[a,b] and nuclear attraction V[a,b].
+T, V = engine.one_body(nuclear_potential)
+h_core = T + V  # the one-body core Hamiltonian
 
-    # Two-body electron-repulsion tensor (ab|cd), chemists' notation.
-    eri = engine.two_body(method="fft")
+# Two-body electron-repulsion tensor (ab|cd), chemists' notation.
+eri = engine.two_body(method="fft")
 
-    np.set_printoptions(precision=4, suppress=True)
-    print("\nKinetic energy matrix T (Ha):")
-    print(T.real)
-    print("\nNuclear attraction matrix V (Ha):")
-    print(V.real)
-    print("\nCore Hamiltonian h = T + V (Ha):")
-    print(h_core.real)
-    print("\nSelected two-body integrals (Ha):")
-    print(f"  (00|00) = {eri[0, 0, 0, 0].real:.4f}   on-site repulsion")
-    print(f"  (00|11) = {eri[0, 0, 1, 1].real:.4f}   inter-site Coulomb")
-    print(f"  (01|01) = {eri[0, 1, 0, 1].real:.4f}   exchange")
+np.set_printoptions(precision=4, suppress=True)
+print("\nKinetic energy matrix T (Ha):")
+print(T.real)
+print("\nNuclear attraction matrix V (Ha):")
+print(V.real)
+print("\nCore Hamiltonian h = T + V (Ha):")
+print(h_core.real)
+print("\nSelected two-body integrals (Ha):")
+print(f"  (00|00) = {eri[0, 0, 0, 0].real:.4f}   on-site repulsion")
+print(f"  (00|11) = {eri[0, 0, 1, 1].real:.4f}   inter-site Coulomb")
+print(f"  (01|01) = {eri[0, 1, 0, 1].real:.4f}   exchange")
 
-
-if __name__ == "__main__":
-    main()
