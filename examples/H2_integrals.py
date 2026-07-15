@@ -23,37 +23,30 @@ from __future__ import annotations
 import numpy as np
 
 from carcara.basis import HydrogenicOrbital
-from carcara.integrals import Grid, IntegralEngine
+from carcara.integrals import Grid, IntegralEngine, Potentials
 
 # Nuclear charges and geometry (atomic units, Bohr).  The equilibrium bond
 # length of H2 is ~1.4 a0; the two protons sit symmetrically about the origin.
 Z = 1.0
 R = 1.4
-nuclei = np.array([[0.0, 0.0, -R / 2],
-                   [0.0, 0.0, +R / 2]])
+proton_a = np.array([0.0, 0.0, -R / 2])
+proton_b = np.array([0.0, 0.0, +R / 2])
 
-
-def nuclear_potential(x, y, z):
-    """External potential of the two protons: ``V(r) = -sum_A Z / |r - R_A|``."""
-    v = np.zeros_like(x, dtype=float)
-    for Rx, Ry, Rz in nuclei:
-        r = np.sqrt((x - Rx) ** 2 + (y - Ry) ** 2 + (z - Rz) ** 2)
-        v -= Z / np.maximum(r, 1e-12)
-    return v
-
+# External electron-nuclear potential V(r) = -sum_A Z / |r - R_A|.
+potentials = Potentials([(Z, proton_a), (Z, proton_b)])
 
 # A cubic real-space grid large enough to contain both 1s tails.
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, points=64)
 
 # Minimal basis: one 1s orbital centered on each proton.
-basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[0]),
-            HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[1])]
+basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_a),
+            HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_b)]
 
 engine = IntegralEngine(basis, grid)
 print(f"C backend in use: {engine.uses_c_backend}")
 
 # One-body integrals: kinetic T[a,b] and nuclear attraction V[a,b].
-T, V = engine.one_body(nuclear_potential)
+T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V  # the one-body core Hamiltonian
 
 # Two-body electron-repulsion tensor (ab|cd), chemists' notation.

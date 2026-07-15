@@ -19,18 +19,20 @@ potential felt by the electrons is the sum of the two nuclear Coulomb wells:
 V(\mathbf r) = -\sum_A \frac{Z}{|\mathbf r - \mathbf R_A|}.
 ```
 
+The `Potentials` class builds this callable from a list of `(Z, center)` pairs;
+its `nuclear_potential` method is exactly the `V(x, y, z)` signature the engine
+expects.
+
 ```python
 import numpy as np
 
-Z, R = 1.0, 1.4
-nuclei = np.array([[0.0, 0.0, -R / 2], [0.0, 0.0, +R / 2]])
+from carcara.integrals import Potentials
 
-def nuclear_potential(x, y, z):
-    v = np.zeros_like(x, dtype=float)
-    for Rx, Ry, Rz in nuclei:
-        r = np.sqrt((x - Rx) ** 2 + (y - Ry) ** 2 + (z - Rz) ** 2)
-        v -= Z / np.maximum(r, 1e-12)
-    return v
+Z, R = 1.0, 1.4
+proton_a = np.array([0.0, 0.0, -R / 2])
+proton_b = np.array([0.0, 0.0, +R / 2])
+
+potentials = Potentials([(Z, proton_a), (Z, proton_b)])
 ```
 
 ## Grid, basis and engine
@@ -44,8 +46,8 @@ from carcara.basis import HydrogenicOrbital
 from carcara.integrals import Grid, IntegralEngine
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, points=64)
-basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[0]),
-         HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[1])]
+basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_a),
+         HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_b)]
 
 engine = IntegralEngine(basis, grid)
 ```
@@ -57,7 +59,7 @@ engine = IntegralEngine(basis, grid)
 `V[a,b] = <a| V |b>`. Their sum is the one-body core Hamiltonian.
 
 ```python
-T, V = engine.one_body(nuclear_potential)
+T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V
 ```
 

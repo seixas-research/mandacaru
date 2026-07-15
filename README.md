@@ -67,27 +67,24 @@ electron-repulsion tensor. The full script lives in
 import numpy as np
 
 from carcara.basis import HydrogenicOrbital
-from carcara.integrals import Grid, IntegralEngine
+from carcara.integrals import Grid, IntegralEngine, Potentials
 
 # Geometry (atomic units): two protons at the H2 equilibrium bond length.
 Z, R = 1.0, 1.4
-nuclei = np.array([[0.0, 0.0, -R / 2], [0.0, 0.0, +R / 2]])
+proton_a = np.array([0.0, 0.0, -R / 2])
+proton_b = np.array([0.0, 0.0, +R / 2])
 
-def nuclear_potential(x, y, z):
-    v = np.zeros_like(x, dtype=float)
-    for Rx, Ry, Rz in nuclei:
-        r = np.sqrt((x - Rx) ** 2 + (y - Ry) ** 2 + (z - Rz) ** 2)
-        v -= Z / np.maximum(r, 1e-12)
-    return v
+# External electron-nuclear potential V(r) = -sum_A Z / |r - R_A|.
+potentials = Potentials([(Z, proton_a), (Z, proton_b)])
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, points=64)
-basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[0]),
-         HydrogenicOrbital(1, 0, 0, Z=Z, center=nuclei[1])]
+basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_a),
+         HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_b)]
 
 engine = IntegralEngine(basis, grid)
 
 # One-body: kinetic T and nuclear attraction V -> core Hamiltonian.
-T, V = engine.one_body(nuclear_potential)
+T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V
 
 # Two-body electron-repulsion tensor (ab|cd) in chemists' notation.
@@ -116,8 +113,9 @@ basis = [HydrogenicOrbital(1, 0, 0, Z=2.69, center=li_pos),   # Li 1s core
          HydrogenicOrbital(2, 1, 0, Z=1.28, center=li_pos),   # Li 2pz valence
          HydrogenicOrbital(1, 0, 0, Z=1.00, center=h_pos)]    # H 1s
 
+potentials = Potentials([(3.0, li_pos), (1.0, h_pos)])  # true nuclear charges
 engine = IntegralEngine(basis, grid)
-T, V = engine.one_body(nuclear_potential)
+T, V = engine.one_body(potentials.nuclear_potential)
 eri = engine.two_body(method="fft")
 ```
 

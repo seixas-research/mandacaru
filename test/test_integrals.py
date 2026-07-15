@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from carcara.basis import HydrogenicOrbital
-from carcara.integrals import Grid, IntegralEngine, PoissonFFTSolver
+from carcara.integrals import Grid, IntegralEngine, PoissonFFTSolver, Potentials
 
 
 @pytest.fixture
@@ -43,6 +43,40 @@ class TestPoissonFFT:
         # (ab|cd) == (cd|ab) and (ab|cd) == (ba|dc)* for a real basis set.
         assert np.allclose(eri, np.transpose(eri, (2, 3, 0, 1)))
         assert np.allclose(eri, np.conj(np.transpose(eri, (1, 0, 3, 2))))
+
+
+class TestPotentials:
+    def test_single_charge_is_minus_z_over_r(self):
+        # V(r) = -Z/|r - R|; a unit charge at the origin gives -1 at 1 Bohr.
+        pot = Potentials([(1.0, np.array([0.0, 0.0, 0.0]))])
+        r = np.array([1.0, 2.0])
+        v = pot.nuclear_potential(r, np.zeros_like(r), np.zeros_like(r))
+        assert np.allclose(v, [-1.0, -0.5])
+
+    def test_charges_superpose(self):
+        # Two wells add: at the midpoint each contributes -Z/(R/2).
+        R = 2.0
+        pot = Potentials([(1.0, np.array([0.0, 0.0, -R / 2])),
+                          (1.0, np.array([0.0, 0.0, +R / 2]))])
+        v = pot.nuclear_potential(np.array([0.0]), np.array([0.0]),
+                                  np.array([0.0]))
+        assert np.allclose(v, [-2.0 / (R / 2)])
+
+    def test_softening_bounds_the_singularity(self):
+        # On top of the nucleus the potential is finite: -Z/softening.
+        pot = Potentials([(1.0, np.array([0.0, 0.0, 0.0]))], softening=1e-3)
+        z = np.array([0.0])
+        v = pot.nuclear_potential(z, z, z)
+        assert np.isfinite(v).all()
+        assert np.allclose(v, [-1.0 / 1e-3])
+
+    def test_bound_method_drives_the_engine(self):
+        # The method is directly consumable as the one_body potential callable.
+        grid = Grid(center=[0, 0, 0], box_size=10.0, points=32)
+        pot = Potentials([(1.0, np.array([0.0, 0.0, 0.0]))])
+        eng = IntegralEngine([HydrogenicOrbital(1, 0, 0, Z=1.0)], grid)
+        T, V = eng.one_body(pot.nuclear_potential)
+        assert V[0, 0].real < 0  # attractive well
 
 
 class TestPoissonSolverDirect:

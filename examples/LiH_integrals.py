@@ -27,7 +27,7 @@ from __future__ import annotations
 import numpy as np
 
 from carcara.basis import HydrogenicOrbital
-from carcara.integrals import Grid, IntegralEngine
+from carcara.integrals import Grid, IntegralEngine, Potentials
 
 # Nuclear charges and geometry (atomic units, Bohr).  The equilibrium bond
 # length of LiH is ~3.015 a0; Li and H sit along z about the origin.
@@ -36,17 +36,10 @@ Z_H = 1.0
 R = 3.015
 li_pos = np.array([0.0, 0.0, -R / 2])
 h_pos = np.array([0.0, 0.0, +R / 2])
-nuclei = [(Z_LI, li_pos), (Z_H, h_pos)]
 
-
-def nuclear_potential(x, y, z):
-    """External potential of the two nuclei: ``V(r) = -sum_A Z_A / |r - R_A|``."""
-    v = np.zeros_like(x, dtype=float)
-    for Z, (Rx, Ry, Rz) in nuclei:
-        r = np.sqrt((x - Rx) ** 2 + (y - Ry) ** 2 + (z - Rz) ** 2)
-        v -= Z / np.maximum(r, 1e-12)
-    return v
-
+# External potential with the *true* nuclear charges (Z_Li = 3, Z_H = 1),
+# independent of the effective basis charges chosen below.
+potentials = Potentials([(Z_LI, li_pos), (Z_H, h_pos)])
 
 # A cubic real-space grid large enough to contain the diffuse Li 2s/2p tails.
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=9.0, points=72)
@@ -63,7 +56,7 @@ print(f"C backend in use: {engine.uses_c_backend}")
 print("Basis order:", ", ".join(f"{i}={l}" for i, l in enumerate(labels)))
 
 # One-body integrals: kinetic T[a,b] and nuclear attraction V[a,b].
-T, V = engine.one_body(nuclear_potential)
+T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V  # the one-body core Hamiltonian
 
 # Two-body electron-repulsion tensor (ab|cd), chemists' notation.

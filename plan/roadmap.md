@@ -36,7 +36,7 @@ full quantum error correction, and tensor-network classical backends.
 
 ## 2. Current State (baseline)
 
-Package version: **26.6.4**. Build: `hatchling`. Python ≥ 3.10.
+Package version: **26.6.4**. Build: `hatchling`. Python ≥ 3.14.
 Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
 `qiskit-ibm-runtime`, `ase`.
 
@@ -87,7 +87,7 @@ no restructuring is required.
 - Define the public API surface in `__init__.py` (lazy imports of `core`,
   `circuits`, `algorithms`, `optimizers`, `backends`).
 - Set up tooling: `ruff`/`black` formatting, `mypy` type checks, `pytest` +
-  `pytest-cov`, and a GitHub Actions CI matrix (Python 3.10–3.12).
+  `pytest-cov`, and a GitHub Actions CI matrix (Python 3.14).
 - Add `optional-dependencies` groups in `pyproject.toml` (`dev`, `docs`, `hw`).
 - Establish the logging utility (`utils/logging.py`) as the project-wide logger.
 - Populate `CHANGELOG.md` (currently empty) with a Keep-a-Changelog format.

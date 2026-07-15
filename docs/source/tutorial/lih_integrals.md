@@ -16,20 +16,20 @@ with the *true* charges `Z_Li = 3` and `Z_H = 1`:
 V(\mathbf r) = -\sum_A \frac{Z_A}{|\mathbf r - \mathbf R_A|}.
 ```
 
+The `Potentials` class takes a list of `(Z, center)` pairs -- here with the
+*true* charges on each center -- and exposes the sum of Coulomb wells as its
+`nuclear_potential` method.
+
 ```python
 import numpy as np
+
+from carcara.integrals import Potentials
 
 Z_LI, Z_H, R = 3.0, 1.0, 3.015
 li_pos = np.array([0.0, 0.0, -R / 2])
 h_pos = np.array([0.0, 0.0, +R / 2])
-nuclei = [(Z_LI, li_pos), (Z_H, h_pos)]
 
-def nuclear_potential(x, y, z):
-    v = np.zeros_like(x, dtype=float)
-    for Z, (Rx, Ry, Rz) in nuclei:
-        r = np.sqrt((x - Rx) ** 2 + (y - Ry) ** 2 + (z - Rz) ** 2)
-        v -= Z / np.maximum(r, 1e-12)
-    return v
+potentials = Potentials([(Z_LI, li_pos), (Z_H, h_pos)])
 ```
 
 ## Grid, basis and engine
@@ -64,7 +64,7 @@ engine = IntegralEngine(basis, grid)
 the one-body core Hamiltonian.
 
 ```python
-T, V = engine.one_body(nuclear_potential)
+T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V
 ```
 

@@ -12,5 +12,7 @@ from ._backend import HAS_C_BACKEND
 from .engine import IntegralEngine
 from .grid import Grid
 from .poisson import PoissonFFTSolver
+from .potentials import Potentials
 
-__all__ = ["IntegralEngine", "Grid", "PoissonFFTSolver", "HAS_C_BACKEND"]
+__all__ = ["IntegralEngine", "Grid", "PoissonFFTSolver", "Potentials",
+           "HAS_C_BACKEND"]
