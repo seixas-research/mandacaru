@@ -25,18 +25,20 @@ import numpy as np
 from carcara.basis import HydrogenicOrbital
 from carcara.integrals import Grid, IntegralEngine, Potentials
 
-# Nuclear charges and geometry (atomic units, Bohr).  The equilibrium bond
-# length of H2 is ~1.4 a0; the two protons sit symmetrically about the origin.
+# Nuclear charges and geometry.  Lengths are in the user-facing unit (Angstrom):
+# the equilibrium bond length of H2 is ~0.74 A, the two protons sitting
+# symmetrically about the origin.
 Z = 1.0
-R = 1.4
+R = 0.74
 proton_a = np.array([0.0, 0.0, -R / 2])
 proton_b = np.array([0.0, 0.0, +R / 2])
 
 # External electron-nuclear potential V(r) = -sum_A Z / |r - R_A|.
 potentials = Potentials([(Z, proton_a), (Z, proton_b)])
 
-# A cubic real-space grid large enough to contain both 1s tails.
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, points=64)
+# A cubic real-space grid large enough to contain both 1s tails, sampled at a
+# spacing of h = 0.10 Angstrom.
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.10)
 
 # Minimal basis: one 1s orbital centered on each proton.
 basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_a),
@@ -45,22 +47,23 @@ basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_a),
 engine = IntegralEngine(basis, grid)
 print(f"C backend in use: {engine.uses_c_backend}")
 
-# One-body integrals: kinetic T[a,b] and nuclear attraction V[a,b].
+# One-body integrals: kinetic T[a,b] and nuclear attraction V[a,b].  Energies
+# are returned in the user-facing unit (eV) by default.
 T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V  # the one-body core Hamiltonian
 
 # Two-body electron-repulsion tensor (ab|cd), chemists' notation.
 eri = engine.two_body(method="fft")
 
-np.set_printoptions(precision=4, suppress=True)
-print("\nKinetic energy matrix T (Ha):")
+np.set_printoptions(precision=3, suppress=True)
+print("\nKinetic energy matrix T (eV):")
 print(T.real)
-print("\nNuclear attraction matrix V (Ha):")
+print("\nNuclear attraction matrix V (eV):")
 print(V.real)
-print("\nCore Hamiltonian h = T + V (Ha):")
+print("\nCore Hamiltonian h = T + V (eV):")
 print(h_core.real)
-print("\nSelected two-body integrals (Ha):")
-print(f"  (00|00) = {eri[0, 0, 0, 0].real:.4f}   on-site repulsion")
-print(f"  (00|11) = {eri[0, 0, 1, 1].real:.4f}   inter-site Coulomb")
-print(f"  (01|01) = {eri[0, 1, 0, 1].real:.4f}   exchange")
+print("\nSelected two-body integrals (eV):")
+print(f"  (00|00) = {eri[0, 0, 0, 0].real:.3f}   on-site repulsion")
+print(f"  (00|11) = {eri[0, 0, 1, 1].real:.3f}   inter-site Coulomb")
+print(f"  (01|01) = {eri[0, 1, 0, 1].real:.3f}   exchange")
 

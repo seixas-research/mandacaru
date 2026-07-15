@@ -23,6 +23,7 @@ from collections.abc import Callable, Sequence
 import numpy as np
 
 from ..basis.base import BasisFunction
+from ..units import from_hartree
 from . import _backend
 from .grid import Grid
 from .poisson import PoissonFFTSolver
@@ -56,13 +57,17 @@ class IntegralEngine:
 
     # -- one body ---------------------------------------------------------- #
 
-    def one_body(self, potential: PotentialFn):
+    def one_body(self, potential: PotentialFn, energy_units: str = "eV"):
         """Kinetic ``T`` and potential ``V`` matrices over the basis.
 
         Parameters
         ----------
         potential : callable
-            ``V(x, y, z)`` returning the external potential (real) on the grid.
+            ``V(x, y, z)`` returning the external potential (real, Hartree) on
+            the grid's Bohr coordinates.
+        energy_units : {"eV", "Ha"}
+            Unit of the returned matrices (default ``"eV"``); the integrals are
+            computed in Hartree and converted on return.
 
         Returns
         -------
@@ -72,12 +77,14 @@ class IntegralEngine:
         Vext = np.ascontiguousarray(
             np.real(potential(self.grid.X, self.grid.Y, self.grid.Z)).reshape(-1),
             dtype=np.float64)
-        return _backend.one_body_matrices(self._psi, Vext, self.grid.dx,
+        T, V = _backend.one_body_matrices(self._psi, Vext, self.grid.dx,
                                           self.grid.points)
+        return from_hartree(T, energy_units), from_hartree(V, energy_units)
 
     # -- two body ---------------------------------------------------------- #
 
-    def two_body(self, method: str = "fft", softening: float = 0.0):
+    def two_body(self, method: str = "fft", softening: float = 0.0,
+                 energy_units: str = "eV"):
         """Electron-repulsion tensor ``(ab|cd)`` over the basis (chemists').
 
         Parameters
@@ -89,14 +96,19 @@ class IntegralEngine:
             (kept as a reference / for arbitrary non-uniform grids).
         softening : float
             Only used by ``method="direct"``: regularizes ``r12 -> 0``.
+        energy_units : {"eV", "Ha"}
+            Unit of the returned tensor (default ``"eV"``); the integrals are
+            computed in Hartree and converted on return.
         """
         if method == "fft":
-            return self._two_body_fft()
-        if method == "direct":
+            eri = self._two_body_fft()
+        elif method == "direct":
             xg, yg, zg = self.grid.flat_coords()
-            return _backend.two_body_tensor(self._psi, xg, yg, zg,
-                                            self.grid.dV, softening)
-        raise ValueError(f"unknown two-body method {method!r}")
+            eri = _backend.two_body_tensor(self._psi, xg, yg, zg,
+                                           self.grid.dV, softening)
+        else:
+            raise ValueError(f"unknown two-body method {method!r}")
+        return from_hartree(eri, energy_units)
 
     def _two_body_fft(self):
         """FFT-Poisson electron-repulsion tensor.

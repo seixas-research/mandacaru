@@ -34,6 +34,18 @@ from .integrals import Grid, IntegralEngine
 ANGSTROM_TO_BOHR = 1.8897259886
 
 
+def _points_to_h(box_size, points):
+    """Spacing ``h`` (Bohr) reproducing ``points`` nodes over ``[-box, box]``.
+
+    ``Grid`` now takes a spacing rather than a node count; this keeps the legacy
+    ``points`` argument of the methods below working by handing ``Grid`` the
+    equivalent ``h`` (the round-trip recovers exactly ``points`` nodes).  This
+    facade works throughout in atomic units, so the grids below are built with
+    ``units="bohr"``.
+    """
+    return 2.0 * box_size / (points - 1)
+
+
 class Wavefunction:
     def __init__(self, xyz_filename, atom_index=0):
         """
@@ -93,7 +105,8 @@ class Wavefunction:
         center = self.origin_cart if center is None else np.asarray(center, float)
         Z = self.Z if Z is None else Z
         n, l, m = state
-        return HydrogenicOrbital(n, l, m, Z=Z, center=center)
+        # This facade keeps positions in Bohr (atomic units) throughout.
+        return HydrogenicOrbital(n, l, m, Z=Z, center=center, units="bohr")
 
     def _psi_on_cart_grid(self, state, origin_cart, X_abs, Y_abs, Z_abs, Z_nuclear=None):
         """Evaluate a hydrogen-like wavefunction on a Cartesian coordinate grid."""
@@ -157,7 +170,8 @@ class Wavefunction:
         """Numerically integrates <psi | V | psi> over a 3D Cartesian grid."""
         center = self.origin_cart if origin is None \
             else self.spherical_to_cartesian(origin)
-        grid = Grid(center=center, box_size=box_size, points=points)
+        grid = Grid(center=center, box_size=box_size,
+                    h=_points_to_h(box_size, points), units="bohr")
 
         orb = self.orbital(quantum_state, center=center, Z=self.Z)
         psi = orb.evaluate(grid.X, grid.Y, grid.Z)
@@ -198,13 +212,15 @@ class Wavefunction:
 
         # Grid centered midway between the two orbital centers.
         center = (center_a + center_b) / 2.0
-        grid = Grid(center=center, box_size=box_size, points=points)
+        grid = Grid(center=center, box_size=box_size,
+                    h=_points_to_h(box_size, points), units="bohr")
 
         basis = [self.orbital(state_a, center=center_a, Z=Z_a),
                  self.orbital(state_b, center=center_b, Z=Z_b)]
         engine = IntegralEngine(basis, grid)
 
-        T, V = engine.one_body(self.electron_nuclear_potential)
+        # Legacy API returns atomic units (Hartree).
+        T, V = engine.one_body(self.electron_nuclear_potential, energy_units="Ha")
         T_ab = float(np.real(T[0, 1]))
         V_ab = float(np.real(V[0, 1]))
         return {'kinetic': T_ab, 'potential': V_ab, 'total': T_ab + V_ab}

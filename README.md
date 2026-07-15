@@ -69,34 +69,36 @@ import numpy as np
 from carcara.basis import HydrogenicOrbital
 from carcara.integrals import Grid, IntegralEngine, Potentials
 
-# Geometry (atomic units): two protons at the H2 equilibrium bond length.
-Z, R = 1.0, 1.4
+# Geometry: the user-facing API uses Angstrom for lengths and eV for energies.
+# H2 equilibrium bond length ~0.74 A; two protons about the origin.
+Z, R = 1.0, 0.74
 proton_a = np.array([0.0, 0.0, -R / 2])
 proton_b = np.array([0.0, 0.0, +R / 2])
 
 # External electron-nuclear potential V(r) = -sum_A Z / |r - R_A|.
 potentials = Potentials([(Z, proton_a), (Z, proton_b)])
 
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, points=64)
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.10)  # Angstrom
 basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_a),
          HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_b)]
 
 engine = IntegralEngine(basis, grid)
 
-# One-body: kinetic T and nuclear attraction V -> core Hamiltonian.
+# One-body: kinetic T and nuclear attraction V -> core Hamiltonian (eV).
 T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V
 
-# Two-body electron-repulsion tensor (ab|cd) in chemists' notation.
+# Two-body electron-repulsion tensor (ab|cd) in chemists' notation (eV).
 eri = engine.two_body(method="fft")
 
-print("Core Hamiltonian h = T + V (Ha):")
+print("Core Hamiltonian h = T + V (eV):")
 print(h_core.real)
-print(f"(00|00) on-site repulsion = {eri[0, 0, 0, 0].real:.4f} Ha")
+print(f"(00|00) on-site repulsion = {eri[0, 0, 0, 0].real:.3f} eV")
 ```
 
 Running it prints the `2 x 2` core Hamiltonian and the on-site repulsion
-`(00|00) ~ 0.62 Ha`, in agreement with the exact hydrogen 1s value of `5/8 Ha`.
+`(00|00) ~ 17.0 eV`, in agreement with the exact hydrogen 1s value of
+`5/8 Ha = 17.007 eV`.
 
 ## A heteronuclear molecule: LiH
 
@@ -104,14 +106,15 @@ The same machinery scales to multi-orbital, heteronuclear systems. The example
 [`examples/LiH_integrals.py`](examples/LiH_integrals.py) builds a small minimal
 basis for LiH -- the Li 1s, 2s and 2p_z orbitals plus the H 1s -- using the
 *true* nuclear charges (`Z_Li = 3`, `Z_H = 1`) in the potential and *effective*
-(Slater) charges for the hydrogenic basis orbitals:
+charges from **Slater's rules** for the hydrogenic basis orbitals via
+`HydrogenicOrbital.from_slater`:
 
 ```python
 labels = ["Li 1s", "Li 2s", "Li 2pz", "H 1s"]
-basis = [HydrogenicOrbital(1, 0, 0, Z=2.69, center=li_pos),   # Li 1s core
-         HydrogenicOrbital(2, 0, 0, Z=1.28, center=li_pos),   # Li 2s valence
-         HydrogenicOrbital(2, 1, 0, Z=1.28, center=li_pos),   # Li 2pz valence
-         HydrogenicOrbital(1, 0, 0, Z=1.00, center=h_pos)]    # H 1s
+basis = [HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
+         HydrogenicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
+         HydrogenicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
+         HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
 
 potentials = Potentials([(3.0, li_pos), (1.0, h_pos)])  # true nuclear charges
 engine = IntegralEngine(basis, grid)
@@ -120,7 +123,7 @@ eri = engine.two_body(method="fft")
 ```
 
 This yields the `4 x 4` one-body matrices and the `4 x 4 x 4 x 4`
-electron-repulsion tensor. The H 1s on-site integral `(33|33) ~ 0.62 Ha` again
+electron-repulsion tensor. The H 1s on-site integral `(33|33) ~ 17.0 eV` again
 recovers the exact `5/8 Ha`.
 
 # License

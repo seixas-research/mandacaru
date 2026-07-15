@@ -28,25 +28,35 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from ..units import to_bohr
+
 
 class Potentials:
     r"""External potentials of a set of point nuclei.
 
+    The nuclear positions are given in ``units`` (Angstrom by default) and are
+    stored internally in Bohr.  :meth:`nuclear_potential` is a backend-facing
+    callable: it is evaluated on the engine's Bohr grid and returns the
+    potential in Hartree, exactly the atomic-unit contract
+    :meth:`~carcara.integrals.IntegralEngine.one_body` expects.
+
     Parameters
     ----------
     nuclei : sequence of ``(Z, center)``
-        One entry per nucleus: its charge ``Z`` and Cartesian ``center`` in
-        Bohr (shape ``(3,)``).  For a molecule these are the *true* nuclear
+        One entry per nucleus: its charge ``Z`` and Cartesian ``center`` (shape
+        ``(3,)``) in ``units``.  For a molecule these are the *true* nuclear
         charges (``Z_Li = 3``, ``Z_H = 1``, ...), independent of any effective
         (Slater) charges used for the basis orbitals.
     softening : float, optional
-        Lower bound on ``|r - R_A|`` used to regularize the ``r -> R_A``
-        Coulomb singularity on the grid (default ``1e-12`` Bohr).
+        Lower bound on ``|r - R_A|`` in Bohr, regularizing the ``r -> R_A``
+        Coulomb singularity on the grid (default ``1e-12``).
+    units : {"angstrom", "bohr"}
+        Unit of the nuclear centers (default ``"angstrom"``).
     """
 
     def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
-                 softening: float = 1e-12):
-        self.nuclei = [(float(Z), np.asarray(center, dtype=float))
+                 softening: float = 1e-12, units: str = "angstrom"):
+        self.nuclei = [(float(Z), to_bohr(center, units))
                        for Z, center in nuclei]
         self.softening = float(softening)
 
@@ -61,7 +71,7 @@ class Potentials:
         Returns
         -------
         numpy.ndarray
-            The real external potential sampled on the input coordinates.
+            The real external potential (Hartree) sampled on the input coordinates.
         """
         v = np.zeros_like(x, dtype=float)
         for Z, (Rx, Ry, Rz) in self.nuclei:

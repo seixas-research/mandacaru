@@ -29,11 +29,12 @@ import numpy as np
 from carcara.basis import HydrogenicOrbital
 from carcara.integrals import Grid, IntegralEngine, Potentials
 
-# Nuclear charges and geometry (atomic units, Bohr).  The equilibrium bond
-# length of LiH is ~3.015 a0; Li and H sit along z about the origin.
+# Nuclear charges and geometry.  Lengths are in the user-facing unit (Angstrom):
+# the equilibrium bond length of LiH is ~1.60 A; Li and H sit along z about the
+# origin.
 Z_LI = 3.0
 Z_H = 1.0
-R = 3.015
+R = 1.595
 li_pos = np.array([0.0, 0.0, -R / 2])
 h_pos = np.array([0.0, 0.0, +R / 2])
 
@@ -42,35 +43,39 @@ h_pos = np.array([0.0, 0.0, +R / 2])
 potentials = Potentials([(Z_LI, li_pos), (Z_H, h_pos)])
 
 # A cubic real-space grid large enough to contain the diffuse Li 2s/2p tails.
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=9.0, points=72)
+# A fine spacing (h = 0.10 Angstrom) is used to resolve the contracted Li 1s core.
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.10)
 
-# Minimal basis with effective (Slater) charges: Li {1s, 2s, 2p_z} + H {1s}.
+# Minimal basis with effective charges from Slater's rules: Li {1s, 2s, 2p_z}
+# + H {1s}.  ``from_slater`` derives Z_eff from the atomic number of the center.
 labels = ["Li 1s", "Li 2s", "Li 2pz", "H 1s"]
-basis = [HydrogenicOrbital(1, 0, 0, Z=2.69, center=li_pos),   # Li 1s core
-         HydrogenicOrbital(2, 0, 0, Z=1.28, center=li_pos),   # Li 2s valence
-         HydrogenicOrbital(2, 1, 0, Z=1.28, center=li_pos),   # Li 2pz valence
-         HydrogenicOrbital(1, 0, 0, Z=1.00, center=h_pos)]    # H 1s
+basis = [HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
+         HydrogenicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
+         HydrogenicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
+         HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
 
 engine = IntegralEngine(basis, grid)
 print(f"C backend in use: {engine.uses_c_backend}")
 print("Basis order:", ", ".join(f"{i}={l}" for i, l in enumerate(labels)))
+print("Slater Z_eff:", ", ".join(f"{l}={o.Z:.2f}" for l, o in zip(labels, basis)))
 
-# One-body integrals: kinetic T[a,b] and nuclear attraction V[a,b].
+# One-body integrals: kinetic T[a,b] and nuclear attraction V[a,b].  Energies
+# are returned in the user-facing unit (eV) by default.
 T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V  # the one-body core Hamiltonian
 
 # Two-body electron-repulsion tensor (ab|cd), chemists' notation.
 eri = engine.two_body(method="fft")
 
-np.set_printoptions(precision=4, suppress=True)
-print("\nKinetic energy matrix T (Ha):")
+np.set_printoptions(precision=3, suppress=True)
+print("\nKinetic energy matrix T (eV):")
 print(T.real)
-print("\nNuclear attraction matrix V (Ha):")
+print("\nNuclear attraction matrix V (eV):")
 print(V.real)
-print("\nCore Hamiltonian h = T + V (Ha):")
+print("\nCore Hamiltonian h = T + V (eV):")
 print(h_core.real)
-print("\nSelected two-body integrals (Ha):")
-print(f"  (00|00) = {eri[0, 0, 0, 0].real:.4f}   Li 1s on-site repulsion")
-print(f"  (33|33) = {eri[3, 3, 3, 3].real:.4f}   H 1s on-site repulsion")
-print(f"  (11|33) = {eri[1, 1, 3, 3].real:.4f}   Li 2s - H 1s Coulomb")
-print(f"  (13|13) = {eri[1, 3, 1, 3].real:.4f}   Li 2s - H 1s exchange")
+print("\nSelected two-body integrals (eV):")
+print(f"  (00|00) = {eri[0, 0, 0, 0].real:.3f}   Li 1s on-site repulsion")
+print(f"  (33|33) = {eri[3, 3, 3, 3].real:.3f}   H 1s on-site repulsion")
+print(f"  (11|33) = {eri[1, 1, 3, 3].real:.3f}   Li 2s - H 1s Coulomb")
+print(f"  (13|13) = {eri[1, 3, 1, 3].real:.3f}   Li 2s - H 1s exchange")

@@ -67,14 +67,18 @@ The one design principle that spans multiple files is that the integral machiner
 
 The single contract is `BasisFunction.evaluate(x, y, z)` (in `basis/base.py`). The data flow:
 
-1. `Grid` (`integrals/grid.py`) — a uniform cubic grid; owns sampling points, spacing `dx`, volume element `dV`. All coordinates are in **Bohr** (atomic units); `Wavefunction` converts Ångström input via `ANGSTROM_TO_BOHR`.
+1. `Grid` (`integrals/grid.py`) — a uniform cubic grid specified by a physical spacing `h` (not a node count); `points`/`dx` are derived. Owns sampling points, spacing `dx`, volume element `dV`.
 2. Each `BasisFunction.sample(grid)` produces a contiguous `complex128` vector.
 3. `IntegralEngine` (`integrals/engine.py`) stacks them into `(M, ngrid)`, evaluates the external potential callable `V(x,y,z)`, and dispatches to the backend:
    - `one_body(potential)` → kinetic `T` (finite-difference Laplacian) and potential `V` matrices → core Hamiltonian `h = T + V`.
    - `two_body(method=...)` → electron-repulsion tensor `(ab|cd)` in **chemists' notation**. `method="fft"` (default) uses the O(N log N) `PoissonFFTSolver` (`integrals/poisson.py`); `method="direct"` uses the O(N²) real-space double sum in C.
 4. `Wavefunction` (`wavefunction.py`) is a thin facade: it reads geometry (ASE), builds the grid + hydrogenic basis, and delegates all physics to the engine.
 
-Validation anchor used throughout the tests: the hydrogen 1s on-site repulsion `(00|00)` must recover the exact `5/8 Ha = 0.625`.
+**Units convention** (`units.py` is the single source of truth): the numerical core — `evaluate`, the grid coordinate arrays, the C backend, the Poisson solver — always works in **atomic units (Bohr, Hartree)**. The user-facing classes (`Grid`, `HydrogenicOrbital`, `Potentials`, `IntegralEngine`) default to the **frontend units (Ångström, eV)** and convert at their boundary via a `units=`/`energy_units=` argument. The legacy `Wavefunction` facade opts back into atomic units (`units="bohr"`, `energy_units="Ha"`), which is why its public API and tests are unchanged. When adding a user-facing length/energy argument, route it through `units.py` and default to Ångström/eV.
+
+`HydrogenicOrbital` also provides Slater's-rules effective charges: `slater_effective_charge(atomic_number, n, l)` (static) and the `from_slater(n, l, m, atomic_number, ...)` constructor.
+
+Validation anchor used throughout the tests: the hydrogen 1s on-site repulsion `(00|00)` must recover the exact `5/8 Ha` (`= 0.625` Ha `= 17.007` eV, depending on `energy_units`).
 
 ## Versioning
 

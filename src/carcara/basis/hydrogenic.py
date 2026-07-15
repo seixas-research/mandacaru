@@ -19,12 +19,30 @@ from __future__ import annotations
 import numpy as np
 from scipy import special
 
+from ..units import to_bohr
 from .base import BasisFunction
 
 # Bohr radius in atomic units.  Kept explicit so the formula reads like a
 # textbook and a different length unit could be plugged in later.
 _A0 = 1.0
 _R_EPS = 1e-15  # regularizes 1/r and the polar angle at the nucleus
+
+# --- Slater's rules ------------------------------------------------------- #
+# Ground-state aufbau (Madelung) filling order as (n, l), with l-subshell
+# capacities, used to build a neutral atom's configuration for screening.
+_AUFBAU_ORDER = [
+    (1, 0), (2, 0), (2, 1), (3, 0), (3, 1), (4, 0), (3, 2), (4, 1),
+    (5, 0), (4, 2), (5, 1), (6, 0), (4, 3), (5, 2), (6, 1), (7, 0),
+    (5, 3), (6, 2), (7, 1),
+]
+_L_CAPACITY = {0: 2, 1: 6, 2: 10, 3: 14}
+# Slater groups s and p of the same shell together; d and f stand alone.  The
+# order value ranks groups from innermost (screening most) to outermost.
+_SLATER_GROUP_ORDER = {"sp": 0, "d": 1, "f": 2}
+
+
+def _slater_group(l: int) -> str:
+    return "sp" if l in (0, 1) else ("d" if l == 2 else "f")
 
 
 class HydrogenicOrbital(BasisFunction):
@@ -42,12 +60,18 @@ class HydrogenicOrbital(BasisFunction):
     n, l, m : int
         Principal, azimuthal and magnetic quantum numbers.
     Z : float
-        Effective nuclear charge used in the radial function.
+        Effective nuclear charge used in the radial function.  See
+        :meth:`slater_effective_charge` / :meth:`from_slater` to obtain it from
+        Slater's rules.
     center : array_like, shape (3,)
-        Cartesian center in Bohr.  Defaults to the origin.
+        Cartesian center, in ``units``.  Defaults to the origin.
+    units : {"angstrom", "bohr"}
+        Unit of ``center`` (default ``"angstrom"``).  It is stored internally in
+        Bohr, the atomic unit :meth:`evaluate` works in.
     """
 
-    def __init__(self, n: int, l: int, m: int, Z: float = 1.0, center=None):
+    def __init__(self, n: int, l: int, m: int, Z: float = 1.0, center=None,
+                 units: str = "angstrom"):
         if not (0 <= l < n):
             raise ValueError(f"require 0 <= l < n, got n={n}, l={l}")
         if abs(m) > l:
@@ -55,7 +79,7 @@ class HydrogenicOrbital(BasisFunction):
         self.n, self.l, self.m = int(n), int(l), int(m)
         self.Z = float(Z)
         self.center = (np.zeros(3) if center is None
-                       else np.asarray(center, dtype=float))
+                       else to_bohr(center, units))
         # Precompute the pieces that do not depend on the sampling point.
         num = special.factorial(self.n - self.l - 1)
         den = 2 * self.n * special.factorial(self.n + self.l)
@@ -66,6 +90,80 @@ class HydrogenicOrbital(BasisFunction):
     @property
     def state(self) -> tuple[int, int, int]:
         return (self.n, self.l, self.m)
+
+    # --- Slater's rules --------------------------------------------------- #
+
+    @staticmethod
+    def slater_effective_charge(atomic_number: int, n: int, l: int) -> float:
+        r"""Effective nuclear charge ``Z_eff = Z - S`` from Slater's rules.
+
+        Builds the ground-state electron configuration of the neutral atom with
+        atomic number ``Z = atomic_number`` and returns the effective charge
+        seen by an electron in the ``(n, l)`` orbital, where the screening
+        constant ``S`` follows Slater's rules (Slater, *Phys. Rev.* **36**, 57,
+        1930):
+
+        * electrons in outer groups contribute ``0``;
+        * each other electron in the same group contributes ``0.35`` (``0.30``
+          for the ``1s`` group);
+        * for an ``ns``/``np`` electron, each electron in the ``n-1`` shell
+          contributes ``0.85`` and each in shells ``<= n-2`` contributes ``1.00``;
+        * for an ``nd``/``nf`` electron, every electron in an inner group
+          contributes ``1.00``.
+
+        Examples: ``slater_effective_charge(1, 1, 0) == 1.0`` (H 1s);
+        ``slater_effective_charge(3, 1, 0) == 2.70`` (Li 1s);
+        ``slater_effective_charge(3, 2, 0) == 1.30`` (Li 2s).
+        """
+        Z = int(atomic_number)
+        if Z < 1:
+            raise ValueError(f"atomic_number must be >= 1, got {atomic_number}")
+
+        # Fill the neutral-atom configuration, accumulating Slater-group
+        # occupancies keyed by (shell n, group in {'sp','d','f'}).
+        group_occ: dict[tuple[int, str], int] = {}
+        remaining = Z
+        for (nn, ll) in _AUFBAU_ORDER:
+            if remaining <= 0:
+                break
+            occ = min(_L_CAPACITY[ll], remaining)
+            remaining -= occ
+            key = (nn, _slater_group(ll))
+            group_occ[key] = group_occ.get(key, 0) + occ
+        if remaining > 0:
+            raise ValueError(
+                f"atomic number {Z} is beyond the supported filling table")
+
+        target = (int(n), _slater_group(int(l)))
+        if target not in group_occ:
+            raise ValueError(
+                f"orbital n={n}, l={l} is unoccupied in the ground state of "
+                f"Z={Z}; Slater's rules do not define its screening")
+        t_order = (target[0], _SLATER_GROUP_ORDER[target[1]])
+
+        S = 0.0
+        for (gn, gt), occ in group_occ.items():
+            if (gn, gt) == target:
+                per = 0.30 if (gn == 1 and gt == "sp") else 0.35
+                S += per * (occ - 1)
+            elif (gn, _SLATER_GROUP_ORDER[gt]) > t_order:
+                continue  # outer groups do not screen
+            elif target[1] == "sp":
+                S += (0.85 if gn == target[0] - 1 else 1.00) * occ
+            else:  # d or f electron: all inner groups screen fully
+                S += 1.00 * occ
+        return Z - S
+
+    @classmethod
+    def from_slater(cls, n: int, l: int, m: int, atomic_number: int,
+                    center=None, units: str = "angstrom") -> "HydrogenicOrbital":
+        """Build an orbital whose ``Z`` is the Slater effective charge.
+
+        Convenience constructor equivalent to passing
+        ``Z=slater_effective_charge(atomic_number, n, l)``.
+        """
+        Z = cls.slater_effective_charge(atomic_number, n, l)
+        return cls(n, l, m, Z=Z, center=center, units=units)
 
     def evaluate(self, x, y, z) -> np.ndarray:
         """Sample :math:`\\psi_{nlm}` on Cartesian coordinates (Bohr)."""

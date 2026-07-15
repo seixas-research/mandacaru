@@ -7,10 +7,11 @@ nuclear charges on the two centers, and more than one orbital per atom.
 
 ## Geometry and external potential
 
-We work in atomic units (Bohr, Hartree). Lithium and hydrogen sit along the
-z-axis about the origin at the equilibrium bond length `R = 3.015 a0`. Because
-the nuclei carry different charges, the external potential sums Coulomb wells
-with the *true* charges `Z_Li = 3` and `Z_H = 1`:
+As in the [H2 tutorial](h2_integrals.md) we use the user-facing units: lengths
+in Ångström, energies in eV. Lithium and hydrogen sit along the z-axis about the
+origin at the equilibrium bond length `R = 1.595 Å`. Because the nuclei carry
+different charges, the external potential sums Coulomb wells with the *true*
+charges `Z_Li = 3` and `Z_H = 1`:
 
 ```{math}
 V(\mathbf r) = -\sum_A \frac{Z_A}{|\mathbf r - \mathbf R_A|}.
@@ -25,33 +26,40 @@ import numpy as np
 
 from carcara.integrals import Potentials
 
-Z_LI, Z_H, R = 3.0, 1.0, 3.015
+Z_LI, Z_H, R = 3.0, 1.0, 1.595  # R in Angstrom
 li_pos = np.array([0.0, 0.0, -R / 2])
 h_pos = np.array([0.0, 0.0, +R / 2])
 
 potentials = Potentials([(Z_LI, li_pos), (Z_H, h_pos)])
 ```
 
-## Grid, basis and engine
+## Grid, basis and effective charges
 
 The minimal basis carries three orbitals on lithium -- the 1s core plus the 2s
 and 2p_z valence orbitals -- and one 1s orbital on hydrogen. A subtlety appears
 here: a hydrogenic Li 1s built with the bare charge `Z = 3` is extremely
 contracted and hard to resolve on a modest grid. We therefore give the *basis*
-orbitals *effective* (Slater) charges, while the *potential* above keeps the
-true nuclear charges.
+orbitals *effective* charges, while the *potential* above keeps the true
+nuclear charges.
+
+`HydrogenicOrbital.from_slater` derives the effective charge from **Slater's
+rules** given the atomic number of the center (e.g. `Z_eff = 2.70` for Li 1s,
+`1.30` for Li 2s/2p, `1.00` for H 1s). The static method
+`HydrogenicOrbital.slater_effective_charge(atomic_number, n, l)` exposes the
+same value directly.
 
 ```python
 from carcara.basis import HydrogenicOrbital
 from carcara.integrals import Grid, IntegralEngine
 
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=9.0, points=72)
+# A fine spacing (h = 0.10 Angstrom) resolves the contracted Li 1s core.
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.10)
 
 labels = ["Li 1s", "Li 2s", "Li 2pz", "H 1s"]
-basis = [HydrogenicOrbital(1, 0, 0, Z=2.69, center=li_pos),   # Li 1s core
-         HydrogenicOrbital(2, 0, 0, Z=1.28, center=li_pos),   # Li 2s valence
-         HydrogenicOrbital(2, 1, 0, Z=1.28, center=li_pos),   # Li 2pz valence
-         HydrogenicOrbital(1, 0, 0, Z=1.00, center=h_pos)]    # H 1s
+basis = [HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
+         HydrogenicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
+         HydrogenicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
+         HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
 
 engine = IntegralEngine(basis, grid)
 ```
@@ -77,18 +85,18 @@ uses an O(N log N) FFT Poisson solver.
 ```python
 eri = engine.two_body(method="fft")
 
-print("Core Hamiltonian h = T + V (Ha):")
+print("Core Hamiltonian h = T + V (eV):")
 print(h_core.real)
-print(f"(00|00) Li 1s on-site  = {eri[0, 0, 0, 0].real:.4f} Ha")
-print(f"(33|33) H 1s on-site   = {eri[3, 3, 3, 3].real:.4f} Ha")
-print(f"(11|33) Li 2s - H 1s J = {eri[1, 1, 3, 3].real:.4f} Ha")
+print(f"(00|00) Li 1s on-site  = {eri[0, 0, 0, 0].real:.3f} eV")
+print(f"(33|33) H 1s on-site   = {eri[3, 3, 3, 3].real:.3f} eV")
+print(f"(11|33) Li 2s - H 1s J = {eri[1, 1, 3, 3].real:.3f} eV")
 ```
 
 ## Checking the result
 
 The hydrogen 1s on-site integral `(33|33)` is unaffected by its heteronuclear
-neighbour and recovers the exact self-repulsion `5/8 = 0.625 Ha` (the engine
-returns `~0.62 Ha`). The lithium core integral `(00|00)` is larger because the
+neighbour and recovers the exact self-repulsion `5/8 Ha = 17.007 eV` (the engine
+returns `~17.0 eV`). The lithium core integral `(00|00)` is larger because the
 1s orbital is far more contracted, and the inter-site `(11|33)` term measures
 the Coulomb repulsion between the Li 2s and H 1s charge clouds. The complete
 runnable script is available in
