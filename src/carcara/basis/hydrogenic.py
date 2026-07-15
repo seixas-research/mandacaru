@@ -20,29 +20,14 @@ import numpy as np
 from scipy import special
 
 from ..units import to_bohr
+from ._config import (_AUFBAU_ORDER, _L_CAPACITY, _SLATER_GROUP_ORDER,
+                      _slater_group)
 from .base import BasisFunction
 
 # Bohr radius in atomic units.  Kept explicit so the formula reads like a
 # textbook and a different length unit could be plugged in later.
 _A0 = 1.0
 _R_EPS = 1e-15  # regularizes 1/r and the polar angle at the nucleus
-
-# --- Slater's rules ------------------------------------------------------- #
-# Ground-state aufbau (Madelung) filling order as (n, l), with l-subshell
-# capacities, used to build a neutral atom's configuration for screening.
-_AUFBAU_ORDER = [
-    (1, 0), (2, 0), (2, 1), (3, 0), (3, 1), (4, 0), (3, 2), (4, 1),
-    (5, 0), (4, 2), (5, 1), (6, 0), (4, 3), (5, 2), (6, 1), (7, 0),
-    (5, 3), (6, 2), (7, 1),
-]
-_L_CAPACITY = {0: 2, 1: 6, 2: 10, 3: 14}
-# Slater groups s and p of the same shell together; d and f stand alone.  The
-# order value ranks groups from innermost (screening most) to outermost.
-_SLATER_GROUP_ORDER = {"sp": 0, "d": 1, "f": 2}
-
-
-def _slater_group(l: int) -> str:
-    return "sp" if l in (0, 1) else ("d" if l == 2 else "f")
 
 
 class HydrogenicOrbital(BasisFunction):

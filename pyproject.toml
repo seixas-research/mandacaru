@@ -46,3 +46,10 @@ accel = [
 
 [tool.hatch.version]
 path = "src/carcara/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/carcara"]
+
+# Ship the Gaussian basis-set data files (NWChem format) inside the package.
+[tool.hatch.build.targets.wheel.force-include]
+"src/carcara/basis/gto_sets" = "carcara/basis/gto_sets"

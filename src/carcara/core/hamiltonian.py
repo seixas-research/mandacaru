@@ -1,0 +1,204 @@
+# -*- coding: utf-8 -*-
+# file: core/hamiltonian.py
+
+# This code is part of Carcará.
+# MIT License
+#
+# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
+
+r"""Electronic-structure integrals and the molecular Hamiltonian.
+
+:class:`HydrogenicIntegrals` computes the one- and two-body integrals over a
+localized (hydrogenic) basis by driving the real-space
+:class:`~carcara.integrals.IntegralEngine`, and assembles the second-quantized
+molecular Hamiltonian as a :class:`~carcara.core.mapping.Fermion`.
+
+Conventions (atomic units, Hartree):
+
+* one-body ``h_pq = <p| -1/2 nabla^2 - sum_I Z_I/|r-R_I| |q>``;
+* two-body in **chemist's notation** ``(pq|rs) = int int p*(1) q(1) r*(2) s(2)/r12``
+  (this is exactly what :meth:`IntegralEngine.two_body` returns);
+* the Hamiltonian uses the ordering of :meth:`Fermion.from_integrals`,
+
+  .. math::
+
+      H = \sum_{PQ} h_{PQ}\, a^\dagger_P a_Q
+        + \tfrac12 \sum_{PQRS} g_{PQRS}\, a^\dagger_P a^\dagger_Q a_S a_R,
+
+  over spin-orbitals, with the spin-blocked expansion of the spatial integrals.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import numpy as np
+
+from ..basis import HydrogenicOrbital
+from ..integrals import Grid, IntegralEngine, Potentials
+from ..units import to_bohr
+from .mapping import Fermion
+
+
+class HydrogenicIntegrals:
+    """One- and two-body integrals over a localized basis for a molecule.
+
+    Parameters
+    ----------
+    nuclei : sequence of ``(Z, position)``
+        Nuclear charges and Cartesian positions (in ``units``) defining the
+        electron-nuclear potential.
+    basis : sequence of BasisFunction
+        Spatial orbitals spanning the active space (e.g. ``HydrogenicOrbital``).
+    grid : Grid
+        Real-space integration grid.
+    units : {"angstrom", "bohr"}
+        Unit of the nuclear positions (default ``"angstrom"``).
+    """
+
+    def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
+                 basis, grid: Grid, units: str = "angstrom",
+                 orthogonalize: bool = True):
+        self.nuclei = [(float(Z), np.asarray(R, dtype=float)) for Z, R in nuclei]
+        self.basis = list(basis)
+        self.grid = grid
+        self.units = units
+        self.orthogonalize = orthogonalize
+        self._engine = IntegralEngine(self.basis, grid)
+        self._potentials = Potentials(self.nuclei, units=units)
+        self._S: np.ndarray | None = None
+        self._h1: np.ndarray | None = None
+        self._eri: np.ndarray | None = None
+
+    @property
+    def n_orbitals(self) -> int:
+        """Number of spatial orbitals."""
+        return len(self.basis)
+
+    # -- overlap and orthogonalization ------------------------------------ #
+
+    def overlap(self) -> np.ndarray:
+        r"""Overlap matrix ``S_pq = <p|q>`` of the (generally non-orthogonal) basis."""
+        if self._S is None:
+            psi = np.stack([b.evaluate(self.grid.X, self.grid.Y, self.grid.Z).ravel()
+                            for b in self.basis])
+            S = (np.conj(psi) @ psi.T) * self.grid.dV
+            self._S = 0.5 * (S + S.conj().T)
+        return self._S
+
+    def _lowdin_x(self) -> np.ndarray:
+        """Symmetric orthogonalization matrix ``X = S^{-1/2}``."""
+        S = self.overlap()
+        w, U = np.linalg.eigh(S)
+        return (U * (1.0 / np.sqrt(w))) @ U.conj().T
+
+    def _compute(self):
+        T, V = self._engine.one_body(self._potentials.nuclear_potential,
+                                     energy_units="Ha")
+        h = 0.5 * ((T + V) + (T + V).conj().T)   # symmetrize away grid noise
+        eri = self._engine.two_body(method="fft", energy_units="Ha")
+        if self.orthogonalize:
+            # Lowdin-orthonormalize the basis; the second-quantized Hamiltonian
+            # requires an orthonormal orbital set.
+            X = self._lowdin_x()
+            h = X.conj().T @ h @ X
+            eri = np.einsum("ap,bq,cr,ds,abcd->pqrs",
+                            X.conj(), X, X.conj(), X, eri, optimize=True)
+        self._h1, self._eri = h, eri
+
+    # -- spatial integrals (Hartree) -------------------------------------- #
+
+    def one_body(self) -> np.ndarray:
+        r"""Spatial one-body core Hamiltonian ``h_pq = T_pq + V_pq`` (Hartree).
+
+        In the orthonormalized orbital basis when ``orthogonalize=True``.
+        """
+        if self._h1 is None:
+            self._compute()
+        return self._h1
+
+    def two_body(self) -> np.ndarray:
+        r"""Spatial two-body tensor ``(pq|rs)`` in chemist's notation (Hartree)."""
+        if self._eri is None:
+            self._compute()
+        return self._eri
+
+    @property
+    def nuclear_repulsion(self) -> float:
+        r"""Nuclear repulsion energy ``sum_{I<J} Z_I Z_J/|R_I-R_J|`` (Hartree)."""
+        e = 0.0
+        pos = [to_bohr(R, self.units) for _Z, R in self.nuclei]
+        Zs = [Z for Z, _R in self.nuclei]
+        for i in range(len(self.nuclei)):
+            for j in range(i + 1, len(self.nuclei)):
+                e += Zs[i] * Zs[j] / np.linalg.norm(pos[i] - pos[j])
+        return float(e)
+
+    # -- spin-orbital integrals ------------------------------------------- #
+
+    def spin_orbital_integrals(self) -> tuple[np.ndarray, np.ndarray]:
+        r"""Spin-orbital ``(h_so, g_so)`` for the Hamiltonian (spin-blocked).
+
+        Spin-orbital ``P = p + sigma * M`` (``M`` spatial orbitals; ``sigma = 0``
+        alpha for the first block, ``1`` beta for the second).  The returned
+        tensors feed :meth:`Fermion.from_integrals` directly and yield a
+        Hermitian, spin- and particle-number-conserving Hamiltonian.
+        """
+        h = self.one_body()
+        eri = self.two_body()
+        M = self.n_orbitals
+        n_so = 2 * M
+
+        def spin(P):
+            return P // M
+
+        def orb(P):
+            return P % M
+
+        h_so = np.zeros((n_so, n_so), dtype=complex)
+        for P in range(n_so):
+            for Q in range(n_so):
+                if spin(P) == spin(Q):
+                    h_so[P, Q] = h[orb(P), orb(Q)]
+
+        g_so = np.zeros((n_so,) * 4, dtype=complex)
+        for P in range(n_so):
+            for Q in range(n_so):
+                for R in range(n_so):
+                    for S in range(n_so):
+                        if spin(P) == spin(R) and spin(Q) == spin(S):
+                            g_so[P, Q, R, S] = eri[orb(P), orb(R),
+                                                   orb(Q), orb(S)]
+        return h_so, g_so
+
+    # -- molecular Hamiltonian -------------------------------------------- #
+
+    def molecular_hamiltonian(self,
+                              include_nuclear_repulsion: bool = True) -> Fermion:
+        """Assemble the second-quantized :class:`Fermion` Hamiltonian.
+
+        Spin-orbitals are ordered alpha-block then beta-block, so the parity
+        mapping's two-qubit reduction (which taper the alpha- and total-parity
+        qubits) applies directly.
+        """
+        h_so, g_so = self.spin_orbital_integrals()
+        H = Fermion.from_integrals(h_so, g_so)
+        if include_nuclear_repulsion:
+            H = H + Fermion({(): complex(self.nuclear_repulsion)},
+                            n_modes=2 * self.n_orbitals)
+        return H
+
+
+def minimal_hydrogenic_basis(nuclei, grid_units: str = "angstrom"):
+    """Build one Slater-screened hydrogenic 1s orbital per atom (minimal basis).
+
+    ``nuclei`` is a sequence of ``(Z, position)``; returns a list of
+    :class:`~carcara.basis.HydrogenicOrbital`, one 1s per center with the Slater
+    effective charge for that atom's 1s.
+    """
+    basis = []
+    for Z, R in nuclei:
+        z_eff = HydrogenicOrbital.slater_effective_charge(int(round(Z)), 1, 0)
+        basis.append(HydrogenicOrbital(1, 0, 0, Z=z_eff, center=R,
+                                       units=grid_units))
+    return basis

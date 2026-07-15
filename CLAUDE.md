@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Current state of the code
 
 Implemented:
-- `src/carcara/basis/` — localized single-particle basis functions (`BasisFunction` ABC, `HydrogenicOrbital`)
+- `src/carcara/basis/` — localized single-particle basis functions (`BasisFunction` ABC) and three concrete families: `HydrogenicOrbital` (analytic, with Slater charges), `NumericalAtomicOrbital` (confined Sankey/SIESTA-type, `nao.py`), `GaussianOrbital` (contracted GTOs, `gaussian.py`). The `BasisSet` factory (`factory.py`) builds NAO/GTO bases by name; GTO parser + file-backed registry in `gto_data.py` loading verbatim NWChem-format data from `gto_sets/*.nwchem` (7 families — STO-3G, 6-31G(d), 6-311G(d,p), cc-pVDZ, cc-pVTZ, def2-SVP, def2-TZVP — covering H–Ar, from the Basis Set Exchange); the parser handles general contractions and shells up to `f`. `register(name, text)` adds more at runtime. Shared aufbau config in `_config.py`, angular helpers in `_angular.py`. (`gto_sets/` is shipped via a `force-include` in `pyproject.toml`.)
 - `src/carcara/integrals/` — real-space one- and two-body integral engine, grid, FFT Poisson solver, C backend binding
 - `src/carcara/wavefunction.py` — atomic-system facade over basis + grid + engine (ASE XYZ I/O)
 
@@ -63,7 +63,7 @@ When editing the numerics, keep the C kernel and its NumPy fallback in `_backend
 
 ## Architecture: the integral engine
 
-The one design principle that spans multiple files is that the integral machinery is **basis-agnostic**. The C backend and `IntegralEngine` never see analytic orbital forms — only **sampled values** `psi[i, :]` on a uniform cubic grid. This is what lets new bases (Wannier, numerical atomic orbitals) drop in with zero changes to the integral core.
+The one design principle that spans multiple files is that the integral machinery is **basis-agnostic**. The C backend and `IntegralEngine` never see analytic orbital forms — only **sampled values** `psi[i, :]` on a uniform cubic grid. This is what lets any basis drop in with zero changes to the integral core: a new family only implements `BasisFunction.evaluate(x, y, z)` (returning `complex128` in Bohr). `HydrogenicOrbital`, `NumericalAtomicOrbital` (spline of a confined radial solve) and `GaussianOrbital` (contracted Gaussians) all follow the same `R(r)·Y_lm` pattern; NAO/GTO share `_angular.py` for the Cartesian→spherical + spherical-harmonic step. Orbitals are normalized in 3D with orthonormal `Y_lm` (i.e. `∫|R|²r²dr = 1`) — preserve that convention for any new radial family.
 
 The single contract is `BasisFunction.evaluate(x, y, z)` (in `basis/base.py`). The data flow:
 
