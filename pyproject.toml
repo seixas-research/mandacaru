@@ -20,9 +20,9 @@ dependencies = [
     'matplotlib',
     'pytest',
     'pyyaml',
-    'qiskit', # IBM Qiskit
-    'qiskit-nature',
-    'qiskit-ibm-runtime'
+    'qiskit',             # IBM Qiskit
+    'qiskit-nature',      # IBM Qiskit Nature
+    'qiskit-ibm-runtime'  # IBM Qiskit Runtime
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
