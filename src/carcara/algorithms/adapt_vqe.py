@@ -320,7 +320,7 @@ class AdaptVQE:
     # -- main loop -------------------------------------------------------- #
 
     def run(self, max_iterations: int = 50, gradient_tol: float = 1e-3,
-            initial_parameters=None) -> AdaptVQEResult:
+            initial_parameters=None, callback=None) -> AdaptVQEResult:
         """Grow and optimize the ansatz until convergence.
 
         Parameters
@@ -332,6 +332,14 @@ class AdaptVQE:
             (default ``1e-3``).
         initial_parameters : array_like, optional
             Warm-start parameters for an already-grown ansatz (rarely needed).
+        callback : callable, optional
+            Invoked once per accepted operator with a dict
+            ``{"iteration", "num_operators", "ansatz", "parameters", "energy",
+            "max_gradient", "operator_label", "metrics"}`` after the inner
+            re-optimization.  Used e.g. by
+            :class:`~carcara.algorithms.expressivity.ADAPTExpressivityTracker` to
+            record how the ansatz's expressibility grows.  The ``ansatz`` passed is
+            the live :class:`AdaptAnsatz` at its current size (do not mutate it).
         """
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping)
@@ -378,6 +386,18 @@ class AdaptVQE:
                 max_gradient=max_grad, energy=energy,
                 cnot_count=metrics.cnot_count, depth=metrics.depth,
                 num_parameters=ansatz.num_parameters))
+
+            if callback is not None:
+                callback({
+                    "iteration": len(iterations),
+                    "num_operators": ansatz.num_parameters,
+                    "ansatz": ansatz,
+                    "parameters": params,
+                    "energy": energy,
+                    "max_gradient": max_grad,
+                    "operator_label": op.label,
+                    "metrics": metrics,
+                })
         else:
             # Loop exhausted without meeting the gradient threshold; report the
             # final screening gradient so callers can see how close it got.

@@ -6,4 +6,7 @@ h2_integrals
 lih_integrals
 basis_sets
 vqe
+adapt_vqe
+expressivity
+pes
 ```

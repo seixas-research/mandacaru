@@ -23,15 +23,19 @@ Carcará connects theoretical condensed matter physics with NISQ-era quantum har
 
 ## Key Features
 
-* **Fermion-to-Qubit Mapping:** Built-in, optimized transformations including Jordan-Wigner, Bravyi-Kitaev, and parity mappings to translate fermionic creation/annihilation operators into Pauli strings.
+* **Native basis sets, generated from scratch:** analytic **hydrogenic** orbitals, confined **numerical atomic orbitals** (NAO), and Gaussian **STO-nG** and split-valence **6-31G(d)** bases — all built on the fly by fitting Slater-type orbitals, with *no tabulated basis-set data* — feeding a real-space one-/two-body integral engine (OpenMP C backend with a NumPy fallback).
 
-* **Hardware-Efficient & Physics-Inspired Ansatzes:** Ready-to-use ansatz generation, including Unitary Coupled Cluster (UCCSD) and hardware-efficient templates designed to minimize circuit depth and gate errors on real QPUs.
+* **Second quantization & fermion-to-qubit mappings:** molecular `Fermion` Hamiltonians in physicists' notation, translated to Pauli operators via **Jordan-Wigner**, **Bravyi-Kitaev**, and **parity** mappings (the last with an optional two-qubit reduction).
 
-* **Hybrid Variational Solvers:** Robust implementation of the Variational Quantum Eigensolver (VQE) and its time-dependent variants, coupled with state-of-the-art classical optimizers (e.g., SPSA, COBYLA, SLSQP).
+* **Hartree-Fock & the molecular-orbital basis:** restricted (**RHF**) and unrestricted (**UHF**) self-consistent-field solvers that supply the MO basis correlated methods need.
 
-* **Real Hardware Deployment:** Seamless integration with major quantum cloud providers (IBM Quantum Platform) with native support.
+* **Variational solvers:** an exact state-vector **VQE** with the **UCCSD** ansatz, and **ADAPT-VQE** with four pluggable operator pools — **fermionic**, **qubit** (qubit-ADAPT), **QEB**, and **CEO** — warm-started re-optimization, and **circuit profiling** (CNOT count and depth in a native `{CNOT, U}` gate set) at every step.
 
-* **Advanced Error Mitigation:** Built-in noise-resilient pipelines featuring Zero-Noise Extrapolation (ZNE) and symmetry verification.
+* **Circuit analysis:** ansatz **expressibility** (KL divergence of the fidelity distribution from Haar), with native support for tracking it as ADAPT-VQE grows the circuit.
+
+* **Classical optimizers:** a SciPy-backed interface over COBYLA, SLSQP, L-BFGS-B, Nelder-Mead, and Powell, with cost-history tracking.
+
+* **On the roadmap:** real-hardware execution (IBM Quantum via Qiskit) and error mitigation (Zero-Noise Extrapolation, symmetry verification) — see [`plan/roadmap.md`](plan/roadmap.md).
 
 # Installation
 
@@ -173,6 +177,72 @@ Under Jordan-Wigner the 4-spin-orbital H2 Hamiltonian becomes a **4-qubit**
 Pauli operator (27 terms); the parity mapping's two-qubit reduction tapers it to
 **2 qubits** while preserving the ground-state energy `-1.1154 Ha`. Hand the
 result to Qiskit with `H_jw.to_sparse_pauli_op()`.
+
+## Ground states with VQE and ADAPT-VQE
+
+`carcara.algorithms` provides both a fixed-ansatz **VQE** and an adaptive
+**ADAPT-VQE** that grows a compact, problem-tailored ansatz one operator at a
+time. ADAPT works in the Hartree-Fock molecular-orbital basis
+(`molecular_hamiltonian(mo_basis=True, ...)`), where single-excitation gradients
+vanish and the physical correlating excitations are selected first. The pool is
+pluggable — `"fermionic"`, `"qubit"`, `"qeb"`, or `"ceo"` — and each grown
+circuit is profiled for its CNOT count and depth. The full script is in
+[`examples/run_adapt_vqe.py`](examples/run_adapt_vqe.py).
+
+```python
+import numpy as np
+
+from carcara.algorithms import AdaptVQE
+from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.integrals import Grid
+
+R = 0.74
+nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
+          (1.0, np.array([0.0, 0.0, +R / 2]))]
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
+
+# Hamiltonian in the RHF molecular-orbital basis (2 electrons, 4 qubits).
+H = HydrogenicIntegrals(nuclei, minimal_hydrogenic_basis(nuclei),
+                        grid).molecular_hamiltonian(mo_basis=True, n_electrons=2)
+
+adapt = AdaptVQE(H, pool="ceo", num_particles=(1, 1), n_spatial_orbitals=2)
+result = adapt.run(max_iterations=15, gradient_tol=1e-6)
+
+print(f"ADAPT-VQE energy = {result.optimal_energy:.8f} Ha "
+      f"({result.num_operators} operators)")
+print(f"CNOTs = {result.metrics.cnot_count}, depth = {result.metrics.depth}")
+```
+
+Every pool reaches the exact (FCI) ground state on H₂; on hardware-minded pools
+it does so with far fewer CNOTs (the qubit pool reaches it in 6 CNOTs versus 48
+for the fermionic pool).
+
+## Measuring ansatz expressibility
+
+`carcara.algorithms.expressivity` scores how uniformly a parameterized circuit
+covers its accessible Hilbert space by comparing its random-parameter fidelity
+distribution to the Haar distribution (lower KL = more expressive). Because the
+fermionic ansätze conserve particle number and spin, the Haar reference uses the
+**number-conserving sector** dimension, not the full `2^N`. The
+`ADAPTExpressivityTracker` records the score as ADAPT-VQE grows the ansatz — see
+[`examples/adapt_expressivity.py`](examples/adapt_expressivity.py).
+
+```python
+from carcara.algorithms import compute_expressibility
+from carcara.circuits import UCCSD
+
+ansatz = UCCSD(n_spatial_orbitals=2, num_particles=(1, 1))
+result = compute_expressibility(ansatz, num_samples=2000, num_particles=(1, 1))
+print(result)   # ExpressibilityResult(E=..., d=4, n_samples=2000)
+```
+
+## Potential-energy surfaces and basis-set comparison
+
+The [`examples/generate_h2_pes.py`](examples/generate_h2_pes.py) and
+[`examples/generate_lih_pes.py`](examples/generate_lih_pes.py) scripts scan a bond
+length and export RHF dissociation curves for the hydrogenic, STO-3G, and
+6-31G(d) bases to CSV; [`examples/plot_pes.py`](examples/plot_pes.py) renders the
+multi-curve comparison.
 
 # License
 
