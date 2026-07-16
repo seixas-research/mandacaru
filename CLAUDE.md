@@ -6,16 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Carcará** is a framework for fermionic quantum simulation based on variational quantum algorithms (VQAs), targeting real NISQ-era quantum hardware (IBM Quantum via Qiskit). The intended end-to-end pipeline is: fermionic system → second-quantized Hamiltonian → qubit (Pauli) Hamiltonian → parameterized ansatz → VQA optimization → QPU/simulator execution → error mitigation. See `plan/roadmap.md` for the full phased design and its flagship algorithm, **ADAPT-VQE** with pluggable operator pools (fermionic / qubit / QEB / CEO).
 
-**Important:** the project is early. Most of the pipeline is still empty stubs — the roadmap describes the target, not the current state. Only the real-space integral computation is implemented. Before building on a module, check whether it actually has code (`wc -l`), because `plan/roadmap.md` describes intent and is partly out of date (e.g. it says Python ≥ 3.10, but `pyproject.toml` requires ≥ 3.14).
+**Important:** the project is mid-build. The fermionic front end is implemented — localized bases, the real-space integral engine, the second-quantized `Fermion` Hamiltonian, and the three fermion-to-qubit mappings (`core/`) — but the quantum-algorithm back end (circuits, VQE/ADAPT, optimizers, hardware backends, mitigation) is still empty stubs; the roadmap describes that target, not the current state. Before building on a module, check whether it actually has code (`wc -l`), because `plan/roadmap.md` mostly describes intended design: its Phase 2+ modules (circuits, VQE/ADAPT, optimizers, backends, mitigation) are not yet written. `pyproject.toml` is the source of truth for the build (currently Python ≥ 3.11).
 
 ## Current state of the code
 
 Implemented:
 - `src/carcara/basis/` — localized single-particle basis functions (`BasisFunction` ABC) and three concrete families: `HydrogenicOrbital` (analytic, with Slater charges), `NumericalAtomicOrbital` (confined Sankey/SIESTA-type, `nao.py`), `GaussianOrbital` (contracted GTOs, `gaussian.py`). **All families are generated natively from scratch — no tabulated/external basis-set data.** The `BasisSet` factory (`factory.py`) builds NAO or GTO bases; the GTO family is a minimal **STO-nG** basis generated in `sto_ng.py` by least-squares fitting `n_gaussians` primitives to the Slater-type orbital of each occupied subshell (Slater's-rules ζ = (Z−S)/n\*), with the reference fit done once at ζ=1 (cached, `_fit_reference`) and exponents rescaled by ζ². `BasisSet.build(method="GTO", n_gaussians=3)` → STO-3G-like; the fit reproduces published STO-nG exponents closely (H 1s → 2.22766/0.40577/0.10982). Shared aufbau config in `_config.py`, angular helpers in `_angular.py`.
 - `src/carcara/integrals/` — real-space one- and two-body integral engine, grid, FFT Poisson solver, C backend binding
+- `src/carcara/core/` — the second-quantized layer. `mapping.py`: `Fermion` (fermionic ladder operators with full algebra and a `from_integrals` builder for `H = Σ h_pq a†_p a_q + ½ Σ ⟨pq|rs⟩ a†_p a†_q a_s a_r`), `PauliSum` (the qubit-operator output type, with `to_sparse_pauli_op`), and the three fermion-to-qubit mappings — **Jordan-Wigner** (default), **parity** (with optional two-qubit reduction) and **Bravyi-Kitaev** — via a shared encoding-matrix construction (`map_to_qubits(method=...)`). `hamiltonian.py`: `HydrogenicIntegrals` drives the integral engine to build the spin-orbital molecular Hamiltonian as a `Fermion`.
 - `src/carcara/wavefunction.py` — atomic-system facade over basis + grid + engine (ASE XYZ I/O)
 
-Empty stubs (0 LOC — the roadmap's target modules, not yet written): `core/hamiltonian.py`, `core/mappings.py`, `circuits/ansatz.py`, `circuits/gates.py`, `algorithms/vqe.py`, `optimizers/optim.py`, `backends/hardware.py`, `backends/mitigation.py`, `utils/logging.py`.
+Empty stubs (0 LOC — the roadmap's target modules, not yet written): `circuits/ansatz.py`, `circuits/gates.py`, `algorithms/vqe.py`, `optimizers/optim.py`, `backends/hardware.py`, `backends/mitigation.py`, `utils/logging.py`.
 
 ## Commands
 
@@ -31,7 +32,7 @@ PYTHONPATH=src python -m pytest test/test_integrals.py::TestPoissonFFT -v
 PYTHONPATH=src python -m pytest test/test_integrals.py::TestPoissonFFT::test_1s_self_repulsion_matches_exact
 
 # Run an example
-PYTHONPATH=src python examples/H2.py
+PYTHONPATH=src python examples/H2_integrals.py
 
 # Editable install (alternative to PYTHONPATH)
 pip install -e .

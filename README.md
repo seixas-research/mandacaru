@@ -88,16 +88,16 @@ engine = IntegralEngine(basis, grid)
 T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V
 
-# Two-body electron-repulsion tensor (ab|cd) in chemists' notation (eV).
+# Two-body electron-repulsion tensor <ab|cd> in physicists' notation (eV).
 eri = engine.two_body(method="fft")
 
 print("Core Hamiltonian h = T + V (eV):")
 print(h_core.real)
-print(f"(00|00) on-site repulsion = {eri[0, 0, 0, 0].real:.3f} eV")
+print(f"<00|00> on-site repulsion = {eri[0, 0, 0, 0].real:.3f} eV")
 ```
 
 Running it prints the `2 x 2` core Hamiltonian and the on-site repulsion
-`(00|00) ~ 17.0 eV`, in agreement with the exact hydrogen 1s value of
+`<00|00> ~ 17.0 eV`, in agreement with the exact hydrogen 1s value of
 `5/8 Ha = 17.007 eV`.
 
 ## A heteronuclear molecule: LiH
@@ -123,8 +123,56 @@ eri = engine.two_body(method="fft")
 ```
 
 This yields the `4 x 4` one-body matrices and the `4 x 4 x 4 x 4`
-electron-repulsion tensor. The H 1s on-site integral `(33|33) ~ 17.0 eV` again
+electron-repulsion tensor. The H 1s on-site integral `<33|33> ~ 17.0 eV` again
 recovers the exact `5/8 Ha`.
+
+## Fermionic Hamiltonian and fermion-to-qubit mapping
+
+The `carcara.core` module assembles the second-quantized molecular Hamiltonian
+from those integrals and maps it to a qubit (Pauli) operator. It is built as a
+`Fermion` operator in physicists' notation,
+`H = Σ_pq h_pq a†_p a_q + ½ Σ_pqrs ⟨pq|rs⟩ a†_p a†_q a_s a_r`, and
+`map_to_qubits` translates it into Pauli strings via **Jordan-Wigner** (the
+default), **Bravyi-Kitaev**, or **parity** -- the last with an optional
+two-qubit reduction that exploits particle-number symmetry. The full script is
+in [`examples/H2_mapping.py`](examples/H2_mapping.py).
+
+```python
+import numpy as np
+
+from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.integrals import Grid
+
+# H2: a minimal Slater-screened 1s basis, one orbital per atom (Angstrom).
+R = 0.74
+nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
+          (1.0, np.array([0.0, 0.0, +R / 2]))]
+basis = minimal_hydrogenic_basis(nuclei)
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.15)
+
+# Second-quantized molecular Hamiltonian over spin-orbitals (a `Fermion`).
+integrals = HydrogenicIntegrals(nuclei, basis, grid)
+H = integrals.molecular_hamiltonian()          # 2 spatial -> 4 spin-orbitals
+
+# Map to a qubit operator (a `PauliSum` of Pauli strings).
+H_jw = H.map_to_qubits(method="jordan_wigner")           # default
+H_bk = H.map_to_qubits(method="bravyi_kitaev")
+H_parity = H.map_to_qubits(method="parity",
+                           two_qubit_reduction=True, num_particles=(1, 1))
+
+print(f"Jordan-Wigner: {H_jw.num_qubits} qubits, "
+      f"{len(H_jw.simplify().terms)} Pauli terms")
+print(f"parity + two-qubit reduction: {H_parity.num_qubits} qubits")
+
+# Exact ground state by diagonalizing the (Hermitian) qubit Hamiltonian.
+E0 = np.linalg.eigvalsh(H_jw.to_matrix()).min()
+print(f"ground-state energy = {E0:.4f} Ha")
+```
+
+Under Jordan-Wigner the 4-spin-orbital H2 Hamiltonian becomes a **4-qubit**
+Pauli operator (27 terms); the parity mapping's two-qubit reduction tapers it to
+**2 qubits** while preserving the ground-state energy `-1.1154 Ha`. Hand the
+result to Qiskit with `H_jw.to_sparse_pauli_op()`.
 
 # License
 

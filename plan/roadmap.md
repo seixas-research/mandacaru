@@ -36,16 +36,18 @@ full quantum error correction, and tensor-network classical backends.
 
 ## 2. Current State (baseline)
 
-Package version: **26.6.4**. Build: `hatchling`. Python ≥ 3.14.
+Package version: **26.7.10**. Build: `hatchling`. Python ≥ 3.11.
 Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
-`qiskit-ibm-runtime`, `ase`.
+`qiskit-ibm-runtime`, `ase` (plus `pandas`, `matplotlib`, `pyyaml`, `pytest`).
 
 | Module | Path | Status |
 |---|---|---|
 | Package init | `src/carcara/__init__.py` | exports `__version__` |
-| Wavefunction (hydrogen-like, ASE I/O) | `src/carcara/wavefunction.py` | implemented (~247 LOC) |
-| Hamiltonian | `src/carcara/core/hamiltonian.py` | **empty stub** |
-| Mappings | `src/carcara/core/mappings.py` | **empty stub** |
+| Localized basis sets (Hydrogenic, NAO, native STO-nG) | `src/carcara/basis/` | **implemented** — generated from scratch, no external data |
+| Integral engine (real-space one-/two-body, FFT Poisson, C backend) | `src/carcara/integrals/` | **implemented** |
+| Wavefunction (hydrogen-like, ASE I/O) | `src/carcara/wavefunction.py` | **implemented** (~226 LOC) |
+| Hamiltonian (`HydrogenicIntegrals`, molecular Hamiltonian) | `src/carcara/core/hamiltonian.py` | **implemented** (~212 LOC) |
+| Fermion operators + fermion-to-qubit mappings (JW/BK/parity) | `src/carcara/core/mapping.py` | **implemented** (~514 LOC) |
 | Operator pools | `src/carcara/circuits/pools.py` | **planned** (new) |
 | ADAPT-VQE | `src/carcara/algorithms/adapt.py` | **planned** (new) |
 | Ansatz | `src/carcara/circuits/ansatz.py` | **empty stub** |
@@ -54,12 +56,17 @@ Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
 | Optimizers | `src/carcara/optimizers/optim.py` | header only |
 | Hardware backend | `src/carcara/backends/hardware.py` | **empty stub** |
 | Error mitigation | `src/carcara/backends/mitigation.py` | **empty stub** |
-| Tests | `test/test_wavefunction.py` | wavefunction only |
-| Docs | `docs/` (Sphinx + ReadTheDocs) | scaffolded, VQE tutorial stub |
+| Tests | `test/` (basis, integrals, NAO, GTO, wavefunction, mapping, hamiltonian) | **implemented** |
+| Docs | `docs/` (Sphinx + ReadTheDocs) | basis & integral tutorials; VQE tutorial stub |
 
-**Implication:** the directory architecture is in place; the core scientific
-logic must now be filled in. The roadmap below follows this existing layout so
-no restructuring is required.
+**Implication:** the fermionic front end (bases → integrals → second-quantized
+Hamiltonian → qubit mappings) is implemented; the quantum-algorithm layer
+(circuits, VQE/ADAPT, optimizers, hardware backends, mitigation) must now be
+filled in. The roadmap below follows this existing layout so no restructuring is
+required.
+
+> **Naming note:** the mappings live in `core/mapping.py` (singular), not the
+> `core/mappings.py` used in some earlier drafts of this document.
 
 ---
 
@@ -87,10 +94,10 @@ no restructuring is required.
 - Define the public API surface in `__init__.py` (lazy imports of `core`,
   `circuits`, `algorithms`, `optimizers`, `backends`).
 - Set up tooling: `ruff`/`black` formatting, `mypy` type checks, `pytest` +
-  `pytest-cov`, and a GitHub Actions CI matrix (Python 3.14).
+  `pytest-cov`, and a GitHub Actions CI matrix (Python 3.11+).
 - Add `optional-dependencies` groups in `pyproject.toml` (`dev`, `docs`, `hw`).
 - Establish the logging utility (`utils/logging.py`) as the project-wide logger.
-- Populate `CHANGELOG.md` (currently empty) with a Keep-a-Changelog format.
+- Add a `CHANGELOG.md` (currently absent) in Keep-a-Changelog format.
 
 **Deliverables:** green CI, `pip install -e .[dev]` works, contributor guide.
 **Acceptance:** CI passes on a trivial PR; coverage report published.
@@ -99,23 +106,37 @@ no restructuring is required.
 
 ### Phase 1 — Core: Hamiltonians & Mappings
 *Goal: turn a fermionic system into a qubit operator.*
-*Files: `core/hamiltonian.py`, `core/mappings.py`.*
+*Files: `core/hamiltonian.py`, `core/mapping.py`.*
+
+> **Status — largely implemented.** `Fermion` (second-quantized operators with
+> full algebra and a `from_integrals` builder), `PauliSum` (qubit-operator
+> output, `to_sparse_pauli_op`), and the three mappings — Jordan–Wigner
+> (default), Bravyi–Kitaev, and parity **with** optional two-qubit reduction —
+> all exist in `core/mapping.py`, exposed via
+> `Fermion.map_to_qubits(method=...)`. `HydrogenicIntegrals`
+> (`core/hamiltonian.py`) assembles the molecular Hamiltonian over spin-orbitals
+> from the real-space integral engine, in **physicists' notation**
+> `⟨pq|rs⟩`. Remaining: the `qiskit-nature`/PySCF driver path, lattice-model
+> Hamiltonians, general `Z2Symmetries` tapering, and richer operator metadata.
 
 - **`FermionicHamiltonian`**: represent second-quantized operators
   (one- and two-body integrals). Two construction paths:
-  - *Molecular*: from geometry via `qiskit-nature` drivers (PySCF) and/or the
-    existing `Wavefunction`/ASE pipeline.
+  - *Molecular*: implemented via the real-space `HydrogenicIntegrals`
+    (`Wavefunction`/ASE + integral engine); a `qiskit-nature`/PySCF driver path
+    remains optional/future.
   - *Model*: lattice Hamiltonians (Hubbard, Heisenberg, t–J, SSH) built
-    programmatically.
-- **Mappings** (`mappings.py`): wrap and expose
-  - Jordan–Wigner
-  - Bravyi–Kitaev
-  - Parity (with two-qubit reduction)
-  - Optional: symmetry tapering (`Z2Symmetries`) to shrink qubit count.
-- Compute the qubit Hamiltonian as a Pauli `SparsePauliOp` plus metadata
-  (qubit count, number of terms, locality).
+    programmatically **(planned)**.
+- **Mappings** (`mapping.py`): wrap and expose
+  - Jordan–Wigner ✓
+  - Bravyi–Kitaev ✓
+  - Parity (with two-qubit reduction) ✓
+  - Optional: symmetry tapering (`Z2Symmetries`) to shrink qubit count
+    **(planned)**.
+- Compute the qubit Hamiltonian as a `PauliSum` (convertible to a Pauli
+  `SparsePauliOp`); richer metadata (qubit count, number of terms, locality)
+  is a follow-up.
 
-**Deliverables:** `H_qubit = jordan_wigner(H_fermionic)` style API.
+**Deliverables:** `H_qubit = jordan_wigner(H_fermionic)` style API ✓.
 **Acceptance:** H₂ (STO-3G) qubit Hamiltonian reproduces the known
 ground-state energy under exact diagonalization (−1.137 Ha at equilibrium).
 
