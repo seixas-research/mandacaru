@@ -4,4 +4,10 @@
 # This code is part of Carcará. 
 # MIT License
 #
-# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br> 
+# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
+
+"""Variational quantum algorithms."""
+
+from .vqe import VQE, VQEResult
+
+__all__ = ["VQE", "VQEResult"] 

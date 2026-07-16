@@ -48,21 +48,22 @@ Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
 | Wavefunction (hydrogen-like, ASE I/O) | `src/carcara/wavefunction.py` | **implemented** (~226 LOC) |
 | Hamiltonian (`HydrogenicIntegrals`, molecular Hamiltonian) | `src/carcara/core/hamiltonian.py` | **implemented** (~212 LOC) |
 | Fermion operators + fermion-to-qubit mappings (JW/BK/parity) | `src/carcara/core/mapping.py` | **implemented** (~514 LOC) |
+| Ansatz (UCCSD) | `src/carcara/circuits/ansatz.py` | **implemented** |
+| Excitation gates | `src/carcara/circuits/gates.py` | **implemented** |
+| VQE (state-vector) | `src/carcara/algorithms/vqe.py` | **implemented** |
+| Optimizers (SciPy-backed) | `src/carcara/optimizers/optim.py` | **implemented** |
 | Operator pools | `src/carcara/circuits/pools.py` | **planned** (new) |
 | ADAPT-VQE | `src/carcara/algorithms/adapt.py` | **planned** (new) |
-| Ansatz | `src/carcara/circuits/ansatz.py` | **empty stub** |
-| Gates | `src/carcara/circuits/gates.py` | **empty stub** |
-| VQE | `src/carcara/algorithms/vqe.py` | **empty stub** |
-| Optimizers | `src/carcara/optimizers/optim.py` | header only |
 | Hardware backend | `src/carcara/backends/hardware.py` | **empty stub** |
 | Error mitigation | `src/carcara/backends/mitigation.py` | **empty stub** |
-| Tests | `test/` (basis, integrals, NAO, GTO, wavefunction, mapping, hamiltonian) | **implemented** |
+| Tests | `test/` (basis, integrals, NAO, GTO, wavefunction, mapping, hamiltonian, vqe) | **implemented** |
 | Docs | `docs/` (Sphinx + ReadTheDocs) | basis & integral tutorials; VQE tutorial stub |
 
-**Implication:** the fermionic front end (bases → integrals → second-quantized
-Hamiltonian → qubit mappings) is implemented; the quantum-algorithm layer
-(circuits, VQE/ADAPT, optimizers, hardware backends, mitigation) must now be
-filled in. The roadmap below follows this existing layout so no restructuring is
+**Implication:** the pipeline is implemented end-to-end through a fixed-ansatz
+VQE (bases → integrals → second-quantized Hamiltonian → qubit mappings → UCCSD
+ansatz → VQE, on an exact state-vector backend). What remains is the *adaptive*
+ansatz (ADAPT-VQE + operator pools), real-hardware backends, and error
+mitigation. The roadmap below follows this existing layout so no restructuring is
 required.
 
 > **Naming note:** the mappings live in `core/mapping.py` (singular), not the
@@ -146,6 +147,14 @@ ground-state energy under exact diagonalization (−1.137 Ha at equilibrium).
 *Goal: build the parameterized state |ψ(θ)⟩.*
 *Files: `circuits/gates.py`, `circuits/ansatz.py`.*
 
+> **Status — UCCSD implemented.** `gates.py` provides the anti-Hermitian single
+> and double fermionic excitation generators; `ansatz.py` provides `UCCSD` as a
+> state-vector generator, `|ψ(θ)⟩ = exp(Σ θ_k (T_k − T_k†))|HF⟩` (exact UCC by
+> default, `trotter=True` for the circuit-faithful product), with the
+> Hartree-Fock reference and `num_parameters`. Remaining: native
+> `QuantumCircuit` emission and transpilation, hardware-efficient templates, and
+> k-UpCCGSD.
+
 - **`gates.py`**: reusable gate primitives — fermionic excitation gates,
   Givens rotations, particle-number-preserving blocks.
 - **`ansatz.py`**:
@@ -166,6 +175,11 @@ transpiles to a target basis without error.
 *Goal: classical parameter optimization for hybrid loops.*
 *File: `optimizers/optim.py`.*
 
+> **Status — SciPy backend implemented.** `Optimizer` exposes the SciPy
+> gradient-free methods (COBYLA default, plus Nelder–Mead / SLSQP / Powell /
+> L-BFGS-B) behind `minimize(cost, x0) -> OptimizeResult`, recording the cost
+> history. Remaining: SPSA for shot noise and parameter-shift gradients.
+
 - Unified optimizer interface (`minimize(cost_fn, x0, ...) -> Result`).
 - Gradient-free: **COBYLA**, **SLSQP**, **Nelder–Mead** (via `scipy`).
 - Stochastic: **SPSA** (essential for noisy hardware) with calibration.
@@ -181,6 +195,14 @@ converges under simulated shot noise.
 ### Phase 4 — Algorithms: VQE & Variants
 *Goal: the hybrid variational solver tying everything together.*
 *File: `algorithms/vqe.py`.*
+
+> **Status — fixed-ansatz VQE implemented.** `VQE(hamiltonian, ansatz,
+> optimizer).run()` returns a `VQEResult` (optimal energy, parameters, reference
+> energy, cost history) on an **exact state-vector backend**; the acceptance
+> criterion is met for H₂ (reproduces exact diagonalization to ~1e-9 Ha, well
+> within chemical accuracy — see `examples/H2_vqe.py`). Remaining: shot-based
+> `qiskit` `Estimator` evaluation, the excited-state variants (VQD/SSVQE), and
+> serializable result objects.
 
 - **`VQE`** solver: takes `(qubit_hamiltonian, ansatz, optimizer, backend)` and
   returns ground-state energy, optimal parameters, and convergence history.

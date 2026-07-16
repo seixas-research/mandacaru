@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Carcará** is a framework for fermionic quantum simulation based on variational quantum algorithms (VQAs), targeting real NISQ-era quantum hardware (IBM Quantum via Qiskit). The intended end-to-end pipeline is: fermionic system → second-quantized Hamiltonian → qubit (Pauli) Hamiltonian → parameterized ansatz → VQA optimization → QPU/simulator execution → error mitigation. See `plan/roadmap.md` for the full phased design and its flagship algorithm, **ADAPT-VQE** with pluggable operator pools (fermionic / qubit / QEB / CEO).
 
-**Important:** the project is mid-build. The fermionic front end is implemented — localized bases, the real-space integral engine, the second-quantized `Fermion` Hamiltonian, and the three fermion-to-qubit mappings (`core/`) — but the quantum-algorithm back end (circuits, VQE/ADAPT, optimizers, hardware backends, mitigation) is still empty stubs; the roadmap describes that target, not the current state. Before building on a module, check whether it actually has code (`wc -l`), because `plan/roadmap.md` mostly describes intended design: its Phase 2+ modules (circuits, VQE/ADAPT, optimizers, backends, mitigation) are not yet written. `pyproject.toml` is the source of truth for the build (currently Python ≥ 3.11).
+**Important:** the project is mid-build. Implemented end-to-end: localized bases → real-space integral engine → second-quantized `Fermion` Hamiltonian → fermion-to-qubit mappings → **UCCSD ansatz → VQE** (an exact state-vector solver, validated on H₂). Still empty stubs: ADAPT-VQE and operator pools, hardware backends, and error mitigation. Before building on a module, check whether it actually has code (`wc -l`), because `plan/roadmap.md` mostly describes intended design and its later phases (backends, mitigation, ADAPT) are not yet written. `pyproject.toml` is the source of truth for the build (currently Python ≥ 3.11).
 
 ## Current state of the code
 
@@ -15,8 +15,11 @@ Implemented:
 - `src/carcara/integrals/` — real-space one- and two-body integral engine, grid, FFT Poisson solver, C backend binding
 - `src/carcara/core/` — the second-quantized layer. `mapping.py`: `Fermion` (fermionic ladder operators with full algebra and a `from_integrals` builder for `H = Σ h_pq a†_p a_q + ½ Σ ⟨pq|rs⟩ a†_p a†_q a_s a_r`), `PauliSum` (the qubit-operator output type, with `to_sparse_pauli_op`), and the three fermion-to-qubit mappings — **Jordan-Wigner** (default), **parity** (with optional two-qubit reduction) and **Bravyi-Kitaev** — via a shared encoding-matrix construction (`map_to_qubits(method=...)`). `hamiltonian.py`: `HydrogenicIntegrals` drives the integral engine to build the spin-orbital molecular Hamiltonian as a `Fermion`.
 - `src/carcara/wavefunction.py` — atomic-system facade over basis + grid + engine (ASE XYZ I/O)
+- `src/carcara/circuits/` — `gates.py` (anti-Hermitian single/double fermionic excitation generators) and `ansatz.py` (`UCCSD`, a state-vector ansatz `|ψ(θ)⟩ = exp(Σ θ_k (T_k − T_k†))|HF⟩`; default is the exact UCC exponential, `trotter=True` gives the circuit-faithful first-order product).
+- `src/carcara/optimizers/optim.py` — `Optimizer`, a SciPy-backed wrapper (COBYLA default) with cost-history tracking.
+- `src/carcara/algorithms/vqe.py` — `VQE`, an exact state-vector eigensolver (`⟨ψ(θ)|H|ψ(θ)⟩` minimized over ansatz params); validated on H₂ against exact diagonalization to ~1e-9 Ha. See `examples/H2_vqe.py`.
 
-Empty stubs (0 LOC — the roadmap's target modules, not yet written): `circuits/ansatz.py`, `circuits/gates.py`, `algorithms/vqe.py`, `optimizers/optim.py`, `backends/hardware.py`, `backends/mitigation.py`, `utils/logging.py`.
+Empty stubs (0 LOC — the roadmap's target modules, not yet written): `backends/hardware.py`, `backends/mitigation.py`, `utils/logging.py` (plus the planned `circuits/pools.py` and `algorithms/adapt.py` for ADAPT-VQE).
 
 ## Commands
 
