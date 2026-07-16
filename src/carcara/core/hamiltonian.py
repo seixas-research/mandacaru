@@ -150,51 +150,84 @@ class HydrogenicIntegrals:
         directly and yield a Hermitian, spin- and particle-number-conserving
         Hamiltonian.
         """
-        h = self.one_body()
-        eri = self.two_body()
-        M = self.n_orbitals
-        n_so = 2 * M
+        return spin_block_integrals(self.one_body(), self.two_body())
 
-        def spin(P):
-            return P // M
+    # -- Hartree-Fock ----------------------------------------------------- #
 
-        def orb(P):
-            return P % M
+    def hartree_fock(self, n_electrons: int):
+        """Run restricted Hartree-Fock in the (orthonormal) spatial basis.
 
-        h_so = np.zeros((n_so, n_so), dtype=complex)
-        for P in range(n_so):
-            for Q in range(n_so):
-                if spin(P) == spin(Q):
-                    h_so[P, Q] = h[orb(P), orb(Q)]
-
-        # g_so[P,Q,R,S] = <PQ|RS> (physicists') = <orb(P) orb(Q) | orb(R) orb(S)>
-        # spatial, with electron 1 = (P, R) and electron 2 = (Q, S).
-        g_so = np.zeros((n_so,) * 4, dtype=complex)
-        for P in range(n_so):
-            for Q in range(n_so):
-                for R in range(n_so):
-                    for S in range(n_so):
-                        if spin(P) == spin(R) and spin(Q) == spin(S):
-                            g_so[P, Q, R, S] = eri[orb(P), orb(Q),
-                                                   orb(R), orb(S)]
-        return h_so, g_so
+        Returns an :class:`~carcara.algorithms.hartree_fock.RHFResult` with the MO
+        coefficients, orbital energies and MO-basis integrals.  Requires
+        ``orthogonalize=True`` (the default) so the basis overlap is the identity.
+        """
+        from ..algorithms.hartree_fock import RHF
+        return RHF(self.one_body(), self.two_body(), n_electrons).run()
 
     # -- molecular Hamiltonian -------------------------------------------- #
 
-    def molecular_hamiltonian(self,
-                              include_nuclear_repulsion: bool = True) -> Fermion:
+    def molecular_hamiltonian(self, include_nuclear_repulsion: bool = True,
+                              mo_basis: bool = False,
+                              n_electrons: int | None = None) -> Fermion:
         """Assemble the second-quantized :class:`Fermion` Hamiltonian.
 
         Spin-orbitals are ordered alpha-block then beta-block, so the parity
         mapping's two-qubit reduction (which taper the alpha- and total-parity
         qubits) applies directly.
+
+        With ``mo_basis=True`` the spatial integrals are first transformed to the
+        restricted Hartree-Fock molecular-orbital basis (``n_electrons`` required),
+        so the reference determinant is the HF ground state -- the basis expected
+        by ADAPT-VQE and by variational algorithms in general.
         """
-        h_so, g_so = self.spin_orbital_integrals()
+        if mo_basis:
+            if n_electrons is None:
+                raise ValueError("mo_basis=True requires n_electrons")
+            rhf = self.hartree_fock(n_electrons)
+            h_so, g_so = spin_block_integrals(rhf.h_mo, rhf.eri_mo)
+        else:
+            h_so, g_so = self.spin_orbital_integrals()
         H = Fermion.from_integrals(h_so, g_so)
         if include_nuclear_repulsion:
             H = H + Fermion({(): complex(self.nuclear_repulsion)},
                             n_modes=2 * self.n_orbitals)
         return H
+
+
+def spin_block_integrals(h: np.ndarray,
+                         eri: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    r"""Expand spatial integrals ``(h, <pq|rs>)`` to spin-orbitals (spin-blocked).
+
+    Spin-orbital ``P = p + sigma * M`` (``sigma = 0`` alpha for the first ``M``,
+    ``1`` beta for the second).  The one-body block is diagonal in spin; the
+    physicists'-notation two-body tensor is non-zero only when
+    ``spin(P) == spin(R)`` (electron 1) and ``spin(Q) == spin(S)`` (electron 2).
+    """
+    h = np.asarray(h)
+    eri = np.asarray(eri)
+    M = h.shape[0]
+    n_so = 2 * M
+
+    def spin(P):
+        return P // M
+
+    def orb(P):
+        return P % M
+
+    h_so = np.zeros((n_so, n_so), dtype=complex)
+    for P in range(n_so):
+        for Q in range(n_so):
+            if spin(P) == spin(Q):
+                h_so[P, Q] = h[orb(P), orb(Q)]
+
+    g_so = np.zeros((n_so,) * 4, dtype=complex)
+    for P in range(n_so):
+        for Q in range(n_so):
+            for R in range(n_so):
+                for S in range(n_so):
+                    if spin(P) == spin(R) and spin(Q) == spin(S):
+                        g_so[P, Q, R, S] = eri[orb(P), orb(Q), orb(R), orb(S)]
+    return h_so, g_so
 
 
 def minimal_hydrogenic_basis(nuclei, grid_units: str = "angstrom"):

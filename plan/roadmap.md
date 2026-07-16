@@ -52,17 +52,20 @@ Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
 | Excitation gates | `src/carcara/circuits/gates.py` | **implemented** |
 | VQE (state-vector) | `src/carcara/algorithms/vqe.py` | **implemented** |
 | Optimizers (SciPy-backed) | `src/carcara/optimizers/optim.py` | **implemented** |
-| Operator pools | `src/carcara/circuits/pools.py` | **planned** (new) |
-| ADAPT-VQE | `src/carcara/algorithms/adapt.py` | **planned** (new) |
+| Operator pools (fermionic / qubit / QEB / CEO) | `src/carcara/circuits/pools.py` | **implemented** |
+| ADAPT-VQE (state-vector, + circuit profiling) | `src/carcara/algorithms/adapt_vqe.py` | **implemented** |
+| Hartree-Fock (RHF/UHF, MO basis) | `src/carcara/algorithms/hartree_fock.py` | **implemented** |
+| Pople split-valence basis (6-31G / 6-31G(d)) | `src/carcara/basis/pople.py` | **implemented** |
 | Hardware backend | `src/carcara/backends/hardware.py` | **empty stub** |
 | Error mitigation | `src/carcara/backends/mitigation.py` | **empty stub** |
 | Tests | `test/` (basis, integrals, NAO, GTO, wavefunction, mapping, hamiltonian, vqe) | **implemented** |
 | Docs | `docs/` (Sphinx + ReadTheDocs) | basis & integral tutorials; VQE tutorial stub |
 
-**Implication:** the pipeline is implemented end-to-end through a fixed-ansatz
-VQE (bases → integrals → second-quantized Hamiltonian → qubit mappings → UCCSD
-ansatz → VQE, on an exact state-vector backend). What remains is the *adaptive*
-ansatz (ADAPT-VQE + operator pools), real-hardware backends, and error
+**Implication:** the pipeline is implemented end-to-end through both a
+fixed-ansatz VQE and the *adaptive* **ADAPT-VQE** (bases → integrals →
+second-quantized Hamiltonian → qubit mappings → HF/MO basis → UCCSD/ADAPT ansatz
+→ VQE, on an exact state-vector backend), with all four operator pools and
+Qiskit-based circuit profiling. What remains is real-hardware backends and error
 mitigation. The roadmap below follows this existing layout so no restructuring is
 required.
 
@@ -245,11 +248,11 @@ This yields shallower, hardware-friendlier circuits than fixed UCCSD while
 recovering most of the correlation energy.
 
 #### 5.1 — Pool abstraction (`circuits/pools.py`)
-A common `OperatorPool` interface so pools are interchangeable and
+A common `PoolBase` interface so pools are interchangeable and
 user-extensible:
 
 ```python
-class OperatorPool(Protocol):
+class PoolBase(Protocol):
     def operators(self) -> list[PoolOperator]: ...   # generators A_i
     def commutator_with(self, H) -> list[SparsePauliOp]: ...  # for gradients
     def circuit(self, op, theta) -> QuantumCircuit: ...       # exp(θ A_i)

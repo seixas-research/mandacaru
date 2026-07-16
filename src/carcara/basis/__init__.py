@@ -23,11 +23,13 @@ families are generated from scratch -- no tabulated basis-set data.
 """
 
 from .base import BasisFunction
-from .factory import BasisSet, GTOBasisSet, NAOBasisSet
+from .factory import (BasisSet, GTOBasisSet, HydrogenicBasisSet, NAOBasisSet,
+                      Pople631GBasisSet)
 from .gaussian import GaussianOrbital
 from .hydrogenic import HydrogenicOrbital
 from .nao import (DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital,
                   energy_shift_to_rc)
+from .pople import pople_631g_shells
 from .sto_ng import (occupied_subshells, slater_exponent, sto_ng_contraction,
                      sto_ng_shells)
 
@@ -37,12 +39,15 @@ __all__ = [
     "NumericalAtomicOrbital",
     "GaussianOrbital",
     "BasisSet",
+    "HydrogenicBasisSet",
     "NAOBasisSet",
     "GTOBasisSet",
+    "Pople631GBasisSet",
     "energy_shift_to_rc",
     "DEFAULT_ENERGY_SHIFT",
     "sto_ng_contraction",
     "sto_ng_shells",
+    "pople_631g_shells",
     "slater_exponent",
     "occupied_subshells",
 ]

@@ -35,8 +35,9 @@ from .base import BasisFunction
 from .gaussian import GaussianOrbital
 from .hydrogenic import HydrogenicOrbital
 from .nao import DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital, energy_shift_to_rc
+from .pople import pople_631g_shells
 from .sto_ng import sto_ng_shells
-from ._config import valence_subshells
+from ._config import ground_state_config, valence_subshells
 
 
 def _to_atomic_number(element) -> int:
@@ -56,13 +57,27 @@ class BasisSet:
 
     @staticmethod
     def build(method: str, **kwargs) -> "BasisSet":
-        """Construct a basis set of the requested ``method`` (``"NAO"`` or ``"GTO"``)."""
-        key = method.upper()
+        """Construct a basis set of the requested ``method``.
+
+        Supported methods: ``"hydrogenic"`` (minimal analytic hydrogen-like),
+        ``"NAO"`` (confined numerical atomic orbitals), ``"GTO"`` (native STO-nG
+        minimal Gaussian) and ``"6-31G"`` / ``"6-31G(d)"`` (native Pople
+        split-valence, optionally with ``d`` polarization).
+        """
+        key = method.upper().replace(" ", "")
+        if key in ("HYDROGENIC", "HYDROGEN"):
+            return HydrogenicBasisSet(**kwargs)
         if key == "NAO":
             return NAOBasisSet(**kwargs)
         if key == "GTO":
             return GTOBasisSet(**kwargs)
-        raise ValueError(f"unknown basis method {method!r}; use 'NAO' or 'GTO'")
+        if key in ("6-31G", "631G"):
+            return Pople631GBasisSet(polarization=False, **kwargs)
+        if key in ("6-31G(D)", "631G(D)", "6-31G*", "631G*", "6-31GD"):
+            return Pople631GBasisSet(polarization=True, **kwargs)
+        raise ValueError(
+            f"unknown basis method {method!r}; use 'hydrogenic', 'NAO', 'GTO', "
+            f"'6-31G' or '6-31G(d)'")
 
     # -- interface --------------------------------------------------------- #
 
@@ -156,3 +171,66 @@ class GTOBasisSet(BasisSet):
 
     def __repr__(self) -> str:
         return f"GTOBasisSet(name={self.name!r})"
+
+
+class HydrogenicBasisSet(BasisSet):
+    """Minimal analytic hydrogen-like basis: one orbital per occupied subshell.
+
+    For each occupied ``(n, l)`` subshell of the atom, builds the ``2l + 1``
+    :class:`~carcara.basis.HydrogenicOrbital` functions with the subshell's Slater
+    effective charge.  A cheap, fully analytic reference basis (e.g. H -> 1s;
+    Li -> 1s, 2s; C -> 1s, 2s, 2p).
+    """
+
+    method = "hydrogenic"
+    name = "hydrogenic"
+
+    def atom(self, element, center=(0.0, 0.0, 0.0),
+             units: str = "angstrom") -> list[BasisFunction]:
+        Z = _to_atomic_number(element)
+        orbitals: list[BasisFunction] = []
+        for (n, l) in sorted(ground_state_config(Z)):
+            z_eff = HydrogenicOrbital.slater_effective_charge(Z, n, l)
+            for m in range(-l, l + 1):
+                orbitals.append(HydrogenicOrbital(n, l, m, Z=z_eff,
+                                                  center=center, units=units))
+        return orbitals
+
+    def __repr__(self) -> str:
+        return "HydrogenicBasisSet()"
+
+
+class Pople631GBasisSet(BasisSet):
+    """Native Pople split-valence basis 6-31G / 6-31G(d), generated from scratch.
+
+    Core subshells are single 6-primitive contractions; valence subshells are
+    split into a contracted inner + uncontracted outer function; with
+    ``polarization=True`` a ``d`` shell is added on non-hydrogen atoms (the
+    ``(d)`` of 6-31G(d)).  See :mod:`carcara.basis.pople`; no tabulated basis-set
+    data is used.
+
+    Parameters
+    ----------
+    polarization : bool
+        Add ``d`` polarization functions on non-hydrogen atoms (``6-31G(d)`` if
+        ``True``, plain ``6-31G`` if ``False``).
+    """
+
+    method = "6-31G"
+
+    def __init__(self, polarization: bool = True):
+        self.polarization = bool(polarization)
+        self.name = "6-31G(d)" if polarization else "6-31G"
+
+    def atom(self, element, center=(0.0, 0.0, 0.0),
+             units: str = "angstrom") -> list[BasisFunction]:
+        Z = _to_atomic_number(element)
+        orbitals: list[BasisFunction] = []
+        for (l, exps, coeffs) in pople_631g_shells(Z, self.polarization):
+            for m in range(-l, l + 1):
+                orbitals.append(GaussianOrbital(l, m, exps, coeffs,
+                                                center=center, units=units))
+        return orbitals
+
+    def __repr__(self) -> str:
+        return f"Pople631GBasisSet(name={self.name!r})"

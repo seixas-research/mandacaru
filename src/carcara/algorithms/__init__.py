@@ -8,6 +8,28 @@
 
 """Variational quantum algorithms."""
 
+from .adapt_vqe import (
+    AdaptAnsatz,
+    AdaptIteration,
+    AdaptVQE,
+    AdaptVQEResult,
+    CircuitMetrics,
+    profile_ansatz,
+)
+from .hartree_fock import RHF, RHFResult, UHF, transform_integrals
 from .vqe import VQE, VQEResult
 
-__all__ = ["VQE", "VQEResult"] 
+__all__ = [
+    "VQE",
+    "VQEResult",
+    "RHF",
+    "RHFResult",
+    "UHF",
+    "transform_integrals",
+    "AdaptVQE",
+    "AdaptVQEResult",
+    "AdaptAnsatz",
+    "AdaptIteration",
+    "CircuitMetrics",
+    "profile_ansatz",
+]
