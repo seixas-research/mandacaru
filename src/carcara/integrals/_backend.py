@@ -133,10 +133,12 @@ def one_body_matrices(psi_stack, Vext, dx, points):
 
 
 def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0):
-    """Electron-repulsion tensor ``(ab|cd)`` for ``M`` sampled functions.
+    """Electron-repulsion tensor ``<ab|cd>`` for ``M`` sampled functions.
 
     ``eri[a, b, c, d] = ∫∫ psi_a*(1) psi_c(1) (1/r12) psi_b*(2) psi_d(2) dV1 dV2``
-    in chemists' notation.  ``softening`` regularizes the ``r12 -> 0`` node.
+    -- physicists' notation, electron 1 carrying the index pair ``(a, c)`` and
+    electron 2 the pair ``(b, d)``.  ``softening`` regularizes the ``r12 -> 0``
+    node.
     """
     psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
     xg = np.ascontiguousarray(xg, dtype=np.float64)

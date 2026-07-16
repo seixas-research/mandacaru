@@ -16,16 +16,19 @@ molecular Hamiltonian as a :class:`~carcara.core.mapping.Fermion`.
 Conventions (atomic units, Hartree):
 
 * one-body ``h_pq = <p| -1/2 nabla^2 - sum_I Z_I/|r-R_I| |q>``;
-* two-body in **chemist's notation** ``(pq|rs) = int int p*(1) q(1) r*(2) s(2)/r12``
-  (this is exactly what :meth:`IntegralEngine.two_body` returns);
+* two-body in **physicists' notation**
+  ``<pq|rs> = int int p*(1) q*(2) r(1) s(2)/r12`` -- electron 1 carries the
+  orbital pair ``(p, r)`` and electron 2 the pair ``(q, s)`` (this is exactly
+  what :meth:`IntegralEngine.two_body` returns);
 * the Hamiltonian uses the ordering of :meth:`Fermion.from_integrals`,
 
   .. math::
 
       H = \sum_{PQ} h_{PQ}\, a^\dagger_P a_Q
-        + \tfrac12 \sum_{PQRS} g_{PQRS}\, a^\dagger_P a^\dagger_Q a_S a_R,
+        + \tfrac12 \sum_{PQRS} \langle PQ|RS\rangle\, a^\dagger_P a^\dagger_Q a_S a_R,
 
-  over spin-orbitals, with the spin-blocked expansion of the spatial integrals.
+  over spin-orbitals, with the spin-blocked expansion of the spatial integrals
+  (the standard physicists'-notation second-quantized electronic Hamiltonian).
 """
 
 from __future__ import annotations
@@ -118,7 +121,7 @@ class HydrogenicIntegrals:
         return self._h1
 
     def two_body(self) -> np.ndarray:
-        r"""Spatial two-body tensor ``(pq|rs)`` in chemist's notation (Hartree)."""
+        r"""Spatial two-body tensor ``<pq|rs>`` in physicists' notation (Hartree)."""
         if self._eri is None:
             self._compute()
         return self._eri
@@ -140,9 +143,12 @@ class HydrogenicIntegrals:
         r"""Spin-orbital ``(h_so, g_so)`` for the Hamiltonian (spin-blocked).
 
         Spin-orbital ``P = p + sigma * M`` (``M`` spatial orbitals; ``sigma = 0``
-        alpha for the first block, ``1`` beta for the second).  The returned
-        tensors feed :meth:`Fermion.from_integrals` directly and yield a
-        Hermitian, spin- and particle-number-conserving Hamiltonian.
+        alpha for the first block, ``1`` beta for the second).  ``g_so`` is the
+        two-electron integral in physicists' notation ``<PQ|RS>``, non-zero only
+        when ``spin(P) == spin(R)`` (electron 1) and ``spin(Q) == spin(S)``
+        (electron 2).  The returned tensors feed :meth:`Fermion.from_integrals`
+        directly and yield a Hermitian, spin- and particle-number-conserving
+        Hamiltonian.
         """
         h = self.one_body()
         eri = self.two_body()
@@ -161,14 +167,16 @@ class HydrogenicIntegrals:
                 if spin(P) == spin(Q):
                     h_so[P, Q] = h[orb(P), orb(Q)]
 
+        # g_so[P,Q,R,S] = <PQ|RS> (physicists') = <orb(P) orb(Q) | orb(R) orb(S)>
+        # spatial, with electron 1 = (P, R) and electron 2 = (Q, S).
         g_so = np.zeros((n_so,) * 4, dtype=complex)
         for P in range(n_so):
             for Q in range(n_so):
                 for R in range(n_so):
                     for S in range(n_so):
                         if spin(P) == spin(R) and spin(Q) == spin(S):
-                            g_so[P, Q, R, S] = eri[orb(P), orb(R),
-                                                   orb(Q), orb(S)]
+                            g_so[P, Q, R, S] = eri[orb(P), orb(Q),
+                                                   orb(R), orb(S)]
         return h_so, g_so
 
     # -- molecular Hamiltonian -------------------------------------------- #

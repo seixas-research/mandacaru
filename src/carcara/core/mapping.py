@@ -13,12 +13,16 @@ This module provides
 * :class:`PauliSum` -- a lightweight linear combination of Pauli strings (the
   qubit-operator output type), with the algebra needed to compose mappings;
 * :class:`Fermion` -- second-quantized fermionic operators with full operator
-  algebra and a builder for the molecular Hamiltonian
+  algebra and a builder for the molecular Hamiltonian in physicists' notation,
 
   .. math::
 
       H = \sum_{pq} h_{pq}\, a^\dagger_p a_q
-        + \tfrac12 \sum_{pqrs} g_{pqrs}\, a^\dagger_p a^\dagger_q a_s a_r ;
+        + \tfrac12 \sum_{pqrs} \langle pq|rs\rangle\, a^\dagger_p a^\dagger_q a_s a_r ,
+
+  where :math:`\langle pq|rs\rangle = \iint \phi_p^*(1)\phi_q^*(2)\,
+  r_{12}^{-1}\,\phi_r(1)\phi_s(2)` is the two-electron integral in physicists'
+  notation;
 
 * three fermion-to-qubit mappings -- **Jordan-Wigner** (default), **parity**
   (with optional two-qubit reduction) and **Bravyi-Kitaev**.
@@ -333,12 +337,14 @@ class Fermion:
     def from_integrals(cls, h_pq: np.ndarray,
                        g_pqrs: np.ndarray | None = None,
                        tol: float = 1e-12) -> "Fermion":
-        r"""Build ``H = sum h_pq a+_p a_q + 1/2 sum g_pqrs a+_p a+_q a_s a_r``.
+        r"""Build ``H = sum h_pq a+_p a_q + 1/2 sum <pq|rs> a+_p a+_q a_s a_r``.
 
         ``h_pq`` is the ``(M, M)`` one-body tensor and ``g_pqrs`` the optional
-        ``(M, M, M, M)`` two-body tensor over the *same* ``M`` spin-orbitals.
-        The operator ordering ``a+_p a+_q a_s a_r`` and the two-body factor
-        ``1/2`` follow the convention in the class docstring.
+        ``(M, M, M, M)`` two-electron integral in **physicists' notation**
+        ``<pq|rs>`` over the *same* ``M`` spin-orbitals.  The operator ordering
+        ``a+_p a+_q a_s a_r`` (note the ``s`` before ``r``) and the two-body
+        factor ``1/2`` are the standard physicists'-notation convention -- see
+        the class docstring.
         """
         h_pq = np.asarray(h_pq)
         m = h_pq.shape[0]

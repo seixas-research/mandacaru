@@ -78,8 +78,8 @@ h_core = T + V
 
 ## Two-body integrals
 
-`IntegralEngine.two_body` returns the electron-repulsion tensor `(ab|cd)` in the
-chemists' convention -- now a `4 x 4 x 4 x 4` array. The default `method="fft"`
+`IntegralEngine.two_body` returns the electron-repulsion tensor `<ab|cd>` in the
+physicists' convention -- now a `4 x 4 x 4 x 4` array. The default `method="fft"`
 uses an O(N log N) FFT Poisson solver.
 
 ```python
@@ -87,21 +87,21 @@ eri = engine.two_body(method="fft")
 
 print("Core Hamiltonian h = T + V (eV):")
 print(h_core.real)
-print(f"(00|00) Li 1s on-site  = {eri[0, 0, 0, 0].real:.3f} eV")
-print(f"(33|33) H 1s on-site   = {eri[3, 3, 3, 3].real:.3f} eV")
-print(f"(11|33) Li 2s - H 1s J = {eri[1, 1, 3, 3].real:.3f} eV")
+print(f"<00|00> Li 1s on-site  = {eri[0, 0, 0, 0].real:.3f} eV")
+print(f"<33|33> H 1s on-site   = {eri[3, 3, 3, 3].real:.3f} eV")
+print(f"<13|13> Li 2s - H 1s J = {eri[1, 3, 1, 3].real:.3f} eV")
 ```
 
 ## Checking the result
 
-The hydrogen 1s on-site integral `(33|33)` is unaffected by its heteronuclear
+The hydrogen 1s on-site integral `<33|33>` is unaffected by its heteronuclear
 neighbour and recovers the exact self-repulsion `5/8 Ha = 17.007 eV` (the engine
-returns `~17.0 eV`). The lithium core integral `(00|00)` is larger because the
-1s orbital is far more contracted, and the inter-site `(11|33)` term measures
+returns `~17.0 eV`). The lithium core integral `<00|00>` is larger because the
+1s orbital is far more contracted, and the inter-site `<13|13>` term measures
 the Coulomb repulsion between the Li 2s and H 1s charge clouds. The complete
 runnable script is available in
 [`examples/lih_integrals.py`](https://github.com/seixas-research/carcara/blob/main/examples/lih_integrals.py).
 
-As in the H2 case, the resulting `T`, `V` and `(ab|cd)` arrays are exactly the
+As in the H2 case, the resulting `T`, `V` and `<ab|cd>` arrays are exactly the
 inputs needed to assemble the fermionic Hamiltonian and map it to qubits for a
 VQE calculation.

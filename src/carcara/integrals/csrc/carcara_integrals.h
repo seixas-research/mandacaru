@@ -52,10 +52,12 @@ void carcara_one_body(const double _Complex *psi,
                       double _Complex *out_T,
                       double _Complex *out_V);
 
-/* Two-body electron-repulsion tensor (chemists' notation):
+/* Two-body electron-repulsion tensor (physicists' notation <ab|cd>):
  *
  *   eri[((a*M + b)*M + c)*M + d] =
  *       \int\int conj(psi_a(1)) psi_c(1) (1/r12) conj(psi_b(2)) psi_d(2) dV1 dV2
+ *
+ * i.e. electron 1 carries the index pair (a, c) and electron 2 the pair (b, d).
  *
  * Computed as: for each density pair rho_bd(2) build its Coulomb potential
  * Phi_bd(1) on the grid (the O(ngrid^2) hotspot, OpenMP-parallel), then

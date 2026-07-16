@@ -75,26 +75,27 @@ h_core = T + V
 
 ## Two-body integrals
 
-`IntegralEngine.two_body` returns the electron-repulsion tensor `(ab|cd)` in
-the chemists' convention. The default
-`method="fft"` uses an O(N log N) FFT Poisson solver.
+`IntegralEngine.two_body` returns the electron-repulsion tensor `<ab|cd>` in
+the physicists' convention (electron 1 carries the index pair `a, c`; electron 2
+the pair `b, d`). The default `method="fft"` uses an O(N log N) FFT Poisson
+solver.
 
 ```python
 eri = engine.two_body(method="fft")
 
 print("Core Hamiltonian h = T + V (eV):")
 print(h_core.real)
-print(f"(00|00) on-site repulsion = {eri[0, 0, 0, 0].real:.3f} eV")
-print(f"(00|11) inter-site Coulomb = {eri[0, 0, 1, 1].real:.3f} eV")
+print(f"<00|00> on-site repulsion = {eri[0, 0, 0, 0].real:.3f} eV")
+print(f"<01|01> inter-site Coulomb = {eri[0, 1, 0, 1].real:.3f} eV")
 ```
 
 ## Checking the result
 
-The on-site integral `(00|00)` is the self-repulsion of a single hydrogen 1s
+The on-site integral `<00|00>` is the self-repulsion of a single hydrogen 1s
 orbital, whose exact value is `5/8 Ha = 17.007 eV`. On the grid above the engine
 returns `~17.0 eV`, and it converges toward the exact value as the grid is
 refined. The complete runnable script is available in
 [`examples/h2_integrals.py`](https://github.com/seixas-research/carcara/blob/main/examples/h2_integrals.py).
 
-The resulting `T`, `V` and `(ab|cd)` arrays are exactly the inputs needed to
+The resulting `T`, `V` and `<ab|cd>` arrays are exactly the inputs needed to
 assemble the fermionic Hamiltonian and map it to qubits for a VQE calculation.

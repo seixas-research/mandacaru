@@ -45,9 +45,13 @@ class TestPoissonFFT:
         basis = [HydrogenicOrbital(1, 0, 0, Z=1.0, units="bohr"),
                  HydrogenicOrbital(2, 1, 0, Z=1.0, units="bohr")]
         eri = IntegralEngine(basis, grid).two_body(method="fft")
-        # (ab|cd) == (cd|ab) and (ab|cd) == (ba|dc)* for a real basis set.
-        assert np.allclose(eri, np.transpose(eri, (2, 3, 0, 1)))
-        assert np.allclose(eri, np.conj(np.transpose(eri, (1, 0, 3, 2))))
+        # Physicists' <ab|cd>: the full 8-fold symmetry of a real basis set.
+        # The electron-1/2 bra-swaps <ab|cd>==<cb|ad>==<ad|cb> are the ones that
+        # distinguish the physicists' convention from the chemists' (ab|cd).
+        assert np.allclose(eri, np.transpose(eri, (2, 1, 0, 3)))   # e-1 bra swap
+        assert np.allclose(eri, np.transpose(eri, (0, 3, 2, 1)))   # e-2 bra swap
+        assert np.allclose(eri, np.transpose(eri, (2, 3, 0, 1)))   # <ab|cd>=<cd|ab>
+        assert np.allclose(eri, np.conj(np.transpose(eri, (1, 0, 3, 2))))  # e- swap
 
 
 class TestUnits:

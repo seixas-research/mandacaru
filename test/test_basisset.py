@@ -4,8 +4,7 @@
 import numpy as np
 import pytest
 
-from carcara.basis import (BasisFunction, BasisSet, GTOBasisSet, NAOBasisSet,
-                           available_bases, register)
+from carcara.basis import BasisFunction, BasisSet, GTOBasisSet, NAOBasisSet
 from carcara.integrals import Grid
 
 
@@ -15,8 +14,9 @@ class TestBuild:
         assert isinstance(nao, NAOBasisSet)
 
     def test_build_gto(self):
-        gto = BasisSet.build(method="GTO", name="6-31G(d)")
+        gto = BasisSet.build(method="GTO", n_gaussians=3)
         assert isinstance(gto, GTOBasisSet)
+        assert gto.name == "STO-3G"
 
     def test_unknown_method_raises(self):
         with pytest.raises(ValueError):
@@ -38,62 +38,54 @@ class TestNAOFactory:
 
 
 class TestGTOFactory:
-    def test_families_are_available(self):
-        avail = available_bases()
-        for fam in ("sto-3g", "6-31g(d)", "6-311g(d,p)", "cc-pvdz", "cc-pvtz",
-                    "def2-svp", "def2-tzvp"):
-            assert fam in avail
-
-    @pytest.mark.parametrize("name, n_h", [
-        ("STO-3G", 1),        # 1s
-        ("6-31G(d)", 2),      # 2s, no polarization on H
-        ("6-311G(d,p)", 6),   # 3s + 3p
-        ("cc-pVDZ", 5),       # 2s + 3p
-        ("cc-pVTZ", 14),      # 3s + 6p + 5d
-        ("def2-SVP", 5),      # 2s + 3p
-        ("def2-TZVP", 6),     # 3s + 3p
+    # STO-nG is a minimal basis: one contracted function per occupied subshell
+    # (core + valence), so the *count* is fixed and only the contraction length
+    # depends on n_gaussians.
+    @pytest.mark.parametrize("element, n_funcs", [
+        ("H", 1),     # 1s
+        ("He", 1),    # 1s
+        ("C", 5),     # 1s 2s 2p     -> 1 + 1 + 3
+        ("O", 5),     # 1s 2s 2p
+        ("Ne", 5),    # 1s 2s 2p
+        ("Ar", 9),    # 1s 2s 2p 3s 3p -> 1+1+3+1+3
     ])
-    def test_hydrogen_counts_per_family(self, name, n_h):
-        assert len(BasisSet.build(method="GTO", name=name).atom("H")) == n_h
+    def test_minimal_basis_counts(self, element, n_funcs):
+        assert len(BasisSet.build(method="GTO").atom(element)) == n_funcs
 
-    def test_carbon_counts(self):
-        # 6-31G(d) and cc-pVDZ carbon: 3s + 6p + 5d = 14 spherical functions.
-        assert len(BasisSet.build(method="GTO", name="6-31G(d)").atom("C")) == 14
-        assert len(BasisSet.build(method="GTO", name="cc-pVDZ").atom("C")) == 14
-        # cc-pVTZ carbon adds f functions: 4s + 6p + 10d + 7f = 30.
-        assert len(BasisSet.build(method="GTO", name="cc-pVTZ").atom("C")) == 30
+    @pytest.mark.parametrize("n_gaussians", [2, 3, 6])
+    def test_contraction_length_tracks_n_gaussians(self, n_gaussians):
+        orb = BasisSet.build(method="GTO", n_gaussians=n_gaussians).atom("H")[0]
+        assert orb.n_primitives == n_gaussians
 
-    def test_second_row_element(self):
-        # Argon is now covered (H..Ar); STO-3G Ar = 1s2s2p3s3p = 9.
-        assert len(BasisSet.build(method="GTO", name="STO-3G").atom("Ar")) == 9
+    def test_transition_metal_supported(self):
+        # Fe (Z=26): 1s2s2p3s3p4s3d -> all subshells have n <= 4 (Slater n* known).
+        # 1+1+3+1+3+1+5 = 15 functions; generator handles it with no data files.
+        assert len(BasisSet.build(method="GTO").atom("Fe")) == 15
 
-    def test_missing_element_raises(self):
-        # Iron (Z=26) is beyond the embedded H..Ar range.
-        gto = BasisSet.build(method="GTO", name="cc-pVDZ")
+    def test_beyond_slater_table_raises(self):
+        # Francium (Z=87) occupies a 7s subshell; no Slater n* for n=7.
         with pytest.raises(ValueError):
-            gto.atom("Fe")
-
-    def test_unknown_family_raises(self):
-        with pytest.raises(ValueError):
-            BasisSet.build(method="GTO", name="not-a-basis")
-
-    def test_register_custom_basis(self):
-        register("mini-h", "H S\n 1.0 1.0\n")
-        orbs = BasisSet.build(method="GTO", name="mini-h").atom("H")
-        assert len(orbs) == 1
+            BasisSet.build(method="GTO").atom("Fr")
 
 
 class TestMoleculeAndEngine:
     def test_molecule_concatenates(self):
-        gto = BasisSet.build(method="GTO", name="6-31G(d)")
+        gto = BasisSet.build(method="GTO")
         basis = gto.molecule(["H", "H"], [[0, 0, 0], [0, 0, 0.74]])
-        assert len(basis) == 4                      # 2 per H
+        assert len(basis) == 2                      # 1 per H (minimal)
 
-    def test_overlap_diagonal_is_normalized(self):
-        # Each basis function is 3D-normalized -> S_aa ~ 1 on a fine grid.
-        gto = BasisSet.build(method="GTO", name="6-31G(d)")
-        basis = gto.atom("H", center=[0, 0, 0], units="bohr")
-        grid = Grid(center=[0, 0, 0], box_size=10.0, h=0.25, units="bohr")
-        psi = np.stack([b.evaluate(grid.X, grid.Y, grid.Z).ravel() for b in basis])
-        S = (np.conj(psi) @ psi.T) * grid.dV
-        assert np.allclose(np.diag(S).real, 1.0, atol=0.02)
+    def test_all_shells_radially_normalized(self):
+        # Every contracted shell is analytically normalized (grid-independent,
+        # so the tight core 1s isn't a resolution artifact).
+        basis = BasisSet.build(method="GTO").atom("C", units="bohr")
+        r = np.linspace(0.0, 40.0, 400000)
+        for orb in basis:
+            norm = float(np.trapezoid(orb.radial(r) ** 2 * r * r, r))
+            assert np.isclose(norm, 1.0, atol=1e-4)
+
+    def test_diffuse_orbital_grid_normalized(self):
+        # The diffuse hydrogen 1s is resolved on a modest grid -> S_aa ~ 1.
+        orb = BasisSet.build(method="GTO").atom("H", units="bohr")[0]
+        grid = Grid(center=[0, 0, 0], box_size=12.0, h=0.25, units="bohr")
+        psi = orb.evaluate(grid.X, grid.Y, grid.Z)
+        assert abs(float(np.sum(np.abs(psi) ** 2) * grid.dV) - 1.0) < 0.02

@@ -11,7 +11,7 @@
 Builds a minimal basis of one hydrogen 1s orbital on each nucleus, then uses
 :class:`~carcara.integrals.IntegralEngine` to compute the real-space one-body
 (kinetic ``T`` and nuclear-attraction ``V``) matrices and the two-body
-electron-repulsion tensor ``(ab|cd)`` in the chemists' convention.
+electron-repulsion tensor ``<ab|cd>`` in the physicists' convention.
 
 Run with::
 
@@ -52,7 +52,7 @@ print(f"C backend in use: {engine.uses_c_backend}")
 T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V  # the one-body core Hamiltonian
 
-# Two-body electron-repulsion tensor (ab|cd), chemists' notation.
+# Two-body electron-repulsion tensor <ab|cd>, physicists' notation.
 eri = engine.two_body(method="fft")
 
 np.set_printoptions(precision=3, suppress=True)
@@ -63,7 +63,7 @@ print(V.real)
 print("\nCore Hamiltonian h = T + V (eV):")
 print(h_core.real)
 print("\nSelected two-body integrals (eV):")
-print(f"  (00|00) = {eri[0, 0, 0, 0].real:.3f}   on-site repulsion")
-print(f"  (00|11) = {eri[0, 0, 1, 1].real:.3f}   inter-site Coulomb")
-print(f"  (01|01) = {eri[0, 1, 0, 1].real:.3f}   exchange")
+print(f"  <00|00> = {eri[0, 0, 0, 0].real:.3f}   on-site repulsion")
+print(f"  <01|01> = {eri[0, 1, 0, 1].real:.3f}   inter-site Coulomb")
+print(f"  <00|11> = {eri[0, 0, 1, 1].real:.3f}   exchange")
 

@@ -15,18 +15,21 @@ grid), so any of them drops straight into the integral engine.  Built-ins:
   effective charges);
 * :class:`NumericalAtomicOrbital` -- confined Sankey/SIESTA-type numerical
   orbitals on a radial grid;
-* :class:`GaussianOrbital` -- contracted Gaussian-type orbitals.
+* :class:`GaussianOrbital` -- contracted Gaussian-type orbitals, used by the
+  native STO-nG basis (:mod:`carcara.basis.sto_ng`).
 
-Use the :class:`BasisSet` factory to build NAO or GTO bases by name.
+Use the :class:`BasisSet` factory to build NAO or (STO-nG) GTO bases.  All
+families are generated from scratch -- no tabulated basis-set data.
 """
 
 from .base import BasisFunction
 from .factory import BasisSet, GTOBasisSet, NAOBasisSet
 from .gaussian import GaussianOrbital
-from .gto_data import available_bases, parse_nwchem, register
 from .hydrogenic import HydrogenicOrbital
 from .nao import (DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital,
                   energy_shift_to_rc)
+from .sto_ng import (occupied_subshells, slater_exponent, sto_ng_contraction,
+                     sto_ng_shells)
 
 __all__ = [
     "BasisFunction",
@@ -38,7 +41,8 @@ __all__ = [
     "GTOBasisSet",
     "energy_shift_to_rc",
     "DEFAULT_ENERGY_SHIFT",
-    "register",
-    "parse_nwchem",
-    "available_bases",
+    "sto_ng_contraction",
+    "sto_ng_shells",
+    "slater_exponent",
+    "occupied_subshells",
 ]

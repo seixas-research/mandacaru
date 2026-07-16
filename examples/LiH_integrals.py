@@ -11,7 +11,7 @@
 Builds a small minimal basis -- the Li 1s, 2s and 2p_z orbitals plus the H 1s
 orbital -- and uses :class:`~carcara.integrals.IntegralEngine` to compute the
 real-space one-body (kinetic ``T`` and nuclear-attraction ``V``) matrices and
-the two-body electron-repulsion tensor ``(ab|cd)`` in the chemists' convention.
+the two-body electron-repulsion tensor ``<ab|cd>`` in the physicists' convention.
 
 The nuclear potential uses the *true* nuclear charges (Z_Li = 3, Z_H = 1),
 while the hydrogenic basis orbitals use *effective* charges (Slater's rules) so
@@ -64,7 +64,7 @@ print("Slater Z_eff:", ", ".join(f"{l}={o.Z:.2f}" for l, o in zip(labels, basis)
 T, V = engine.one_body(potentials.nuclear_potential)
 h_core = T + V  # the one-body core Hamiltonian
 
-# Two-body electron-repulsion tensor (ab|cd), chemists' notation.
+# Two-body electron-repulsion tensor <ab|cd>, physicists' notation.
 eri = engine.two_body(method="fft")
 
 np.set_printoptions(precision=3, suppress=True)
@@ -75,7 +75,7 @@ print(V.real)
 print("\nCore Hamiltonian h = T + V (eV):")
 print(h_core.real)
 print("\nSelected two-body integrals (eV):")
-print(f"  (00|00) = {eri[0, 0, 0, 0].real:.3f}   Li 1s on-site repulsion")
-print(f"  (33|33) = {eri[3, 3, 3, 3].real:.3f}   H 1s on-site repulsion")
-print(f"  (11|33) = {eri[1, 1, 3, 3].real:.3f}   Li 2s - H 1s Coulomb")
-print(f"  (13|13) = {eri[1, 3, 1, 3].real:.3f}   Li 2s - H 1s exchange")
+print(f"  <00|00> = {eri[0, 0, 0, 0].real:.3f}   Li 1s on-site repulsion")
+print(f"  <33|33> = {eri[3, 3, 3, 3].real:.3f}   H 1s on-site repulsion")
+print(f"  <13|13> = {eri[1, 3, 1, 3].real:.3f}   Li 2s - H 1s Coulomb")
+print(f"  <11|33> = {eri[1, 1, 3, 3].real:.3f}   Li 2s - H 1s exchange")

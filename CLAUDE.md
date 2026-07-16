@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Current state of the code
 
 Implemented:
-- `src/carcara/basis/` — localized single-particle basis functions (`BasisFunction` ABC) and three concrete families: `HydrogenicOrbital` (analytic, with Slater charges), `NumericalAtomicOrbital` (confined Sankey/SIESTA-type, `nao.py`), `GaussianOrbital` (contracted GTOs, `gaussian.py`). The `BasisSet` factory (`factory.py`) builds NAO/GTO bases by name; GTO parser + file-backed registry in `gto_data.py` loading verbatim NWChem-format data from `gto_sets/*.nwchem` (7 families — STO-3G, 6-31G(d), 6-311G(d,p), cc-pVDZ, cc-pVTZ, def2-SVP, def2-TZVP — covering H–Ar, from the Basis Set Exchange); the parser handles general contractions and shells up to `f`. `register(name, text)` adds more at runtime. Shared aufbau config in `_config.py`, angular helpers in `_angular.py`. (`gto_sets/` is shipped via a `force-include` in `pyproject.toml`.)
+- `src/carcara/basis/` — localized single-particle basis functions (`BasisFunction` ABC) and three concrete families: `HydrogenicOrbital` (analytic, with Slater charges), `NumericalAtomicOrbital` (confined Sankey/SIESTA-type, `nao.py`), `GaussianOrbital` (contracted GTOs, `gaussian.py`). **All families are generated natively from scratch — no tabulated/external basis-set data.** The `BasisSet` factory (`factory.py`) builds NAO or GTO bases; the GTO family is a minimal **STO-nG** basis generated in `sto_ng.py` by least-squares fitting `n_gaussians` primitives to the Slater-type orbital of each occupied subshell (Slater's-rules ζ = (Z−S)/n\*), with the reference fit done once at ζ=1 (cached, `_fit_reference`) and exponents rescaled by ζ². `BasisSet.build(method="GTO", n_gaussians=3)` → STO-3G-like; the fit reproduces published STO-nG exponents closely (H 1s → 2.22766/0.40577/0.10982). Shared aufbau config in `_config.py`, angular helpers in `_angular.py`.
 - `src/carcara/integrals/` — real-space one- and two-body integral engine, grid, FFT Poisson solver, C backend binding
 - `src/carcara/wavefunction.py` — atomic-system facade over basis + grid + engine (ASE XYZ I/O)
 
@@ -71,14 +71,14 @@ The single contract is `BasisFunction.evaluate(x, y, z)` (in `basis/base.py`). T
 2. Each `BasisFunction.sample(grid)` produces a contiguous `complex128` vector.
 3. `IntegralEngine` (`integrals/engine.py`) stacks them into `(M, ngrid)`, evaluates the external potential callable `V(x,y,z)`, and dispatches to the backend:
    - `one_body(potential)` → kinetic `T` (finite-difference Laplacian) and potential `V` matrices → core Hamiltonian `h = T + V`.
-   - `two_body(method=...)` → electron-repulsion tensor `(ab|cd)` in **chemists' notation**. `method="fft"` (default) uses the O(N log N) `PoissonFFTSolver` (`integrals/poisson.py`); `method="direct"` uses the O(N²) real-space double sum in C.
+   - `two_body(method=...)` → electron-repulsion tensor `<ab|cd>` in **physicists' notation** (electron 1 carries indices `a,c`; electron 2 `b,d`). `method="fft"` (default) uses the O(N log N) `PoissonFFTSolver` (`integrals/poisson.py`); `method="direct"` uses the O(N²) real-space double sum in C.
 4. `Wavefunction` (`wavefunction.py`) is a thin facade: it reads geometry (ASE), builds the grid + hydrogenic basis, and delegates all physics to the engine.
 
 **Units convention** (`units.py` is the single source of truth): the numerical core — `evaluate`, the grid coordinate arrays, the C backend, the Poisson solver — always works in **atomic units (Bohr, Hartree)**. The user-facing classes (`Grid`, `HydrogenicOrbital`, `Potentials`, `IntegralEngine`) default to the **frontend units (Ångström, eV)** and convert at their boundary via a `units=`/`energy_units=` argument. The legacy `Wavefunction` facade opts back into atomic units (`units="bohr"`, `energy_units="Ha"`), which is why its public API and tests are unchanged. When adding a user-facing length/energy argument, route it through `units.py` and default to Ångström/eV.
 
 `HydrogenicOrbital` also provides Slater's-rules effective charges: `slater_effective_charge(atomic_number, n, l)` (static) and the `from_slater(n, l, m, atomic_number, ...)` constructor.
 
-Validation anchor used throughout the tests: the hydrogen 1s on-site repulsion `(00|00)` must recover the exact `5/8 Ha` (`= 0.625` Ha `= 17.007` eV, depending on `energy_units`).
+Validation anchor used throughout the tests: the hydrogen 1s on-site repulsion `<00|00>` must recover the exact `5/8 Ha` (`= 0.625` Ha `= 17.007` eV, depending on `energy_units`).
 
 ## Versioning
 

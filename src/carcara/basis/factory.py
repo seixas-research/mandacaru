@@ -15,23 +15,27 @@ ready for :class:`~carcara.integrals.IntegralEngine`:
 .. code-block:: python
 
     nao = BasisSet.build(method="NAO", energy_shift=0.03)
-    gto = BasisSet.build(method="GTO", name="6-31G(d)")
+    gto = BasisSet.build(method="GTO", n_gaussians=3)          # STO-3G
 
     orbitals = gto.atom("O", center=[0.0, 0.0, 0.0])          # one atom
     basis = gto.molecule(["H", "H"], [[0, 0, 0], [0, 0, 0.74]])  # a geometry
+
+The GTO family is generated from scratch (see :mod:`carcara.basis.sto_ng`): a
+least-squares STO-nG fit of Gaussians to Slater-type orbitals, so it needs no
+tabulated basis-set data.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ase.data import atomic_numbers, chemical_symbols
+from ase.data import atomic_numbers
 
 from .base import BasisFunction
 from .gaussian import GaussianOrbital
-from .gto_data import get_basis_data
 from .hydrogenic import HydrogenicOrbital
 from .nao import DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital, energy_shift_to_rc
+from .sto_ng import sto_ng_shells
 from ._config import valence_subshells
 
 
@@ -120,30 +124,31 @@ class NAOBasisSet(BasisSet):
 
 
 class GTOBasisSet(BasisSet):
-    """Contracted Gaussian-Type Orbitals from a named family.
+    """Minimal STO-nG Gaussian-Type Orbitals, generated natively from scratch.
+
+    One contracted Gaussian per occupied atomic subshell (core and valence),
+    each a least-squares STO-nG fit of ``n_gaussians`` primitives to the Slater
+    orbital of the subshell (:mod:`carcara.basis.sto_ng`).  No tabulated
+    basis-set data is used.
 
     Parameters
     ----------
-    name : str
-        Basis-set family, e.g. ``"6-31G(d)"``, ``"cc-pVDZ"`` or ``"def2-SVP"``.
+    n_gaussians : int
+        Number of primitive Gaussians per contraction (the ``n`` of STO-nG,
+        default ``3`` -> an STO-3G-like minimal basis).
     """
 
     method = "GTO"
 
-    def __init__(self, name: str):
-        self.name = name
-        self._data = get_basis_data(name)
+    def __init__(self, n_gaussians: int = 3):
+        self.n_gaussians = int(n_gaussians)
+        self.name = f"STO-{self.n_gaussians}G"
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
              units: str = "angstrom") -> list[BasisFunction]:
         Z = _to_atomic_number(element)
-        if Z not in self._data:
-            sym = chemical_symbols[Z] if Z < len(chemical_symbols) else Z
-            raise ValueError(
-                f"element {sym!r} is not in the embedded {self.name!r} data; "
-                f"register it with carcara.basis.register")
         orbitals: list[BasisFunction] = []
-        for (l, exps, coeffs) in self._data[Z]:
+        for (_n, l, exps, coeffs) in sto_ng_shells(Z, self.n_gaussians):
             for m in range(-l, l + 1):
                 orbitals.append(GaussianOrbital(
                     l, m, exps, coeffs, center=center, units=units))

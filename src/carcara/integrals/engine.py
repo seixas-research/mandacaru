@@ -85,7 +85,20 @@ class IntegralEngine:
 
     def two_body(self, method: str = "fft", softening: float = 0.0,
                  energy_units: str = "eV"):
-        """Electron-repulsion tensor ``(ab|cd)`` over the basis (chemists').
+        r"""Electron-repulsion tensor over the basis, physicists' notation.
+
+        Returns ``eri[a, b, c, d] = <ab|cd>``,
+
+        .. math::
+
+            \langle ab|cd\rangle = \iint
+                \psi_a^*(\mathbf r_1)\,\psi_b^*(\mathbf r_2)\,
+                \frac{1}{r_{12}}\,
+                \psi_c(\mathbf r_1)\,\psi_d(\mathbf r_2)\,
+                d\mathbf r_1\, d\mathbf r_2 ,
+
+        i.e. electron 1 carries the index pair ``(a, c)`` and electron 2 the pair
+        ``(b, d)``.  (In chemists' notation this is ``(ac|bd)``.)
 
         Parameters
         ----------
@@ -104,6 +117,8 @@ class IntegralEngine:
             eri = self._two_body_fft()
         elif method == "direct":
             xg, yg, zg = self.grid.flat_coords()
+            # The backend already returns the physicists'-ordered tensor
+            # eri[a,b,c,d] = <ab|cd> (electron 1 carries indices a, c).
             eri = _backend.two_body_tensor(self._psi, xg, yg, zg,
                                            self.grid.dV, softening)
         else:
@@ -111,13 +126,18 @@ class IntegralEngine:
         return from_hartree(eri, energy_units)
 
     def _two_body_fft(self):
-        """FFT-Poisson electron-repulsion tensor.
+        r"""FFT-Poisson electron-repulsion tensor ``<ab|cd>`` (physicists').
 
         For every ordered pair build the density ``rho_ij = conj(psi_i) psi_j``;
         solve Poisson for each ``rho_bd`` to get ``Phi_bd``; then the whole
         tensor is a single dense contraction (BLAS GEMM)
 
-            eri[a,b,c,d] = sum_g rho_ac[g] Phi_bd[g] dV .
+            eri[a,b,c,d] = <ab|cd> = sum_g rho_ac[g] Phi_bd[g] dV .
+
+        The pair index ``p = i*M + j`` selects ``rho_ij``; ``R[(a,c),(b,d)]``
+        reshapes to the ``(a, c, b, d)`` layout, and the transpose ``(0,2,1,3)``
+        brings it to the physicists' ordering ``<ab|cd>`` (electron 1 = ``a, c``;
+        electron 2 = ``b, d``).
         """
         M = len(self.basis)
         ngrid = self.grid.size
@@ -129,7 +149,7 @@ class IntegralEngine:
         solver = PoissonFFTSolver(self.grid.points, self.grid.dx)
         phi_pairs = solver.solve_stack(pairs)                    # (M*M, ngrid)
 
-        # R[(a,c),(b,d)] = sum_g pairs[(a,c),g] phi[(b,d),g] * dV.
+        # R[(a,c),(b,d)] = sum_g rho_ac[g] Phi_bd[g] * dV = <ab|cd>.
         R = (pairs @ phi_pairs.T) * self.grid.dV                 # (M*M, M*M)
-        # Reshape (a,c,b,d) -> transpose to chemists' (a,b,c,d).
+        # Reshape to (a, c, b, d), then transpose to physicists' (a, b, c, d).
         return R.reshape(M, M, M, M).transpose(0, 2, 1, 3).copy()

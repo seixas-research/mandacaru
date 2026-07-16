@@ -5,16 +5,17 @@ localized basis functions, both implementing the same `BasisFunction` contract
 so they plug straight into `IntegralEngine`:
 
 * **NAO** -- confined *Numerical Atomic Orbitals* (Sankey/SIESTA-type);
-* **GTO** -- *Contracted Gaussian-Type Orbitals* from standard families.
+* **GTO** -- a minimal *STO-nG Contracted Gaussian* basis, generated from
+  scratch (no tabulated basis-set data).
 
-The `BasisSet` factory builds either by name. Lengths are in Ångström and
-energies in eV (the user-facing units).
+Both are built by the `BasisSet` factory and generated natively. Lengths are in
+Ångström and energies in eV (the user-facing units).
 
 ```python
 from carcara.basis import BasisSet
 
 nao = BasisSet.build(method="NAO", energy_shift=0.03)
-gto = BasisSet.build(method="GTO", name="6-31G(d)")
+gto = BasisSet.build(method="GTO", n_gaussians=3)   # STO-3G-like
 ```
 
 ## Numerical Atomic Orbitals
@@ -52,38 +53,38 @@ $\chi(\mathbf r) = R(r)\,Y_l^m$ with
 $R(r) = \sum_i c_i\, N(\alpha_i, l)\, r^l e^{-\alpha_i r^2}$; each primitive is
 normalized and the contraction renormalized so $\int |R|^2 r^2 dr = 1$.
 
-Seven families spanning the main design philosophies ship built in, each
-covering the elements **H–Ar** (spherical harmonics, from the
-[Basis Set Exchange](https://www.basissetexchange.org)):
+The GTO family is a **minimal STO-nG basis generated from scratch** — it needs
+no tabulated basis-set data. For every occupied subshell $(n, l)$ of the atom
+(core *and* valence) a Slater-type orbital
+$S_{nl}(r) \propto r^{\,n-1} e^{-\zeta r}$, with Slater's-rules exponent
+$\zeta = (Z - s)/n^*$, is approximated by a fixed contraction of `n_gaussians`
+Gaussians,
 
-| Group | Families | Design |
-|---|---|---|
-| Pople | `STO-3G`, `6-31G(d)`, `6-311G(d,p)` | minimal / split-valence + polarization |
-| Dunning | `cc-pVDZ`, `cc-pVTZ` | correlation-consistent (post-HF) |
-| Karlsruhe | `def2-SVP`, `def2-TZVP` | DFT-optimized |
-
-List them with `carcara.basis.available_bases()`. The parser handles segmented
-*and* general contractions and shells up to `f`, so triple-zeta sets work too:
-
-```python
-BasisSet.build(method="GTO", name="6-31G(d)").atom("C")   # 14 funcs: 3s+6p+5d
-BasisSet.build(method="GTO", name="cc-pVTZ").atom("C")    # 30 funcs: +f shell
+```{math}
+S_{nl}(r) \;\approx\; \sum_{i=1}^{n} c_i\, N(\alpha_i, l)\, r^l e^{-\alpha_i r^2},
 ```
 
-Any other element/family can be added from a Basis Set Exchange download in
-NWChem/Gaussian94 format:
+whose exponents and coefficients come from a least-squares fit to $S_{nl}$
+(weighted by $r^2\,dr$). The fit is scale-covariant, so it is done once at the
+reference $\zeta = 1$ (cached) and the exponents are rescaled by $\zeta^2$ for
+the actual atom. This reproduces the standard published STO-nG contractions
+closely — e.g. the hydrogen 1s STO-3G exponents $2.22766, 0.40577, 0.10982$ to
+five figures.
 
 ```python
-from carcara.basis import register
-
-register("my-basis", nwchem_text)     # then BasisSet.build(method="GTO", name="my-basis")
+BasisSet.build(method="GTO", n_gaussians=3).atom("C")   # 5 funcs: 1s+2s+2p
+BasisSet.build(method="GTO", n_gaussians=6).atom("H")   # 1 func, 6 primitives
 ```
+
+The count is the minimal-basis size (one contraction per occupied subshell);
+`n_gaussians` only sets how many primitives each contraction uses. Any atom whose
+occupied shells have a defined Slater $n^*$ ($n \le 6$) is supported.
 
 ```{note}
-Real-space grids cannot resolve the ultra-tight *core* Gaussians of
-all-electron triple-zeta sets (exponents in the thousands); those functions are
-still analytically normalized but under-sampled on a coarse grid. Diffuse and
-valence functions integrate accurately.
+Real-space grids cannot fully resolve the ultra-tight *core* Gaussians of heavy
+atoms (e.g. the argon 1s); those functions are still analytically normalized but
+under-sampled on a coarse grid. Diffuse and valence functions integrate
+accurately.
 ```
 
 ## Feeding the engine
