@@ -9,6 +9,8 @@
 """Variational quantum algorithms."""
 
 from .adapt_vqe import (
+    ADAPTVQE,
+    ADAPTVQEResult,
     AdaptAnsatz,
     AdaptIteration,
     AdaptVQE,
@@ -40,6 +42,8 @@ __all__ = [
     "RHFResult",
     "UHF",
     "transform_integrals",
+    "ADAPTVQE",
+    "ADAPTVQEResult",
     "AdaptVQE",
     "AdaptVQEResult",
     "AdaptAnsatz",

@@ -318,21 +318,30 @@ class CEOPool(QEBPool):
 
     def _build(self) -> list[PoolOperator]:
         groups: dict[tuple[int, ...], PauliSum] = {}
+        members: dict[tuple[int, ...], list[str]] = {}
         order: list[tuple[int, ...]] = []
         for op in self._qeb_operators():
             key = op.support
             if key not in groups:
                 groups[key] = PauliSum()
+                members[key] = []
                 order.append(key)
             groups[key] = groups[key] + op.generator
+            members[key].append(op.label)
 
         ops: list[PoolOperator] = []
         for key in order:
             generator = groups[key].simplify()
             if not generator.terms:
                 continue
-            span = f"{key[0]}..{key[-1]}" if len(key) > 1 else f"{key[0]}"
-            ops.append(PoolOperator(f"CEO[{span}]", generator, key, "ceo"))
+            # Label with the *full* qubit support (not just its endpoints, which
+            # collide for non-contiguous supports) plus the coupled QEB
+            # excitations, so every CEO operator is uniquely and descriptively
+            # named -- e.g. "CEO[q0,q1,q4,q5]{QD(0,1->4,5)}".
+            qubits = ",".join(f"q{q}" for q in key)
+            excitations = "+".join(m[1:] for m in members[key])  # drop the "Q"
+            label = f"CEO[{qubits}]{{{excitations}}}"
+            ops.append(PoolOperator(label, generator, key, "ceo"))
         return ops
 
 

@@ -41,9 +41,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ase.calculators.calculator import Calculator, all_changes
+
 from ..circuits.pools import PoolBase, PoolOperator, build_pool
 from ..core.mapping import Fermion, PauliSum
 from ..optimizers.optim import Optimizer
+from ..units import ANGSTROM_TO_BOHR, from_hartree
 
 
 def _resolve_geometry(geometry):
@@ -79,10 +82,12 @@ class CircuitMetrics:
     cnot_count: int | None            # number of CNOT (two-qubit) gates
     depth: int | None                 # circuit depth in the native gate set
     num_operators: int                # generators (parameters) in the ansatz
+    num_1q_gates: int | None = None   # single-qubit (``u``) gates
+    total_gates: int | None = None    # all gates in the native gate set
 
     def __repr__(self) -> str:
         return (f"CircuitMetrics(cnots={self.cnot_count}, depth={self.depth}, "
-                f"n_ops={self.num_operators})")
+                f"gates={self.total_gates}, n_ops={self.num_operators})")
 
 
 def _pauli_evolution_gate(generator: PauliSum, time=1.0):
@@ -131,7 +136,9 @@ def profile_ansatz(n_qubits: int, occupied: tuple[int, ...],
     counts = compiled.count_ops()
     return CircuitMetrics(cnot_count=int(counts.get("cx", 0)),
                           depth=int(compiled.depth()),
-                          num_operators=len(operators))
+                          num_operators=len(operators),
+                          num_1q_gates=int(counts.get("u", 0)),
+                          total_gates=int(sum(counts.values())))
 
 
 # --------------------------------------------------------------------------- #
@@ -252,39 +259,87 @@ class AdaptVQEResult:
 # ADAPT-VQE driver.
 # --------------------------------------------------------------------------- #
 
-class AdaptVQE:
-    """Adaptive VQE on an exact state-vector backend.
+class ADAPTVQE(Calculator):
+    """Adaptive VQE on an exact state-vector backend; also an ASE calculator.
+
+    Two usage modes:
+
+    * **Direct** -- construct with a Hamiltonian and call :meth:`run`.
+    * **ASE calculator** -- construct with a ``hamiltonian_builder`` (no
+      Hamiltonian), attach to an ``Atoms`` object (``atoms.calc = ADAPTVQE(...)``)
+      and let ``atoms.get_total_energy()`` build the Hamiltonian from the current
+      geometry and drive :meth:`run`.  ASE energies are returned in **eV**.
 
     Parameters
     ----------
-    hamiltonian : PauliSum or Fermion
+    hamiltonian : PauliSum or Fermion, optional
         Qubit Hamiltonian, or a fermionic Hamiltonian mapped with ``mapping``.
+        Omit it in calculator mode and pass ``hamiltonian_builder`` instead.
     pool : PoolBase or str
         The operator pool, or a name for :func:`~carcara.circuits.pools.build_pool`
         (``"fermionic"``, ``"qubit"``, ``"qeb"``, ``"ceo"``).  When a name is given
-        ``n_spatial_orbitals`` and ``num_particles`` are required.
+        ``n_spatial_orbitals`` and ``num_particles`` are required (in direct mode;
+        in calculator mode the builder supplies them).
     num_particles : (int, int), optional
         ``(n_alpha, n_beta)``; required to build a pool from a name and to set the
         Hartree-Fock reference.  Inferred from the pool object otherwise.
     n_spatial_orbitals : int, optional
         Number of spatial orbitals; required to build a pool from a name.
     optimizer : Optimizer, optional
-        Classical optimizer for the inner re-optimization (default L-BFGS-B).
+        Classical optimizer for the inner re-optimization (default **COBYLA**).
     mapping : str
         Fermion-to-qubit mapping used when ``hamiltonian`` is a ``Fermion`` and to
         build a named fermionic pool (default ``"jordan_wigner"``).
     profile : bool
         Compile and profile the ansatz each iteration (default ``True``).
+    atomic_units : bool
+        Units used in the ``output.txt`` log.  ``False`` (default) logs energies
+        in **eV** and lengths in **Angstrom**; ``True`` logs Hartree and Bohr.
+        (ASE's ``get_total_energy`` always returns eV, per the ASE convention.)
+    hamiltonian_builder : callable, optional
+        ``atoms -> (hamiltonian, num_particles, n_spatial_orbitals)``.  Used in
+        ASE-calculator mode to build the Hamiltonian from the current geometry.
+    run_options : dict, optional
+        Keyword arguments forwarded to :meth:`run` on each calculator evaluation
+        (e.g. ``{"max_iterations": 20, "gradient_tol": 1e-4}``).
     """
 
-    def __init__(self, hamiltonian, pool, num_particles=None,
+    implemented_properties = ["energy", "free_energy"]
+
+    def __init__(self, hamiltonian=None, pool=None, num_particles=None,
                  n_spatial_orbitals=None, optimizer: Optimizer | None = None,
-                 mapping: str = "jordan_wigner", profile: bool = True):
+                 mapping: str = "jordan_wigner", profile: bool = True,
+                 atomic_units: bool = False, hamiltonian_builder=None,
+                 run_options: dict | None = None, **calc_kwargs):
+        Calculator.__init__(self, **calc_kwargs)
+
         self.mapping = mapping
         self.profile = profile
-        self.optimizer = optimizer or Optimizer(method="L-BFGS-B", maxiter=2000)
+        self.optimizer = optimizer or Optimizer(method="COBYLA", maxiter=2000)
 
-        # Resolve the pool.
+        # Output-unit convention (see class docstring).
+        self.atomic_units = bool(atomic_units)
+        self.energy_units = "Ha" if atomic_units else "eV"
+        self.length_units = "bohr" if atomic_units else "angstrom"
+
+        self._pool_spec = pool
+        self.hamiltonian_builder = hamiltonian_builder
+        self.run_options = dict(run_options or {})
+
+        # Seeded RNG for reproducible expressivity logging (output.txt).
+        self._expr_rng = np.random.default_rng(0)
+
+        # Configure eagerly when a Hamiltonian is given (direct mode); otherwise
+        # defer to the first calculator evaluation (:meth:`calculate`).
+        self._configured = False
+        if hamiltonian is not None:
+            self._configure(hamiltonian, num_particles, n_spatial_orbitals)
+
+    # -- setup helpers ---------------------------------------------------- #
+
+    def _configure(self, hamiltonian, num_particles, n_spatial_orbitals):
+        """Resolve the pool and materialize the Hamiltonian / pool matrices."""
+        pool = self._pool_spec
         if isinstance(pool, PoolBase):
             self.pool = pool
         else:
@@ -293,7 +348,7 @@ class AdaptVQE:
                     "building a pool by name requires n_spatial_orbitals and "
                     "num_particles")
             self.pool = build_pool(pool, n_spatial_orbitals, num_particles,
-                                   mapping=mapping)
+                                   mapping=self.mapping)
         self.n_qubits = self.pool.n_qubits
         self.num_particles = (tuple(num_particles) if num_particles is not None
                               else self.pool.num_particles)
@@ -311,11 +366,7 @@ class AdaptVQE:
         # Precompute pool-operator matrices once.
         self._pool_ops = self.pool.operators()
         self._pool_matrices = [op.matrix() for op in self._pool_ops]
-
-        # Seeded RNG for reproducible expressivity logging (output.txt).
-        self._expr_rng = np.random.default_rng(0)
-
-    # -- setup helpers ---------------------------------------------------- #
+        self._configured = True
 
     def _as_pauli_sum(self, hamiltonian) -> PauliSum:
         if isinstance(hamiltonian, PauliSum):
@@ -323,6 +374,37 @@ class AdaptVQE:
         if isinstance(hamiltonian, Fermion):
             return hamiltonian.map_to_qubits(self.mapping, n_modes=self.n_qubits)
         raise TypeError("hamiltonian must be a PauliSum or Fermion")
+
+    # -- ASE calculator interface ---------------------------------------- #
+
+    def calculate(self, atoms=None, properties=("energy",),
+                  system_changes=all_changes):
+        """ASE hook: build the Hamiltonian from ``atoms`` and run ADAPT-VQE.
+
+        Stores the ground-state energy (in **eV**, per ASE convention) in
+        :attr:`results` and the full :class:`ADAPTVQEResult` in
+        :attr:`adapt_result`.  Requires a ``hamiltonian_builder`` unless the
+        object was already configured with a Hamiltonian.
+        """
+        Calculator.calculate(self, atoms, properties, system_changes)
+        atoms = self.atoms  # the Atoms copy stored by the base class
+
+        if self.hamiltonian_builder is not None:
+            hamiltonian, num_particles, n_spatial_orbitals = \
+                self.hamiltonian_builder(atoms)
+            self._configure(hamiltonian, num_particles, n_spatial_orbitals)
+        elif not self._configured:
+            raise RuntimeError(
+                "ADAPTVQE used as a calculator needs a `hamiltonian_builder` "
+                "(or a Hamiltonian supplied at construction)")
+
+        result = self.run(geometry=atoms, **self.run_options)
+        self.adapt_result = result
+
+        # ASE always works in eV / Angstrom, regardless of the log-unit choice.
+        energy_ev = float(from_hartree(result.optimal_energy, "eV"))
+        self.results["energy"] = energy_ev
+        self.results["free_energy"] = energy_ev
 
     # -- energy / gradient ------------------------------------------------ #
 
@@ -344,13 +426,26 @@ class AdaptVQE:
 
     # -- output.txt logging ---------------------------------------------- #
 
+    def _to_energy_units(self, energy_ha):
+        """Convert a Hartree energy to the configured output units (eV default)."""
+        return float(from_hartree(energy_ha, self.energy_units))
+
+    def _energy_unit_label(self) -> str:
+        return "Ha" if self.energy_units.lower() in ("ha", "hartree", "au") \
+            else "eV"
+
+    def _length_unit_label(self) -> str:
+        return "Bohr" if self.length_units.lower() in ("bohr", "au", "a0") \
+            else "Angstrom"
+
     def _make_logger(self, output_file, geometry, cell, ref_energy,
                      max_iterations, gradient_tol):
         """Create an :class:`AdaptOutputLogger` and write the header blocks.
 
         Returns ``None`` when ``output_file`` is not given (logging disabled).
         Resolves the geometry/cell from an ASE ``Atoms`` object or a
-        ``(symbols, positions)`` pair.
+        ``(symbols, positions)`` pair, and converts geometry/energy into the
+        configured output units (**eV / Angstrom** by default).
         """
         if output_file is None:
             return None
@@ -359,15 +454,24 @@ class AdaptVQE:
         symbols, positions, geom_cell = _resolve_geometry(geometry)
         cell = geom_cell if cell is None else cell
 
+        # Geometry from ASE is in Angstrom; convert to Bohr only if requested.
+        if self.atomic_units:
+            if positions is not None:
+                positions = np.asarray(positions, float) * ANGSTROM_TO_BOHR
+            if cell is not None:
+                cell = np.asarray(cell, float) * ANGSTROM_TO_BOHR
+
         logger = AdaptOutputLogger(output_file)
         logger.write_metadata(
             symbols=symbols, positions=positions, cell=cell,
+            units=self._length_unit_label(),
             title=f"ADAPT-VQE ({self.pool.__class__.__name__}, "
                   f"{self.n_qubits} qubits)")
         logger.write_optimizer_setup(
             optimizer_method=self.optimizer.method,
-            reference_energy=ref_energy, gradient_tol=gradient_tol,
-            max_iterations=max_iterations,
+            reference_energy=self._to_energy_units(ref_energy),
+            energy_unit=self._energy_unit_label(),
+            gradient_tol=gradient_tol, max_iterations=max_iterations,
             extra={"mapping": self.mapping,
                    "num_particles": self.num_particles,
                    "pool_size": len(self._pool_ops)})
@@ -433,6 +537,11 @@ class AdaptVQE:
             Compute and log the expressivity score each iteration when
             ``output_file`` is set (default ``True``).
         """
+        if not self._configured:
+            raise RuntimeError(
+                "ADAPTVQE has no Hamiltonian; construct it with one, or use it "
+                "as an ASE calculator with a `hamiltonian_builder`")
+
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping)
         params = (np.asarray(initial_parameters, dtype=float).ravel()
@@ -441,6 +550,7 @@ class AdaptVQE:
 
         logger = self._make_logger(output_file, geometry, cell, ref_energy,
                                    max_iterations, gradient_tol)
+        e_unit = self._energy_unit_label()
 
         iterations: list[AdaptIteration] = []
         selected: list[str] = []
@@ -449,6 +559,7 @@ class AdaptVQE:
         max_grad = np.inf
         energy = ref_energy
         metrics: CircuitMetrics | None = None
+        final_expr: float | None = None
 
         try:
             for _ in range(max_iterations):
@@ -486,11 +597,12 @@ class AdaptVQE:
                 if logger is not None:
                     expr = (self._expressivity(ansatz)
                             if log_expressivity else None)
+                    final_expr = expr
                     logger.write_iteration(
                         iteration=len(iterations), pool_operators=self._pool_ops,
                         gradients=grads, selected_index=idx, expressivity=expr,
-                        energy=energy, num_parameters=ansatz.num_parameters,
-                        metrics=metrics)
+                        energy=self._to_energy_units(energy), energy_unit=e_unit,
+                        num_parameters=ansatz.num_parameters, metrics=metrics)
 
                 if callback is not None:
                     callback({
@@ -504,8 +616,17 @@ class AdaptVQE:
                         "metrics": metrics,
                     })
             if logger is not None:
-                logger.write_summary(converged=converged, optimal_energy=energy,
-                                     num_operators=len(selected))
+                logger.write_summary(
+                    converged=converged,
+                    optimal_energy=self._to_energy_units(energy),
+                    reference_energy=self._to_energy_units(ref_energy),
+                    correlation_energy=self._to_energy_units(energy - ref_energy),
+                    energy_unit=e_unit, num_operators=len(selected),
+                    num_parameters=int(params.size),
+                    final_max_gradient=max_grad, expressivity=final_expr,
+                    num_evaluations=total_evals, metrics=metrics,
+                    optimizer=self.optimizer.method,
+                    operator_sequence=selected)
         finally:
             if logger is not None:
                 logger.close()
@@ -527,3 +648,8 @@ class AdaptVQE:
             iterations=iterations,
             num_evaluations=total_evals,
             metrics=metrics)
+
+
+# Backward-compatible aliases (the class was renamed to ``ADAPTVQE``).
+AdaptVQE = ADAPTVQE
+ADAPTVQEResult = AdaptVQEResult

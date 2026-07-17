@@ -139,7 +139,7 @@ class AdaptOutputLogger:
     # -- optimization setup block ------------------------------------------ #
 
     def write_optimizer_setup(self, optimizer_method: str,
-                              reference_energy: float,
+                              reference_energy: float, energy_unit: str = "eV",
                               gradient_tol: float | None = None,
                               max_iterations: int | None = None,
                               extra: dict | None = None) -> None:
@@ -151,12 +151,13 @@ class AdaptOutputLogger:
         starting point.
         """
         self._emit("[OPTIMIZATION SETUP]",
-                   f"classical_optimizer: {optimizer_method}")
+                   f"classical_optimizer: {optimizer_method}",
+                   f"energy_unit: {energy_unit}")
         if max_iterations is not None:
             self._emit(f"max_iterations: {max_iterations}")
         if gradient_tol is not None:
             self._emit(f"gradient_tol: {gradient_tol:g}")
-        self._emit(f"reference_energy_Ha: {reference_energy:.10f}",
+        self._emit(f"reference_energy_{energy_unit}: {reference_energy:.10f}",
                    "initial_ansatz: |HF> (0 parameters)")
         if extra:
             for key, value in extra.items():
@@ -168,8 +169,12 @@ class AdaptOutputLogger:
     def write_iteration(self, iteration: int, pool_operators: Sequence,
                         gradients: Iterable[float], selected_index: int,
                         expressivity: float | None, energy: float,
-                        num_parameters: int, metrics: Any = None) -> None:
+                        num_parameters: int, energy_unit: str = "eV",
+                        metrics: Any = None) -> None:
         """Append one ADAPT iteration's tracked metrics, in order.
+
+        The **selected operator** is reported in its own block, clearly separate
+        from the full **operator pool** listing that follows it.
 
         Parameters
         ----------
@@ -187,47 +192,97 @@ class AdaptOutputLogger:
             Expressivity score :math:`E` of the parameterized ansatz at this
             iteration (``None`` if not computed).
         energy : float
-            Energy after the inner re-optimization (Hartree).
+            Energy after the inner re-optimization, in ``energy_unit``.
         num_parameters : int
             Number of parameters (operators) in the ansatz after this step.
+        energy_unit : str
+            Unit label for ``energy`` (default ``"eV"``).
         metrics : optional
-            Object exposing ``cnot_count`` / ``depth`` (logged if present).
+            Object exposing ``cnot_count`` / ``depth`` / ``total_gates`` (logged
+            if present).
         """
         grads = [float(g) for g in gradients]
         selected = pool_operators[selected_index]
-        self._emit(_RULE,
-                   f"[ITERATION {iteration}]",
-                   f"selected_operator: {selected.label}",
-                   f"selected_operator_kind: {selected.kind}",
-                   f"max_gradient: {abs(grads[selected_index]):.6e}")
+
+        self._emit(_RULE, f"[ITERATION {iteration}]")
+
+        # 1. Selected operator -- reported separately from the pool.
+        self._emit("selected_operator: " + selected.label,
+                   f"  kind: {selected.kind}",
+                   f"  gradient: {abs(grads[selected_index]):.6e}",
+                   f"  pauli: {_format_pauli(selected.generator)}")
+
+        # 2. Post-optimization state of the ansatz.
         if expressivity is not None:
             self._emit(f"expressivity_E: {expressivity:.6f}")
         else:
             self._emit("expressivity_E: (not computed)")
-        self._emit(f"energy_Ha: {energy:.10f}",
+        self._emit(f"energy_{energy_unit}: {energy:.10f}",
                    f"num_parameters: {num_parameters}")
         if metrics is not None and getattr(metrics, "cnot_count", None) is not None:
             self._emit(f"cnot_count: {metrics.cnot_count}",
                        f"circuit_depth: {metrics.depth}")
+            if getattr(metrics, "total_gates", None) is not None:
+                self._emit(f"total_gates: {metrics.total_gates}",
+                           f"one_qubit_gates: {metrics.num_1q_gates}")
 
-        # Pool operators (Pauli strings) with their gradient magnitudes.
-        self._emit(f"pool_size: {len(pool_operators)}", "pool_operators:")
+        # 3. Full operator pool with per-operator gradient magnitudes and Pauli
+        #    strings (a plain listing; the selected operator is reported above).
+        self._emit(f"pool_size: {len(pool_operators)}", "operator_pool:")
         for i, op in enumerate(pool_operators):
-            flag = "  <== SELECTED" if i == selected_index else ""
-            self._emit(f"  [{i:3d}] label={op.label} "
-                       f"|grad|={abs(grads[i]):.6e}{flag}")
+            marker = " (selected)" if i == selected_index else ""
+            self._emit(f"  [{i:3d}] {op.label}  |grad|={abs(grads[i]):.6e}{marker}")
             self._emit(f"        pauli: {_format_pauli(op.generator)}")
         self._emit("")
 
     # -- footer / teardown ------------------------------------------------- #
 
     def write_summary(self, converged: bool, optimal_energy: float,
-                      num_operators: int, extra: dict | None = None) -> None:
-        """Write the closing summary block."""
-        self._emit(_BANNER, "[SUMMARY]",
-                   f"converged: {converged}",
-                   f"optimal_energy_Ha: {optimal_energy:.10f}",
-                   f"num_operators: {num_operators}")
+                      num_operators: int, energy_unit: str = "eV",
+                      reference_energy: float | None = None,
+                      correlation_energy: float | None = None,
+                      num_parameters: int | None = None,
+                      final_max_gradient: float | None = None,
+                      expressivity: float | None = None,
+                      num_evaluations: int | None = None,
+                      metrics: Any = None, optimizer: str | None = None,
+                      operator_sequence: Sequence[str] | None = None,
+                      extra: dict | None = None) -> None:
+        """Write the closing summary block: the final parameterization in full.
+
+        Records the converged energy, the final ansatz size (operators /
+        parameters), its expressivity, and the compiled-circuit cost (CNOTs,
+        single-qubit gates, total gates, depth), plus the classical-optimizer
+        effort -- everything describing the final variational state.
+        """
+        self._emit(_BANNER, "[SUMMARY]", f"converged: {converged}")
+        if optimizer is not None:
+            self._emit(f"classical_optimizer: {optimizer}")
+        self._emit(f"optimal_energy_{energy_unit}: {optimal_energy:.10f}")
+        if reference_energy is not None:
+            self._emit(f"reference_energy_{energy_unit}: {reference_energy:.10f}")
+        if correlation_energy is not None:
+            self._emit(f"correlation_energy_{energy_unit}: "
+                       f"{correlation_energy:.10f}")
+        self._emit(f"num_operators: {num_operators}")
+        if num_parameters is not None:
+            self._emit(f"num_parameters: {num_parameters}")
+        if expressivity is not None:
+            self._emit(f"final_expressivity_E: {expressivity:.6f}")
+        if final_max_gradient is not None:
+            self._emit(f"final_max_gradient: {final_max_gradient:.6e}")
+        if num_evaluations is not None:
+            self._emit(f"cost_evaluations: {num_evaluations}")
+
+        # Final compiled-circuit cost.
+        if metrics is not None and getattr(metrics, "cnot_count", None) is not None:
+            self._emit(f"cnot_count: {metrics.cnot_count}",
+                       f"circuit_depth: {metrics.depth}")
+            if getattr(metrics, "total_gates", None) is not None:
+                self._emit(f"one_qubit_gates: {metrics.num_1q_gates}",
+                           f"total_gates: {metrics.total_gates}")
+        if operator_sequence is not None:
+            self._emit("operator_sequence: " + " -> ".join(operator_sequence))
         if extra:
             for key, value in extra.items():
                 self._emit(f"{key}: {value}")
@@ -289,7 +344,7 @@ def parse_output(path: str) -> dict:
             if stripped.startswith("[ITERATION"):
                 section = "iteration"
                 current = {"index": int(stripped.split()[1].rstrip("]")),
-                           "pool": []}
+                           "pool": [], "_in_pool": False}
                 result["iterations"].append(current)
                 continue
             if stripped == "[SUMMARY]":
@@ -305,12 +360,19 @@ def parse_output(path: str) -> dict:
                 key, _, value = stripped.partition(":")
                 result["summary"][key.strip()] = value.strip()
             elif section == "iteration" and current is not None:
-                if stripped.startswith("expressivity_E:"):
+                if stripped == "operator_pool:":
+                    current["_in_pool"] = True
+                elif stripped.startswith("expressivity_E:"):
                     current["expressivity_E"] = stripped.split(":", 1)[1].strip()
                 elif stripped.startswith("selected_operator:"):
                     current["selected_operator"] = stripped.split(":", 1)[1].strip()
-                elif stripped.startswith("energy_Ha:"):
-                    current["energy_Ha"] = float(stripped.split(":", 1)[1])
-                elif stripped.startswith("pauli:"):
+                elif stripped.startswith("energy_"):
+                    # energy_eV: / energy_Ha: -- unit taken from the key suffix.
+                    key, _, value = stripped.partition(":")
+                    current["energy"] = float(value)
+                    current["energy_unit"] = key.split("_", 1)[1]
+                elif current["_in_pool"] and stripped.startswith("pauli:"):
                     current["pool"].append(stripped.split(":", 1)[1].strip())
+    for it in result["iterations"]:
+        it.pop("_in_pool", None)
     return result
