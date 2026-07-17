@@ -26,6 +26,7 @@ the integral core changes.
 """
 
 import numpy as np
+from ase import Atoms
 from ase.io import read
 
 from .basis import HydrogenicOrbital
@@ -47,33 +48,130 @@ def _points_to_h(box_size, points):
 
 
 class Wavefunction:
-    def __init__(self, xyz_filename, atom_index=0):
-        """
-        Initializes the system by reading a molecular/atomic configuration from an XYZ file.
+    def __init__(self, atoms=None, atom_index=0, xyz_filename=None):
+        """Initialize the system from an ASE ``Atoms`` object or an XYZ file.
 
-        Parameters:
-        xyz_filename (str): Path to the .xyz file.
-        atom_index (int): The index of the atom acting as the reference nucleus/origin.
+        Parameters
+        ----------
+        atoms : ase.Atoms or str, optional
+            Either an ASE :class:`~ase.Atoms` object (elements, positions and,
+            for a crystal, the cell are read directly from it) or a path to an
+            ``.xyz`` file.  Passing a path here is equivalent to the historical
+            ``Wavefunction("file.xyz")`` call.
+        atom_index : int
+            Index of the atom acting as the reference nucleus/origin.
+        xyz_filename : str, optional
+            Explicit XYZ path (kept for the legacy keyword form); used only when
+            ``atoms`` is not given.
+
+        The chemical symbols come from ``atoms.get_chemical_symbols()`` and the
+        positions from ``atoms.get_positions()``; the unit cell, when the object
+        carries one, is read from ``atoms.get_cell()`` and exposed as
+        :attr:`cell` (Angstrom) / :attr:`cell_bohr` (Bohr).
         """
-        self.atoms = read(xyz_filename)
+        if atoms is None and xyz_filename is not None:
+            atoms = xyz_filename
+        if atoms is None:
+            raise ValueError("provide an ase.Atoms object or an XYZ file path")
+        if isinstance(atoms, str):
+            atoms = read(atoms)
+        elif not isinstance(atoms, Atoms):
+            raise TypeError(
+                "atoms must be an ase.Atoms object or a path to an XYZ file, "
+                f"got {type(atoms).__name__}")
+
+        self._setup_from_atoms(atoms, atom_index)
+
+        print(f"Loaded {self.n_atoms} atom(s). Reference nucleus: "
+              f"'{self.all_symbols[atom_index]}' (index {atom_index}, Z={self.Z})."
+              + (f" Periodic cell present." if self.has_cell else ""))
+
+    @classmethod
+    def from_ase(cls, atoms, atom_index=0):
+        """Build a :class:`Wavefunction` directly from an ASE ``Atoms`` object.
+
+        Extracts the chemical elements (``atoms.get_chemical_symbols()``),
+        atomic positions (``atoms.get_positions()``) and, for a crystal, the
+        cell (``atoms.get_cell()``) -- no XYZ round-trip or manual geometry
+        parsing required.
+
+        Parameters
+        ----------
+        atoms : ase.Atoms
+            The molecule or crystal.
+        atom_index : int
+            Reference nucleus/origin index.
+        """
+        if not isinstance(atoms, Atoms):
+            raise TypeError(f"expected an ase.Atoms object, got {type(atoms).__name__}")
+        return cls(atoms=atoms, atom_index=atom_index)
+
+    def _setup_from_atoms(self, atoms, atom_index):
+        """Populate state from an ASE ``Atoms`` object (elements/positions/cell)."""
+        self.atoms = atoms
         self.atom_index = atom_index
-        self.n_atoms = len(self.atoms)
+        self.n_atoms = len(atoms)
 
-        # Data for all atoms (positions in Bohr)
-        self.all_positions_bohr = self.atoms.positions * ANGSTROM_TO_BOHR  # (N, 3)
-        self.all_numbers = self.atoms.numbers                              # (N,)
-        self.all_symbols = list(self.atoms.symbols)                        # length N
+        # Elements and positions straight from the ASE object.
+        symbols = atoms.get_chemical_symbols()
+        positions = np.asarray(atoms.get_positions(), dtype=float)  # (N, 3) Angstrom
 
-        # Reference atom (nucleus/origin)
+        self.all_symbols = list(symbols)                                  # length N
+        self.all_numbers = np.asarray(atoms.get_atomic_numbers())         # (N,)
+        self.all_positions_bohr = positions * ANGSTROM_TO_BOHR            # (N, 3) Bohr
+
+        # Unit cell (crystals).  ASE always returns a (3, 3) Cell; it is the zero
+        # matrix for a non-periodic molecule, in which case there is no cell.
+        cell = np.asarray(atoms.get_cell(), dtype=float)                  # (3, 3) Angstrom
+        self.has_cell = bool(np.any(cell))
+        self.cell = cell if self.has_cell else None
+        self.cell_bohr = cell * ANGSTROM_TO_BOHR if self.has_cell else None
+        self.pbc = np.asarray(atoms.get_pbc(), dtype=bool)
+
+        # Reference atom (nucleus/origin).
         self.origin_cart = self.all_positions_bohr[atom_index]
         self.Z = int(self.all_numbers[atom_index])
 
-        print(f"Loaded {self.n_atoms} atom(s). Reference nucleus: "
-              f"'{self.all_symbols[atom_index]}' (index {atom_index}, Z={self.Z}).")
-
     def __repr__(self):
+        cell = "cell" if self.has_cell else "no cell"
         return (f"Wavefunction(nucleus='{self.all_symbols[self.atom_index]}', "
-                f"Z={self.Z}, origin_cart={self.origin_cart}, n_atoms={self.n_atoms})")
+                f"Z={self.Z}, origin_cart={self.origin_cart}, "
+                f"n_atoms={self.n_atoms}, {cell})")
+
+    # --- Grid construction from the (possibly non-cubic) cell ---------------
+
+    def grid_from_cell(self, h=0.20, padding=0.0):
+        """Build an integration :class:`~carcara.integrals.Grid` from the cell.
+
+        Uses the ASE cell tensor (arbitrary, possibly non-orthogonal lattice
+        vectors) so the grid spans the full crystal cell rather than an implicit
+        cube.  Requires the ``Atoms`` object to carry a cell.
+
+        Parameters
+        ----------
+        h : float
+            Target grid spacing in Bohr.
+        padding : float
+            Extra half-extent (Bohr) added around the cell bounding box.
+
+        Returns
+        -------
+        Grid
+            A uniform-spacing grid centered on the cell, non-cubic when the cell
+            is.
+        """
+        if not self.has_cell:
+            raise ValueError("this system has no unit cell; use a cubic Grid "
+                             "with an explicit box_size instead")
+        cell_bohr = self.cell_bohr
+        center = 0.5 * cell_bohr.sum(axis=0)          # geometric center of the cell
+        cell = cell_bohr.copy()
+        if padding:
+            # Grow every lattice vector length by 2*padding along its own axis.
+            extent = np.abs(cell).sum(axis=0)
+            scale = (extent + 2.0 * padding) / np.where(extent > 0, extent, 1.0)
+            cell = cell * scale[np.newaxis, :]
+        return Grid(center=center, box_size=0.0, h=h, units="bohr", cell=cell)
 
     # --- Coordinate Conversion ---
 

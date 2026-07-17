@@ -55,34 +55,42 @@ class PoissonFFTSolver:
 
     Parameters
     ----------
-    points : int
-        Nodes per Cartesian dimension of the (cubic) source grid, ``N``.
+    shape : int or (int, int, int)
+        Nodes per Cartesian axis of the source grid.  A scalar means a cubic
+        grid ``(N, N, N)``; a triple ``(nx, ny, nz)`` a non-cubic one -- the FFT
+        convolution is agnostic to the box shape, only the per-axis lengths and
+        padding differ.
     dx : float
-        Grid spacing in Bohr.
+        Grid spacing in Bohr (uniform across axes).
     self_const : float, optional
         Cell self-energy constant :math:`C_\\text{cube}` used for ``G(0)``.
     workers : int, optional
         Threads for the FFTs (``-1`` uses all cores).
     """
 
-    def __init__(self, points: int, dx: float,
+    def __init__(self, shape, dx: float,
                  self_const: float = CUBE_SELF_CONSTANT, workers: int = -1):
-        self.N = int(points)
+        if np.isscalar(shape):
+            self.shape = (int(shape),) * 3
+        else:
+            self.shape = tuple(int(s) for s in shape)
         self.dx = float(dx)
         self.workers = workers
         # Pad each axis to >= 2N-1 (FFT-friendly length) to avoid wraparound.
-        self.L = sfft.next_fast_len(2 * self.N - 1)
+        self.L = tuple(sfft.next_fast_len(2 * n - 1) for n in self.shape)
         self._Gk = self._build_kernel_transform(self_const)
 
     def _build_kernel_transform(self, self_const: float) -> np.ndarray:
         """Precompute FFT of the 1/r Green's function on the padded grid."""
-        N, L, dx = self.N, self.L, self.dx
-        # Signed integer offsets: 0..N-1 positive, top of the array negative.
-        idx = np.arange(L)
-        offs = np.where(idx < N, idx, idx - L).astype(float)
-        SX = offs[:, None, None]
-        SY = offs[None, :, None]
-        SZ = offs[None, None, :]
+        dx = self.dx
+        offs = []
+        for n, L in zip(self.shape, self.L):
+            # Signed integer offsets: 0..n-1 positive, top of the array negative.
+            idx = np.arange(L)
+            offs.append(np.where(idx < n, idx, idx - L).astype(float))
+        SX = offs[0][:, None, None]
+        SY = offs[1][None, :, None]
+        SZ = offs[2][None, None, :]
         dist = dx * np.sqrt(SX * SX + SY * SY + SZ * SZ)
         with np.errstate(divide="ignore"):
             G = np.where(dist > 0, 1.0 / dist, 0.0)
@@ -98,23 +106,24 @@ class PoissonFFTSolver:
 
         Parameters
         ----------
-        rho_stack : (P, N**3) complex
-            Densities sampled on the flattened cubic grid.
+        rho_stack : (P, nx*ny*nz) complex
+            Densities sampled on the flattened grid.
 
         Returns
         -------
-        (P, N**3) complex
+        (P, nx*ny*nz) complex
             The corresponding Coulomb potentials ``Phi``.
         """
-        N, L, dV = self.N, self.L, self.dx ** 3
+        (nx, ny, nz), dV = self.shape, self.dx ** 3
+        ngrid = nx * ny * nz
         rho_stack = np.ascontiguousarray(rho_stack, dtype=np.complex128)
         P = rho_stack.shape[0]
-        out = np.empty((P, N ** 3), dtype=np.complex128)
-        pad = np.zeros((L, L, L), dtype=np.complex128)
+        out = np.empty((P, ngrid), dtype=np.complex128)
+        pad = np.zeros(self.L, dtype=np.complex128)
         for p in range(P):
             pad[:] = 0.0
-            pad[:N, :N, :N] = rho_stack[p].reshape(N, N, N)
+            pad[:nx, :ny, :nz] = rho_stack[p].reshape(nx, ny, nz)
             spec = sfft.fftn(pad, workers=self.workers)
             phi = sfft.ifftn(spec * self._Gk, workers=self.workers)
-            out[p] = phi[:N, :N, :N].reshape(-1) * dV
+            out[p] = phi[:nx, :ny, :nz].reshape(-1) * dV
         return out

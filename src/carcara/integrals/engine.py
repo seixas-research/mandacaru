@@ -78,7 +78,7 @@ class IntegralEngine:
             np.real(potential(self.grid.X, self.grid.Y, self.grid.Z)).reshape(-1),
             dtype=np.float64)
         T, V = _backend.one_body_matrices(self._psi, Vext, self.grid.dx,
-                                          self.grid.points)
+                                          self.grid.shape)
         return from_hartree(T, energy_units), from_hartree(V, energy_units)
 
     # -- two body ---------------------------------------------------------- #
@@ -146,7 +146,7 @@ class IntegralEngine:
         # Density pairs, row index p = i*M + j  ->  conj(psi_i) * psi_j.
         pairs = (np.conj(psi)[:, None, :] * psi[None, :, :]).reshape(M * M, ngrid)
 
-        solver = PoissonFFTSolver(self.grid.points, self.grid.dx)
+        solver = PoissonFFTSolver(self.grid.shape, self.grid.dx)
         phi_pairs = solver.solve_stack(pairs)                    # (M*M, ngrid)
 
         # R[(a,c),(b,d)] = sum_g rho_ac[g] Phi_bd[g] * dV = <ab|cd>.

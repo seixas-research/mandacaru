@@ -28,9 +28,21 @@ extensions = [
     'sphinx.ext.autodoc',      # Gera docs a partir das docstrings
     'sphinx.ext.napoleon',     # Suporte para estilo Google/NumPy de docstrings
     'sphinx.ext.viewcode',     # Adiciona links para o código fonte
-    'myst_parser',             # Se quiser usar arquivos .md
-    'sphinx_rtd_theme'        # O tema do Read the Docs
+    'sphinx.ext.mathjax',      # Renderiza equacoes LaTeX (docstrings .rst via ``.. math::``)
+    'myst_parser',             # Arquivos Markdown (.md)
+    'sphinx_rtd_theme'         # O tema do Read the Docs
 ]
+
+# MyST (Markdown) math support.  Without ``dollarmath`` the ``$...$`` inline and
+# ``$$...$$`` block math in the ``.md`` tutorials is treated as literal text and
+# never reaches MathJax; ``amsmath`` enables LaTeX ``align``/``equation``
+# environments.  These are what make the equations in the tutorials render.
+myst_enable_extensions = [
+    'dollarmath',
+    'amsmath',
+]
+# Also let single-backslash shortcuts like ``\(`` ... ``\)`` work if used.
+myst_dmath_double_inline = True
 
 templates_path = ['_templates']
 exclude_patterns = []

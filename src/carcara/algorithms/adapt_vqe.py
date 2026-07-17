@@ -46,6 +46,28 @@ from ..core.mapping import Fermion, PauliSum
 from ..optimizers.optim import Optimizer
 
 
+def _resolve_geometry(geometry):
+    """Normalize ``geometry`` to ``(symbols, positions, cell)`` for logging.
+
+    Accepts an ASE ``Atoms`` object (symbols/positions/cell read directly), a
+    ``(symbols, positions)`` pair, or ``None``.  ``cell`` is ``None`` for a
+    non-periodic input.
+    """
+    if geometry is None:
+        return None, None, None
+    # ASE Atoms: duck-typed to avoid a hard dependency here.
+    if hasattr(geometry, "get_chemical_symbols") and \
+            hasattr(geometry, "get_positions"):
+        symbols = list(geometry.get_chemical_symbols())
+        positions = np.asarray(geometry.get_positions(), dtype=float)
+        cell = np.asarray(geometry.get_cell(), dtype=float)
+        cell = cell if np.any(cell) else None
+        return symbols, positions, cell
+    # (symbols, positions) pair.
+    symbols, positions = geometry
+    return list(symbols), np.asarray(positions, dtype=float), None
+
+
 # --------------------------------------------------------------------------- #
 # Circuit profiling.
 # --------------------------------------------------------------------------- #
@@ -290,6 +312,9 @@ class AdaptVQE:
         self._pool_ops = self.pool.operators()
         self._pool_matrices = [op.matrix() for op in self._pool_ops]
 
+        # Seeded RNG for reproducible expressivity logging (output.txt).
+        self._expr_rng = np.random.default_rng(0)
+
     # -- setup helpers ---------------------------------------------------- #
 
     def _as_pauli_sum(self, hamiltonian) -> PauliSum:
@@ -317,10 +342,59 @@ class AdaptVQE:
                              self.mapping)
         return self.energy(ansatz.reference_state())
 
+    # -- output.txt logging ---------------------------------------------- #
+
+    def _make_logger(self, output_file, geometry, cell, ref_energy,
+                     max_iterations, gradient_tol):
+        """Create an :class:`AdaptOutputLogger` and write the header blocks.
+
+        Returns ``None`` when ``output_file`` is not given (logging disabled).
+        Resolves the geometry/cell from an ASE ``Atoms`` object or a
+        ``(symbols, positions)`` pair.
+        """
+        if output_file is None:
+            return None
+        from ..utils.logging import AdaptOutputLogger
+
+        symbols, positions, geom_cell = _resolve_geometry(geometry)
+        cell = geom_cell if cell is None else cell
+
+        logger = AdaptOutputLogger(output_file)
+        logger.write_metadata(
+            symbols=symbols, positions=positions, cell=cell,
+            title=f"ADAPT-VQE ({self.pool.__class__.__name__}, "
+                  f"{self.n_qubits} qubits)")
+        logger.write_optimizer_setup(
+            optimizer_method=self.optimizer.method,
+            reference_energy=ref_energy, gradient_tol=gradient_tol,
+            max_iterations=max_iterations,
+            extra={"mapping": self.mapping,
+                   "num_particles": self.num_particles,
+                   "pool_size": len(self._pool_ops)})
+        return logger
+
+    def _expressivity(self, ansatz) -> float:
+        """Expressivity score ``E`` of the current ansatz (KL from Haar).
+
+        Uses the number-conserving sector dimension as the fixed Haar reference,
+        so scores are comparable across iterations (see
+        :mod:`carcara.algorithms.expressivity`).
+        """
+        from .expressivity import (active_space_dimension,
+                                   calculate_kl_divergence,
+                                   sample_pqc_fidelities)
+        dim = active_space_dimension(self.n_qubits, self.num_particles)
+        fidelities = sample_pqc_fidelities(ansatz, num_samples=400,
+                                           rng=self._expr_rng)
+        return calculate_kl_divergence(fidelities, self.n_qubits, num_bins=75,
+                                       dim=dim)
+
     # -- main loop -------------------------------------------------------- #
 
     def run(self, max_iterations: int = 50, gradient_tol: float = 1e-3,
-            initial_parameters=None, callback=None) -> AdaptVQEResult:
+            initial_parameters=None, callback=None,
+            output_file: str | None = None, geometry=None, cell=None,
+            log_expressivity: bool = True) -> AdaptVQEResult:
         """Grow and optimize the ansatz until convergence.
 
         Parameters
@@ -340,12 +414,33 @@ class AdaptVQE:
             :class:`~carcara.algorithms.expressivity.ADAPTExpressivityTracker` to
             record how the ansatz's expressibility grows.  The ``ansatz`` passed is
             the live :class:`AdaptAnsatz` at its current size (do not mutate it).
+        output_file : str, optional
+            When given, write a structured runtime trace to this path following
+            the ADAPT ``output.txt`` protocol
+            (:class:`~carcara.utils.logging.AdaptOutputLogger`): the initial
+            geometry and cell, the classical optimizer setup, and -- appended
+            live at every iteration -- the pool operators as explicit Pauli
+            strings, each operator's gradient magnitude, the selected operator,
+            and the ansatz's expressivity score :math:`E`.
+        geometry : ase.Atoms or (symbols, positions), optional
+            Initial geometry for the ``output.txt`` metadata block.  An ASE
+            ``Atoms`` object supplies symbols, positions and (if periodic) the
+            cell; a ``(symbols, positions)`` pair supplies just the geometry.
+        cell : (3, 3) array_like, optional
+            Explicit unit-cell tensor for the metadata block (overrides any cell
+            carried by an ``Atoms`` ``geometry``).
+        log_expressivity : bool
+            Compute and log the expressivity score each iteration when
+            ``output_file`` is set (default ``True``).
         """
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping)
         params = (np.asarray(initial_parameters, dtype=float).ravel()
                   if initial_parameters is not None else np.zeros(0))
         ref_energy = self.energy(ansatz.reference_state())
+
+        logger = self._make_logger(output_file, geometry, cell, ref_energy,
+                                   max_iterations, gradient_tol)
 
         iterations: list[AdaptIteration] = []
         selected: list[str] = []
@@ -355,50 +450,67 @@ class AdaptVQE:
         energy = ref_energy
         metrics: CircuitMetrics | None = None
 
-        for _ in range(max_iterations):
-            psi = ansatz.state(params) if ansatz.num_parameters else \
-                ansatz.reference_state()
-            grads = self._gradients(psi)
-            idx = int(np.argmax(np.abs(grads)))
-            max_grad = float(abs(grads[idx]))
-            if max_grad < gradient_tol:
-                converged = True
-                break
+        try:
+            for _ in range(max_iterations):
+                psi = ansatz.state(params) if ansatz.num_parameters else \
+                    ansatz.reference_state()
+                grads = self._gradients(psi)
+                idx = int(np.argmax(np.abs(grads)))
+                max_grad = float(abs(grads[idx]))
+                if max_grad < gradient_tol:
+                    converged = True
+                    break
 
-            op = self._pool_ops[idx]
-            ansatz.append(op)
-            selected.append(op.label)
+                op = self._pool_ops[idx]
+                ansatz.append(op)
+                selected.append(op.label)
 
-            # Warm start: reuse previous optimum, new parameter initialized to 0.
-            x0 = np.concatenate([params, [0.0]])
-            result = self.optimizer.minimize(
-                lambda t: self.energy(ansatz.state(t)), x0)
-            params = np.asarray(result.x, dtype=float)
-            energy = float(result.fun)
-            total_evals += result.nfev
+                # Warm start: reuse previous optimum, new parameter set to 0.
+                x0 = np.concatenate([params, [0.0]])
+                result = self.optimizer.minimize(
+                    lambda t: self.energy(ansatz.state(t)), x0)
+                params = np.asarray(result.x, dtype=float)
+                energy = float(result.fun)
+                total_evals += result.nfev
 
-            metrics = (profile_ansatz(self.n_qubits, ansatz.occupied,
-                                      ansatz.operators)
-                       if self.profile else
-                       CircuitMetrics(None, None, ansatz.num_parameters))
-            iterations.append(AdaptIteration(
-                operator_label=op.label, operator_kind=op.kind,
-                max_gradient=max_grad, energy=energy,
-                cnot_count=metrics.cnot_count, depth=metrics.depth,
-                num_parameters=ansatz.num_parameters))
+                metrics = (profile_ansatz(self.n_qubits, ansatz.occupied,
+                                          ansatz.operators)
+                           if self.profile else
+                           CircuitMetrics(None, None, ansatz.num_parameters))
+                iterations.append(AdaptIteration(
+                    operator_label=op.label, operator_kind=op.kind,
+                    max_gradient=max_grad, energy=energy,
+                    cnot_count=metrics.cnot_count, depth=metrics.depth,
+                    num_parameters=ansatz.num_parameters))
 
-            if callback is not None:
-                callback({
-                    "iteration": len(iterations),
-                    "num_operators": ansatz.num_parameters,
-                    "ansatz": ansatz,
-                    "parameters": params,
-                    "energy": energy,
-                    "max_gradient": max_grad,
-                    "operator_label": op.label,
-                    "metrics": metrics,
-                })
-        else:
+                if logger is not None:
+                    expr = (self._expressivity(ansatz)
+                            if log_expressivity else None)
+                    logger.write_iteration(
+                        iteration=len(iterations), pool_operators=self._pool_ops,
+                        gradients=grads, selected_index=idx, expressivity=expr,
+                        energy=energy, num_parameters=ansatz.num_parameters,
+                        metrics=metrics)
+
+                if callback is not None:
+                    callback({
+                        "iteration": len(iterations),
+                        "num_operators": ansatz.num_parameters,
+                        "ansatz": ansatz,
+                        "parameters": params,
+                        "energy": energy,
+                        "max_gradient": max_grad,
+                        "operator_label": op.label,
+                        "metrics": metrics,
+                    })
+            if logger is not None:
+                logger.write_summary(converged=converged, optimal_energy=energy,
+                                     num_operators=len(selected))
+        finally:
+            if logger is not None:
+                logger.close()
+
+        if not converged and len(iterations) == max_iterations:
             # Loop exhausted without meeting the gradient threshold; report the
             # final screening gradient so callers can see how close it got.
             psi = ansatz.state(params) if ansatz.num_parameters else \

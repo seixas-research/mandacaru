@@ -102,7 +102,16 @@ HAS_C_BACKEND = _LIB is not None
 # Public API (C-accelerated when available, NumPy fallback otherwise).
 # --------------------------------------------------------------------------- #
 
-def one_body_matrices(psi_stack, Vext, dx, points):
+def _as_shape(shape):
+    """Normalize a node-count spec to a ``(nx, ny, nz)`` tuple of ints."""
+    if np.isscalar(shape):
+        n = int(shape)
+        return (n, n, n)
+    nx, ny, nz = (int(s) for s in shape)
+    return (nx, ny, nz)
+
+
+def one_body_matrices(psi_stack, Vext, dx, shape):
     """Kinetic ``T`` and potential ``V`` matrices for ``M`` sampled functions.
 
     ``T[a, b] = <psi_a | -1/2 nabla^2 | psi_b>`` (finite-difference Laplacian),
@@ -111,25 +120,34 @@ def one_body_matrices(psi_stack, Vext, dx, points):
     Parameters
     ----------
     psi_stack : (M, ngrid) complex128
-        Row ``a`` holds ``psi_a`` sampled on the flattened cubic grid.
+        Row ``a`` holds ``psi_a`` sampled on the flattened grid.
     Vext : (ngrid,) float64
         External (e.g. electron-nuclear) potential sampled on the grid.
     dx : float
-        Grid spacing.  ``dV = dx**3``.
-    points : int
-        Nodes per Cartesian dimension (``ngrid == points**3``).
+        Grid spacing (uniform across axes).  ``dV = dx**3``.
+    shape : int or (int, int, int)
+        Nodes per Cartesian axis.  A scalar means a cubic grid
+        (``ngrid == shape**3``); a triple ``(nx, ny, nz)`` a non-cubic one
+        (``ngrid == nx*ny*nz``).
+
+    Notes
+    -----
+    The C backend assumes an equal node count on every axis, so it is used only
+    for cubic grids; non-cubic grids fall back to the vectorized NumPy kernel
+    (which handles any ``(nx, ny, nz)`` and is exercised by the tests).
     """
     psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
     Vext = np.ascontiguousarray(Vext, dtype=np.float64)
+    nx, ny, nz = _as_shape(shape)
     M = psi_stack.shape[0]
     T = np.zeros((M, M), dtype=np.complex128)
     V = np.zeros((M, M), dtype=np.complex128)
 
-    if HAS_C_BACKEND:
-        _LIB.carcara_one_body(psi_stack.reshape(-1), Vext, M, int(points),
+    if HAS_C_BACKEND and nx == ny == nz:
+        _LIB.carcara_one_body(psi_stack.reshape(-1), Vext, M, int(nx),
                               float(dx), T.reshape(-1), V.reshape(-1))
         return T, V
-    return _one_body_numpy(psi_stack, Vext, dx, points)
+    return _one_body_numpy(psi_stack, Vext, dx, (nx, ny, nz))
 
 
 def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0):
@@ -174,12 +192,12 @@ def _laplacian_fd(field3d, dx):
     return lap / (dx * dx)
 
 
-def _one_body_numpy(psi_stack, Vext, dx, points):
+def _one_body_numpy(psi_stack, Vext, dx, shape):
     M = psi_stack.shape[0]
     dV = dx ** 3
     T = np.zeros((M, M), dtype=np.complex128)
     V = np.zeros((M, M), dtype=np.complex128)
-    shape = (points, points, points)
+    shape = _as_shape(shape)
     lap = [_laplacian_fd(psi_stack[b].reshape(shape), dx).reshape(-1)
            for b in range(M)]
     for a in range(M):
