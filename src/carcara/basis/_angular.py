@@ -12,7 +12,7 @@ Both the numerical atomic orbitals and the Gaussian orbitals factorize as a
 radial function times a spherical harmonic, differing only in the radial part.
 The Cartesian->spherical conversion and the (orthonormal, complex) spherical
 harmonic live here so those classes share exactly one implementation, matching
-the convention already used by :class:`~carcara.basis.hydrogenic.HydrogenicOrbital`.
+the convention already used by :class:`~carcara.basis.fao.FullAtomicOrbital`.
 """
 
 from __future__ import annotations

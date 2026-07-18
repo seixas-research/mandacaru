@@ -4,7 +4,7 @@
 import numpy as np
 import pytest
 
-from carcara.basis import HydrogenicOrbital
+from carcara.basis import FullAtomicOrbital
 from carcara.integrals import Grid, IntegralEngine, PoissonFFTSolver, Potentials
 from carcara.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
@@ -15,7 +15,7 @@ from carcara.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, HARTREE_TO_EV
 @pytest.fixture
 def h1s_engine():
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=12.0, h=0.51, units="bohr")
-    basis = [HydrogenicOrbital(1, 0, 0, Z=1.0, units="bohr")]
+    basis = [FullAtomicOrbital(1, 0, 0, Z=1.0, units="bohr")]
     return IntegralEngine(basis, grid)
 
 
@@ -29,7 +29,7 @@ class TestPoissonFFT:
         errs = []
         for h in (1.04, 0.51):  # coarse -> fine spacing (Bohr)
             grid = Grid(center=[0, 0, 0], box_size=12.0, h=h, units="bohr")
-            eng = IntegralEngine([HydrogenicOrbital(1, 0, 0, Z=1.0, units="bohr")],
+            eng = IntegralEngine([FullAtomicOrbital(1, 0, 0, Z=1.0, units="bohr")],
                                  grid)
             J = eng.two_body(method="fft", energy_units="Ha")[0, 0, 0, 0].real
             errs.append(abs(J - 0.625))
@@ -42,8 +42,8 @@ class TestPoissonFFT:
 
     def test_eight_fold_symmetry(self):
         grid = Grid(center=[0, 0, 0], box_size=8.0, h=0.84, units="bohr")
-        basis = [HydrogenicOrbital(1, 0, 0, Z=1.0, units="bohr"),
-                 HydrogenicOrbital(2, 1, 0, Z=1.0, units="bohr")]
+        basis = [FullAtomicOrbital(1, 0, 0, Z=1.0, units="bohr"),
+                 FullAtomicOrbital(2, 1, 0, Z=1.0, units="bohr")]
         eri = IntegralEngine(basis, grid).two_body(method="fft")
         # Physicists' <ab|cd>: the full 8-fold symmetry of a real basis set.
         # The electron-1/2 bra-swaps <ab|cd>==<cb|ad>==<ad|cb> are the ones that
@@ -72,9 +72,9 @@ class TestUnits:
         assert np.allclose(g_ang.X, g_bohr.X)
 
     def test_orbital_center_converts_to_bohr(self):
-        orb = HydrogenicOrbital(1, 0, 0, center=[0.0, 0.0, 1.0])  # Angstrom
+        orb = FullAtomicOrbital(1, 0, 0, center=[0.0, 0.0, 1.0])  # Angstrom
         assert np.allclose(orb.center, [0.0, 0.0, ANGSTROM_TO_BOHR])
-        orb_b = HydrogenicOrbital(1, 0, 0, center=[0.0, 0.0, 1.0], units="bohr")
+        orb_b = FullAtomicOrbital(1, 0, 0, center=[0.0, 0.0, 1.0], units="bohr")
         assert np.allclose(orb_b.center, [0.0, 0.0, 1.0])
 
     def test_potentials_center_converts_to_bohr(self):
@@ -94,22 +94,22 @@ class TestSlater:
         (26, 3, 2, 6.25),  # Fe 3d
     ])
     def test_effective_charge_values(self, atomic_number, n, l, expected):
-        Z = HydrogenicOrbital.slater_effective_charge(atomic_number, n, l)
+        Z = FullAtomicOrbital.slater_effective_charge(atomic_number, n, l)
         assert np.isclose(Z, expected)
 
     def test_from_slater_sets_Z(self):
-        orb = HydrogenicOrbital.from_slater(2, 0, 0, atomic_number=3)
+        orb = FullAtomicOrbital.from_slater(2, 0, 0, atomic_number=3)
         assert np.isclose(orb.Z, 1.30)
         assert orb.state == (2, 0, 0)
 
     def test_unoccupied_orbital_raises(self):
         # He has no 2s in its ground state -> screening undefined.
         with pytest.raises(ValueError):
-            HydrogenicOrbital.slater_effective_charge(2, 2, 0)
+            FullAtomicOrbital.slater_effective_charge(2, 2, 0)
 
     def test_invalid_atomic_number_raises(self):
         with pytest.raises(ValueError):
-            HydrogenicOrbital.slater_effective_charge(0, 1, 0)
+            FullAtomicOrbital.slater_effective_charge(0, 1, 0)
 
 
 class TestPotentials:
@@ -142,7 +142,7 @@ class TestPotentials:
         # The method is directly consumable as the one_body potential callable.
         grid = Grid(center=[0, 0, 0], box_size=10.0, h=0.645, units="bohr")
         pot = Potentials([(1.0, np.array([0.0, 0.0, 0.0]))], units="bohr")
-        eng = IntegralEngine([HydrogenicOrbital(1, 0, 0, Z=1.0, units="bohr")],
+        eng = IntegralEngine([FullAtomicOrbital(1, 0, 0, Z=1.0, units="bohr")],
                              grid)
         T, V = eng.one_body(pot.nuclear_potential)
         assert V[0, 0].real < 0  # attractive well

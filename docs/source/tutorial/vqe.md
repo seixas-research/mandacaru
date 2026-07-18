@@ -25,7 +25,7 @@ estimator on real hardware is a drop-in replacement for the energy evaluation.
 ## The Hamiltonian
 
 Build the second-quantized H₂ Hamiltonian from the real-space integral engine
-over a minimal hydrogenic 1s basis (one orbital per atom):
+over a minimal FAO 1s basis (one orbital per atom):
 
 ```python
 import numpy as np

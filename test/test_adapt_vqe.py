@@ -21,7 +21,7 @@ from carcara.circuits import (
     available_pools,
     build_pool,
 )
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 from carcara.optimizers import Optimizer
 
@@ -38,7 +38,7 @@ def h2_integrals():
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.25)
-    return HydrogenicIntegrals(nuclei, minimal_hydrogenic_basis(nuclei), grid)
+    return MolecularIntegrals(nuclei, minimal_fao_basis(nuclei), grid)
 
 
 @pytest.fixture(scope="module")

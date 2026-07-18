@@ -23,10 +23,10 @@ families are generated from scratch -- no tabulated basis-set data.
 """
 
 from .base import BasisFunction
-from .factory import (BasisSet, FAOBasisSet, GTOBasisSet, HydrogenicBasisSet,
-                      NAOBasisSet, Pople631GBasisSet)
+from .factory import (BasisSet, FAOBasisSet, GTOBasisSet, NAOBasisSet,
+                      Pople631GBasisSet)
 from .gaussian import GaussianOrbital
-from .hydrogenic import FullAtomicOrbital, HydrogenicOrbital
+from .fao import FullAtomicOrbital
 from .nao import (DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital,
                   energy_shift_to_rc)
 from .pople import pople_631g_shells
@@ -36,12 +36,10 @@ from .sto_ng import (occupied_subshells, slater_exponent, sto_ng_contraction,
 __all__ = [
     "BasisFunction",
     "FullAtomicOrbital",
-    "HydrogenicOrbital",      # alias of FullAtomicOrbital
     "NumericalAtomicOrbital",
     "GaussianOrbital",
     "BasisSet",
     "FAOBasisSet",
-    "HydrogenicBasisSet",     # alias of FAOBasisSet
     "NAOBasisSet",
     "GTOBasisSet",
     "Pople631GBasisSet",

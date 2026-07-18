@@ -23,17 +23,21 @@ Carcará connects theoretical condensed matter physics with NISQ-era quantum har
 
 ## Key Features
 
-* **Native basis sets, generated from scratch:** analytic **hydrogenic** orbitals, confined **numerical atomic orbitals** (NAO), and Gaussian **STO-nG** and split-valence **6-31G(d)** bases — all built on the fly by fitting Slater-type orbitals, with *no tabulated basis-set data* — feeding a real-space one-/two-body integral engine (OpenMP C backend with a NumPy fallback).
+* **Native basis sets, generated from scratch:** analytic **Full Atomic Orbitals** (`FAO`), confined **numerical atomic orbitals** (NAO), and Gaussian **STO-nG** and split-valence **6-31G(d)** bases — all built on the fly by fitting Slater-type orbitals, with *no tabulated basis-set data* — feeding a real-space one-/two-body integral engine (OpenMP C backend with a NumPy fallback).
 
 * **Second quantization & fermion-to-qubit mappings:** molecular `Fermion` Hamiltonians in physicists' notation, translated to Pauli operators via **Jordan-Wigner**, **Bravyi-Kitaev**, and **parity** mappings (the last with an optional two-qubit reduction).
 
 * **Hartree-Fock & the molecular-orbital basis:** restricted (**RHF**) and unrestricted (**UHF**) self-consistent-field solvers that supply the MO basis correlated methods need.
 
-* **Variational solvers:** an exact state-vector **VQE** with the **UCCSD** ansatz, and **ADAPT-VQE** with four pluggable operator pools — **fermionic**, **qubit** (qubit-ADAPT), **QEB**, and **CEO** — warm-started re-optimization, and **circuit profiling** (CNOT count and depth in a native `{CNOT, U}` gate set) at every step.
+* **Variational solvers:** an exact state-vector **VQE** with the **UCCSD** ansatz, and **ADAPT-VQE** with four pluggable operator pools — **fermionic**, **qubit** (qubit-ADAPT), **QEB**, and **CEO** — warm-started re-optimization, selectable **gradients** (classical finite-difference or the quantum **parameter-shift rule**), and **circuit profiling** (CNOT count, gate count, and depth in a native `{CNOT, U}` gate set) at every step.
+
+* **ASE-native workflow:** define a molecule or crystal as an ASE `Atoms` object (elements, positions, and arbitrary non-cubic cells) and attach **`ADAPTVQE` as an ASE calculator** — `atoms.calc = ADAPTVQE(pool=..., basis="FAO", mapping=..., gradient=..., device=...)`; `atoms.get_total_energy()` builds the Hamiltonian from the geometry and runs the whole loop, returning eV. Runs are traced live to a structured `output.txt`.
 
 * **Circuit analysis:** ansatz **expressibility** (KL divergence of the fidelity distribution from Haar), with native support for tracking it as ADAPT-VQE grows the circuit.
 
-* **Classical optimizers:** a SciPy-backed interface over COBYLA, SLSQP, L-BFGS-B, Nelder-Mead, and Powell, with cost-history tracking.
+* **Classical optimizers:** a SciPy-backed interface over COBYLA (default), SLSQP, L-BFGS-B, Nelder-Mead, and Powell, with cost-history tracking.
+
+* **Execution devices:** a device registry — `AER_simulator` (ideal state-vector simulator, the default) with `ibm-quantum` reserved for real-hardware execution.
 
 * **On the roadmap:** real-hardware execution (IBM Quantum via Qiskit) and error mitigation (Zero-Noise Extrapolation, symmetry verification) — see [`plan/roadmap.md`](plan/roadmap.md).
 
@@ -70,7 +74,7 @@ electron-repulsion tensor. The full script lives in
 ```python
 import numpy as np
 
-from carcara.basis import HydrogenicOrbital
+from carcara.basis import FullAtomicOrbital
 from carcara.integrals import Grid, IntegralEngine, Potentials
 
 # Geometry: the user-facing API uses Angstrom for lengths and eV for energies.
@@ -83,8 +87,8 @@ proton_b = np.array([0.0, 0.0, +R / 2])
 potentials = Potentials([(Z, proton_a), (Z, proton_b)])
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.10)  # Angstrom
-basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_a),
-         HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_b)]
+basis = [FullAtomicOrbital(1, 0, 0, Z=Z, center=proton_a),
+         FullAtomicOrbital(1, 0, 0, Z=Z, center=proton_b)]
 
 engine = IntegralEngine(basis, grid)
 
@@ -110,15 +114,15 @@ The same machinery scales to multi-orbital, heteronuclear systems. The example
 [`examples/LiH_integrals.py`](examples/LiH_integrals.py) builds a small minimal
 basis for LiH -- the Li 1s, 2s and 2p_z orbitals plus the H 1s -- using the
 *true* nuclear charges (`Z_Li = 3`, `Z_H = 1`) in the potential and *effective*
-charges from **Slater's rules** for the hydrogenic basis orbitals via
-`HydrogenicOrbital.from_slater`:
+charges from **Slater's rules** for the FAO basis orbitals via
+`FullAtomicOrbital.from_slater`:
 
 ```python
 labels = ["Li 1s", "Li 2s", "Li 2pz", "H 1s"]
-basis = [HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
-         HydrogenicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
-         HydrogenicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
-         HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
+basis = [FullAtomicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
+         FullAtomicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
+         FullAtomicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
+         FullAtomicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
 
 potentials = Potentials([(3.0, li_pos), (1.0, h_pos)])  # true nuclear charges
 engine = IntegralEngine(basis, grid)
@@ -144,18 +148,18 @@ in [`examples/H2_mapping.py`](examples/H2_mapping.py).
 ```python
 import numpy as np
 
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 
 # H2: a minimal Slater-screened 1s basis, one orbital per atom (Angstrom).
 R = 0.74
 nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
           (1.0, np.array([0.0, 0.0, +R / 2]))]
-basis = minimal_hydrogenic_basis(nuclei)
+basis = minimal_fao_basis(nuclei)
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.15)
 
 # Second-quantized molecular Hamiltonian over spin-orbitals (a `Fermion`).
-integrals = HydrogenicIntegrals(nuclei, basis, grid)
+integrals = MolecularIntegrals(nuclei, basis, grid)
 H = integrals.molecular_hamiltonian()          # 2 spatial -> 4 spin-orbitals
 
 # Map to a qubit operator (a `PauliSum` of Pauli strings).
@@ -182,40 +186,50 @@ result to Qiskit with `H_jw.to_sparse_pauli_op()`.
 
 `carcara.algorithms` provides both a fixed-ansatz **VQE** and an adaptive
 **ADAPT-VQE** that grows a compact, problem-tailored ansatz one operator at a
-time. ADAPT works in the Hartree-Fock molecular-orbital basis
-(`molecular_hamiltonian(mo_basis=True, ...)`), where single-excitation gradients
-vanish and the physical correlating excitations are selected first. The pool is
-pluggable — `"fermionic"`, `"qubit"`, `"qeb"`, or `"ceo"` — and each grown
-circuit is profiled for its CNOT count and depth. The full script is in
-[`examples/run_adapt_vqe.py`](examples/run_adapt_vqe.py).
+time. `ADAPTVQE` is also an **ASE calculator**: define the system as an ASE
+`Atoms` object, attach the calculator, and `atoms.get_total_energy()` builds the
+Hamiltonian from the geometry (using the chosen `basis`, in the RHF
+molecular-orbital basis) and drives the whole loop — returning the energy in
+**eV**. The argument surface is `pool` (`"ceo"` / `"fermionic"` / `"qubit"` /
+`"qeb"`), `basis` (`"FAO"` / `"STO-3G"` / `"6-31G(d)"` / …), `mapping`
+(`"jordan_wigner"` / `"parity"` / `"bravyi_kitaev"`), `gradient` (`"classical"`
+/ `"parameter-shift_rule"`), `device` (`"AER_simulator"` / `"ibm-quantum"`), plus
+`max_iterations`, `gradient_tolerance`, and `output`. The full script is in
+[`examples/h2_adapt_ceo_ase.py`](examples/h2_adapt_ceo_ase.py).
 
 ```python
-import numpy as np
+from ase import Atoms
 
-from carcara.algorithms import AdaptVQE
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.algorithms import ADAPTVQE
 from carcara.integrals import Grid
 
-R = 0.74
-nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
-          (1.0, np.array([0.0, 0.0, +R / 2]))]
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
+# 1. Define the molecule with ASE and attach ADAPTVQE as its calculator.
+atoms = Atoms("H2", positions=[[0.0, 0.0, -0.37], [0.0, 0.0, 0.37]])
+atoms.calc = ADAPTVQE(
+    pool="ceo",
+    basis="FAO",
+    mapping="jordan_wigner",
+    gradient="parameter-shift_rule",
+    device="AER_simulator",
+    grid=Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20),
+    max_iterations=15,
+    gradient_tolerance=1e-4,
+    output="output.txt",
+)
 
-# Hamiltonian in the RHF molecular-orbital basis (2 electrons, 4 qubits).
-H = HydrogenicIntegrals(nuclei, minimal_hydrogenic_basis(nuclei),
-                        grid).molecular_hamiltonian(mo_basis=True, n_electrons=2)
+# 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation (eV).
+energy = atoms.get_total_energy()
+result = atoms.calc.adapt_result
 
-adapt = AdaptVQE(H, pool="ceo", num_particles=(1, 1), n_spatial_orbitals=2)
-result = adapt.run(max_iterations=15, gradient_tol=1e-6)
-
-print(f"ADAPT-VQE energy = {result.optimal_energy:.8f} Ha "
-      f"({result.num_operators} operators)")
+print(f"ADAPT-VQE energy = {energy:.6f} eV ({result.num_operators} operators)")
 print(f"CNOTs = {result.metrics.cnot_count}, depth = {result.metrics.depth}")
 ```
 
 Every pool reaches the exact (FCI) ground state on H₂; on hardware-minded pools
 it does so with far fewer CNOTs (the qubit pool reaches it in 6 CNOTs versus 48
-for the fermionic pool).
+for the fermionic pool). For direct use without ASE, construct `ADAPTVQE` with a
+`Fermion`/`PauliSum` Hamiltonian and `num_particles` / `n_spatial_orbitals`, then
+call `.run()` — see [`examples/run_adapt_vqe.py`](examples/run_adapt_vqe.py).
 
 ## Measuring ansatz expressibility
 
@@ -240,7 +254,7 @@ print(result)   # ExpressibilityResult(E=..., d=4, n_samples=2000)
 
 The [`examples/generate_h2_pes.py`](examples/generate_h2_pes.py) and
 [`examples/generate_lih_pes.py`](examples/generate_lih_pes.py) scripts scan a bond
-length and export RHF dissociation curves for the hydrogenic, STO-3G, and
+length and export RHF dissociation curves for the FAO, STO-3G, and
 6-31G(d) bases to CSV; [`examples/plot_pes.py`](examples/plot_pes.py) renders the
 multi-curve comparison.
 

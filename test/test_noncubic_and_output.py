@@ -19,8 +19,8 @@ import pytest
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE, AdaptVQE
-from carcara.basis import HydrogenicOrbital
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.basis import FullAtomicOrbital
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid, IntegralEngine
 from carcara.utils import AdaptOutputLogger, parse_output
 from carcara.wavefunction import Wavefunction
@@ -32,7 +32,7 @@ from carcara.wavefunction import Wavefunction
 
 def _eri_00(grid):
     """H 1s on-site repulsion <00|00> on ``grid`` (Hartree)."""
-    orb = HydrogenicOrbital(1, 0, 0, Z=1.0, center=[0.0, 0.0, 0.0], units="bohr")
+    orb = FullAtomicOrbital(1, 0, 0, Z=1.0, center=[0.0, 0.0, 0.0], units="bohr")
     eng = IntegralEngine([orb], grid)
     return float(np.real(eng.two_body(method="fft", energy_units="Ha")[0, 0, 0, 0]))
 
@@ -90,7 +90,7 @@ class TestNonCubicGrid:
 
     def test_kinetic_energy_non_cubic(self):
         # <1s|-1/2 nabla^2|1s> = 1/2 Ha for hydrogen, on a non-cubic grid.
-        orb = HydrogenicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0], units="bohr")
+        orb = FullAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0], units="bohr")
         g = Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0], h=0.20, units="bohr")
         eng = IntegralEngine([orb], g)
         zero_v = lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape)
@@ -160,7 +160,7 @@ def h2_hamiltonian():
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
     grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.35)
-    integrals = HydrogenicIntegrals(nuclei, minimal_hydrogenic_basis(nuclei), grid)
+    integrals = MolecularIntegrals(nuclei, minimal_fao_basis(nuclei), grid)
     return integrals.molecular_hamiltonian(mo_basis=True, n_electrons=2)
 
 
@@ -279,8 +279,8 @@ class TestADAPTVQECalculator:
             nuclei = [(float(Z), np.asarray(R)) for Z, R in
                       zip(atoms.get_atomic_numbers(), atoms.get_positions())]
             grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.35)
-            H = HydrogenicIntegrals(
-                nuclei, minimal_hydrogenic_basis(nuclei), grid
+            H = MolecularIntegrals(
+                nuclei, minimal_fao_basis(nuclei), grid
             ).molecular_hamiltonian(mo_basis=True, n_electrons=2)
             return H, (1, 1), 2
 

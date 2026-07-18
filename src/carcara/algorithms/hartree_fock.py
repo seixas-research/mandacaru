@@ -18,7 +18,7 @@ excitations first and converges to the FCI ground state -- behaviour that does
 
 :class:`RHF` is a small closed-shell self-consistent-field solver operating on an
 **already orthonormal** spatial basis (as produced by
-:class:`~carcara.core.hamiltonian.HydrogenicIntegrals` with ``orthogonalize=True``,
+:class:`~carcara.core.hamiltonian.MolecularIntegrals` with ``orthogonalize=True``,
 i.e. overlap :math:`S = I`).  It returns the MO coefficients and the one- and
 two-body integrals rotated into the MO basis, ready for
 :meth:`~carcara.core.mapping.Fermion.from_integrals`.

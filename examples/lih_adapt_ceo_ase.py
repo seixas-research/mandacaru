@@ -56,8 +56,9 @@ atoms.calc = ADAPTVQE(
     gradient="parameter-shift_rule",
     device="AER_simulator",
     grid=Grid(center=[0.0, 0.0, 0.0], box_size=7.0, h=0.18),
-    run_options={"max_iterations": 25, "gradient_tol": 1e-3,
-                 "output_file": output_file})
+    max_iterations=25,
+    gradient_tolerance=1e-3,
+    output=output_file)
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)

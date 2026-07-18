@@ -2,11 +2,11 @@
 # file: test_adapt_args_gradient.py
 
 """ADAPTVQE argument surface, gradient strategies, the device registry and the
-FullAtomicOrbitals (FAO) rename.
+FullAtomicOrbitals (FAO) basis.
 
 Covers the features added on top of the ADAPT-VQE driver:
 
-* the ``FullAtomicOrbital`` / ``FAO`` rename (with backward-compatible aliases);
+* the ``FullAtomicOrbital`` / ``FAO`` naming (no ``Hydrogenic`` aliases remain);
 * selectable ``gradient`` strategies -- ``"classical"`` (finite difference) and
   ``"parameter-shift_rule"`` -- both matching the exact analytic gradient;
 * the ``ADAPTVQE`` argument surface (``pool``, ``basis``, ``mapping``,
@@ -28,8 +28,8 @@ from carcara.integrals import Grid
 # The FullAtomicOrbitals (FAO) rename.
 # --------------------------------------------------------------------------- #
 
-class TestFAORename:
-    def test_new_names_exist(self):
+class TestFAONaming:
+    def test_fao_names_exist(self):
         from carcara.basis import FAOBasisSet, FullAtomicOrbital
         from carcara.core import MolecularIntegrals, minimal_fao_basis
         assert FullAtomicOrbital is not None
@@ -37,21 +37,21 @@ class TestFAORename:
         assert MolecularIntegrals is not None
         assert minimal_fao_basis is not None
 
-    def test_backward_compatible_aliases(self):
-        from carcara.basis import (FAOBasisSet, FullAtomicOrbital,
-                                    HydrogenicBasisSet, HydrogenicOrbital)
-        from carcara.core import (HydrogenicIntegrals, MolecularIntegrals,
-                                  minimal_fao_basis, minimal_hydrogenic_basis)
-        assert HydrogenicOrbital is FullAtomicOrbital
-        assert HydrogenicBasisSet is FAOBasisSet
-        assert HydrogenicIntegrals is MolecularIntegrals
-        assert minimal_hydrogenic_basis is minimal_fao_basis
+    def test_no_hydrogenic_aliases(self):
+        # The Hydrogenic names have been fully removed (no backward compat).
+        import carcara.basis as basis
+        import carcara.core as core
+        for name in ("HydrogenicOrbital", "HydrogenicBasisSet"):
+            assert not hasattr(basis, name), name
+        for name in ("HydrogenicIntegrals", "minimal_hydrogenic_basis"):
+            assert not hasattr(core, name), name
 
     def test_factory_builds_fao(self):
         from carcara.basis import BasisSet, FAOBasisSet
         assert isinstance(BasisSet.build("FAO"), FAOBasisSet)
-        assert isinstance(BasisSet.build("hydrogenic"), FAOBasisSet)  # alias
         assert BasisSet.build("STO-3G").name == "STO-3G"
+        with pytest.raises(ValueError):
+            BasisSet.build("hydrogenic")      # the alias no longer resolves
 
 
 # --------------------------------------------------------------------------- #
@@ -137,6 +137,28 @@ class TestArgumentSurface:
         exact = float(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min())
         exact_ev = exact * 27.211386245988
         assert abs(energy_ev - exact_ev) < 1e-3, mapping
+
+    def test_run_defaults_come_from_constructor(self, h2_hamiltonian):
+        # max_iterations / gradient_tolerance / output are constructor args and
+        # supply the defaults for run().
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False,
+                         max_iterations=3, gradient_tolerance=1e-2)
+        assert adapt.max_iterations == 3
+        assert adapt.gradient_tolerance == 1e-2
+        res = adapt.run()                       # no args -> uses the defaults
+        assert res.num_operators <= 3
+
+    def test_output_constructor_arg_writes_file(self, h2_hamiltonian, tmp_path):
+        from carcara.utils import parse_output
+        out = str(tmp_path / "output.txt")
+        adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False,
+                         max_iterations=4, gradient_tolerance=1e-3, output=out)
+        adapt.run()                             # output taken from constructor
+        parsed = parse_output(out)
+        assert parsed["setup"]["classical_optimizer"] == "COBYLA"
+        assert len(parsed["iterations"]) >= 1
 
     def test_basis_option_sets_qubit_count(self):
         # FAO on LiH -> Li{1s,2s} + H{1s} = 3 orbitals -> 6 qubits.

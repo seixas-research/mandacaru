@@ -60,8 +60,8 @@ class TestFactory:
         assert BasisSet.build("6-31G").name == "6-31G"
         assert BasisSet.build("6-31G(d)").name == "6-31G(d)"
 
-    def test_hydrogenic_factory(self):
-        b = BasisSet.build("hydrogenic")
+    def test_fao_factory(self):
+        b = BasisSet.build("FAO")
         assert len(b.atom("H")) == 1             # 1s
         assert len(b.atom("Li")) == 2            # 1s + 2s
 

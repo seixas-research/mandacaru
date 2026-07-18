@@ -17,7 +17,7 @@ separated-atom limit and the well depth is a binding energy.
 
 Three basis sets are compared:
 
-* ``hydrogenic`` -- minimal analytic hydrogen-like orbitals;
+* ``FAO``        -- minimal analytic Full Atomic Orbitals;
 * ``STO-3G``     -- native minimal Gaussian (STO-3G);
 * ``6-31G(d)``   -- native Pople split-valence with ``d`` polarization.
 
@@ -60,7 +60,7 @@ HARTREE_TO_EV = 27.211386245988
 
 # Basis sets compared in every curve: (key, human label, BasisSet).
 BASES = [
-    ("hydrogenic", "hydrogenic", BasisSet.build("hydrogenic")),
+    ("FAO", "FAO", BasisSet.build("FAO")),
     ("sto-3g", "STO-3G", BasisSet.build("GTO", n_gaussians=3)),
     ("6-31g(d)", "6-31G(d)", BasisSet.build("6-31G(d)")),
 ]

@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from carcara.algorithms import RHF, UHF, transform_integrals
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 
 
@@ -17,7 +17,7 @@ def h2_integrals():
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
-    return HydrogenicIntegrals(nuclei, minimal_hydrogenic_basis(nuclei), grid)
+    return MolecularIntegrals(nuclei, minimal_fao_basis(nuclei), grid)
 
 
 class TestRHF:
@@ -46,8 +46,8 @@ class TestUHF:
         # A single electron: UHF is self-interaction-free, E -> the exact H 1s.
         c = np.array([0.03, 0.017, 0.023])          # offset from any grid node
         grid = Grid(center=[0.0, 0.0, 0.0], box_size=8.0, h=0.15)
-        ig = HydrogenicIntegrals([(1.0, c)],
-                                 minimal_hydrogenic_basis([(1.0, c)]), grid)
+        ig = MolecularIntegrals([(1.0, c)],
+                                 minimal_fao_basis([(1.0, c)]), grid)
         e = UHF(ig.one_body(), ig.two_body(), 1, 0).run()
         assert e == pytest.approx(-0.5, abs=0.05)
 

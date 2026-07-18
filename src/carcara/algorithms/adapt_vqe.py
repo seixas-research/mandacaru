@@ -331,6 +331,16 @@ class ADAPTVQE(Calculator):
         Execution device -- ``"AER_simulator"`` (default; ideal simulator) or
         ``"ibm-quantum"`` (reserved for real hardware, not yet runnable).  See
         :mod:`carcara.backends.hardware`.
+    max_iterations : int
+        Maximum number of operators to append before stopping (default ``50``).
+        Used as the default for :meth:`run` / the ASE-calculator evaluation.
+    gradient_tolerance : float
+        Convergence threshold on the largest pool gradient (default ``1e-3``).
+        Used as the default for :meth:`run` / the ASE-calculator evaluation.
+    output : str, optional
+        Path of the structured ``output.txt`` runtime log (default ``None`` --
+        no file).  Used as the default for :meth:`run` / the ASE-calculator
+        evaluation.
     profile : bool
         Compile and profile the ansatz each iteration (default ``True``).
     atomic_units : bool
@@ -348,8 +358,9 @@ class ADAPTVQE(Calculator):
         ``atoms -> (hamiltonian, num_particles, n_spatial_orbitals)``.  An
         explicit override for the built-in ``basis`` builder in calculator mode.
     run_options : dict, optional
-        Keyword arguments forwarded to :meth:`run` on each calculator evaluation
-        (e.g. ``{"max_iterations": 20, "gradient_tol": 1e-4}``).
+        Extra keyword arguments forwarded to :meth:`run` on each calculator
+        evaluation (e.g. ``{"log_expressivity": False}``); overrides the
+        ``max_iterations`` / ``gradient_tolerance`` / ``output`` defaults above.
     """
 
     implemented_properties = ["energy", "free_energy"]
@@ -360,7 +371,9 @@ class ADAPTVQE(Calculator):
                  num_particles=None, n_spatial_orbitals=None,
                  optimizer: Optimizer | None = None,
                  mapping: str = "jordan_wigner", gradient: str = "classical",
-                 device: str = "AER_simulator", profile: bool = True,
+                 device: str = "AER_simulator",
+                 max_iterations: int = 50, gradient_tolerance: float = 1e-3,
+                 output: str | None = None, profile: bool = True,
                  atomic_units: bool = False, grid=None, charge: int = 0,
                  n_electrons=None, hamiltonian_builder=None,
                  run_options: dict | None = None, **calc_kwargs):
@@ -370,6 +383,11 @@ class ADAPTVQE(Calculator):
         self.basis = basis
         self.profile = profile
         self.optimizer = optimizer or Optimizer(method="COBYLA", maxiter=2000)
+
+        # Run defaults (also the defaults for the ASE-calculator evaluation).
+        self.max_iterations = int(max_iterations)
+        self.gradient_tolerance = float(gradient_tolerance)
+        self.output = output
 
         # Validate the enumerated options up front.
         if gradient not in self._GRADIENTS:
@@ -679,19 +697,25 @@ class ADAPTVQE(Calculator):
 
     # -- main loop -------------------------------------------------------- #
 
-    def run(self, max_iterations: int = 50, gradient_tol: float = 1e-3,
+    def run(self, max_iterations: int | None = None,
+            gradient_tol: float | None = None,
             initial_parameters=None, callback=None,
             output_file: str | None = None, geometry=None, cell=None,
             log_expressivity: bool = True) -> AdaptVQEResult:
         """Grow and optimize the ansatz until convergence.
 
+        ``max_iterations``, ``gradient_tol`` and ``output_file`` default to the
+        instance's ``max_iterations`` / ``gradient_tolerance`` / ``output``
+        constructor arguments when left as ``None``.
+
         Parameters
         ----------
-        max_iterations : int
-            Maximum number of operators to append (default ``50``).
-        gradient_tol : float
+        max_iterations : int, optional
+            Maximum number of operators to append (default: the instance's
+            ``max_iterations``).
+        gradient_tol : float, optional
             Stop when the largest pool gradient falls below this threshold
-            (default ``1e-3``).
+            (default: the instance's ``gradient_tolerance``).
         initial_parameters : array_like, optional
             Warm-start parameters for an already-grown ansatz (rarely needed).
         callback : callable, optional
@@ -725,6 +749,14 @@ class ADAPTVQE(Calculator):
             raise RuntimeError(
                 "ADAPTVQE has no Hamiltonian; construct it with one, or use it "
                 "as an ASE calculator with a `hamiltonian_builder`")
+
+        # Fall back to the instance-level constructor defaults.
+        if max_iterations is None:
+            max_iterations = self.max_iterations
+        if gradient_tol is None:
+            gradient_tol = self.gradient_tolerance
+        if output_file is None:
+            output_file = self.output
 
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping)

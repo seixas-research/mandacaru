@@ -10,7 +10,7 @@ r"""Generate the H2 potential-energy curve (three basis sets) and export a CSV.
 
 Scans the H-H bond length from 0.5 to 2.5 A and computes the RHF total energy over
 
-* the minimal analytic **hydrogenic** basis,
+* the minimal analytic **FAO** basis,
 * the native minimal **STO-3G** Gaussian basis, and
 * the native Pople split-valence **6-31G(d)** basis,
 
@@ -20,7 +20,7 @@ plot them with ``examples/plot_pes.py``.
 
 H2 has no atomic core, so the uniform real-space grid resolves it well and these
 curves are quantitative (the expected basis-set ordering
-``hydrogenic > STO-3G > 6-31G(d)`` in energy is visible).
+``FAO > STO-3G > 6-31G(d)`` in energy is visible).
 
 Run with::
 

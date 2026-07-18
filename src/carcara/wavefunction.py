@@ -19,7 +19,7 @@
 
 This class keeps its historical, tested API (coordinate conversions, orbital
 evaluation, Coulomb potential, one-body integrals) but no longer implements the
-physics inline: it prepares geometry/grids and delegates.  Swapping hydrogenic
+physics inline: it prepares geometry/grids and delegates.  Swapping FAO
 orbitals for Wannier functions is a matter of feeding different
 :class:`~carcara.basis.base.BasisFunction` objects to the engine -- nothing in
 the integral core changes.

@@ -15,7 +15,7 @@ A minimal Slater-type orbital (STO) for a subshell ``(n, l)`` has the radial for
     S_{nl}(r) \propto r^{\,n-1}\, e^{-\zeta r}, \qquad \zeta = \frac{Z - s}{n^*},
 
 with the screening ``s`` and effective principal quantum number ``n^*`` from
-Slater's rules (:meth:`~carcara.basis.HydrogenicOrbital.slater_effective_charge`
+Slater's rules (:meth:`~carcara.basis.FullAtomicOrbital.slater_effective_charge`
 supplies ``Z - s``).  The **STO-nG** approximation replaces that Slater orbital
 by a fixed contraction of ``n`` Gaussians,
 
@@ -44,7 +44,7 @@ from scipy.optimize import minimize
 from scipy.special import gamma, pbdv
 
 from ._config import ground_state_config
-from .hydrogenic import HydrogenicOrbital
+from .fao import FullAtomicOrbital
 
 # Effective principal quantum number n* from Slater's rules.
 _N_STAR = {1: 1.0, 2: 2.0, 3: 3.0, 4: 3.7, 5: 4.0, 6: 4.2}
@@ -62,7 +62,7 @@ def effective_principal_number(n: int) -> float:
 
 def slater_exponent(atomic_number: int, n: int, l: int) -> float:
     r"""Slater orbital exponent ``zeta = (Z - s) / n*`` for subshell ``(n, l)``."""
-    z_eff = HydrogenicOrbital.slater_effective_charge(atomic_number, n, l)
+    z_eff = FullAtomicOrbital.slater_effective_charge(atomic_number, n, l)
     return z_eff / effective_principal_number(n)
 
 

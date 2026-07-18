@@ -4,7 +4,7 @@
 import numpy as np
 import pytest
 
-from carcara.core.hamiltonian import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.core.hamiltonian import MolecularIntegrals, minimal_fao_basis
 from carcara.core.mapping import Fermion
 from carcara.integrals import Grid
 
@@ -17,11 +17,11 @@ def h2_integrals():
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.18)
-    basis = minimal_hydrogenic_basis(nuclei)
-    return HydrogenicIntegrals(nuclei, basis, grid, units="angstrom")
+    basis = minimal_fao_basis(nuclei)
+    return MolecularIntegrals(nuclei, basis, grid, units="angstrom")
 
 
-class TestHydrogenicIntegrals:
+class TestMolecularIntegrals:
     def test_orbital_count(self, h2_integrals):
         assert h2_integrals.n_orbitals == 2
 

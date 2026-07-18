@@ -37,7 +37,7 @@ potentials = Potentials([(Z_LI, li_pos), (Z_H, h_pos)])
 
 The minimal basis carries three orbitals on lithium -- the 1s core plus the 2s
 and 2p_z valence orbitals -- and one 1s orbital on hydrogen. A subtlety appears
-here: a hydrogenic Li 1s built with the bare charge `Z = 3` is extremely
+here: a Li 1s built with the bare charge `Z = 3` is extremely
 contracted and hard to resolve on a modest grid. We therefore give the *basis*
 orbitals *effective* charges, while the *potential* above keeps the true
 nuclear charges.

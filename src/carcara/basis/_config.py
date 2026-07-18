@@ -8,7 +8,7 @@
 
 """Ground-state electron configurations (aufbau filling).
 
-Shared helpers used both by Slater's rules (:mod:`carcara.basis.hydrogenic`) and
+Shared helpers used both by Slater's rules (:mod:`carcara.basis.fao`) and
 by the numerical-atomic-orbital basis generation (:mod:`carcara.basis.nao`), so
 the periodic filling order lives in exactly one place.
 """

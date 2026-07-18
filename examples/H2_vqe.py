@@ -8,7 +8,7 @@
 
 """Ground-state energy of H2 by VQE with a UCCSD ansatz (Jordan-Wigner).
 
-End-to-end pipeline on a minimal hydrogenic basis:
+End-to-end pipeline on a minimal FAO basis:
 
     geometry -> real-space integrals -> second-quantized Hamiltonian
              -> Jordan-Wigner qubit Hamiltonian
@@ -31,7 +31,7 @@ from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 from carcara.optimizers import Optimizer
 
-# --- 1) Molecule: H2 at equilibrium, minimal hydrogenic 1s basis (Angstrom).
+# --- 1) Molecule: H2 at equilibrium, minimal FAO 1s basis (Angstrom).
 R = 0.74
 nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
           (1.0, np.array([0.0, 0.0, +R / 2]))]

@@ -13,7 +13,7 @@ from carcara.algorithms import (ADAPTExpressivityTracker, AdaptVQE,
                                 estimate_effective_dimension,
                                 sample_pqc_fidelities, track_adapt_expressivity)
 from carcara.circuits import UCCSD
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 
 
@@ -23,7 +23,7 @@ def h2_hamiltonian():
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.25)
-    return HydrogenicIntegrals(nuclei, minimal_hydrogenic_basis(nuclei),
+    return MolecularIntegrals(nuclei, minimal_fao_basis(nuclei),
                                grid).molecular_hamiltonian(mo_basis=True,
                                                            n_electrons=2)
 

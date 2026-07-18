@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
-# file: basis/hydrogenic.py
+# file: basis/fao.py
 
 # This code is part of Carcará.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Hydrogen-like (hydrogenic) atomic orbitals.
+"""Full Atomic Orbitals (FAO): analytic single-particle atomic orbitals.
 
-This is the *single source of truth* for the analytic hydrogenic wavefunction
-in Carcará.  Both the real-space evaluation used by the integral engine and the
-legacy :class:`~carcara.wavefunction.Wavefunction` helpers delegate here, so the
-radial/angular formula lives in exactly one place.
+:class:`FullAtomicOrbital` is the *single source of truth* for the analytic
+atomic wavefunction in Carcará (an eigenfunction of a screened Coulomb, i.e.
+hydrogen-like, radial problem).  Both the real-space evaluation used by the
+integral engine and the :class:`~carcara.wavefunction.Wavefunction` helpers
+delegate here, so the radial/angular formula lives in exactly one place.
 """
 
 from __future__ import annotations
@@ -171,7 +172,3 @@ class FullAtomicOrbital(BasisFunction):
         return (f"FullAtomicOrbital(n={self.n}, l={self.l}, m={self.m}, "
                 f"Z={self.Z}, center={self.center})")
 
-
-# Backward-compatible alias: the family was renamed from "hydrogenic" to the
-# Full Atomic Orbitals (FAO) family.  ``HydrogenicOrbital`` still works.
-HydrogenicOrbital = FullAtomicOrbital

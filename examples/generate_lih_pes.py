@@ -9,7 +9,7 @@
 r"""Generate the LiH potential-energy curve (three basis sets) and export a CSV.
 
 Scans the Li-H bond length from 1.0 to 3.5 A and computes the RHF total energy over
-the minimal **hydrogenic**, native **STO-3G** and native **6-31G(d)** bases, each
+the minimal **FAO**, native **STO-3G** and native **6-31G(d)** bases, each
 referenced to the sum of isolated-atom energies (``E_Li + E_H``).  Results go to
 ``data/lih_pes_data.csv``; plot them with ``examples/plot_pes.py``.
 

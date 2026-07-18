@@ -63,6 +63,51 @@ print(f"ADAPT-VQE energy = {result.optimal_energy:.8f} Ha")
 print(f"operators added  = {result.operators}")
 ```
 
+## As an ASE calculator
+
+`ADAPTVQE` doubles as an [ASE](https://wiki.fysik.dtu.dk/ase/) calculator, so a
+molecule (or crystal) can be defined once as an `Atoms` object and its
+ground-state energy requested through ASE. Attaching the calculator and calling
+`atoms.get_total_energy()` builds the Hamiltonian from the current geometry with
+the chosen `basis` and runs the whole ADAPT-VQE loop, returning the energy in
+**eV** (the ASE convention):
+
+```python
+from ase import Atoms
+
+from carcara.algorithms import ADAPTVQE
+from carcara.integrals import Grid
+
+atoms = Atoms("H2", positions=[[0.0, 0.0, -0.37], [0.0, 0.0, 0.37]])
+atoms.calc = ADAPTVQE(
+    pool="ceo",                       # "ceo" / "fermionic" / "qubit" / "qeb"
+    basis="FAO",                      # "FAO" / "STO-3G" / "6-31G(d)" / ...
+    mapping="jordan_wigner",          # "jordan_wigner" / "parity" / "bravyi_kitaev"
+    gradient="parameter-shift_rule",  # "classical" / "parameter-shift_rule"
+    device="AER_simulator",           # "AER_simulator" (ideal) / "ibm-quantum"
+    grid=Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20),
+    max_iterations=15,
+    gradient_tolerance=1e-4,
+    output="output.txt",              # structured runtime log (eV / Angstrom)
+)
+
+energy_eV = atoms.get_total_energy()
+result = atoms.calc.adapt_result      # the full ADAPTVQEResult
+```
+
+The **gradient** argument selects how the pool screening gradients are
+evaluated: `"classical"` uses a finite-difference estimate from shifted
+parameters, while `"parameter-shift_rule"` uses the quantum parameter-shift rule
+(exact on the state-vector backend). The **device** argument names the execution
+backend — `"AER_simulator"` is the ideal simulator used today; `"ibm-quantum"` is
+reserved for real-hardware execution. The run is traced live to the `output`
+file following the {mod}`output.txt protocol <carcara.utils.logging>`.
+
+The complete H₂ and LiH calculator examples are in
+[`examples/h2_adapt_ceo_ase.py`](https://github.com/seixas-research/carcara/blob/main/examples/h2_adapt_ceo_ase.py)
+and
+[`examples/lih_adapt_ceo_ase.py`](https://github.com/seixas-research/carcara/blob/main/examples/lih_adapt_ceo_ase.py).
+
 ## Circuit profiling
 
 Each grown ansatz is compiled to a native `{CNOT, U}` gate set with Qiskit, and

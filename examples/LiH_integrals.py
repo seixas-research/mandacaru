@@ -14,7 +14,7 @@ real-space one-body (kinetic ``T`` and nuclear-attraction ``V``) matrices and
 the two-body electron-repulsion tensor ``<ab|cd>`` in the physicists' convention.
 
 The nuclear potential uses the *true* nuclear charges (Z_Li = 3, Z_H = 1),
-while the hydrogenic basis orbitals use *effective* charges (Slater's rules) so
+while the FAO basis orbitals use *effective* charges (Slater's rules) so
 that the contracted Li core is representable on a modest real-space grid.
 
 Run with::

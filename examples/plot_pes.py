@@ -36,7 +36,7 @@ DATA_DIR = os.path.join(os.path.dirname(HERE), "data")
 
 # Basis key -> (legend label, Okabe-Ito colourblind-safe colour, marker).
 SERIES = [
-    ("hydrogenic", "hydrogenic", "#0072B2", "o"),
+    ("FAO", "FAO", "#0072B2", "o"),
     ("sto-3g", "STO-3G", "#E69F00", "s"),
     ("6-31g(d)", "6-31G(d)", "#009E73", "^"),
 ]

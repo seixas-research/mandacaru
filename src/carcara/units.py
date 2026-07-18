@@ -10,11 +10,11 @@
 
 Carcará computes in **atomic units** internally -- lengths in Bohr, energies in
 Hartree -- because that is what the real-space integral kernels, the
-finite-difference Laplacian and the hydrogenic orbitals are written in.  Users,
+finite-difference Laplacian and the FAO (Full Atomic Orbital) orbitals are written in.  Users,
 however, usually think in **Angstrom** and **electronvolts**.
 
 This module is the single source of truth for the conversion factors and small
-helpers.  The user-facing classes (``Grid``, ``HydrogenicOrbital``,
+helpers.  The user-facing classes (``Grid``, ``FullAtomicOrbital``,
 ``Potentials``, ``IntegralEngine``) accept lengths in Angstrom and return
 energies in eV *by default*, converting to/from atomic units at their boundary;
 the legacy :class:`~carcara.wavefunction.Wavefunction` facade opts back into

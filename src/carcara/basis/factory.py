@@ -33,7 +33,7 @@ from ase.data import atomic_numbers
 
 from .base import BasisFunction
 from .gaussian import GaussianOrbital
-from .hydrogenic import FullAtomicOrbital
+from .fao import FullAtomicOrbital
 from .nao import DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital, energy_shift_to_rc
 from .pople import pople_631g_shells
 from .sto_ng import sto_ng_shells
@@ -60,13 +60,13 @@ class BasisSet:
         """Construct a basis set of the requested ``method``.
 
         Supported methods: ``"FAO"`` (Full Atomic Orbitals -- the minimal
-        analytic hydrogen-like family; ``"hydrogenic"`` is kept as an alias),
+        analytic single-zeta atomic family),
         ``"NAO"`` (confined numerical atomic orbitals), ``"GTO"`` / ``"STO-3G"``
         (native STO-nG minimal Gaussian) and ``"6-31G"`` / ``"6-31G(d)"`` (native
         Pople split-valence, optionally with ``d`` polarization).
         """
         key = method.upper().replace(" ", "")
-        if key in ("FAO", "FULLATOMICORBITALS", "HYDROGENIC", "HYDROGEN"):
+        if key in ("FAO", "FULLATOMICORBITALS"):
             return FAOBasisSet(**kwargs)
         if key == "NAO":
             return NAOBasisSet(**kwargs)
@@ -179,7 +179,7 @@ class GTOBasisSet(BasisSet):
 
 
 class FAOBasisSet(BasisSet):
-    """Minimal analytic hydrogen-like basis: one orbital per occupied subshell.
+    """Minimal analytic Full Atomic Orbitals basis: one orbital per occupied subshell.
 
     For each occupied ``(n, l)`` subshell of the atom, builds the ``2l + 1``
     :class:`~carcara.basis.FullAtomicOrbital` functions with the subshell's Slater
@@ -204,9 +204,6 @@ class FAOBasisSet(BasisSet):
     def __repr__(self) -> str:
         return "FAOBasisSet()"
 
-
-# Backward-compatible alias (the family was renamed from "hydrogenic" to FAO).
-HydrogenicBasisSet = FAOBasisSet
 
 
 class Pople631GBasisSet(BasisSet):

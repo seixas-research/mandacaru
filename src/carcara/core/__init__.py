@@ -15,15 +15,12 @@
 * :class:`PauliSum` -- the qubit-operator output type.
 """
 
-from .hamiltonian import (HydrogenicIntegrals, MolecularIntegrals,
-                          minimal_fao_basis, minimal_hydrogenic_basis)
+from .hamiltonian import MolecularIntegrals, minimal_fao_basis
 from .mapping import Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity
 
 __all__ = [
     "MolecularIntegrals",
-    "HydrogenicIntegrals",       # alias of MolecularIntegrals
     "minimal_fao_basis",
-    "minimal_hydrogenic_basis",  # alias of minimal_fao_basis
     "Fermion",
     "PauliSum",
     "jordan_wigner",
