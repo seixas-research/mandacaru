@@ -43,7 +43,7 @@ from carcara.utils import parse_output
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-output_file = os.path.join(DATA_DIR, "output.txt")
+output_file = os.path.join(DATA_DIR, "output_h2.txt")
 
 # 1. Define the molecule via ASE and attach ADAPTVQE as its calculator.  The
 #    full argument surface is spelled out: pool / basis / mapping / gradient /

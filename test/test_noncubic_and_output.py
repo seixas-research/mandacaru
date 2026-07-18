@@ -10,7 +10,7 @@ Covers the three features added on top of the cubic integral core:
   physics (H 1s on-site repulsion = 5/8 Ha) on a non-cubic box;
 * :class:`~carcara.wavefunction.Wavefunction` built directly from an ASE
   ``Atoms`` object (elements / positions / cell);
-* :class:`~carcara.algorithms.AdaptVQE` writing a structured, live-parseable
+* :class:`~carcara.algorithms.ADAPTVQE` writing a structured, live-parseable
   ``output.txt`` as the ADAPT loop runs.
 """
 
@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, AdaptVQE
+from carcara.algorithms import ADAPTVQE
 from carcara.basis import FullAtomicOrbital
 from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid, IntegralEngine
@@ -268,9 +268,11 @@ class TestCEOLabels:
 
 
 class TestADAPTVQECalculator:
-    def test_class_renamed_with_alias(self):
-        # Requirement 2: class is ADAPTVQE (all caps); AdaptVQE stays as an alias.
-        assert AdaptVQE is ADAPTVQE
+    def test_class_named_all_caps(self):
+        # The driver class is ADAPTVQE (all caps); the old AdaptVQE alias is gone.
+        import carcara.algorithms as algs
+        assert not hasattr(algs, "AdaptVQE")
+        assert not hasattr(algs, "AdaptVQEResult")
 
     def test_ase_calculator_get_total_energy(self, tmp_path):
         # Requirement 7: attach ADAPTVQE as an ASE calculator; get_total_energy

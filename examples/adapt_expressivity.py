@@ -72,7 +72,7 @@ histories = {}
 finals = {}
 for pool in ("fermionic", "qeb"):
     adapt = ADAPTVQE(H, pool, num_particles=num_particles,
-                     n_spatial_orbitals=4, profile=False)
+                     n_spatial_orbitals=4, profile=False, verbose=False)
     result, history = track_adapt_expressivity(
         adapt, num_samples=600, bins=75, rng=rng,
         max_iterations=8, gradient_tol=1e-3)

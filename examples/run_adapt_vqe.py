@@ -59,7 +59,9 @@ summary = {}
 for name in POOLS:
     adapt = ADAPTVQE(H, name, num_particles=(1, 1), n_spatial_orbitals=2,
                      optimizer=Optimizer("L-BFGS-B", maxiter=2000))
-    res = adapt.run(max_iterations=15, gradient_tol=1e-6)
+    # verbose=False keeps this benchmark's curated comparison table clean; the
+    # per-run Pauli-string trace is on by default (see the ASE-calculator examples).
+    res = adapt.run(max_iterations=15, gradient_tol=1e-6, verbose=False)
     summary[name] = res
     print(f"{name:10s} {res.optimal_energy:+13.8f} "
           f"{res.optimal_energy - exact:+11.2e} "

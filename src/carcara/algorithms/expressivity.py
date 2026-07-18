@@ -292,8 +292,8 @@ class ExpressibilityStep:
 class ADAPTExpressivityTracker:
     """Callback that records ansatz expressibility as ADAPT-VQE grows the circuit.
 
-    Pass an instance as the ``callback`` of :meth:`AdaptVQE.run
-    <carcara.algorithms.adapt_vqe.AdaptVQE.run>`: after each accepted operator it
+    Pass an instance as the ``callback`` of :meth:`ADAPTVQE.run
+    <carcara.algorithms.adapt_vqe.ADAPTVQE.run>`: after each accepted operator it
     samples the current ansatz's expressibility against a **fixed** Haar reference
     (so the scores are comparable across steps) and appends an
     :class:`ExpressibilityStep`.  The resulting :attr:`history` shows how
@@ -359,13 +359,13 @@ def track_adapt_expressivity(adapt_vqe, dim: int | None = None,
                              num_samples: int = 500, bins: int = 75,
                              rng: np.random.Generator | None = None,
                              **run_kwargs):
-    """Run an :class:`AdaptVQE` while tracking expressibility per ADAPT step.
+    """Run an :class:`ADAPTVQE` while tracking expressibility per ADAPT step.
 
     Returns ``(adapt_result, history)`` where ``history`` is the tracker's list of
     :class:`ExpressibilityStep`.  The Haar reference dimension is fixed to
     ``dim`` (or the number-conserving sector inferred from
     ``adapt_vqe.num_particles``).  Extra keyword arguments are forwarded to
-    :meth:`AdaptVQE.run <carcara.algorithms.adapt_vqe.AdaptVQE.run>`.
+    :meth:`ADAPTVQE.run <carcara.algorithms.adapt_vqe.ADAPTVQE.run>`.
     """
     tracker = ADAPTExpressivityTracker(
         adapt_vqe.n_qubits, dim=dim, num_particles=adapt_vqe.num_particles,

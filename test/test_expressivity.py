@@ -6,7 +6,7 @@
 import numpy as np
 import pytest
 
-from carcara.algorithms import (ADAPTExpressivityTracker, AdaptVQE,
+from carcara.algorithms import (ADAPTExpressivityTracker, ADAPTVQE,
                                 ExpressibilityResult, active_space_dimension,
                                 calculate_haar_distribution,
                                 calculate_kl_divergence, compute_expressibility,
@@ -146,7 +146,7 @@ class TestSamplingAndDriver:
 
 class TestADAPTTracking:
     def test_tracker_records_one_step_per_operator(self, h2_hamiltonian):
-        adapt = AdaptVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
+        adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=False)
         tracker = ADAPTExpressivityTracker(4, num_particles=(1, 1),
                                            num_samples=200, bins=50,
@@ -159,7 +159,7 @@ class TestADAPTTracking:
         assert tracker.dimension == 4
 
     def test_track_helper_returns_result_and_history(self, h2_hamiltonian):
-        adapt = AdaptVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
+        adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=False)
         result, history = track_adapt_expressivity(
             adapt, num_samples=200, rng=np.random.default_rng(8),

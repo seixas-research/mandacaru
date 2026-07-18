@@ -288,7 +288,7 @@ A `PoolFactory`/registry lets users select `"fermionic" | "qubit" | "qeb" |
 "ceo-ovp" | "ceo-mvp"` by name or register custom pools via entry points.
 
 #### 5.2 — ADAPT driver (`algorithms/adapt.py`)
-- **`AdaptVQE`** orchestrating the grow→optimize loop on top of the Phase 4 VQE.
+- **`ADAPTVQE`** orchestrating the grow→optimize loop on top of the Phase 4 VQE.
 - **Gradient estimation strategies:** exact commutator expectation on
   simulators; measurement-based (grouped Pauli) estimation on hardware;
   optional parameter-shift fallback.
@@ -310,7 +310,7 @@ A `PoolFactory`/registry lets users select `"fermionic" | "qubit" | "qeb" |
 - **Noise-aware selection:** weight operator selection by estimated circuit
   noise (CNOT cost) so cheaper operators win ties — pairs naturally with CEO.
 
-**Deliverables:** `AdaptVQE(H, pool="ceo", ...).run()` with a pluggable pool
+**Deliverables:** `ADAPTVQE(H, pool="ceo", ...).run()` with a pluggable pool
 (`"fermionic" | "qubit" | "qeb" | "ceo"`), full convergence history, and
 per-iteration **circuit profiling** (CNOT count + depth in a native `{CNOT, U}`
 gate set via Qiskit). ✓ *implemented* (`algorithms/adapt_vqe.py`,

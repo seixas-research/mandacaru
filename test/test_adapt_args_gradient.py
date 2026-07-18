@@ -163,6 +163,60 @@ class TestArgumentSurface:
 
 
 # --------------------------------------------------------------------------- #
+# Optimizer selection.
+# --------------------------------------------------------------------------- #
+
+class TestOptimizerOption:
+    def test_default_is_cobyla(self, h2_hamiltonian):
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False)
+        assert adapt.optimizer.method == "COBYLA"
+
+    @pytest.mark.parametrize("name", ["COBYLA", "Nelder-Mead", "BFGS"])
+    def test_named_optimizers_build(self, h2_hamiltonian, name):
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False, optimizer=name)
+        assert adapt.optimizer.method == name
+
+    def test_optimizer_instance_passthrough(self, h2_hamiltonian):
+        from carcara.optimizers import Optimizer
+        opt = Optimizer("L-BFGS-B", maxiter=500)
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False, optimizer=opt)
+        assert adapt.optimizer is opt
+
+    def test_unknown_optimizer_rejected(self, h2_hamiltonian):
+        with pytest.raises(ValueError):
+            ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                     n_spatial_orbitals=2, optimizer="nope")
+
+
+# --------------------------------------------------------------------------- #
+# Standard-output Pauli-string trace.
+# --------------------------------------------------------------------------- #
+
+class TestVerbosePauliOutput:
+    def test_hamiltonian_and_ansatz_pauli_strings_printed(self, h2_hamiltonian,
+                                                          capsys):
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False, verbose=True)
+        adapt.run(max_iterations=3, gradient_tol=1e-6)
+        out = capsys.readouterr().out
+        # The qubit Hamiltonian is echoed as Pauli strings ...
+        assert "Qubit Hamiltonian" in out
+        assert "* ZIII" in out
+        # ... and each iteration prints the selected operator's generator.
+        assert "ansatz operator (Pauli strings)" in out
+        assert out.count("[iter 1]") == 1
+
+    def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False, verbose=False)
+        adapt.run(max_iterations=3, gradient_tol=1e-6)
+        assert capsys.readouterr().out == ""
+
+
+# --------------------------------------------------------------------------- #
 # Device registry.
 # --------------------------------------------------------------------------- #
 

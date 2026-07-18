@@ -8,7 +8,7 @@
 
 r"""ADAPT-VQE: adaptively grown variational ansatz.
 
-:class:`AdaptVQE` implements ADAPT-VQE (Grimsley *et al.*, 2019), which builds a
+:class:`ADAPTVQE` implements ADAPT-VQE (Grimsley *et al.*, 2019), which builds a
 compact, problem-tailored ansatz one operator at a time instead of using a fixed
 template.  Each macro-iteration:
 
@@ -88,6 +88,33 @@ def _resolve_geometry(geometry):
     # (symbols, positions) pair.
     symbols, positions = geometry
     return list(symbols), np.asarray(positions, dtype=float), None
+
+
+def format_pauli_sum(pauli: PauliSum, indent: str = "    ",
+                     max_terms: int | None = None) -> str:
+    """Render a :class:`~carcara.core.mapping.PauliSum` as ``coeff * PauliString``.
+
+    Real coefficients (Hermitian operators, e.g. the Hamiltonian) print as plain
+    reals; purely imaginary ones (anti-Hermitian generators) print with a ``j``.
+    ``max_terms`` truncates long sums with a trailing ``... (k more terms)`` line.
+    """
+    items = sorted(pauli.simplify().terms.items())
+    if not items:
+        return f"{indent}0"
+    shown = items if max_terms is None else items[:max_terms]
+    lines = []
+    for label, coeff in shown:
+        c = complex(coeff)
+        if abs(c.imag) < 1e-12:
+            coeff_str = f"{c.real:+.6f}"
+        elif abs(c.real) < 1e-12:
+            coeff_str = f"{c.imag:+.6f}j"
+        else:
+            coeff_str = f"({c.real:+.6f}{c.imag:+.6f}j)"
+        lines.append(f"{indent}{coeff_str} * {label}")
+    if max_terms is not None and len(items) > max_terms:
+        lines.append(f"{indent}... ({len(items) - max_terms} more terms)")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -249,8 +276,8 @@ class AdaptIteration:
 
 
 @dataclass
-class AdaptVQEResult:
-    """Result of an :class:`AdaptVQE` run."""
+class ADAPTVQEResult:
+    """Result of an :class:`ADAPTVQE` run."""
 
     optimal_energy: float
     optimal_parameters: np.ndarray
@@ -276,7 +303,7 @@ class AdaptVQEResult:
 
     def __repr__(self) -> str:
         cnots = self.metrics.cnot_count if self.metrics else None
-        return (f"AdaptVQEResult(energy={self.optimal_energy:.6f}, "
+        return (f"ADAPTVQEResult(energy={self.optimal_energy:.6f}, "
                 f"n_ops={self.num_operators}, cnots={cnots}, "
                 f"converged={self.converged})")
 
@@ -317,8 +344,10 @@ class ADAPTVQE(Calculator):
         Hartree-Fock reference.  Inferred from the pool object otherwise.
     n_spatial_orbitals : int, optional
         Number of spatial orbitals; required to build a pool from a name.
-    optimizer : Optimizer, optional
-        Classical optimizer for the inner re-optimization (default **COBYLA**).
+    optimizer : str or Optimizer
+        Classical optimizer for the inner re-optimization.  Either a method name
+        -- one of ``"COBYLA"`` (default), ``"Nelder-Mead"``, ``"BFGS"`` -- or a
+        pre-built :class:`~carcara.optimizers.optim.Optimizer` instance.
     mapping : str
         Fermion-to-qubit mapping -- one of ``"jordan_wigner"`` (default),
         ``"parity"``, ``"bravyi_kitaev"`` -- used when ``hamiltonian`` is a
@@ -343,6 +372,10 @@ class ADAPTVQE(Calculator):
         evaluation.
     profile : bool
         Compile and profile the ansatz each iteration (default ``True``).
+    verbose : bool
+        Print a live trace of the quantum simulation to standard output (default
+        ``True``): the qubit Hamiltonian as Pauli strings before the loop, and the
+        selected operator's generator as Pauli strings at each iteration.
     atomic_units : bool
         Units used in the ``output.txt`` log.  ``False`` (default) logs energies
         in **eV** and lengths in **Angstrom**; ``True`` logs Hartree and Bohr.
@@ -366,6 +399,7 @@ class ADAPTVQE(Calculator):
     implemented_properties = ["energy", "free_energy"]
 
     _GRADIENTS = ("classical", "parameter-shift_rule")
+    _OPTIMIZERS = ("COBYLA", "Nelder-Mead", "BFGS")
 
     def __init__(self,
                  hamiltonian=None,
@@ -373,7 +407,7 @@ class ADAPTVQE(Calculator):
                  basis: str = "FAO",
                  num_particles=None,
                  n_spatial_orbitals=None,
-                 optimizer: Optimizer | None = None,
+                 optimizer: str | Optimizer = "COBYLA",
                  mapping: str = "jordan_wigner",
                  gradient: str = "classical",
                  device: str = "AER_simulator",
@@ -381,6 +415,7 @@ class ADAPTVQE(Calculator):
                  gradient_tolerance: float = 1e-3,
                  output: str | None = None,
                  profile: bool = True,
+                 verbose: bool = True,
                  atomic_units: bool = False,
                  grid=None,
                  charge: int = 0,
@@ -392,7 +427,8 @@ class ADAPTVQE(Calculator):
         self.mapping = mapping
         self.basis = basis
         self.profile = profile
-        self.optimizer = optimizer or Optimizer(method="COBYLA", maxiter=2000)
+        self.verbose = bool(verbose)
+        self.optimizer = self._resolve_optimizer(optimizer)
 
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
@@ -428,6 +464,23 @@ class ADAPTVQE(Calculator):
             self._configure(hamiltonian, num_particles, n_spatial_orbitals)
 
     # -- setup helpers ---------------------------------------------------- #
+
+    def _resolve_optimizer(self, optimizer: str | Optimizer) -> Optimizer:
+        """Normalize the ``optimizer`` argument to an :class:`Optimizer`.
+
+        Accepts a pre-built :class:`Optimizer` (used as-is) or one of the method
+        names in :attr:`_OPTIMIZERS` (``"COBYLA"``, ``"Nelder-Mead"``, ``"BFGS"``).
+        """
+        if isinstance(optimizer, Optimizer):
+            return optimizer
+        if isinstance(optimizer, str):
+            if optimizer not in self._OPTIMIZERS:
+                raise ValueError(
+                    f"unknown optimizer {optimizer!r}; use one of "
+                    f"{self._OPTIMIZERS} or an Optimizer instance")
+            return Optimizer(method=optimizer, maxiter=2000)
+        raise TypeError(
+            "optimizer must be a method name or an Optimizer instance")
 
     def _configure(self, hamiltonian, num_particles, n_spatial_orbitals):
         """Resolve the pool and materialize the Hamiltonian / pool matrices."""
@@ -711,12 +764,15 @@ class ADAPTVQE(Calculator):
             gradient_tol: float | None = None,
             initial_parameters=None, callback=None,
             output_file: str | None = None, geometry=None, cell=None,
-            log_expressivity: bool = True) -> AdaptVQEResult:
+            log_expressivity: bool = True,
+            verbose: bool | None = None) -> ADAPTVQEResult:
         """Grow and optimize the ansatz until convergence.
 
-        ``max_iterations``, ``gradient_tol`` and ``output_file`` default to the
-        instance's ``max_iterations`` / ``gradient_tolerance`` / ``output``
-        constructor arguments when left as ``None``.
+        Every argument is optional: ``max_iterations``, ``gradient_tol``,
+        ``output_file`` and ``verbose`` fall back to the instance's
+        ``max_iterations`` / ``gradient_tolerance`` / ``output`` / ``verbose``
+        constructor arguments when left as ``None``, so a configured
+        :class:`ADAPTVQE` can simply be ``.run()``.
 
         Parameters
         ----------
@@ -754,6 +810,10 @@ class ADAPTVQE(Calculator):
         log_expressivity : bool
             Compute and log the expressivity score each iteration when
             ``output_file`` is set (default ``True``).
+        verbose : bool, optional
+            Print the quantum-simulation trace to standard output -- the qubit
+            Hamiltonian as Pauli strings, then each iteration's selected operator
+            as Pauli strings.  Defaults to the instance's ``verbose``.
         """
         if not self._configured:
             raise RuntimeError(
@@ -767,6 +827,8 @@ class ADAPTVQE(Calculator):
             gradient_tol = self.gradient_tolerance
         if output_file is None:
             output_file = self.output
+        if verbose is None:
+            verbose = self.verbose
 
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping)
@@ -777,6 +839,9 @@ class ADAPTVQE(Calculator):
         logger = self._make_logger(output_file, geometry, cell, ref_energy,
                                    max_iterations, gradient_tol)
         e_unit = self._energy_unit_label()
+
+        if verbose:
+            self._print_header(ref_energy, e_unit)
 
         iterations: list[AdaptIteration] = []
         selected: list[str] = []
@@ -809,6 +874,10 @@ class ADAPTVQE(Calculator):
                 params = np.asarray(result.x, dtype=float)
                 energy = float(result.fun)
                 total_evals += result.nfev
+
+                if verbose:
+                    self._print_iteration(len(iterations) + 1, op, max_grad,
+                                          energy, e_unit)
 
                 metrics = (profile_ansatz(self.n_qubits, ansatz.occupied,
                                           ansatz.operators)
@@ -864,7 +933,7 @@ class ADAPTVQE(Calculator):
                 ansatz.reference_state()
             max_grad = float(np.max(np.abs(self._gradients(psi))))
 
-        return AdaptVQEResult(
+        result = ADAPTVQEResult(
             optimal_energy=energy,
             optimal_parameters=params,
             reference_energy=ref_energy,
@@ -875,7 +944,44 @@ class ADAPTVQE(Calculator):
             num_evaluations=total_evals,
             metrics=metrics)
 
+        if verbose:
+            self._print_summary(result, e_unit)
+        return result
 
-# Backward-compatible aliases (the class was renamed to ``ADAPTVQE``).
-AdaptVQE = ADAPTVQE
-ADAPTVQEResult = AdaptVQEResult
+    # -- standard-output trace ------------------------------------------- #
+
+    def _print_header(self, ref_energy: float, e_unit: str) -> None:
+        """Print the run banner and the qubit Hamiltonian as Pauli strings."""
+        rule = "=" * 70
+        print(rule)
+        print(f"ADAPT-VQE  |  mapping: {self.mapping}  |  {self.n_qubits} qubits "
+              f"|  device: {self.device}")
+        print(f"pool: {self.pool.__class__.__name__}  |  "
+              f"optimizer: {self.optimizer.method}  |  gradient: {self.gradient}")
+        print(rule)
+        n_terms = len(self.hamiltonian.simplify().terms)
+        print(f"Qubit Hamiltonian ({n_terms} Pauli terms):")
+        print(format_pauli_sum(self.hamiltonian))
+        print(f"Hartree-Fock reference energy = "
+              f"{self._to_energy_units(ref_energy):+.8f} {e_unit}")
+        print(rule)
+
+    def _print_iteration(self, iteration: int, op: PoolOperator,
+                         max_grad: float, energy: float, e_unit: str) -> None:
+        """Print one iteration: the selected operator as Pauli strings."""
+        print(f"\n[iter {iteration}] selected {op.label}  "
+              f"(kind={op.kind}, |grad|={max_grad:.6e})")
+        print("  ansatz operator (Pauli strings):")
+        print(format_pauli_sum(op.generator, indent="    "))
+        print(f"  energy = {self._to_energy_units(energy):+.8f} {e_unit}")
+
+    def _print_summary(self, result: ADAPTVQEResult, e_unit: str) -> None:
+        """Print the closing summary line."""
+        rule = "=" * 70
+        print(rule)
+        status = "converged" if result.converged else "not converged"
+        print(f"ADAPT-VQE finished ({status}): "
+              f"E = {self._to_energy_units(result.optimal_energy):+.8f} {e_unit}, "
+              f"{result.num_operators} operators, "
+              f"final |grad| = {result.final_max_gradient:.6e}")
+        print(rule)

@@ -11,7 +11,7 @@ double excitation first and every pool reaches the FCI ground state.
 import numpy as np
 import pytest
 
-from carcara.algorithms import AdaptVQE, AdaptVQEResult, RHF
+from carcara.algorithms import ADAPTVQE, ADAPTVQEResult, RHF
 from carcara.algorithms.adapt_vqe import AdaptAnsatz, profile_ansatz
 from carcara.circuits import (
     CEOPool,
@@ -53,7 +53,7 @@ def h2_exact(h2_hamiltonian):
 
 
 def _adapt(hamiltonian, pool_name):
-    return AdaptVQE(hamiltonian, pool_name, num_particles=(1, 1),
+    return ADAPTVQE(hamiltonian, pool_name, num_particles=(1, 1),
                     n_spatial_orbitals=2,
                     optimizer=Optimizer("L-BFGS-B", maxiter=2000))
 
@@ -161,7 +161,7 @@ class TestConvergence:
     def test_pool_reaches_fci(self, h2_hamiltonian, h2_exact, name):
         res = _adapt(h2_hamiltonian, name).run(max_iterations=15,
                                                gradient_tol=1e-6)
-        assert isinstance(res, AdaptVQEResult)
+        assert isinstance(res, ADAPTVQEResult)
         assert abs(res.optimal_energy - h2_exact) < 1e-6
         assert res.optimal_energy < res.reference_energy - 1e-4
 
@@ -214,17 +214,17 @@ class TestProfiling:
 class TestDriver:
     def test_accepts_pool_object(self, h2_hamiltonian, h2_exact):
         pool = build_pool("ceo", 2, (1, 1))
-        res = AdaptVQE(h2_hamiltonian, pool, num_particles=(1, 1)).run(
+        res = ADAPTVQE(h2_hamiltonian, pool, num_particles=(1, 1)).run(
             gradient_tol=1e-6)
         assert abs(res.optimal_energy - h2_exact) < 1e-6
 
     def test_named_pool_requires_shape(self, h2_hamiltonian):
         with pytest.raises(ValueError):
-            AdaptVQE(h2_hamiltonian, "fermionic")   # missing shape/particles
+            ADAPTVQE(h2_hamiltonian, "fermionic")   # missing shape/particles
 
     def test_qubit_count_mismatch_raises(self, h2_hamiltonian):
         # A fixed-size qubit Hamiltonian against a wrongly-sized pool is rejected.
         qubit_h = h2_hamiltonian.map_to_qubits("jordan_wigner")   # 4 qubits
         with pytest.raises(ValueError):
-            AdaptVQE(qubit_h, "fermionic", num_particles=(1, 1),
+            ADAPTVQE(qubit_h, "fermionic", num_particles=(1, 1),
                      n_spatial_orbitals=3)           # 6-qubit pool vs 4-qubit H

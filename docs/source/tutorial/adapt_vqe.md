@@ -83,6 +83,7 @@ atoms.calc = ADAPTVQE(
     pool="ceo",                       # "ceo" / "fermionic" / "qubit" / "qeb"
     basis="FAO",                      # "FAO" / "STO-3G" / "6-31G(d)" / ...
     mapping="jordan_wigner",          # "jordan_wigner" / "parity" / "bravyi_kitaev"
+    optimizer="COBYLA",               # "COBYLA" / "Nelder-Mead" / "BFGS"
     gradient="parameter-shift_rule",  # "classical" / "parameter-shift_rule"
     device="AER_simulator",           # "AER_simulator" (ideal) / "ibm-quantum"
     grid=Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20),
@@ -100,8 +101,15 @@ evaluated: `"classical"` uses a finite-difference estimate from shifted
 parameters, while `"parameter-shift_rule"` uses the quantum parameter-shift rule
 (exact on the state-vector backend). The **device** argument names the execution
 backend — `"AER_simulator"` is the ideal simulator used today; `"ibm-quantum"` is
-reserved for real-hardware execution. The run is traced live to the `output`
-file following the {mod}`output.txt protocol <carcara.utils.logging>`.
+reserved for real-hardware execution. The **optimizer** argument selects the
+classical inner optimizer by name — `"COBYLA"` (default), `"Nelder-Mead"` or
+`"BFGS"` — or accepts a pre-built {class}`~carcara.optimizers.optim.Optimizer`.
+The run is traced live to the `output` file following the {mod}`output.txt
+protocol <carcara.utils.logging>`.
+
+By default (`verbose=True`) the run also prints a live trace to standard output:
+the qubit Hamiltonian as Pauli strings before the loop, and at each iteration the
+selected operator's generator as Pauli strings. Pass `verbose=False` to silence it.
 
 The complete H₂ and LiH calculator examples are in
 [`examples/h2_adapt_ceo_ase.py`](https://github.com/seixas-research/carcara/blob/main/examples/h2_adapt_ceo_ase.py)

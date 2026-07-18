@@ -13,8 +13,6 @@ from .adapt_vqe import (
     ADAPTVQEResult,
     AdaptAnsatz,
     AdaptIteration,
-    AdaptVQE,
-    AdaptVQEResult,
     CircuitMetrics,
     profile_ansatz,
 )
@@ -44,8 +42,6 @@ __all__ = [
     "transform_integrals",
     "ADAPTVQE",
     "ADAPTVQEResult",
-    "AdaptVQE",
-    "AdaptVQEResult",
     "AdaptAnsatz",
     "AdaptIteration",
     "CircuitMetrics",
