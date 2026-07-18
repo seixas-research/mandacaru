@@ -108,11 +108,17 @@ backend — `"AER_simulator"` is the ideal simulator used today; `"ibm-quantum"`
 reserved for real-hardware execution. The **optimizer** argument selects the
 classical inner optimizer by name — `"COBYLA"` (default), `"Nelder-Mead"` or
 `"BFGS"` — or accepts a pre-built {class}`~carcara.optimizers.optim.Optimizer`.
-The **kpts** argument takes a Monkhorst-Pack mesh size (resolved with ASE), but
-the real-space engine is Gamma-point (molecular): only `kpts=(1, 1, 1)` (the
-default) runs, and a denser mesh — though generated and exposed on
-`calc.kpoints` — raises `NotImplementedError`. The run is traced live to the
-`output` file following the {mod}`output.txt protocol <carcara.utils.logging>`.
+The **kpts** argument takes a Monkhorst-Pack mesh (resolved with ASE) — a size
+triple `(n1, n2, n3)` or the ASE dict `{"size": (n1, n2, n3), "gamma": True}`
+(`gamma=True` centres the mesh on Γ) — but the real-space engine is Gamma-point
+(molecular): only a single Γ point runs, and a denser mesh (generated and exposed
+on `calc.kpoints`) raises `NotImplementedError`. **spin** (default `False`)
+selects a spin-polarized reference (open-shell odd-electron builds are a roadmap
+item), and **initial_state** (`"hartree-fock"` by default) sets the ansatz
+reference to the Hartree-Fock determinant. When `verbose`, the run opens with a
+start-up **banner** (versions / host) written to standard output before the
+`output` file; that structured log follows the {mod}`output.txt protocol
+<carcara.utils.logging>`.
 
 By default (`verbose=True`) the run also prints a live trace to standard output:
 the qubit Hamiltonian as Pauli strings before the loop, and at each iteration the

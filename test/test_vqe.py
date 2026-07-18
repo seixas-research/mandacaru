@@ -274,3 +274,23 @@ class TestVQEKPoints:
         vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), kpts=(2, 2, 2), verbose=False)
         with pytest.raises(NotImplementedError, match="Monkhorst-Pack"):
             vqe.run()
+
+    def test_dict_gamma_centering(self):
+        vqe = VQE(basis="FAO", kpts={"size": (2, 2, 2), "gamma": True})
+        assert vqe.kpts == (2, 2, 2) and vqe.kpts_gamma is True
+        assert any(np.allclose(k, [0, 0, 0]) for k in vqe.kpoints)
+
+
+# --- Spin and initial-state arguments ---
+
+class TestVQESpinAndInitialState:
+    def test_spin_default_false(self, h2_hamiltonian):
+        assert VQE(h2_hamiltonian, UCCSD(2, (1, 1))).spin is False
+
+    def test_spin_flag_stored(self, h2_hamiltonian):
+        assert VQE(h2_hamiltonian, UCCSD(2, (1, 1)), spin=True).spin is True
+
+    def test_initial_state_default_and_validation(self, h2_hamiltonian):
+        assert VQE(h2_hamiltonian, UCCSD(2, (1, 1))).initial_state == "hartree-fock"
+        with pytest.raises(ValueError):
+            VQE(h2_hamiltonian, UCCSD(2, (1, 1)), initial_state="excited")

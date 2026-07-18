@@ -203,6 +203,41 @@ class MolecularIntegrals:
                             n_modes=2 * self.n_orbitals)
         return H
 
+    def hartree_fock_hamiltonian(self, n_electrons: int,
+                                 include_nuclear_repulsion: bool = True) -> Fermion:
+        r"""Reduce the molecular Hamiltonian to its Hartree-Fock (mean-field) form.
+
+        Returns the diagonal one-body :class:`Fermion`
+
+        .. math::
+
+            H_{\mathrm{HF}} = \sum_P \varepsilon_P\, a^\dagger_P a_P + c ,
+
+        where :math:`\varepsilon_P` are the (spin-orbital) RHF orbital energies and
+        the constant :math:`c` is fixed so that, in the ``n_electrons`` sector, the
+        aufbau (Hartree-Fock) determinant is the ground state with exactly the RHF
+        total energy.  This is the mean-field Hamiltonian whose ground state is the
+        HF determinant -- e.g. a cheap reference for the variational drivers.
+        """
+        rhf = self.hartree_fock(n_electrons)
+        eps = np.real(np.asarray(rhf.mo_energies, dtype=float))
+        M = len(eps)
+        eps_so = np.concatenate([eps, eps])          # alpha block, then beta block
+        n_so = 2 * M
+        n_occ = n_electrons // 2
+        occupied = list(range(n_occ)) + list(range(M, M + n_occ))
+
+        terms = {((P, True), (P, False)): complex(eps_so[P]) for P in range(n_so)}
+        H = Fermion(terms, n_modes=n_so)
+
+        e_reference = float(sum(eps_so[P] for P in occupied))
+        e_hf = rhf.electronic_energy + (self.nuclear_repulsion
+                                        if include_nuclear_repulsion else 0.0)
+        const = complex(e_hf - e_reference)
+        if abs(const) > 1e-14:
+            H = H + Fermion({(): const}, n_modes=n_so)
+        return H
+
 
 def spin_block_integrals(h: np.ndarray,
                          eri: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

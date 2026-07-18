@@ -282,6 +282,52 @@ class TestKPoints:
         with pytest.raises(ValueError):
             ADAPTVQE(pool="ceo", basis="FAO", kpts=(1, 1))       # not length-3
 
+    def test_dict_spec_with_gamma_centering(self):
+        # ASE dict form {"size": ..., "gamma": True}: Gamma-centred mesh.
+        adapt = ADAPTVQE(pool="ceo", basis="FAO",
+                         kpts={"size": (2, 2, 1), "gamma": True})
+        assert adapt.kpts == (2, 2, 1)
+        assert adapt.kpts_gamma is True
+        # Gamma-centring shifts the even-axis mesh so it includes the Gamma point.
+        assert any(np.allclose(k, [0, 0, 0]) for k in adapt.kpoints)
+
+    def test_dict_gamma_only(self):
+        adapt = ADAPTVQE(pool="ceo", basis="FAO",
+                         kpts={"size": (1, 1, 1), "gamma": True})
+        assert len(adapt.kpoints) == 1 and adapt.kpts_gamma is True
+
+
+class TestSpinAndInitialState:
+    def test_spin_defaults_false(self):
+        assert ADAPTVQE(pool="ceo", basis="FAO").spin is False
+
+    def test_spin_flag_stored(self):
+        assert ADAPTVQE(pool="ceo", basis="FAO", spin=True).spin is True
+
+    def test_even_electron_spin_polarized_matches_closed_shell(self):
+        # For a singlet (even electrons) spin-polarized == closed-shell.
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
+
+        def energy(spin):
+            atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.4, spin=spin,
+                                  verbose=False, max_iterations=6,
+                                  gradient_tolerance=1e-3)
+            return atoms.get_total_energy()
+
+        assert energy(False) == pytest.approx(energy(True), abs=1e-6)
+
+    def test_initial_state_default_is_hartree_fock(self):
+        assert ADAPTVQE(pool="ceo", basis="FAO").initial_state == "hartree-fock"
+
+    def test_initial_state_none_is_hartree_fock(self):
+        assert ADAPTVQE(pool="ceo", basis="FAO",
+                        initial_state=None).initial_state == "hartree-fock"
+
+    def test_unknown_initial_state_rejected(self):
+        with pytest.raises(ValueError):
+            ADAPTVQE(pool="ceo", basis="FAO", initial_state="random")
+
 
 class TestPlacementInvariance:
     def test_energy_independent_of_position_in_cell(self):

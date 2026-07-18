@@ -125,7 +125,9 @@ class VQE(Calculator):
                  optimizer: str | Optimizer = "COBYLA", verbose: bool = True,
                  *, basis: str = "FAO", mapping: str = "jordan_wigner",
                  device: str = "AER_simulator", grid=None, h: float = 0.20,
-                 kpts=None, charge: int = 0, n_electrons=None,
+                 kpts=None, spin: bool = False,
+                 initial_state: str | None = "hartree-fock",
+                 charge: int = 0, n_electrons=None,
                  hamiltonian_builder=None, ansatz_builder=None,
                  run_options: dict | None = None, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
@@ -137,10 +139,13 @@ class VQE(Calculator):
         self.device = normalize_device(device)
         self.grid = grid
         self.h = float(h)
+        self.spin = bool(spin)
 
+        from ._hamiltonian_from_atoms import (monkhorst_pack_kpts,
+                                              resolve_initial_state)
+        self.initial_state = resolve_initial_state(initial_state)
         # Monkhorst-Pack k-point mesh (ASE); Gamma-point only is runnable.
-        from ._hamiltonian_from_atoms import monkhorst_pack_kpts
-        self.kpts, self.kpoints = monkhorst_pack_kpts(kpts)
+        self.kpts, self.kpts_gamma, self.kpoints = monkhorst_pack_kpts(kpts)
         self.charge = int(charge)
         self.n_electrons = n_electrons
         self.hamiltonian_builder = hamiltonian_builder
@@ -181,9 +186,11 @@ class VQE(Calculator):
 
     def _kpts_label(self) -> str:
         n1, n2, n3 = self.kpts
+        centred = ", Gamma-centred" if self.kpts_gamma else ""
         if len(self.kpoints) == 1:
             return f"Gamma ({n1}x{n2}x{n3} Monkhorst-Pack)"
-        return f"{len(self.kpoints)} k-points ({n1}x{n2}x{n3} Monkhorst-Pack)"
+        return (f"{len(self.kpoints)} k-points ({n1}x{n2}x{n3} "
+                f"Monkhorst-Pack{centred})")
 
     @staticmethod
     def _as_pauli_sum(hamiltonian, ansatz) -> PauliSum:
@@ -223,7 +230,8 @@ class VQE(Calculator):
                 from ._hamiltonian_from_atoms import build_basis_hamiltonian
                 hamiltonian, num_particles, n_orb, profile = \
                     build_basis_hamiltonian(atoms, self.basis, self.grid, self.h,
-                                            self.charge, self.n_electrons)
+                                            self.charge, self.n_electrons,
+                                            spin=self.spin)
                 self._integration_profile = profile
             ansatz = self._default_ansatz(n_orb, num_particles)
             self._configure(hamiltonian, ansatz)
@@ -277,6 +285,8 @@ class VQE(Calculator):
 
         ref_energy = self.reference_energy()
         if self.verbose:
+            from ..utils import banner
+            banner.show()
             self._print_header(ref_energy)
 
         with timings.time("parameter optimization"):
@@ -312,6 +322,8 @@ class VQE(Calculator):
         print(f"ansatz: {type(self.ansatz).__name__}  |  "
               f"parameters: {self.ansatz.num_parameters}  |  "
               f"k-points: {self._kpts_label()}")
+        print(f"spin-polarized: {self.spin}  |  "
+              f"initial state: {self.initial_state}")
         print(rule)
         n_terms = len(self.hamiltonian.simplify().terms)
         print(f"Qubit Hamiltonian ({n_terms} Pauli terms):")

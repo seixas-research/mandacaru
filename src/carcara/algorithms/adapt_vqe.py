@@ -49,6 +49,9 @@ from ..circuits.pools import PoolBase, PoolOperator, build_pool
 from ..core.mapping import Fermion, PauliSum
 from ..optimizers.optim import Optimizer, resolve_optimizer
 from ..units import ANGSTROM_TO_BOHR, from_hartree
+from ._hamiltonian_from_atoms import (monkhorst_pack_kpts,
+                                      resolve_initial_state as
+                                      _resolve_initial_state)
 
 
 def _unique_frequencies(eigenvalues: np.ndarray, tol: float = 1e-7) -> np.ndarray:
@@ -392,13 +395,23 @@ class ADAPTVQE(Calculator):
         Target grid spacing in **Angstrom** (default ``0.20``) for the automatic
         cell-based grid used when ``grid`` is not given.  Finer ``h`` (e.g.
         ``0.10``) gives a denser grid and more accurate one-/two-body integrals.
-    kpts : (int, int, int), optional
-        Monkhorst-Pack k-point mesh size, resolved with ASE
+    kpts : (int, int, int) or dict, optional
+        Monkhorst-Pack k-point mesh, resolved with ASE
         (:func:`ase.dft.kpoints.monkhorst_pack`); default ``None`` (a single
-        Gamma point, equivalent to ``(1, 1, 1)``).  The real-space engine solves a
-        Gamma-point (molecular) problem, so a denser mesh is generated and exposed
-        on :attr:`kpoints` but raises ``NotImplementedError`` at run time (Bloch /
-        periodic Hamiltonians are not yet implemented).
+        Gamma point).  Accepts a size triple ``(n1, n2, n3)`` or the ASE dict
+        ``{"size": (n1, n2, n3), "gamma": True}`` (``gamma=True`` centres the mesh
+        on Gamma).  The real-space engine solves a Gamma-point (molecular)
+        problem, so a denser mesh is generated and exposed on :attr:`kpoints` but
+        raises ``NotImplementedError`` at run time.
+    spin : bool
+        Spin polarization (default ``False``).  ``False`` is a closed-shell
+        reference (``n_alpha == n_beta``); ``True`` is a spin-polarized (high-spin)
+        reference.  Only affects the calculator-mode Hamiltonian builder; genuinely
+        open-shell (odd-electron) systems raise ``NotImplementedError`` (RHF-only
+        integrals).
+    initial_state : str, optional
+        The ansatz reference state; ``"hartree-fock"`` (default) is the
+        Hartree-Fock determinant.  ``None`` is treated as ``"hartree-fock"``.
     charge : int
         Total charge, used to set the electron count in the ``basis`` builder.
     n_electrons : int, optional
@@ -438,6 +451,8 @@ class ADAPTVQE(Calculator):
                  grid=None,
                  h: float = 0.20,
                  kpts=None,
+                 spin: bool = False,
+                 initial_state: str | None = "hartree-fock",
                  charge: int = 0,
                  n_electrons=None,
                  hamiltonian_builder=None,
@@ -448,13 +463,14 @@ class ADAPTVQE(Calculator):
         self.basis = basis
         self.profile = profile
         self.verbose = bool(verbose)
+        self.spin = bool(spin)
+        self.initial_state = _resolve_initial_state(initial_state)
         self.optimizer = self._resolve_optimizer(optimizer)
 
         # Monkhorst-Pack k-point mesh (ASE).  The real-space engine is
         # Gamma-point (molecular), so only a single Gamma point is runnable; a
         # denser mesh is generated and stored but rejected at run time.
-        from ._hamiltonian_from_atoms import monkhorst_pack_kpts
-        self.kpts, self.kpoints = monkhorst_pack_kpts(kpts)
+        self.kpts, self.kpts_gamma, self.kpoints = monkhorst_pack_kpts(kpts)
 
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
@@ -515,9 +531,11 @@ class ADAPTVQE(Calculator):
 
     def _kpts_label(self) -> str:
         n1, n2, n3 = self.kpts
+        centred = ", Gamma-centred" if self.kpts_gamma else ""
         if len(self.kpoints) == 1:
             return f"Gamma ({n1}x{n2}x{n3} Monkhorst-Pack)"
-        return f"{len(self.kpoints)} k-points ({n1}x{n2}x{n3} Monkhorst-Pack)"
+        return (f"{len(self.kpoints)} k-points ({n1}x{n2}x{n3} "
+                f"Monkhorst-Pack{centred})")
 
     def _configure(self, hamiltonian, num_particles, n_spatial_orbitals):
         """Resolve the pool and materialize the Hamiltonian / pool matrices."""
@@ -580,7 +598,8 @@ class ADAPTVQE(Calculator):
         from ._hamiltonian_from_atoms import build_basis_hamiltonian
 
         hamiltonian, num_particles, n_orbitals, profile = build_basis_hamiltonian(
-            atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons)
+            atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons,
+            spin=self.spin)
         self._integration_profile = profile
         return hamiltonian, num_particles, n_orbitals
 
@@ -845,6 +864,11 @@ class ADAPTVQE(Calculator):
                   if initial_parameters is not None else np.zeros(0))
         ref_energy = self.energy(ansatz.reference_state())
 
+        # Banner to standard output *before* any data is written to output.txt.
+        if verbose:
+            from ..utils import banner
+            banner.show()
+
         logger = self._make_logger(output_file, geometry, cell, ref_energy,
                                    max_iterations, gradient_tol)
         e_unit = self._energy_unit_label()
@@ -980,7 +1004,8 @@ class ADAPTVQE(Calculator):
               f"|  device: {self.device}")
         print(f"pool: {self.pool.__class__.__name__}  |  "
               f"optimizer: {self.optimizer.method}  |  gradient: {self.gradient}")
-        print(f"k-points: {self._kpts_label()}")
+        print(f"k-points: {self._kpts_label()}  |  spin-polarized: {self.spin}  "
+              f"|  initial state: {self.initial_state}")
         print(rule)
         n_terms = len(self.hamiltonian.simplify().terms)
         print(f"Qubit Hamiltonian ({n_terms} Pauli terms):")

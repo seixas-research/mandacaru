@@ -76,13 +76,20 @@ def grid_from_cell(atoms, h: float, center=None):
 
 
 def build_basis_hamiltonian(atoms, basis: str, grid, h: float, charge: int,
-                            n_electrons):
+                            n_electrons, spin: bool = False):
     """Build the RHF MO Hamiltonian from ``atoms`` using the named ``basis``.
 
     Returns ``(hamiltonian, num_particles, n_spatial_orbitals, integration_profile)``,
     where ``integration_profile`` is the timing / cores / peak-memory dict from
     the real-space integral engine (see
     :meth:`carcara.core.MolecularIntegrals.integration_profile`).
+
+    ``spin`` selects the reference occupation: ``False`` (default) is closed-shell
+    (``n_alpha == n_beta``, requires an even electron count); ``True`` is a
+    spin-polarized (high-spin) reference ``n_alpha = ceil(n/2)``, ``n_beta =
+    floor(n/2)``.  The MO integrals themselves come from closed-shell RHF, so a
+    genuinely open-shell (odd-electron) system raises ``NotImplementedError`` --
+    spin-unrestricted (UHF/ROHF) Hamiltonian construction is a roadmap item.
     """
     from ..basis import BasisSet
     from ..core import MolecularIntegrals
@@ -101,32 +108,75 @@ def build_basis_hamiltonian(atoms, basis: str, grid, h: float, charge: int,
          else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
     n_el = (int(n_electrons) if n_electrons is not None
             else int(sum(int(z) for z in numbers)) - int(charge))
+
+    num_particles = ((n_el + 1) // 2, n_el // 2) if spin else (n_el // 2, n_el // 2)
     if n_el % 2 != 0:
+        if spin:
+            raise NotImplementedError(
+                f"open-shell spin-polarized Hamiltonian construction ({n_el} "
+                "electrons) is not yet implemented: the built-in FAO builder uses "
+                "closed-shell RHF.  Pass a hamiltonian_builder for open shells.")
         raise ValueError(
             f"the built-in {basis!r} builder assumes a closed shell; got an odd "
-            f"electron count ({n_el}). Pass a hamiltonian_builder.")
+            f"electron count ({n_el}). Use spin=True (open shell) or pass a "
+            "hamiltonian_builder.")
 
     integrals = MolecularIntegrals(nuclei, basis_fns, g)
     hamiltonian = integrals.molecular_hamiltonian(mo_basis=True, n_electrons=n_el)
-    return (hamiltonian, (n_el // 2, n_el // 2), len(basis_fns),
+    return (hamiltonian, num_particles, len(basis_fns),
             integrals.integration_profile())
+
+
+def resolve_initial_state(initial_state):
+    """Normalize the ``initial_state`` spec (currently ``"hartree-fock"`` only).
+
+    ``None`` and ``"hartree-fock"`` / ``"hf"`` (case-insensitive) map to
+    ``"hartree-fock"`` -- the Hartree-Fock determinant used as the ansatz
+    reference.  Anything else raises ``ValueError``.
+    """
+    if initial_state is None:
+        return "hartree-fock"
+    key = str(initial_state).strip().lower().replace("_", "-").replace(" ", "-")
+    if key in ("hartree-fock", "hartree", "hf"):
+        return "hartree-fock"
+    raise ValueError(
+        f"unknown initial_state {initial_state!r}; only 'hartree-fock' "
+        "(the Hartree-Fock determinant) is supported")
 
 
 def monkhorst_pack_kpts(kpts):
     """Resolve a k-point spec to a Monkhorst-Pack mesh via ASE.
 
-    ``kpts`` is ``None`` / ``(1, 1, 1)`` for a single Gamma point, or a triple
-    ``(n1, n2, n3)`` for a Monkhorst-Pack grid.  Returns ``(size, mesh)`` where
-    ``size`` is the ``(n1, n2, n3)`` tuple and ``mesh`` is the ``(Nk, 3)`` array of
-    fractional k-point coordinates produced by
-    :func:`ase.dft.kpoints.monkhorst_pack`.
+    ``kpts`` may be
+
+    * ``None`` or ``(1, 1, 1)`` -- a single Gamma point;
+    * a triple ``(n1, n2, n3)`` -- a Monkhorst-Pack grid;
+    * a dict ``{"size": (n1, n2, n3), "gamma": True}`` -- the ASE spelling, where
+      ``gamma=True`` shifts the mesh so it is Gamma-centred (includes the Gamma
+      point even for even mesh sizes).
+
+    Returns ``(size, gamma, mesh)``: the ``(n1, n2, n3)`` size, whether the mesh is
+    Gamma-centred, and the ``(Nk, 3)`` array of fractional k-point coordinates
+    built with :func:`ase.dft.kpoints.monkhorst_pack`.
     """
     from ase.dft.kpoints import monkhorst_pack
 
+    gamma = None
     if kpts is None:
-        kpts = (1, 1, 1)
-    size = tuple(int(k) for k in kpts)
+        size = (1, 1, 1)
+    elif isinstance(kpts, dict):
+        size = tuple(int(k) for k in kpts.get("size", (1, 1, 1)))
+        if kpts.get("gamma", None) is not None:
+            gamma = bool(kpts["gamma"])
+    else:
+        size = tuple(int(k) for k in kpts)
     if len(size) != 3 or any(k < 1 for k in size):
         raise ValueError(
-            f"kpts must be three positive integers (n1, n2, n3), got {kpts!r}")
-    return size, monkhorst_pack(size)
+            f"kpts size must be three positive integers (n1, n2, n3); got {kpts!r}")
+
+    mesh = monkhorst_pack(size)
+    if gamma:
+        # Gamma-centred: shift by 0.5/n on even axes so Gamma is on the mesh.
+        offset = np.array([0.5 / n if n % 2 == 0 else 0.0 for n in size])
+        mesh = mesh + offset
+    return size, bool(gamma), mesh

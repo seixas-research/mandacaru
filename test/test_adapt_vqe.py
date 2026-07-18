@@ -79,6 +79,19 @@ class TestHartreeFock:
         rhf = h2_integrals.hartree_fock(2)
         assert np.all(np.diff(rhf.mo_energies) >= -1e-12)
 
+    def test_hartree_fock_hamiltonian_ground_state_is_hf(self, h2_integrals,
+                                                         h2_exact):
+        # The mean-field HF Hamiltonian's ground state (in the 2e sector) equals
+        # the RHF total energy, and lies above the full FCI (correlation energy).
+        rhf = h2_integrals.hartree_fock(2)
+        e_hf = rhf.electronic_energy + h2_integrals.nuclear_repulsion
+        H_hf = h2_integrals.hartree_fock_hamiltonian(2)
+        m = H_hf.map_to_qubits("jordan_wigner").to_matrix()
+        # Lowest eigenvalue of the diagonal mean-field Hamiltonian.
+        hf_ground = float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
+        assert hf_ground == pytest.approx(e_hf, abs=1e-8)
+        assert h2_exact < e_hf - 1e-4          # FCI below HF: correlation captured
+
 
 # --------------------------------------------------------------------------- #
 # Operator pools.
