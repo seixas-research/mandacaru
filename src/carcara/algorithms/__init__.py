@@ -16,6 +16,7 @@ from .adapt_vqe import (
     CircuitMetrics,
     profile_ansatz,
 )
+from .bloch import BandStructure, BlochADAPTVQE
 from .expressivity import (
     ADAPTExpressivityTracker,
     ExpressibilityResult,
@@ -46,6 +47,8 @@ __all__ = [
     "AdaptIteration",
     "CircuitMetrics",
     "profile_ansatz",
+    "BlochADAPTVQE",
+    "BandStructure",
     "compute_expressibility",
     "ExpressibilityResult",
     "ExpressibilityStep",

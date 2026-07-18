@@ -8,4 +8,5 @@ vqe_h2
 vqe_lih
 adapt_vqe_lih
 pes_scan
+bloch_crystals
 ```
