@@ -17,10 +17,13 @@
 
 from .hamiltonian import MolecularIntegrals, minimal_fao_basis
 from .mapping import Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity
+from .planewave import PlaneWaveIntegrals, plane_wave_vectors
 
 __all__ = [
     "MolecularIntegrals",
     "minimal_fao_basis",
+    "PlaneWaveIntegrals",
+    "plane_wave_vectors",
     "Fermion",
     "PauliSum",
     "jordan_wigner",

@@ -108,14 +108,15 @@ class VQE(Calculator):
     verbose : bool
         Print the qubit Hamiltonian (Pauli strings) and a timing / resources
         summary to standard output (default ``True``).
-    basis, mapping, device, grid, h, kpts, charge, n_electrons,
-    hamiltonian_builder, ansatz_builder, run_options :
+    basis, mapping, device, grid, h, kpts, charge, n_electrons, hamiltonian_builder, ansatz_builder, run_options :
         Calculator-mode options mirroring
-        :class:`~carcara.algorithms.adapt_vqe.ADAPTVQE`: the ``basis`` and grid
-        resolution ``h`` build the Hamiltonian from the ASE geometry (the grid is
-        generated from ``atoms.cell`` unless ``grid`` is given), ``ansatz_builder``
-        overrides the default UCCSD factory.  ``kpts`` is a Monkhorst-Pack mesh
-        size resolved with ASE (Gamma-point only is runnable; see ``ADAPTVQE``).
+        :class:`~carcara.algorithms.adapt_vqe.ADAPTVQE`: ``basis`` (a name or a
+        ``{"name": ..., <options>}`` dict, including the periodic ``"PW"`` plane-wave
+        family ``{"name": "PW", "energy_cutoff": 300}``) and grid resolution ``h``
+        build the Hamiltonian from the ASE geometry (the grid is generated from
+        ``atoms.cell`` unless ``grid`` is given), ``ansatz_builder`` overrides the
+        default UCCSD factory.  ``kpts`` is a Monkhorst-Pack mesh resolved with ASE
+        (Gamma-point only is runnable; see ``ADAPTVQE``).
     """
 
     implemented_properties = ["energy", "free_energy"]
@@ -123,7 +124,7 @@ class VQE(Calculator):
 
     def __init__(self, hamiltonian=None, ansatz=None,
                  optimizer: str | Optimizer = "COBYLA", verbose: bool = True,
-                 *, basis: str = "FAO", mapping: str = "jordan_wigner",
+                 *, basis="FAO", mapping: str = "jordan_wigner",
                  device: str = "AER_simulator", grid=None, h: float = 0.20,
                  kpts=None, spin: bool = False,
                  initial_state: str | None = "hartree-fock",

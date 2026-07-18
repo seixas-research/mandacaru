@@ -232,7 +232,7 @@ pytest
 
 ## Documentation
 
-Documentation is built using Sphinx and the Furo theme:
+Documentation is built using Sphinx:
 ```bash
 cd docs
 make html

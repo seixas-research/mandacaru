@@ -1,12 +1,11 @@
-# Tutorial
+# Hands-On Tutorials
+
+These tutorials provide step-by-step guides for setting up and running variational quantum simulations on molecular systems using Carcará.
 
 ```{toctree}
 :maxdepth: 1
-h2_integrals
-lih_integrals
-basis_sets
-vqe
-adapt_vqe
-expressivity
-pes
+vqe_h2
+vqe_lih
+adapt_vqe_lih
+pes_scan
 ```

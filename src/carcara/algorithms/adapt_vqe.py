@@ -340,11 +340,14 @@ class ADAPTVQE(Calculator):
         -- one of ``"ceo"``, ``"fermionic"``, ``"qubit"``, ``"qeb"``.  When a name
         is given ``n_spatial_orbitals`` and ``num_particles`` are required (in
         direct mode; in calculator mode the builder supplies them).
-    basis : str
+    basis : str or dict
         Basis set used to build the molecular Hamiltonian from an ASE geometry in
-        calculator mode -- one of ``"FAO"`` (default; Full Atomic Orbitals),
-        ``"STO-3G"``, ``"6-31G(d)"``, or any other method understood by
-        :meth:`carcara.basis.BasisSet.build`.
+        calculator mode.  Either a name -- ``"FAO"`` (default; Full Atomic
+        Orbitals), ``"NAO"``, ``"GTO"``/``"STO-3G"``, ``"6-31G(d)"`` (localized
+        real-space families) or ``"PW"`` (periodic plane waves) -- or a
+        ``{"name": ..., <options>}`` dict passing that family's options, e.g.
+        ``{"name": "NAO", "energy_shift": 0.03}``, ``{"name": "GTO",
+        "n_gaussians": 3}`` or ``{"name": "PW", "energy_cutoff": 300}``.
     num_particles : (int, int), optional
         ``(n_alpha, n_beta)``; required to build a pool from a name and to set the
         Hartree-Fock reference.  Inferred from the pool object otherwise.
@@ -435,7 +438,7 @@ class ADAPTVQE(Calculator):
     def __init__(self,
                  hamiltonian=None,
                  pool="fermionic",
-                 basis: str = "FAO",
+                 basis="FAO",
                  num_particles=None,
                  n_spatial_orbitals=None,
                  optimizer: str | Optimizer = "COBYLA",

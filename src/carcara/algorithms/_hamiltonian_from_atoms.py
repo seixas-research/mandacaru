@@ -75,30 +75,74 @@ def grid_from_cell(atoms, h: float, center=None):
     return Grid(center=center, box_size=0.0, h=h, units="angstrom", cell=cell)
 
 
-def build_basis_hamiltonian(atoms, basis: str, grid, h: float, charge: int,
-                            n_electrons, spin: bool = False):
-    """Build the RHF MO Hamiltonian from ``atoms`` using the named ``basis``.
+def resolve_basis(basis):
+    """Normalize a ``basis`` spec to ``(name, options)``.
 
-    Returns ``(hamiltonian, num_particles, n_spatial_orbitals, integration_profile)``,
-    where ``integration_profile`` is the timing / cores / peak-memory dict from
-    the real-space integral engine (see
-    :meth:`carcara.core.MolecularIntegrals.integration_profile`).
+    Accepts a plain method name (``"FAO"``) or a dict giving the name plus that
+    family's options: ``{"name": "FAO"}``, ``{"name": "NAO", "energy_shift": 0.03}``,
+    ``{"name": "GTO", "n_gaussians": 3}``, ``{"name": "6-31G(d)"}`` or the
+    plane-wave basis ``{"name": "PW", "energy_cutoff": 300}``.  Returns the name
+    string and a dict of the remaining keyword options.
+    """
+    if isinstance(basis, str):
+        return basis, {}
+    if isinstance(basis, dict):
+        options = dict(basis)
+        name = options.pop("name", None)
+        if name is None:
+            raise ValueError(
+                "a basis dict must include a 'name' key, e.g. {'name': 'FAO'} "
+                "or {'name': 'PW', 'energy_cutoff': 300}")
+        return name, options
+    raise TypeError(
+        "basis must be a name string or a dict like {'name': 'FAO', ...}")
+
+
+def _num_particles(n_el: int, spin: bool, basis) -> tuple[int, int]:
+    """Reference occupation ``(n_alpha, n_beta)``; validates the shell for RHF."""
+    if n_el % 2 != 0:
+        if spin:
+            raise NotImplementedError(
+                f"open-shell spin-polarized Hamiltonian construction ({n_el} "
+                "electrons) is not yet implemented: the built-in builders use "
+                "closed-shell RHF.  Pass a hamiltonian_builder for open shells.")
+        raise ValueError(
+            f"the built-in {basis!r} builder assumes a closed shell; got an odd "
+            f"electron count ({n_el}). Use spin=True (open shell) or pass a "
+            "hamiltonian_builder.")
+    return ((n_el + 1) // 2, n_el // 2) if spin else (n_el // 2, n_el // 2)
+
+
+def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
+                            n_electrons, spin: bool = False):
+    """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
+
+    ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
+    :func:`resolve_basis`).  The plane-wave family (``"PW"``) uses the periodic
+    :class:`~carcara.core.PlaneWaveIntegrals` engine; every other family uses a
+    localized basis on the real-space grid.
+
+    Returns ``(hamiltonian, num_particles, n_spatial_orbitals, integration_profile)``.
 
     ``spin`` selects the reference occupation: ``False`` (default) is closed-shell
     (``n_alpha == n_beta``, requires an even electron count); ``True`` is a
-    spin-polarized (high-spin) reference ``n_alpha = ceil(n/2)``, ``n_beta =
-    floor(n/2)``.  The MO integrals themselves come from closed-shell RHF, so a
-    genuinely open-shell (odd-electron) system raises ``NotImplementedError`` --
-    spin-unrestricted (UHF/ROHF) Hamiltonian construction is a roadmap item.
+    spin-polarized (high-spin) reference.  A genuinely open-shell (odd-electron)
+    system raises ``NotImplementedError`` (RHF-only integrals).
     """
+    name, options = resolve_basis(basis)
+    numbers = atoms.get_atomic_numbers()
+    n_el = (int(n_electrons) if n_electrons is not None
+            else int(sum(int(z) for z in numbers)) - int(charge))
+
+    if name.upper().replace("-", "").replace(" ", "") in ("PW", "PLANEWAVE"):
+        return _plane_wave_hamiltonian(atoms, options, n_el, spin, name)
+
     from ..basis import BasisSet
     from ..core import MolecularIntegrals
 
-    numbers = atoms.get_atomic_numbers()
     symbols = atoms.get_chemical_symbols()
     positions = coherent_positions(atoms)                 # minimum-image whole
-
-    bset = BasisSet.build(basis)
+    bset = BasisSet.build(name, **options)
     basis_fns, nuclei = [], []
     for Z, sym, pos in zip(numbers, symbols, positions):
         basis_fns += bset.atom(sym, center=pos, units="angstrom")
@@ -106,25 +150,31 @@ def build_basis_hamiltonian(atoms, basis: str, grid, h: float, charge: int,
 
     g = (grid if grid is not None
          else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
-    n_el = (int(n_electrons) if n_electrons is not None
-            else int(sum(int(z) for z in numbers)) - int(charge))
-
-    num_particles = ((n_el + 1) // 2, n_el // 2) if spin else (n_el // 2, n_el // 2)
-    if n_el % 2 != 0:
-        if spin:
-            raise NotImplementedError(
-                f"open-shell spin-polarized Hamiltonian construction ({n_el} "
-                "electrons) is not yet implemented: the built-in FAO builder uses "
-                "closed-shell RHF.  Pass a hamiltonian_builder for open shells.")
-        raise ValueError(
-            f"the built-in {basis!r} builder assumes a closed shell; got an odd "
-            f"electron count ({n_el}). Use spin=True (open shell) or pass a "
-            "hamiltonian_builder.")
+    num_particles = _num_particles(n_el, spin, name)
 
     integrals = MolecularIntegrals(nuclei, basis_fns, g)
     hamiltonian = integrals.molecular_hamiltonian(mo_basis=True, n_electrons=n_el)
     return (hamiltonian, num_particles, len(basis_fns),
             integrals.integration_profile())
+
+
+def _plane_wave_hamiltonian(atoms, options, n_el, spin, name):
+    """Build the periodic plane-wave (PW) MO Hamiltonian from ``atoms``."""
+    from ..core import PlaneWaveIntegrals
+
+    cell = np.asarray(atoms.get_cell(), dtype=float)
+    if not np.any(cell):
+        raise ValueError(
+            "the plane-wave (PW) basis requires a periodic unit cell; set "
+            "atoms.cell (or atoms.set_cell(...)).")
+    positions = coherent_positions(atoms)
+    numbers = atoms.get_atomic_numbers()
+    nuclei = [(float(Z), pos) for Z, pos in zip(numbers, positions)]
+
+    pw = PlaneWaveIntegrals(nuclei, cell, units="angstrom", **options)
+    num_particles = _num_particles(n_el, spin, name)
+    hamiltonian = pw.molecular_hamiltonian(mo_basis=True, n_electrons=n_el)
+    return (hamiltonian, num_particles, pw.n_orbitals, pw.integration_profile())
 
 
 def resolve_initial_state(initial_state):
