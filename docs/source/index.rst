@@ -10,17 +10,18 @@
      </a>
 
      <!-- BADGES -->
-     <p>
-       <!-- PyPI -->
-       <a href="https://pypi.org/project/carcara/">
-         <img src="https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge" alt="pypi">
-       </a>
-
+    <p>
        <!-- License -->
        <a href="https://github.com/seixas-research/carcara/blob/main/LICENSE"> 
          <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license">
        </a>
-     </p>
+       <!-- PyPI -->
+       <a href="https://pypi.org/project/carcara/">
+         <img src="https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge" alt="pypi">
+       </a>
+    </p>
+
+
 
    </div>
 

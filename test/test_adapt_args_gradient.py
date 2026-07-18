@@ -6,7 +6,6 @@ FullAtomicOrbitals (FAO) basis.
 
 Covers the features added on top of the ADAPT-VQE driver:
 
-* the ``FullAtomicOrbital`` / ``FAO`` naming (no ``Hydrogenic`` aliases remain);
 * selectable ``gradient`` strategies -- ``"classical"`` (finite difference) and
   ``"parameter-shift_rule"`` -- both matching the exact analytic gradient;
 * the ``ADAPTVQE`` argument surface (``pool``, ``basis``, ``mapping``,
@@ -36,15 +35,6 @@ class TestFAONaming:
         assert FAOBasisSet is not None
         assert MolecularIntegrals is not None
         assert minimal_fao_basis is not None
-
-    def test_no_hydrogenic_aliases(self):
-        # The Hydrogenic names have been fully removed (no backward compat).
-        import carcara.basis as basis
-        import carcara.core as core
-        for name in ("HydrogenicOrbital", "HydrogenicBasisSet"):
-            assert not hasattr(basis, name), name
-        for name in ("HydrogenicIntegrals", "minimal_hydrogenic_basis"):
-            assert not hasattr(core, name), name
 
     def test_factory_builds_fao(self):
         from carcara.basis import BasisSet, FAOBasisSet

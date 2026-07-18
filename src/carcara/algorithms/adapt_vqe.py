@@ -367,15 +367,25 @@ class ADAPTVQE(Calculator):
 
     _GRADIENTS = ("classical", "parameter-shift_rule")
 
-    def __init__(self, hamiltonian=None, pool="fermionic", basis: str = "FAO",
-                 num_particles=None, n_spatial_orbitals=None,
+    def __init__(self,
+                 hamiltonian=None,
+                 pool="fermionic",
+                 basis: str = "FAO",
+                 num_particles=None,
+                 n_spatial_orbitals=None,
                  optimizer: Optimizer | None = None,
-                 mapping: str = "jordan_wigner", gradient: str = "classical",
+                 mapping: str = "jordan_wigner",
+                 gradient: str = "classical",
                  device: str = "AER_simulator",
-                 max_iterations: int = 50, gradient_tolerance: float = 1e-3,
-                 output: str | None = None, profile: bool = True,
-                 atomic_units: bool = False, grid=None, charge: int = 0,
-                 n_electrons=None, hamiltonian_builder=None,
+                 max_iterations: int = 50,
+                 gradient_tolerance: float = 1e-3,
+                 output: str | None = None,
+                 profile: bool = True,
+                 atomic_units: bool = False,
+                 grid=None,
+                 charge: int = 0,
+                 n_electrons=None,
+                 hamiltonian_builder=None,
                  run_options: dict | None = None, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
 
