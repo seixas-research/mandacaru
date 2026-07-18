@@ -36,38 +36,40 @@ full quantum error correction, and tensor-network classical backends.
 
 ## 2. Current State (baseline)
 
-Package version: **26.7.10**. Build: `hatchling`. Python ≥ 3.11.
+Package version: **26.7.28**. Build: `hatchling`. Python ≥ 3.11.
 Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
 `qiskit-ibm-runtime`, `ase` (plus `pandas`, `matplotlib`, `pyyaml`, `pytest`).
 
 | Module | Path | Status |
 |---|---|---|
 | Package init | `src/carcara/__init__.py` | exports `__version__` |
-| Localized basis sets (Hydrogenic, NAO, native STO-nG) | `src/carcara/basis/` | **implemented** — generated from scratch, no external data |
-| Integral engine (real-space one-/two-body, FFT Poisson, C backend) | `src/carcara/integrals/` | **implemented** |
-| Wavefunction (hydrogen-like, ASE I/O) | `src/carcara/wavefunction.py` | **implemented** (~226 LOC) |
-| Hamiltonian (`HydrogenicIntegrals`, molecular Hamiltonian) | `src/carcara/core/hamiltonian.py` | **implemented** (~212 LOC) |
-| Fermion operators + fermion-to-qubit mappings (JW/BK/parity) | `src/carcara/core/mapping.py` | **implemented** (~514 LOC) |
+| Localized basis sets (FAO, NAO, native STO-nG, Pople 6-31G(d)) | `src/carcara/basis/` | **implemented** — generated from scratch, no external data |
+| Integral engine (real-space one-/two-body, FFT Poisson, C backend; per-axis + non-orthogonal grids) | `src/carcara/integrals/` | **implemented** |
+| Molecular Hamiltonian (`MolecularIntegrals`, + `hartree_fock_hamiltonian`) | `src/carcara/core/hamiltonian.py` | **implemented** |
+| Periodic plane-wave basis (`PlaneWaveIntegrals`, reciprocal-space PBC integrals) | `src/carcara/core/planewave.py` | **implemented** |
+| Fermion operators + fermion-to-qubit mappings (JW/BK/parity) | `src/carcara/core/mapping.py` | **implemented** |
 | Ansatz (UCCSD) | `src/carcara/circuits/ansatz.py` | **implemented** |
 | Excitation gates | `src/carcara/circuits/gates.py` | **implemented** |
-| VQE (state-vector) | `src/carcara/algorithms/vqe.py` | **implemented** |
+| VQE (state-vector; ASE calculator) | `src/carcara/algorithms/vqe.py` | **implemented** |
 | Optimizers (SciPy-backed) | `src/carcara/optimizers/optim.py` | **implemented** |
 | Operator pools (fermionic / qubit / QEB / CEO) | `src/carcara/circuits/pools.py` | **implemented** |
-| ADAPT-VQE (state-vector, + circuit profiling) | `src/carcara/algorithms/adapt_vqe.py` | **implemented** |
+| ADAPT-VQE (state-vector, + circuit profiling; ASE calculator) | `src/carcara/algorithms/adapt_vqe.py` | **implemented** |
+| Geometry→Hamiltonian builder (grid-from-cell, basis dict, kpts, spin) | `src/carcara/algorithms/_hamiltonian_from_atoms.py` | **implemented** |
 | Hartree-Fock (RHF/UHF, MO basis) | `src/carcara/algorithms/hartree_fock.py` | **implemented** |
-| Pople split-valence basis (6-31G / 6-31G(d)) | `src/carcara/basis/pople.py` | **implemented** |
-| Hardware backend | `src/carcara/backends/hardware.py` | **empty stub** |
+| Expressibility (KL-from-Haar, ADAPT tracker) | `src/carcara/algorithms/expressivity.py` | **implemented** |
+| Profiling / banner / `output.txt` logger | `src/carcara/utils/` | **implemented** |
+| Hardware backend (device registry) | `src/carcara/backends/hardware.py` | **implemented** — `AER_simulator` runnable, `ibm-quantum` reserved |
 | Error mitigation | `src/carcara/backends/mitigation.py` | **empty stub** |
-| Tests | `test/` (basis, integrals, NAO, GTO, wavefunction, mapping, hamiltonian, vqe) | **implemented** |
-| Docs | `docs/` (Sphinx + ReadTheDocs) | basis & integral tutorials; VQE tutorial stub |
+| Tests | `test/` (basis/integrals/mapping/hamiltonian/HF, vqe, adapt, planewave, profiling, banner, non-cubic/output) | **implemented** |
+| Docs | `docs/` (Sphinx + ReadTheDocs) | basis, integral, VQE & ADAPT-VQE tutorials |
 
 **Implication:** the pipeline is implemented end-to-end through both a
-fixed-ansatz VQE and the *adaptive* **ADAPT-VQE** (bases → integrals →
-second-quantized Hamiltonian → qubit mappings → HF/MO basis → UCCSD/ADAPT ansatz
-→ VQE, on an exact state-vector backend), with all four operator pools and
-Qiskit-based circuit profiling. What remains is real-hardware backends and error
-mitigation. The roadmap below follows this existing layout so no restructuring is
-required.
+fixed-ansatz VQE and the *adaptive* **ADAPT-VQE** (localized *or* periodic
+plane-wave bases → integrals → second-quantized Hamiltonian → qubit mappings →
+HF/MO basis → UCCSD/ADAPT ansatz → VQE, on an exact state-vector backend), with
+all four operator pools, Qiskit-based circuit profiling, and an ASE-calculator
+front-end. What remains is real-hardware execution and error mitigation. The
+roadmap below follows this existing layout so no restructuring is required.
 
 > **Naming note:** the mappings live in `core/mapping.py` (singular), not the
 > `core/mappings.py` used in some earlier drafts of this document.
@@ -117,17 +119,19 @@ required.
 > output, `to_sparse_pauli_op`), and the three mappings — Jordan–Wigner
 > (default), Bravyi–Kitaev, and parity **with** optional two-qubit reduction —
 > all exist in `core/mapping.py`, exposed via
-> `Fermion.map_to_qubits(method=...)`. `HydrogenicIntegrals`
+> `Fermion.map_to_qubits(method=...)`. `MolecularIntegrals`
 > (`core/hamiltonian.py`) assembles the molecular Hamiltonian over spin-orbitals
 > from the real-space integral engine, in **physicists' notation**
-> `⟨pq|rs⟩`. Remaining: the `qiskit-nature`/PySCF driver path, lattice-model
-> Hamiltonians, general `Z2Symmetries` tapering, and richer operator metadata.
+> `⟨pq|rs⟩`; `PlaneWaveIntegrals` (`core/planewave.py`) does the same from the
+> reciprocal-space plane-wave integrals with periodic boundary conditions.
+> Remaining: the `qiskit-nature`/PySCF driver path, lattice-model Hamiltonians,
+> general `Z2Symmetries` tapering, and richer operator metadata.
 
 - **`FermionicHamiltonian`**: represent second-quantized operators
   (one- and two-body integrals). Two construction paths:
-  - *Molecular*: implemented via the real-space `HydrogenicIntegrals`
-    (`Wavefunction`/ASE + integral engine); a `qiskit-nature`/PySCF driver path
-    remains optional/future.
+  - *Molecular*: implemented via the real-space `MolecularIntegrals` (ASE
+    geometry + integral engine) and the periodic `PlaneWaveIntegrals`; a
+    `qiskit-nature`/PySCF driver path remains optional/future.
   - *Model*: lattice Hamiltonians (Hubbard, Heisenberg, t–J, SSH) built
     programmatically **(planned)**.
 - **Mappings** (`mapping.py`): wrap and expose
@@ -203,7 +207,7 @@ converges under simulated shot noise.
 > optimizer).run()` returns a `VQEResult` (optimal energy, parameters, reference
 > energy, cost history) on an **exact state-vector backend**; the acceptance
 > criterion is met for H₂ (reproduces exact diagonalization to ~1e-9 Ha, well
-> within chemical accuracy — see `examples/H2_vqe.py`). Remaining: shot-based
+> within chemical accuracy; `VQE` is also an ASE calculator). Remaining: shot-based
 > `qiskit` `Estimator` evaluation, the excited-state variants (VQD/SSVQE), and
 > serializable result objects.
 
@@ -230,7 +234,7 @@ converges under simulated shot noise.
 ### Phase 5 — ADAPT-VQE & Operator Pools ⭐
 *Goal: adaptively grow a compact, problem-tailored ansatz instead of a fixed
 template — the framework's flagship algorithm.*
-*Files: `algorithms/adapt.py`, `circuits/pools.py`, `circuits/gates.py`.*
+*Files: `algorithms/adapt_vqe.py`, `circuits/pools.py`, `circuits/gates.py`.*
 
 ADAPT-VQE (Grimsley *et al.*, 2019) builds the ansatz one operator at a time.
 Each iteration:
@@ -287,7 +291,7 @@ Pools to implement (in priority order):
 A `PoolFactory`/registry lets users select `"fermionic" | "qubit" | "qeb" |
 "ceo-ovp" | "ceo-mvp"` by name or register custom pools via entry points.
 
-#### 5.2 — ADAPT driver (`algorithms/adapt.py`)
+#### 5.2 — ADAPT driver (`algorithms/adapt_vqe.py`)
 - **`ADAPTVQE`** orchestrating the grow→optimize loop on top of the Phase 4 VQE.
 - **Gradient estimation strategies:** exact commutator expectation on
   simulators; measurement-based (grouped Pauli) estimation on hardware;
@@ -314,7 +318,7 @@ A `PoolFactory`/registry lets users select `"fermionic" | "qubit" | "qeb" |
 (`"fermionic" | "qubit" | "qeb" | "ceo"`), full convergence history, and
 per-iteration **circuit profiling** (CNOT count + depth in a native `{CNOT, U}`
 gate set via Qiskit). ✓ *implemented* (`algorithms/adapt_vqe.py`,
-`circuits/pools.py`; example `examples/run_adapt_vqe.py`).
+`circuits/pools.py`; examples `examples/01_ADAPTVQE_H2.py`, `examples/02_ADAPTVQE_LiH.py`).
 **Acceptance (simulator):**
 - ✓ All four pools reach the exact (FCI) ground state on H₂ (dE ≈ 1e-13); each
   selects the physical double excitation first (Brillouin's theorem in the RHF-MO
@@ -329,8 +333,7 @@ gate set via Qiskit). ✓ *implemented* (`algorithms/adapt_vqe.py`,
 >   reference.
 > - **Ansatz expressibility** (`algorithms/expressivity.py`): KL divergence of the
 >   fidelity distribution from Haar, with an `ADAPTExpressivityTracker` that logs
->   how expressibility grows as the ansatz does (example
->   `examples/adapt_expressivity.py`).
+>   how expressibility grows as the ansatz does).
 > - **Split-valence 6-31G(d)** basis (`basis/pople.py`) and **potential-energy
 >   surface** examples (H₂, LiH across three bases → CSV + plots).
 
@@ -339,6 +342,13 @@ gate set via Qiskit). ✓ *implemented* (`algorithms/adapt_vqe.py`,
 ### Phase 6 — Backends: Real Hardware Execution
 *Goal: run on IBM Quantum.*
 *File: `backends/hardware.py`.*
+
+> **Status — device registry implemented.** `backends/hardware.py` provides the
+> `normalize_device` / `require_runnable` registry the drivers already route
+> through (`device="AER_simulator"` runnable; `"ibm-quantum"` reserved and raising
+> `NotImplementedError` at run). The C integral backend also reports its OpenMP
+> thread count (`carcara_num_threads`). Remaining: the concrete `IBMBackend`
+> runtime (Sampler/Estimator, transpilation, job management).
 
 - Abstract `Backend` interface; concrete `IBMBackend` via
   `qiskit-ibm-runtime` (Sampler/Estimator primitives, sessions).
@@ -432,16 +442,21 @@ release at the end.
 
 ## 7. Milestones Summary
 
-| Milestone | Phases | Definition of done |
-|---|---|---|
-| **M0 — Repo ready** | 0 | CI green, tooling in place |
-| **M1 — Hamiltonian → qubits** | 1 | H₂ qubit Hamiltonian validated |
-| **M2 — Ansatz + optimizers** | 2, 3 | UCCSD/HEA built; optimizers tested |
-| **M3 — VQE on simulator** | 4 | H₂/LiH within chemical accuracy |
-| **M4 — ADAPT-VQE + pools** | 5 | Fermionic/qubit/QEB/CEO pools; CEO ≤ CNOTs of fermionic at equal accuracy |
-| **M5 — Hardware run** | 6 | VQE/ADAPT completes on IBM QPU |
-| **M6 — Mitigated results** | 7 | ZNE improves noisy accuracy |
-| **M7 — Public release** | 8 | Docs + PyPI + tutorial reproducible |
+| Milestone | Phases | Status | Definition of done |
+|---|---|---|---|
+| **M1 — Hamiltonian → qubits** | 1 | ✅ done | H₂ qubit Hamiltonian validated (JW/BK/parity) |
+| **M2 — Ansatz + optimizers** | 2, 3 | ✅ done | UCCSD built; SciPy optimizers tested |
+| **M3 — VQE on simulator** | 4 | ✅ done | H₂ within chemical accuracy on the exact state-vector backend |
+| **M4 — ADAPT-VQE + pools** | 5 | ✅ done | Fermionic/qubit/QEB/CEO pools all reach FCI on H₂; qubit pool reaches it in 6 CNOTs vs 48 (fermionic) |
+| **M5 — Hardware run** | 6 | ⬜ pending | VQE/ADAPT completes on IBM QPU (device registry ready; runtime not written) |
+| **M6 — Mitigated results** | 7 | ⬜ pending | ZNE improves noisy accuracy |
+| **M7 — Public release** | 8 | ◐ partial | Docs + PyPI + tutorial reproducible (Sphinx tutorials live; PW/ASE features documented) |
+
+*Also landed beyond the original milestones:* a periodic **plane-wave basis**
+(`PlaneWaveIntegrals`, PBC), an **ASE-calculator** front-end for both drivers
+(grid-from-cell, `basis` dicts, Monkhorst-Pack `kpts`, `spin`, `initial_state`),
+per-axis / non-orthogonal grids in the C backend, and a timing / memory / cores
+profiling layer with a start-up banner.
 
 ---
 
