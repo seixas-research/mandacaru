@@ -18,19 +18,22 @@
        <a href="https://pypi.org/project/carcara/">
          <img src="https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge" alt="pypi">
        </a>
+      <!-- repo size -->
+       <a>
+         <img src="https://img.shields.io/github/repo-size/leseixas/carcara?style=for-the-badge&color=yellow" alt="size">
+       </a>
 
+      <!-- documentation -->
        <a href="https://carcara.readthedocs.io/en/latest/">
          <img src="https://readthedocs.org/projects/carcara/badge/?version=latest&style=for-the-badge" alt="docs">
        </a>
 
-       <a>
-         <img src="https://img.shields.io/github/repo-size/leseixas/carcara?style=for-the-badge&color=yellow" alt="size">
-       </a>
+
     </p>
 
    </div>
 
-**Carcará** is an end-to-end Python framework for fermionic quantum simulations based on variational quantum algorithms (VQAs). Named after the *carcará* (a resilient bird of prey native to Brazil), the library is engineered to bridge the gap between classical quantum chemistry methods and NISQ-era (Noisy Intermediate-Scale Quantum) physical devices.
+**Carcará** is an end-to-end Python framework for fermionic quantum simulations based on variational quantum algorithms (VQAs). The library is engineered to bridge the gap between classical quantum chemistry methods and NISQ-era (Noisy Intermediate-Scale Quantum) physical devices.
 
 
 .. toctree::
