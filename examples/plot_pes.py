@@ -108,16 +108,11 @@ def plot_molecule(name, csv_path, out_path) -> bool:
     return True
 
 
-def main() -> None:
-    print("Plotting potential-energy curves:")
-    plotted = 0
-    plotted += plot_molecule("H₂", os.path.join(DATA_DIR, "h2_pes_data.csv"),
-                             os.path.join(DATA_DIR, "h2_pes.png"))
-    plotted += plot_molecule("LiH", os.path.join(DATA_DIR, "lih_pes_data.csv"),
-                             os.path.join(DATA_DIR, "lih_pes.png"))
-    if not plotted:
-        print("No CSVs found. Run generate_h2_pes.py / generate_lih_pes.py first.")
-
-
-if __name__ == "__main__":
-    main()
+print("Plotting potential-energy curves:")
+plotted = 0
+plotted += plot_molecule("H₂", os.path.join(DATA_DIR, "h2_pes_data.csv"),
+                         os.path.join(DATA_DIR, "h2_pes.png"))
+plotted += plot_molecule("LiH", os.path.join(DATA_DIR, "lih_pes_data.csv"),
+                         os.path.join(DATA_DIR, "lih_pes.png"))
+if not plotted:
+    print("No CSVs found. Run generate_h2_pes.py / generate_lih_pes.py first.")

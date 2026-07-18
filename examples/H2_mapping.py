@@ -9,7 +9,7 @@
 """Fermionic Hamiltonian and fermion-to-qubit mapping for H2.
 
 Assembles the second-quantized molecular Hamiltonian of H2 from the real-space
-integral engine (:class:`~carcara.core.HydrogenicIntegrals`) as a ``Fermion``
+integral engine (:class:`~carcara.core.MolecularIntegrals`) as a ``Fermion``
 operator, then maps it to a qubit (Pauli) operator with each of the three
 mappings -- Jordan-Wigner (default), Bravyi-Kitaev and parity (with the optional
 two-qubit reduction).  All three share the same spectrum; the parity reduction
@@ -24,19 +24,19 @@ from __future__ import annotations
 
 import numpy as np
 
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 
 # H2: a minimal Slater-screened 1s basis, one orbital per atom (Angstrom).
 R = 0.74
 nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
           (1.0, np.array([0.0, 0.0, +R / 2]))]
-basis = minimal_hydrogenic_basis(nuclei)
+basis = minimal_fao_basis(nuclei)
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.15)
 
 # Second-quantized molecular Hamiltonian over spin-orbitals (a Fermion):
 #   H = sum_pq h_pq a+_p a_q + 1/2 sum_pqrs <pq|rs> a+_p a+_q a_s a_r
-integrals = HydrogenicIntegrals(nuclei, basis, grid)
+integrals = MolecularIntegrals(nuclei, basis, grid)
 H = integrals.molecular_hamiltonian()          # 2 spatial -> 4 spin-orbitals
 print(f"Fermionic Hamiltonian: {H}")
 

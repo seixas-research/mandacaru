@@ -38,89 +38,81 @@ import os
 
 import numpy as np
 
-from carcara.algorithms import (AdaptVQE, active_space_dimension,
+import matplotlib.pyplot as plt
+
+from carcara.algorithms import (ADAPTVQE, active_space_dimension,
                                 compute_expressibility, plot_expressivity_growth,
                                 plot_fidelity_distribution,
                                 track_adapt_expressivity)
 from carcara.algorithms.adapt_vqe import AdaptAnsatz
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(HERE), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 POOL_COLORS = {"fermionic": "#0072B2", "qeb": "#009E73"}
 
+# Linear H4 Hamiltonian in the RHF molecular-orbital (FAO) basis (8 qubits).
+spacing = 1.0
+zs = [(-1.5 + i) * spacing for i in range(4)]
+nuclei = [(1.0, np.array([0.0, 0.0, z])) for z in zs]
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=9.0, h=0.22)
+H = MolecularIntegrals(nuclei, minimal_fao_basis(nuclei), grid).molecular_hamiltonian(
+    mo_basis=True, n_electrons=4)
 
-def build_h4(spacing: float = 1.0):
-    """Linear H4 Hamiltonian in the RHF molecular-orbital basis (8 qubits)."""
-    zs = [(-1.5 + i) * spacing for i in range(4)]
-    nuclei = [(1.0, np.array([0.0, 0.0, z])) for z in zs]
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=9.0, h=0.22)
-    integrals = HydrogenicIntegrals(nuclei, minimal_hydrogenic_basis(nuclei), grid)
-    return integrals.molecular_hamiltonian(mo_basis=True, n_electrons=4)
+num_particles = (2, 2)
+d = active_space_dimension(8, num_particles)
+print(f"Linear H4: 8 qubits, 4 electrons; number-conserving sector d = {d} "
+      f"(full space would be {2 ** 8}).\n")
 
+rng = np.random.default_rng(7)
+histories = {}
+finals = {}
+for pool in ("fermionic", "qeb"):
+    adapt = ADAPTVQE(H, pool, num_particles=num_particles,
+                     n_spatial_orbitals=4, profile=False)
+    result, history = track_adapt_expressivity(
+        adapt, num_samples=600, bins=75, rng=rng,
+        max_iterations=8, gradient_tol=1e-3)
+    histories[pool] = history
+    finals[pool] = (adapt, result)
+    print(f"== {pool} pool ==")
+    for s in history:
+        print(f"  #ops={s.num_operators:2d}  E={s.kl_divergence:7.4f}  "
+              f"energy={s.energy:+.6f}  ({s.operator_label})")
+    print()
 
-def main() -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    H = build_h4()
-    num_particles = (2, 2)
-    d = active_space_dimension(8, num_particles)
-    print(f"Linear H4: 8 qubits, 4 electrons; number-conserving sector d = {d} "
-          f"(full space would be {2 ** 8}).\n")
+# --- Plot 1: expressibility growth (both pools on one graph) -------------- #
+fig, ax = plt.subplots(figsize=(7.0, 4.5))
+for pool, history in histories.items():
+    plot_expressivity_growth(history, ax=ax, color=POOL_COLORS[pool],
+                             label=f"{pool} pool")
+ax.set_title("Expressibility growth during ADAPT-VQE (linear H₄)")
+ax.legend(frameon=False)
+fig.tight_layout()
+growth_path = os.path.join(DATA_DIR, "adapt_expressivity.png")
+fig.savefig(growth_path, dpi=150)
+plt.close(fig)
+print(f"-> wrote {growth_path}")
 
-    rng = np.random.default_rng(7)
-    histories = {}
-    finals = {}
-    for pool in ("fermionic", "qeb"):
-        adapt = AdaptVQE(H, pool, num_particles=num_particles,
-                         n_spatial_orbitals=4, profile=False)
-        result, history = track_adapt_expressivity(
-            adapt, num_samples=600, bins=75, rng=rng,
-            max_iterations=8, gradient_tol=1e-3)
-        histories[pool] = history
-        finals[pool] = (adapt, result)
-        print(f"== {pool} pool ==")
-        for s in history:
-            print(f"  #ops={s.num_operators:2d}  E={s.kl_divergence:7.4f}  "
-                  f"energy={s.energy:+.6f}  ({s.operator_label})")
-        print()
+# --- Plot 2: final-ansatz fidelity distribution vs Haar ------------------- #
+adapt, _ = finals["fermionic"]
+# Rebuild the fully-grown fermionic ansatz to measure its distribution.
+ansatz = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals)
+by_label = {op.label: op for op in adapt.pool.operators()}
+for label in finals["fermionic"][1].operators:
+    ansatz.append(by_label[label])
+res = compute_expressibility(ansatz, num_samples=4000, bins=60,
+                             num_particles=num_particles, rng=rng)
+print(f"\nFinal fermionic ansatz ({ansatz.num_parameters} operators): {res}")
 
-    # --- Plot 1: expressibility growth (both pools on one graph) ---------- #
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(7.0, 4.5))
-    for pool, history in histories.items():
-        plot_expressivity_growth(history, ax=ax, color=POOL_COLORS[pool],
-                                 label=f"{pool} pool")
-    ax.set_title("Expressibility growth during ADAPT-VQE (linear H₄)")
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    growth_path = os.path.join(DATA_DIR, "adapt_expressivity.png")
-    fig.savefig(growth_path, dpi=150)
-    plt.close(fig)
-    print(f"-> wrote {growth_path}")
-
-    # --- Plot 2: final-ansatz fidelity distribution vs Haar --------------- #
-    adapt, _ = finals["fermionic"]
-    # Rebuild the fully-grown fermionic ansatz to measure its distribution.
-    ansatz = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals)
-    by_label = {op.label: op for op in adapt.pool.operators()}
-    for label in finals["fermionic"][1].operators:
-        ansatz.append(by_label[label])
-    res = compute_expressibility(ansatz, num_samples=4000, bins=60,
-                                 num_particles=num_particles, rng=rng)
-    print(f"\nFinal fermionic ansatz ({ansatz.num_parameters} operators): {res}")
-
-    ax = plot_fidelity_distribution(res)
-    ax.figure.tight_layout()
-    hist_path = os.path.join(DATA_DIR, "fidelity_distribution.png")
-    ax.figure.savefig(hist_path, dpi=150)
-    plt.close(ax.figure)
-    print(f"-> wrote {hist_path}")
-    print("\nLower E = more expressive; the curve falls then saturates as the "
-          "ansatz grows.")
-
-
-if __name__ == "__main__":
-    main()
+ax = plot_fidelity_distribution(res)
+ax.figure.tight_layout()
+hist_path = os.path.join(DATA_DIR, "fidelity_distribution.png")
+ax.figure.savefig(hist_path, dpi=150)
+plt.close(ax.figure)
+print(f"-> wrote {hist_path}")
+print("\nLower E = more expressive; the curve falls then saturates as the "
+      "ansatz grows.")

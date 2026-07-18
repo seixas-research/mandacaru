@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from carcara.basis import HydrogenicOrbital
+from carcara.basis import FullAtomicOrbital
 from carcara.integrals import Grid, IntegralEngine, Potentials
 
 # Nuclear charges and geometry.  Lengths are in the user-facing unit (Angstrom):
@@ -41,8 +41,8 @@ potentials = Potentials([(Z, proton_a), (Z, proton_b)])
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.10)
 
 # Minimal basis: one 1s orbital centered on each proton.
-basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_a),
-            HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_b)]
+basis = [FullAtomicOrbital(1, 0, 0, Z=Z, center=proton_a),
+            FullAtomicOrbital(1, 0, 0, Z=Z, center=proton_b)]
 
 engine = IntegralEngine(basis, grid)
 print(f"C backend in use: {engine.uses_c_backend}")

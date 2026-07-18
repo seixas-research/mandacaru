@@ -33,7 +33,7 @@ from ase.data import atomic_numbers
 
 from .base import BasisFunction
 from .gaussian import GaussianOrbital
-from .hydrogenic import HydrogenicOrbital
+from .hydrogenic import FullAtomicOrbital
 from .nao import DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital, energy_shift_to_rc
 from .pople import pople_631g_shells
 from .sto_ng import sto_ng_shells
@@ -59,25 +59,30 @@ class BasisSet:
     def build(method: str, **kwargs) -> "BasisSet":
         """Construct a basis set of the requested ``method``.
 
-        Supported methods: ``"hydrogenic"`` (minimal analytic hydrogen-like),
-        ``"NAO"`` (confined numerical atomic orbitals), ``"GTO"`` (native STO-nG
-        minimal Gaussian) and ``"6-31G"`` / ``"6-31G(d)"`` (native Pople
-        split-valence, optionally with ``d`` polarization).
+        Supported methods: ``"FAO"`` (Full Atomic Orbitals -- the minimal
+        analytic hydrogen-like family; ``"hydrogenic"`` is kept as an alias),
+        ``"NAO"`` (confined numerical atomic orbitals), ``"GTO"`` / ``"STO-3G"``
+        (native STO-nG minimal Gaussian) and ``"6-31G"`` / ``"6-31G(d)"`` (native
+        Pople split-valence, optionally with ``d`` polarization).
         """
         key = method.upper().replace(" ", "")
-        if key in ("HYDROGENIC", "HYDROGEN"):
-            return HydrogenicBasisSet(**kwargs)
+        if key in ("FAO", "FULLATOMICORBITALS", "HYDROGENIC", "HYDROGEN"):
+            return FAOBasisSet(**kwargs)
         if key == "NAO":
             return NAOBasisSet(**kwargs)
         if key == "GTO":
             return GTOBasisSet(**kwargs)
+        if key in ("STO-3G", "STO3G"):
+            return GTOBasisSet(n_gaussians=3, **kwargs)
+        if key in ("STO-6G", "STO6G"):
+            return GTOBasisSet(n_gaussians=6, **kwargs)
         if key in ("6-31G", "631G"):
             return Pople631GBasisSet(polarization=False, **kwargs)
         if key in ("6-31G(D)", "631G(D)", "6-31G*", "631G*", "6-31GD"):
             return Pople631GBasisSet(polarization=True, **kwargs)
         raise ValueError(
-            f"unknown basis method {method!r}; use 'hydrogenic', 'NAO', 'GTO', "
-            f"'6-31G' or '6-31G(d)'")
+            f"unknown basis method {method!r}; use 'FAO', 'NAO', 'GTO', "
+            f"'STO-3G', '6-31G' or '6-31G(d)'")
 
     # -- interface --------------------------------------------------------- #
 
@@ -127,7 +132,7 @@ class NAOBasisSet(BasisSet):
         Z = _to_atomic_number(element)
         orbitals: list[BasisFunction] = []
         for (n, l) in valence_subshells(Z):
-            z_eff = HydrogenicOrbital.slater_effective_charge(Z, n, l)
+            z_eff = FullAtomicOrbital.slater_effective_charge(Z, n, l)
             for m in range(-l, l + 1):
                 orbitals.append(NumericalAtomicOrbital(
                     n, l, m, Z=z_eff, r_c=self.r_c, center=center,
@@ -173,31 +178,35 @@ class GTOBasisSet(BasisSet):
         return f"GTOBasisSet(name={self.name!r})"
 
 
-class HydrogenicBasisSet(BasisSet):
+class FAOBasisSet(BasisSet):
     """Minimal analytic hydrogen-like basis: one orbital per occupied subshell.
 
     For each occupied ``(n, l)`` subshell of the atom, builds the ``2l + 1``
-    :class:`~carcara.basis.HydrogenicOrbital` functions with the subshell's Slater
+    :class:`~carcara.basis.FullAtomicOrbital` functions with the subshell's Slater
     effective charge.  A cheap, fully analytic reference basis (e.g. H -> 1s;
     Li -> 1s, 2s; C -> 1s, 2s, 2p).
     """
 
-    method = "hydrogenic"
-    name = "hydrogenic"
+    method = "FAO"
+    name = "FAO"
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
              units: str = "angstrom") -> list[BasisFunction]:
         Z = _to_atomic_number(element)
         orbitals: list[BasisFunction] = []
         for (n, l) in sorted(ground_state_config(Z)):
-            z_eff = HydrogenicOrbital.slater_effective_charge(Z, n, l)
+            z_eff = FullAtomicOrbital.slater_effective_charge(Z, n, l)
             for m in range(-l, l + 1):
-                orbitals.append(HydrogenicOrbital(n, l, m, Z=z_eff,
+                orbitals.append(FullAtomicOrbital(n, l, m, Z=z_eff,
                                                   center=center, units=units))
         return orbitals
 
     def __repr__(self) -> str:
-        return "HydrogenicBasisSet()"
+        return "FAOBasisSet()"
+
+
+# Backward-compatible alias (the family was renamed from "hydrogenic" to FAO).
+HydrogenicBasisSet = FAOBasisSet
 
 
 class Pople631GBasisSet(BasisSet):

@@ -37,13 +37,13 @@ total_gates: 88
 one_qubit_gates: 40
 pool_size: 8
 operator_pool:
-  [  0] CEO[q0,q2]{S(0->2)}  |grad|=4.670185e-12
+  [  0] CEO[q0,q2]{S(0->2)}  |grad|=4.669831e-12
         pauli: -0.5j XIYIII  +0.5j YIXIII
-  [  1] CEO[q1,q2]{S(1->2)}  |grad|=2.525727e-11
+  [  1] CEO[q1,q2]{S(1->2)}  |grad|=2.525688e-11
         pauli: -0.5j IXYIII  +0.5j IYXIII
-  [  2] CEO[q3,q5]{S(3->5)}  |grad|=4.670183e-12
+  [  2] CEO[q3,q5]{S(3->5)}  |grad|=4.670292e-12
         pauli: -0.5j IIIXIY  +0.5j IIIYIX
-  [  3] CEO[q4,q5]{S(4->5)}  |grad|=2.525737e-11
+  [  3] CEO[q4,q5]{S(4->5)}  |grad|=2.525760e-11
         pauli: -0.5j IIIIXY  +0.5j IIIIYX
   [  4] CEO[q0,q2,q3,q5]{D(0,3->2,5)}  |grad|=4.263166e-03
         pauli: -0.125j XIXXIY  +0.125j XIXYIX  -0.125j XIYXIX  -0.125j XIYYIY  +0.125j YIXXIX  +0.125j YIXYIY  -0.125j YIYXIY  +0.125j YIYYIX

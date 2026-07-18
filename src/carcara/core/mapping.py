@@ -450,6 +450,25 @@ def _canonical_method(method: str) -> str:
             f"or 'bravyi_kitaev'") from None
 
 
+def reference_qubit_bits(method: str, n_modes: int,
+                         occupied) -> np.ndarray:
+    r"""Qubit bit-string of a Slater determinant under a fermion-to-qubit map.
+
+    A determinant is the occupation vector ``x`` (``x_j = 1`` iff spin-orbital
+    ``j`` is filled).  Under the encoding matrix :math:`\beta` the qubit register
+    stores ``q = beta x  (mod 2)``: for Jordan-Wigner ``q = x`` (qubit ``j`` holds
+    the occupation of orbital ``j``), but for parity / Bravyi-Kitaev the qubits
+    hold parity sums, so the Hartree-Fock reference is a *different* computational
+    basis state.  Returns ``q`` as a length-``n_modes`` array with ``q[i]`` the
+    state of qubit ``i``.
+    """
+    x = np.zeros(int(n_modes), dtype=np.int8)
+    for j in occupied:
+        x[int(j)] = 1
+    beta = _encoding_matrix(_canonical_method(method), int(n_modes))
+    return (beta @ x) % 2
+
+
 def _numeric_annihilators(n: int) -> list[np.ndarray]:
     """Fock-space annihilation matrices with Jordan-Wigner Z-strings (qubit 0 first)."""
     lower = np.array([[0, 1], [0, 0]], dtype=complex)   # |1> -> |0>

@@ -59,7 +59,7 @@ print(result)     # ExpressibilityResult(E=..., d=4, n_samples=2000)
 
 ## Tracking expressibility during ADAPT-VQE
 
-The `ADAPTExpressivityTracker` hooks into `AdaptVQE.run(callback=...)` and records
+The `ADAPTExpressivityTracker` hooks into `ADAPTVQE.run(callback=...)` and records
 the score after every operator the ansatz gains, against a **fixed** Haar
 reference so the values are comparable across steps. On linear H₄ the score falls
 steadily and then saturates as ADAPT adds operators:
@@ -67,18 +67,18 @@ steadily and then saturates as ADAPT adds operators:
 ```python
 import numpy as np
 
-from carcara.algorithms import AdaptVQE, track_adapt_expressivity
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.algorithms import ADAPTVQE, track_adapt_expressivity
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 
 # Linear H4 chain (8 qubits, 4 electrons; number-conserving sector d = 36).
 zs = [(-1.5 + i) * 1.0 for i in range(4)]
 nuclei = [(1.0, np.array([0.0, 0.0, z])) for z in zs]
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=9.0, h=0.22)
-H = HydrogenicIntegrals(nuclei, minimal_hydrogenic_basis(nuclei),
+H = MolecularIntegrals(nuclei, minimal_fao_basis(nuclei),
                         grid).molecular_hamiltonian(mo_basis=True, n_electrons=4)
 
-adapt = AdaptVQE(H, "fermionic", num_particles=(2, 2), n_spatial_orbitals=4,
+adapt = ADAPTVQE(H, "fermionic", num_particles=(2, 2), n_spatial_orbitals=4,
                  profile=False)
 result, history = track_adapt_expressivity(adapt, num_samples=600,
                                            max_iterations=8, gradient_tol=1e-3)

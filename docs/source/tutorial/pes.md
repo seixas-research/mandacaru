@@ -6,7 +6,7 @@ the bonding well and how the basis-set choice shifts it. Carcará builds these
 curves from its real-space integral engine and restricted Hartree-Fock (RHF)
 solver, over three **natively generated** basis sets:
 
-* `hydrogenic` — one analytic hydrogen-like orbital per occupied subshell;
+* `FAO` (Full Atomic Orbitals) — one analytic hydrogen-like orbital per occupied subshell;
 * `STO-3G` — the minimal Gaussian basis (`GTO`, three primitives);
 * `6-31G(d)` — the native Pople split-valence basis with `d` polarization.
 
@@ -22,7 +22,7 @@ import numpy as np
 
 from carcara.algorithms import RHF
 from carcara.basis import BasisSet
-from carcara.core import HydrogenicIntegrals
+from carcara.core import MolecularIntegrals
 from carcara.integrals import Grid
 
 sto3g = BasisSet.build("GTO", n_gaussians=3)
@@ -32,7 +32,7 @@ positions = [np.array([0.0, 0.0, -R / 2]), np.array([0.0, 0.0, +R / 2])]
 basis = sto3g.atom("H", center=positions[0]) + sto3g.atom("H", center=positions[1])
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=7.0, h=0.12)
-integrals = HydrogenicIntegrals([(1.0, positions[0]), (1.0, positions[1])],
+integrals = MolecularIntegrals([(1.0, positions[0]), (1.0, positions[1])],
                                 basis, grid)
 rhf = RHF(integrals.one_body(), integrals.two_body(), n_electrons=2).run()
 energy = rhf.electronic_energy + integrals.nuclear_repulsion

@@ -53,7 +53,7 @@ from ase.data import atomic_numbers
 
 from carcara.algorithms import RHF, UHF
 from carcara.basis import BasisSet
-from carcara.core import HydrogenicIntegrals
+from carcara.core import MolecularIntegrals
 from carcara.integrals import Grid
 
 HARTREE_TO_EV = 27.211386245988
@@ -100,7 +100,7 @@ def rhf_total_energy(symbols, positions, basis_set, grid: Grid) -> float:
     basis = []
     for sym, pos in zip(symbols, positions):
         basis.extend(basis_set.atom(sym, center=pos))
-    integrals = HydrogenicIntegrals(nuclei, basis, grid)
+    integrals = MolecularIntegrals(nuclei, basis, grid)
     rhf = RHF(integrals.one_body(), integrals.two_body(), n_electrons).run()
     return rhf.electronic_energy + integrals.nuclear_repulsion
 
@@ -113,7 +113,7 @@ def atom_energy(symbol, basis_set, grid: Grid, position) -> float:
     error cancels in the reference.
     """
     Z = atomic_numbers[symbol]
-    integrals = HydrogenicIntegrals([(float(Z), np.asarray(position, dtype=float))],
+    integrals = MolecularIntegrals([(float(Z), np.asarray(position, dtype=float))],
                                     basis_set.atom(symbol, center=position), grid)
     n_alpha, n_beta = ceil(Z / 2), floor(Z / 2)
     return UHF(integrals.one_body(), integrals.two_body(), n_alpha, n_beta).run()

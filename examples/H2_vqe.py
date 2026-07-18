@@ -27,7 +27,7 @@ import numpy as np
 
 from carcara.algorithms import VQE
 from carcara.circuits import UCCSD
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 from carcara.optimizers import Optimizer
 
@@ -35,11 +35,11 @@ from carcara.optimizers import Optimizer
 R = 0.74
 nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
           (1.0, np.array([0.0, 0.0, +R / 2]))]
-basis = minimal_hydrogenic_basis(nuclei)
+basis = minimal_fao_basis(nuclei)
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.15)
 
 # --- 2) Second-quantized molecular Hamiltonian (a Fermion), 4 spin-orbitals.
-integrals = HydrogenicIntegrals(nuclei, basis, grid)
+integrals = MolecularIntegrals(nuclei, basis, grid)
 H = integrals.molecular_hamiltonian()
 print(f"Fermionic Hamiltonian: {H}")
 

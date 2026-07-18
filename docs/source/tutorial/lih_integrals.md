@@ -42,24 +42,24 @@ contracted and hard to resolve on a modest grid. We therefore give the *basis*
 orbitals *effective* charges, while the *potential* above keeps the true
 nuclear charges.
 
-`HydrogenicOrbital.from_slater` derives the effective charge from **Slater's
+`FullAtomicOrbital.from_slater` derives the effective charge from **Slater's
 rules** given the atomic number of the center (e.g. `Z_eff = 2.70` for Li 1s,
 `1.30` for Li 2s/2p, `1.00` for H 1s). The static method
-`HydrogenicOrbital.slater_effective_charge(atomic_number, n, l)` exposes the
+`FullAtomicOrbital.slater_effective_charge(atomic_number, n, l)` exposes the
 same value directly.
 
 ```python
-from carcara.basis import HydrogenicOrbital
+from carcara.basis import FullAtomicOrbital
 from carcara.integrals import Grid, IntegralEngine
 
 # A fine spacing (h = 0.10 Angstrom) resolves the contracted Li 1s core.
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.10)
 
 labels = ["Li 1s", "Li 2s", "Li 2pz", "H 1s"]
-basis = [HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
-         HydrogenicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
-         HydrogenicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
-         HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
+basis = [FullAtomicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
+         FullAtomicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
+         FullAtomicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
+         FullAtomicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
 
 engine = IntegralEngine(basis, grid)
 ```

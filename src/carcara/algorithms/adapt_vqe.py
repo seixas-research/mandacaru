@@ -43,10 +43,29 @@ import numpy as np
 
 from ase.calculators.calculator import Calculator, all_changes
 
+from ..backends.hardware import normalize_device, require_runnable
 from ..circuits.pools import PoolBase, PoolOperator, build_pool
 from ..core.mapping import Fermion, PauliSum
 from ..optimizers.optim import Optimizer
 from ..units import ANGSTROM_TO_BOHR, from_hartree
+
+
+def _unique_frequencies(eigenvalues: np.ndarray, tol: float = 1e-7) -> np.ndarray:
+    """Unique positive eigenvalue differences (the frequencies of ``E(theta)``).
+
+    ``E(theta) = <psi| e^{-theta A} H e^{theta A} |psi>`` for a generator with
+    ``-iA`` eigenvalues ``{w_k}`` is a trigonometric polynomial with frequencies
+    ``|w_k - w_l|``; this returns the distinct positive ones (clustered to
+    ``tol``), used by the parameter-shift gradient.
+    """
+    w = np.asarray(eigenvalues, dtype=float)
+    diffs = np.abs(w[:, None] - w[None, :]).ravel()
+    diffs = diffs[diffs > tol]
+    if diffs.size == 0:
+        return np.empty(0)
+    # Cluster near-equal differences so the frequency set stays small.
+    rounded = np.round(diffs / tol) * tol
+    return np.unique(rounded)
 
 
 def _resolve_geometry(geometry):
@@ -166,9 +185,16 @@ class AdaptAnsatz:
         self._hf = self._reference_vector()
 
     def _reference_vector(self) -> np.ndarray:
+        # The Hartree-Fock determinant is a computational basis state whose bits
+        # depend on the fermion-to-qubit map (occupation for JW, parity sums for
+        # parity / Bravyi-Kitaev).
+        from ..core.mapping import reference_qubit_bits
+
+        bits = reference_qubit_bits(self.mapping, self.n_qubits, self.occupied)
         index = 0
-        for j in self.occupied:
-            index |= 1 << (self.n_qubits - 1 - j)             # qubit 0 = MSB
+        for i, bit in enumerate(bits):
+            if bit:
+                index |= 1 << (self.n_qubits - 1 - i)         # qubit 0 = MSB
         vec = np.zeros(2 ** self.n_qubits, dtype=complex)
         vec[index] = 1.0
         return vec
@@ -274,12 +300,18 @@ class ADAPTVQE(Calculator):
     ----------
     hamiltonian : PauliSum or Fermion, optional
         Qubit Hamiltonian, or a fermionic Hamiltonian mapped with ``mapping``.
-        Omit it in calculator mode and pass ``hamiltonian_builder`` instead.
+        Omit it in calculator mode and let ``basis`` (or ``hamiltonian_builder``)
+        build it from the geometry instead.
     pool : PoolBase or str
         The operator pool, or a name for :func:`~carcara.circuits.pools.build_pool`
-        (``"fermionic"``, ``"qubit"``, ``"qeb"``, ``"ceo"``).  When a name is given
-        ``n_spatial_orbitals`` and ``num_particles`` are required (in direct mode;
-        in calculator mode the builder supplies them).
+        -- one of ``"ceo"``, ``"fermionic"``, ``"qubit"``, ``"qeb"``.  When a name
+        is given ``n_spatial_orbitals`` and ``num_particles`` are required (in
+        direct mode; in calculator mode the builder supplies them).
+    basis : str
+        Basis set used to build the molecular Hamiltonian from an ASE geometry in
+        calculator mode -- one of ``"FAO"`` (default; Full Atomic Orbitals),
+        ``"STO-3G"``, ``"6-31G(d)"``, or any other method understood by
+        :meth:`carcara.basis.BasisSet.build`.
     num_particles : (int, int), optional
         ``(n_alpha, n_beta)``; required to build a pool from a name and to set the
         Hartree-Fock reference.  Inferred from the pool object otherwise.
@@ -288,17 +320,33 @@ class ADAPTVQE(Calculator):
     optimizer : Optimizer, optional
         Classical optimizer for the inner re-optimization (default **COBYLA**).
     mapping : str
-        Fermion-to-qubit mapping used when ``hamiltonian`` is a ``Fermion`` and to
-        build a named fermionic pool (default ``"jordan_wigner"``).
+        Fermion-to-qubit mapping -- one of ``"jordan_wigner"`` (default),
+        ``"parity"``, ``"bravyi_kitaev"`` -- used when ``hamiltonian`` is a
+        ``Fermion`` and to build a named fermionic pool.
+    gradient : str
+        How the pool screening gradients are evaluated -- ``"classical"``
+        (default; a finite-difference estimate from shifted parameters) or
+        ``"parameter-shift_rule"`` (the quantum parameter-shift rule).
+    device : str
+        Execution device -- ``"AER_simulator"`` (default; ideal simulator) or
+        ``"ibm-quantum"`` (reserved for real hardware, not yet runnable).  See
+        :mod:`carcara.backends.hardware`.
     profile : bool
         Compile and profile the ansatz each iteration (default ``True``).
     atomic_units : bool
         Units used in the ``output.txt`` log.  ``False`` (default) logs energies
         in **eV** and lengths in **Angstrom**; ``True`` logs Hartree and Bohr.
         (ASE's ``get_total_energy`` always returns eV, per the ASE convention.)
+    grid : Grid, optional
+        Real-space integration grid for the calculator-mode ``basis`` builder.
+        Defaults to an automatic cube enclosing the molecule.
+    charge : int
+        Total charge, used to set the electron count in the ``basis`` builder.
+    n_electrons : int, optional
+        Explicit electron count for the ``basis`` builder (overrides ``charge``).
     hamiltonian_builder : callable, optional
-        ``atoms -> (hamiltonian, num_particles, n_spatial_orbitals)``.  Used in
-        ASE-calculator mode to build the Hamiltonian from the current geometry.
+        ``atoms -> (hamiltonian, num_particles, n_spatial_orbitals)``.  An
+        explicit override for the built-in ``basis`` builder in calculator mode.
     run_options : dict, optional
         Keyword arguments forwarded to :meth:`run` on each calculator evaluation
         (e.g. ``{"max_iterations": 20, "gradient_tol": 1e-4}``).
@@ -306,16 +354,29 @@ class ADAPTVQE(Calculator):
 
     implemented_properties = ["energy", "free_energy"]
 
-    def __init__(self, hamiltonian=None, pool=None, num_particles=None,
-                 n_spatial_orbitals=None, optimizer: Optimizer | None = None,
-                 mapping: str = "jordan_wigner", profile: bool = True,
-                 atomic_units: bool = False, hamiltonian_builder=None,
+    _GRADIENTS = ("classical", "parameter-shift_rule")
+
+    def __init__(self, hamiltonian=None, pool="fermionic", basis: str = "FAO",
+                 num_particles=None, n_spatial_orbitals=None,
+                 optimizer: Optimizer | None = None,
+                 mapping: str = "jordan_wigner", gradient: str = "classical",
+                 device: str = "AER_simulator", profile: bool = True,
+                 atomic_units: bool = False, grid=None, charge: int = 0,
+                 n_electrons=None, hamiltonian_builder=None,
                  run_options: dict | None = None, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
 
         self.mapping = mapping
+        self.basis = basis
         self.profile = profile
         self.optimizer = optimizer or Optimizer(method="COBYLA", maxiter=2000)
+
+        # Validate the enumerated options up front.
+        if gradient not in self._GRADIENTS:
+            raise ValueError(
+                f"unknown gradient {gradient!r}; use one of {self._GRADIENTS}")
+        self.gradient = gradient
+        self.device = normalize_device(device)     # raises on unknown device
 
         # Output-unit convention (see class docstring).
         self.atomic_units = bool(atomic_units)
@@ -323,6 +384,9 @@ class ADAPTVQE(Calculator):
         self.length_units = "bohr" if atomic_units else "angstrom"
 
         self._pool_spec = pool
+        self.grid = grid
+        self.charge = int(charge)
+        self.n_electrons = n_electrons
         self.hamiltonian_builder = hamiltonian_builder
         self.run_options = dict(run_options or {})
 
@@ -363,9 +427,17 @@ class ADAPTVQE(Calculator):
         h = qubit_h.to_matrix()
         self._h_matrix = 0.5 * (h + h.conj().T)      # Hermitize away rounding
 
-        # Precompute pool-operator matrices once.
+        # Precompute pool-operator matrices and their eigendecompositions once.
+        # For A anti-Hermitian, -iA is Hermitian: -iA = V diag(w) V^dag, so
+        # exp(theta A) = V diag(exp(i theta w)) V^dag.  The unique positive
+        # eigenvalue *differences* are the frequencies of E(theta), used by the
+        # parameter-shift gradient.
         self._pool_ops = self.pool.operators()
         self._pool_matrices = [op.matrix() for op in self._pool_ops]
+        self._pool_eig = []
+        for a in self._pool_matrices:
+            w, V = np.linalg.eigh(-1j * a)
+            self._pool_eig.append((w, V, _unique_frequencies(w)))
         self._configured = True
 
     def _as_pauli_sum(self, hamiltonian) -> PauliSum:
@@ -375,6 +447,54 @@ class ADAPTVQE(Calculator):
             return hamiltonian.map_to_qubits(self.mapping, n_modes=self.n_qubits)
         raise TypeError("hamiltonian must be a PauliSum or Fermion")
 
+    # -- basis-driven Hamiltonian (calculator mode) ----------------------- #
+
+    def _basis_hamiltonian_builder(self, atoms):
+        """Build the RHF MO Hamiltonian from ``atoms`` using ``self.basis``.
+
+        Elements and positions come from the ASE object; the basis functions are
+        generated by :meth:`carcara.basis.BasisSet.build` for the chosen family
+        (``FAO`` / ``STO-3G`` / ``6-31G(d)`` / ...).  Returns
+        ``(hamiltonian, num_particles, n_spatial_orbitals)``.
+        """
+        from ..basis import BasisSet
+        from ..core import MolecularIntegrals
+        from ..integrals import Grid
+
+        numbers = atoms.get_atomic_numbers()
+        symbols = atoms.get_chemical_symbols()
+        positions = np.asarray(atoms.get_positions(), dtype=float)
+
+        bset = BasisSet.build(self.basis)
+        basis, nuclei = [], []
+        for Z, sym, pos in zip(numbers, symbols, positions):
+            basis += bset.atom(sym, center=pos, units="angstrom")
+            nuclei.append((float(Z), pos))
+
+        grid = self.grid if self.grid is not None else self._auto_grid(positions)
+        n_el = (int(self.n_electrons) if self.n_electrons is not None
+                else int(sum(int(z) for z in numbers)) - self.charge)
+        if n_el % 2 != 0:
+            raise ValueError(
+                f"the built-in {self.basis!r} builder assumes a closed shell; "
+                f"got an odd electron count ({n_el}). Pass a hamiltonian_builder.")
+
+        integrals = MolecularIntegrals(nuclei, basis, grid)
+        hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,
+                                                      n_electrons=n_el)
+        n_orbitals = len(basis)
+        return hamiltonian, (n_el // 2, n_el // 2), n_orbitals
+
+    @staticmethod
+    def _auto_grid(positions, padding: float = 5.0, spacing: float = 0.2):
+        """A cubic grid (Angstrom) enclosing the atoms with ``padding`` around."""
+        from ..integrals import Grid
+
+        positions = np.asarray(positions, dtype=float)
+        center = positions.mean(axis=0)
+        half = 0.5 * float(np.max(positions.max(axis=0) - positions.min(axis=0)))
+        return Grid(center=center, box_size=half + padding, h=spacing)
+
     # -- ASE calculator interface ---------------------------------------- #
 
     def calculate(self, atoms=None, properties=("energy",),
@@ -383,20 +503,20 @@ class ADAPTVQE(Calculator):
 
         Stores the ground-state energy (in **eV**, per ASE convention) in
         :attr:`results` and the full :class:`ADAPTVQEResult` in
-        :attr:`adapt_result`.  Requires a ``hamiltonian_builder`` unless the
-        object was already configured with a Hamiltonian.
+        :attr:`adapt_result`.  The Hamiltonian is built from the current geometry
+        with the chosen ``basis`` (or an explicit ``hamiltonian_builder``); a
+        fixed Hamiltonian supplied at construction is reused as-is.
         """
+        require_runnable(self.device)   # e.g. 'ibm-quantum' is not runnable yet
         Calculator.calculate(self, atoms, properties, system_changes)
         atoms = self.atoms  # the Atoms copy stored by the base class
 
-        if self.hamiltonian_builder is not None:
-            hamiltonian, num_particles, n_spatial_orbitals = \
-                self.hamiltonian_builder(atoms)
+        builder = self.hamiltonian_builder
+        if builder is None and not self._configured:
+            builder = self._basis_hamiltonian_builder
+        if builder is not None:
+            hamiltonian, num_particles, n_spatial_orbitals = builder(atoms)
             self._configure(hamiltonian, num_particles, n_spatial_orbitals)
-        elif not self._configured:
-            raise RuntimeError(
-                "ADAPTVQE used as a calculator needs a `hamiltonian_builder` "
-                "(or a Hamiltonian supplied at construction)")
 
         result = self.run(geometry=atoms, **self.run_options)
         self.adapt_result = result
@@ -411,13 +531,77 @@ class ADAPTVQE(Calculator):
     def energy(self, psi: np.ndarray) -> float:
         return float(np.real(np.vdot(psi, self._h_matrix @ psi)))
 
-    def _gradients(self, psi: np.ndarray) -> np.ndarray:
-        r"""Pool gradients ``g_i = 2 Re<H psi | A_i psi>`` at the current state."""
+    def _analytic_gradients(self, psi: np.ndarray) -> np.ndarray:
+        r"""Exact pool gradients ``g_i = 2 Re<H psi | A_i psi>`` (reference)."""
         h_psi = self._h_matrix @ psi
         grads = np.empty(len(self._pool_matrices))
         for i, a in enumerate(self._pool_matrices):
             grads[i] = 2.0 * np.real(np.vdot(h_psi, a @ psi))
         return grads
+
+    def _pool_energy_at(self, psi: np.ndarray, i: int, theta: float) -> float:
+        r"""Energy after appending ``exp(theta A_i)`` to ``psi``.
+
+        ``E_i(theta) = <psi| e^{-theta A_i} H e^{theta A_i} |psi>`` evaluated from
+        the cached eigendecomposition of ``A_i`` (no matrix exponential).
+        """
+        w, V, _ = self._pool_eig[i]
+        c = V.conj().T @ psi
+        phi = V @ (np.exp(1j * theta * w) * c)
+        return float(np.real(np.vdot(phi, self._h_matrix @ phi)))
+
+    def _finite_difference_gradients(self, psi: np.ndarray,
+                                     eps: float = 1e-4) -> np.ndarray:
+        r"""Classical gradient: central finite difference in each pool direction.
+
+        ``g_i ~= [E_i(+eps) - E_i(-eps)] / (2 eps)`` -- a purely classical
+        estimate that evaluates the energy at *shifted parameter* values.
+        """
+        grads = np.empty(len(self._pool_matrices))
+        for i in range(len(self._pool_matrices)):
+            plus = self._pool_energy_at(psi, i, eps)
+            minus = self._pool_energy_at(psi, i, -eps)
+            grads[i] = (plus - minus) / (2.0 * eps)
+        return grads
+
+    def _parameter_shift_gradients(self, psi: np.ndarray) -> np.ndarray:
+        r"""Quantum gradient via the parameter-shift rule.
+
+        ``E_i(theta)`` is a finite trigonometric polynomial whose frequencies are
+        the unique positive eigenvalue differences of the generator.  Its odd
+        part ``[E_i(theta) - E_i(-theta)]/2 = sum_r b_r sin(omega_r theta)`` is
+        sampled at symmetric shifts ``+/- theta_j`` and the ``b_r`` recovered by a
+        small linear solve; the derivative at zero is ``sum_r omega_r b_r``.  For
+        a single-Pauli generator (one frequency) this reduces to the textbook
+        two-term shift and is exact; the multi-frequency reconstruction keeps it
+        exact for every pool.
+        """
+        grads = np.empty(len(self._pool_matrices))
+        for i in range(len(self._pool_matrices)):
+            _, _, freqs = self._pool_eig[i]
+            grads[i] = self._psr_one(psi, i, freqs)
+        return grads
+
+    def _psr_one(self, psi, i, freqs) -> float:
+        R = len(freqs)
+        if R == 0:
+            return 0.0
+        # Symmetric shift points; scaled by 1/omega_max to keep arguments in
+        # (0, pi].  2R points over-determine the R sine coefficients (exact).
+        base = np.linspace(0.0, np.pi, 2 * R + 1)[1:]
+        thetas = base / float(freqs.max())
+        odd = np.array([(self._pool_energy_at(psi, i, t)
+                         - self._pool_energy_at(psi, i, -t)) / 2.0
+                        for t in thetas])
+        S = np.sin(np.outer(thetas, freqs))          # (2R, R)
+        b, *_ = np.linalg.lstsq(S, odd, rcond=None)
+        return float(np.dot(freqs, b))
+
+    def _gradients(self, psi: np.ndarray) -> np.ndarray:
+        """Pool screening gradients using the configured :attr:`gradient` method."""
+        if self.gradient == "parameter-shift_rule":
+            return self._parameter_shift_gradients(psi)
+        return self._finite_difference_gradients(psi)      # "classical"
 
     def reference_energy(self) -> float:
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,

@@ -8,19 +8,22 @@
 
 """Electronic Hamiltonians and fermion-to-qubit mappings.
 
-* :class:`HydrogenicIntegrals` -- one-/two-body integrals and the molecular
+* :class:`MolecularIntegrals` -- one-/two-body integrals and the molecular
   Hamiltonian over a localized basis;
 * :class:`Fermion` -- second-quantized fermionic operators and the three
   fermion-to-qubit mappings (Jordan-Wigner, parity, Bravyi-Kitaev);
 * :class:`PauliSum` -- the qubit-operator output type.
 """
 
-from .hamiltonian import HydrogenicIntegrals, minimal_hydrogenic_basis
+from .hamiltonian import (HydrogenicIntegrals, MolecularIntegrals,
+                          minimal_fao_basis, minimal_hydrogenic_basis)
 from .mapping import Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity
 
 __all__ = [
-    "HydrogenicIntegrals",
-    "minimal_hydrogenic_basis",
+    "MolecularIntegrals",
+    "HydrogenicIntegrals",       # alias of MolecularIntegrals
+    "minimal_fao_basis",
+    "minimal_hydrogenic_basis",  # alias of minimal_fao_basis
     "Fermion",
     "PauliSum",
     "jordan_wigner",

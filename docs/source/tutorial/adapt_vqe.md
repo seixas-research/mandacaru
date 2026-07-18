@@ -13,7 +13,7 @@ iteration it
 3. appends $e^{\theta_k A_{\text{opt}}}$ for the largest-gradient operator, and
 4. re-optimizes **all** parameters (warm-started from the previous optimum).
 
-Carcará's `AdaptVQE` is an exact state-vector implementation, in the same spirit
+Carcará's `ADAPTVQE` is an exact state-vector implementation, in the same spirit
 as {doc}`VQE <vqe>`.
 
 ## The molecular-orbital basis matters
@@ -28,7 +28,7 @@ there, so the physical double excitations are selected first:
 ```python
 import numpy as np
 
-from carcara.core import HydrogenicIntegrals, minimal_hydrogenic_basis
+from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 
 R = 0.74
@@ -36,7 +36,7 @@ nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
           (1.0, np.array([0.0, 0.0, +R / 2]))]
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
 
-integrals = HydrogenicIntegrals(nuclei, minimal_hydrogenic_basis(nuclei), grid)
+integrals = MolecularIntegrals(nuclei, minimal_fao_basis(nuclei), grid)
 # Transform to the RHF molecular-orbital basis (2 electrons -> 4 qubits).
 H = integrals.molecular_hamiltonian(mo_basis=True, n_electrons=2)
 ```
@@ -54,9 +54,9 @@ from the spin-conserving single and double excitations and selected by name:
 | `"ceo"` | coupled-exchange operators (QEBs sharing a support) | best accuracy per CNOT |
 
 ```python
-from carcara.algorithms import AdaptVQE
+from carcara.algorithms import ADAPTVQE
 
-adapt = AdaptVQE(H, pool="ceo", num_particles=(1, 1), n_spatial_orbitals=2)
+adapt = ADAPTVQE(H, pool="ceo", num_particles=(1, 1), n_spatial_orbitals=2)
 result = adapt.run(max_iterations=15, gradient_tol=1e-6)
 
 print(f"ADAPT-VQE energy = {result.optimal_energy:.8f} Ha")

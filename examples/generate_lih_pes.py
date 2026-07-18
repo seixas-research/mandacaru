@@ -39,15 +39,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(HERE), "data")
 
 
-def main() -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    grid = GridSpec(box_size=10.0, spacing=0.16)
-    distances = commensurate_distances(1.0, 3.5, grid)   # step = 2h = 0.32 A
-    csv_path = os.path.join(DATA_DIR, "lih_pes_data.csv")
-    print("Note: LiH well depth is grid-limited (Li 1s core); read qualitatively.\n")
-    generate_pes("LiH", ["Li", "H"], distances, grid, csv_path)
-    print("Done. Plot with:  python examples/plot_pes.py")
-
-
-if __name__ == "__main__":
-    main()
+os.makedirs(DATA_DIR, exist_ok=True)
+grid = GridSpec(box_size=10.0, spacing=0.16)
+distances = commensurate_distances(1.0, 3.5, grid)   # step = 2h = 0.32 A
+csv_path = os.path.join(DATA_DIR, "lih_pes_data.csv")
+print("Note: LiH well depth is grid-limited (Li 1s core); read qualitatively.\n")
+generate_pes("LiH", ["Li", "H"], distances, grid, csv_path)
+print("Done. Plot with:  python examples/plot_pes.py")

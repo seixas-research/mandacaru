@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from carcara.basis import HydrogenicOrbital
+from carcara.basis import FullAtomicOrbital
 from carcara.integrals import Grid, IntegralEngine, Potentials
 
 # Nuclear charges and geometry.  Lengths are in the user-facing unit (Angstrom):
@@ -49,10 +49,10 @@ grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.10)
 # Minimal basis with effective charges from Slater's rules: Li {1s, 2s, 2p_z}
 # + H {1s}.  ``from_slater`` derives Z_eff from the atomic number of the center.
 labels = ["Li 1s", "Li 2s", "Li 2pz", "H 1s"]
-basis = [HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
-         HydrogenicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
-         HydrogenicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
-         HydrogenicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
+basis = [FullAtomicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
+         FullAtomicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
+         FullAtomicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
+         FullAtomicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
 
 engine = IntegralEngine(basis, grid)
 print(f"C backend in use: {engine.uses_c_backend}")

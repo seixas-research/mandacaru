@@ -48,16 +48,16 @@ potentials = Potentials([(Z, proton_a), (Z, proton_b)])
 The `Grid` is a uniform cubic box; it must be large enough to contain the
 orbital tails. It is specified by a physical spacing `h` (in Ångström, default
 `0.20`) rather than a node count -- the number of points per dimension is
-derived from `h` and `box_size`. The basis is a list of `HydrogenicOrbital`
+derived from `h` and `box_size`. The basis is a list of `FullAtomicOrbital`
 objects, one centered on each proton.
 
 ```python
-from carcara.basis import HydrogenicOrbital
+from carcara.basis import FullAtomicOrbital
 from carcara.integrals import Grid, IntegralEngine
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.10)  # Angstrom
-basis = [HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_a),
-         HydrogenicOrbital(1, 0, 0, Z=Z, center=proton_b)]
+basis = [FullAtomicOrbital(1, 0, 0, Z=Z, center=proton_a),
+         FullAtomicOrbital(1, 0, 0, Z=Z, center=proton_b)]
 
 engine = IntegralEngine(basis, grid)
 ```

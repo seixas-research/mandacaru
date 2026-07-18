@@ -10,7 +10,7 @@
 
 ``Wavefunction`` is now a thin *facade* over three decoupled pieces:
 
-* :class:`carcara.basis.HydrogenicOrbital` -- the single source of truth for the
+* :class:`carcara.basis.FullAtomicOrbital` -- the single source of truth for the
   hydrogen-like orbital math (previously duplicated in two methods here);
 * :class:`carcara.integrals.Grid` -- the shared real-space integration grid;
 * :class:`carcara.integrals.IntegralEngine` -- the basis-agnostic engine that
@@ -29,7 +29,7 @@ import numpy as np
 from ase import Atoms
 from ase.io import read
 
-from .basis import HydrogenicOrbital
+from .basis import FullAtomicOrbital
 from .integrals import Grid, IntegralEngine
 
 ANGSTROM_TO_BOHR = 1.8897259886
@@ -193,10 +193,10 @@ class Wavefunction:
         phi = np.arctan2(y, x)
         return np.array([r, theta, phi])
 
-    # --- Orbital construction (single source of truth via HydrogenicOrbital) ---
+    # --- Orbital construction (single source of truth via FullAtomicOrbital) ---
 
     def orbital(self, state, center=None, Z=None):
-        """Build a :class:`HydrogenicOrbital` for this system.
+        """Build a :class:`FullAtomicOrbital` for this system.
 
         Centralizes orbital creation so no radial/angular formula is duplicated.
         """
@@ -204,7 +204,7 @@ class Wavefunction:
         Z = self.Z if Z is None else Z
         n, l, m = state
         # This facade keeps positions in Bohr (atomic units) throughout.
-        return HydrogenicOrbital(n, l, m, Z=Z, center=center, units="bohr")
+        return FullAtomicOrbital(n, l, m, Z=Z, center=center, units="bohr")
 
     def _psi_on_cart_grid(self, state, origin_cart, X_abs, Y_abs, Z_abs, Z_nuclear=None):
         """Evaluate a hydrogen-like wavefunction on a Cartesian coordinate grid."""

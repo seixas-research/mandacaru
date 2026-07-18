@@ -8,7 +8,7 @@
 
 r"""Electronic-structure integrals and the molecular Hamiltonian.
 
-:class:`HydrogenicIntegrals` computes the one- and two-body integrals over a
+:class:`MolecularIntegrals` computes the one- and two-body integrals over a
 localized (hydrogenic) basis by driving the real-space
 :class:`~carcara.integrals.IntegralEngine`, and assembles the second-quantized
 molecular Hamiltonian as a :class:`~carcara.core.mapping.Fermion`.
@@ -37,13 +37,13 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from ..basis import HydrogenicOrbital
+from ..basis import FullAtomicOrbital
 from ..integrals import Grid, IntegralEngine, Potentials
 from ..units import to_bohr
 from .mapping import Fermion
 
 
-class HydrogenicIntegrals:
+class MolecularIntegrals:
     """One- and two-body integrals over a localized basis for a molecule.
 
     Parameters
@@ -52,7 +52,7 @@ class HydrogenicIntegrals:
         Nuclear charges and Cartesian positions (in ``units``) defining the
         electron-nuclear potential.
     basis : sequence of BasisFunction
-        Spatial orbitals spanning the active space (e.g. ``HydrogenicOrbital``).
+        Spatial orbitals spanning the active space (e.g. ``FullAtomicOrbital``).
     grid : Grid
         Real-space integration grid.
     units : {"angstrom", "bohr"}
@@ -230,16 +230,23 @@ def spin_block_integrals(h: np.ndarray,
     return h_so, g_so
 
 
-def minimal_hydrogenic_basis(nuclei, grid_units: str = "angstrom"):
+def minimal_fao_basis(nuclei, grid_units: str = "angstrom"):
     """Build one Slater-screened hydrogenic 1s orbital per atom (minimal basis).
 
     ``nuclei`` is a sequence of ``(Z, position)``; returns a list of
-    :class:`~carcara.basis.HydrogenicOrbital`, one 1s per center with the Slater
+    :class:`~carcara.basis.FullAtomicOrbital`, one 1s per center with the Slater
     effective charge for that atom's 1s.
     """
     basis = []
     for Z, R in nuclei:
-        z_eff = HydrogenicOrbital.slater_effective_charge(int(round(Z)), 1, 0)
-        basis.append(HydrogenicOrbital(1, 0, 0, Z=z_eff, center=R,
+        z_eff = FullAtomicOrbital.slater_effective_charge(int(round(Z)), 1, 0)
+        basis.append(FullAtomicOrbital(1, 0, 0, Z=z_eff, center=R,
                                        units=grid_units))
     return basis
+
+
+# Backward-compatible aliases.  ``MolecularIntegrals`` is basis-agnostic (it
+# drives the integral engine over any localized basis); it was previously named
+# ``HydrogenicIntegrals``.  ``minimal_fao_basis`` was ``minimal_hydrogenic_basis``.
+HydrogenicIntegrals = MolecularIntegrals
+minimal_hydrogenic_basis = minimal_fao_basis

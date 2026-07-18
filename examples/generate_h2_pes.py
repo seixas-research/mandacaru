@@ -39,17 +39,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(HERE), "data")
 
 
-def main() -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    # H has no atomic core, so the grid resolves it well at every geometry and a
-    # fine, freely-spaced scan is both smooth and quantitative (unlike LiH, which
-    # needs grid-commensurate spacing -- see generate_lih_pes.py).
-    grid = GridSpec(box_size=7.0, spacing=0.12)
-    distances = np.linspace(0.5, 2.5, 21)
-    csv_path = os.path.join(DATA_DIR, "h2_pes_data.csv")
-    generate_pes("H2", ["H", "H"], distances, grid, csv_path)
-    print("Done. Plot with:  python examples/plot_pes.py")
-
-
-if __name__ == "__main__":
-    main()
+os.makedirs(DATA_DIR, exist_ok=True)
+# H has no atomic core, so the grid resolves it well at every geometry and a
+# fine, freely-spaced scan is both smooth and quantitative (unlike LiH, which
+# needs grid-commensurate spacing -- see generate_lih_pes.py).
+grid = GridSpec(box_size=7.0, spacing=0.12)
+distances = np.linspace(0.5, 2.5, 21)
+csv_path = os.path.join(DATA_DIR, "h2_pes_data.csv")
+generate_pes("H2", ["H", "H"], distances, grid, csv_path)
+print("Done. Plot with:  python examples/plot_pes.py")

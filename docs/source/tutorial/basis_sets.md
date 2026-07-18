@@ -1,6 +1,6 @@
 # Localized basis sets: NAO and GTO
 
-Beyond the analytic `HydrogenicOrbital`, Carcará provides two families of
+Beyond the analytic `FullAtomicOrbital`, Carcará provides two families of
 localized basis functions, both implementing the same `BasisFunction` contract
 so they plug straight into `IntegralEngine`:
 

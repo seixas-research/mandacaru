@@ -30,7 +30,7 @@ _A0 = 1.0
 _R_EPS = 1e-15  # regularizes 1/r and the polar angle at the nucleus
 
 
-class HydrogenicOrbital(BasisFunction):
+class FullAtomicOrbital(BasisFunction):
     r"""A hydrogen-like orbital :math:`\psi_{nlm}(\mathbf r)` for nuclear charge Z.
 
     .. math::
@@ -141,7 +141,7 @@ class HydrogenicOrbital(BasisFunction):
 
     @classmethod
     def from_slater(cls, n: int, l: int, m: int, atomic_number: int,
-                    center=None, units: str = "angstrom") -> "HydrogenicOrbital":
+                    center=None, units: str = "angstrom") -> "FullAtomicOrbital":
         """Build an orbital whose ``Z`` is the Slater effective charge.
 
         Convenience constructor equivalent to passing
@@ -168,5 +168,10 @@ class HydrogenicOrbital(BasisFunction):
         return np.asarray(R_nl * Y_lm, dtype=np.complex128)
 
     def __repr__(self) -> str:
-        return (f"HydrogenicOrbital(n={self.n}, l={self.l}, m={self.m}, "
+        return (f"FullAtomicOrbital(n={self.n}, l={self.l}, m={self.m}, "
                 f"Z={self.Z}, center={self.center})")
+
+
+# Backward-compatible alias: the family was renamed from "hydrogenic" to the
+# Full Atomic Orbitals (FAO) family.  ``HydrogenicOrbital`` still works.
+HydrogenicOrbital = FullAtomicOrbital

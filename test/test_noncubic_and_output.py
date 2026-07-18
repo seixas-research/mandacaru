@@ -299,10 +299,22 @@ class TestADAPTVQECalculator:
         exact = float(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min())
         assert result.optimal_energy == pytest.approx(exact, abs=1e-4)
 
-    def test_calculator_requires_builder_or_hamiltonian(self):
+    def test_calculator_builds_from_default_basis(self):
+        # With the default basis="FAO", no explicit builder is needed: the
+        # calculator builds the Hamiltonian from the geometry itself.
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        atoms.calc = ADAPTVQE(pool="ceo")   # no Hamiltonian, no builder
-        with pytest.raises(RuntimeError):
+        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO",
+                              grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.30),
+                              run_options={"max_iterations": 6,
+                                           "gradient_tol": 1e-3})
+        energy = atoms.get_total_energy()
+        assert np.isfinite(energy)
+        assert atoms.calc.n_qubits == 4        # H2 in FAO -> 2 orbitals
+
+    def test_ibm_quantum_device_not_runnable(self):
+        atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
+        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", device="ibm-quantum")
+        with pytest.raises(NotImplementedError):
             atoms.get_total_energy()
 
 
