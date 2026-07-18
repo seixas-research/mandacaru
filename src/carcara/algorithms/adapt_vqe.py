@@ -46,7 +46,7 @@ from ase.calculators.calculator import Calculator, all_changes
 from ..backends.hardware import normalize_device, require_runnable
 from ..circuits.pools import PoolBase, PoolOperator, build_pool
 from ..core.mapping import Fermion, PauliSum
-from ..optimizers.optim import Optimizer
+from ..optimizers.optim import Optimizer, resolve_optimizer
 from ..units import ANGSTROM_TO_BOHR, from_hartree
 
 
@@ -381,8 +381,14 @@ class ADAPTVQE(Calculator):
         in **eV** and lengths in **Angstrom**; ``True`` logs Hartree and Bohr.
         (ASE's ``get_total_energy`` always returns eV, per the ASE convention.)
     grid : Grid, optional
-        Real-space integration grid for the calculator-mode ``basis`` builder.
-        Defaults to an automatic cube enclosing the molecule.
+        Explicit real-space integration grid for the calculator-mode ``basis``
+        builder.  When omitted the grid is generated automatically from the ASE
+        ``atoms.cell`` at resolution ``h`` (see :meth:`_grid_from_cell`); a unit
+        cell is then required.
+    h : float
+        Target grid spacing in **Angstrom** (default ``0.20``) for the automatic
+        cell-based grid used when ``grid`` is not given.  Finer ``h`` (e.g.
+        ``0.10``) gives a denser grid and more accurate one-/two-body integrals.
     charge : int
         Total charge, used to set the electron count in the ``basis`` builder.
     n_electrons : int, optional
@@ -392,8 +398,10 @@ class ADAPTVQE(Calculator):
         explicit override for the built-in ``basis`` builder in calculator mode.
     run_options : dict, optional
         Extra keyword arguments forwarded to :meth:`run` on each calculator
-        evaluation (e.g. ``{"log_expressivity": False}``); overrides the
-        ``max_iterations`` / ``gradient_tolerance`` / ``output`` defaults above.
+        evaluation (e.g. ``{"log_expressivity": False}``).  Only arguments that
+        :meth:`run` accepts are valid here -- the stopping controls
+        (``max_iterations`` / ``gradient_tolerance``), ``output`` and ``verbose``
+        are constructor arguments, not ``run`` arguments.
     """
 
     implemented_properties = ["energy", "free_energy"]
@@ -418,6 +426,7 @@ class ADAPTVQE(Calculator):
                  verbose: bool = True,
                  atomic_units: bool = False,
                  grid=None,
+                 h: float = 0.20,
                  charge: int = 0,
                  n_electrons=None,
                  hamiltonian_builder=None,
@@ -449,6 +458,7 @@ class ADAPTVQE(Calculator):
 
         self._pool_spec = pool
         self.grid = grid
+        self.h = float(h)
         self.charge = int(charge)
         self.n_electrons = n_electrons
         self.hamiltonian_builder = hamiltonian_builder
@@ -471,16 +481,7 @@ class ADAPTVQE(Calculator):
         Accepts a pre-built :class:`Optimizer` (used as-is) or one of the method
         names in :attr:`_OPTIMIZERS` (``"COBYLA"``, ``"Nelder-Mead"``, ``"BFGS"``).
         """
-        if isinstance(optimizer, Optimizer):
-            return optimizer
-        if isinstance(optimizer, str):
-            if optimizer not in self._OPTIMIZERS:
-                raise ValueError(
-                    f"unknown optimizer {optimizer!r}; use one of "
-                    f"{self._OPTIMIZERS} or an Optimizer instance")
-            return Optimizer(method=optimizer, maxiter=2000)
-        raise TypeError(
-            "optimizer must be a method name or an Optimizer instance")
+        return resolve_optimizer(optimizer, allowed=self._OPTIMIZERS)
 
     def _configure(self, hamiltonian, num_particles, n_spatial_orbitals):
         """Resolve the pool and materialize the Hamiltonian / pool matrices."""
@@ -552,7 +553,7 @@ class ADAPTVQE(Calculator):
             basis += bset.atom(sym, center=pos, units="angstrom")
             nuclei.append((float(Z), pos))
 
-        grid = self.grid if self.grid is not None else self._auto_grid(positions)
+        grid = self.grid if self.grid is not None else self._grid_from_cell(atoms)
         n_el = (int(self.n_electrons) if self.n_electrons is not None
                 else int(sum(int(z) for z in numbers)) - self.charge)
         if n_el % 2 != 0:
@@ -566,15 +567,33 @@ class ADAPTVQE(Calculator):
         n_orbitals = len(basis)
         return hamiltonian, (n_el // 2, n_el // 2), n_orbitals
 
-    @staticmethod
-    def _auto_grid(positions, padding: float = 5.0, spacing: float = 0.2):
-        """A cubic grid (Angstrom) enclosing the atoms with ``padding`` around."""
+    def _grid_from_cell(self, atoms):
+        """Build the real-space integration grid from the ASE ``atoms.cell``.
+
+        The grid is generated automatically from the **unit cell** and the target
+        resolution :attr:`h` (Angstrom): the cell's three lattice vectors fix the
+        extent (and shape) of the box, and ``h`` sets the uniform node spacing.
+        The same grid feeds both the one- and two-body integral kernels over the
+        chosen ``basis`` (the engine is basis-agnostic), so a single resolution
+        controls the whole Hamiltonian build.
+
+        A unit cell is **required**: attach one to the geometry
+        (``atoms.cell = ...`` / ``atoms.set_cell(...)``), or pass an explicit
+        ``grid=`` at construction.  Raises ``ValueError`` otherwise.
+        """
         from ..integrals import Grid
 
-        positions = np.asarray(positions, dtype=float)
-        center = positions.mean(axis=0)
-        half = 0.5 * float(np.max(positions.max(axis=0) - positions.min(axis=0)))
-        return Grid(center=center, box_size=half + padding, h=spacing)
+        cell = np.asarray(atoms.get_cell(), dtype=float)   # Angstrom (ASE)
+        if not np.any(cell):
+            raise ValueError(
+                "ADAPTVQE cannot auto-generate a grid: the geometry has no unit "
+                "cell.  Set one (e.g. atoms.cell = [[Lx,0,0],[0,Ly,0],[0,0,Lz]] "
+                "or atoms.set_cell(...)), or pass an explicit `grid=`.  The grid "
+                f"is then built from the cell at resolution h={self.h:g} "
+                "Angstrom.")
+        center = 0.5 * cell.sum(axis=0)                    # geometric cell center
+        return Grid(center=center, box_size=0.0, h=self.h, units="angstrom",
+                    cell=cell)
 
     # -- ASE calculator interface ---------------------------------------- #
 
@@ -760,28 +779,19 @@ class ADAPTVQE(Calculator):
 
     # -- main loop -------------------------------------------------------- #
 
-    def run(self, max_iterations: int | None = None,
-            gradient_tol: float | None = None,
-            initial_parameters=None, callback=None,
-            output_file: str | None = None, geometry=None, cell=None,
-            log_expressivity: bool = True,
-            verbose: bool | None = None) -> ADAPTVQEResult:
+    def run(self, initial_parameters=None, callback=None,
+            geometry=None, cell=None,
+            log_expressivity: bool = True) -> ADAPTVQEResult:
         """Grow and optimize the ansatz until convergence.
 
-        Every argument is optional: ``max_iterations``, ``gradient_tol``,
-        ``output_file`` and ``verbose`` fall back to the instance's
-        ``max_iterations`` / ``gradient_tolerance`` / ``output`` / ``verbose``
-        constructor arguments when left as ``None``, so a configured
-        :class:`ADAPTVQE` can simply be ``.run()``.
+        Everything that also lives on the constructor -- the stopping controls
+        (``max_iterations`` / ``gradient_tolerance``), the ``output`` log path and
+        the ``verbose`` flag -- is taken from the instance, so a configured
+        :class:`ADAPTVQE` is driven with a bare ``.run()``.  ``run`` only accepts
+        arguments that the constructor does not already carry.
 
         Parameters
         ----------
-        max_iterations : int, optional
-            Maximum number of operators to append (default: the instance's
-            ``max_iterations``).
-        gradient_tol : float, optional
-            Stop when the largest pool gradient falls below this threshold
-            (default: the instance's ``gradient_tolerance``).
         initial_parameters : array_like, optional
             Warm-start parameters for an already-grown ansatz (rarely needed).
         callback : callable, optional
@@ -792,43 +802,28 @@ class ADAPTVQE(Calculator):
             :class:`~carcara.algorithms.expressivity.ADAPTExpressivityTracker` to
             record how the ansatz's expressibility grows.  The ``ansatz`` passed is
             the live :class:`AdaptAnsatz` at its current size (do not mutate it).
-        output_file : str, optional
-            When given, write a structured runtime trace to this path following
-            the ADAPT ``output.txt`` protocol
-            (:class:`~carcara.utils.logging.AdaptOutputLogger`): the initial
-            geometry and cell, the classical optimizer setup, and -- appended
-            live at every iteration -- the pool operators as explicit Pauli
-            strings, each operator's gradient magnitude, the selected operator,
-            and the ansatz's expressivity score :math:`E`.
         geometry : ase.Atoms or (symbols, positions), optional
-            Initial geometry for the ``output.txt`` metadata block.  An ASE
-            ``Atoms`` object supplies symbols, positions and (if periodic) the
-            cell; a ``(symbols, positions)`` pair supplies just the geometry.
+            Initial geometry for the ``output.txt`` metadata block (written only
+            when the instance's ``output`` path is set).  An ASE ``Atoms`` object
+            supplies symbols, positions and (if periodic) the cell; a
+            ``(symbols, positions)`` pair supplies just the geometry.
         cell : (3, 3) array_like, optional
             Explicit unit-cell tensor for the metadata block (overrides any cell
             carried by an ``Atoms`` ``geometry``).
         log_expressivity : bool
-            Compute and log the expressivity score each iteration when
-            ``output_file`` is set (default ``True``).
-        verbose : bool, optional
-            Print the quantum-simulation trace to standard output -- the qubit
-            Hamiltonian as Pauli strings, then each iteration's selected operator
-            as Pauli strings.  Defaults to the instance's ``verbose``.
+            Compute and log the expressivity score each iteration when the
+            instance's ``output`` path is set (default ``True``).
         """
         if not self._configured:
             raise RuntimeError(
                 "ADAPTVQE has no Hamiltonian; construct it with one, or use it "
                 "as an ASE calculator with a `hamiltonian_builder`")
 
-        # Fall back to the instance-level constructor defaults.
-        if max_iterations is None:
-            max_iterations = self.max_iterations
-        if gradient_tol is None:
-            gradient_tol = self.gradient_tolerance
-        if output_file is None:
-            output_file = self.output
-        if verbose is None:
-            verbose = self.verbose
+        # Stopping / logging controls come straight from the constructor.
+        max_iterations = self.max_iterations
+        gradient_tol = self.gradient_tolerance
+        output_file = self.output
+        verbose = self.verbose
 
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping)

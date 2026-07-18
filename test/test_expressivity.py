@@ -147,11 +147,12 @@ class TestSamplingAndDriver:
 class TestADAPTTracking:
     def test_tracker_records_one_step_per_operator(self, h2_hamiltonian):
         adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False)
+                         n_spatial_orbitals=2, profile=False,
+                         max_iterations=3, gradient_tolerance=1e-8)
         tracker = ADAPTExpressivityTracker(4, num_particles=(1, 1),
                                            num_samples=200, bins=50,
                                            rng=np.random.default_rng(7))
-        adapt.run(callback=tracker, max_iterations=3, gradient_tol=1e-8)
+        adapt.run(callback=tracker)
         assert len(tracker.history) >= 1
         # Operator counts increase by one each accepted step.
         assert tracker.num_operators == list(range(1, len(tracker.history) + 1))
@@ -160,9 +161,9 @@ class TestADAPTTracking:
 
     def test_track_helper_returns_result_and_history(self, h2_hamiltonian):
         adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False)
+                         n_spatial_orbitals=2, profile=False,
+                         max_iterations=2, gradient_tolerance=1e-8)
         result, history = track_adapt_expressivity(
-            adapt, num_samples=200, rng=np.random.default_rng(8),
-            max_iterations=2, gradient_tol=1e-8)
+            adapt, num_samples=200, rng=np.random.default_rng(8))
         assert result.num_operators == len(history)
         assert history[0].energy is not None

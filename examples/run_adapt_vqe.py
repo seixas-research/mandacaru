@@ -57,11 +57,14 @@ print("-" * len(header))
 
 summary = {}
 for name in POOLS:
+    # Stopping controls and verbosity live on the constructor; run() takes no
+    # arguments that the constructor already carries.  verbose=False keeps this
+    # benchmark's curated comparison table clean (the per-run Pauli-string trace
+    # is on by default -- see the ASE-calculator examples).
     adapt = ADAPTVQE(H, name, num_particles=(1, 1), n_spatial_orbitals=2,
-                     optimizer=Optimizer("L-BFGS-B", maxiter=2000))
-    # verbose=False keeps this benchmark's curated comparison table clean; the
-    # per-run Pauli-string trace is on by default (see the ASE-calculator examples).
-    res = adapt.run(max_iterations=15, gradient_tol=1e-6, verbose=False)
+                     optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                     max_iterations=15, gradient_tolerance=1e-6, verbose=False)
+    res = adapt.run()
     summary[name] = res
     print(f"{name:10s} {res.optimal_energy:+13.8f} "
           f"{res.optimal_energy - exact:+11.2e} "

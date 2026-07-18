@@ -75,18 +75,25 @@ does not quite reach the exact ground state).
 
 Hand the Hamiltonian, ansatz, and a classical optimizer to `VQE` and call
 `run()`. Optimization starts from the Hartree-Fock reference (all parameters
-zero):
+zero). Mirroring `ADAPTVQE`, the `optimizer` may be named by string — `"COBYLA"`
+(default), `"Nelder-Mead"` or `"BFGS"` — or given as an
+{class}`~carcara.optimizers.optim.Optimizer`, and a `verbose` run (the default)
+prints the qubit Hamiltonian as Pauli strings to standard output:
 
 ```python
 from carcara.algorithms import VQE
-from carcara.optimizers import Optimizer
 
-vqe = VQE(H, ansatz, optimizer=Optimizer(method="COBYLA", maxiter=2000))
+vqe = VQE(H, ansatz, optimizer="COBYLA")   # or optimizer=Optimizer(...)
 result = vqe.run()
 
 print(f"VQE ground-state energy = {result.optimal_energy:.6f} Ha")
 print(f"optimal parameters      = {result.optimal_parameters}")
 ```
+
+The returned `VQEResult` is shaped like `ADAPTVQEResult`: alongside
+`optimal_energy` / `optimal_parameters` / `reference_energy` it exposes
+`num_parameters`, `energy_history` and `correlation_energy`. Pass `verbose=False`
+to silence the Pauli-string trace.
 
 ## Checking the result
 

@@ -77,8 +77,7 @@ class IntegralEngine:
         Vext = np.ascontiguousarray(
             np.real(potential(self.grid.X, self.grid.Y, self.grid.Z)).reshape(-1),
             dtype=np.float64)
-        T, V = _backend.one_body_matrices(self._psi, Vext, self.grid.dx,
-                                          self.grid.shape)
+        T, V = _backend.one_body_matrices(self._psi, Vext, self.grid)
         return from_hartree(T, energy_units), from_hartree(V, energy_units)
 
     # -- two body ---------------------------------------------------------- #

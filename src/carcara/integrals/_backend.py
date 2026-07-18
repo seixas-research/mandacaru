@@ -69,7 +69,15 @@ def _load():
         lib = ctypes.CDLL(path)
     except OSError:
         return None
+    try:
+        return _bind(lib)
+    except AttributeError:
+        # A stale library missing a newer symbol (e.g. carcara_one_body_general):
+        # fall back to the NumPy kernels rather than crashing on import.
+        return None
 
+
+def _bind(lib):
     lib.carcara_one_body.restype = None
     lib.carcara_one_body.argtypes = [
         _C128,                       # psi   (M * ngrid)
@@ -77,6 +85,20 @@ def _load():
         ctypes.c_int,                # M
         ctypes.c_int,                # npts (points per dimension)
         ctypes.c_double,             # dx
+        _C128_W,                     # out_T (M * M)
+        _C128_W,                     # out_V (M * M)
+    ]
+
+    lib.carcara_one_body_general.restype = None
+    lib.carcara_one_body_general.argtypes = [
+        _C128,                       # psi   (M * ngrid)
+        _F64,                        # Vext  (ngrid)
+        ctypes.c_int,                # M
+        ctypes.c_int,                # nx
+        ctypes.c_int,                # ny
+        ctypes.c_int,                # nz
+        _F64,                        # ginv  (9, row-major inverse metric)
+        ctypes.c_double,             # dV
         _C128_W,                     # out_T (M * M)
         _C128_W,                     # out_V (M * M)
     ]
@@ -111,7 +133,7 @@ def _as_shape(shape):
     return (nx, ny, nz)
 
 
-def one_body_matrices(psi_stack, Vext, dx, shape):
+def one_body_matrices(psi_stack, Vext, grid):
     """Kinetic ``T`` and potential ``V`` matrices for ``M`` sampled functions.
 
     ``T[a, b] = <psi_a | -1/2 nabla^2 | psi_b>`` (finite-difference Laplacian),
@@ -123,31 +145,33 @@ def one_body_matrices(psi_stack, Vext, dx, shape):
         Row ``a`` holds ``psi_a`` sampled on the flattened grid.
     Vext : (ngrid,) float64
         External (e.g. electron-nuclear) potential sampled on the grid.
-    dx : float
-        Grid spacing (uniform across axes).  ``dV = dx**3``.
-    shape : int or (int, int, int)
-        Nodes per Cartesian axis.  A scalar means a cubic grid
-        (``ngrid == shape**3``); a triple ``(nx, ny, nz)`` a non-cubic one
-        (``ngrid == nx*ny*nz``).
-
-    Notes
-    -----
-    The C backend assumes an equal node count on every axis, so it is used only
-    for cubic grids; non-cubic grids fall back to the vectorized NumPy kernel
-    (which handles any ``(nx, ny, nz)`` and is exercised by the tests).
+    grid : Grid
+        The integration grid.  Its geometry -- ``shape``, ``dx``, the inverse
+        metric ``metric_inverse()`` and the voxel volume ``dV`` -- selects the
+        kernel: a cubic grid uses the fast ``carcara_one_body`` C path; any
+        anisotropic (per-axis spacing) or non-orthogonal grid uses the general
+        ``carcara_one_body_general`` C path.  Without the C library the
+        vectorized NumPy kernel (which mirrors both C kernels) is used instead.
     """
     psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
     Vext = np.ascontiguousarray(Vext, dtype=np.float64)
-    nx, ny, nz = _as_shape(shape)
+    nx, ny, nz = grid.shape
     M = psi_stack.shape[0]
     T = np.zeros((M, M), dtype=np.complex128)
     V = np.zeros((M, M), dtype=np.complex128)
+    ginv = np.ascontiguousarray(grid.metric_inverse(), dtype=np.float64)
+    dV = float(grid.dV)
 
-    if HAS_C_BACKEND and nx == ny == nz:
+    if HAS_C_BACKEND and grid.is_cubic:
         _LIB.carcara_one_body(psi_stack.reshape(-1), Vext, M, int(nx),
-                              float(dx), T.reshape(-1), V.reshape(-1))
+                              float(grid.dx), T.reshape(-1), V.reshape(-1))
         return T, V
-    return _one_body_numpy(psi_stack, Vext, dx, (nx, ny, nz))
+    if HAS_C_BACKEND:
+        _LIB.carcara_one_body_general(
+            psi_stack.reshape(-1), Vext, M, int(nx), int(ny), int(nz),
+            ginv.reshape(-1), dV, T.reshape(-1), V.reshape(-1))
+        return T, V
+    return _one_body_numpy(psi_stack, Vext, ginv, dV, (nx, ny, nz))
 
 
 def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0):
@@ -177,28 +201,51 @@ def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0):
 # NumPy reference fallbacks (mirror the C kernels exactly).
 # --------------------------------------------------------------------------- #
 
-def _laplacian_fd(field3d, dx):
-    """7-point finite-difference Laplacian; zero (decayed) outside the box."""
-    lap = -6.0 * field3d
-    for axis in range(3):
-        lap += (np.roll(field3d, 1, axis) + np.roll(field3d, -1, axis))
-        # zero out the wrapped boundary contribution
-        sl_lo = [slice(None)] * 3
-        sl_hi = [slice(None)] * 3
-        sl_lo[axis] = 0
-        sl_hi[axis] = -1
-        lap[tuple(sl_lo)] -= np.roll(field3d, 1, axis)[tuple(sl_lo)]
-        lap[tuple(sl_hi)] -= np.roll(field3d, -1, axis)[tuple(sl_hi)]
-    return lap / (dx * dx)
+def _shifted(field3d, axis, direction):
+    """``field`` shifted by one node along ``axis``, zero-filled at the boundary.
+
+    ``direction=+1`` fetches the ``+e_axis`` neighbor (so index 0 loses its lower
+    neighbor); this mirrors the C kernel's "out-of-range neighbor is 0" rule.
+    """
+    out = np.roll(field3d, -direction, axis)
+    sl = [slice(None)] * 3
+    sl[axis] = -1 if direction > 0 else 0     # the wrapped face -> 0
+    out[tuple(sl)] = 0.0
+    return out
 
 
-def _one_body_numpy(psi_stack, Vext, dx, shape):
+def _laplacian_general(field3d, ginv):
+    """General FD Laplacian ``sum_{a,b} ginv[a,b] d_a d_b f`` (mirrors the C kernel).
+
+    ``ginv`` is the 3x3 inverse metric ``(step^T step)^{-1}``; for an orthorhombic
+    grid it is ``diag(1/dx^2, 1/dy^2, 1/dz^2)`` and only the diagonal (7-point)
+    terms survive.  Out-of-range neighbors are treated as zero.
+    """
+    diag = -2.0 * (ginv[0, 0] + ginv[1, 1] + ginv[2, 2])
+    lap = diag * field3d
+    for a in range(3):                                   # diagonal 2nd derivatives
+        g = ginv[a, a]
+        if g != 0.0:
+            lap += g * (_shifted(field3d, a, +1) + _shifted(field3d, a, -1))
+    for a, b in ((0, 1), (0, 2), (1, 2)):                # mixed (cross) terms
+        g = ginv[a, b]
+        if g != 0.0:
+            c = 0.5 * g                                  # 2*g_ab * 1/4
+            pp = _shifted(_shifted(field3d, a, +1), b, +1)
+            pm = _shifted(_shifted(field3d, a, +1), b, -1)
+            mp = _shifted(_shifted(field3d, a, -1), b, +1)
+            mm = _shifted(_shifted(field3d, a, -1), b, -1)
+            lap += c * (pp - pm - mp + mm)
+    return lap
+
+
+def _one_body_numpy(psi_stack, Vext, ginv, dV, shape):
     M = psi_stack.shape[0]
-    dV = dx ** 3
+    ginv = np.asarray(ginv, dtype=float)
     T = np.zeros((M, M), dtype=np.complex128)
     V = np.zeros((M, M), dtype=np.complex128)
     shape = _as_shape(shape)
-    lap = [_laplacian_fd(psi_stack[b].reshape(shape), dx).reshape(-1)
+    lap = [_laplacian_general(psi_stack[b].reshape(shape), ginv).reshape(-1)
            for b in range(M)]
     for a in range(M):
         conj_a = np.conj(psi_stack[a])

@@ -35,6 +35,31 @@ class OptimizeResult:
     message: str = ""
 
 
+# The gradient-free / quasi-Newton methods exposed by name to the variational
+# drivers (VQE, ADAPTVQE).  COBYLA is the default everywhere.
+NAMED_OPTIMIZERS = ("COBYLA", "Nelder-Mead", "BFGS")
+
+
+def resolve_optimizer(optimizer, allowed=NAMED_OPTIMIZERS,
+                      maxiter: int = 2000) -> "Optimizer":
+    """Normalize an ``optimizer`` argument to an :class:`Optimizer`.
+
+    Accepts either a pre-built :class:`Optimizer` (returned unchanged) or a
+    method name from ``allowed`` (``"COBYLA"``, ``"Nelder-Mead"``, ``"BFGS"``),
+    which is wrapped in a fresh :class:`Optimizer`.  Shared by the VQE and
+    ADAPT-VQE drivers so both expose the same ``optimizer=`` surface.
+    """
+    if isinstance(optimizer, Optimizer):
+        return optimizer
+    if isinstance(optimizer, str):
+        if optimizer not in allowed:
+            raise ValueError(
+                f"unknown optimizer {optimizer!r}; use one of {tuple(allowed)} "
+                "or an Optimizer instance")
+        return Optimizer(method=optimizer, maxiter=maxiter)
+    raise TypeError("optimizer must be a method name or an Optimizer instance")
+
+
 class Optimizer:
     """SciPy-backed classical optimizer with cost-history tracking.
 

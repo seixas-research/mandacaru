@@ -52,10 +52,12 @@ def h2_exact(h2_hamiltonian):
     return float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
 
 
-def _adapt(hamiltonian, pool_name):
+def _adapt(hamiltonian, pool_name, max_iterations=50, gradient_tol=1e-6):
+    # Stopping controls now live on the constructor (run() takes no duplicates).
     return ADAPTVQE(hamiltonian, pool_name, num_particles=(1, 1),
                     n_spatial_orbitals=2,
-                    optimizer=Optimizer("L-BFGS-B", maxiter=2000))
+                    optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                    max_iterations=max_iterations, gradient_tolerance=gradient_tol)
 
 
 # --------------------------------------------------------------------------- #
@@ -146,8 +148,7 @@ class TestGradientSelection:
 
     def test_first_selected_operator_is_a_double(self, h2_hamiltonian):
         for name in ("fermionic", "qeb", "ceo"):
-            res = _adapt(h2_hamiltonian, name).run(max_iterations=6,
-                                                   gradient_tol=1e-6)
+            res = _adapt(h2_hamiltonian, name, max_iterations=6).run()
             assert "double" in res.iterations[0].operator_kind \
                 or res.iterations[0].operator_kind == "ceo"
 
@@ -159,14 +160,13 @@ class TestGradientSelection:
 class TestConvergence:
     @pytest.mark.parametrize("name", POOL_NAMES)
     def test_pool_reaches_fci(self, h2_hamiltonian, h2_exact, name):
-        res = _adapt(h2_hamiltonian, name).run(max_iterations=15,
-                                               gradient_tol=1e-6)
+        res = _adapt(h2_hamiltonian, name, max_iterations=15).run()
         assert isinstance(res, ADAPTVQEResult)
         assert abs(res.optimal_energy - h2_exact) < 1e-6
         assert res.optimal_energy < res.reference_energy - 1e-4
 
     def test_result_history_is_consistent(self, h2_hamiltonian):
-        res = _adapt(h2_hamiltonian, "fermionic").run(gradient_tol=1e-6)
+        res = _adapt(h2_hamiltonian, "fermionic").run()
         assert len(res.energy_history) == res.num_operators
         assert len(res.operators) == res.num_operators
         # Energy decreases monotonically as operators are added.
@@ -192,7 +192,7 @@ class TestProfiling:
             prev = cur
 
     def test_run_reports_cnot_and_depth(self, h2_hamiltonian):
-        res = _adapt(h2_hamiltonian, "fermionic").run(gradient_tol=1e-6)
+        res = _adapt(h2_hamiltonian, "fermionic").run()
         assert res.metrics.cnot_count is not None and res.metrics.cnot_count > 0
         assert res.metrics.depth is not None and res.metrics.depth > 0
         # Per-iteration metrics track the growing ansatz.
@@ -202,8 +202,8 @@ class TestProfiling:
     def test_qubit_pool_uses_fewer_cnots_than_fermionic(self, h2_hamiltonian):
         # The headline hardware-efficiency benchmark: qubit-ADAPT reaches the same
         # ground state with strictly fewer CNOTs than the fermionic pool.
-        ferm = _adapt(h2_hamiltonian, "fermionic").run(gradient_tol=1e-6)
-        qub = _adapt(h2_hamiltonian, "qubit").run(gradient_tol=1e-6)
+        ferm = _adapt(h2_hamiltonian, "fermionic").run()
+        qub = _adapt(h2_hamiltonian, "qubit").run()
         assert qub.metrics.cnot_count < ferm.metrics.cnot_count
 
 
@@ -214,8 +214,8 @@ class TestProfiling:
 class TestDriver:
     def test_accepts_pool_object(self, h2_hamiltonian, h2_exact):
         pool = build_pool("ceo", 2, (1, 1))
-        res = ADAPTVQE(h2_hamiltonian, pool, num_particles=(1, 1)).run(
-            gradient_tol=1e-6)
+        res = ADAPTVQE(h2_hamiltonian, pool, num_particles=(1, 1),
+                       gradient_tolerance=1e-6).run()
         assert abs(res.optimal_energy - h2_exact) < 1e-6
 
     def test_named_pool_requires_shape(self, h2_hamiltonian):

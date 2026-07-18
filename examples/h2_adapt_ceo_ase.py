@@ -36,7 +36,6 @@ import numpy as np
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE
-from carcara.integrals import Grid
 from carcara.units import from_hartree
 from carcara.utils import parse_output
 
@@ -48,14 +47,21 @@ output_file = os.path.join(DATA_DIR, "output_h2.txt")
 # 1. Define the molecule via ASE and attach ADAPTVQE as its calculator.  The
 #    full argument surface is spelled out: pool / basis / mapping / gradient /
 #    device.  With basis="FAO" the calculator builds the Hamiltonian itself.
-atoms = Atoms("H2", positions=[[0.0, 0.0, -0.37], [0.0, 0.0, +0.37]])
+#
+#    The molecule carries a unit cell, so no explicit `grid=` is needed: the
+#    calculator auto-generates the integration grid from `atoms.cell` at the
+#    requested resolution `h` (Angstrom).  (Pass `grid=Grid(...)` to override.)
+atoms = Atoms("H2", positions=[[6.0, 6.0, 5.63], [6.0, 6.0, 6.37]],
+              cell=[[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]],
+              pbc=True)
 atoms.calc = ADAPTVQE(
     pool="ceo",
     basis="FAO",
     mapping="jordan_wigner",
+    optimizer="COBYLA",
     gradient="parameter-shift_rule",
     device="AER_simulator",
-    grid=Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20),
+    h=0.20,                     # grid resolution (Angstrom); grid built from cell
     max_iterations=15,
     gradient_tolerance=1e-4,
     output=output_file)

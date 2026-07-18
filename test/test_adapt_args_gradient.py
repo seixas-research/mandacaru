@@ -90,8 +90,9 @@ class TestGradientStrategies:
         exact = float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
         for grad in ("classical", "parameter-shift_rule"):
             adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                             n_spatial_orbitals=2, profile=False, gradient=grad)
-            res = adapt.run(max_iterations=10, gradient_tol=1e-4)
+                             n_spatial_orbitals=2, profile=False, gradient=grad,
+                             max_iterations=10, gradient_tolerance=1e-4)
+            res = adapt.run()
             assert abs(res.optimal_energy - exact) < 1e-4, grad
 
     def test_invalid_gradient_rejected(self, h2_hamiltonian):
@@ -110,8 +111,7 @@ class TestArgumentSurface:
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = ADAPTVQE(pool=pool, basis="FAO",
                               grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.3),
-                              run_options={"max_iterations": 8,
-                                           "gradient_tol": 1e-3})
+                              max_iterations=8, gradient_tolerance=1e-3)
         assert np.isfinite(atoms.get_total_energy())
 
     @pytest.mark.parametrize("mapping",
@@ -120,8 +120,7 @@ class TestArgumentSurface:
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", mapping=mapping,
                               grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.25),
-                              run_options={"max_iterations": 8,
-                                           "gradient_tol": 1e-3})
+                              max_iterations=8, gradient_tolerance=1e-3)
         energy_ev = atoms.get_total_energy()
         h = atoms.calc.hamiltonian.to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min())
@@ -155,8 +154,7 @@ class TestArgumentSurface:
         atoms = Atoms("LiH", positions=[[0, 0, -0.8], [0, 0, 0.8]])
         atoms.calc = ADAPTVQE(pool="ceo", basis="FAO",
                               grid=Grid(center=[0, 0, 0], box_size=7.0, h=0.3),
-                              run_options={"max_iterations": 4,
-                                           "gradient_tol": 1e-2})
+                              max_iterations=4, gradient_tolerance=1e-2)
         atoms.get_total_energy()
         assert atoms.calc.n_qubits == 6
         assert atoms.calc.num_particles == (2, 2)
@@ -199,8 +197,9 @@ class TestVerbosePauliOutput:
     def test_hamiltonian_and_ansatz_pauli_strings_printed(self, h2_hamiltonian,
                                                           capsys):
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False, verbose=True)
-        adapt.run(max_iterations=3, gradient_tol=1e-6)
+                         n_spatial_orbitals=2, profile=False, verbose=True,
+                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt.run()
         out = capsys.readouterr().out
         # The qubit Hamiltonian is echoed as Pauli strings ...
         assert "Qubit Hamiltonian" in out
@@ -211,8 +210,9 @@ class TestVerbosePauliOutput:
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False, verbose=False)
-        adapt.run(max_iterations=3, gradient_tol=1e-6)
+                         n_spatial_orbitals=2, profile=False, verbose=False,
+                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt.run()
         assert capsys.readouterr().out == ""
 
 

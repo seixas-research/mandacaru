@@ -17,7 +17,7 @@ Implemented:
 - `src/carcara/wavefunction.py` — atomic-system facade over basis + grid + engine (ASE XYZ I/O)
 - `src/carcara/circuits/` — `gates.py` (anti-Hermitian single/double fermionic excitation generators), `ansatz.py` (`UCCSD`, a state-vector ansatz `|ψ(θ)⟩ = exp(Σ θ_k (T_k − T_k†))|HF⟩`; default is the exact UCC exponential, `trotter=True` gives the circuit-faithful first-order product), and `pools.py` (ADAPT-VQE operator pools — **fermionic**, **qubit** (qubit-ADAPT), **QEB** (Z-strings dropped) and **CEO** (coupled exchange, OVP) — behind a common `OperatorPool`/`PoolOperator` interface with a `build_pool` registry).
 - `src/carcara/optimizers/optim.py` — `Optimizer`, a SciPy-backed wrapper (COBYLA default) with cost-history tracking.
-- `src/carcara/algorithms/vqe.py` — `VQE`, an exact state-vector eigensolver (`⟨ψ(θ)|H|ψ(θ)⟩` minimized over ansatz params); validated on H₂ against exact diagonalization to ~1e-9 Ha. See `examples/H2_vqe.py`.
+- `src/carcara/algorithms/vqe.py` — `VQE`, an exact state-vector eigensolver (`⟨ψ(θ)|H|ψ(θ)⟩` minimized over ansatz params); validated on H₂ against exact diagonalization to ~1e-9 Ha. See `examples/H2_vqe.py`. `VQE`/`VQEResult` mirror `ADAPTVQE`/`ADAPTVQEResult`: `optimizer` accepts a method-name string (`"COBYLA"` default / `"Nelder-Mead"` / `"BFGS"`) or an `Optimizer`, `verbose=True` prints the qubit Hamiltonian as Pauli strings on `run()`, and `VQEResult` exposes `num_parameters`/`energy_history`/`correlation_energy`. The shared `resolve_optimizer` helper lives in `optimizers/optim.py`.
 - `src/carcara/algorithms/adapt_vqe.py` — `ADAPTVQE`, the adaptive grow-then-reoptimize loop (gradient `⟨ψ|[H,A_i]|ψ⟩` over a pool, warm-started inner VQE) on the exact state-vector backend, with a growable `AdaptAnsatz` and Qiskit-based circuit profiling (`profile_ansatz` → CNOT count + depth in a native `{cx, u}` gate set). All four pools reach FCI on H₂. See `examples/run_adapt_vqe.py`.
 - `src/carcara/algorithms/hartree_fock.py` — `RHF` (closed-shell SCF; supplies the **molecular-orbital basis** so ADAPT's HF reference is stationary and singles have zero gradient) and `UHF` (open-shell, for isolated-atom energies). `MolecularIntegrals.molecular_hamiltonian(mo_basis=True, n_electrons=...)` returns the MO-basis `Fermion`.
 - `src/carcara/algorithms/expressivity.py` — PQC **expressibility** (Sim *et al.* 2019): random-parameter state fidelities vs the Haar distribution scored by KL divergence (`compute_expressibility`, `calculate_kl_divergence`, `calculate_haar_distribution`). The Haar reference dimension is the *number-conserving sector* `d = C(M,nα)·C(M,nβ)` (`active_space_dimension`) or the empirical span rank (`estimate_effective_dimension`), **not** `2^N` — the fermionic ansätze never leave their symmetry sector. `ADAPTExpressivityTracker` / `track_adapt_expressivity` hook `ADAPTVQE.run(callback=...)` to log expressibility as the ansatz grows. See `examples/adapt_expressivity.py`.
@@ -60,25 +60,27 @@ The heavy integral kernels live in C (`src/carcara/integrals/csrc/carcara_integr
 
 The build is **optional**: if the library is absent, `HAS_C_BACKEND` is `False` and vectorized NumPy reference implementations (which mirror the C kernels exactly) run instead, so the package is always importable and testable without compiling anything.
 
-Build it with CMake; the output must land in `csrc/build/` where `_backend.py` looks (it also honors the `CARCARA_INTEGRALS_LIB` env var):
+Two one-body kernels: `carcara_one_body` (cubic fast path, single `npts`/`dx`) and `carcara_one_body_general` (per-axis `nx,ny,nz` + a 3×3 inverse-metric `ginv` and voxel volume `dV`), the latter handling **varying resolution per axis and non-orthogonal cells** via the generalized FD Laplacian `∇²f = Σ_ab ginv[a,b] ∂_a∂_b f` (diagonal 3-point + off-diagonal 4-point cross stencils). `_backend.one_body_matrices(psi, Vext, grid)` dispatches on `grid.is_cubic`. The two-body direct kernel already consumes explicit coordinates + `dV`, so it is geometry-agnostic.
+
+Build it with CMake; the output must land in `csrc/build/` where `_backend.py` looks (it also honors the `CARCARA_INTEGRALS_LIB` env var). The `CMakeLists.txt` is macOS+Linux portable: on Linux OpenMP is found out of the box; on macOS (Apple Clang) it auto-discovers Homebrew `libomp` via `brew --prefix libomp` (override with `-DOpenMP_ROOT`).
 
 ```bash
 cd src/carcara/integrals/csrc
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-# macOS / Apple Clang needs Homebrew libomp:
+# macOS: libomp is auto-discovered; to pin it explicitly:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOpenMP_ROOT=$(brew --prefix libomp)
 ```
 
-When editing the numerics, keep the C kernel and its NumPy fallback in `_backend.py` in lockstep — tests may exercise either depending on whether the library is built.
+When editing the numerics, keep the C kernel and its NumPy fallback in `_backend.py` in lockstep (both the cubic and the general Laplacian) — tests may exercise either depending on whether the library is built.
 
 ## Architecture: the integral engine
 
-The one design principle that spans multiple files is that the integral machinery is **basis-agnostic**. The C backend and `IntegralEngine` never see analytic orbital forms — only **sampled values** `psi[i, :]` on a uniform cubic grid. This is what lets any basis drop in with zero changes to the integral core: a new family only implements `BasisFunction.evaluate(x, y, z)` (returning `complex128` in Bohr). `FullAtomicOrbital`, `NumericalAtomicOrbital` (spline of a confined radial solve) and `GaussianOrbital` (contracted Gaussians) all follow the same `R(r)·Y_lm` pattern; NAO/GTO share `_angular.py` for the Cartesian→spherical + spherical-harmonic step. Orbitals are normalized in 3D with orthonormal `Y_lm` (i.e. `∫|R|²r²dr = 1`) — preserve that convention for any new radial family.
+The one design principle that spans multiple files is that the integral machinery is **basis-agnostic**. The C backend and `IntegralEngine` never see analytic orbital forms — only **sampled values** `psi[i, :]` on the grid (cubic, orthorhombic, or non-orthogonal). This is what lets any basis drop in with zero changes to the integral core: a new family only implements `BasisFunction.evaluate(x, y, z)` (returning `complex128` in Bohr). `FullAtomicOrbital`, `NumericalAtomicOrbital` (spline of a confined radial solve) and `GaussianOrbital` (contracted Gaussians) all follow the same `R(r)·Y_lm` pattern; NAO/GTO share `_angular.py` for the Cartesian→spherical + spherical-harmonic step. Orbitals are normalized in 3D with orthonormal `Y_lm` (i.e. `∫|R|²r²dr = 1`) — preserve that convention for any new radial family.
 
 The single contract is `BasisFunction.evaluate(x, y, z)` (in `basis/base.py`). The data flow:
 
-1. `Grid` (`integrals/grid.py`) — a uniform cubic grid specified by a physical spacing `h` (not a node count); `points`/`dx` are derived. Owns sampling points, spacing `dx`, volume element `dV`.
+1. `Grid` (`integrals/grid.py`) — a regular Cartesian grid specified by a physical spacing `h` (not a node count); node counts and `dx`/`dy`/`dz` are derived. Three shapes: **cubic** (scalar `box_size` + scalar `h`; the byte-exact historical path), **orthorhombic** (per-axis `box_size`/`h` — i.e. varying resolution per axis — or a diagonal `cell`), and **non-orthogonal** (full `cell` with `skew=True`, sampling the skewed lattice directly; default `skew=False` uses the cell's bounding box). Geometry is captured in the `step` (3×3 voxel basis) matrix, from which `dV = |det(step)|` and `metric_inverse()` = `(stepᵀstep)⁻¹` (the coefficients of the generalized FD Laplacian) are derived. Non-orthogonal / anisotropic two-body integrals should use `method="direct"` (the FFT-Poisson path assumes uniform orthogonal spacing).
 2. Each `BasisFunction.sample(grid)` produces a contiguous `complex128` vector.
 3. `IntegralEngine` (`integrals/engine.py`) stacks them into `(M, ngrid)`, evaluates the external potential callable `V(x,y,z)`, and dispatches to the backend:
    - `one_body(potential)` → kinetic `T` (finite-difference Laplacian) and potential `V` matrices → core Hamiltonian `h = T + V`.

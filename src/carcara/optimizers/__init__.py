@@ -8,6 +8,7 @@
 
 """Classical optimizers for hybrid variational loops."""
 
-from .optim import Optimizer, OptimizeResult
+from .optim import NAMED_OPTIMIZERS, Optimizer, OptimizeResult, resolve_optimizer
 
-__all__ = ["Optimizer", "OptimizeResult"]
+__all__ = ["Optimizer", "OptimizeResult", "resolve_optimizer",
+           "NAMED_OPTIMIZERS"]

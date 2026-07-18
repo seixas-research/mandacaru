@@ -140,3 +140,45 @@ class TestVQE:
         qubit_h = h2_hamiltonian.map_to_qubits("jordan_wigner")   # 4 qubits
         with pytest.raises(ValueError):
             VQE(qubit_h, UCCSD(3, (1, 1)))                        # 6 qubits
+
+
+# --- Parity with ADAPTVQE / ADAPTVQEResult (requirement: mirror the API) ---
+
+class TestVQEMirrorsADAPT:
+    def test_default_optimizer_is_cobyla(self, h2_hamiltonian):
+        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)))
+        assert vqe.optimizer.method == "COBYLA"
+
+    @pytest.mark.parametrize("name", ["COBYLA", "Nelder-Mead", "BFGS"])
+    def test_named_optimizers_build(self, h2_hamiltonian, name):
+        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), optimizer=name)
+        assert vqe.optimizer.method == name
+
+    def test_optimizer_instance_passthrough(self, h2_hamiltonian):
+        opt = Optimizer("L-BFGS-B", maxiter=500)
+        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), optimizer=opt)
+        assert vqe.optimizer is opt
+
+    def test_unknown_optimizer_rejected(self, h2_hamiltonian):
+        with pytest.raises(ValueError):
+            VQE(h2_hamiltonian, UCCSD(2, (1, 1)), optimizer="nope")
+
+    def test_result_mirrors_adapt_result_shape(self, h2_hamiltonian):
+        res = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False).run()
+        # Same convenience views as ADAPTVQEResult.
+        assert res.num_parameters == len(res.optimal_parameters)
+        assert res.energy_history == list(res.history)
+        assert res.correlation_energy == pytest.approx(
+            res.optimal_energy - res.reference_energy)
+
+    def test_verbose_prints_hamiltonian_pauli_strings(self, h2_hamiltonian,
+                                                      capsys):
+        VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=True).run()
+        out = capsys.readouterr().out
+        assert "Qubit Hamiltonian" in out
+        assert "* ZIII" in out
+        assert "VQE finished" in out
+
+    def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
+        VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False).run()
+        assert capsys.readouterr().out == ""

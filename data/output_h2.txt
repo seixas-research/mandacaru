@@ -6,10 +6,15 @@
 units: Angstrom
 n_atoms: 2
 geometry:
-  H       0.0000000000     0.0000000000    -0.3700000000
-  H       0.0000000000     0.0000000000     0.3700000000
-cell_present: False
-cell_vectors: (non-periodic)
+  H       6.0000000000     6.0000000000     5.6300000000
+  H       6.0000000000     6.0000000000     6.3700000000
+cell_present: True
+cell_vectors:
+  a1 = [ 12.0000000000   0.0000000000   0.0000000000]
+  a2 = [  0.0000000000  12.0000000000   0.0000000000]
+  a3 = [  0.0000000000   0.0000000000  12.0000000000]
+cell_lengths: a=12.0000000000 b=12.0000000000 c=12.0000000000
+cell_angles: alpha=90.000000 beta=90.000000 gamma=90.000000
 
 [OPTIMIZATION SETUP]
 classical_optimizer: COBYLA

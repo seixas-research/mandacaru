@@ -52,6 +52,26 @@ void carcara_one_body(const double _Complex *psi,
                       double _Complex *out_T,
                       double _Complex *out_V);
 
+/* One-body matrices on a *general* grid: per-axis node counts (nx, ny, nz) and
+ * an arbitrary (anisotropic and/or non-orthogonal) geometry.  The grid geometry
+ * enters only through
+ *
+ *   ginv : (9) row-major 3x3 inverse metric (step^T step)^{-1}, which carries
+ *          the 1/length^2 units of the Laplacian (diag(1/dx^2, 1/dy^2, 1/dz^2)
+ *          for an orthorhombic grid, with non-zero off-diagonals when skewed);
+ *   dV   : voxel volume |det(step)|.
+ *
+ * This is the general counterpart of carcara_one_body (which is the fast path
+ * for a cubic grid) and supports varying resolution along each axis and
+ * non-orthogonal unit cells.  out_T, out_V : (M * M) complex, caller-allocated.
+ */
+void carcara_one_body_general(const double _Complex *psi,
+                              const double *Vext,
+                              int M, int nx, int ny, int nz,
+                              const double *ginv, double dV,
+                              double _Complex *out_T,
+                              double _Complex *out_V);
+
 /* Two-body electron-repulsion tensor (physicists' notation <ab|cd>):
  *
  *   eri[((a*M + b)*M + c)*M + d] =

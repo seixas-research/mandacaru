@@ -98,6 +98,72 @@ class TestNonCubicGrid:
         assert float(np.real(T[0, 0])) == pytest.approx(0.5, abs=1e-2)
 
 
+class TestVaryingResolution:
+    """Per-axis (varying) resolution and non-orthogonal cells (C-backend req)."""
+
+    def test_per_axis_resolution_grid(self):
+        # A length-3 h sets a different spacing on each axis.
+        g = Grid(center=[0, 0, 0], box_size=8.0, h=[0.20, 0.25, 0.30],
+                 units="bohr")
+        assert (g.dx, g.dy, g.dz) == pytest.approx((0.20, 0.25, 0.30))
+        assert g.is_orthorhombic and not g.is_cubic
+        assert g.dV == pytest.approx(0.20 * 0.25 * 0.30)
+        # Inverse metric is diagonal 1/d^2 for an orthorhombic grid.
+        np.testing.assert_allclose(
+            g.metric_inverse(),
+            np.diag([1 / 0.20 ** 2, 1 / 0.25 ** 2, 1 / 0.30 ** 2]), atol=1e-12)
+
+    def test_kinetic_energy_varying_resolution(self):
+        # The generalized (per-axis) Laplacian still recovers <1s|T|1s> = 1/2 Ha.
+        orb = FullAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0], units="bohr")
+        g = Grid(center=[0, 0, 0], box_size=8.0, h=[0.20, 0.25, 0.30],
+                 units="bohr")
+        T, _ = IntegralEngine([orb], g).one_body(
+            lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape),
+            energy_units="Ha")
+        assert float(np.real(T[0, 0])) == pytest.approx(0.5, abs=2e-2)
+
+    def test_skewed_non_orthogonal_grid(self):
+        # skew=True samples the actual (non-orthogonal) lattice; the step matrix
+        # is non-diagonal and dV = |det(step)|.
+        cell = np.array([[16.0, 0.0, 0.0],
+                         [3.0, 16.0, 0.0],
+                         [0.0, 1.0, 16.0]])
+        g = Grid(center=[0, 0, 0], cell=cell, h=0.4, units="bohr", skew=True)
+        assert not g.is_orthorhombic
+        assert g.dV == pytest.approx(abs(np.linalg.det(g.step)))
+        # Cross-term Laplacian recovers the hydrogen kinetic energy.
+        orb = FullAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0], units="bohr")
+        T, _ = IntegralEngine([orb], g).one_body(
+            lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape),
+            energy_units="Ha")
+        assert float(np.real(T[0, 0])) == pytest.approx(0.5, abs=3e-2)
+
+    def test_c_and_numpy_kernels_agree(self):
+        # The C general kernel and the NumPy fallback must stay in lockstep on
+        # anisotropic and skewed grids.
+        import carcara.integrals._backend as backend
+        if not backend.HAS_C_BACKEND:
+            pytest.skip("C backend not built")
+        orb = FullAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0.2], units="bohr")
+        for g in (Grid(center=[0, 0, 0], box_size=6.0, h=[0.25, 0.30, 0.35],
+                       units="bohr"),
+                  Grid(center=[0, 0, 0],
+                       cell=np.array([[12., 0, 0], [3., 12., 0], [0, 1., 12.]]),
+                       h=0.4, units="bohr", skew=True)):
+            psi = np.stack([orb.sample(g)])
+            vext = np.zeros(g.size)
+            saved = backend.HAS_C_BACKEND
+            try:
+                backend.HAS_C_BACKEND = True
+                Tc, _ = backend.one_body_matrices(psi, vext, g)
+                backend.HAS_C_BACKEND = False
+                Tn, _ = backend.one_body_matrices(psi, vext, g)
+            finally:
+                backend.HAS_C_BACKEND = saved
+            np.testing.assert_allclose(Tc, Tn, atol=1e-10)
+
+
 # --------------------------------------------------------------------------- #
 # ASE integration.
 # --------------------------------------------------------------------------- #
@@ -179,9 +245,9 @@ class TestAdaptOutputProtocol:
         geom = Atoms("H2", positions=[[0, 0, -R / 2], [0, 0, R / 2]],
                      cell=[[6, 0, 0], [1, 7, 0], [0, 0, 5]], pbc=True)
         out = str(tmp_path / "output.txt")
-        adapt = _h2_adapt(h2_hamiltonian)
-        result = adapt.run(max_iterations=6, gradient_tol=1e-4,
-                           output_file=out, geometry=geom)
+        adapt = _h2_adapt(h2_hamiltonian, max_iterations=6,
+                          gradient_tolerance=1e-4, output=out)
+        result = adapt.run(geometry=geom)
 
         parsed = parse_output(out)
 
@@ -212,8 +278,8 @@ class TestAdaptOutputProtocol:
         # Requirement 3: the selected operator is a distinct block, and the pool
         # is a separate listing.
         out = str(tmp_path / "output.txt")
-        _h2_adapt(h2_hamiltonian).run(max_iterations=4, gradient_tol=1e-4,
-                                      output_file=out)
+        _h2_adapt(h2_hamiltonian, max_iterations=4, gradient_tolerance=1e-4,
+                  output=out).run()
         text = open(out, encoding="utf-8").read()
         assert "selected_operator:" in text
         assert "operator_pool:" in text
@@ -227,8 +293,9 @@ class TestAdaptOutputProtocol:
         # Requirement 5: richer summary (expressivity, gates, CNOTs, depth, ...).
         out = str(tmp_path / "output.txt")
         adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=True)  # profile for gates
-        adapt.run(max_iterations=4, gradient_tol=1e-4, output_file=out)
+                         n_spatial_orbitals=2, profile=True,  # profile for gates
+                         max_iterations=4, gradient_tolerance=1e-4, output=out)
+        adapt.run()
         summary = parse_output(out)["summary"]
         for key in ("optimal_energy_eV", "reference_energy_eV", "num_operators",
                     "num_parameters", "final_expressivity_E", "cnot_count",
@@ -240,9 +307,9 @@ class TestAdaptOutputProtocol:
         # Requirement 1: atomic units used only when explicitly requested.
         out = str(tmp_path / "output.txt")
         geom = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        adapt = _h2_adapt(h2_hamiltonian, atomic_units=True)
-        adapt.run(max_iterations=4, gradient_tol=1e-4, output_file=out,
-                  geometry=geom)
+        adapt = _h2_adapt(h2_hamiltonian, atomic_units=True, max_iterations=4,
+                          gradient_tolerance=1e-4, output=out)
+        adapt.run(geometry=geom)
         parsed = parse_output(out)
         assert parsed["metadata"]["units"] == "Bohr"
         assert parsed["setup"]["energy_unit"] == "Ha"
@@ -251,8 +318,8 @@ class TestAdaptOutputProtocol:
     def test_runs_without_geometry(self, h2_hamiltonian, tmp_path):
         # The protocol must still write cleanly when no geometry is supplied.
         out = str(tmp_path / "output.txt")
-        _h2_adapt(h2_hamiltonian).run(max_iterations=4, gradient_tol=1e-4,
-                                      output_file=out)
+        _h2_adapt(h2_hamiltonian, max_iterations=4, gradient_tolerance=1e-4,
+                  output=out).run()
         parsed = parse_output(out)
         assert parsed["metadata"]["cell_present"] == "False"
         assert parsed["metadata"]["geometry"] == "(not provided)"
@@ -288,8 +355,7 @@ class TestADAPTVQECalculator:
 
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = ADAPTVQE(pool="ceo", hamiltonian_builder=builder,
-                              run_options={"max_iterations": 6,
-                                           "gradient_tol": 1e-4})
+                              max_iterations=6, gradient_tolerance=1e-4)
         energy_ev = atoms.get_total_energy()
         result = atoms.calc.adapt_result
 
@@ -307,8 +373,7 @@ class TestADAPTVQECalculator:
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = ADAPTVQE(pool="ceo", basis="FAO",
                               grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.30),
-                              run_options={"max_iterations": 6,
-                                           "gradient_tol": 1e-3})
+                              max_iterations=6, gradient_tolerance=1e-3)
         energy = atoms.get_total_energy()
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 4        # H2 in FAO -> 2 orbitals
@@ -317,6 +382,25 @@ class TestADAPTVQECalculator:
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", device="ibm-quantum")
         with pytest.raises(NotImplementedError):
+            atoms.get_total_energy()
+
+    def test_grid_auto_generated_from_cell(self):
+        # No explicit grid: the calculator builds one from atoms.cell at
+        # resolution h, and the run still reaches a finite energy.
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
+        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.30,
+                              max_iterations=6, gradient_tolerance=1e-3)
+        assert np.isfinite(atoms.get_total_energy())
+        assert atoms.calc.n_qubits == 4
+
+    def test_grid_requires_cell_when_not_given(self):
+        # Without an explicit grid AND without a unit cell, grid auto-generation
+        # is impossible -> a clear error.
+        atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])  # no cell
+        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO",
+                              max_iterations=4, gradient_tolerance=1e-3)
+        with pytest.raises(ValueError, match="no unit cell"):
             atoms.get_total_energy()
 
 
