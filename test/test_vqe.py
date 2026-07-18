@@ -256,3 +256,21 @@ class TestVQEProfiling:
         out = capsys.readouterr().out
         assert "integration:" in out              # integration stage is timed
         assert atoms.calc.vqe_result.integration_profile is not None
+
+
+# --- Monkhorst-Pack k-points (requirement: kpts via ASE) ---
+
+class TestVQEKPoints:
+    def test_default_is_gamma(self, h2_hamiltonian):
+        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)))
+        assert vqe.kpts == (1, 1, 1) and len(vqe.kpoints) == 1
+
+    def test_mesh_from_ase(self):
+        from ase.dft.kpoints import monkhorst_pack
+        vqe = VQE(basis="FAO", kpts=(3, 1, 1))
+        np.testing.assert_allclose(vqe.kpoints, monkhorst_pack((3, 1, 1)))
+
+    def test_non_gamma_rejected_at_run(self, h2_hamiltonian):
+        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), kpts=(2, 2, 2), verbose=False)
+        with pytest.raises(NotImplementedError, match="Monkhorst-Pack"):
+            vqe.run()

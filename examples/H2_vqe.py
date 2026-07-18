@@ -54,17 +54,9 @@ h_matrix = atoms.calc.hamiltonian.to_matrix()
 exact_ha = float(np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min())
 exact_ev = float(from_hartree(exact_ha, "eV"))
 
-print(f"\nH2 from ASE Atoms: {atoms.get_chemical_symbols()} @ d = 0.74 Angstrom")
-print(f"Hartree-Fock reference energy : {result.reference_energy:+.6f} Ha")
-print(f"VQE ground-state energy       : {energy_ha:+.6f} Ha  "
-      f"({energy_ev:+.6f} eV)")
-print(f"Exact diagonalization         : {exact_ha:+.6f} Ha")
-print(f"VQE - exact                   : {energy_ha - exact_ha:+.2e} Ha")
-print(f"Correlation energy recovered  : {result.correlation_energy:+.6f} Ha")
-print(f"Optimizer evaluations         : {result.num_evaluations}")
-print(f"Integration: {result.timings['n_cores']} cores, peak memory "
-      f"{result.timings['peak_memory_mb']:.0f} MiB")
-
-chemical_accuracy = 1.6e-3  # Ha
-assert abs(energy_ha - exact_ha) < chemical_accuracy
-print("\nVQE reproduces the exact ground state to within chemical accuracy.")
+assert abs(energy_ha - exact_ha) < 1.6e-3, "VQE missed chemical accuracy"
+print(f"H2  VQE E = {energy_ha:.6f} Ha ({energy_ev:.6f} eV), "
+      f"error vs exact {energy_ha - exact_ha:+.1e} Ha")
+print(f"    correlation {result.correlation_energy:+.6f} Ha, "
+      f"{result.num_evaluations} evaluations, "
+      f"{result.timings['n_cores']} cores")

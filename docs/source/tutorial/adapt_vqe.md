@@ -72,13 +72,17 @@ ground-state energy requested through ASE. Attaching the calculator and calling
 the chosen `basis` and runs the whole ADAPT-VQE loop, returning the energy in
 **eV** (the ASE convention):
 
+The molecule carries a unit cell, so the integration grid is generated from it
+automatically at resolution `h` (and centred on the molecule, so its placement in
+the cell is irrelevant); pass an explicit `grid=` to override.
+
 ```python
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE
-from carcara.integrals import Grid
 
-atoms = Atoms("H2", positions=[[0.0, 0.0, -0.37], [0.0, 0.0, 0.37]])
+atoms = Atoms("H2", positions=[[0.0, 0.0, -0.37], [0.0, 0.0, 0.37]],
+              cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=True)
 atoms.calc = ADAPTVQE(
     pool="ceo",                       # "ceo" / "fermionic" / "qubit" / "qeb"
     basis="FAO",                      # "FAO" / "STO-3G" / "6-31G(d)" / ...
@@ -86,10 +90,10 @@ atoms.calc = ADAPTVQE(
     optimizer="COBYLA",               # "COBYLA" / "Nelder-Mead" / "BFGS"
     gradient="parameter-shift_rule",  # "classical" / "parameter-shift_rule"
     device="AER_simulator",           # "AER_simulator" (ideal) / "ibm-quantum"
-    grid=Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20),
+    h=0.20,                           # grid resolution in Angstrom (grid from cell)
     max_iterations=15,
     gradient_tolerance=1e-4,
-    output="output.txt",              # structured runtime log (eV / Angstrom)
+    output="output.txt",              # structured log, written to the run directory
 )
 
 energy_eV = atoms.get_total_energy()
@@ -104,8 +108,11 @@ backend — `"AER_simulator"` is the ideal simulator used today; `"ibm-quantum"`
 reserved for real-hardware execution. The **optimizer** argument selects the
 classical inner optimizer by name — `"COBYLA"` (default), `"Nelder-Mead"` or
 `"BFGS"` — or accepts a pre-built {class}`~carcara.optimizers.optim.Optimizer`.
-The run is traced live to the `output` file following the {mod}`output.txt
-protocol <carcara.utils.logging>`.
+The **kpts** argument takes a Monkhorst-Pack mesh size (resolved with ASE), but
+the real-space engine is Gamma-point (molecular): only `kpts=(1, 1, 1)` (the
+default) runs, and a denser mesh — though generated and exposed on
+`calc.kpoints` — raises `NotImplementedError`. The run is traced live to the
+`output` file following the {mod}`output.txt protocol <carcara.utils.logging>`.
 
 By default (`verbose=True`) the run also prints a live trace to standard output:
 the qubit Hamiltonian as Pauli strings before the loop, and at each iteration the

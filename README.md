@@ -192,44 +192,38 @@ Hamiltonian from the geometry (using the chosen `basis`, in the RHF
 molecular-orbital basis) and drives the whole loop — returning the energy in
 **eV**. The argument surface is `pool` (`"ceo"` / `"fermionic"` / `"qubit"` /
 `"qeb"`), `basis` (`"FAO"` / `"STO-3G"` / `"6-31G(d)"` / …), `mapping`
-(`"jordan_wigner"` / `"parity"` / `"bravyi_kitaev"`), `gradient` (`"classical"`
-/ `"parameter-shift_rule"`), `device` (`"AER_simulator"` / `"ibm-quantum"`), plus
-`max_iterations`, `gradient_tolerance`, and `output`. The full script is in
+(`"jordan_wigner"` / `"parity"` / `"bravyi_kitaev"`), `optimizer` (`"COBYLA"` /
+`"Nelder-Mead"` / `"BFGS"`), `gradient` (`"classical"` / `"parameter-shift_rule"`),
+`device` (`"AER_simulator"` / `"ibm-quantum"`), the grid resolution `h`, plus
+`max_iterations`, `gradient_tolerance`, and `output`. With a unit cell set on the
+`Atoms`, the integration grid is generated automatically (and centred on the
+molecule, so its placement in the cell does not matter). The full script is in
 [`examples/h2_adapt_ceo_ase.py`](examples/h2_adapt_ceo_ase.py).
 
 ```python
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE
-from carcara.integrals import Grid
 
-# 1. Define the molecule with ASE and attach ADAPTVQE as its calculator.
-atoms = Atoms("H2", positions=[[0.0, 0.0, -0.37], [0.0, 0.0, 0.37]])
-atoms.calc = ADAPTVQE(
-    pool="ceo",
-    basis="FAO",
-    mapping="jordan_wigner",
-    gradient="parameter-shift_rule",
-    device="AER_simulator",
-    grid=Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20),
-    max_iterations=15,
-    gradient_tolerance=1e-4,
-    output="output.txt",
-)
+# Define the molecule with ASE (with a cell) and attach ADAPTVQE as its
+# calculator; asking ASE for the energy runs the whole ADAPT-VQE simulation.
+atoms = Atoms("H2", positions=[[0.0, 0.0, -0.37], [0.0, 0.0, 0.37]],
+              cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=True)
+atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", gradient="parameter-shift_rule",
+                      h=0.20, max_iterations=15, gradient_tolerance=1e-4,
+                      output="output.txt")            # written to the run directory
 
-# 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation (eV).
-energy = atoms.get_total_energy()
+energy = atoms.get_total_energy()                     # eV
 result = atoms.calc.adapt_result
-
-print(f"ADAPT-VQE energy = {energy:.6f} eV ({result.num_operators} operators)")
-print(f"CNOTs = {result.metrics.cnot_count}, depth = {result.metrics.depth}")
+print(f"ADAPT-VQE: {energy:.6f} eV, {result.num_operators} operators, "
+      f"{result.metrics.cnot_count} CNOTs")
 ```
 
-Every pool reaches the exact (FCI) ground state on H₂; on hardware-minded pools
-it does so with far fewer CNOTs (the qubit pool reaches it in 6 CNOTs versus 48
-for the fermionic pool). For direct use without ASE, construct `ADAPTVQE` with a
-`Fermion`/`PauliSum` Hamiltonian and `num_particles` / `n_spatial_orbitals`, then
-call `.run()` — see [`examples/run_adapt_vqe.py`](examples/run_adapt_vqe.py).
+`VQE` works the same way (`atoms.calc = VQE(basis="FAO", ...)`). Every pool
+reaches the exact (FCI) ground state on H₂; on hardware-minded pools it does so
+with far fewer CNOTs (the qubit pool reaches it in 6 CNOTs versus 48 for the
+fermionic pool). For direct use without ASE, construct with a `Fermion`/`PauliSum`
+Hamiltonian and `num_particles` / `n_spatial_orbitals`, then call `.run()`.
 
 ## Measuring ansatz expressibility
 

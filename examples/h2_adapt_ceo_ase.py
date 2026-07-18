@@ -20,29 +20,16 @@ End-to-end demonstration wiring the pieces together through the ASE interface:
   returns the ground-state energy in **eV** (the ASE convention).
 
 The argument surface exercised here is ``pool`` / ``basis`` / ``mapping`` /
-``gradient`` / ``device``.  A structured runtime trace (eV / Angstrom by default)
-is written to ``examples/data/output.txt``.
-
-Run with::
-
-    PYTHONPATH=src python examples/h2_adapt_ceo_ase.py
+``gradient`` / ``device``.
 """
 
 from __future__ import annotations
-
-import os
 
 import numpy as np
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE
 from carcara.units import from_hartree
-from carcara.utils import parse_output
-
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "data")
-os.makedirs(DATA_DIR, exist_ok=True)
-output_file = os.path.join(DATA_DIR, "output_h2.txt")
 
 # 1. Define the molecule via ASE and attach ADAPTVQE as its calculator.  The
 #    full argument surface is spelled out: pool / basis / mapping / gradient /
@@ -54,6 +41,7 @@ output_file = os.path.join(DATA_DIR, "output_h2.txt")
 atoms = Atoms("H2", positions=[[6.0, 6.0, 5.63], [6.0, 6.0, 6.37]],
               cell=[[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]],
               pbc=True)
+
 atoms.calc = ADAPTVQE(
     pool="ceo",
     basis="FAO",
@@ -64,7 +52,7 @@ atoms.calc = ADAPTVQE(
     h=0.20,                     # grid resolution (Angstrom); grid built from cell
     max_iterations=15,
     gradient_tolerance=1e-4,
-    output=output_file)
+    output="output_H2.txt")
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)
@@ -76,31 +64,8 @@ h_matrix = atoms.calc.hamiltonian.to_matrix()
 exact_ha = float(np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min())
 exact_ev = float(from_hartree(exact_ha, "eV"))
 
-print("H2 from ASE Atoms:", atoms.get_chemical_symbols(), "@ d = 0.74 Angstrom")
-print(f"pool=ceo  basis=FAO  mapping={atoms.calc.mapping}  "
-      f"gradient={atoms.calc.gradient}  device={atoms.calc.device}")
-print(f"optimizer = {atoms.calc.optimizer.method}")
-print(f"\natoms.get_total_energy() = {energy_ev:+.6f} eV  ({energy_ha:+.8f} Ha)")
-print(f"FCI reference            = {exact_ev:+.6f} eV  ({exact_ha:+.8f} Ha)")
-print(f"error vs FCI             = {energy_ev - exact_ev:+.2e} eV")
-
-print("\nADAPT-VQE (CEO pool) final ansatz")
-print("-" * 48)
-print(f"  operators     = {result.num_operators} "
-      f"({' -> '.join(result.operators)})")
-print(f"  CNOTs / depth = {result.metrics.cnot_count} / {result.metrics.depth}")
-print(f"  total gates   = {result.metrics.total_gates}")
-print(f"  converged     = {result.converged}")
-
 assert abs(energy_ha - exact_ha) < 1e-4, "CEO ADAPT missed FCI"
-print("\nReached the FCI ground state to < 1e-4 Ha.")
-
-# 3. Read back the structured (eV / Angstrom) trace the loop wrote live.
-parsed = parse_output(output_file)
-print(f"\nWrote structured trace -> {output_file}")
-print(f"  units          : {parsed['setup'].get('energy_unit')} / "
-      f"{parsed['metadata'].get('units')}")
-for it in parsed["iterations"]:
-    print(f"  iteration {it['index']}: selected {it['selected_operator']}, "
-          f"E = {it.get('expressivity_E')}, "
-          f"energy = {it['energy']:+.4f} {it['energy_unit']}")
+print(f"H2  E = {energy_ev:.6f} eV ({energy_ha:.8f} Ha), error vs FCI "
+      f"{energy_ev - exact_ev:+.1e} eV")
+print(f"    {result.num_operators} operators, "
+      f"{result.metrics.cnot_count} CNOTs, converged={result.converged}")

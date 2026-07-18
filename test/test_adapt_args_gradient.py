@@ -257,6 +257,49 @@ class TestADAPTProfiling:
 
 
 # --------------------------------------------------------------------------- #
+# Monkhorst-Pack k-points and placement-invariance (PBC-aware grid).
+# --------------------------------------------------------------------------- #
+
+class TestKPoints:
+    def test_default_is_gamma(self):
+        adapt = ADAPTVQE(pool="ceo", basis="FAO")
+        assert adapt.kpts == (1, 1, 1)
+        assert len(adapt.kpoints) == 1
+        np.testing.assert_allclose(adapt.kpoints[0], [0.0, 0.0, 0.0])
+
+    def test_mesh_generated_via_ase_monkhorst_pack(self):
+        from ase.dft.kpoints import monkhorst_pack
+        adapt = ADAPTVQE(pool="ceo", basis="FAO", kpts=(2, 2, 1))
+        np.testing.assert_allclose(adapt.kpoints, monkhorst_pack((2, 2, 1)))
+
+    def test_non_gamma_rejected_at_run(self, h2_hamiltonian):
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, kpts=(2, 1, 1))
+        with pytest.raises(NotImplementedError, match="Monkhorst-Pack"):
+            adapt.run()
+
+    def test_invalid_kpts_rejected(self):
+        with pytest.raises(ValueError):
+            ADAPTVQE(pool="ceo", basis="FAO", kpts=(1, 1))       # not length-3
+
+
+class TestPlacementInvariance:
+    def test_energy_independent_of_position_in_cell(self):
+        # PBC-aware grid: the molecule is centred on itself, so placing H2 at the
+        # cell corner vs. the cell centre gives the same Hamiltonian and energy.
+        def energy(pos):
+            atoms = Atoms("H2", positions=pos,
+                          cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=True)
+            atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.35, verbose=False,
+                                  max_iterations=6, gradient_tolerance=1e-3)
+            return atoms.get_total_energy()
+
+        corner = energy([[0, 0, -0.37], [0, 0, 0.37]])
+        centre = energy([[4, 4, 3.63], [4, 4, 4.37]])
+        assert corner == pytest.approx(centre, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
 # Device registry.
 # --------------------------------------------------------------------------- #
 

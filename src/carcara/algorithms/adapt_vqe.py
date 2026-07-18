@@ -392,6 +392,13 @@ class ADAPTVQE(Calculator):
         Target grid spacing in **Angstrom** (default ``0.20``) for the automatic
         cell-based grid used when ``grid`` is not given.  Finer ``h`` (e.g.
         ``0.10``) gives a denser grid and more accurate one-/two-body integrals.
+    kpts : (int, int, int), optional
+        Monkhorst-Pack k-point mesh size, resolved with ASE
+        (:func:`ase.dft.kpoints.monkhorst_pack`); default ``None`` (a single
+        Gamma point, equivalent to ``(1, 1, 1)``).  The real-space engine solves a
+        Gamma-point (molecular) problem, so a denser mesh is generated and exposed
+        on :attr:`kpoints` but raises ``NotImplementedError`` at run time (Bloch /
+        periodic Hamiltonians are not yet implemented).
     charge : int
         Total charge, used to set the electron count in the ``basis`` builder.
     n_electrons : int, optional
@@ -430,6 +437,7 @@ class ADAPTVQE(Calculator):
                  atomic_units: bool = False,
                  grid=None,
                  h: float = 0.20,
+                 kpts=None,
                  charge: int = 0,
                  n_electrons=None,
                  hamiltonian_builder=None,
@@ -441,6 +449,12 @@ class ADAPTVQE(Calculator):
         self.profile = profile
         self.verbose = bool(verbose)
         self.optimizer = self._resolve_optimizer(optimizer)
+
+        # Monkhorst-Pack k-point mesh (ASE).  The real-space engine is
+        # Gamma-point (molecular), so only a single Gamma point is runnable; a
+        # denser mesh is generated and stored but rejected at run time.
+        from ._hamiltonian_from_atoms import monkhorst_pack_kpts
+        self.kpts, self.kpoints = monkhorst_pack_kpts(kpts)
 
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
@@ -489,6 +503,21 @@ class ADAPTVQE(Calculator):
         names in :attr:`_OPTIMIZERS` (``"COBYLA"``, ``"Nelder-Mead"``, ``"BFGS"``).
         """
         return resolve_optimizer(optimizer, allowed=self._OPTIMIZERS)
+
+    def _check_kpts(self) -> None:
+        """Reject a non-Gamma Monkhorst-Pack mesh (the engine is Gamma-point)."""
+        if len(self.kpoints) > 1:
+            raise NotImplementedError(
+                f"a {self.kpts[0]}x{self.kpts[1]}x{self.kpts[2]} Monkhorst-Pack "
+                f"mesh ({len(self.kpoints)} k-points) is not yet supported: the "
+                "real-space engine solves a Gamma-point (molecular) problem.  Use "
+                "kpts=(1, 1, 1) or kpts=None.")
+
+    def _kpts_label(self) -> str:
+        n1, n2, n3 = self.kpts
+        if len(self.kpoints) == 1:
+            return f"Gamma ({n1}x{n2}x{n3} Monkhorst-Pack)"
+        return f"{len(self.kpoints)} k-points ({n1}x{n2}x{n3} Monkhorst-Pack)"
 
     def _configure(self, hamiltonian, num_particles, n_spatial_orbitals):
         """Resolve the pool and materialize the Hamiltonian / pool matrices."""
@@ -791,6 +820,7 @@ class ADAPTVQE(Calculator):
             raise RuntimeError(
                 "ADAPTVQE has no Hamiltonian; construct it with one, or use it "
                 "as an ASE calculator with a `hamiltonian_builder`")
+        self._check_kpts()
 
         # Stopping / logging controls come straight from the constructor.
         max_iterations = self.max_iterations
@@ -950,6 +980,7 @@ class ADAPTVQE(Calculator):
               f"|  device: {self.device}")
         print(f"pool: {self.pool.__class__.__name__}  |  "
               f"optimizer: {self.optimizer.method}  |  gradient: {self.gradient}")
+        print(f"k-points: {self._kpts_label()}")
         print(rule)
         n_terms = len(self.hamiltonian.simplify().terms)
         print(f"Qubit Hamiltonian ({n_terms} Pauli terms):")

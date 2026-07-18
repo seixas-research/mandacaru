@@ -108,13 +108,14 @@ class VQE(Calculator):
     verbose : bool
         Print the qubit Hamiltonian (Pauli strings) and a timing / resources
         summary to standard output (default ``True``).
-    basis, mapping, device, grid, h, charge, n_electrons, hamiltonian_builder,
-    ansatz_builder, atomic_units, run_options :
+    basis, mapping, device, grid, h, kpts, charge, n_electrons,
+    hamiltonian_builder, ansatz_builder, run_options :
         Calculator-mode options mirroring
         :class:`~carcara.algorithms.adapt_vqe.ADAPTVQE`: the ``basis`` and grid
         resolution ``h`` build the Hamiltonian from the ASE geometry (the grid is
         generated from ``atoms.cell`` unless ``grid`` is given), ``ansatz_builder``
-        overrides the default UCCSD factory.
+        overrides the default UCCSD factory.  ``kpts`` is a Monkhorst-Pack mesh
+        size resolved with ASE (Gamma-point only is runnable; see ``ADAPTVQE``).
     """
 
     implemented_properties = ["energy", "free_energy"]
@@ -124,9 +125,9 @@ class VQE(Calculator):
                  optimizer: str | Optimizer = "COBYLA", verbose: bool = True,
                  *, basis: str = "FAO", mapping: str = "jordan_wigner",
                  device: str = "AER_simulator", grid=None, h: float = 0.20,
-                 charge: int = 0, n_electrons=None, hamiltonian_builder=None,
-                 ansatz_builder=None, run_options: dict | None = None,
-                 **calc_kwargs):
+                 kpts=None, charge: int = 0, n_electrons=None,
+                 hamiltonian_builder=None, ansatz_builder=None,
+                 run_options: dict | None = None, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
 
         self.verbose = bool(verbose)
@@ -136,6 +137,10 @@ class VQE(Calculator):
         self.device = normalize_device(device)
         self.grid = grid
         self.h = float(h)
+
+        # Monkhorst-Pack k-point mesh (ASE); Gamma-point only is runnable.
+        from ._hamiltonian_from_atoms import monkhorst_pack_kpts
+        self.kpts, self.kpoints = monkhorst_pack_kpts(kpts)
         self.charge = int(charge)
         self.n_electrons = n_electrons
         self.hamiltonian_builder = hamiltonian_builder
@@ -164,6 +169,21 @@ class VQE(Calculator):
         h = qubit_h.to_matrix()
         self._h_matrix = 0.5 * (h + h.conj().T)
         self._configured = True
+
+    def _check_kpts(self) -> None:
+        """Reject a non-Gamma Monkhorst-Pack mesh (the engine is Gamma-point)."""
+        if len(self.kpoints) > 1:
+            raise NotImplementedError(
+                f"a {self.kpts[0]}x{self.kpts[1]}x{self.kpts[2]} Monkhorst-Pack "
+                f"mesh ({len(self.kpoints)} k-points) is not yet supported: the "
+                "real-space engine solves a Gamma-point (molecular) problem.  Use "
+                "kpts=(1, 1, 1) or kpts=None.")
+
+    def _kpts_label(self) -> str:
+        n1, n2, n3 = self.kpts
+        if len(self.kpoints) == 1:
+            return f"Gamma ({n1}x{n2}x{n3} Monkhorst-Pack)"
+        return f"{len(self.kpoints)} k-points ({n1}x{n2}x{n3} Monkhorst-Pack)"
 
     @staticmethod
     def _as_pauli_sum(hamiltonian, ansatz) -> PauliSum:
@@ -238,6 +258,7 @@ class VQE(Calculator):
             raise RuntimeError(
                 "VQE has no Hamiltonian/ansatz; construct it with both, or use it "
                 "as an ASE calculator with a `basis`")
+        self._check_kpts()
         from ..utils.profiling import Timings
         from ..integrals import _backend
 
@@ -289,7 +310,8 @@ class VQE(Calculator):
         print(f"VQE  |  mapping: {self.mapping}  |  {self.n_qubits} qubits  |  "
               f"optimizer: {self.optimizer.method}  |  device: {self.device}")
         print(f"ansatz: {type(self.ansatz).__name__}  |  "
-              f"parameters: {self.ansatz.num_parameters}")
+              f"parameters: {self.ansatz.num_parameters}  |  "
+              f"k-points: {self._kpts_label()}")
         print(rule)
         n_terms = len(self.hamiltonian.simplify().terms)
         print(f"Qubit Hamiltonian ({n_terms} Pauli terms):")
