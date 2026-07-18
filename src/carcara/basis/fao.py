@@ -10,9 +10,8 @@
 
 :class:`FullAtomicOrbital` is the *single source of truth* for the analytic
 atomic wavefunction in Carcará (an eigenfunction of a screened Coulomb, i.e.
-hydrogen-like, radial problem).  Both the real-space evaluation used by the
-integral engine and the :class:`~carcara.wavefunction.Wavefunction` helpers
-delegate here, so the radial/angular formula lives in exactly one place.
+hydrogen-like, radial problem).  The real-space evaluation used by the integral
+engine delegates here, so the radial/angular formula lives in exactly one place.
 """
 
 from __future__ import annotations

@@ -8,8 +8,8 @@ Covers the three features added on top of the cubic integral core:
 * :class:`~carcara.integrals.Grid` accepting an anisotropic ``box_size`` or a
   full ``cell`` tensor, with the integral engine still recovering the reference
   physics (H 1s on-site repulsion = 5/8 Ha) on a non-cubic box;
-* :class:`~carcara.wavefunction.Wavefunction` built directly from an ASE
-  ``Atoms`` object (elements / positions / cell);
+* the real-space grid generated directly from an ASE ``Atoms`` unit cell
+  (:func:`carcara.algorithms._hamiltonian_from_atoms.grid_from_cell`);
 * :class:`~carcara.algorithms.ADAPTVQE` writing a structured, live-parseable
   ``output.txt`` as the ADAPT loop runs.
 """
@@ -19,11 +19,11 @@ import pytest
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE
+from carcara.algorithms._hamiltonian_from_atoms import grid_from_cell
 from carcara.basis import FullAtomicOrbital
 from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid, IntegralEngine
 from carcara.utils import AdaptOutputLogger, parse_output
-from carcara.wavefunction import Wavefunction
 
 
 # --------------------------------------------------------------------------- #
@@ -165,55 +165,22 @@ class TestVaryingResolution:
 
 
 # --------------------------------------------------------------------------- #
-# ASE integration.
+# Grid generated from an ASE cell.
 # --------------------------------------------------------------------------- #
 
-class TestASEIntegration:
-    def test_from_ase_molecule(self):
-        atoms = Atoms("H2", positions=[[0, 0, 0], [0.74, 0, 0]])
-        wf = Wavefunction.from_ase(atoms)
-        assert wf.n_atoms == 2
-        assert wf.all_symbols == ["H", "H"]
-        assert wf.Z == 1
-        assert not wf.has_cell
-        assert wf.cell is None
-
-    def test_from_ase_extracts_positions(self):
-        atoms = Atoms("H2", positions=[[0, 0, 0], [0.74, 0, 0]])
-        wf = Wavefunction.from_ase(atoms)
-        assert wf.all_positions_bohr.shape == (2, 3)
-        # 0.74 Angstrom -> Bohr on the second atom's x.
-        assert wf.all_positions_bohr[1, 0] == pytest.approx(0.74 * 1.8897259886)
-
-    def test_from_ase_crystal_cell(self):
-        cell = [[0.0, 2.7, 2.7], [2.7, 0.0, 2.7], [2.7, 2.7, 0.0]]
-        atoms = Atoms("Si2", positions=[[0, 0, 0], [1.35, 1.35, 1.35]],
-                      cell=cell, pbc=True)
-        wf = Wavefunction.from_ase(atoms)
-        assert wf.has_cell
-        assert wf.cell.shape == (3, 3)
-        np.testing.assert_allclose(wf.cell, cell)
-
-    def test_grid_from_cell(self):
+class TestGridFromCell:
+    def test_grid_spans_the_cell_and_is_non_cubic(self):
         cell = [[10.0, 0, 0], [0, 12.0, 0], [0, 0, 8.0]]  # Angstrom, orthorhombic
         atoms = Atoms("H", positions=[[5, 6, 4]], cell=cell, pbc=True)
-        wf = Wavefunction.from_ase(atoms)
-        grid = wf.grid_from_cell(h=0.5)
+        grid = grid_from_cell(atoms, h=0.25)
         assert not grid.is_cubic          # 10 != 12 != 8
-        assert grid.dx == pytest.approx(0.5)
+        # h is Angstrom; the grid spacing is that value converted to Bohr.
+        assert grid.dx == pytest.approx(0.25 * 1.8897259886)
 
-    def test_grid_from_cell_requires_cell(self):
-        wf = Wavefunction.from_ase(Atoms("H", positions=[[0, 0, 0]]))
-        with pytest.raises(ValueError):
-            wf.grid_from_cell()
-
-    def test_legacy_xyz_still_works(self, tmp_path):
-        from ase.io import write
-        path = str(tmp_path / "h2.xyz")
-        write(path, Atoms("H2", positions=[[0, 0, 0], [0.74, 0, 0]]))
-        wf = Wavefunction(path, atom_index=0)   # positional str path (legacy)
-        assert wf.n_atoms == 2
-        assert not wf.has_cell
+    def test_grid_requires_a_cell(self):
+        atoms = Atoms("H", positions=[[0, 0, 0]])          # no unit cell
+        with pytest.raises(ValueError, match="no unit cell"):
+            grid_from_cell(atoms, h=0.2)
 
 
 # --------------------------------------------------------------------------- #

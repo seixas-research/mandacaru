@@ -16,9 +16,9 @@ however, usually think in **Angstrom** and **electronvolts**.
 This module is the single source of truth for the conversion factors and small
 helpers.  The user-facing classes (``Grid``, ``FullAtomicOrbital``,
 ``Potentials``, ``IntegralEngine``) accept lengths in Angstrom and return
-energies in eV *by default*, converting to/from atomic units at their boundary;
-the legacy :class:`~carcara.wavefunction.Wavefunction` facade opts back into
-atomic units explicitly.
+energies in eV *by default*, converting to/from atomic units at their boundary,
+while the numerical core (the integral engine, the C backend) works throughout
+in atomic units (Bohr, Hartree).
 """
 
 from __future__ import annotations
