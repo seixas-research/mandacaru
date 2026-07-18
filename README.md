@@ -10,10 +10,10 @@
 </h1> 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge)](LICENSE)
+[![Python 3.11](https://img.shields.io/badge/Python-3.11+-fcbc2c.svg?style=for-the-badge)](https://www.python.org/downloads/)
 [![PyPI version](https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge)](https://pypi.org/project/carcara/)
-![Size](https://img.shields.io/github/repo-size/leseixas/carcara?style=for-the-badge&color=yellow)
 [![Documentation Status](https://readthedocs.org/projects/carcara/badge/?version=latest&style=for-the-badge)](https://carcara.readthedocs.io/en/latest/?badge=latest)
-[![Python versions 3.11 and higher](https://img.shields.io/badge/Python-3.11+-fcbc2c.svg?style=for-the-badge)](https://www.python.org/downloads/)
+![Size](https://img.shields.io/github/repo-size/leseixas/carcara?style=for-the-badge&color=orange)
 
 
 # Carcará
