@@ -31,31 +31,25 @@ from ase import Atoms
 from carcara.algorithms import ADAPTVQE
 from carcara.units import from_hartree
 
-# 1. Define the molecule via ASE and attach ADAPTVQE as its calculator.  The
-#    full argument surface is spelled out: pool / basis / mapping / gradient /
-#    device.  With basis="FAO" the calculator builds the Hamiltonian itself.
-#
-#    The molecule carries a unit cell, so no explicit `grid=` is needed: the
-#    calculator auto-generates the integration grid from `atoms.cell` at the
-#    requested resolution `h` (Angstrom).  (Pass `grid=Grid(...)` to override.)
-atoms = Atoms("H2", positions=[[6.0, 6.0, 5.63], [6.0, 6.0, 6.37]],
+
+atoms = Atoms("H2",
+              positions=[[6.0, 6.0, 5.63], [6.0, 6.0, 6.37]],
               cell=[[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]],
               pbc=True)
 
 atoms.calc = ADAPTVQE(
-    pool="ceo",
-    basis="FAO",
-    mapping="jordan_wigner",
-    optimizer="COBYLA",
-    gradient="parameter-shift_rule",
-    device="AER_simulator",
-    h=0.20,                     # grid resolution (Angstrom); grid built from cell
-    max_iterations=15,
-    gradient_tolerance=1e-4,
-    output="output_H2.txt")
+              pool="ceo",
+              basis="FAO",
+              mapping="jordan_wigner",
+              optimizer="COBYLA",
+              gradient="parameter-shift_rule",
+              device="AER_simulator",
+              h=0.20,
+              max_iterations=15,
+              gradient_tolerance=1e-4,
+              output="output_H2.txt")
 
-# 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
-energy_ev = atoms.get_total_energy()               # eV (ASE convention)
+energy_ev = atoms.get_total_energy()
 result = atoms.calc.adapt_result
 energy_ha = result.optimal_energy
 
@@ -64,7 +58,7 @@ h_matrix = atoms.calc.hamiltonian.to_matrix()
 exact_ha = float(np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min())
 exact_ev = float(from_hartree(exact_ha, "eV"))
 
-assert abs(energy_ha - exact_ha) < 1e-4, "CEO ADAPT missed FCI"
+assert abs(energy_ha - exact_ha) < 1e-4, "ADAPT missed FCI"
 print(f"H2  E = {energy_ev:.6f} eV ({energy_ha:.8f} Ha), error vs FCI "
       f"{energy_ev - exact_ev:+.1e} eV")
 print(f"    {result.num_operators} operators, "
