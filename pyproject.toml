@@ -14,12 +14,10 @@ license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
     'numpy>=2.0.0',
-    'pandas',
     'ase',
     'scipy',
     'matplotlib',
     'pytest',
-    'pyyaml',
     'qiskit',             # IBM Qiskit
     'qiskit-nature',      # IBM Qiskit Nature
     'qiskit-ibm-runtime'  # IBM Qiskit Runtime
