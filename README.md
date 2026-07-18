@@ -9,9 +9,10 @@
 </a>
 </h1> 
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge)](LICENSE)
 [![PyPI version](https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge)](https://pypi.org/project/carcara/)
 [![Documentation Status](https://readthedocs.org/projects/carcara/badge/?version=latest&style=for-the-badge)](https://carcara.readthedocs.io/en/latest/?badge=latest)
+
 
 # Carcará
 
