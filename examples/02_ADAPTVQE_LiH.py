@@ -10,7 +10,7 @@
 
 Companion to ``h2_adapt_ceo_ase.py``, for the four-electron LiH molecule.  LiH is
 defined as an ASE :class:`ase.Atoms` object and :class:`~carcara.algorithms.ADAPTVQE`
-is attached as its *calculator*; with ``basis="FAO"`` the Full Atomic Orbitals of
+is attached as its *calculator*; with ``basis={"name": "FAO"}`` the Full Atomic Orbitals of
 each atom (Li {1s, 2s} + H {1s} = 3 spatial orbitals -> 6 qubits) are generated
 from the geometry, and ``atoms.get_total_energy()`` drives ADAPT-VQE with the CEO
 pool, returning the energy in **eV**.
@@ -43,7 +43,7 @@ atoms = Atoms("LiH",
 
 atoms.calc = ADAPTVQE(
     pool="ceo",
-    basis="FAO",
+    basis={"name": "FAO"},
     mapping="jordan_wigner",
     gradient="parameter-shift_rule",
     device="AER_simulator",

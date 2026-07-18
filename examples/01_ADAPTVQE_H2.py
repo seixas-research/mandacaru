@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""H2 ground state with ADAPT-VQE (CEO pool) as an ASE calculator.
+"""H2 ground state with ADAPT-VQE (qubit pool) as an ASE calculator.
 
 End-to-end demonstration wiring the pieces together through the ASE interface:
 
@@ -38,13 +38,13 @@ atoms = Atoms("H2",
               pbc=True)
 
 atoms.calc = ADAPTVQE(
-              pool="ceo",
-              basis="FAO",
+              pool="qubit",
+              basis={"name": "FAO"},
               mapping="jordan_wigner",
               optimizer="COBYLA",
               gradient="parameter-shift_rule",
               device="AER_simulator",
-              h=0.20,
+              h=0.10,
               max_iterations=15,
               gradient_tolerance=1e-4,
               output="output_H2.txt")
