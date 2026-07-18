@@ -425,7 +425,7 @@ class ADAPTVQE(Calculator):
         which is intractable beyond ~11 qubits (tens of GB for a 12-qubit water
         active space).  The sparse pool keeps the generators as sparse matrices and
         screens with the exact analytic gradient, densifying only the few
-        *selected* operators; ``"auto"`` enables it for ``n_qubits >= 12``, ``True``
+        *selected* operators; ``"auto"`` enables it for ``n_qubits >= 10``, ``True``
         / ``False`` force it.  In sparse mode screening always uses the analytic
         gradient (the ``gradient`` argument's estimators need the dense
         eigendecompositions and are unavailable).
@@ -670,12 +670,12 @@ class ADAPTVQE(Calculator):
     def _resolve_sparse(sparse, n_qubits: int) -> bool:
         """Resolve the ``sparse`` spec to a bool.
 
-        ``"auto"`` (default) enables the sparse pool for ``n_qubits >= 12``, where a
+        ``"auto"`` (default) enables the sparse pool for ``n_qubits >= 10``, where a
         dense pool would need tens of GB; ``True`` / ``False`` force it on / off.
         """
         if isinstance(sparse, str):
             if sparse.strip().lower() == "auto":
-                return int(n_qubits) >= 12
+                return int(n_qubits) >= 10
             raise ValueError(
                 f"unknown sparse spec {sparse!r}; use True, False or 'auto'")
         return bool(sparse)
