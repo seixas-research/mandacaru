@@ -47,7 +47,7 @@ from ase.calculators.calculator import Calculator, all_changes
 from ..backends.hardware import normalize_device, require_runnable
 from ..circuits.pools import PoolBase, PoolOperator, build_pool
 from ..core.mapping import Fermion, PauliSum
-from ..optimizers.optim import Optimizer, resolve_optimizer
+from ..optimizers.optim import NAMED_OPTIMIZERS, Optimizer, resolve_optimizer
 from ..units import ANGSTROM_TO_BOHR, from_hartree
 from ._hamiltonian_from_atoms import (monkhorst_pack_kpts,
                                       resolve_initial_state as
@@ -389,16 +389,17 @@ class ADAPTVQE(Calculator):
         Number of spatial orbitals; required to build a pool from a name.
     optimizer : str or Optimizer
         Classical optimizer for the inner re-optimization.  Either a method name
-        -- one of ``"COBYLA"`` (default), ``"Nelder-Mead"``, ``"BFGS"`` -- or a
-        pre-built :class:`~carcara.optimizers.optim.Optimizer` instance.
+        -- one of ``"SPSA"``, ``"COBYLA"`` (default), ``"Nelder-Mead"``,
+        ``"SLSQP"``, ``"Adam"``, ``"L-BFGS-B"`` -- or a pre-built
+        :class:`~carcara.optimizers.optim.Optimizer` instance.
     mapping : str
         Fermion-to-qubit mapping -- one of ``"jordan_wigner"`` (default),
         ``"parity"``, ``"bravyi_kitaev"`` -- used when ``hamiltonian`` is a
         ``Fermion`` and to build a named fermionic pool.
     gradient : str
-        How the pool screening gradients are evaluated -- ``"classical"``
+        How the pool screening gradients are evaluated -- ``"finite_difference"``
         (default; a finite-difference estimate from shifted parameters) or
-        ``"parameter-shift_rule"`` (the quantum parameter-shift rule).
+        ``"parameter-shift"`` (the quantum parameter-shift rule).
     device : str
         Execution device -- ``"AER_simulator"`` (default; ideal simulator) or
         ``"ibm-quantum"`` (reserved for real hardware, not yet runnable).  See
@@ -494,8 +495,8 @@ class ADAPTVQE(Calculator):
 
     implemented_properties = ["energy", "free_energy"]
 
-    _GRADIENTS = ("classical", "parameter-shift_rule")
-    _OPTIMIZERS = ("COBYLA", "Nelder-Mead", "BFGS")
+    _GRADIENTS = ("finite_difference", "parameter-shift")
+    _OPTIMIZERS = NAMED_OPTIMIZERS
 
     def __init__(self,
                  hamiltonian=None,
@@ -505,7 +506,7 @@ class ADAPTVQE(Calculator):
                  n_spatial_orbitals=None,
                  optimizer: str | Optimizer = "COBYLA",
                  mapping: str = "jordan_wigner",
-                 gradient: str = "classical",
+                 gradient: str = "finite_difference",
                  device: str = "AER_simulator",
                  max_iterations: int = 50,
                  gradient_tolerance: float = 1e-3,
@@ -587,7 +588,8 @@ class ADAPTVQE(Calculator):
         """Normalize the ``optimizer`` argument to an :class:`Optimizer`.
 
         Accepts a pre-built :class:`Optimizer` (used as-is) or one of the method
-        names in :attr:`_OPTIMIZERS` (``"COBYLA"``, ``"Nelder-Mead"``, ``"BFGS"``).
+        names in :attr:`_OPTIMIZERS` (``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``,
+        ``"SLSQP"``, ``"Adam"``, ``"L-BFGS-B"``).
         """
         return resolve_optimizer(optimizer, allowed=self._OPTIMIZERS)
 
@@ -827,16 +829,16 @@ class ADAPTVQE(Calculator):
         """Pool screening gradients using the configured :attr:`gradient` method.
 
         In the sparse pool path the per-operator eigendecompositions the
-        ``"classical"`` / ``"parameter-shift_rule"`` estimators rely on are not
+        ``"finite_difference"`` / ``"parameter-shift"`` estimators rely on are not
         materialized, so screening uses the exact analytic gradient
         ``g_i = 2 Re<H psi | A_i psi>`` (a sparse matrix-vector product) -- which is
         the very quantity those estimators approximate.
         """
         if getattr(self, "_sparse", False):
             return self._analytic_gradients(psi)
-        if self.gradient == "parameter-shift_rule":
+        if self.gradient == "parameter-shift":
             return self._parameter_shift_gradients(psi)
-        return self._finite_difference_gradients(psi)      # "classical"
+        return self._finite_difference_gradients(psi)      # "finite_difference"
 
     def reference_energy(self) -> float:
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,

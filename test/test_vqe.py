@@ -110,6 +110,22 @@ class TestOptimizer:
             lambda x: (x[0] + 1) ** 2 + (x[1] - 2) ** 2, [0.0, 0.0])
         assert np.allclose(res.x, [-1.0, 2.0], atol=1e-4)
 
+    def test_adam_minimizes_quadratic(self):
+        res = Optimizer(method="Adam", maxiter=500).minimize(
+            lambda x: (x[0] + 1) ** 2 + (x[1] - 2) ** 2, [0.0, 0.0])
+        assert np.allclose(res.x, [-1.0, 2.0], atol=1e-2)
+        assert res.history and res.nfev == len(res.history)
+
+    def test_spsa_minimizes_quadratic(self):
+        res = Optimizer(method="SPSA", maxiter=600).minimize(
+            lambda x: (x[0] + 1) ** 2 + (x[1] - 2) ** 2, [0.0, 0.0])
+        assert np.allclose(res.x, [-1.0, 2.0], atol=1e-1)
+        assert res.fun < 0.1
+
+    def test_zero_parameter_ansatz(self):
+        res = Optimizer(method="Adam").minimize(lambda x: 7.0, [])
+        assert res.fun == 7.0 and res.nfev == 1
+
 
 # --- VQE end-to-end ---
 
@@ -150,7 +166,9 @@ class TestVQEMirrorsADAPT:
         vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)))
         assert vqe.optimizer.method == "COBYLA"
 
-    @pytest.mark.parametrize("name", ["COBYLA", "Nelder-Mead", "BFGS"])
+    @pytest.mark.parametrize(
+        "name",
+        ["SPSA", "COBYLA", "Nelder-Mead", "SLSQP", "Adam", "L-BFGS-B"])
     def test_named_optimizers_build(self, h2_hamiltonian, name):
         vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), optimizer=name)
         assert vqe.optimizer.method == name

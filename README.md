@@ -46,7 +46,7 @@ A robust second-quantized algebra layer implements:
 - **Fermion-to-Qubit Mappings:** Jordan-Wigner (default), Parity (with optional two-qubit reduction), and Bravyi-Kitaev mappings.
 
 ### 4. Variational Quantum Algorithms (VQAs)
-- **VQE (Variational Quantum Eigensolver):** High-precision state-vector simulator employing parameterized quantum circuits (e.g., UCCSD) and classical SciPy-backed optimizers (COBYLA, Nelder-Mead, BFGS, etc.).
+- **VQE (Variational Quantum Eigensolver):** High-precision state-vector simulator employing parameterized quantum circuits (e.g., UCCSD) and classical optimizers (SPSA, COBYLA, Nelder-Mead, SLSQP, Adam, L-BFGS-B).
 - **ADAPT-VQE:** Adaptive grows-then-reoptimizes ansatz builder utilizing energy gradients to grow ansätze one operator at a time. It supports four distinct operator pools:
   - `fermionic` (spin-adapted fermionic excitations, Jordan-Wigner mapped).
   - `qubit` (individual JW Pauli strings, providing the shallowest individual operators).
@@ -206,7 +206,7 @@ atoms.calc = ADAPTVQE(
               pool="ceo",
               basis="FAO",
               optimizer="COBYLA",
-              gradient="parameter-shift_rule",
+              gradient="parameter-shift",
               h=0.20,
               max_iterations=15,
               gradient_tolerance=1e-6

@@ -6,8 +6,8 @@ FullAtomicOrbitals (FAO) basis.
 
 Covers the features added on top of the ADAPT-VQE driver:
 
-* selectable ``gradient`` strategies -- ``"classical"`` (finite difference) and
-  ``"parameter-shift_rule"`` -- both matching the exact analytic gradient;
+* selectable ``gradient`` strategies -- ``"finite_difference"`` and
+  ``"parameter-shift"`` -- both matching the exact analytic gradient;
 * the ``ADAPTVQE`` argument surface (``pool``, ``basis``, ``mapping``,
   ``gradient``, ``device``) and its basis-driven Hamiltonian builder;
 * the ``device`` registry (AER_simulator vs the reserved ibm-quantum).
@@ -67,7 +67,8 @@ class TestGradientStrategies:
     @pytest.mark.parametrize("pool", ["fermionic", "qubit", "qeb", "ceo"])
     def test_finite_difference_matches_analytic(self, h2_hamiltonian, pool):
         adapt = ADAPTVQE(h2_hamiltonian, pool, num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False, gradient="classical")
+                         n_spatial_orbitals=2, profile=False,
+                         gradient="finite_difference")
         psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
             np.zeros(0))
         g_an = adapt._analytic_gradients(psi)
@@ -78,7 +79,7 @@ class TestGradientStrategies:
     def test_parameter_shift_is_exact(self, h2_hamiltonian, pool):
         adapt = ADAPTVQE(h2_hamiltonian, pool, num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=False,
-                         gradient="parameter-shift_rule")
+                         gradient="parameter-shift")
         psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
             np.zeros(0))
         g_an = adapt._analytic_gradients(psi)
@@ -88,7 +89,7 @@ class TestGradientStrategies:
     def test_both_gradients_reach_fci(self, h2_hamiltonian):
         m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
-        for grad in ("classical", "parameter-shift_rule"):
+        for grad in ("finite_difference", "parameter-shift"):
             adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
                              n_spatial_orbitals=2, profile=False, gradient=grad,
                              max_iterations=10, gradient_tolerance=1e-4)
@@ -170,7 +171,9 @@ class TestOptimizerOption:
                          n_spatial_orbitals=2, profile=False)
         assert adapt.optimizer.method == "COBYLA"
 
-    @pytest.mark.parametrize("name", ["COBYLA", "Nelder-Mead", "BFGS"])
+    @pytest.mark.parametrize(
+        "name",
+        ["SPSA", "COBYLA", "Nelder-Mead", "SLSQP", "Adam", "L-BFGS-B"])
     def test_named_optimizers_build(self, h2_hamiltonian, name):
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=False, optimizer=name)

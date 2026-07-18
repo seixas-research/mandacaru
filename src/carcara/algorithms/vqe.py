@@ -43,7 +43,7 @@ from ase.calculators.calculator import Calculator, all_changes
 
 from ..backends.hardware import normalize_device, require_runnable
 from ..core.mapping import Fermion, PauliSum
-from ..optimizers.optim import Optimizer, resolve_optimizer
+from ..optimizers.optim import NAMED_OPTIMIZERS, Optimizer, resolve_optimizer
 from ..units import from_hartree
 from .adapt_vqe import format_pauli_sum
 
@@ -103,8 +103,9 @@ class VQE(Calculator):
         :class:`~carcara.circuits.ansatz.UCCSD`).  Omit in calculator mode; a
         UCCSD ansatz is then built from the geometry.
     optimizer : str or Optimizer
-        Method name -- ``"COBYLA"`` (default), ``"Nelder-Mead"``, ``"BFGS"`` -- or
-        a pre-built :class:`~carcara.optimizers.optim.Optimizer`.
+        Method name -- one of ``"SPSA"``, ``"COBYLA"`` (default),
+        ``"Nelder-Mead"``, ``"SLSQP"``, ``"Adam"``, ``"L-BFGS-B"`` -- or a
+        pre-built :class:`~carcara.optimizers.optim.Optimizer`.
     verbose : bool
         Print the qubit Hamiltonian (Pauli strings) and a timing / resources
         summary to standard output (default ``True``).
@@ -128,7 +129,7 @@ class VQE(Calculator):
     """
 
     implemented_properties = ["energy", "free_energy"]
-    _OPTIMIZERS = ("COBYLA", "Nelder-Mead", "BFGS")
+    _OPTIMIZERS = NAMED_OPTIMIZERS
 
     def __init__(self, hamiltonian=None, ansatz=None,
                  optimizer: str | Optimizer = "COBYLA", verbose: bool = True,

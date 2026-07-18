@@ -134,7 +134,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - **Complete**
    * - **carcara.optimizers**
      - Parameter optimization
-     - SciPy classical wrapper (COBYLA, Nelder-Mead, L-BFGS-B) with evaluation counting and history tracking.
+     - Classical optimizer wrapper (SPSA, COBYLA, Nelder-Mead, SLSQP, Adam, L-BFGS-B) with evaluation counting and history tracking.
      - **Complete**
    * - **carcara.backends**
      - Quantum backends

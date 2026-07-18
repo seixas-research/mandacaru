@@ -91,9 +91,9 @@ class TestSparsePool:
         sparse = self._energy(lih, sparse=True)
         assert dense == pytest.approx(sparse, abs=1e-5)
 
-    def test_auto_enables_sparse_beyond_12_qubits(self):
-        assert ADAPTVQE._resolve_sparse("auto", 12) is True
-        assert ADAPTVQE._resolve_sparse("auto", 10) is False
+    def test_auto_enables_sparse_beyond_10_qubits(self):
+        assert ADAPTVQE._resolve_sparse("auto", 10) is True
+        assert ADAPTVQE._resolve_sparse("auto", 8) is False
         assert ADAPTVQE._resolve_sparse(True, 4) is True
         assert ADAPTVQE._resolve_sparse(False, 20) is False
 
