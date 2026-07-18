@@ -51,9 +51,25 @@ class IntegralEngine:
         self._psi = np.ascontiguousarray(
             np.stack([b.sample(grid) for b in self.basis]), dtype=np.complex128)
 
+        # Profiling: wall-time per integral stage, plus the backend / core count
+        # so the driver summary can report how the integration ran.
+        from ..utils.profiling import Timings
+        self.timings = Timings(
+            n_cores=_backend.num_threads(),
+            backend="C (OpenMP)" if _backend.HAS_C_BACKEND else "NumPy")
+
     @property
     def uses_c_backend(self) -> bool:
         return _backend.HAS_C_BACKEND
+
+    @property
+    def n_cores(self) -> int | None:
+        """OpenMP threads the C backend uses (``None`` for the NumPy fallback)."""
+        return _backend.num_threads()
+
+    def integration_profile(self) -> dict:
+        """Timing / core / memory summary of the integrals run so far."""
+        return self.timings.as_dict()
 
     # -- one body ---------------------------------------------------------- #
 
@@ -77,7 +93,8 @@ class IntegralEngine:
         Vext = np.ascontiguousarray(
             np.real(potential(self.grid.X, self.grid.Y, self.grid.Z)).reshape(-1),
             dtype=np.float64)
-        T, V = _backend.one_body_matrices(self._psi, Vext, self.grid)
+        with self.timings.time("one-body integrals"):
+            T, V = _backend.one_body_matrices(self._psi, Vext, self.grid)
         return from_hartree(T, energy_units), from_hartree(V, energy_units)
 
     # -- two body ---------------------------------------------------------- #
@@ -113,13 +130,15 @@ class IntegralEngine:
             computed in Hartree and converted on return.
         """
         if method == "fft":
-            eri = self._two_body_fft()
+            with self.timings.time("two-body integrals (fft)"):
+                eri = self._two_body_fft()
         elif method == "direct":
             xg, yg, zg = self.grid.flat_coords()
             # The backend already returns the physicists'-ordered tensor
             # eri[a,b,c,d] = <ab|cd> (electron 1 carries indices a, c).
-            eri = _backend.two_body_tensor(self._psi, xg, yg, zg,
-                                           self.grid.dV, softening)
+            with self.timings.time("two-body integrals (direct)"):
+                eri = _backend.two_body_tensor(self._psi, xg, yg, zg,
+                                               self.grid.dV, softening)
         else:
             raise ValueError(f"unknown two-body method {method!r}")
         return from_hartree(eri, energy_units)

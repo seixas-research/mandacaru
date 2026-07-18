@@ -78,6 +78,16 @@ class MolecularIntegrals:
         """Number of spatial orbitals."""
         return len(self.basis)
 
+    def integration_profile(self) -> dict:
+        """Timing / cores / peak-memory profile of the integral engine.
+
+        Populated once the integrals have run (via :meth:`molecular_hamiltonian`,
+        :meth:`one_body`, ...).  Keys: ``stages_s`` (per-stage wall times),
+        ``total_s``, ``peak_memory_mb``, ``n_cores`` (OpenMP threads, ``None`` for
+        the NumPy fallback) and ``backend``.
+        """
+        return self._engine.integration_profile()
+
     # -- overlap and orthogonalization ------------------------------------ #
 
     def overlap(self) -> np.ndarray:

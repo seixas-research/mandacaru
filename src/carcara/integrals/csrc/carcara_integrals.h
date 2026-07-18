@@ -28,6 +28,10 @@
 extern "C" {
 #endif
 
+/* Number of OpenMP threads the kernels run with (1 when built without OpenMP).
+ * Lets the Python layer report the core count used by the integral backend. */
+int carcara_num_threads(void);
+
 /* Signature for on-the-fly basis evaluation: fills `out` (length ngrid) with
  * the value of basis function `i` at the supplied grid coordinates.  `ctx` is
  * an opaque user pointer (e.g. a struct of quantum numbers / Wannier tables). */

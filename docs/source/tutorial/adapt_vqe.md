@@ -111,6 +111,12 @@ By default (`verbose=True`) the run also prints a live trace to standard output:
 the qubit Hamiltonian as Pauli strings before the loop, and at each iteration the
 selected operator's generator as Pauli strings. Pass `verbose=False` to silence it.
 
+The closing summary adds a **timing / resources** block: the wall time of each
+stage (real-space integration, gradient screening, parameter optimization,
+circuit profiling), the number of OpenMP cores the C integral backend used, and
+the peak process memory. The same figures are on `result.timings` and
+`result.integration_profile`.
+
 The complete H₂ and LiH calculator examples are in
 [`examples/h2_adapt_ceo_ase.py`](https://github.com/seixas-research/carcara/blob/main/examples/h2_adapt_ceo_ase.py)
 and

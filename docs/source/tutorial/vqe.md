@@ -95,6 +95,31 @@ The returned `VQEResult` is shaped like `ADAPTVQEResult`: alongside
 `num_parameters`, `energy_history` and `correlation_energy`. Pass `verbose=False`
 to silence the Pauli-string trace.
 
+## Running through ASE (recommended)
+
+Like `ADAPTVQE`, `VQE` is an **ASE calculator**, which is the recommended way to
+drive a quantum simulation: define the molecule once as an `Atoms` object (with a
+unit cell) and let `atoms.get_total_energy()` build the Hamiltonian from the
+geometry, build a default UCCSD ansatz, and run the whole VQE (returning eV):
+
+```python
+from ase import Atoms
+from carcara.algorithms import VQE
+
+atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
+              cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=True)
+atoms.calc = VQE(basis="FAO", optimizer="COBYLA", h=0.20)   # grid from atoms.cell
+
+energy_eV = atoms.get_total_energy()
+result = atoms.calc.vqe_result        # the full VQEResult
+```
+
+A `verbose` run prints, after the Pauli-string Hamiltonian, a **timing / resources
+summary**: the wall time of each stage (real-space integration, parameter
+optimization), the number of OpenMP cores the C integral backend used, and the
+peak process memory. The same numbers are available programmatically on
+`result.timings` and `result.integration_profile`.
+
 ## Checking the result
 
 Because the backend is exact, VQE must reproduce the exact ground state of the

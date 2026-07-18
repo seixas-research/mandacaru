@@ -113,6 +113,9 @@ def _bind(lib):
         ctypes.c_double,             # softening
         _C128_W,                     # out_eri (M^4)
     ]
+
+    lib.carcara_num_threads.restype = ctypes.c_int
+    lib.carcara_num_threads.argtypes = []
     return lib
 
 
@@ -123,6 +126,18 @@ HAS_C_BACKEND = _LIB is not None
 # --------------------------------------------------------------------------- #
 # Public API (C-accelerated when available, NumPy fallback otherwise).
 # --------------------------------------------------------------------------- #
+
+def num_threads() -> int | None:
+    """OpenMP thread count of the C backend, or ``None`` when it is not built.
+
+    ``None`` signals the vectorized NumPy fallback path (no explicit OpenMP
+    parallelism managed here); a positive integer is the number of cores the C
+    integral kernels run on.
+    """
+    if HAS_C_BACKEND and hasattr(_LIB, "carcara_num_threads"):
+        return int(_LIB.carcara_num_threads())
+    return None
+
 
 def _as_shape(shape):
     """Normalize a node-count spec to a ``(nx, ny, nz)`` tuple of ints."""

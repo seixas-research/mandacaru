@@ -217,6 +217,46 @@ class TestVerbosePauliOutput:
 
 
 # --------------------------------------------------------------------------- #
+# Timing / memory / cores profiling (requirements 2-3).
+# --------------------------------------------------------------------------- #
+
+class TestADAPTProfiling:
+    def test_result_carries_stage_timings(self, h2_hamiltonian):
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False, verbose=False,
+                         max_iterations=3, gradient_tolerance=1e-6)
+        res = adapt.run()
+        t = res.timings
+        assert t is not None
+        assert "gradient screening" in t["stages_s"]
+        assert "parameter optimization" in t["stages_s"]
+        assert t["wall_time_s"] is not None
+        assert t["peak_memory_mb"] > 0.0
+
+    def test_summary_prints_timings_cores_memory(self, h2_hamiltonian, capsys):
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False, verbose=True,
+                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt.run()
+        out = capsys.readouterr().out
+        assert "Timings (wall-clock)" in out
+        assert "gradient screening" in out
+        assert "parameter optimization" in out
+        assert "cores (OpenMP threads)" in out
+        assert "peak memory" in out
+
+    def test_calculator_summary_includes_integration(self, capsys):
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
+        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.4, verbose=True,
+                              max_iterations=4, gradient_tolerance=1e-3)
+        atoms.get_total_energy()
+        out = capsys.readouterr().out
+        assert "integration:" in out
+        assert atoms.calc.adapt_result.integration_profile is not None
+
+
+# --------------------------------------------------------------------------- #
 # Device registry.
 # --------------------------------------------------------------------------- #
 

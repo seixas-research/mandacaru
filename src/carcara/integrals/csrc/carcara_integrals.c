@@ -27,6 +27,15 @@
 #include <omp.h>
 #endif
 
+/* Number of OpenMP threads the kernels run with (1 without OpenMP). */
+int carcara_num_threads(void) {
+#ifdef _OPENMP
+    return omp_get_max_threads();
+#else
+    return 1;
+#endif
+}
+
 /* Flat index into a cubic (npts^3) grid, row-major (i,j,k). */
 static inline long idx3(int i, int j, int k, int npts) {
     return ((long)i * npts + j) * npts + k;

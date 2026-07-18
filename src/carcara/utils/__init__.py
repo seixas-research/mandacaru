@@ -9,5 +9,7 @@
 """Utilities (structured logging, ...)."""
 
 from .logging import AdaptOutputLogger, parse_output
+from .profiling import Timings, backend_cores, peak_memory_mb
 
-__all__ = ["AdaptOutputLogger", "parse_output"]
+__all__ = ["AdaptOutputLogger", "parse_output",
+           "Timings", "backend_cores", "peak_memory_mb"]

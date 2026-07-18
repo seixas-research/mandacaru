@@ -5,6 +5,7 @@
 
 import numpy as np
 import pytest
+from ase import Atoms
 
 from carcara.algorithms import VQE, VQEResult
 from carcara.circuits import UCCSD, double_excitation, single_excitation
@@ -182,3 +183,76 @@ class TestVQEMirrorsADAPT:
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
         VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False).run()
         assert capsys.readouterr().out == ""
+
+
+# --- VQE as an ASE calculator (requirement: ASE for all quantum simulations) ---
+
+class TestVQEAsASECalculator:
+    def test_get_total_energy_matches_exact(self):
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
+        atoms.calc = VQE(basis="FAO", optimizer="COBYLA", h=0.30, verbose=False)
+        energy_ev = atoms.get_total_energy()
+        result = atoms.calc.vqe_result
+        # ASE returns eV; must equal the Ha result converted to eV.
+        assert energy_ev == pytest.approx(result.optimal_energy * 27.211386245988,
+                                          rel=1e-9)
+        # And match the exact FCI of the built Hamiltonian.
+        h = atoms.calc.hamiltonian.to_matrix()
+        exact = float(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min())
+        assert result.optimal_energy == pytest.approx(exact, abs=1e-3)
+        assert atoms.calc.n_qubits == 4
+
+    def test_builder_hamiltonian_and_default_ansatz(self):
+        # An explicit hamiltonian_builder + the default UCCSD ansatz factory.
+        def builder(atoms):
+            nuclei = [(float(Z), np.asarray(R)) for Z, R in
+                      zip(atoms.get_atomic_numbers(), atoms.get_positions())]
+            grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.35)
+            H = MolecularIntegrals(
+                nuclei, minimal_fao_basis(nuclei), grid
+            ).molecular_hamiltonian(mo_basis=True, n_electrons=2)
+            return H, (1, 1), 2
+
+        atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
+        atoms.calc = VQE(hamiltonian_builder=builder, verbose=False)
+        assert np.isfinite(atoms.get_total_energy())
+
+    def test_missing_cell_raises(self):
+        atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])  # no cell
+        atoms.calc = VQE(basis="FAO", verbose=False)
+        with pytest.raises(ValueError, match="no unit cell"):
+            atoms.get_total_energy()
+
+    def test_ibm_quantum_device_not_runnable(self):
+        atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
+        atoms.calc = VQE(basis="FAO", device="ibm-quantum", verbose=False)
+        with pytest.raises(NotImplementedError):
+            atoms.get_total_energy()
+
+
+# --- Timing / memory / cores in the result and the summary (requirements 2-3) ---
+
+class TestVQEProfiling:
+    def test_result_carries_timings(self, h2_hamiltonian):
+        res = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False).run()
+        assert res.timings is not None
+        assert "parameter optimization" in res.timings["stages_s"]
+        assert res.timings["peak_memory_mb"] > 0.0
+
+    def test_summary_shows_timings_and_resources(self, h2_hamiltonian, capsys):
+        VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=True).run()
+        out = capsys.readouterr().out
+        assert "Timings (wall-clock)" in out
+        assert "parameter optimization" in out
+        assert "cores (OpenMP threads)" in out
+        assert "peak memory" in out
+
+    def test_calculator_summary_includes_integration(self, capsys):
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
+        atoms.calc = VQE(basis="FAO", optimizer="COBYLA", h=0.4, verbose=True)
+        atoms.get_total_energy()
+        out = capsys.readouterr().out
+        assert "integration:" in out              # integration stage is timed
+        assert atoms.calc.vqe_result.integration_profile is not None

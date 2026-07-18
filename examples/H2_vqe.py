@@ -6,15 +6,19 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Ground-state energy of H2 by VQE with a UCCSD ansatz (Jordan-Wigner).
+"""Ground-state energy of H2 by VQE with a UCCSD ansatz, driven through ASE.
 
-End-to-end pipeline on a minimal FAO basis:
+The whole quantum simulation is run the ASE-native way: define the molecule as an
+``Atoms`` object (with a unit cell) and attach :class:`~carcara.algorithms.VQE`
+as its calculator.  ``atoms.get_total_energy()`` then runs the end-to-end
+pipeline
 
     geometry -> real-space integrals -> second-quantized Hamiltonian
              -> Jordan-Wigner qubit Hamiltonian
-             -> UCCSD ansatz -> VQE optimization -> ground-state energy
+             -> UCCSD ansatz -> VQE optimization -> ground-state energy (eV)
 
-The result is validated against exact diagonalization of the qubit Hamiltonian.
+and prints the qubit Hamiltonian (Pauli strings) plus a timing / memory / cores
+summary.  The result is validated against exact diagonalization.
 
 Run with::
 
@@ -24,48 +28,43 @@ Run with::
 from __future__ import annotations
 
 import numpy as np
+from ase import Atoms
 
 from carcara.algorithms import VQE
-from carcara.circuits import UCCSD
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid
-from carcara.optimizers import Optimizer
+from carcara.units import from_hartree
 
-# --- 1) Molecule: H2 at equilibrium, minimal FAO 1s basis (Angstrom).
-R = 0.74
-nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
-          (1.0, np.array([0.0, 0.0, +R / 2]))]
-basis = minimal_fao_basis(nuclei)
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.15)
+# --- 1) Molecule: H2 at equilibrium in a cubic cell (the grid is generated from
+#        the cell at resolution h; no explicit Grid needed).
+atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
+              cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]],
+              pbc=True)
 
-# --- 2) Second-quantized molecular Hamiltonian (a Fermion), 4 spin-orbitals.
-integrals = MolecularIntegrals(nuclei, basis, grid)
-H = integrals.molecular_hamiltonian()
-print(f"Fermionic Hamiltonian: {H}")
+# --- 2) Attach VQE as an ASE calculator.  basis="FAO" builds the Hamiltonian and
+#        a default UCCSD ansatz from the geometry; optimizer is named by string.
+atoms.calc = VQE(basis="FAO", mapping="jordan_wigner", optimizer="COBYLA",
+                 h=0.20)
 
-# --- 3) UCCSD ansatz on 4 qubits, 2 electrons (1 alpha + 1 beta), JW mapping.
-ansatz = UCCSD(n_spatial_orbitals=2, num_particles=(1, 1),
-               mapping="jordan_wigner")
-print(f"Ansatz: {ansatz}")
+# --- 3) Asking ASE for the energy runs the whole VQE simulation (returns eV).
+energy_ev = atoms.get_total_energy()
+result = atoms.calc.vqe_result
+energy_ha = result.optimal_energy
 
-# --- 4) VQE: minimize <psi(theta)| H |psi(theta)> from the HF reference.
-vqe = VQE(H, ansatz, optimizer=Optimizer(method="COBYLA", maxiter=2000))
-result = vqe.run()
+# --- 4) Validate against exact diagonalization of the built qubit Hamiltonian.
+h_matrix = atoms.calc.hamiltonian.to_matrix()
+exact_ha = float(np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min())
+exact_ev = float(from_hartree(exact_ha, "eV"))
 
-# --- 5) Report and validate against exact diagonalization.
-h_matrix = H.map_to_qubits("jordan_wigner").to_matrix()
-exact = float(np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min())
-
-print(f"\nHartree-Fock reference energy : {result.reference_energy:+.6f} Ha")
-print(f"VQE ground-state energy       : {result.optimal_energy:+.6f} Ha")
-print(f"Exact diagonalization         : {exact:+.6f} Ha")
-print(f"VQE - exact                   : {result.optimal_energy - exact:+.2e} Ha")
-print(f"Correlation energy recovered  : "
-      f"{result.reference_energy - result.optimal_energy:.6f} Ha")
+print(f"\nH2 from ASE Atoms: {atoms.get_chemical_symbols()} @ d = 0.74 Angstrom")
+print(f"Hartree-Fock reference energy : {result.reference_energy:+.6f} Ha")
+print(f"VQE ground-state energy       : {energy_ha:+.6f} Ha  "
+      f"({energy_ev:+.6f} eV)")
+print(f"Exact diagonalization         : {exact_ha:+.6f} Ha")
+print(f"VQE - exact                   : {energy_ha - exact_ha:+.2e} Ha")
+print(f"Correlation energy recovered  : {result.correlation_energy:+.6f} Ha")
 print(f"Optimizer evaluations         : {result.num_evaluations}")
-print(f"Optimal parameters            : "
-      f"{np.array2string(result.optimal_parameters, precision=5)}")
+print(f"Integration: {result.timings['n_cores']} cores, peak memory "
+      f"{result.timings['peak_memory_mb']:.0f} MiB")
 
 chemical_accuracy = 1.6e-3  # Ha
-assert abs(result.optimal_energy - exact) < chemical_accuracy
+assert abs(energy_ha - exact_ha) < chemical_accuracy
 print("\nVQE reproduces the exact ground state to within chemical accuracy.")
