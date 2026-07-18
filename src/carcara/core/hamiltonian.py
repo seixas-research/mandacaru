@@ -57,18 +57,25 @@ class MolecularIntegrals:
         Real-space integration grid.
     units : {"angstrom", "bohr"}
         Unit of the nuclear positions (default ``"angstrom"``).
+    softening : float
+        Coulomb softening length in **Bohr** (default ``1e-12``, effectively a bare
+        ``-Z/r``): the electron-nuclear potential is ``-Z/max(r, softening)``, which
+        bounds the singularity a nucleus samples when it sits on (or very near) a
+        grid node.  The ASE-calculator path sets it to a fraction of the grid step
+        so heavier-atom cores stay numerically finite on a coarse grid.
     """
 
     def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
                  basis, grid: Grid, units: str = "angstrom",
-                 orthogonalize: bool = True):
+                 orthogonalize: bool = True, softening: float = 1e-12):
         self.nuclei = [(float(Z), np.asarray(R, dtype=float)) for Z, R in nuclei]
         self.basis = list(basis)
         self.grid = grid
         self.units = units
         self.orthogonalize = orthogonalize
         self._engine = IntegralEngine(self.basis, grid)
-        self._potentials = Potentials(self.nuclei, units=units)
+        self._potentials = Potentials(self.nuclei, softening=softening,
+                                      units=units)
         self._S: np.ndarray | None = None
         self._h1: np.ndarray | None = None
         self._eri: np.ndarray | None = None
@@ -178,7 +185,8 @@ class MolecularIntegrals:
 
     def molecular_hamiltonian(self, include_nuclear_repulsion: bool = True,
                               mo_basis: bool = False,
-                              n_electrons: int | None = None) -> Fermion:
+                              n_electrons: int | None = None,
+                              frozen_orbitals=None) -> Fermion:
         """Assemble the second-quantized :class:`Fermion` Hamiltonian.
 
         Spin-orbitals are ordered alpha-block then beta-block, so the parity
@@ -189,18 +197,38 @@ class MolecularIntegrals:
         restricted Hartree-Fock molecular-orbital basis (``n_electrons`` required),
         so the reference determinant is the HF ground state -- the basis expected
         by ADAPT-VQE and by variational algorithms in general.
+
+        ``frozen_orbitals`` applies the **frozen-core approximation**: the given
+        (doubly occupied) spatial MO indices are removed from the active space and
+        replaced by their mean-field contribution -- a constant core energy plus an
+        effective one-body potential on the remaining orbitals (see
+        :func:`freeze_core_integrals`).  It requires ``mo_basis=True``; the returned
+        Hamiltonian acts only on the active spin-orbitals.
         """
+        frozen = sorted({int(i) for i in frozen_orbitals}) if frozen_orbitals \
+            else []
+        core_energy = 0.0
         if mo_basis:
             if n_electrons is None:
                 raise ValueError("mo_basis=True requires n_electrons")
             rhf = self.hartree_fock(n_electrons)
-            h_so, g_so = spin_block_integrals(rhf.h_mo, rhf.eri_mo)
+            h_mo, eri_mo = rhf.h_mo, rhf.eri_mo
+            if frozen:
+                active = [p for p in range(self.n_orbitals) if p not in frozen]
+                h_mo, eri_mo, core_energy = freeze_core_integrals(
+                    h_mo, eri_mo, frozen, active)
+            h_so, g_so = spin_block_integrals(h_mo, eri_mo)
         else:
+            if frozen:
+                raise ValueError(
+                    "frozen_orbitals requires mo_basis=True (the frozen-core "
+                    "approximation freezes canonical molecular orbitals)")
             h_so, g_so = self.spin_orbital_integrals()
         H = Fermion.from_integrals(h_so, g_so)
-        if include_nuclear_repulsion:
-            H = H + Fermion({(): complex(self.nuclear_repulsion)},
-                            n_modes=2 * self.n_orbitals)
+        const = core_energy + (self.nuclear_repulsion
+                               if include_nuclear_repulsion else 0.0)
+        if abs(const) > 1e-14:
+            H = H + Fermion({(): complex(const)}, n_modes=h_so.shape[0])
         return H
 
     def hartree_fock_hamiltonian(self, n_electrons: int,
@@ -273,6 +301,55 @@ def spin_block_integrals(h: np.ndarray,
                     if spin(P) == spin(R) and spin(Q) == spin(S):
                         g_so[P, Q, R, S] = eri[orb(P), orb(Q), orb(R), orb(S)]
     return h_so, g_so
+
+
+def freeze_core_integrals(h_mo: np.ndarray, eri_mo: np.ndarray,
+                          frozen: Sequence[int], active: Sequence[int]
+                          ) -> tuple[np.ndarray, np.ndarray, float]:
+    r"""Frozen-core reduction of the MO-basis spatial integrals.
+
+    Given the molecular-orbital one-body ``h_mo`` and physicists'-notation
+    two-body ``<pq|rs>`` (``eri_mo``), a set of doubly occupied ``frozen`` (core)
+    spatial orbitals and the complementary ``active`` orbitals, returns
+    ``(h_active, eri_active, core_energy)`` for the reduced active-space
+    Hamiltonian:
+
+    .. math::
+
+        E_{\text{core}} &= 2\sum_{i}h_{ii}
+            + \sum_{ij}\bigl(2\langle ij|ij\rangle-\langle ij|ji\rangle\bigr), \\
+        h^{\text{eff}}_{pq} &= h_{pq}
+            + \sum_{i}\bigl(2\langle pi|qi\rangle-\langle pi|iq\rangle\bigr),
+
+    with ``i, j`` over ``frozen`` and ``p, q`` over ``active``; ``eri_active`` is
+    the ``active`` sub-block of ``eri_mo``.  Adding ``core_energy`` as a constant
+    and using ``(h_active, eri_active)`` in the active space reproduces the full
+    energy exactly for a determinant that keeps every frozen orbital doubly
+    occupied (the frozen-core approximation).
+    """
+    h_mo = np.asarray(h_mo)
+    eri_mo = np.asarray(eri_mo)
+    frozen = list(frozen)
+    active = list(active)
+
+    core_energy = 0.0
+    for i in frozen:
+        core_energy += 2.0 * h_mo[i, i]
+    for i in frozen:
+        for j in frozen:
+            core_energy += 2.0 * eri_mo[i, j, i, j] - eri_mo[i, j, j, i]
+
+    n_act = len(active)
+    h_eff = np.zeros((n_act, n_act), dtype=complex)
+    for a, p in enumerate(active):
+        for b, q in enumerate(active):
+            val = h_mo[p, q]
+            for i in frozen:
+                val += 2.0 * eri_mo[p, i, q, i] - eri_mo[p, i, i, q]
+            h_eff[a, b] = val
+
+    eri_active = eri_mo[np.ix_(active, active, active, active)]
+    return h_eff, eri_active, float(np.real(core_energy))
 
 
 def minimal_fao_basis(nuclei, grid_units: str = "angstrom"):

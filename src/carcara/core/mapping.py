@@ -144,6 +144,27 @@ class PauliSum:
             mat += coeff * m
         return mat
 
+    def to_sparse_matrix(self):
+        """Sparse CSR matrix (qubit 0 is the leftmost Kronecker factor).
+
+        Uses :mod:`scipy.sparse` Kronecker products, so the memory scales with the
+        (small) number of non-zeros of each Pauli string rather than the dense
+        ``2^n * 2^n``.  Used by the memory-light path of
+        :class:`~carcara.algorithms.adapt_vqe.ADAPTVQE` for larger active spaces.
+        """
+        import scipy.sparse as sp
+
+        n = self.num_qubits
+        dim = 2 ** n
+        single = {ch: sp.csr_matrix(M) for ch, M in _SINGLE.items()}
+        mat = sp.csr_matrix((dim, dim), dtype=complex)
+        for label, coeff in self.terms.items():
+            m = sp.identity(1, dtype=complex, format="csr")
+            for ch in label:
+                m = sp.kron(m, single[ch], format="csr")
+            mat = mat + coeff * m
+        return mat.tocsr()
+
     def to_sparse_pauli_op(self):
         """Convert to a qiskit ``SparsePauliOp`` (requires qiskit)."""
         from qiskit.quantum_info import SparsePauliOp

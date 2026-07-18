@@ -98,23 +98,122 @@ def resolve_basis(basis):
         "basis must be a name string or a dict like {'name': 'FAO', ...}")
 
 
-def _num_particles(n_el: int, spin: bool, basis) -> tuple[int, int]:
-    """Reference occupation ``(n_alpha, n_beta)``; validates the shell for RHF."""
+# Noble-gas core: (highest Z of the row, core electrons of that row's atoms).
+_NOBLE_CORE_THRESHOLDS = ((2, 0), (10, 2), (18, 10), (36, 18),
+                          (54, 36), (86, 54), (118, 86))
+
+
+def core_electrons(atomic_number: int) -> int:
+    """Number of noble-gas core electrons for an atom of ``atomic_number``.
+
+    The chemical (frozen) core is the electron count of the preceding noble gas:
+    ``0`` for H/He, ``2`` (He) for Li--Ne, ``10`` (Ne) for Na--Ar, ``18`` (Ar) for
+    K--Kr, and so on.
+    """
+    Z = int(atomic_number)
+    for zmax, core in _NOBLE_CORE_THRESHOLDS:
+        if Z <= zmax:
+            return core
+    return 86
+
+
+def _auto_frozen_count(frozen_core, numbers) -> int:
+    """Number of lowest MOs to freeze from a ``frozen_core`` spec (no explicit list).
+
+    ``False``/``None``/``0`` -> freeze nothing; ``True``/``"auto"`` -> the chemical
+    (noble-gas) core, ``sum(core_electrons(Z)) // 2`` spatial orbitals; an integer
+    -> that many lowest MOs.
+    """
+    if frozen_core is None or frozen_core is False:
+        return 0
+    if frozen_core is True or (isinstance(frozen_core, str)
+                              and frozen_core.strip().lower() == "auto"):
+        return sum(core_electrons(int(z)) for z in numbers) // 2
+    if isinstance(frozen_core, (int, np.integer)):
+        n = int(frozen_core)
+        if n < 0:
+            raise ValueError(f"frozen_core count must be >= 0, got {n}")
+        return n
+    raise ValueError(
+        f"unknown frozen_core spec {frozen_core!r}; use False, True/'auto', or an "
+        "integer number of core spatial orbitals")
+
+
+def resolve_frozen_core(frozen_core, frozen_orbitals, numbers, n_el: int,
+                        n_orbitals: int) -> list[int]:
+    """Resolve the frozen-core spec to a sorted list of frozen spatial-MO indices.
+
+    ``frozen_orbitals`` (an explicit list of spatial MO indices) takes precedence;
+    otherwise the lowest ``_auto_frozen_count(frozen_core, numbers)`` MOs are
+    frozen.  Every frozen orbital must be doubly occupied in the reference
+    (index ``< n_el // 2``), since the frozen-core approximation removes doubly
+    occupied core orbitals.
+    """
+    n_occ = n_el // 2
+    if frozen_orbitals is not None:
+        frozen = sorted({int(i) for i in frozen_orbitals})
+    else:
+        frozen = list(range(_auto_frozen_count(frozen_core, numbers)))
+    for i in frozen:
+        if not (0 <= i < n_orbitals):
+            raise ValueError(
+                f"frozen orbital index {i} is out of range [0, {n_orbitals})")
+        if i >= n_occ:
+            raise ValueError(
+                f"cannot freeze spatial orbital {i}: only the {n_occ} doubly "
+                f"occupied orbitals (indices 0..{n_occ - 1}) may be frozen")
+    return frozen
+
+
+def resolve_num_unpaired(atoms, spin, n_el: int) -> int:
+    """Number of unpaired electrons ``2S = n_alpha - n_beta`` for the reference.
+
+    The **initial spin state** of the molecule is read primarily from the ASE
+    ``Atoms`` initial magnetic moments (``Atoms(..., magmoms=...)`` /
+    :meth:`ase.Atoms.set_initial_magnetic_moments`): their rounded total is the
+    number of unpaired electrons -- e.g. a triplet O₂ with ``magmoms=[1, 1]``
+    gives ``2``.  When no magnetic moments are set, falls back to the boolean
+    ``spin`` flag: ``spin=True`` requests a single unpaired electron for an
+    odd-electron count (a high-spin doublet) and, for an even count, keeps the
+    closed-shell singlet (``0``); ``spin=False`` is always ``0``.
+    """
+    total = 0.0
+    if atoms is not None:
+        try:
+            total = float(np.sum(atoms.get_initial_magnetic_moments()))
+        except Exception:
+            total = 0.0
+    if abs(total) > 1e-8:
+        return int(round(abs(total)))
+    if spin:
+        return 1 if n_el % 2 == 1 else 0
+    return 0
+
+
+def _num_particles(n_el: int, n_unpaired: int, basis) -> tuple[int, int]:
+    """Reference occupation ``(n_alpha, n_beta)`` for ``n_unpaired = n_alpha - n_beta``.
+
+    Validates the shell for the restricted (closed-shell RHF) integral builders:
+    the electron count must be even (odd-electron open shells are not yet
+    supported) and the requested spin state ``n_unpaired`` must share its parity
+    and not exceed ``n_el``.
+    """
     if n_el % 2 != 0:
-        if spin:
-            raise NotImplementedError(
-                f"open-shell spin-polarized Hamiltonian construction ({n_el} "
-                "electrons) is not yet implemented: the built-in builders use "
-                "closed-shell RHF.  Pass a hamiltonian_builder for open shells.")
+        raise NotImplementedError(
+            f"the built-in {basis!r} builder uses restricted (closed-shell RHF) "
+            f"integrals and needs an even electron count; got {n_el}.  Open-shell "
+            "odd-electron systems are not yet supported (pass a "
+            "hamiltonian_builder for those).")
+    if n_unpaired < 0 or n_unpaired > n_el or n_unpaired % 2 != 0:
         raise ValueError(
-            f"the built-in {basis!r} builder assumes a closed shell; got an odd "
-            f"electron count ({n_el}). Use spin=True (open shell) or pass a "
-            "hamiltonian_builder.")
-    return ((n_el + 1) // 2, n_el // 2) if spin else (n_el // 2, n_el // 2)
+            f"the requested spin state (n_unpaired={n_unpaired}) is incompatible "
+            f"with {n_el} electrons: n_unpaired must be even and in [0, {n_el}].")
+    return ((n_el + n_unpaired) // 2, (n_el - n_unpaired) // 2)
 
 
 def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
-                            n_electrons, spin: bool = False):
+                            n_electrons, spin: bool = False,
+                            frozen_core=False, frozen_orbitals=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
@@ -128,6 +227,11 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     (``n_alpha == n_beta``, requires an even electron count); ``True`` is a
     spin-polarized (high-spin) reference.  A genuinely open-shell (odd-electron)
     system raises ``NotImplementedError`` (RHF-only integrals).
+
+    ``frozen_core`` / ``frozen_orbitals`` apply the frozen-core approximation (see
+    :func:`resolve_frozen_core`): the resolved core spatial MOs are removed from
+    the active space, so the returned ``num_particles`` and ``n_spatial_orbitals``
+    describe the reduced active space.
     """
     name, options = resolve_basis(basis)
     numbers = atoms.get_atomic_numbers()
@@ -135,7 +239,8 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
             else int(sum(int(z) for z in numbers)) - int(charge))
 
     if name.upper().replace("-", "").replace(" ", "") in ("PW", "PLANEWAVE"):
-        return _plane_wave_hamiltonian(atoms, options, n_el, spin, name)
+        return _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
+                                       frozen_core, frozen_orbitals)
 
     from ..basis import BasisSet
     from ..core import MolecularIntegrals
@@ -150,17 +255,36 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
 
     g = (grid if grid is not None
          else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
-    num_particles = _num_particles(n_el, spin, name)
 
-    integrals = MolecularIntegrals(nuclei, basis_fns, g)
-    hamiltonian = integrals.molecular_hamiltonian(mo_basis=True, n_electrons=n_el)
-    return (hamiltonian, num_particles, len(basis_fns),
+    frozen = resolve_frozen_core(frozen_core, frozen_orbitals, numbers, n_el,
+                                 len(basis_fns))
+    n_active_el = n_el - 2 * len(frozen)
+    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
+    num_particles = _num_particles(n_active_el, n_unpaired, name)
+
+    # Soften the -Z/r cusp to half a grid step (Bohr): a nucleus that lands on a
+    # grid node would otherwise sample -Z/r at r->0 and produce a ~1e12 garbage
+    # core integral.  Half a step keeps the well-resolved region untouched while
+    # bounding the on-node case, so heavier-atom cores stay finite on a coarse grid.
+    softening = 0.5 * float(min(g.dx, g.dy, g.dz))
+    integrals = MolecularIntegrals(nuclei, basis_fns, g, softening=softening)
+    hamiltonian = integrals.molecular_hamiltonian(
+        mo_basis=True, n_electrons=n_el,
+        frozen_orbitals=frozen if frozen else None)
+    return (hamiltonian, num_particles, len(basis_fns) - len(frozen),
             integrals.integration_profile())
 
 
-def _plane_wave_hamiltonian(atoms, options, n_el, spin, name):
+def _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
+                            frozen_core=False, frozen_orbitals=None):
     """Build the periodic plane-wave (PW) MO Hamiltonian from ``atoms``."""
     from ..core import PlaneWaveIntegrals
+
+    if frozen_core or frozen_orbitals:
+        raise NotImplementedError(
+            "the frozen-core approximation is not supported for the plane-wave "
+            "(PW) basis: plane waves are delocalized and have no localized core "
+            "to freeze.  Use a localized basis (FAO / GTO / 6-31G(d) / NAO).")
 
     cell = np.asarray(atoms.get_cell(), dtype=float)
     if not np.any(cell):
@@ -172,7 +296,8 @@ def _plane_wave_hamiltonian(atoms, options, n_el, spin, name):
     nuclei = [(float(Z), pos) for Z, pos in zip(numbers, positions)]
 
     pw = PlaneWaveIntegrals(nuclei, cell, units="angstrom", **options)
-    num_particles = _num_particles(n_el, spin, name)
+    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
+    num_particles = _num_particles(n_el, n_unpaired, name)
     hamiltonian = pw.molecular_hamiltonian(mo_basis=True, n_electrons=n_el)
     return (hamiltonian, num_particles, pw.n_orbitals, pw.integration_profile())
 

@@ -8,8 +8,7 @@
 
 """LiH ground state with ADAPT-VQE (CEO pool) as an ASE calculator.
 
-Companion to ``h2_adapt_ceo_ase.py``, for the four-electron LiH molecule.  LiH is
-defined as an ASE :class:`ase.Atoms` object and :class:`~carcara.algorithms.ADAPTVQE`
+LiH is defined as an ASE :class:`ase.Atoms` object and :class:`~carcara.algorithms.ADAPTVQE`
 is attached as its *calculator*; with ``basis={"name": "FAO"}`` the Full Atomic Orbitals of
 each atom (Li {1s, 2s} + H {1s} = 3 spatial orbitals -> 6 qubits) are generated
 from the geometry, and ``atoms.get_total_energy()`` drives ADAPT-VQE with the CEO
@@ -42,15 +41,15 @@ atoms = Atoms("LiH",
               pbc=True)
 
 atoms.calc = ADAPTVQE(
-    pool="ceo",
-    basis={"name": "FAO"},
-    mapping="jordan_wigner",
-    gradient="parameter-shift_rule",
-    device="AER_simulator",
-    h=0.10,
-    max_iterations=25,
-    gradient_tolerance=1e-3,
-    output="output_LiH.txt")
+              pool="ceo",
+              basis={"name": "FAO"},
+              mapping="jordan_wigner",
+              gradient="parameter-shift_rule",
+              device="AER_simulator",
+              h=0.10,
+              max_iterations=25,
+              gradient_tolerance=1e-3,
+              output="output_LiH.txt")
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)
@@ -62,6 +61,7 @@ n_orbitals = atoms.calc.n_qubits // 2
 h_matrix = atoms.calc.hamiltonian.to_matrix()
 exact_ha = float(np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min())
 exact_ev = float(from_hartree(exact_ha, "eV"))
+print(f"Exact energy: {exact_ev:.8f}")
 
 assert abs(energy_ha - exact_ha) < 1e-4, "CEO ADAPT missed FCI"
 print(f"LiH  {n_orbitals} orbitals ({atoms.calc.n_qubits} qubits), "

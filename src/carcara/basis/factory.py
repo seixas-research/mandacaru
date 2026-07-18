@@ -182,9 +182,10 @@ class FAOBasisSet(BasisSet):
     """Minimal analytic Full Atomic Orbitals basis: one orbital per occupied subshell.
 
     For each occupied ``(n, l)`` subshell of the atom, builds the ``2l + 1``
-    :class:`~carcara.basis.FullAtomicOrbital` functions with the subshell's Slater
-    effective charge.  A cheap, fully analytic reference basis (e.g. H -> 1s;
-    Li -> 1s, 2s; C -> 1s, 2s, 2p).
+    :class:`~carcara.basis.FullAtomicOrbital` functions with the **actual atomic
+    number** ``Z`` as the orbital's nuclear charge (the bare hydrogenic orbital of
+    the element -- no Slater screening).  A cheap, fully analytic reference basis
+    (e.g. H -> 1s; Li -> 1s, 2s; C -> 1s, 2s, 2p).
     """
 
     method = "FAO"
@@ -195,9 +196,8 @@ class FAOBasisSet(BasisSet):
         Z = _to_atomic_number(element)
         orbitals: list[BasisFunction] = []
         for (n, l) in sorted(ground_state_config(Z)):
-            z_eff = FullAtomicOrbital.slater_effective_charge(Z, n, l)
             for m in range(-l, l + 1):
-                orbitals.append(FullAtomicOrbital(n, l, m, Z=z_eff,
+                orbitals.append(FullAtomicOrbital(n, l, m, Z=float(Z),
                                                   center=center, units=units))
         return orbitals
 

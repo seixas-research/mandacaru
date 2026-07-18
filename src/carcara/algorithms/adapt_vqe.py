@@ -54,6 +54,12 @@ from ._hamiltonian_from_atoms import (monkhorst_pack_kpts,
                                       _resolve_initial_state)
 
 
+def _spm_norm(spm) -> float:
+    """Largest-magnitude entry of a scipy sparse matrix (0 for the empty matrix)."""
+    data = spm.tocoo().data
+    return float(np.max(np.abs(data))) if data.size else 0.0
+
+
 def _unique_frequencies(eigenvalues: np.ndarray, tol: float = 1e-7) -> np.ndarray:
     """Unique positive eigenvalue differences (the frequencies of ``E(theta)``).
 
@@ -198,21 +204,33 @@ def profile_ansatz(n_qubits: int, occupied: tuple[int, ...],
 class AdaptAnsatz:
     """A product-of-exponentials ansatz that grows one generator at a time.
 
-    ``|psi(theta)> = prod_k exp(theta_k A_k) |HF>`` applied in append order, with
-    each ``exp(theta_k A_k)`` evaluated exactly via the eigendecomposition of the
-    anti-Hermitian generator ``A_k`` (cached, so cost evaluations are cheap).
+    ``|psi(theta)> = prod_k exp(theta_k A_k) |HF>`` applied in append order.
+
+    Two evaluation backends, chosen by ``sparse``:
+
+    * **dense** (default) -- each ``exp(theta_k A_k)`` is applied via the cached
+      eigendecomposition of the anti-Hermitian generator ``A_k``;
+    * **sparse** -- ``A_k`` is kept as a sparse matrix and, when it satisfies the
+      excitation identity ``A^3 = -A`` (true for the fermionic / qubit generators),
+      the exponential uses the closed form
+      ``exp(theta A) = I + sin(theta) A + (1 - cos(theta)) A^2`` -- two sparse
+      matrix-vector products, no ``2^n x 2^n`` dense matrix.  Generators that fail
+      the identity fall back to :func:`scipy.sparse.linalg.expm_multiply`.  This is
+      what keeps 12+-qubit active spaces tractable.
 
     Exposes the interface expected by :class:`~carcara.algorithms.vqe.VQE`
     (``num_parameters``, ``n_qubits``, ``state``, ``reference_state``).
     """
 
     def __init__(self, n_qubits: int, occupied: tuple[int, ...],
-                 mapping: str = "jordan_wigner"):
+                 mapping: str = "jordan_wigner", sparse: bool = False):
         self.n_qubits = int(n_qubits)
         self.mapping = mapping
         self.occupied = tuple(occupied)
+        self.sparse = bool(sparse)
         self._ops: list[PoolOperator] = []
-        self._eig: list[tuple[np.ndarray, np.ndarray]] = []   # (w, V) per generator
+        self._eig: list[tuple[np.ndarray, np.ndarray]] = []   # dense (w, V)
+        self._sparse_ops: list[tuple] = []                    # (A, A2, rodrigues)
         self._hf = self._reference_vector()
 
     def _reference_vector(self) -> np.ndarray:
@@ -232,11 +250,18 @@ class AdaptAnsatz:
 
     def append(self, op: PoolOperator) -> None:
         """Add a generator to the end of the ansatz."""
+        self._ops.append(op)
+        if self.sparse:
+            A = op.generator.to_sparse_matrix()
+            A2 = (A @ A).tocsr()
+            # Rodrigues closed form is valid iff A^3 = -A (excitation generators).
+            rodrigues = _spm_norm(A @ A2 + A) < 1e-9 * max(1.0, _spm_norm(A))
+            self._sparse_ops.append((A, A2, rodrigues))
+            return
         a = op.matrix()
         # A anti-Hermitian => (-i A) is Hermitian: -i A = V diag(w) V^dag, so
         # A = i V diag(w) V^dag and exp(theta A) = V diag(exp(i theta w)) V^dag.
         w, V = np.linalg.eigh(-1j * a)
-        self._ops.append(op)
         self._eig.append((w, V))
 
     @property
@@ -257,6 +282,15 @@ class AdaptAnsatz:
             raise ValueError(
                 f"expected {self.num_parameters} parameters, got {theta.size}")
         psi = self._hf.copy()
+        if self.sparse:
+            for angle, (A, A2, rodrigues) in zip(theta, self._sparse_ops):
+                if rodrigues:
+                    psi = (psi + np.sin(angle) * (A @ psi)
+                           + (1.0 - np.cos(angle)) * (A2 @ psi))
+                else:
+                    from scipy.sparse.linalg import expm_multiply
+                    psi = expm_multiply(angle * A, psi)
+            return psi
         for angle, (w, V) in zip(theta, self._eig):
             psi = V @ (np.exp(1j * angle * w) * (V.conj().T @ psi))
         return psi
@@ -385,6 +419,16 @@ class ADAPTVQE(Calculator):
         Print a live trace of the quantum simulation to standard output (default
         ``True``): the qubit Hamiltonian as Pauli strings before the loop, and the
         selected operator's generator as Pauli strings at each iteration.
+    sparse : bool or str
+        Memory strategy for the operator pool (default ``"auto"``).  A dense pool
+        materializes every operator's ``2^n x 2^n`` matrix and eigendecomposition,
+        which is intractable beyond ~11 qubits (tens of GB for a 12-qubit water
+        active space).  The sparse pool keeps the generators as sparse matrices and
+        screens with the exact analytic gradient, densifying only the few
+        *selected* operators; ``"auto"`` enables it for ``n_qubits >= 12``, ``True``
+        / ``False`` force it.  In sparse mode screening always uses the analytic
+        gradient (the ``gradient`` argument's estimators need the dense
+        eigendecompositions and are unavailable).
     atomic_units : bool
         Units used in the ``output.txt`` log.  ``False`` (default) logs energies
         in **eV** and lengths in **Angstrom**; ``True`` logs Hartree and Bohr.
@@ -409,9 +453,14 @@ class ADAPTVQE(Calculator):
     spin : bool
         Spin polarization (default ``False``).  ``False`` is a closed-shell
         reference (``n_alpha == n_beta``); ``True`` is a spin-polarized (high-spin)
-        reference.  Only affects the calculator-mode Hamiltonian builder; genuinely
-        open-shell (odd-electron) systems raise ``NotImplementedError`` (RHF-only
-        integrals).
+        reference.  The **initial spin state is read primarily from the ASE
+        geometry's initial magnetic moments** (``Atoms(..., magmoms=...)``): their
+        rounded total is the number of unpaired electrons, so a triplet is set with
+        ``magmoms=[1, 1]`` (see
+        :func:`~carcara.algorithms._hamiltonian_from_atoms.resolve_num_unpaired`).
+        ``spin`` is the fallback when no magnetic moments are set.  Only affects the
+        calculator-mode Hamiltonian builder; genuinely open-shell (odd-electron)
+        systems raise ``NotImplementedError`` (RHF-only integrals).
     initial_state : str, optional
         The ansatz reference state; ``"hartree-fock"`` (default) is the
         Hartree-Fock determinant.  ``None`` is treated as ``"hartree-fock"``.
@@ -419,6 +468,19 @@ class ADAPTVQE(Calculator):
         Total charge, used to set the electron count in the ``basis`` builder.
     n_electrons : int, optional
         Explicit electron count for the ``basis`` builder (overrides ``charge``).
+    frozen_core : bool, str or int
+        Frozen-core approximation (default ``False``, no freezing).  ``True`` or
+        ``"auto"`` freezes the chemical noble-gas core (``He`` core for Li--Ne,
+        ``Ne`` core for Na--Ar, ...); an integer freezes that many lowest molecular
+        orbitals.  The frozen (doubly occupied) core orbitals are removed from the
+        active space and replaced by their mean-field contribution -- a constant
+        core energy plus an effective one-body potential -- so the ansatz, pool and
+        qubit count are built for the smaller active space.
+    frozen_orbitals : sequence of int, optional
+        Explicit list of (doubly occupied) spatial molecular-orbital indices to
+        freeze.  Overrides ``frozen_core`` and names exactly which electrons are
+        treated as frozen core; the remaining occupied orbitals plus the virtuals
+        form the active space.
     hamiltonian_builder : callable, optional
         ``atoms -> (hamiltonian, num_particles, n_spatial_orbitals)``.  An
         explicit override for the built-in ``basis`` builder in calculator mode.
@@ -450,6 +512,7 @@ class ADAPTVQE(Calculator):
                  output: str | None = None,
                  profile: bool = True,
                  verbose: bool = True,
+                 sparse: bool | str = "auto",
                  atomic_units: bool = False,
                  grid=None,
                  h: float = 0.20,
@@ -458,6 +521,8 @@ class ADAPTVQE(Calculator):
                  initial_state: str | None = "hartree-fock",
                  charge: int = 0,
                  n_electrons=None,
+                 frozen_core=False,
+                 frozen_orbitals=None,
                  hamiltonian_builder=None,
                  run_options: dict | None = None, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
@@ -466,7 +531,10 @@ class ADAPTVQE(Calculator):
         self.basis = basis
         self.profile = profile
         self.verbose = bool(verbose)
+        self.sparse = sparse
         self.spin = bool(spin)
+        self.frozen_core = frozen_core
+        self.frozen_orbitals = frozen_orbitals
         self.initial_state = _resolve_initial_state(initial_state)
         self.optimizer = self._resolve_optimizer(optimizer)
 
@@ -563,21 +631,54 @@ class ADAPTVQE(Calculator):
                 f"Hamiltonian acts on {qubit_h.num_qubits} qubits but the pool "
                 f"has {self.n_qubits}")
         self.hamiltonian = qubit_h
-        h = qubit_h.to_matrix()
-        self._h_matrix = 0.5 * (h + h.conj().T)      # Hermitize away rounding
 
-        # Precompute pool-operator matrices and their eigendecompositions once.
-        # For A anti-Hermitian, -iA is Hermitian: -iA = V diag(w) V^dag, so
-        # exp(theta A) = V diag(exp(i theta w)) V^dag.  The unique positive
-        # eigenvalue *differences* are the frequencies of E(theta), used by the
-        # parameter-shift gradient.
+        # Decide dense vs sparse: a dense pool stores every operator's matrix *and*
+        # eigendecomposition (two 2^n x 2^n arrays each), which is ~46 GB for a
+        # 12-qubit water active space -- and even the dense Hamiltonian ``to_matrix``
+        # (O(terms * 4^n)) is prohibitively slow there.  The sparse path keeps the
+        # Hamiltonian and the pool generators as sparse matrices and screens with
+        # the exact analytic gradient (a sparse matrix-vector product), so only the
+        # few *selected* operators are ever densified (by the growable ansatz).  See
+        # :meth:`_resolve_sparse`.
         self._pool_ops = self.pool.operators()
-        self._pool_matrices = [op.matrix() for op in self._pool_ops]
-        self._pool_eig = []
-        for a in self._pool_matrices:
-            w, V = np.linalg.eigh(-1j * a)
-            self._pool_eig.append((w, V, _unique_frequencies(w)))
+        self._sparse = self._resolve_sparse(self.sparse, self.n_qubits)
+
+        if self._sparse:
+            # Sparse Hamiltonian + sparse generators; no dense to_matrix, and no
+            # per-operator eigendecomposition (screening is the analytic gradient).
+            hs = qubit_h.to_sparse_matrix()
+            self._h_matrix = 0.5 * (hs + hs.conj().T)
+            self._pool_matrices = [op.generator.to_sparse_matrix()
+                                   for op in self._pool_ops]
+            self._pool_eig = None
+        else:
+            h = qubit_h.to_matrix()
+            self._h_matrix = 0.5 * (h + h.conj().T)  # Hermitize away rounding
+            # Precompute pool-operator matrices and their eigendecompositions once.
+            # For A anti-Hermitian, -iA is Hermitian: -iA = V diag(w) V^dag, so
+            # exp(theta A) = V diag(exp(i theta w)) V^dag.  The unique positive
+            # eigenvalue *differences* are the frequencies of E(theta), used by the
+            # parameter-shift gradient.
+            self._pool_matrices = [op.matrix() for op in self._pool_ops]
+            self._pool_eig = []
+            for a in self._pool_matrices:
+                w, V = np.linalg.eigh(-1j * a)
+                self._pool_eig.append((w, V, _unique_frequencies(w)))
         self._configured = True
+
+    @staticmethod
+    def _resolve_sparse(sparse, n_qubits: int) -> bool:
+        """Resolve the ``sparse`` spec to a bool.
+
+        ``"auto"`` (default) enables the sparse pool for ``n_qubits >= 12``, where a
+        dense pool would need tens of GB; ``True`` / ``False`` force it on / off.
+        """
+        if isinstance(sparse, str):
+            if sparse.strip().lower() == "auto":
+                return int(n_qubits) >= 12
+            raise ValueError(
+                f"unknown sparse spec {sparse!r}; use True, False or 'auto'")
+        return bool(sparse)
 
     def _as_pauli_sum(self, hamiltonian) -> PauliSum:
         if isinstance(hamiltonian, PauliSum):
@@ -602,7 +703,8 @@ class ADAPTVQE(Calculator):
 
         hamiltonian, num_particles, n_orbitals, profile = build_basis_hamiltonian(
             atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons,
-            spin=self.spin)
+            spin=self.spin, frozen_core=self.frozen_core,
+            frozen_orbitals=self.frozen_orbitals)
         self._integration_profile = profile
         return hamiltonian, num_particles, n_orbitals
 
@@ -722,14 +824,23 @@ class ADAPTVQE(Calculator):
         return float(np.dot(freqs, b))
 
     def _gradients(self, psi: np.ndarray) -> np.ndarray:
-        """Pool screening gradients using the configured :attr:`gradient` method."""
+        """Pool screening gradients using the configured :attr:`gradient` method.
+
+        In the sparse pool path the per-operator eigendecompositions the
+        ``"classical"`` / ``"parameter-shift_rule"`` estimators rely on are not
+        materialized, so screening uses the exact analytic gradient
+        ``g_i = 2 Re<H psi | A_i psi>`` (a sparse matrix-vector product) -- which is
+        the very quantity those estimators approximate.
+        """
+        if getattr(self, "_sparse", False):
+            return self._analytic_gradients(psi)
         if self.gradient == "parameter-shift_rule":
             return self._parameter_shift_gradients(psi)
         return self._finite_difference_gradients(psi)      # "classical"
 
     def reference_energy(self) -> float:
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
-                             self.mapping)
+                             self.mapping, sparse=getattr(self, "_sparse", False))
         return self.energy(ansatz.reference_state())
 
     # -- output.txt logging ---------------------------------------------- #
@@ -862,7 +973,7 @@ class ADAPTVQE(Calculator):
             run_t0 = _perf()
 
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
-                             self.mapping)
+                             self.mapping, sparse=self._sparse)
         params = (np.asarray(initial_parameters, dtype=float).ravel()
                   if initial_parameters is not None else np.zeros(0))
         ref_energy = self.energy(ansatz.reference_state())
@@ -1005,8 +1116,10 @@ class ADAPTVQE(Calculator):
         print(rule)
         print(f"ADAPT-VQE  |  mapping: {self.mapping}  |  {self.n_qubits} qubits "
               f"|  device: {self.device}")
+        grad_label = ("analytic (sparse pool)" if getattr(self, "_sparse", False)
+                      else self.gradient)
         print(f"pool: {self.pool.__class__.__name__}  |  "
-              f"optimizer: {self.optimizer.method}  |  gradient: {self.gradient}")
+              f"optimizer: {self.optimizer.method}  |  gradient: {grad_label}")
         print(f"k-points: {self._kpts_label()}  |  spin-polarized: {self.spin}  "
               f"|  initial state: {self.initial_state}")
         print(rule)

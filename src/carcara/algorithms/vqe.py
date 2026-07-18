@@ -117,6 +117,14 @@ class VQE(Calculator):
         ``atoms.cell`` unless ``grid`` is given), ``ansatz_builder`` overrides the
         default UCCSD factory.  ``kpts`` is a Monkhorst-Pack mesh resolved with ASE
         (Gamma-point only is runnable; see ``ADAPTVQE``).
+    frozen_core : bool, str or int
+        Frozen-core approximation (default ``False``, no freezing).  ``True`` /
+        ``"auto"`` freezes the chemical noble-gas core; an integer freezes that
+        many lowest molecular orbitals.  The frozen orbitals are removed from the
+        active space (see :class:`~carcara.algorithms.adapt_vqe.ADAPTVQE`).
+    frozen_orbitals : sequence of int, optional
+        Explicit list of (doubly occupied) spatial MO indices to freeze; overrides
+        ``frozen_core`` and names exactly which electrons are core vs active.
     """
 
     implemented_properties = ["energy", "free_energy"]
@@ -129,6 +137,7 @@ class VQE(Calculator):
                  kpts=None, spin: bool = False,
                  initial_state: str | None = "hartree-fock",
                  charge: int = 0, n_electrons=None,
+                 frozen_core=False, frozen_orbitals=None,
                  hamiltonian_builder=None, ansatz_builder=None,
                  run_options: dict | None = None, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
@@ -141,6 +150,8 @@ class VQE(Calculator):
         self.grid = grid
         self.h = float(h)
         self.spin = bool(spin)
+        self.frozen_core = frozen_core
+        self.frozen_orbitals = frozen_orbitals
 
         from ._hamiltonian_from_atoms import (monkhorst_pack_kpts,
                                               resolve_initial_state)
@@ -232,7 +243,9 @@ class VQE(Calculator):
                 hamiltonian, num_particles, n_orb, profile = \
                     build_basis_hamiltonian(atoms, self.basis, self.grid, self.h,
                                             self.charge, self.n_electrons,
-                                            spin=self.spin)
+                                            spin=self.spin,
+                                            frozen_core=self.frozen_core,
+                                            frozen_orbitals=self.frozen_orbitals)
                 self._integration_profile = profile
             ansatz = self._default_ansatz(n_orb, num_particles)
             self._configure(hamiltonian, ansatz)

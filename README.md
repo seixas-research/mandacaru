@@ -27,7 +27,7 @@ From molecular geometry inputs, Carcará constructs real-space grids, evaluates 
 
 ### 1. Localized Basis Sets (Generated Native)
 All basis set functions are generated from scratch mathematically rather than relying on tabulated basis databases. Supported localized single-particle basis sets include:
-- **FAO (Full Atomic Orbital):** Analytic hydrogen-like orbitals equipped with Slater effective charges.
+- **FAO (Full Atomic Orbital):** Analytic hydrogen-like orbitals built from the actual atomic number (bare nuclear charge, no Slater screening), one per occupied subshell.
 - **NAO (Numerical Atomic Orbital):** Confined Sankey/SIESTA-type atomic orbitals solved numerically on radial grids within a hard-wall sphere boundary dictated by a user-specified energy shift.
 - **GTO (Gaussian-Type Orbital):** Minimal STO-nG bases generated via scale-covariant least-squares fitting of primitives to Slater-type orbitals.
 - **Pople Split-Valence:** Contracted GTO split-valence bases (e.g., 6-31G and 6-31G(d)), featuring native polarization d-shells.
@@ -53,6 +53,9 @@ A robust second-quantized algebra layer implements:
   - `qeb` (qubit-excitation generators with Jordan-Wigner Z-strings dropped).
   - `ceo` (coupled-exchange operators sharing entangling structures, yielding the highest accuracy per CNOT).
 - **Hartree-Fock Reference Drivers:** Restricted Hartree-Fock (RHF) and Unrestricted Hartree-Fock (UHF) models to supply stable molecular-orbital bases and stationary reference states.
+- **Frozen-Core Approximation:** Both `VQE` and `ADAPTVQE` accept `frozen_core` (`True`/`"auto"` for the chemical noble-gas core, or an integer count of lowest MOs) and `frozen_orbitals` (an explicit list of core spatial-MO indices). Frozen core orbitals are removed from the active space and replaced by their mean-field contribution (a constant core energy plus an effective one-body potential), shrinking the qubit count.
+- **Spin-Polarized References:** The initial spin state is set the ASE way, through the atoms' initial magnetic moments (`Atoms(..., magmoms=[1, 1])` for a triplet); the calculators read it and build a reference with `n_alpha - n_beta` unpaired electrons.
+- **Sparse Large Active Spaces:** For 12+ qubits `ADAPTVQE` automatically switches to a sparse operator pool (`sparse="auto"`) that screens with the exact analytic gradient and applies each excitation with a closed-form `exp(θA)`, keeping frozen-core problems such as water tractable on an exact state-vector backend.
 - **Expressibility & Profiling Analysis:** Evaluates parameterized quantum circuit expressibility (KL-divergence vs. Haar distribution within symmetry-conserving subspaces) and tracks circuit complexity (CNOT counts and depth compilation).
 
 ### 5. ASE Calculator Integration
@@ -82,7 +85,7 @@ carcara/
 │       ├── utils/       # Profiling (timing/memory), logging, start-up banner
 │       ├── units.py     # Unified conversion factors (Angstrom/eV <-> Bohr/Hartree)
 │       └── version.py   # Package versioning (CalVer YY.M.patch)
-├── examples/            # Example scripts for PES scans, integrals, VQE, and ADAPT
+├── examples/            # ADAPT-VQE walkthroughs: H2, LiH, H2O (frozen core), BeH2, mappings, O2 triplet
 ├── test/                # Comprehensive pytest suite
 └── docs/                # Sphinx source files and configuration
 ```
