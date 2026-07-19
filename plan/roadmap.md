@@ -36,7 +36,7 @@ full quantum error correction, and tensor-network classical backends.
 
 ## 2. Current State (baseline)
 
-Package version: **26.7.28**. Build: `hatchling`. Python ≥ 3.11.
+Package version: **26.7.35**. Build: `hatchling`. Python ≥ 3.11.
 Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
 `qiskit-ibm-runtime`, `ase` (plus `pandas`, `matplotlib`, `pyyaml`, `pytest`).
 
@@ -48,13 +48,18 @@ Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
 | Molecular Hamiltonian (`MolecularIntegrals`, + `hartree_fock_hamiltonian`) | `src/carcara/core/hamiltonian.py` | **implemented** |
 | Periodic plane-wave basis (`PlaneWaveIntegrals`, reciprocal-space PBC integrals) | `src/carcara/core/planewave.py` | **implemented** |
 | Fermion operators + fermion-to-qubit mappings (JW/BK/parity) | `src/carcara/core/mapping.py` | **implemented** |
-| Ansatz (UCCSD) | `src/carcara/circuits/ansatz.py` | **implemented** |
+| Ansatz protocol + UCCSD + growable AdaptAnsatz + circuit profiling | `src/carcara/circuits/{base,ansatz,adapt_ansatz,profiling}.py` | **implemented** |
 | Excitation gates | `src/carcara/circuits/gates.py` | **implemented** |
+| Shared driver base (ASE setup, H materialization, `energy(psi)`, timings) | `src/carcara/algorithms/base.py` | **implemented** |
 | VQE (state-vector; ASE calculator) | `src/carcara/algorithms/vqe.py` | **implemented** |
-| Optimizers (SciPy-backed) | `src/carcara/optimizers/optim.py` | **implemented** |
+| Optimizers (SciPy + native SPSA/Adam) | `src/carcara/optimizers/optim.py` | **implemented** |
 | Operator pools (fermionic / qubit / QEB / CEO) | `src/carcara/circuits/pools.py` | **implemented** |
 | ADAPT-VQE (state-vector, + circuit profiling; ASE calculator) | `src/carcara/algorithms/adapt_vqe.py` | **implemented** |
-| Geometry→Hamiltonian builder (grid-from-cell, basis dict, kpts, spin) | `src/carcara/algorithms/_hamiltonian_from_atoms.py` | **implemented** |
+| VASQE (stochastic ADAPT: softmax selection + temperature annealing) | `src/carcara/algorithms/vasqe.py` | **implemented** |
+| Excited states — deflation (`energy_levels`, `DeflationMixin`) | `src/carcara/algorithms/deflation.py` | **implemented** |
+| Excited states — subspace search (SSVQE; `SubspaceVQE`/`SubspaceADAPTVQE`/`SubspaceVASQE`) | `src/carcara/algorithms/subspace.py` | **implemented** |
+| Periodic crystals (Bloch bands + BvK total energy) | `src/carcara/algorithms/bloch.py` | **implemented** |
+| Geometry→Hamiltonian builder (grid-from-cell, basis dict, kpts, spin, frozen core) | `src/carcara/algorithms/_hamiltonian_from_atoms.py` | **implemented** |
 | Hartree-Fock (RHF/UHF, MO basis) | `src/carcara/algorithms/hartree_fock.py` | **implemented** |
 | Expressibility (KL-from-Haar, ADAPT tracker) | `src/carcara/algorithms/expressivity.py` | **implemented** |
 | Profiling / banner / `output.txt` logger | `src/carcara/utils/` | **implemented** |
@@ -68,8 +73,23 @@ fixed-ansatz VQE and the *adaptive* **ADAPT-VQE** (localized *or* periodic
 plane-wave bases → integrals → second-quantized Hamiltonian → qubit mappings →
 HF/MO basis → UCCSD/ADAPT ansatz → VQE, on an exact state-vector backend), with
 all four operator pools, Qiskit-based circuit profiling, and an ASE-calculator
-front-end. What remains is real-hardware execution and error mitigation. The
-roadmap below follows this existing layout so no restructuring is required.
+front-end. On top of that baseline, **excited states** (variational deflation
+`energy_levels` and subspace-search `SubspaceVQE`/`SubspaceADAPTVQE`), a
+**stochastic adaptive** solver (**VASQE**, softmax operator selection with
+temperature annealing), and **periodic crystals** (`BlochADAPTVQE`) are also in.
+All drivers share a common **`VariationalDriver`** base with the excited-state
+techniques as composable mixins (see §Architecture note below). What remains is
+real-hardware execution and error mitigation. The roadmap below follows this
+existing layout so no restructuring is required.
+
+> **Architecture note (delivered):** the drivers were refactored into three
+> orthogonal layers — problem setup + state-vector backend (`algorithms/base.py`,
+> `VariationalDriver`), the algorithm loop (thin `VQE`/`ADAPTVQE`/`VASQE`
+> subclasses), and cross-cutting excited-state methods as mixins (`DeflationMixin`,
+> `SubspaceMixin`). Ansätze conform to a structural `Ansatz` protocol
+> (`circuits/base.py`); `AdaptAnsatz` and circuit profiling live in `circuits/`.
+> A new method (selection rule, ansatz, or excited-state technique) plugs in
+> without touching the shared setup code.
 
 > **Naming note:** the mappings live in `core/mapping.py` (singular), not the
 > `core/mappings.py` used in some earlier drafts of this document.
@@ -182,10 +202,13 @@ transpiles to a target basis without error.
 *Goal: classical parameter optimization for hybrid loops.*
 *File: `optimizers/optim.py`.*
 
-> **Status — SciPy backend implemented.** `Optimizer` exposes the SciPy
-> gradient-free methods (COBYLA default, plus Nelder–Mead / SLSQP / Powell /
-> L-BFGS-B) behind `minimize(cost, x0) -> OptimizeResult`, recording the cost
-> history. Remaining: SPSA for shot noise and parameter-shift gradients.
+> **Status — implemented.** `Optimizer` exposes six named methods behind
+> `minimize(cost, x0) -> OptimizeResult` with cost-history tracking: COBYLA
+> (default), Nelder–Mead, SLSQP and L-BFGS-B (via `scipy.optimize.minimize`), plus
+> **native SPSA** (two-eval Spall stochastic gradient, for shot noise) and
+> **native Adam** (finite-difference-gradient adaptive moments). ADAPT-VQE also
+> screens pool gradients with a **parameter-shift** estimator. Remaining:
+> shot-calibrated SPSA and analytic parameter-shift gradients on hardware.
 
 - Unified optimizer interface (`minimize(cost_fn, x0, ...) -> Result`).
 - Gradient-free: **COBYLA**, **SLSQP**, **Nelder–Mead** (via `scipy`).
@@ -203,23 +226,25 @@ converges under simulated shot noise.
 *Goal: the hybrid variational solver tying everything together.*
 *File: `algorithms/vqe.py`.*
 
-> **Status — fixed-ansatz VQE implemented.** `VQE(hamiltonian, ansatz,
-> optimizer).run()` returns a `VQEResult` (optimal energy, parameters, reference
-> energy, cost history) on an **exact state-vector backend**; the acceptance
-> criterion is met for H₂ (reproduces exact diagonalization to ~1e-9 Ha, well
-> within chemical accuracy; `VQE` is also an ASE calculator). Remaining: shot-based
-> `qiskit` `Estimator` evaluation, the excited-state variants (VQD/SSVQE), and
+> **Status — fixed-ansatz VQE + excited-state variants implemented.**
+> `VQE(hamiltonian, ansatz, optimizer).run()` returns a `VQEResult` (optimal
+> energy, parameters, reference energy, cost history) on an **exact state-vector
+> backend**; the acceptance criterion is met for H₂ (reproduces exact
+> diagonalization to ~1e-9 Ha; `VQE` is also an ASE calculator). The excited-state
+> variants are now in: **VQD** (variational deflation) via `energy_levels(...)` on
+> both `VQE` and `ADAPTVQE`, and **SSVQE** (subspace-search) via `SubspaceVQE` /
+> `SubspaceADAPTVQE`. Remaining: shot-based `qiskit` `Estimator` evaluation and
 > serializable result objects.
 
 - **`VQE`** solver: takes `(qubit_hamiltonian, ansatz, optimizer, backend)` and
   returns ground-state energy, optimal parameters, and convergence history.
 - Expectation-value estimation via `qiskit` primitives (`Estimator`), with shot
   budgeting and operator grouping for measurement reduction.
-- **Variants (stretch within this phase):**
-  - VQD (excited states),
-  - SSVQE,
-  - time-dependent / McLachlan variational dynamics ("its variants" per README).
-- Result objects are serializable (YAML/JSON) for provenance.
+- **Variants:**
+  - VQD (excited states) ✓ — `energy_levels(...)` via `DeflationMixin`,
+  - SSVQE ✓ — `SubspaceVQE` / `SubspaceADAPTVQE` (and `SubspaceVASQE`),
+  - time-dependent / McLachlan variational dynamics ("its variants" per README) **(planned)**.
+- Result objects are serializable (YAML/JSON) for provenance **(planned)**.
 
 **Deliverables:** end-to-end `VQE(...).run()` on a statevector simulator.
 **Acceptance:** H₂ and LiH ground-state energies within chemical accuracy
@@ -303,16 +328,26 @@ A `PoolFactory`/registry lets users select `"fermionic" | "qubit" | "qeb" |
 - **Warm starts:** initialize newly added parameter at 0 and reuse previous
   optimum for the rest (ADAPT's key efficiency property).
 
-#### 5.3 — Advanced ADAPT variants (stretch within this phase)
-- **Tetris-ADAPT-VQE** (Anastasiou *et al.*, 2024): add multiple
+#### 5.3 — Advanced ADAPT variants
+- **VASQE — stochastic selection** ✓ *implemented* (`algorithms/vasqe.py`): instead
+  of the greedy `argmax|g|`, sample the next operator from a softmax of the pool
+  gradients, `P(i,τ) = exp(|gᵢ|/τ)/Σ exp(|gⱼ|/τ)`, with a constant or **annealed**
+  selection temperature (exponential / linear / logarithmic). τ→0 recovers
+  ADAPT-VQE; higher τ explores the ansatz space. Implemented as the single
+  `_select_operator` hook, so it also drives the deflation and subspace excited
+  states (`SubspaceVASQE`).
+- **Excited states:** ✓ *implemented* — deflation (`energy_levels`) and
+  subspace-search grow their ADAPT ansätze through the same selection hook
+  (stochastically under VASQE). MORE-ADAPT / richer state-specific penalties remain
+  future work.
+- **Tetris-ADAPT-VQE** (Anastasiou *et al.*, 2024) **(planned)**: add multiple
   *disjoint-support* operators per iteration to pack circuit "moments" and cut
   depth/iteration count.
-- **Selected/screened pools:** pre-filter the pool by symmetry sector and by
-  cheap gradient pre-screening to reduce per-iteration measurement cost.
-- **Excited states:** MORE-ADAPT / state-specific penalties reusing the Phase 4
-  VQD/SSVQE machinery.
-- **Noise-aware selection:** weight operator selection by estimated circuit
-  noise (CNOT cost) so cheaper operators win ties — pairs naturally with CEO.
+- **Selected/screened pools (planned):** pre-filter the pool by symmetry sector and
+  by cheap gradient pre-screening to reduce per-iteration measurement cost.
+- **Noise-aware selection (planned):** weight operator selection by estimated
+  circuit noise (CNOT cost) so cheaper operators win ties — pairs naturally with
+  CEO, and slots into the same `_select_operator` hook VASQE uses.
 
 **Deliverables:** `ADAPTVQE(H, pool="ceo", ...).run()` with a pluggable pool
 (`"fermionic" | "qubit" | "qeb" | "ceo"`), full convergence history, and
@@ -331,6 +366,14 @@ gate set via Qiskit). ✓ *implemented* (`algorithms/adapt_vqe.py`,
 > - **Hartree-Fock (RHF/UHF)** and the molecular-orbital basis
 >   (`algorithms/hartree_fock.py`) — required so ADAPT starts from a stationary
 >   reference.
+> - **Excited states** — variational deflation (`algorithms/deflation.py`,
+>   `energy_levels`) and subspace-search / SSVQE (`algorithms/subspace.py`).
+> - **VASQE** (`algorithms/vasqe.py`) — stochastic ADAPT with temperature annealing.
+> - **Periodic crystals** (`algorithms/bloch.py`, `BlochADAPTVQE`) — Bloch band
+>   structure + Born–von Kármán total energy.
+> - **Layered driver architecture** — `VariationalDriver` base + `DeflationMixin` /
+>   `SubspaceMixin`, and the `Ansatz` protocol / `AdaptAnsatz` / profiling in
+>   `circuits/`.
 > - **Ansatz expressibility** (`algorithms/expressivity.py`): KL divergence of the
 >   fidelity distribution from Haar, with an `ADAPTExpressivityTracker` that logs
 >   how expressibility grows as the ansatz does).
@@ -384,8 +427,9 @@ to FCI than the unmitigated run.
 ### Phase 8 — Documentation, Examples & Release
 *Goal: usable, citable, published.*
 
-- Complete Sphinx docs: API reference (autodoc) + the VQE tutorial stub in
-  `docs/source/tutorial/vqe.md`.
+- Sphinx docs: API reference (autodoc) + hands-on tutorials — VQE, ADAPT-VQE,
+  **excited states (deflation)**, **subspace-search (SSVQE)**, **VASQE**, periodic
+  **Bloch crystals**, and PES scans (all live under `docs/source/tutorial/`).
 - Worked examples/notebooks: H₂ dissociation curve, Hubbard dimer, a hardware
   run walkthrough, and an **ADAPT-VQE pool comparison** (fermionic vs qubit vs
   QEB vs CEO: energy error vs CNOT count).
@@ -452,11 +496,15 @@ release at the end.
 | **M6 — Mitigated results** | 7 | ⬜ pending | ZNE improves noisy accuracy |
 | **M7 — Public release** | 8 | ◐ partial | Docs + PyPI + tutorial reproducible (Sphinx tutorials live; PW/ASE features documented) |
 
-*Also landed beyond the original milestones:* a periodic **plane-wave basis**
-(`PlaneWaveIntegrals`, PBC), an **ASE-calculator** front-end for both drivers
-(grid-from-cell, `basis` dicts, Monkhorst-Pack `kpts`, `spin`, `initial_state`),
-per-axis / non-orthogonal grids in the C backend, and a timing / memory / cores
-profiling layer with a start-up banner.
+*Also landed beyond the original milestones:* **excited states** (deflation
+`energy_levels` + subspace-search SSVQE), the stochastic **VASQE** with
+temperature annealing, **periodic crystals** (`BlochADAPTVQE` — band structure +
+BvK total energy), a **layered driver architecture** (`VariationalDriver` base +
+composable excited-state mixins, an `Ansatz` protocol), a periodic **plane-wave
+basis** (`PlaneWaveIntegrals`, PBC), an **ASE-calculator** front-end for the
+molecular drivers (grid-from-cell, `basis` dicts, Monkhorst-Pack `kpts`, `spin`,
+`initial_state`, frozen core), per-axis / non-orthogonal grids in the C backend,
+and a timing / memory / cores profiling layer with a start-up banner.
 
 ---
 
@@ -488,6 +536,11 @@ profiling layer with a start-up banner.
   to reduce circuit depth.
 - **Tetris-ADAPT-VQE** — Anastasiou *et al.* (2024). Disjoint-support batching of
   operators per iteration.
+- **VQD (Variational Quantum Deflation)** — Higgott, Wang, Brierley, *Quantum*
+  **3**, 156 (2019). Excited states by penalizing overlap with lower states.
+- **SSVQE (Subspace-Search VQE)** — Nakanishi, Mitarai, Fujii, *Phys. Rev.
+  Research* **1**, 033062 (2019). Ground + excited states in one optimization via a
+  weighted-energy cost over orthogonal references.
 
 ---
 
