@@ -44,7 +44,7 @@ from carcara.algorithms import (ADAPTVQE, active_space_dimension,
                                 compute_expressibility, plot_expressivity_growth,
                                 plot_fidelity_distribution,
                                 track_adapt_expressivity)
-from carcara.algorithms.adapt_vqe import AdaptAnsatz
+from carcara.circuits import AdaptAnsatz
 from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 

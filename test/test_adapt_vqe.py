@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from carcara.algorithms import ADAPTVQE, ADAPTVQEResult, RHF
-from carcara.algorithms.adapt_vqe import AdaptAnsatz, profile_ansatz
+from carcara.circuits import AdaptAnsatz, profile_ansatz
 from carcara.circuits import (
     CEOPool,
     FermionicPool,

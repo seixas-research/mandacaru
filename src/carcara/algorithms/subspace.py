@@ -45,9 +45,10 @@ import numpy as np
 
 from ase.calculators.calculator import all_changes
 
+from ..circuits import AdaptAnsatz, CircuitMetrics, profile_ansatz
 from ..core.mapping import reference_qubit_bits
+from .adapt_vqe import ADAPTVQE
 from .deflation import EnergyLevels
-from .adapt_vqe import ADAPTVQE, AdaptAnsatz, CircuitMetrics, profile_ansatz
 from .vqe import VQE
 
 
@@ -465,11 +466,11 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
             with timings.time("gradient screening"):
                 evolved = ansatz.evolve(params, refs)
                 grads = self._weighted_gradients(evolved, weights)
-            idx = int(np.argmax(np.abs(grads)))
-            max_grad = float(abs(grads[idx]))
+            max_grad = float(np.max(np.abs(grads)))
             if max_grad < gradient_tol:
                 converged = True
                 break
+            idx = self._select_operator(grads, len(selected))
 
             op = self._pool_ops[idx]
             ansatz.append(op)

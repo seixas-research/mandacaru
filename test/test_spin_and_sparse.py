@@ -106,7 +106,7 @@ class TestSparsePool:
 
 class TestClosedFormAnsatz:
     def test_sparse_ansatz_matches_dense_state(self):
-        from carcara.algorithms.adapt_vqe import AdaptAnsatz
+        from carcara.circuits import AdaptAnsatz
         from carcara.circuits.pools import build_pool
 
         pool = build_pool("fermionic", 3, (2, 1), mapping="jordan_wigner")

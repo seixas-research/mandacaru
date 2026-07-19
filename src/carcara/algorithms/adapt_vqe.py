@@ -46,14 +46,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-# AdaptAnsatz and the circuit-profiling helpers now live in carcara.circuits; they
-# are imported (and re-exported) here so the historical import paths
-# ``from carcara.algorithms.adapt_vqe import AdaptAnsatz, profile_ansatz`` keep working.
 from ..circuits.adapt_ansatz import AdaptAnsatz
 from ..circuits.pools import PoolBase, PoolOperator, build_pool
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
 from ..units import ANGSTROM_TO_BOHR, from_hartree
-# format_pauli_sum lives on the base module now; re-exported for back-compat.
 from .base import VariationalDriver, format_pauli_sum
 from .deflation import DeflationMixin, deflation_penalty
 
@@ -492,6 +488,18 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             return self._parameter_shift_gradients(psi)
         return self._finite_difference_gradients(psi)      # "finite_difference"
 
+    def _select_operator(self, grads: np.ndarray, iteration: int) -> int:
+        """Index of the pool operator to append this iteration.
+
+        ADAPT-VQE's greedy rule: the largest-magnitude gradient.  This is the
+        single **selection hook** subclasses override to change *which* operator
+        grows the ansatz -- e.g. :class:`~carcara.algorithms.vasqe.VASQE` samples
+        it stochastically from a softmax of the gradients.  Convergence
+        (``max|grad| < tol``) is decided by the caller, independently of the
+        selection, so overriding this never changes the stopping criterion.
+        """
+        return int(np.argmax(np.abs(grads)))
+
     def reference_energy(self) -> float:
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping, sparse=getattr(self, "_sparse", False))
@@ -651,11 +659,11 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     psi = ansatz.state(params) if ansatz.num_parameters else \
                         ansatz.reference_state()
                     grads = self._gradients(psi)
-                idx = int(np.argmax(np.abs(grads)))
-                max_grad = float(abs(grads[idx]))
+                max_grad = float(np.max(np.abs(grads)))
                 if max_grad < gradient_tol:
                     converged = True
                     break
+                idx = self._select_operator(grads, len(selected))
 
                 op = self._pool_ops[idx]
                 ansatz.append(op)
@@ -809,9 +817,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             psi = (ansatz.state(params) if ansatz.num_parameters
                    else ansatz.reference_state())
             grads = self._deflated_gradients(psi, states, beta)
-            idx = int(np.argmax(np.abs(grads)))
-            if float(abs(grads[idx])) < gradient_tol:
+            if float(np.max(np.abs(grads))) < gradient_tol:
                 break
+            idx = self._select_operator(grads, ansatz.num_parameters)
             ansatz.append(self._pool_ops[idx])
             x0 = np.concatenate([params, [0.0]])
 

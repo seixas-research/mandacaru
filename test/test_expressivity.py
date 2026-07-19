@@ -116,7 +116,7 @@ class TestSamplingAndDriver:
 
     def test_zero_parameter_ansatz_is_constant(self):
         # An ADAPT ansatz with no operators yields the fixed reference: F == 1.
-        from carcara.algorithms.adapt_vqe import AdaptAnsatz
+        from carcara.circuits import AdaptAnsatz
         ansatz = AdaptAnsatz(4, occupied=(0, 2))
         F = sample_pqc_fidelities(ansatz, num_samples=50,
                                   rng=np.random.default_rng(4))

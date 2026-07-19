@@ -18,7 +18,7 @@ import pytest
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE
-from carcara.algorithms.adapt_vqe import AdaptAnsatz
+from carcara.circuits import AdaptAnsatz
 from carcara.backends import available_devices, is_simulator, normalize_device
 from carcara.integrals import Grid
 

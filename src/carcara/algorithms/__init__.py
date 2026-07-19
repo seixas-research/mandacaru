@@ -8,14 +8,7 @@
 
 """Variational quantum algorithms."""
 
-from .adapt_vqe import (
-    ADAPTVQE,
-    ADAPTVQEResult,
-    AdaptAnsatz,
-    AdaptIteration,
-    CircuitMetrics,
-    profile_ansatz,
-)
+from .adapt_vqe import ADAPTVQE, ADAPTVQEResult, AdaptIteration
 from .deflation import DeflationMixin, EnergyLevels
 from .bloch import BandStructure, BlochADAPTVQE
 from .expressivity import (
@@ -39,6 +32,13 @@ from .subspace import (
     SubspaceVQE,
     SubspaceVQEResult,
 )
+from .vasqe import (
+    SubspaceVASQE,
+    VASQE,
+    VASQEResult,
+    annealed_temperature,
+    softmax_selection_probabilities,
+)
 from .vqe import VQE, VQEResult
 
 __all__ = [
@@ -50,10 +50,7 @@ __all__ = [
     "transform_integrals",
     "ADAPTVQE",
     "ADAPTVQEResult",
-    "AdaptAnsatz",
     "AdaptIteration",
-    "CircuitMetrics",
-    "profile_ansatz",
     "BlochADAPTVQE",
     "BandStructure",
     "EnergyLevels",
@@ -61,6 +58,11 @@ __all__ = [
     "SubspaceVQEResult",
     "SubspaceADAPTVQE",
     "SubspaceADAPTVQEResult",
+    "VASQE",
+    "VASQEResult",
+    "SubspaceVASQE",
+    "softmax_selection_probabilities",
+    "annealed_temperature",
     "compute_expressibility",
     "ExpressibilityResult",
     "ExpressibilityStep",
