@@ -42,6 +42,9 @@ from scipy.linalg import expm
 from ..core.mapping import Fermion
 from .gates import double_excitation, single_excitation
 
+# UCCSD conforms to the carcara.circuits.base.Ansatz protocol
+# (num_parameters, n_qubits, reference_state, state, evolve).
+
 
 class UCCSD:
     """UCCSD ansatz state-vector generator over ``2 * n_spatial_orbitals`` qubits.

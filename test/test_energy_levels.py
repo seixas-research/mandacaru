@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from carcara.algorithms import ADAPTVQE, VQE, EnergyLevels
-from carcara.algorithms._energy_levels import spectral_width_beta
+from carcara.algorithms.deflation import spectral_width_beta
 from carcara.circuits import UCCSD
 from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid

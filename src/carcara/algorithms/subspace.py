@@ -8,7 +8,7 @@
 
 r"""Subspace-search VQE and ADAPT-VQE for simultaneous ground + excited states.
 
-Where variational quantum deflation (:mod:`carcara.algorithms._energy_levels`)
+Where variational quantum deflation (:mod:`carcara.algorithms.deflation`)
 finds excited states *one after another*, **subspace-search VQE** (SSVQE,
 Nakanishi *et al.* 2019) finds the ground state and the first few excited states
 **at once**, in a single optimization.
@@ -40,14 +40,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import combinations
-from time import perf_counter as _perf
 
 import numpy as np
 
 from ase.calculators.calculator import all_changes
 
 from ..core.mapping import reference_qubit_bits
-from ._energy_levels import EnergyLevels
+from .deflation import EnergyLevels
 from .adapt_vqe import ADAPTVQE, AdaptAnsatz, CircuitMetrics, profile_ansatz
 from .vqe import VQE
 
@@ -223,10 +222,101 @@ class SubspaceADAPTVQEResult:
 
 
 # --------------------------------------------------------------------------- #
+# Shared subspace-search machinery.
+# --------------------------------------------------------------------------- #
+
+class SubspaceMixin:
+    """Shared SSVQE scaffolding: one unitary over several orthogonal references.
+
+    Owns the outer :meth:`run` (weights, reference determinants, timings, banner,
+    sort, result assembly) and the ASE ``calculate`` that also stores the spectrum
+    on :attr:`subspace_result`.  A concrete driver supplies the parts that differ:
+
+    * :meth:`_reference_occupied` -- the reference determinant's occupied orbitals;
+    * :meth:`_subspace_optimize` -- the actual optimization (fixed ansatz or grow);
+    * :meth:`_make_subspace_result` -- the driver's result dataclass;
+    * :meth:`_emit_run_header` / :meth:`_print_subspace_summary` -- verbose output.
+    """
+
+    def _init_subspace(self, num_states: int, weights) -> None:
+        if int(num_states) < 1:
+            raise ValueError("num_states must be >= 1")
+        self.num_states = int(num_states)
+        self._weights_spec = weights
+
+    # -- ASE calculator: also expose the spectrum on `subspace_result` ---- #
+
+    def calculate(self, atoms=None, properties=("energy",),
+                  system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        self.subspace_result = getattr(self, self._result_attr)
+
+    # -- references ------------------------------------------------------- #
+
+    def _references(self) -> np.ndarray:
+        return reference_matrix(self.mapping, self.n_qubits,
+                                self._reference_occupied(), self.num_states)
+
+    # -- shared outer loop ----------------------------------------------- #
+
+    def run(self, initial_parameters=None, **_ignored):
+        """Optimize the shared unitary and return the ``num_states`` levels."""
+        if not self._configured:
+            raise RuntimeError(
+                f"{type(self).__name__} has no Hamiltonian; construct it with one, "
+                "or use it as an ASE calculator with a `basis`")
+        self._check_kpts()
+
+        weights = resolve_weights(self._weights_spec, self.num_states)
+        refs = self._references()
+        timings, run_t0 = self._make_timings()
+        ref_energy = self.reference_energy()
+
+        if self.verbose:
+            self._show_banner()
+            self._emit_run_header(ref_energy)
+            print(f"Subspace search: {self.num_states} states, weights = "
+                  f"{np.array2string(weights, precision=3)}")
+
+        energies, params, states, extra = self._subspace_optimize(
+            refs, weights, initial_parameters, timings)
+
+        order = np.argsort(energies)
+        energies = np.asarray(energies, dtype=float)[order]
+        states = [states[i] for i in order]
+
+        self._finalize_timings(timings, run_t0)
+        result = self._make_subspace_result(energies, params, weights, states,
+                                            ref_energy, timings, extra)
+        if self.verbose:
+            self._print_subspace_summary(result, timings)
+        return result
+
+    # -- driver hooks ----------------------------------------------------- #
+
+    def _reference_occupied(self):
+        raise NotImplementedError
+
+    def _subspace_optimize(self, refs, weights, initial_parameters, timings):
+        """Return ``(energies, params, states, extra)`` (energies/states unsorted)."""
+        raise NotImplementedError
+
+    def _make_subspace_result(self, energies, params, weights, states,
+                              ref_energy, timings, extra):
+        raise NotImplementedError
+
+    def _emit_run_header(self, ref_energy) -> None:
+        raise NotImplementedError
+
+    def _print_subspace_summary(self, result, timings) -> None:
+        raise NotImplementedError
+
+
+# --------------------------------------------------------------------------- #
 # Subspace-search VQE (fixed ansatz).
 # --------------------------------------------------------------------------- #
 
-class SubspaceVQE(VQE):
+class SubspaceVQE(SubspaceMixin, VQE):
     """Subspace-search VQE: ground + first excited states in one optimization.
 
     Extends :class:`~carcara.algorithms.VQE`; every constructor argument of
@@ -253,29 +343,16 @@ class SubspaceVQE(VQE):
 
     def __init__(self, hamiltonian=None, ansatz=None, *, num_states: int = 2,
                  weights=None, **kwargs):
-        if int(num_states) < 1:
-            raise ValueError("num_states must be >= 1")
-        self.num_states = int(num_states)
-        self._weights_spec = weights
+        self._init_subspace(num_states, weights)
         super().__init__(hamiltonian, ansatz, **kwargs)
 
-    # -- ASE calculator: also expose the spectrum on `subspace_result` ---- #
-
-    def calculate(self, atoms=None, properties=("energy",),
-                  system_changes=all_changes):
-        super().calculate(atoms, properties, system_changes)
-        self.subspace_result = self.vqe_result
-
-    # -- subspace evolution ---------------------------------------------- #
-
-    def _references(self) -> np.ndarray:
+    def _reference_occupied(self):
         occupied = getattr(self.ansatz, "_occupied", None)
         if occupied is None:
             raise TypeError(
                 "the ansatz does not expose its occupied orbitals; SubspaceVQE "
                 "needs a determinant reference (e.g. a UCCSD ansatz)")
-        return reference_matrix(self.mapping, self.n_qubits, occupied,
-                                self.num_states)
+        return occupied
 
     def _evolve(self, theta, references) -> np.ndarray:
         evolve = getattr(self.ansatz, "evolve", None)
@@ -286,76 +363,38 @@ class SubspaceVQE(VQE):
                 "the reference states")
         return evolve(theta, references)
 
-    def run(self, initial_parameters=None) -> SubspaceVQEResult:
-        """Optimize the shared unitary and return the ``num_states`` levels."""
-        if not self._configured:
-            raise RuntimeError(
-                "SubspaceVQE has no Hamiltonian/ansatz; construct it with both, "
-                "or use it as an ASE calculator with a `basis`")
-        self._check_kpts()
-        from ..integrals import _backend
-        from ..utils.profiling import Timings
+    def _emit_run_header(self, ref_energy) -> None:
+        self._print_header(ref_energy)
 
+    def _subspace_optimize(self, refs, weights, initial_parameters, timings):
         k = self.num_states
-        weights = resolve_weights(self._weights_spec, k)
-        refs = self._references()
-        H = self._h_matrix
-
         n = self.ansatz.num_parameters
         x0 = (np.zeros(n) if initial_parameters is None
               else np.asarray(initial_parameters, dtype=float).ravel())
         if x0.size != n:
             raise ValueError(f"expected {n} initial parameters, got {x0.size}")
 
-        timings = Timings(n_cores=_backend.num_threads(),
-                          backend="C (OpenMP)" if _backend.HAS_C_BACKEND
-                          else "NumPy")
-        run_t0 = self.__dict__.pop("_wall_start", None) or _perf()
-
-        ref_energy = self.reference_energy()
-        if self.verbose:
-            from ..utils import banner
-            banner.show()
-            self._print_header(ref_energy)
-            print(f"Subspace search: {k} states, weights = "
-                  f"{np.array2string(weights, precision=3)}")
-
         def weighted_cost(theta):
             evolved = self._evolve(theta, refs)
-            total = 0.0
-            for j in range(k):
-                psi = evolved[:, j]
-                total += weights[j] * float(np.real(np.vdot(psi, H @ psi)))
-            return total
+            return sum(weights[j] * self.energy(evolved[:, j]) for j in range(k))
 
         with timings.time("parameter optimization"):
             result = self.optimizer.minimize(weighted_cost, x0)
 
         evolved = self._evolve(result.x, refs)
-        energies = np.array([float(np.real(np.vdot(evolved[:, j], H @ evolved[:, j])))
-                             for j in range(k)])
-        order = np.argsort(energies)
-        states = [evolved[:, j].copy() for j in order]
+        energies = [self.energy(evolved[:, j]) for j in range(k)]
+        states = [evolved[:, j].copy() for j in range(k)]
+        extra = {"num_evaluations": result.nfev, "success": result.success}
+        return energies, np.asarray(result.x, float), states, extra
 
-        if self._integration_profile is not None:
-            for name, secs in self._integration_profile.get("stages_s", {}).items():
-                timings.add(f"integration: {name}", secs)
-        timings.wall_time = _perf() - run_t0
-
-        subspace = SubspaceVQEResult(
-            energies=energies[order],
-            optimal_parameters=np.asarray(result.x, float),
-            weights=weights,
-            states=states,
-            reference_energy=ref_energy,
-            num_evaluations=result.nfev,
-            success=result.success,
+    def _make_subspace_result(self, energies, params, weights, states,
+                              ref_energy, timings, extra) -> SubspaceVQEResult:
+        return SubspaceVQEResult(
+            energies=energies, optimal_parameters=params, weights=weights,
+            states=states, reference_energy=ref_energy,
+            num_evaluations=extra["num_evaluations"], success=extra["success"],
             timings=timings.as_dict(),
             integration_profile=self._integration_profile)
-
-        if self.verbose:
-            self._print_subspace_summary(subspace, timings)
-        return subspace
 
     def _print_subspace_summary(self, result: SubspaceVQEResult, timings) -> None:
         rule = "=" * 70
@@ -374,7 +413,7 @@ class SubspaceVQE(VQE):
 # Subspace-search ADAPT-VQE (one shared, adaptively grown ansatz).
 # --------------------------------------------------------------------------- #
 
-class SubspaceADAPTVQE(ADAPTVQE):
+class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
     """Subspace-search ADAPT-VQE: grow one shared ansatz for several states.
 
     Extends :class:`~carcara.algorithms.ADAPTVQE`; accepts every ``ADAPTVQE``
@@ -391,18 +430,14 @@ class SubspaceADAPTVQE(ADAPTVQE):
 
     def __init__(self, hamiltonian=None, pool="fermionic", *,
                  num_states: int = 2, weights=None, **kwargs):
-        if int(num_states) < 1:
-            raise ValueError("num_states must be >= 1")
-        self.num_states = int(num_states)
-        self._weights_spec = weights
+        self._init_subspace(num_states, weights)
         super().__init__(hamiltonian, pool, **kwargs)
 
-    def calculate(self, atoms=None, properties=("energy",),
-                  system_changes=all_changes):
-        super().calculate(atoms, properties, system_changes)
-        self.subspace_result = self.adapt_result
+    def _reference_occupied(self):
+        return self.pool.occupied_orbitals
 
-    # -- weighted subspace gradient -------------------------------------- #
+    def _emit_run_header(self, ref_energy) -> None:
+        self._print_header(ref_energy, self._energy_unit_label())
 
     def _weighted_gradients(self, evolved: np.ndarray,
                             weights: np.ndarray) -> np.ndarray:
@@ -412,37 +447,10 @@ class SubspaceADAPTVQE(ADAPTVQE):
             grads += weights[j] * self._analytic_gradients(evolved[:, j])
         return grads
 
-    def run(self, initial_parameters=None, *, geometry=None, cell=None,
-            **_ignored) -> SubspaceADAPTVQEResult:
-        """Grow the shared ansatz and return the ``num_states`` levels."""
-        if not self._configured:
-            raise RuntimeError(
-                "SubspaceADAPTVQE has no Hamiltonian; construct it with one, or "
-                "use it as an ASE calculator with a `basis`")
-        self._check_kpts()
-        from ..integrals import _backend
-        from ..utils.profiling import Timings
-
+    def _subspace_optimize(self, refs, weights, initial_parameters, timings):
         k = self.num_states
-        weights = resolve_weights(self._weights_spec, k)
-        refs = reference_matrix(self.mapping, self.n_qubits,
-                                self.pool.occupied_orbitals, k)
-        H = self._h_matrix
         max_iterations = self.max_iterations
         gradient_tol = self.gradient_tolerance
-
-        timings = Timings(n_cores=_backend.num_threads(),
-                          backend="C (OpenMP)" if _backend.HAS_C_BACKEND
-                          else "NumPy")
-        run_t0 = self.__dict__.pop("_wall_start", None) or _perf()
-
-        ref_energy = self.reference_energy()
-        if self.verbose:
-            from ..utils import banner
-            banner.show()
-            self._print_header(ref_energy, self._energy_unit_label())
-            print(f"Subspace search: {k} states, weights = "
-                  f"{np.array2string(weights, precision=3)}")
 
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping, sparse=self._sparse)
@@ -486,41 +494,34 @@ class SubspaceADAPTVQE(ADAPTVQE):
 
         # Final per-level energies (bare expectation values).
         evolved = ansatz.evolve(params, refs)
-        energies = np.array([self.energy(evolved[:, j]) for j in range(k)])
-        order = np.argsort(energies)
-        states = [evolved[:, j].copy() for j in order]
+        energies = [self.energy(evolved[:, j]) for j in range(k)]
+        states = [evolved[:, j].copy() for j in range(k)]
 
         metrics = (profile_ansatz(self.n_qubits, ansatz.occupied, ansatz.operators)
                    if self.profile else
                    CircuitMetrics(None, None, ansatz.num_parameters))
 
         if not converged and len(selected) == max_iterations:
-            evolved = ansatz.evolve(params, refs)
             max_grad = float(np.max(np.abs(
                 self._weighted_gradients(evolved, weights))))
 
-        if self._integration_profile is not None:
-            for name, secs in self._integration_profile.get("stages_s", {}).items():
-                timings.add(f"integration: {name}", secs)
-        timings.wall_time = _perf() - run_t0
+        extra = {"converged": converged, "final_max_gradient": max_grad,
+                 "operators": selected, "metrics": metrics,
+                 "num_evaluations": total_evals}
+        return energies, params, states, extra
 
-        subspace = SubspaceADAPTVQEResult(
-            energies=energies[order],
-            optimal_parameters=params,
-            weights=weights,
-            converged=converged,
-            final_max_gradient=max_grad,
-            operators=selected,
-            states=states,
+    def _make_subspace_result(self, energies, params, weights, states,
+                              ref_energy, timings,
+                              extra) -> SubspaceADAPTVQEResult:
+        return SubspaceADAPTVQEResult(
+            energies=energies, optimal_parameters=params, weights=weights,
+            converged=extra["converged"],
+            final_max_gradient=extra["final_max_gradient"],
+            operators=extra["operators"], states=states,
             reference_energy=ref_energy,
-            num_evaluations=total_evals,
-            metrics=metrics,
+            num_evaluations=extra["num_evaluations"], metrics=extra["metrics"],
             timings=timings.as_dict(),
             integration_profile=self._integration_profile)
-
-        if self.verbose:
-            self._print_subspace_summary(subspace, timings)
-        return subspace
 
     def _print_subspace_summary(self, result: SubspaceADAPTVQEResult,
                                 timings) -> None:

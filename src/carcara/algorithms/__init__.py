@@ -16,7 +16,7 @@ from .adapt_vqe import (
     CircuitMetrics,
     profile_ansatz,
 )
-from ._energy_levels import EnergyLevels
+from .deflation import DeflationMixin, EnergyLevels
 from .bloch import BandStructure, BlochADAPTVQE
 from .expressivity import (
     ADAPTExpressivityTracker,

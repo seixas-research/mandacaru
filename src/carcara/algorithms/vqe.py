@@ -33,23 +33,18 @@ returns a :class:`VQEResult` shaped like
 
 Beyond the ground state, :meth:`VQE.energy_levels` returns the low-lying
 **molecular energy levels** (ground + excited states) by variational quantum
-deflation -- see :mod:`carcara.algorithms._energy_levels`.
+deflation -- see :mod:`carcara.algorithms.deflation`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from time import perf_counter as _perf
 
 import numpy as np
 
-from ase.calculators.calculator import Calculator, all_changes
-
-from ..backends.hardware import normalize_device, require_runnable
-from ..core.mapping import Fermion, PauliSum
-from ..optimizers.optim import NAMED_OPTIMIZERS, Optimizer, resolve_optimizer
-from ..units import from_hartree
-from .adapt_vqe import format_pauli_sum
+from ..optimizers.optim import Optimizer
+from .base import VariationalDriver, format_pauli_sum
+from .deflation import DeflationMixin, deflation_penalty
 
 
 @dataclass
@@ -91,7 +86,7 @@ class VQEResult:
                 f"nfev={self.num_evaluations}, success={self.success})")
 
 
-class VQE(Calculator):
+class VQE(DeflationMixin, VariationalDriver):
     """Variational Quantum Eigensolver on an exact state-vector backend.
 
     Also an ASE calculator: see the module docstring for the two usage modes.
@@ -132,8 +127,8 @@ class VQE(Calculator):
         ``frozen_core`` and names exactly which electrons are core vs active.
     """
 
-    implemented_properties = ["energy", "free_energy"]
-    _OPTIMIZERS = NAMED_OPTIMIZERS
+    _result_attr = "vqe_result"
+    _default_sparse = False
 
     def __init__(self, hamiltonian=None, ansatz=None,
                  optimizer: str | Optimizer = "COBYLA", verbose: bool = True,
@@ -145,78 +140,35 @@ class VQE(Calculator):
                  frozen_core=False, frozen_orbitals=None,
                  hamiltonian_builder=None, ansatz_builder=None,
                  run_options: dict | None = None, **calc_kwargs):
-        Calculator.__init__(self, **calc_kwargs)
-
-        self.verbose = bool(verbose)
-        self.optimizer = resolve_optimizer(optimizer, allowed=self._OPTIMIZERS)
-        self.basis = basis
-        self.mapping = mapping
-        self.device = normalize_device(device)
-        self.grid = grid
-        self.h = float(h)
-        self.spin = bool(spin)
-        self.frozen_core = frozen_core
-        self.frozen_orbitals = frozen_orbitals
-
-        from ._hamiltonian_from_atoms import (monkhorst_pack_kpts,
-                                              resolve_initial_state)
-        self.initial_state = resolve_initial_state(initial_state)
-        # Monkhorst-Pack k-point mesh (ASE); Gamma-point only is runnable.
-        self.kpts, self.kpts_gamma, self.kpoints = monkhorst_pack_kpts(kpts)
-        self.charge = int(charge)
-        self.n_electrons = n_electrons
-        self.hamiltonian_builder = hamiltonian_builder
+        super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
+                         device=device, grid=grid, h=h, kpts=kpts, spin=spin,
+                         initial_state=initial_state, charge=charge,
+                         n_electrons=n_electrons, frozen_core=frozen_core,
+                         frozen_orbitals=frozen_orbitals,
+                         hamiltonian_builder=hamiltonian_builder,
+                         run_options=run_options, verbose=verbose, **calc_kwargs)
         self.ansatz_builder = ansatz_builder
-        self.run_options = dict(run_options or {})
-        self._integration_profile = None
-
-        self._configured = False
+        self._preset_ansatz = ansatz
+        # Direct mode: a Hamiltonian and ansatz were supplied at construction.
         if hamiltonian is not None and ansatz is not None:
-            self._configure(hamiltonian, ansatz)
+            self._configure(hamiltonian, None, None)
+            self._built_from_hamiltonian = True
 
     # -- setup ------------------------------------------------------------ #
 
-    def _configure(self, hamiltonian, ansatz) -> None:
-        """Materialize the dense Hamiltonian for a given ansatz (direct mode)."""
+    def _configure(self, hamiltonian, num_particles, n_orbitals) -> None:
+        """Adopt / build the ansatz for ``hamiltonian`` and materialize it.
+
+        In direct mode the ansatz supplied at construction is used; in calculator
+        mode a default UCCSD ansatz is built from ``num_particles`` / ``n_orbitals``.
+        """
+        ansatz = (self._preset_ansatz if self._preset_ansatz is not None
+                  else self._default_ansatz(n_orbitals, num_particles))
         self.ansatz = ansatz
-        qubit_h = self._as_pauli_sum(hamiltonian, ansatz)
-        if qubit_h.num_qubits != ansatz.n_qubits:
-            raise ValueError(
-                f"Hamiltonian acts on {qubit_h.num_qubits} qubits but the ansatz "
-                f"has {ansatz.n_qubits}")
-        self.hamiltonian = qubit_h
-        self.n_qubits = ansatz.n_qubits
         self.mapping = getattr(ansatz, "mapping", self.mapping)
-        # Hermitize away rounding noise; the expectation value is then real.
-        h = qubit_h.to_matrix()
-        self._h_matrix = 0.5 * (h + h.conj().T)
+        qubit_h = self._as_pauli_sum(hamiltonian, ansatz.n_qubits)
+        self._materialize_hamiltonian(qubit_h, ansatz.n_qubits)
         self._configured = True
-
-    def _check_kpts(self) -> None:
-        """Reject a non-Gamma Monkhorst-Pack mesh (the engine is Gamma-point)."""
-        if len(self.kpoints) > 1:
-            raise NotImplementedError(
-                f"a {self.kpts[0]}x{self.kpts[1]}x{self.kpts[2]} Monkhorst-Pack "
-                f"mesh ({len(self.kpoints)} k-points) is not yet supported: the "
-                "real-space engine solves a Gamma-point (molecular) problem.  Use "
-                "kpts=(1, 1, 1) or kpts=None.")
-
-    def _kpts_label(self) -> str:
-        n1, n2, n3 = self.kpts
-        centred = ", Gamma-centred" if self.kpts_gamma else ""
-        if len(self.kpoints) == 1:
-            return f"Gamma ({n1}x{n2}x{n3} Monkhorst-Pack)"
-        return (f"{len(self.kpoints)} k-points ({n1}x{n2}x{n3} "
-                f"Monkhorst-Pack{centred})")
-
-    @staticmethod
-    def _as_pauli_sum(hamiltonian, ansatz) -> PauliSum:
-        if isinstance(hamiltonian, PauliSum):
-            return hamiltonian
-        if isinstance(hamiltonian, Fermion):
-            mapping = getattr(ansatz, "mapping", "jordan_wigner")
-            return hamiltonian.map_to_qubits(mapping, n_modes=ansatz.n_qubits)
-        raise TypeError("hamiltonian must be a PauliSum or Fermion")
 
     def _default_ansatz(self, n_spatial_orbitals, num_particles):
         """Build the default UCCSD ansatz for calculator mode."""
@@ -226,53 +178,19 @@ class VQE(Calculator):
         from ..circuits import UCCSD
         return UCCSD(n_spatial_orbitals, num_particles, mapping=self.mapping)
 
-    # -- ASE calculator interface ---------------------------------------- #
-
-    def calculate(self, atoms=None, properties=("energy",),
-                  system_changes=all_changes):
-        """ASE hook: build the Hamiltonian + ansatz from ``atoms`` and run VQE.
-
-        Stores the ground-state energy (eV, per ASE convention) in
-        :attr:`results` and the full :class:`VQEResult` in :attr:`vqe_result`.
-        """
-        require_runnable(self.device)
-        self._wall_start = _perf()       # wall clock spans integration + run
-        Calculator.calculate(self, atoms, properties, system_changes)
-        atoms = self.atoms
-
-        if not self._configured:
-            if self.hamiltonian_builder is not None:
-                hamiltonian, num_particles, n_orb = self.hamiltonian_builder(atoms)
-            else:
-                from ._hamiltonian_from_atoms import build_basis_hamiltonian
-                hamiltonian, num_particles, n_orb, profile = \
-                    build_basis_hamiltonian(atoms, self.basis, self.grid, self.h,
-                                            self.charge, self.n_electrons,
-                                            spin=self.spin,
-                                            frozen_core=self.frozen_core,
-                                            frozen_orbitals=self.frozen_orbitals)
-                self._integration_profile = profile
-            ansatz = self._default_ansatz(n_orb, num_particles)
-            self._configure(hamiltonian, ansatz)
-
-        result = self.run(**self.run_options)
-        self.vqe_result = result
-
-        energy_ev = float(from_hartree(result.optimal_energy, "eV"))
-        self.results["energy"] = energy_ev
-        self.results["free_energy"] = energy_ev
-
     # -- energy ----------------------------------------------------------- #
 
-    def energy(self, theta) -> float:
-        """Expectation value ``<psi(theta)| H |psi(theta)>`` (real)."""
-        psi = self.ansatz.state(theta)
-        return float(np.real(np.vdot(psi, self._h_matrix @ psi)))
+    def energy_at(self, theta) -> float:
+        """Expectation value ``<psi(theta)| H |psi(theta)>`` for parameters ``theta``.
+
+        The parameter-space cost function.  (The base class's ``energy(psi)`` is the
+        state-vector expectation value; ``energy_at`` prepares the state first.)
+        """
+        return self.energy(self.ansatz.state(theta))
 
     def reference_energy(self) -> float:
         """Energy of the ansatz reference state (all parameters zero)."""
-        psi = self.ansatz.reference_state()
-        return float(np.real(np.vdot(psi, self._h_matrix @ psi)))
+        return self.energy(self.ansatz.reference_state())
 
     def run(self, initial_parameters=None) -> VQEResult:
         """Optimize the parameters and return the ground-state estimate.
@@ -286,8 +204,6 @@ class VQE(Calculator):
                 "VQE has no Hamiltonian/ansatz; construct it with both, or use it "
                 "as an ASE calculator with a `basis`")
         self._check_kpts()
-        from ..utils.profiling import Timings
-        from ..integrals import _backend
 
         n = self.ansatz.num_parameters
         x0 = (np.zeros(n) if initial_parameters is None
@@ -295,26 +211,16 @@ class VQE(Calculator):
         if x0.size != n:
             raise ValueError(f"expected {n} initial parameters, got {x0.size}")
 
-        timings = Timings(n_cores=_backend.num_threads(),
-                          backend="C (OpenMP)" if _backend.HAS_C_BACKEND
-                          else "NumPy")
-        run_t0 = self.__dict__.pop("_wall_start", None)
-        if run_t0 is None:
-            run_t0 = _perf()
-
+        timings, run_t0 = self._make_timings()
         ref_energy = self.reference_energy()
         if self.verbose:
-            from ..utils import banner
-            banner.show()
+            self._show_banner()
             self._print_header(ref_energy)
 
         with timings.time("parameter optimization"):
-            result = self.optimizer.minimize(self.energy, x0)
+            result = self.optimizer.minimize(self.energy_at, x0)
 
-        if self._integration_profile is not None:
-            for name, secs in self._integration_profile.get("stages_s", {}).items():
-                timings.add(f"integration: {name}", secs)
-        timings.wall_time = _perf() - run_t0
+        self._finalize_timings(timings, run_t0)
 
         vqe_result = VQEResult(
             optimal_energy=result.fun,
@@ -330,105 +236,42 @@ class VQE(Calculator):
             self._print_summary(vqe_result, timings)
         return vqe_result
 
-    # -- excited states / energy levels ---------------------------------- #
+    # -- excited states / energy levels (DeflationMixin hook) ------------- #
 
-    def energy_levels(self, num_states: int = 2, *, beta: float | None = None,
-                      initial_parameters=None, restarts: int = 1,
-                      seed: int = 0) -> "EnergyLevels":
-        r"""Molecular energy levels (ground + excited states) by deflation.
+    def _deflated_ground(self, states, beta, *, state_index: int = 0,
+                         initial_parameters=None, restarts: int = 1,
+                         seed: int = 0):
+        r"""Lowest state of the fixed ansatz orthogonal to ``states`` (deflation).
 
-        Computes the ``num_states`` lowest eigenstates of the qubit Hamiltonian
-        with **variational quantum deflation** (VQD): the ground state is an
-        ordinary VQE minimization, and each excited state minimizes the deflated
-        cost
-        :math:`\langle\psi(\vec\theta)|H|\psi(\vec\theta)\rangle
-        + \beta\sum_{j<m}|\langle\psi_j|\psi(\vec\theta)\rangle|^2`,
-        reusing this VQE's ansatz and optimizer.  The reported energy of each
-        level is the *bare* expectation value (the penalty vanishes at the
-        eigenstate), so the result is unbiased.
-
-        The states reachable are those the fixed ansatz can represent from its
-        reference; a level is recovered only if the ansatz spans it (e.g. the
-        UCCSD double-excitation subspace gives the totally symmetric excited
-        singlet of H\ :sub:`2`).
-
-        Parameters
-        ----------
-        num_states : int
-            Number of levels to return (``>= 1``); ``1`` is just the ground
-            state.
-        beta : float, optional
-            Deflation penalty weight.  Defaults to a value derived from the
-            Hamiltonian's coefficient 1-norm (guaranteed to exceed the spanned
-            gaps); increase it if excited levels collapse onto lower ones.
-        initial_parameters : array_like, optional
-            Warm start for the ground-state search (default all-zero, the
-            reference state).
-        restarts : int
-            Number of optimizer restarts per level, keeping the lowest (deflated)
-            cost (default ``1``).  Extra restarts use seeded random starts and
-            make hard excited-state searches more robust.
-        seed : int
-            Seed for the restart random starts (reproducible).
-
-        Returns
-        -------
-        EnergyLevels
-            Ascending energies (Hartree), the optimal state vectors, and
-            convenience views (:attr:`~EnergyLevels.excitation_energies`,
-            :meth:`~EnergyLevels.in_units`).
+        Minimizes ``<psi(theta)|H|psi(theta)> + beta * sum_j |<psi_j|psi>|^2`` over
+        the fixed ansatz, from the reference (ground) or seeded random restarts
+        (excited states); the reported energy is the bare expectation value.
+        Called per level by :meth:`~carcara.algorithms.deflation.DeflationMixin.energy_levels`.
         """
-        from ._energy_levels import (EnergyLevels, deflation_penalty,
-                                     spectral_width_beta)
-
-        if not self._configured:
-            raise RuntimeError(
-                "VQE has no Hamiltonian/ansatz; construct it with both, use it as "
-                "an ASE calculator and evaluate an energy first, or call run()")
-        self._check_kpts()
-        if int(num_states) < 1:
-            raise ValueError("num_states must be >= 1")
         n = self.ansatz.num_parameters
-        H = self._h_matrix
-        if beta is None:
-            beta = spectral_width_beta(self.hamiltonian)
-        beta = float(beta)
-        rng = np.random.default_rng(seed)
-
         base_x0 = (np.zeros(n) if initial_parameters is None
                    else np.asarray(initial_parameters, dtype=float).ravel())
         if base_x0.size != n:
             raise ValueError(f"expected {n} initial parameters, got {base_x0.size}")
+        rng = np.random.default_rng(seed + int(state_index))
 
-        states: list[np.ndarray] = []
-        energies: list[float] = []
+        def cost(theta):
+            psi = self.ansatz.state(theta)
+            return self.energy(psi) + deflation_penalty(psi, states, beta)
+
+        # First attempt from the warm start (ground) / reference; further restarts
+        # (and every excited-state restart) from seeded random points.
+        best = None
         total_evals = 0
-        for m in range(int(num_states)):
-            def cost(theta, _states=states):
-                psi = self.ansatz.state(theta)
-                e = float(np.real(np.vdot(psi, H @ psi)))
-                return e + deflation_penalty(psi, _states, beta)
-
-            # First attempt from the warm start (ground) / reference; further
-            # restarts (and every excited-state restart) from seeded random.
-            best = None
-            for r in range(max(1, int(restarts))):
-                x0 = base_x0 if (m == 0 and r == 0) else \
-                    rng.uniform(-np.pi, np.pi, size=n)
-                result = self.optimizer.minimize(cost, x0)
-                total_evals += result.nfev
-                if best is None or result.fun < best.fun:
-                    best = result
-            psi = self.ansatz.state(best.x)
-            energies.append(float(np.real(np.vdot(psi, H @ psi))))
-            states.append(psi)
-
-        order = np.argsort(energies)
-        return EnergyLevels(
-            energies=np.asarray(energies, dtype=float)[order],
-            states=[states[i] for i in order],
-            reference_energy=self.reference_energy(),
-            num_evaluations=total_evals)
+        for r in range(max(1, int(restarts))):
+            x0 = base_x0 if (state_index == 0 and r == 0) else \
+                rng.uniform(-np.pi, np.pi, size=n)
+            result = self.optimizer.minimize(cost, x0)
+            total_evals += result.nfev
+            if best is None or result.fun < best.fun:
+                best = result
+        psi = self.ansatz.state(best.x)
+        return self.energy(psi), psi, total_evals, None
 
     # -- standard-output trace ------------------------------------------- #
 

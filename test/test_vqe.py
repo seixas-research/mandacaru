@@ -150,7 +150,7 @@ class TestVQE:
 
     def test_reference_energy_matches_hf_expectation(self, h2_hamiltonian):
         vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)))
-        assert np.isclose(vqe.reference_energy(), vqe.energy(np.zeros(3)))
+        assert np.isclose(vqe.reference_energy(), vqe.energy_at(np.zeros(3)))
 
     def test_qubit_count_mismatch_raises(self, h2_hamiltonian):
         # A 4-qubit qubit Hamiltonian against a 6-qubit ansatz must be rejected.

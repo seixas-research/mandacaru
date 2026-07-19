@@ -37,32 +37,25 @@ proceeds and metrics are reported as ``None``.
 Beyond the ground state, :meth:`ADAPTVQE.energy_levels` returns the low-lying
 **molecular energy levels** (ground + excited states) by variational quantum
 deflation, growing a fresh deflated ansatz per level -- see
-:mod:`carcara.algorithms._energy_levels`.
+:mod:`carcara.algorithms.deflation`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from time import perf_counter as _perf
 
 import numpy as np
 
-from ase.calculators.calculator import Calculator, all_changes
-
-from ..backends.hardware import normalize_device, require_runnable
+# AdaptAnsatz and the circuit-profiling helpers now live in carcara.circuits; they
+# are imported (and re-exported) here so the historical import paths
+# ``from carcara.algorithms.adapt_vqe import AdaptAnsatz, profile_ansatz`` keep working.
+from ..circuits.adapt_ansatz import AdaptAnsatz
 from ..circuits.pools import PoolBase, PoolOperator, build_pool
-from ..core.mapping import Fermion, PauliSum
-from ..optimizers.optim import NAMED_OPTIMIZERS, Optimizer, resolve_optimizer
+from ..circuits.profiling import CircuitMetrics, profile_ansatz
 from ..units import ANGSTROM_TO_BOHR, from_hartree
-from ._hamiltonian_from_atoms import (monkhorst_pack_kpts,
-                                      resolve_initial_state as
-                                      _resolve_initial_state)
-
-
-def _spm_norm(spm) -> float:
-    """Largest-magnitude entry of a scipy sparse matrix (0 for the empty matrix)."""
-    data = spm.tocoo().data
-    return float(np.max(np.abs(data))) if data.size else 0.0
+# format_pauli_sum lives on the base module now; re-exported for back-compat.
+from .base import VariationalDriver, format_pauli_sum
+from .deflation import DeflationMixin, deflation_penalty
 
 
 def _unique_frequencies(eigenvalues: np.ndarray, tol: float = 1e-7) -> np.ndarray:
@@ -103,216 +96,6 @@ def _resolve_geometry(geometry):
     # (symbols, positions) pair.
     symbols, positions = geometry
     return list(symbols), np.asarray(positions, dtype=float), None
-
-
-def format_pauli_sum(pauli: PauliSum, indent: str = "    ",
-                     max_terms: int | None = None) -> str:
-    """Render a :class:`~carcara.core.mapping.PauliSum` as ``coeff * PauliString``.
-
-    Real coefficients (Hermitian operators, e.g. the Hamiltonian) print as plain
-    reals; purely imaginary ones (anti-Hermitian generators) print with a ``j``.
-    ``max_terms`` truncates long sums with a trailing ``... (k more terms)`` line.
-    """
-    items = sorted(pauli.simplify().terms.items())
-    if not items:
-        return f"{indent}0"
-    shown = items if max_terms is None else items[:max_terms]
-    lines = []
-    for label, coeff in shown:
-        c = complex(coeff)
-        if abs(c.imag) < 1e-12:
-            coeff_str = f"{c.real:+.6f}"
-        elif abs(c.real) < 1e-12:
-            coeff_str = f"{c.imag:+.6f}j"
-        else:
-            coeff_str = f"({c.real:+.6f}{c.imag:+.6f}j)"
-        lines.append(f"{indent}{coeff_str} * {label}")
-    if max_terms is not None and len(items) > max_terms:
-        lines.append(f"{indent}... ({len(items) - max_terms} more terms)")
-    return "\n".join(lines)
-
-
-# --------------------------------------------------------------------------- #
-# Circuit profiling.
-# --------------------------------------------------------------------------- #
-
-@dataclass
-class CircuitMetrics:
-    """Structural cost of a compiled ansatz circuit."""
-
-    cnot_count: int | None            # number of CNOT (two-qubit) gates
-    depth: int | None                 # circuit depth in the native gate set
-    num_operators: int                # generators (parameters) in the ansatz
-    num_1q_gates: int | None = None   # single-qubit (``u``) gates
-    total_gates: int | None = None    # all gates in the native gate set
-
-    def __repr__(self) -> str:
-        return (f"CircuitMetrics(cnots={self.cnot_count}, depth={self.depth}, "
-                f"gates={self.total_gates}, n_ops={self.num_operators})")
-
-
-def _pauli_evolution_gate(generator: PauliSum, time=1.0):
-    """Qiskit ``PauliEvolutionGate`` realizing ``exp(theta * A)`` for anti-Herm ``A``.
-
-    With ``A`` anti-Hermitian, ``G = i A`` is Hermitian with real coefficients and
-    ``exp(-i * time * G) = exp(time * A)``.  Pauli strings are reversed so Qiskit's
-    little-endian qubit order matches Carcará's (qubit 0 = leftmost); this does not
-    affect the CNOT/depth counts, which are relabeling-invariant.
-    """
-    from qiskit.circuit.library import PauliEvolutionGate
-    from qiskit.quantum_info import SparsePauliOp
-
-    labels, coeffs = [], []
-    for label, coeff in generator.simplify().terms.items():
-        herm = 1j * coeff                     # coefficient of G = i A (real)
-        labels.append(label[::-1])            # leftmost -> qubit 0 (little-endian)
-        coeffs.append(complex(herm).real)
-    if not labels:
-        return None
-    op = SparsePauliOp(labels, np.asarray(coeffs, dtype=float))
-    return PauliEvolutionGate(op, time=time)
-
-
-def profile_ansatz(n_qubits: int, occupied: tuple[int, ...],
-                   operators: list[PoolOperator]) -> CircuitMetrics:
-    """Compile ``|HF>`` + product of ``exp(A_k)`` to ``{cx, u}`` and count cost.
-
-    Returns a :class:`CircuitMetrics`; ``cnot_count`` / ``depth`` are ``None`` if
-    Qiskit is not installed.
-    """
-    try:
-        from qiskit import QuantumCircuit, transpile
-    except Exception:
-        return CircuitMetrics(None, None, len(operators))
-
-    qc = QuantumCircuit(n_qubits)
-    for q in occupied:                        # Hartree-Fock reference preparation
-        qc.x(q)
-    for op in operators:
-        gate = _pauli_evolution_gate(op.generator)
-        if gate is not None:
-            qc.append(gate, range(n_qubits))
-
-    compiled = transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
-    counts = compiled.count_ops()
-    return CircuitMetrics(cnot_count=int(counts.get("cx", 0)),
-                          depth=int(compiled.depth()),
-                          num_operators=len(operators),
-                          num_1q_gates=int(counts.get("u", 0)),
-                          total_gates=int(sum(counts.values())))
-
-
-# --------------------------------------------------------------------------- #
-# Growable state-vector ansatz.
-# --------------------------------------------------------------------------- #
-
-class AdaptAnsatz:
-    """A product-of-exponentials ansatz that grows one generator at a time.
-
-    ``|psi(theta)> = prod_k exp(theta_k A_k) |HF>`` applied in append order.
-
-    Two evaluation backends, chosen by ``sparse``:
-
-    * **dense** (default) -- each ``exp(theta_k A_k)`` is applied via the cached
-      eigendecomposition of the anti-Hermitian generator ``A_k``;
-    * **sparse** -- ``A_k`` is kept as a sparse matrix and, when it satisfies the
-      excitation identity ``A^3 = -A`` (true for the fermionic / qubit generators),
-      the exponential uses the closed form
-      ``exp(theta A) = I + sin(theta) A + (1 - cos(theta)) A^2`` -- two sparse
-      matrix-vector products, no ``2^n x 2^n`` dense matrix.  Generators that fail
-      the identity fall back to :func:`scipy.sparse.linalg.expm_multiply`.  This is
-      what keeps 12+-qubit active spaces tractable.
-
-    Exposes the interface expected by :class:`~carcara.algorithms.vqe.VQE`
-    (``num_parameters``, ``n_qubits``, ``state``, ``reference_state``).
-    """
-
-    def __init__(self, n_qubits: int, occupied: tuple[int, ...],
-                 mapping: str = "jordan_wigner", sparse: bool = False):
-        self.n_qubits = int(n_qubits)
-        self.mapping = mapping
-        self.occupied = tuple(occupied)
-        self.sparse = bool(sparse)
-        self._ops: list[PoolOperator] = []
-        self._eig: list[tuple[np.ndarray, np.ndarray]] = []   # dense (w, V)
-        self._sparse_ops: list[tuple] = []                    # (A, A2, rodrigues)
-        self._hf = self._reference_vector()
-
-    def _reference_vector(self) -> np.ndarray:
-        # The Hartree-Fock determinant is a computational basis state whose bits
-        # depend on the fermion-to-qubit map (occupation for JW, parity sums for
-        # parity / Bravyi-Kitaev).
-        from ..core.mapping import reference_qubit_bits
-
-        bits = reference_qubit_bits(self.mapping, self.n_qubits, self.occupied)
-        index = 0
-        for i, bit in enumerate(bits):
-            if bit:
-                index |= 1 << (self.n_qubits - 1 - i)         # qubit 0 = MSB
-        vec = np.zeros(2 ** self.n_qubits, dtype=complex)
-        vec[index] = 1.0
-        return vec
-
-    def append(self, op: PoolOperator) -> None:
-        """Add a generator to the end of the ansatz."""
-        self._ops.append(op)
-        if self.sparse:
-            A = op.generator.to_sparse_matrix()
-            A2 = (A @ A).tocsr()
-            # Rodrigues closed form is valid iff A^3 = -A (excitation generators).
-            rodrigues = _spm_norm(A @ A2 + A) < 1e-9 * max(1.0, _spm_norm(A))
-            self._sparse_ops.append((A, A2, rodrigues))
-            return
-        a = op.matrix()
-        # A anti-Hermitian => (-i A) is Hermitian: -i A = V diag(w) V^dag, so
-        # A = i V diag(w) V^dag and exp(theta A) = V diag(exp(i theta w)) V^dag.
-        w, V = np.linalg.eigh(-1j * a)
-        self._eig.append((w, V))
-
-    @property
-    def num_parameters(self) -> int:
-        return len(self._ops)
-
-    @property
-    def operators(self) -> list[PoolOperator]:
-        return list(self._ops)
-
-    def reference_state(self) -> np.ndarray:
-        return self._hf.copy()
-
-    def state(self, theta) -> np.ndarray:
-        """Prepared state ``prod_k exp(theta_k A_k) |HF>``."""
-        return self.evolve(theta, self._hf)
-
-    def evolve(self, theta, references) -> np.ndarray:
-        r"""Apply the grown unitary ``prod_k exp(theta_k A_k)`` to reference(s).
-
-        ``references`` is a single state vector (shape ``(2**n,)``) or a stack of
-        column vectors (shape ``(2**n, k)``), returned with the matching shape;
-        the *same* product of exponentials is applied to every column.  This lets
-        the subspace-search solver
-        (:class:`~carcara.algorithms.SubspaceADAPTVQE`) send several orthogonal
-        references through one shared, adaptively grown unitary.
-        """
-        theta = np.asarray(theta, dtype=float).ravel()
-        if theta.size != self.num_parameters:
-            raise ValueError(
-                f"expected {self.num_parameters} parameters, got {theta.size}")
-        refs = np.asarray(references, dtype=complex)
-        single = refs.ndim == 1
-        out = refs[:, None].copy() if single else refs.copy()
-        if self.sparse:
-            for angle, (A, A2, rodrigues) in zip(theta, self._sparse_ops):
-                if rodrigues:
-                    out = (out + np.sin(angle) * (A @ out)
-                           + (1.0 - np.cos(angle)) * (A2 @ out))
-                else:
-                    from scipy.sparse.linalg import expm_multiply
-                    out = expm_multiply(angle * A, out)
-        else:
-            for angle, (w, V) in zip(theta, self._eig):
-                out = V @ (np.exp(1j * angle * w)[:, None] * (V.conj().T @ out))
-        return out[:, 0] if single else out
 
 
 # --------------------------------------------------------------------------- #
@@ -371,7 +154,7 @@ class ADAPTVQEResult:
 # ADAPT-VQE driver.
 # --------------------------------------------------------------------------- #
 
-class ADAPTVQE(Calculator):
+class ADAPTVQE(DeflationMixin, VariationalDriver):
     """Adaptive VQE on an exact state-vector backend; also an ASE calculator.
 
     Two usage modes:
@@ -456,8 +239,7 @@ class ADAPTVQE(Calculator):
     grid : Grid, optional
         Explicit real-space integration grid for the calculator-mode ``basis``
         builder.  When omitted the grid is generated automatically from the ASE
-        ``atoms.cell`` at resolution ``h`` (see :meth:`_grid_from_cell`); a unit
-        cell is then required.
+        ``atoms.cell`` at resolution ``h``; a unit cell is then required.
     h : float
         Target grid spacing in **Angstrom** (default ``0.20``) for the automatic
         cell-based grid used when ``grid`` is not given.  Finer ``h`` (e.g.
@@ -512,10 +294,9 @@ class ADAPTVQE(Calculator):
         are constructor arguments, not ``run`` arguments.
     """
 
-    implemented_properties = ["energy", "free_energy"]
-
     _GRADIENTS = ("finite_difference", "parameter-shift")
-    _OPTIMIZERS = NAMED_OPTIMIZERS
+    _result_attr = "adapt_result"
+    _default_sparse = "auto"
 
     def __init__(self,
                  hamiltonian=None,
@@ -545,35 +326,26 @@ class ADAPTVQE(Calculator):
                  frozen_orbitals=None,
                  hamiltonian_builder=None,
                  run_options: dict | None = None, **calc_kwargs):
-        Calculator.__init__(self, **calc_kwargs)
+        super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
+                         device=device, grid=grid, h=h, kpts=kpts, spin=spin,
+                         initial_state=initial_state, charge=charge,
+                         n_electrons=n_electrons, frozen_core=frozen_core,
+                         frozen_orbitals=frozen_orbitals,
+                         hamiltonian_builder=hamiltonian_builder,
+                         run_options=run_options, verbose=verbose,
+                         sparse=sparse, **calc_kwargs)
 
-        self.mapping = mapping
-        self.basis = basis
         self.profile = profile
-        self.verbose = bool(verbose)
-        self.sparse = sparse
-        self.spin = bool(spin)
-        self.frozen_core = frozen_core
-        self.frozen_orbitals = frozen_orbitals
-        self.initial_state = _resolve_initial_state(initial_state)
-        self.optimizer = self._resolve_optimizer(optimizer)
-
-        # Monkhorst-Pack k-point mesh (ASE).  The real-space engine is
-        # Gamma-point (molecular), so only a single Gamma point is runnable; a
-        # denser mesh is generated and stored but rejected at run time.
-        self.kpts, self.kpts_gamma, self.kpoints = monkhorst_pack_kpts(kpts)
+        # Validate the enumerated gradient option up front.
+        if gradient not in self._GRADIENTS:
+            raise ValueError(
+                f"unknown gradient {gradient!r}; use one of {self._GRADIENTS}")
+        self.gradient = gradient
 
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
         self.gradient_tolerance = float(gradient_tolerance)
         self.output = output
-
-        # Validate the enumerated options up front.
-        if gradient not in self._GRADIENTS:
-            raise ValueError(
-                f"unknown gradient {gradient!r}; use one of {self._GRADIENTS}")
-        self.gradient = gradient
-        self.device = normalize_device(device)     # raises on unknown device
 
         # Output-unit convention (see class docstring).
         self.atomic_units = bool(atomic_units)
@@ -581,56 +353,19 @@ class ADAPTVQE(Calculator):
         self.length_units = "bohr" if atomic_units else "angstrom"
 
         self._pool_spec = pool
-        self.grid = grid
-        self.h = float(h)
-        self.charge = int(charge)
-        self.n_electrons = n_electrons
-        self.hamiltonian_builder = hamiltonian_builder
-        self.run_options = dict(run_options or {})
-
         # Seeded RNG for reproducible expressivity logging (output.txt).
         self._expr_rng = np.random.default_rng(0)
 
-        # Integration profile (time / cores / memory) captured by the basis-driven
-        # Hamiltonian builder in calculator mode; None in direct mode.
-        self._integration_profile = None
-
         # Configure eagerly when a Hamiltonian is given (direct mode); otherwise
-        # defer to the first calculator evaluation (:meth:`calculate`).
-        self._configured = False
+        # defer to the first calculator evaluation (the ASE hook in the base).
         if hamiltonian is not None:
             self._configure(hamiltonian, num_particles, n_spatial_orbitals)
+            self._built_from_hamiltonian = True
 
     # -- setup helpers ---------------------------------------------------- #
 
-    def _resolve_optimizer(self, optimizer: str | Optimizer) -> Optimizer:
-        """Normalize the ``optimizer`` argument to an :class:`Optimizer`.
-
-        Accepts a pre-built :class:`Optimizer` (used as-is) or one of the method
-        names in :attr:`_OPTIMIZERS` (``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``,
-        ``"SLSQP"``, ``"Adam"``, ``"L-BFGS-B"``).
-        """
-        return resolve_optimizer(optimizer, allowed=self._OPTIMIZERS)
-
-    def _check_kpts(self) -> None:
-        """Reject a non-Gamma Monkhorst-Pack mesh (the engine is Gamma-point)."""
-        if len(self.kpoints) > 1:
-            raise NotImplementedError(
-                f"a {self.kpts[0]}x{self.kpts[1]}x{self.kpts[2]} Monkhorst-Pack "
-                f"mesh ({len(self.kpoints)} k-points) is not yet supported: the "
-                "real-space engine solves a Gamma-point (molecular) problem.  Use "
-                "kpts=(1, 1, 1) or kpts=None.")
-
-    def _kpts_label(self) -> str:
-        n1, n2, n3 = self.kpts
-        centred = ", Gamma-centred" if self.kpts_gamma else ""
-        if len(self.kpoints) == 1:
-            return f"Gamma ({n1}x{n2}x{n3} Monkhorst-Pack)"
-        return (f"{len(self.kpoints)} k-points ({n1}x{n2}x{n3} "
-                f"Monkhorst-Pack{centred})")
-
     def _configure(self, hamiltonian, num_particles, n_spatial_orbitals):
-        """Resolve the pool and materialize the Hamiltonian / pool matrices."""
+        """Resolve the pool, materialize the Hamiltonian and the pool matrices."""
         pool = self._pool_spec
         if isinstance(pool, PoolBase):
             self.pool = pool
@@ -641,41 +376,24 @@ class ADAPTVQE(Calculator):
                     "num_particles")
             self.pool = build_pool(pool, n_spatial_orbitals, num_particles,
                                    mapping=self.mapping)
-        self.n_qubits = self.pool.n_qubits
         self.num_particles = (tuple(num_particles) if num_particles is not None
                               else self.pool.num_particles)
 
-        # Materialize the qubit Hamiltonian.
-        qubit_h = self._as_pauli_sum(hamiltonian)
-        if qubit_h.num_qubits != self.n_qubits:
-            raise ValueError(
-                f"Hamiltonian acts on {qubit_h.num_qubits} qubits but the pool "
-                f"has {self.n_qubits}")
-        self.hamiltonian = qubit_h
+        # Materialize the (dense or sparse) qubit Hamiltonian on the base; a dense
+        # pool stores every operator's matrix *and* eigendecomposition (two
+        # 2^n x 2^n arrays each), ~46 GB for a 12-qubit water active space, so
+        # ``sparse="auto"`` keeps large active spaces as sparse matrices and
+        # screens with the exact analytic gradient, densifying only selected
+        # operators (in the growable ansatz).
+        qubit_h = self._as_pauli_sum(hamiltonian, self.pool.n_qubits)
+        self._materialize_hamiltonian(qubit_h, self.pool.n_qubits)
 
-        # Decide dense vs sparse: a dense pool stores every operator's matrix *and*
-        # eigendecomposition (two 2^n x 2^n arrays each), which is ~46 GB for a
-        # 12-qubit water active space -- and even the dense Hamiltonian ``to_matrix``
-        # (O(terms * 4^n)) is prohibitively slow there.  The sparse path keeps the
-        # Hamiltonian and the pool generators as sparse matrices and screens with
-        # the exact analytic gradient (a sparse matrix-vector product), so only the
-        # few *selected* operators are ever densified (by the growable ansatz).  See
-        # :meth:`_resolve_sparse`.
         self._pool_ops = self.pool.operators()
-        self._sparse = self._resolve_sparse(self.sparse, self.n_qubits)
-
         if self._sparse:
-            # Sparse Hamiltonian + sparse generators; no dense to_matrix, and no
-            # per-operator eigendecomposition (screening is the analytic gradient).
-            hs = qubit_h.to_sparse_matrix()
-            self._h_matrix = 0.5 * (hs + hs.conj().T)
             self._pool_matrices = [op.generator.to_sparse_matrix()
                                    for op in self._pool_ops]
             self._pool_eig = None
         else:
-            h = qubit_h.to_matrix()
-            self._h_matrix = 0.5 * (h + h.conj().T)  # Hermitize away rounding
-            # Precompute pool-operator matrices and their eigendecompositions once.
             # For A anti-Hermitian, -iA is Hermitian: -iA = V diag(w) V^dag, so
             # exp(theta A) = V diag(exp(i theta w)) V^dag.  The unique positive
             # eigenvalue *differences* are the frequencies of E(theta), used by the
@@ -687,96 +405,11 @@ class ADAPTVQE(Calculator):
                 self._pool_eig.append((w, V, _unique_frequencies(w)))
         self._configured = True
 
-    @staticmethod
-    def _resolve_sparse(sparse, n_qubits: int) -> bool:
-        """Resolve the ``sparse`` spec to a bool.
-
-        ``"auto"`` (default) enables the sparse pool for ``n_qubits >= 10``, where a
-        dense pool would need tens of GB; ``True`` / ``False`` force it on / off.
-        """
-        if isinstance(sparse, str):
-            if sparse.strip().lower() == "auto":
-                return int(n_qubits) >= 10
-            raise ValueError(
-                f"unknown sparse spec {sparse!r}; use True, False or 'auto'")
-        return bool(sparse)
-
-    def _as_pauli_sum(self, hamiltonian) -> PauliSum:
-        if isinstance(hamiltonian, PauliSum):
-            return hamiltonian
-        if isinstance(hamiltonian, Fermion):
-            return hamiltonian.map_to_qubits(self.mapping, n_modes=self.n_qubits)
-        raise TypeError("hamiltonian must be a PauliSum or Fermion")
-
-    # -- basis-driven Hamiltonian (calculator mode) ----------------------- #
-
-    def _basis_hamiltonian_builder(self, atoms):
-        """Build the RHF MO Hamiltonian from ``atoms`` using ``self.basis``.
-
-        Elements and positions come from the ASE object; the basis functions are
-        generated by :meth:`carcara.basis.BasisSet.build` for the chosen family
-        (``FAO`` / ``STO-3G`` / ``6-31G(d)`` / ...).  Returns
-        ``(hamiltonian, num_particles, n_spatial_orbitals)`` and stashes the
-        real-space integration profile (time / cores / memory) on
-        :attr:`_integration_profile` for the run summary.
-        """
-        from ._hamiltonian_from_atoms import build_basis_hamiltonian
-
-        hamiltonian, num_particles, n_orbitals, profile = build_basis_hamiltonian(
-            atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons,
-            spin=self.spin, frozen_core=self.frozen_core,
-            frozen_orbitals=self.frozen_orbitals)
-        self._integration_profile = profile
-        return hamiltonian, num_particles, n_orbitals
-
-    def _grid_from_cell(self, atoms):
-        """Build the real-space integration grid from the ASE ``atoms.cell``.
-
-        Thin wrapper over
-        :func:`carcara.algorithms._hamiltonian_from_atoms.grid_from_cell` using
-        the instance resolution :attr:`h`.  A unit cell is **required** (or pass
-        an explicit ``grid=`` at construction); raises ``ValueError`` otherwise.
-        """
-        from ._hamiltonian_from_atoms import grid_from_cell
-
-        return grid_from_cell(atoms, self.h)
-
-    # -- ASE calculator interface ---------------------------------------- #
-
-    def calculate(self, atoms=None, properties=("energy",),
-                  system_changes=all_changes):
-        """ASE hook: build the Hamiltonian from ``atoms`` and run ADAPT-VQE.
-
-        Stores the ground-state energy (in **eV**, per ASE convention) in
-        :attr:`results` and the full :class:`ADAPTVQEResult` in
-        :attr:`adapt_result`.  The Hamiltonian is built from the current geometry
-        with the chosen ``basis`` (or an explicit ``hamiltonian_builder``); a
-        fixed Hamiltonian supplied at construction is reused as-is.
-        """
-        require_runnable(self.device)   # e.g. 'ibm-quantum' is not runnable yet
-        self._wall_start = _perf()       # wall clock spans integration + run
-        Calculator.calculate(self, atoms, properties, system_changes)
-        atoms = self.atoms  # the Atoms copy stored by the base class
-
-        builder = self.hamiltonian_builder
-        if builder is None and not self._configured:
-            builder = self._basis_hamiltonian_builder
-        if builder is not None:
-            hamiltonian, num_particles, n_spatial_orbitals = builder(atoms)
-            self._configure(hamiltonian, num_particles, n_spatial_orbitals)
-
-        result = self.run(geometry=atoms, **self.run_options)
-        self.adapt_result = result
-
-        # ASE always works in eV / Angstrom, regardless of the log-unit choice.
-        energy_ev = float(from_hartree(result.optimal_energy, "eV"))
-        self.results["energy"] = energy_ev
-        self.results["free_energy"] = energy_ev
+    def _run_kwargs(self, atoms) -> dict:
+        """Forward the geometry to :meth:`run` for the ``output.txt`` metadata."""
+        return {"geometry": atoms, **self.run_options}
 
     # -- energy / gradient ------------------------------------------------ #
-
-    def energy(self, psi: np.ndarray) -> float:
-        return float(np.real(np.vdot(psi, self._h_matrix @ psi)))
 
     def _analytic_gradients(self, psi: np.ndarray) -> np.ndarray:
         r"""Exact pool gradients ``g_i = 2 Re<H psi | A_i psi>`` (reference)."""
@@ -982,16 +615,9 @@ class ADAPTVQE(Calculator):
         output_file = self.output
         verbose = self.verbose
 
-        from ..utils.profiling import Timings
-        from ..integrals import _backend
-        timings = Timings(n_cores=_backend.num_threads(),
-                          backend="C (OpenMP)" if _backend.HAS_C_BACKEND
-                          else "NumPy")
         # In calculator mode the wall clock is seeded in calculate() so it spans
         # the integration too; in direct mode it starts here.
-        run_t0 = self.__dict__.pop("_wall_start", None)
-        if run_t0 is None:
-            run_t0 = _perf()
+        timings, run_t0 = self._make_timings()
 
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping, sparse=self._sparse)
@@ -1001,8 +627,7 @@ class ADAPTVQE(Calculator):
 
         # Banner to standard output *before* any data is written to output.txt.
         if verbose:
-            from ..utils import banner
-            banner.show()
+            self._show_banner()
 
         logger = self._make_logger(output_file, geometry, cell, ref_energy,
                                    max_iterations, gradient_tol)
@@ -1107,10 +732,7 @@ class ADAPTVQE(Calculator):
                 max_grad = float(np.max(np.abs(self._gradients(psi))))
 
         # Fold the (calculator-mode) integration stage in, then set the wall time.
-        if self._integration_profile is not None:
-            for name, secs in self._integration_profile.get("stages_s", {}).items():
-                timings.add(f"integration: {name}", secs)
-        timings.wall_time = _perf() - run_t0
+        self._finalize_timings(timings, run_t0)
 
         result = ADAPTVQEResult(
             optimal_energy=energy,
@@ -1129,78 +751,25 @@ class ADAPTVQE(Calculator):
             self._print_summary(result, e_unit, timings)
         return result
 
-    # -- excited states / energy levels ---------------------------------- #
+    # -- excited states / energy levels (DeflationMixin hook) ------------- #
 
-    def energy_levels(self, num_states: int = 2, *, beta: float | None = None,
-                      max_iterations: int | None = None,
-                      gradient_tolerance: float | None = None) -> "EnergyLevels":
-        r"""Molecular energy levels (ground + excited states) by deflation.
+    def _deflated_ground(self, states, beta, *, state_index: int = 0,
+                         max_iterations: int | None = None,
+                         gradient_tolerance: float | None = None):
+        r"""Grow a fresh deflated ADAPT ansatz orthogonal to ``states``.
 
-        Computes the ``num_states`` lowest eigenstates with **variational quantum
-        deflation** (VQD): a **separate ADAPT-VQE ansatz is grown for each
-        level**, driven by the deflated cost
-        :math:`\langle\psi|H|\psi\rangle
-        + \beta\sum_{j<m}|\langle\psi_j|\psi\rangle|^2`.  Both the pool-screening
-        gradient and the inner re-optimization carry the penalty term, so the
-        adaptive ansatz grows toward the next excited state and the reported
-        energy of each level is the *bare* expectation value (unbiased -- the
-        penalty vanishes at the eigenstate).
-
-        Parameters
-        ----------
-        num_states : int
-            Number of levels to return (``>= 1``); ``1`` reproduces :meth:`run`.
-        beta : float, optional
-            Deflation penalty weight.  Defaults to a value derived from the
-            Hamiltonian's coefficient 1-norm (guaranteed to exceed the spanned
-            gaps); increase it if excited levels collapse onto lower ones.
-        max_iterations, gradient_tolerance : optional
-            Per-state ADAPT growth controls; default to the instance's
-            :attr:`max_iterations` / :attr:`gradient_tolerance`.
-
-        Returns
-        -------
-        EnergyLevels
-            Ascending energies (Hartree), the optimal state vectors, the number of
-            ADAPT operators grown per level, and convenience views
-            (:attr:`~EnergyLevels.excitation_energies`,
-            :meth:`~EnergyLevels.in_units`).
+        Both the pool-screening gradient and the inner re-optimization carry the
+        overlap penalty, so the adaptive ansatz grows toward the next excited
+        state; the reported energy is the bare expectation value.  Called per level
+        by :meth:`~carcara.algorithms.deflation.DeflationMixin.energy_levels`
+        (which also accepts ``max_iterations`` / ``gradient_tolerance``).
         """
-        from ._energy_levels import EnergyLevels, spectral_width_beta
-
-        if not self._configured:
-            raise RuntimeError(
-                "ADAPTVQE has no Hamiltonian; construct it with one, use it as an "
-                "ASE calculator and evaluate an energy first, or call run()")
-        self._check_kpts()
-        if int(num_states) < 1:
-            raise ValueError("num_states must be >= 1")
         max_it = (self.max_iterations if max_iterations is None
                   else int(max_iterations))
         gtol = (self.gradient_tolerance if gradient_tolerance is None
                 else float(gradient_tolerance))
-        if beta is None:
-            beta = spectral_width_beta(self.hamiltonian)
-        beta = float(beta)
-
-        states: list[np.ndarray] = []
-        energies: list[float] = []
-        num_ops: list[int] = []
-        total_evals = 0
-        for _ in range(int(num_states)):
-            energy, psi, n_ops, nev = self._grow_deflated(states, beta, max_it, gtol)
-            energies.append(energy)
-            states.append(psi)
-            num_ops.append(n_ops)
-            total_evals += nev
-
-        order = np.argsort(energies)
-        return EnergyLevels(
-            energies=np.asarray(energies, dtype=float)[order],
-            states=[states[i] for i in order],
-            reference_energy=self.reference_energy(),
-            num_evaluations=total_evals,
-            num_operators=[num_ops[i] for i in order])
+        energy, psi, n_ops, nev = self._grow_deflated(states, beta, max_it, gtol)
+        return energy, psi, nev, n_ops
 
     def _deflated_gradients(self, psi: np.ndarray, states, beta: float
                             ) -> np.ndarray:
@@ -1230,7 +799,7 @@ class ADAPTVQE(Calculator):
         trimmed sibling of :meth:`run` (no logging / profiling / verbose trace)
         used to build each excited state.
         """
-        from ._energy_levels import deflation_penalty
+        from .deflation import deflation_penalty
 
         ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                              self.mapping, sparse=self._sparse)
