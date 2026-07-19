@@ -58,7 +58,7 @@ Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
 | VASQE (stochastic ADAPT: softmax selection + temperature annealing) | `src/carcara/algorithms/vasqe.py` | **implemented** |
 | Excited states — deflation (`energy_levels`, `DeflationMixin`) | `src/carcara/algorithms/deflation.py` | **implemented** |
 | Excited states — subspace search (SSVQE; `SubspaceVQE`/`SubspaceADAPTVQE`/`SubspaceVASQE`) | `src/carcara/algorithms/subspace.py` | **implemented** |
-| Periodic crystals (Bloch bands + BvK total energy) | `src/carcara/algorithms/bloch.py` | **implemented** |
+| Periodic crystals — Bloch bands + BvK total energy (`BlochVQE`/`BlochADAPTVQE`/`BlochVASQE` over a `BlochVariationalDriver` base) | `src/carcara/algorithms/bloch.py` | **implemented** |
 | Geometry→Hamiltonian builder (grid-from-cell, basis dict, kpts, spin, frozen core) | `src/carcara/algorithms/_hamiltonian_from_atoms.py` | **implemented** |
 | Hartree-Fock (RHF/UHF, MO basis) | `src/carcara/algorithms/hartree_fock.py` | **implemented** |
 | Expressibility (KL-from-Haar, ADAPT tracker) | `src/carcara/algorithms/expressivity.py` | **implemented** |
@@ -76,7 +76,7 @@ all four operator pools, Qiskit-based circuit profiling, and an ASE-calculator
 front-end. On top of that baseline, **excited states** (variational deflation
 `energy_levels` and subspace-search `SubspaceVQE`/`SubspaceADAPTVQE`), a
 **stochastic adaptive** solver (**VASQE**, softmax operator selection with
-temperature annealing), and **periodic crystals** (`BlochADAPTVQE`) are also in.
+temperature annealing), and **periodic crystals** (`BlochVQE`/`BlochADAPTVQE`/`BlochVASQE`) are also in.
 All drivers share a common **`VariationalDriver`** base with the excited-state
 techniques as composable mixins (see §Architecture note below). What remains is
 real-hardware execution and error mitigation. The roadmap below follows this
@@ -369,7 +369,7 @@ gate set via Qiskit). ✓ *implemented* (`algorithms/adapt_vqe.py`,
 > - **Excited states** — variational deflation (`algorithms/deflation.py`,
 >   `energy_levels`) and subspace-search / SSVQE (`algorithms/subspace.py`).
 > - **VASQE** (`algorithms/vasqe.py`) — stochastic ADAPT with temperature annealing.
-> - **Periodic crystals** (`algorithms/bloch.py`, `BlochADAPTVQE`) — Bloch band
+> - **Periodic crystals** (`algorithms/bloch.py`, `BlochVQE`/`BlochADAPTVQE`/`BlochVASQE`) — Bloch band
 >   structure + Born–von Kármán total energy.
 > - **Layered driver architecture** — `VariationalDriver` base + `DeflationMixin` /
 >   `SubspaceMixin`, and the `Ansatz` protocol / `AdaptAnsatz` / profiling in
@@ -498,7 +498,7 @@ release at the end.
 
 *Also landed beyond the original milestones:* **excited states** (deflation
 `energy_levels` + subspace-search SSVQE), the stochastic **VASQE** with
-temperature annealing, **periodic crystals** (`BlochADAPTVQE` — band structure +
+temperature annealing, **periodic crystals** (`BlochVQE`/`BlochADAPTVQE`/`BlochVASQE` — band structure +
 BvK total energy), a **layered driver architecture** (`VariationalDriver` base +
 composable excited-state mixins, an `Ansatz` protocol), a periodic **plane-wave
 basis** (`PlaneWaveIntegrals`, PBC), an **ASE-calculator** front-end for the

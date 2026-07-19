@@ -1,8 +1,23 @@
-# Periodic Crystals with BlochADAPTVQE
+# Periodic Crystals with the Bloch Drivers
 
-Molecules are open-boundary systems, but crystals are periodic. {class}`~carcara.algorithms.BlochADAPTVQE` extends Carcará to **1-, 2- and 3-dimensional crystals**: it solves the single-particle **Bloch Hamiltonian** at each k-point for the band structure, and computes a **total energy that uses all k-points** with ADAPT-VQE.
+Molecules are open-boundary systems, but crystals are periodic. Carcará extends to
+**1-, 2- and 3-dimensional crystals** through a small family of Bloch / k-point
+drivers that share one base, {class}`~carcara.algorithms.BlochVariationalDriver`:
 
-The crystal is given as an ASE `Atoms` **primitive cell** — `atoms.cell` sets the lattice vectors and `atoms.pbc` selects which directions are periodic.
+| Driver | Supercell solver |
+| :--- | :--- |
+| {class}`~carcara.algorithms.BlochVQE` | fixed UCCSD ansatz (VQE) |
+| {class}`~carcara.algorithms.BlochADAPTVQE` | adaptive ansatz (ADAPT-VQE) |
+| {class}`~carcara.algorithms.BlochVASQE` | stochastic, annealed selection (VASQE) |
+
+Each driver does two things: it solves the single-particle **Bloch Hamiltonian** at
+each k-point for the band structure, and it computes a **total energy that uses all
+k-points** with its molecular solver. The band structure is single-particle, so it
+is **identical across all three drivers** — it lives on the shared base. Only the
+correlated total energy differs by solver.
+
+The crystal is given as an ASE `Atoms` **primitive cell** — `atoms.cell` sets the
+lattice vectors and `atoms.pbc` selects which directions are periodic.
 
 ---
 
@@ -11,19 +26,22 @@ The crystal is given as an ASE `Atoms` **primitive cell** — `atoms.cell` sets 
 ```python
 import numpy as np
 from ase import Atoms
-from carcara.algorithms import BlochADAPTVQE
+from carcara.algorithms import BlochVQE, BlochADAPTVQE, BlochVASQE
 
 # One H per cell; periodic along x, vacuum in y and z.
 atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
               cell=[[1.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
               pbc=[True, False, False])
 
-bloch = BlochADAPTVQE(atoms, basis="FAO", mapping="jordan_wigner",
-                      n_cells=4, n_images=7, h=0.20)
+bloch = BlochVQE(atoms, basis="FAO", mapping="jordan_wigner",
+                 n_cells=4, n_images=7, h=0.20)
 print(bloch.dimension, "D crystal,", bloch.n_bands, "band(s)")
 ```
 
-`n_cells` sets how many lattice translations enter the Bloch sum, `n_images` the width of the nuclei window used to build the periodic potential, and `h` the real-space grid spacing (Ångström).
+`n_cells` sets how many lattice translations enter the Bloch sum, `n_images` the
+width of the nuclei window used to build the periodic potential, and `h` the
+real-space grid spacing (Ångström). All three drivers take the same constructor
+arguments — swap `BlochVQE` for `BlochADAPTVQE` or `BlochVASQE`.
 
 ---
 
@@ -34,7 +52,10 @@ The band structure is the generalized Bloch eigenproblem
 $$H(\mathbf{k})\,c = \varepsilon(\mathbf{k})\,S(\mathbf{k})\,c , \qquad
 H(\mathbf{k}) = \sum_{\mathbf{R}} e^{2\pi i\,\mathbf{k}\cdot\mathbf{n}}\, h^{(\mathbf{R})} ,$$
 
-solved at each k-point from the real-space cell-to-cell overlap/one-body blocks. Pass **fractional** k-points to `bands`, or use `band_structure` for a high-symmetry path (k-points generated with ASE):
+solved at each k-point from the real-space cell-to-cell overlap/one-body blocks.
+Because it is single-particle, **every driver returns the same bands**. Pass
+**fractional** k-points to `bands`, or use `band_structure` for a high-symmetry
+path (k-points generated with ASE):
 
 ```python
 # Energies (eV) at explicit fractional k-points.
@@ -49,44 +70,78 @@ mesh = bloch.monkhorst_pack((10, 1, 1))
 band_mp = bloch.bands(mesh)[:, 0]
 ```
 
-`band_structure` returns a {class}`~carcara.algorithms.BandStructure` with the cumulative k-axis (`x`), band `energies` (eV), and the `xticks`/`labels` of the high-symmetry points — ready to save to CSV or plot.
+`band_structure` returns a {class}`~carcara.algorithms.BandStructure` with the
+cumulative k-axis (`x`), band `energies` (eV), and the `xticks`/`labels` of the
+high-symmetry points — ready to save to CSV or plot.
 
 ---
 
 ## Total energy using all k-points
 
-A correlated solver like ADAPT-VQE **cannot** be run independently per k-point and summed: the two-electron interaction couples crystal momenta ($\mathbf{k}_1+\mathbf{k}_2 = \mathbf{k}_3+\mathbf{k}_4+\mathbf{G}$). The exact way to fold **all** k-points into a correlated total energy is the **Born–von Kármán equivalence**: an $(n_1, n_2, n_3)$ Monkhorst-Pack mesh is a $\Gamma$-point calculation on the $(n_1, n_2, n_3)$ supercell, so
+A correlated solver **cannot** be run independently per k-point and summed: the
+two-electron interaction couples crystal momenta ($\mathbf{k}_1+\mathbf{k}_2 =
+\mathbf{k}_3+\mathbf{k}_4+\mathbf{G}$). The exact way to fold **all** k-points into
+a correlated total energy is the **Born–von Kármán equivalence**: an
+$(n_1, n_2, n_3)$ Monkhorst-Pack mesh is a $\Gamma$-point calculation on the
+$(n_1, n_2, n_3)$ supercell, so
 
 $$E_\text{cell} = \frac{E_\Gamma\big(\text{supercell}\big)}{n_\text{cells}} .$$
 
-`total_energy` builds that supercell with `atoms.repeat`, runs it through the ADAPT-VQE ASE calculator (the box is the supercell's own cell), and returns the energy per cell:
+`total_energy` builds that supercell with `atoms.repeat`, runs it through the
+driver's molecular calculator (the box is the supercell's own cell), and returns
+`(energy_per_cell_eV, result)` — the `result` being a `VQEResult`,
+`ADAPTVQEResult`, or `VASQEResult` depending on the driver:
 
 ```python
-for n_k in (2, 4, 6):
-    e_cell, result = bloch.total_energy((n_k, 1, 1), h=0.35,
-                                        max_iterations=10,
-                                        gradient_tolerance=1e-3)
-    print(f"({n_k},1,1) mesh -> E/cell = {e_cell:+.4f} eV "
-          f"({result.num_operators} operators)")
+# Fixed-ansatz VQE.
+e_cell, res = BlochVQE(atoms, h=0.20).total_energy((4, 1, 1), optimizer="L-BFGS-B")
+
+# Adaptive ADAPT-VQE (extra adaptive controls).
+e_cell, res = BlochADAPTVQE(atoms, h=0.20).total_energy(
+    (4, 1, 1), max_iterations=10, gradient_tolerance=1e-3)
+print(res.num_operators, "operators grown")
 ```
 
-This is a finite-supercell estimate that converges to the bulk total energy as the mesh is refined (exact in the infinite-mesh limit). Extra keyword arguments are forwarded to {class}`~carcara.algorithms.ADAPTVQE` (grid spacing `h`, `pool`, `max_iterations`, `gradient_tolerance`, …). Note the supercell size — and therefore the qubit count — grows with the mesh, so a dense mesh such as `(10, 1, 1)` (a 20-qubit supercell) is heavy for exact state-vector simulation.
+Extra keyword arguments are forwarded to the driver's calculator, so which are
+valid depends on the driver (`optimizer`/`h` for all; `pool`/`max_iterations`/
+`gradient_tolerance` for the adaptive ones). This is a finite-supercell estimate
+that converges to the bulk total energy as the mesh is refined (exact in the
+infinite-mesh limit). Note the supercell size — and therefore the qubit count —
+grows with the mesh, so a dense mesh such as `(10, 1, 1)` (a 20-qubit supercell) is
+heavy for exact state-vector simulation.
+
+### Stochastic selection with BlochVASQE
+
+{class}`~carcara.algorithms.BlochVASQE` runs the crystal supercell through VASQE, so
+the ansatz grows by **stochastic softmax selection** with an optional temperature
+**annealing** schedule — useful for exploring the operator space on a larger
+supercell before settling on the greedy (ADAPT) choice:
+
+```python
+e_cell, res = BlochVASQE(atoms, h=0.20).total_energy(
+    (4, 1, 1), temperature=2.0, final_temperature=0.02, schedule="exponential",
+    max_iterations=10, gradient_tolerance=1e-3, seed=1)
+print(res.temperatures)          # the selection temperature at each growth step
+```
 
 ---
 
 ## Higher dimensions
 
-The same interface handles 2-D and 3-D crystals — only `atoms.pbc` and the k-points change. A square lattice of hydrogen:
+The same interface handles 2-D and 3-D crystals — only `atoms.pbc` and the
+k-points change. A square lattice of hydrogen:
 
 ```python
 square = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                cell=[[2.0, 0, 0], [0, 2.0, 0], [0, 0, 10.0]],
                pbc=[True, True, False])
-bloch2d = BlochADAPTVQE(square, basis="FAO", n_cells=2, n_images=3, h=0.35)
+bloch2d = BlochVQE(square, basis="FAO", n_cells=2, n_images=3, h=0.35)
 
 # Bands along Gamma -> X -> M of the square Brillouin zone.
 gamma, X, M = [0, 0, 0], [0.5, 0, 0], [0.5, 0.5, 0]
 print(bloch2d.bands([gamma, X, M])[:, 0])
 ```
 
-A complete, runnable end-to-end script (total energy + band structure written to CSV, with a separate plotting script) is `examples/07_ADAPTVQE_H_chain_bands.py`.
+Runnable end-to-end scripts: `examples/07_ADAPTVQE_H_chain_bands.py` (band structure
++ total energy to CSV, with a separate plotting script) and
+`examples/11_Bloch_crystals.py` (the three drivers compared on the H chain).

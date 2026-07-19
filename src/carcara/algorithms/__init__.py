@@ -10,7 +10,13 @@
 
 from .adapt_vqe import ADAPTVQE, ADAPTVQEResult, AdaptIteration
 from .deflation import DeflationMixin, EnergyLevels
-from .bloch import BandStructure, BlochADAPTVQE
+from .bloch import (
+    BandStructure,
+    BlochADAPTVQE,
+    BlochVASQE,
+    BlochVQE,
+    BlochVariationalDriver,
+)
 from .expressivity import (
     ADAPTExpressivityTracker,
     ExpressibilityResult,
@@ -51,7 +57,10 @@ __all__ = [
     "ADAPTVQE",
     "ADAPTVQEResult",
     "AdaptIteration",
+    "BlochVariationalDriver",
+    "BlochVQE",
     "BlochADAPTVQE",
+    "BlochVASQE",
     "BandStructure",
     "EnergyLevels",
     "SubspaceVQE",

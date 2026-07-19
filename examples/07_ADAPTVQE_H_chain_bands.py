@@ -6,27 +6,31 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Periodic hydrogen chain: k-point-summed ADAPT-VQE total energy + Bloch bands.
+"""Periodic hydrogen chain: k-point-summed total energy + Bloch bands.
 
 A **linear chain of hydrogen atoms 1.0 Angstrom apart**, periodic along *x* with a
 10 Angstrom vacuum gap in *y* and *z*.  The geometry is an ASE ``Atoms`` object with
 the **one-atom primitive cell** of the chain (one H per cell -> one 1s band); basis
 **FAO**, fermion-to-qubit map **Jordan-Wigner**.
 
-The whole calculation goes through :class:`carcara.algorithms.BlochADAPTVQE`, the
-general crystal (1-/2-/3-D) driver:
+The calculation uses the Bloch crystal driver family (all sharing the
+:class:`carcara.algorithms.BlochVariationalDriver` base):
 
-* ``bloch.total_energy((Nk, 1, 1))`` -- the **total energy per cell using all
-  k-points**.  A correlated solver cannot be run independently per k-point and
-  summed (the two-electron interaction couples crystal momenta), so this uses the
-  Born-von Karman equivalence: an ``Nk``-point mesh is a Gamma-point ADAPT-VQE
-  calculation on the ``Nk``-cell supercell, and ``E/cell = E(supercell) / Nk``.
-  Running ``Nk = 2, 4, 6`` converges it toward the bulk limit; the requested
-  ``(10, 1, 1)`` mesh is the ``Nk = 10`` (20-qubit) member of the same call.
+* **Band structure** -- ``bloch.bands(...)`` solves the single-particle generalized
+  Bloch eigenproblem ``H(k) c = eps(k) S(k) c`` at each **ASE**-generated k-point (a
+  dense Gamma--X path plus the Monkhorst-Pack mesh).  The band structure is
+  *single-particle*, hence identical for every driver, so we use the lightweight
+  fixed-ansatz :class:`~carcara.algorithms.BlochVQE`.
 
-* ``bloch.bands(...)`` -- the single-particle **band structure**, the generalized
-  Bloch eigenproblem ``H(k) c = eps(k) S(k) c`` solved at each **ASE**-generated
-  k-point (a dense Gamma--X path plus the Monkhorst-Pack mesh).
+* **Total energy using all k-points** -- ``bloch.total_energy((Nk, 1, 1))``.  A
+  correlated solver cannot be run independently per k-point and summed (the
+  two-electron interaction couples crystal momenta), so this uses the Born-von
+  Karman equivalence: an ``Nk``-point mesh is a Gamma-point calculation on the
+  ``Nk``-cell supercell, and ``E/cell = E(supercell) / Nk``.  The correlated
+  supercell energy is grown adaptively with
+  :class:`~carcara.algorithms.BlochADAPTVQE`.  Running ``Nk = 2, 4, 6`` converges it
+  toward the bulk limit; the requested ``(10, 1, 1)`` mesh is the ``Nk = 10``
+  (20-qubit) member of the same call.
 
 The band points are written to ``h_chain_bands.csv``; plotting is a **separate**
 script, ``examples/plot_h_chain_bands.py``.
@@ -40,7 +44,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import BlochADAPTVQE
+from carcara.algorithms import BlochADAPTVQE, BlochVQE
 
 SPACING = 1.0            # H-H distance = lattice constant a (Angstrom)
 VACUUM = 10.0            # y/z vacuum gap (Angstrom)
@@ -53,16 +57,20 @@ CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
               cell=[[SPACING, 0.0, 0.0], [0.0, VACUUM, 0.0], [0.0, 0.0, VACUUM]],
               pbc=[True, False, False])
-bloch = BlochADAPTVQE(atoms, basis="FAO", mapping="jordan_wigner",
-                      n_cells=4, n_images=7, h=0.20)
+settings = dict(basis="FAO", mapping="jordan_wigner", n_cells=4, n_images=7, h=0.20)
+
+# Correlated total energy -> adaptive driver; single-particle bands -> fixed-ansatz
+# driver (bands are solver-independent, so BlochVQE is the cheapest choice).
+adapt = BlochADAPTVQE(atoms, **settings)
+bands = BlochVQE(atoms, **settings)
 print(f"Periodic H chain: {SPACING:.2f} A spacing (one-atom cell), "
-      f"{VACUUM:.0f} A vacuum, {bloch.dimension}-D, {bloch.n_bands} band(s)")
+      f"{VACUUM:.0f} A vacuum, {bands.dimension}-D, {bands.n_bands} band(s)")
 
 # --- Total energy using ALL k-points (Born-von Karman supercell series). ----- #
 print("\n--- Total energy using all k-points (ADAPT-VQE, BvK supercell) ---")
 print("  Nk k-points  ==  Nk-cell supercell at Gamma;  E/cell = E(supercell) / Nk")
 for n_k in MESH_SERIES:
-    e_cell, result = bloch.total_energy((n_k, 1, 1), h=0.35, max_iterations=10,
+    e_cell, result = adapt.total_energy((n_k, 1, 1), h=0.35, max_iterations=10,
                                         gradient_tolerance=1e-3)
     print(f"  ({n_k:>2d}, 1, 1) mesh -> {n_k:>2d} atoms, "
           f"E/cell = {e_cell:+.4f} eV  (operators {result.num_operators})")
@@ -73,11 +81,11 @@ print("   the finite supercells converge toward the bulk total energy.)")
 # --- Band structure: solve the Bloch Hamiltonian at each ASE k-point. -------- #
 frac = np.linspace(-0.5, 0.5, 201)                      # fractional k along Gamma-X
 k_path = 2.0 * np.pi * frac / SPACING                    # cartesian k_x (1/Angstrom)
-band_path = bloch.bands(np.c_[frac, 0 * frac, 0 * frac])[:, 0]
+band_path = bands.bands(np.c_[frac, 0 * frac, 0 * frac])[:, 0]
 
-mp = bloch.monkhorst_pack(KSIZE)                          # ASE Monkhorst-Pack mesh
+mp = bands.monkhorst_pack(KSIZE)                          # ASE Monkhorst-Pack mesh
 k_mp = 2.0 * np.pi * mp[:, 0] / SPACING
-band_mp = bloch.bands(mp)[:, 0]
+band_mp = bands.bands(mp)[:, 0]
 
 print("\n--- Bloch band structure (single 1s band, per k-point) ---")
 print(f"  band edges: Gamma {band_path[len(band_path) // 2]:.3f} eV, "

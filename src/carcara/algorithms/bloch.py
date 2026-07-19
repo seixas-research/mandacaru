@@ -6,37 +6,47 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Bloch / k-point ADAPT-VQE for crystals (1-, 2- and 3-dimensional).
+r"""Bloch / k-point variational eigensolvers for crystals (1-, 2- and 3-D).
 
-:class:`BlochADAPTVQE` wraps the localized-basis integral engine and the
-:class:`~carcara.algorithms.adapt_vqe.ADAPTVQE` calculator to treat a **periodic
-crystal** given as an ASE ``Atoms`` primitive cell (its ``cell`` and ``pbc`` define
-the lattice and which directions are periodic).  It provides the two things a
-crystal calculation needs:
+:class:`BlochVariationalDriver` wraps the localized-basis integral engine and a
+molecular variational calculator to treat a **periodic crystal** given as an ASE
+``Atoms`` primitive cell (its ``cell`` and ``pbc`` define the lattice and which
+directions are periodic).  It provides the two things a crystal calculation needs:
 
 * **Band structure** -- the single-particle Bloch Hamiltonian
   ``H(k) = sum_R e^{i k.R} h^{(R)}``, ``S(k) = sum_R e^{i k.R} S^{(R)}`` is built
   from the real-space cell-to-cell one-body / overlap blocks ``h^{(R)}``,
   ``S^{(R)}`` and the generalized eigenproblem ``H(k) c = eps(k) S(k) c`` is solved
-  at each k-point (:meth:`bands`, :meth:`band_structure`).  This is fully general
-  in the lattice dimension: the Bloch phase uses the fractional coordinates
+  at each k-point (:meth:`~BlochVariationalDriver.bands`,
+  :meth:`~BlochVariationalDriver.band_structure`).  This is fully general in the
+  lattice dimension: the Bloch phase uses the fractional coordinates
   ``e^{2 pi i k.n}`` over the integer lattice translations ``n`` of the periodic
-  directions.
+  directions.  Being single-particle, the band structure is *independent of the
+  variational solver* -- it lives on the base class.
 
 * **Total energy using all k-points** -- a correlated solver cannot be run per
   k-point and summed (the two-electron interaction couples crystal momenta), so
-  :meth:`total_energy` uses the **Born-von Karman equivalence**: an
-  ``(n1, n2, n3)`` Monkhorst-Pack mesh is a Gamma-point calculation on the
-  ``(n1, n2, n3)`` supercell, and the energy per cell is ``E(supercell) / n_cells``.
-  The supercell is built with :meth:`ase.Atoms.repeat` and run through the
-  ADAPT-VQE ASE calculator (the box is the supercell's own ``cell``).  This is a
-  finite-supercell estimate that converges to the periodic total energy as the mesh
-  is refined -- exact in the infinite-mesh limit.
+  :meth:`~BlochVariationalDriver.total_energy` uses the **Born-von Karman
+  equivalence**: an ``(n1, n2, n3)`` Monkhorst-Pack mesh is a Gamma-point
+  calculation on the ``(n1, n2, n3)`` supercell, and the energy per cell is
+  ``E(supercell) / n_cells``.  The supercell is built with
+  :meth:`ase.Atoms.repeat` and run through the molecular variational calculator
+  (the box is the supercell's own ``cell``).  This is a finite-supercell estimate
+  that converges to the periodic total energy as the mesh is refined -- exact in
+  the infinite-mesh limit.
+
+The **only** thing that differs between crystal drivers is *which* molecular
+calculator solves the supercell, so the three concrete drivers are one-line
+subclasses:
+
+* :class:`BlochVQE` -- fixed-ansatz VQE on the supercell;
+* :class:`BlochADAPTVQE` -- adaptive ADAPT-VQE on the supercell;
+* :class:`BlochVASQE` -- stochastic VASQE on the supercell.
 
 Only the one-body and overlap integrals are needed for the bands (the FFT
-two-body path is orthogonal-grid only), so :meth:`bands` works for non-orthogonal
-2-D/3-D cells as well; the total energy uses the full (two-body-inclusive)
-ADAPT-VQE calculator on the supercell.
+two-body path is orthogonal-grid only), so :meth:`~BlochVariationalDriver.bands`
+works for non-orthogonal 2-D/3-D cells as well; the total energy uses the full
+(two-body-inclusive) molecular calculator on the supercell.
 """
 
 from __future__ import annotations
@@ -49,7 +59,7 @@ import numpy as np
 
 @dataclass
 class BandStructure:
-    """Band energies along a k-path (the return value of :meth:`BlochADAPTVQE.band_structure`).
+    """Band energies along a k-path (the return value of :meth:`BlochVariationalDriver.band_structure`).
 
     Attributes
     ----------
@@ -72,8 +82,13 @@ class BandStructure:
     kpts: np.ndarray
 
 
-class BlochADAPTVQE:
-    """k-point ADAPT-VQE driver for a periodic crystal.
+class BlochVariationalDriver:
+    """Base k-point variational driver for a periodic crystal.
+
+    Not used directly -- a concrete driver (:class:`BlochVQE`,
+    :class:`BlochADAPTVQE`, :class:`BlochVASQE`) sets which molecular calculator
+    solves the Born-von Karman supercell in :meth:`total_energy`; everything else
+    (the Bloch Hamiltonian, band structure, supercell construction) is shared.
 
     Parameters
     ----------
@@ -83,7 +98,7 @@ class BlochADAPTVQE:
         must be periodic).  Non-periodic directions must carry enough vacuum.
     basis : str or dict
         Localized basis passed to :class:`~carcara.basis.BasisSet` and to the
-        ADAPT-VQE calculator (default ``"FAO"``).
+        molecular calculator (default ``"FAO"``).
     mapping : str
         Fermion-to-qubit mapping (default ``"jordan_wigner"``).
     n_cells : int
@@ -102,6 +117,10 @@ class BlochADAPTVQE:
         (default ``5.0``).
     """
 
+    #: Extra default keyword arguments for the molecular calculator in
+    #: :meth:`total_energy` (e.g. the operator ``pool`` for the adaptive drivers).
+    _default_options: dict = {}
+
     def __init__(self, atoms, basis="FAO", mapping: str = "jordan_wigner",
                  n_cells: int = 4, n_images: int = 7, h: float = 0.20,
                  vacuum: float = 5.0):
@@ -115,10 +134,18 @@ class BlochADAPTVQE:
         self.periodic = [i for i in range(3) if bool(self.atoms.pbc[i])]
         if not self.periodic:
             raise ValueError(
-                "BlochADAPTVQE needs at least one periodic direction; set "
-                "atoms.pbc (e.g. pbc=[True, False, False] for a 1-D chain).")
+                f"{type(self).__name__} needs at least one periodic direction; "
+                "set atoms.pbc (e.g. pbc=[True, False, False] for a 1-D chain).")
         self._blocks = None          # {n_tuple: (S_block, h_block)}
         self._nbands = None
+
+    # -- concrete-driver hook -------------------------------------------- #
+
+    def _calculator_class(self):
+        """The molecular ASE calculator class used for the supercell total energy."""
+        raise NotImplementedError(
+            "BlochVariationalDriver is abstract; use BlochVQE / BlochADAPTVQE / "
+            "BlochVASQE")
 
     # -- lattice bookkeeping ---------------------------------------------- #
     def _cells(self, radius):
@@ -252,7 +279,7 @@ class BlochADAPTVQE:
 
         Built with :meth:`ase.Atoms.repeat`; the cell is reset to the atoms'
         bounding box plus :attr:`vacuum` so the finite supercell sits in a box the
-        ADAPT-VQE calculator can grid.
+        molecular calculator can grid.
         """
         cell = self.atoms.repeat(tuple(int(k) for k in kmesh))
         pos = cell.get_positions()
@@ -263,27 +290,81 @@ class BlochADAPTVQE:
         cell.center()
         return cell
 
-    def total_energy(self, kmesh, **adapt_kwargs):
+    def total_energy(self, kmesh, **solver_kwargs):
         """Total energy **per cell** (eV) using all ``kmesh`` k-points.
 
-        Runs ADAPT-VQE as an ASE calculator on the ``kmesh`` Born-von Karman
-        supercell (box = the supercell's ``cell``) and divides by the number of
-        cells.  Extra keyword arguments (``h``, ``pool``, ``max_iterations``,
-        ``gradient_tolerance``, ...) are forwarded to
-        :class:`~carcara.algorithms.adapt_vqe.ADAPTVQE`.
+        Runs the driver's molecular calculator as an ASE calculator on the
+        ``kmesh`` Born-von Karman supercell (box = the supercell's ``cell``) and
+        divides by the number of cells.  Extra keyword arguments (``h``, ``pool``,
+        ``max_iterations``, ``temperature``, ...) are forwarded to the calculator;
+        which arguments are valid depends on the concrete driver's calculator.
 
-        Returns ``(energy_per_cell_eV, adapt_result)``.
+        Returns ``(energy_per_cell_eV, result)`` where ``result`` is the molecular
+        calculator's result object (``VQEResult`` / ``ADAPTVQEResult`` /
+        ``VASQEResult``).
         """
-        from .adapt_vqe import ADAPTVQE
-
+        calc_cls = self._calculator_class()
         atoms = self.supercell(kmesh)
-        options = dict(pool="fermionic", basis=self.basis, mapping=self.mapping,
-                       h=self.h, verbose=False)
-        options.update(adapt_kwargs)
-        atoms.calc = ADAPTVQE(**options)
+        options = dict(basis=self.basis, mapping=self.mapping, h=self.h,
+                       verbose=False)
+        options.update(self._default_options)
+        options.update(solver_kwargs)
+        atoms.calc = calc_cls(**options)
         energy = atoms.get_total_energy()                 # eV
         n_cells = int(np.prod([int(k) for k in kmesh]))
-        return energy / n_cells, atoms.calc.adapt_result
+        result = getattr(atoms.calc, calc_cls._result_attr)
+        return energy / n_cells, result
+
+
+# --------------------------------------------------------------------------- #
+# Concrete crystal drivers -- one per molecular variational solver.
+# --------------------------------------------------------------------------- #
+
+class BlochVQE(BlochVariationalDriver):
+    """Bloch / k-point **VQE** for a crystal (fixed UCCSD ansatz on the supercell).
+
+    Band structure + Born-von Karman total energy with the molecular
+    :class:`~carcara.algorithms.vqe.VQE` calculator; see
+    :class:`BlochVariationalDriver` for the shared machinery.
+    """
+
+    _default_options: dict = {}
+
+    def _calculator_class(self):
+        from .vqe import VQE
+        return VQE
+
+
+class BlochADAPTVQE(BlochVariationalDriver):
+    """Bloch / k-point **ADAPT-VQE** for a crystal (adaptive ansatz on the supercell).
+
+    Band structure + Born-von Karman total energy with the molecular
+    :class:`~carcara.algorithms.adapt_vqe.ADAPTVQE` calculator (default operator
+    pool ``"fermionic"``); see :class:`BlochVariationalDriver`.
+    """
+
+    _default_options = {"pool": "fermionic"}
+
+    def _calculator_class(self):
+        from .adapt_vqe import ADAPTVQE
+        return ADAPTVQE
+
+
+class BlochVASQE(BlochVariationalDriver):
+    """Bloch / k-point **VASQE** for a crystal (stochastic ADAPT on the supercell).
+
+    Band structure + Born-von Karman total energy with the molecular
+    :class:`~carcara.algorithms.vasqe.VASQE` calculator -- stochastic softmax
+    operator selection with optional temperature annealing (pass ``temperature`` /
+    ``schedule`` / ``final_temperature`` to :meth:`~BlochVariationalDriver.total_energy`).
+    Default operator pool ``"fermionic"``; see :class:`BlochVariationalDriver`.
+    """
+
+    _default_options = {"pool": "fermionic"}
+
+    def _calculator_class(self):
+        from .vasqe import VASQE
+        return VASQE
 
 
 def _basis_args(basis):
