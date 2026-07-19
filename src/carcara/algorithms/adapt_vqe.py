@@ -33,6 +33,11 @@ count and circuit depth are logged per iteration (see :class:`CircuitMetrics`).
 The four operator pools (:mod:`carcara.circuits.pools`) can then be compared on
 accuracy-per-CNOT.  Profiling is optional -- if Qiskit is unavailable the run
 proceeds and metrics are reported as ``None``.
+
+Beyond the ground state, :meth:`ADAPTVQE.energy_levels` returns the low-lying
+**molecular energy levels** (ground + excited states) by variational quantum
+deflation, growing a fresh deflated ansatz per level -- see
+:mod:`carcara.algorithms._energy_levels`.
 """
 
 from __future__ import annotations
@@ -277,23 +282,37 @@ class AdaptAnsatz:
 
     def state(self, theta) -> np.ndarray:
         """Prepared state ``prod_k exp(theta_k A_k) |HF>``."""
+        return self.evolve(theta, self._hf)
+
+    def evolve(self, theta, references) -> np.ndarray:
+        r"""Apply the grown unitary ``prod_k exp(theta_k A_k)`` to reference(s).
+
+        ``references`` is a single state vector (shape ``(2**n,)``) or a stack of
+        column vectors (shape ``(2**n, k)``), returned with the matching shape;
+        the *same* product of exponentials is applied to every column.  This lets
+        the subspace-search solver
+        (:class:`~carcara.algorithms.SubspaceADAPTVQE`) send several orthogonal
+        references through one shared, adaptively grown unitary.
+        """
         theta = np.asarray(theta, dtype=float).ravel()
         if theta.size != self.num_parameters:
             raise ValueError(
                 f"expected {self.num_parameters} parameters, got {theta.size}")
-        psi = self._hf.copy()
+        refs = np.asarray(references, dtype=complex)
+        single = refs.ndim == 1
+        out = refs[:, None].copy() if single else refs.copy()
         if self.sparse:
             for angle, (A, A2, rodrigues) in zip(theta, self._sparse_ops):
                 if rodrigues:
-                    psi = (psi + np.sin(angle) * (A @ psi)
-                           + (1.0 - np.cos(angle)) * (A2 @ psi))
+                    out = (out + np.sin(angle) * (A @ out)
+                           + (1.0 - np.cos(angle)) * (A2 @ out))
                 else:
                     from scipy.sparse.linalg import expm_multiply
-                    psi = expm_multiply(angle * A, psi)
-            return psi
-        for angle, (w, V) in zip(theta, self._eig):
-            psi = V @ (np.exp(1j * angle * w) * (V.conj().T @ psi))
-        return psi
+                    out = expm_multiply(angle * A, out)
+        else:
+            for angle, (w, V) in zip(theta, self._eig):
+                out = V @ (np.exp(1j * angle * w)[:, None] * (V.conj().T @ out))
+        return out[:, 0] if single else out
 
 
 # --------------------------------------------------------------------------- #
@@ -1109,6 +1128,134 @@ class ADAPTVQE(Calculator):
         if verbose:
             self._print_summary(result, e_unit, timings)
         return result
+
+    # -- excited states / energy levels ---------------------------------- #
+
+    def energy_levels(self, num_states: int = 2, *, beta: float | None = None,
+                      max_iterations: int | None = None,
+                      gradient_tolerance: float | None = None) -> "EnergyLevels":
+        r"""Molecular energy levels (ground + excited states) by deflation.
+
+        Computes the ``num_states`` lowest eigenstates with **variational quantum
+        deflation** (VQD): a **separate ADAPT-VQE ansatz is grown for each
+        level**, driven by the deflated cost
+        :math:`\langle\psi|H|\psi\rangle
+        + \beta\sum_{j<m}|\langle\psi_j|\psi\rangle|^2`.  Both the pool-screening
+        gradient and the inner re-optimization carry the penalty term, so the
+        adaptive ansatz grows toward the next excited state and the reported
+        energy of each level is the *bare* expectation value (unbiased -- the
+        penalty vanishes at the eigenstate).
+
+        Parameters
+        ----------
+        num_states : int
+            Number of levels to return (``>= 1``); ``1`` reproduces :meth:`run`.
+        beta : float, optional
+            Deflation penalty weight.  Defaults to a value derived from the
+            Hamiltonian's coefficient 1-norm (guaranteed to exceed the spanned
+            gaps); increase it if excited levels collapse onto lower ones.
+        max_iterations, gradient_tolerance : optional
+            Per-state ADAPT growth controls; default to the instance's
+            :attr:`max_iterations` / :attr:`gradient_tolerance`.
+
+        Returns
+        -------
+        EnergyLevels
+            Ascending energies (Hartree), the optimal state vectors, the number of
+            ADAPT operators grown per level, and convenience views
+            (:attr:`~EnergyLevels.excitation_energies`,
+            :meth:`~EnergyLevels.in_units`).
+        """
+        from ._energy_levels import EnergyLevels, spectral_width_beta
+
+        if not self._configured:
+            raise RuntimeError(
+                "ADAPTVQE has no Hamiltonian; construct it with one, use it as an "
+                "ASE calculator and evaluate an energy first, or call run()")
+        self._check_kpts()
+        if int(num_states) < 1:
+            raise ValueError("num_states must be >= 1")
+        max_it = (self.max_iterations if max_iterations is None
+                  else int(max_iterations))
+        gtol = (self.gradient_tolerance if gradient_tolerance is None
+                else float(gradient_tolerance))
+        if beta is None:
+            beta = spectral_width_beta(self.hamiltonian)
+        beta = float(beta)
+
+        states: list[np.ndarray] = []
+        energies: list[float] = []
+        num_ops: list[int] = []
+        total_evals = 0
+        for _ in range(int(num_states)):
+            energy, psi, n_ops, nev = self._grow_deflated(states, beta, max_it, gtol)
+            energies.append(energy)
+            states.append(psi)
+            num_ops.append(n_ops)
+            total_evals += nev
+
+        order = np.argsort(energies)
+        return EnergyLevels(
+            energies=np.asarray(energies, dtype=float)[order],
+            states=[states[i] for i in order],
+            reference_energy=self.reference_energy(),
+            num_evaluations=total_evals,
+            num_operators=[num_ops[i] for i in order])
+
+    def _deflated_gradients(self, psi: np.ndarray, states, beta: float
+                            ) -> np.ndarray:
+        r"""Pool gradients of the deflated cost at the current state ``psi``.
+
+        The Hamiltonian part is the exact analytic gradient
+        ``2 Re<H psi | A_i psi>``; each deflated state adds
+        ``2 beta Re(<psi|psi_j> <psi_j| A_i psi>)``, the derivative of the overlap
+        penalty when appending ``exp(theta A_i)`` at ``theta = 0``.
+        """
+        grads = self._analytic_gradients(psi)
+        if not states:
+            return grads
+        overlaps = [np.vdot(psi, sj) for sj in states]      # <psi|psi_j>
+        for i, a in enumerate(self._pool_matrices):
+            a_psi = a @ psi
+            extra = 0.0
+            for ov, sj in zip(overlaps, states):
+                extra += 2.0 * beta * float(np.real(ov * np.vdot(sj, a_psi)))
+            grads[i] += extra
+        return grads
+
+    def _grow_deflated(self, states, beta, max_iterations, gradient_tol):
+        """Grow one deflated ADAPT ansatz; return ``(energy, psi, n_ops, nfev)``.
+
+        With ``states`` empty this is an ordinary ADAPT ground-state growth.  A
+        trimmed sibling of :meth:`run` (no logging / profiling / verbose trace)
+        used to build each excited state.
+        """
+        from ._energy_levels import deflation_penalty
+
+        ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
+                             self.mapping, sparse=self._sparse)
+        params = np.zeros(0)
+        total_evals = 0
+        for _ in range(int(max_iterations)):
+            psi = (ansatz.state(params) if ansatz.num_parameters
+                   else ansatz.reference_state())
+            grads = self._deflated_gradients(psi, states, beta)
+            idx = int(np.argmax(np.abs(grads)))
+            if float(abs(grads[idx])) < gradient_tol:
+                break
+            ansatz.append(self._pool_ops[idx])
+            x0 = np.concatenate([params, [0.0]])
+
+            def cost(t, _states=states):
+                phi = ansatz.state(t)
+                return self.energy(phi) + deflation_penalty(phi, _states, beta)
+
+            result = self.optimizer.minimize(cost, x0)
+            params = np.asarray(result.x, dtype=float)
+            total_evals += result.nfev
+        psi = (ansatz.state(params) if ansatz.num_parameters
+               else ansatz.reference_state())
+        return self.energy(psi), psi, ansatz.num_parameters, total_evals
 
     # -- standard-output trace ------------------------------------------- #
 

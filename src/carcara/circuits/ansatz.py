@@ -144,18 +144,36 @@ class UCCSD:
         Exact UCC (default): ``exp(sum_k theta_k G_k) |HF>``.  Trotter mode:
         the product ``prod_k exp(theta_k G_k) |HF>``.
         """
+        return self.evolve(theta, self._hf)
+
+    def evolve(self, theta, references) -> np.ndarray:
+        r"""Apply the ansatz unitary ``U(theta)`` to arbitrary reference state(s).
+
+        ``references`` is a single state vector (shape ``(2**N,)``) or a stack of
+        column vectors (shape ``(2**N, k)``); the return has the matching shape.
+        The unitary is the *same* for every column -- computed once and applied to
+        all of them -- which is what the subspace-search solvers
+        (:class:`~carcara.algorithms.SubspaceVQE`) need to send several orthogonal
+        references through one shared ``U(theta)``.
+        """
         theta = np.asarray(theta, dtype=float).ravel()
         if theta.size != self.num_parameters:
             raise ValueError(
                 f"expected {self.num_parameters} parameters, got {theta.size}")
+        refs = np.asarray(references, dtype=complex)
+        single = refs.ndim == 1
+        if single:
+            refs = refs[:, None]
         if self.trotter:
-            psi = self._hf.copy()
+            out = refs.copy()
             for angle, gen in zip(theta, self._generators):
-                psi = expm(angle * gen) @ psi
-            return psi
-        cluster = sum((angle * gen for angle, gen in zip(theta, self._generators)),
-                      np.zeros((2 ** self.n_qubits,) * 2, dtype=complex))
-        return expm(cluster) @ self._hf
+                out = expm(angle * gen) @ out
+        else:
+            cluster = sum(
+                (angle * gen for angle, gen in zip(theta, self._generators)),
+                np.zeros((2 ** self.n_qubits,) * 2, dtype=complex))
+            out = expm(cluster) @ refs
+        return out[:, 0] if single else out
 
     def __repr__(self) -> str:
         return (f"UCCSD(n_qubits={self.n_qubits}, "

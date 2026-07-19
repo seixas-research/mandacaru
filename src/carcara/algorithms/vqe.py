@@ -30,6 +30,10 @@ The ``optimizer`` may be named by string, a ``verbose`` run prints the qubit
 Hamiltonian as Pauli strings and a timing / memory / cores summary, and the run
 returns a :class:`VQEResult` shaped like
 :class:`~carcara.algorithms.adapt_vqe.ADAPTVQEResult`.
+
+Beyond the ground state, :meth:`VQE.energy_levels` returns the low-lying
+**molecular energy levels** (ground + excited states) by variational quantum
+deflation -- see :mod:`carcara.algorithms._energy_levels`.
 """
 
 from __future__ import annotations
@@ -325,6 +329,106 @@ class VQE(Calculator):
         if self.verbose:
             self._print_summary(vqe_result, timings)
         return vqe_result
+
+    # -- excited states / energy levels ---------------------------------- #
+
+    def energy_levels(self, num_states: int = 2, *, beta: float | None = None,
+                      initial_parameters=None, restarts: int = 1,
+                      seed: int = 0) -> "EnergyLevels":
+        r"""Molecular energy levels (ground + excited states) by deflation.
+
+        Computes the ``num_states`` lowest eigenstates of the qubit Hamiltonian
+        with **variational quantum deflation** (VQD): the ground state is an
+        ordinary VQE minimization, and each excited state minimizes the deflated
+        cost
+        :math:`\langle\psi(\vec\theta)|H|\psi(\vec\theta)\rangle
+        + \beta\sum_{j<m}|\langle\psi_j|\psi(\vec\theta)\rangle|^2`,
+        reusing this VQE's ansatz and optimizer.  The reported energy of each
+        level is the *bare* expectation value (the penalty vanishes at the
+        eigenstate), so the result is unbiased.
+
+        The states reachable are those the fixed ansatz can represent from its
+        reference; a level is recovered only if the ansatz spans it (e.g. the
+        UCCSD double-excitation subspace gives the totally symmetric excited
+        singlet of H\ :sub:`2`).
+
+        Parameters
+        ----------
+        num_states : int
+            Number of levels to return (``>= 1``); ``1`` is just the ground
+            state.
+        beta : float, optional
+            Deflation penalty weight.  Defaults to a value derived from the
+            Hamiltonian's coefficient 1-norm (guaranteed to exceed the spanned
+            gaps); increase it if excited levels collapse onto lower ones.
+        initial_parameters : array_like, optional
+            Warm start for the ground-state search (default all-zero, the
+            reference state).
+        restarts : int
+            Number of optimizer restarts per level, keeping the lowest (deflated)
+            cost (default ``1``).  Extra restarts use seeded random starts and
+            make hard excited-state searches more robust.
+        seed : int
+            Seed for the restart random starts (reproducible).
+
+        Returns
+        -------
+        EnergyLevels
+            Ascending energies (Hartree), the optimal state vectors, and
+            convenience views (:attr:`~EnergyLevels.excitation_energies`,
+            :meth:`~EnergyLevels.in_units`).
+        """
+        from ._energy_levels import (EnergyLevels, deflation_penalty,
+                                     spectral_width_beta)
+
+        if not self._configured:
+            raise RuntimeError(
+                "VQE has no Hamiltonian/ansatz; construct it with both, use it as "
+                "an ASE calculator and evaluate an energy first, or call run()")
+        self._check_kpts()
+        if int(num_states) < 1:
+            raise ValueError("num_states must be >= 1")
+        n = self.ansatz.num_parameters
+        H = self._h_matrix
+        if beta is None:
+            beta = spectral_width_beta(self.hamiltonian)
+        beta = float(beta)
+        rng = np.random.default_rng(seed)
+
+        base_x0 = (np.zeros(n) if initial_parameters is None
+                   else np.asarray(initial_parameters, dtype=float).ravel())
+        if base_x0.size != n:
+            raise ValueError(f"expected {n} initial parameters, got {base_x0.size}")
+
+        states: list[np.ndarray] = []
+        energies: list[float] = []
+        total_evals = 0
+        for m in range(int(num_states)):
+            def cost(theta, _states=states):
+                psi = self.ansatz.state(theta)
+                e = float(np.real(np.vdot(psi, H @ psi)))
+                return e + deflation_penalty(psi, _states, beta)
+
+            # First attempt from the warm start (ground) / reference; further
+            # restarts (and every excited-state restart) from seeded random.
+            best = None
+            for r in range(max(1, int(restarts))):
+                x0 = base_x0 if (m == 0 and r == 0) else \
+                    rng.uniform(-np.pi, np.pi, size=n)
+                result = self.optimizer.minimize(cost, x0)
+                total_evals += result.nfev
+                if best is None or result.fun < best.fun:
+                    best = result
+            psi = self.ansatz.state(best.x)
+            energies.append(float(np.real(np.vdot(psi, H @ psi))))
+            states.append(psi)
+
+        order = np.argsort(energies)
+        return EnergyLevels(
+            energies=np.asarray(energies, dtype=float)[order],
+            states=[states[i] for i in order],
+            reference_energy=self.reference_energy(),
+            num_evaluations=total_evals)
 
     # -- standard-output trace ------------------------------------------- #
 

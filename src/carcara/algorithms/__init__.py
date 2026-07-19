@@ -16,6 +16,7 @@ from .adapt_vqe import (
     CircuitMetrics,
     profile_ansatz,
 )
+from ._energy_levels import EnergyLevels
 from .bloch import BandStructure, BlochADAPTVQE
 from .expressivity import (
     ADAPTExpressivityTracker,
@@ -32,6 +33,12 @@ from .expressivity import (
     track_adapt_expressivity,
 )
 from .hartree_fock import RHF, RHFResult, UHF, transform_integrals
+from .subspace import (
+    SubspaceADAPTVQE,
+    SubspaceADAPTVQEResult,
+    SubspaceVQE,
+    SubspaceVQEResult,
+)
 from .vqe import VQE, VQEResult
 
 __all__ = [
@@ -49,6 +56,11 @@ __all__ = [
     "profile_ansatz",
     "BlochADAPTVQE",
     "BandStructure",
+    "EnergyLevels",
+    "SubspaceVQE",
+    "SubspaceVQEResult",
+    "SubspaceADAPTVQE",
+    "SubspaceADAPTVQEResult",
     "compute_expressibility",
     "ExpressibilityResult",
     "ExpressibilityStep",

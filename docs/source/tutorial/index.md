@@ -7,6 +7,8 @@ These tutorials provide step-by-step guides for setting up and running variation
 vqe_h2
 vqe_lih
 adapt_vqe_lih
+energy_levels
+subspace_vqe
 pes_scan
 bloch_crystals
 ```
