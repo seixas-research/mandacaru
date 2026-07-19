@@ -18,10 +18,6 @@
        <a href="https://pypi.org/project/carcara/">
          <img src="https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge" alt="pypi">
        </a>
-      <!-- repo size -->
-       <a>
-         <img src="https://img.shields.io/github/repo-size/leseixas/carcara?style=for-the-badge&color=yellow" alt="size">
-       </a>
 
       <!-- documentation -->
        <a href="https://carcara.readthedocs.io/en/latest/">
