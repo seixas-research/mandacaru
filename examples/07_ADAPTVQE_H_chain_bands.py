@@ -32,7 +32,7 @@ The calculation uses the Bloch crystal driver family (all sharing the
   toward the bulk limit; the requested ``(10, 1, 1)`` mesh is the ``Nk = 10``
   (20-qubit) member of the same call.
 
-The band points are written to ``h_chain_bands.csv``; plotting is a **separate**
+The band points are written to ``examples/data/h_chain_bands.csv``; plotting is a **separate**
 script, ``examples/plot_h_chain_bands.py``.
 """
 
@@ -50,8 +50,10 @@ SPACING = 1.0            # H-H distance = lattice constant a (Angstrom)
 VACUUM = 10.0            # y/z vacuum gap (Angstrom)
 KSIZE = (10, 1, 1)       # Monkhorst-Pack mesh
 MESH_SERIES = (2, 4, 6)  # k-point counts for the total-energy convergence
-CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "h_chain_bands.csv")
+# All generated files (logs, CSV, plots) go to examples/data/.
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA, exist_ok=True)
+CSV_PATH = os.path.join(DATA, "h_chain_bands.csv")
 
 # One-atom primitive cell of the chain (periodic along x only).
 atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],

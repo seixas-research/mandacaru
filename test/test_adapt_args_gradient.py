@@ -197,19 +197,50 @@ class TestOptimizerOption:
 # --------------------------------------------------------------------------- #
 
 class TestVerbosePauliOutput:
-    def test_hamiltonian_and_ansatz_pauli_strings_printed(self, h2_hamiltonian,
-                                                          capsys):
+    def test_no_pauli_strings_are_dumped(self, h2_hamiltonian, capsys):
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=False, verbose=True,
                          max_iterations=3, gradient_tolerance=1e-6)
         adapt.run()
         out = capsys.readouterr().out
-        # The qubit Hamiltonian is echoed as Pauli strings ...
-        assert "Qubit Hamiltonian" in out
-        assert "* ZIII" in out
-        # ... and each iteration prints the selected operator's generator.
-        assert "ansatz operator (Pauli strings)" in out
-        assert out.count("[iter 1]") == 1
+        # The Hamiltonian is summarized by size only -- its Pauli expansion runs
+        # to thousands of lines for a realistic active space.
+        assert "Qubit Hamiltonian: 15 Pauli terms" in out
+        assert "* ZIII" not in out
+        # Nor is the selected operator's generator dumped per iteration.
+        assert "ansatz operator (Pauli strings)" not in out
+        assert "[iter 1]" not in out
+        # The operator is still reachable programmatically.
+        assert "ZIII" in adapt.hamiltonian.simplify().terms
+
+    def test_iterations_are_single_aligned_lines(self, h2_hamiltonian, capsys):
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=True, verbose=True,
+                         max_iterations=3, gradient_tolerance=1e-6)
+        result = adapt.run()
+        out = capsys.readouterr().out
+
+        # A column heading precedes the per-iteration rows.
+        for column in ("iter", "max|grad|", "energy", "dE", "npar", "cnot",
+                       "depth", "operator"):
+            assert column in out
+
+        lines = out.splitlines()
+        heading = next(i for i, line in enumerate(lines)
+                       if line.split()[:2] == ["iter", "max|grad|"])
+        # One line per grown operator, each carrying every column.
+        rows = [line for line in lines[heading + 2:]
+                if line.strip() and line.split()[0].isdigit()]
+        assert len(rows) == result.num_operators
+        for index, row in enumerate(rows, start=1):
+            fields = row.split()
+            assert int(fields[0]) == index
+            assert len(fields) == len(("iter", "max|grad|", "energy", "dE",
+                                       "npar", "cnot", "depth", "operator"))
+            assert fields[-1] in result.operators          # the operator label
+        # The rows are column-aligned: the operator column starts at one offset.
+        starts = {row.index(row.split()[-1]) for row in rows}
+        assert len(starts) == 1
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),

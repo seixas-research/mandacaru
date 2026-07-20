@@ -13,15 +13,26 @@ readme = "README.md"
 license = {file = "LICENSE"} 
 requires-python = ">=3.11"
 dependencies = [
+    # -- numerical core -------------------------------------------------- #
     'numpy>=2.0.0',
-    'ase',
     'scipy',
-    'matplotlib',
-    'pytest',
-    'qiskit',             # IBM Qiskit
+    'ase',                # geometries + the Calculator interface the drivers use
+    'matplotlib',         # expressivity / band-structure plotting helpers
+    # -- Hamiltonian cache (Apache Parquet) ------------------------------ #
+    # fastparquet is the default engine and pandas is its table interface; see
+    # carcara.core.serialization for why pyarrow is only an optional engine.
+    'fastparquet',
+    'pandas',
+    # -- quantum SDKs (backend_provider / device registry) ---------------- #
+    'qiskit',             # IBM Qiskit -- default circuit provider + profiling
     'qiskit-nature',      # IBM Qiskit Nature
-    'qiskit-ibm-runtime'  # IBM Qiskit Runtime
+    'qiskit-ibm-runtime', # IBM Qiskit Runtime -- the reserved 'ibm-quantum' device
+    'amazon-braket-sdk',  # Amazon Braket SDK -- local simulator + AWS devices/QPUs
+    'cirq',               # Google Cirq
+    # -- test suite -------------------------------------------------------- #
+    'pytest',             # `python -m pytest test/` ships with the package
 ]
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
@@ -32,11 +43,12 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-accel = [
-    'numba>=0.60',
-    'numpy<2.5',
-]
-#   conda install -c conda-forge libxc pylibxc
+# Alternative Parquet engine.  Not a default: on some platforms pyarrow's
+# Parquet writer crashes in a process that has also run Qiskit's transpiler
+# (see the warning in carcara.core.serialization).
+pyarrow = ['pyarrow']
+docs = ['sphinx', 'sphinx-rtd-theme', 'myst-parser', 'furo']
+dev = ['pyarrow', 'sphinx', 'sphinx-rtd-theme', 'myst-parser', 'furo']
 
 [project.urls]
 "Homepage" = "https://github.com/seixas-research/carcara"

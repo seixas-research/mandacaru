@@ -64,6 +64,60 @@ Classical Optimizers
 
 ----
 
+Hamiltonian Serialization
+-------------------------
+
+The on-disk qubit-Hamiltonian cache (Apache Parquet or JSON) that lets a run skip
+the integrals and the fermion-to-qubit mapping entirely.  See
+:doc:`guide/hamiltonian_cache`.
+
+.. automodule:: carcara.core.serialization
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+----
+
+Backends: Devices & Circuit Providers
+-------------------------------------
+
+.. automodule:: carcara.backends
+
+Device Registry
+~~~~~~~~~~~~~~~
+
+Which machine a run executes on -- the ideal simulator, or an Amazon Braket
+simulator or QPU.  See :doc:`guide/aws_braket`.
+
+.. automodule:: carcara.backends.hardware
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Circuit Providers
+~~~~~~~~~~~~~~~~~
+
+Which SDK builds and executes the ansatz circuits -- Qiskit, Amazon Braket or
+Cirq.  See :doc:`guide/backends`.
+
+.. automodule:: carcara.backends.providers
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Shot-Based Measurement
+~~~~~~~~~~~~~~~~~~~~~~
+
+Estimating :math:`\langle H \rangle` from measurement shots via qubit-wise
+commuting Pauli groups -- the protocol a real QPU requires.
+
+.. automodule:: carcara.backends.measurement
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+----
+
 Utilities & Profiling
 ---------------------
 

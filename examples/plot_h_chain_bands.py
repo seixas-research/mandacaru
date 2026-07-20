@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Plot the periodic H-chain band structure from ``h_chain_bands.csv``.
+"""Plot the periodic H-chain band structure from ``examples/data/h_chain_bands.csv``.
 
 Companion to ``examples/07_ADAPTVQE_H_chain_bands.py``, which writes the band
 points (dense Gamma--X path + Monkhorst-Pack samples) to CSV.  Keeping the plot in
@@ -30,8 +30,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(HERE, "h_chain_bands.csv")
-PNG_PATH = os.path.join(HERE, "h_chain_bands.png")
+DATA = os.path.join(HERE, "data")
+os.makedirs(DATA, exist_ok=True)
+CSV_PATH = os.path.join(DATA, "h_chain_bands.csv")
+PNG_PATH = os.path.join(DATA, "h_chain_bands.png")
 
 
 def load(csv_path):

@@ -36,9 +36,10 @@ full quantum error correction, and tensor-network classical backends.
 
 ## 2. Current State (baseline)
 
-Package version: **26.7.35**. Build: `hatchling`. Python ≥ 3.11.
-Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
-`qiskit-ibm-runtime`, `ase` (plus `pandas`, `matplotlib`, `pyyaml`, `pytest`).
+Package version: **26.7.37**. Build: `hatchling`. Python ≥ 3.11.
+Core dependencies: `numpy`, `scipy`, `ase`, `matplotlib`, `fastparquet`, `pandas`,
+`qiskit`, `qiskit-nature`, `qiskit-ibm-runtime`, `amazon-braket-sdk`, `cirq`,
+`pytest`. Optional extras: `pyarrow` (alternative Parquet engine), `docs`, `dev`.
 
 | Module | Path | Status |
 |---|---|---|
@@ -63,10 +64,13 @@ Core dependencies: `numpy`, `scipy`, `qiskit`, `qiskit-nature`,
 | Hartree-Fock (RHF/UHF, MO basis) | `src/carcara/algorithms/hartree_fock.py` | **implemented** |
 | Expressibility (KL-from-Haar, ADAPT tracker) | `src/carcara/algorithms/expressivity.py` | **implemented** |
 | Profiling / banner / `output.txt` logger | `src/carcara/utils/` | **implemented** |
-| Hardware backend (device registry) | `src/carcara/backends/hardware.py` | **implemented** — `AER_simulator` runnable, `ibm-quantum` reserved |
+| Hamiltonian serialization (Parquet/JSON cache, format auto-detection) | `src/carcara/core/serialization.py` | **implemented** |
+| Device registry (ideal sim, Braket local/managed sims, IonQ/IQM/Rigetti QPUs, raw ARNs) | `src/carcara/backends/hardware.py` | **implemented** — `ibm-quantum` still reserved |
+| Circuit providers (Qiskit / Amazon Braket / Cirq), exact Pauli-rotation decomposition | `src/carcara/backends/providers.py` | **implemented** |
+| Shot-based measurement (qubit-wise-commuting grouping, `<H>` from counts) | `src/carcara/backends/measurement.py` | **implemented** |
 | Error mitigation | `src/carcara/backends/mitigation.py` | **empty stub** |
-| Tests | `test/` (basis/integrals/mapping/hamiltonian/HF, vqe, adapt, planewave, profiling, banner, non-cubic/output) | **implemented** |
-| Docs | `docs/` (Sphinx + ReadTheDocs) | basis, integral, VQE & ADAPT-VQE tutorials |
+| Tests | `test/` (basis/integrals/mapping/hamiltonian/HF, vqe, adapt, planewave, profiling, banner, non-cubic/output, Hamiltonian I/O, backend providers, Braket/AWS, quenching) — 609 tests | **implemented** |
+| Docs | `docs/` (Sphinx + ReadTheDocs) | API reference, theory, tutorials, and how-to guides (cache, backends, AWS Braket, quenching) |
 
 **Implication:** the pipeline is implemented end-to-end through both a
 fixed-ansatz VQE and the *adaptive* **ADAPT-VQE** (localized *or* periodic
@@ -78,9 +82,18 @@ front-end. On top of that baseline, **excited states** (variational deflation
 **stochastic adaptive** solver (**VASQE**, softmax operator selection with
 temperature annealing), and **periodic crystals** (`BlochVQE`/`BlochADAPTVQE`/`BlochVASQE`) are also in.
 All drivers share a common **`VariationalDriver`** base with the excited-state
-techniques as composable mixins (see §Architecture note below). What remains is
-real-hardware execution and error mitigation. The roadmap below follows this
-existing layout so no restructuring is required.
+techniques as composable mixins (see §Architecture note below).
+
+Execution is no longer simulator-only: the same drivers build and run their
+circuits on **Qiskit, Amazon Braket or Cirq** (`backend_provider`), and reach
+**real QPUs** through Braket's shot-based measurement path (`device=`, `shots=`).
+The qubit Hamiltonian is **serializable** (Parquet/JSON), so a built problem can
+be replayed without recomputing the integrals or the mapping.
+
+What remains is the IBM Runtime backend, **hardware-native ADAPT gradient
+screening** (energy evaluation is measured on-device today, pool screening is
+not), and error mitigation. The roadmap below follows this existing layout so no
+restructuring is required.
 
 > **Architecture note (delivered):** the drivers were refactored into three
 > orthogonal layers — problem setup + state-vector backend (`algorithms/base.py`,
@@ -100,13 +113,15 @@ existing layout so no restructuring is required.
 
 1. **Hardware-first.** Every feature must run on a noisy backend, not only on a
    statevector simulator. Circuit depth and gate count are first-class metrics.
-2. **Qiskit-native, but decoupled.** Lean on `qiskit` / `qiskit-nature` /
-   `qiskit-ibm-runtime`, while keeping a thin Carcará API so backends can be
-   swapped later.
+2. **SDK-agnostic, not Qiskit-locked.** *(Delivered.)* Circuits are emitted as a
+   provider-independent gate stream and translated into `qiskit`, `amazon-braket-sdk`
+   or `cirq` behind one `backend_provider` argument; the device is a separate,
+   equally thin `device=` registry. Swapping either changes no solver code.
 3. **Validate against exact results.** Each numerical component is checked
    against exact diagonalization (small systems) or published reference values.
-4. **Reproducible science.** Seeded runs, serializable configs (`pyyaml`), and
-   logged provenance for every experiment.
+4. **Reproducible science.** Seeded runs, logged provenance for every
+   experiment, and a **serializable qubit Hamiltonian** (Parquet/JSON) so a run
+   can be replayed exactly without recomputing the integrals or the mapping.
 5. **Test-driven.** Unit tests land with each module; no empty stub is marked
    "done" without coverage.
 
@@ -121,9 +136,9 @@ existing layout so no restructuring is required.
   `circuits`, `algorithms`, `optimizers`, `backends`).
 - Set up tooling: `ruff`/`black` formatting, `mypy` type checks, `pytest` +
   `pytest-cov`, and a GitHub Actions CI matrix (Python 3.11+).
-- Add `optional-dependencies` groups in `pyproject.toml` (`dev`, `docs`, `hw`).
+- ✓ Add `optional-dependencies` groups in `pyproject.toml` — `pyarrow`
+  (alternative Parquet engine), `docs`, `dev`.
 - Establish the logging utility (`utils/logging.py`) as the project-wide logger.
-- Add a `CHANGELOG.md` (currently absent) in Keep-a-Changelog format.
 
 **Deliverables:** green CI, `pip install -e .[dev]` works, contributor guide.
 **Acceptance:** CI passes on a trivial PR; coverage report published.
@@ -383,28 +398,68 @@ gate set via Qiskit). ✓ *implemented* (`algorithms/adapt_vqe.py`,
 ---
 
 ### Phase 6 — Backends: Real Hardware Execution
-*Goal: run on IBM Quantum.*
-*File: `backends/hardware.py`.*
+*Goal: run on real quantum hardware.*
+*Files: `backends/hardware.py`, `backends/providers.py`, `backends/measurement.py`.*
 
-> **Status — device registry implemented.** `backends/hardware.py` provides the
-> `normalize_device` / `require_runnable` registry the drivers already route
-> through (`device="AER_simulator"` runnable; `"ibm-quantum"` reserved and raising
-> `NotImplementedError` at run). The C integral backend also reports its OpenMP
-> thread count (`carcara_num_threads`). Remaining: the concrete `IBMBackend`
-> runtime (Sampler/Estimator, transpilation, job management).
+> **Status — delivered for Amazon Braket; IBM Runtime still pending.** The
+> execution stack landed in three layers:
+>
+> - **Device registry** (`hardware.py`) — a `Device` record per entry with
+>   `normalize_device` / `require_runnable` / `device_arn` / `device_provider` /
+>   `is_aws_device` / `requires_shots`. Covers `AER_simulator`, Braket's local
+>   simulator, the managed SV1/DM1/TN1 simulators, the IonQ / IQM / Rigetti QPUs,
+>   and **any raw `arn:aws:braket…` ARN** so devices released later can still be
+>   named. `"ibm-quantum"` remains reserved.
+> - **Circuit providers** (`providers.py`) — `backend_provider="qiskit" |
+>   "braket" | "cirq"`. Every generator is anti-Hermitian with mutually commuting
+>   Pauli terms, so `exp(θA) = Π exp(iθcⱼPⱼ)` factorizes **exactly**; one shared
+>   gate stream (`X, H, S, S†, CNOT, Rz`) is translated per SDK. Verified to
+>   reproduce the internal state vector to machine precision across all four pools.
+> - **Shot-based measurement** (`measurement.py`) — the protocol hardware
+>   actually supports. **Verified constraint:** Braket rejects the `StateVector`
+>   result type whenever `shots > 0`, and every QPU requires `shots > 0`, so the
+>   exact path is simulator-only. `⟨H⟩` is instead assembled from **qubit-wise
+>   commuting** Pauli groups (118 terms → 29 circuits on LiH), one measurement
+>   circuit per group, error falling as `1/√shots`.
+>
+> **Remaining:** the IBM `qiskit-ibm-runtime` path (Sampler/Estimator, sessions),
+> device-aware transpilation (coupling maps, layout/routing), noisy `AerSimulator`
+> parity, job management/caching, and — the substantive gap — **hardware-native
+> ADAPT gradient screening** (see below).
 
-- Abstract `Backend` interface; concrete `IBMBackend` via
-  `qiskit-ibm-runtime` (Sampler/Estimator primitives, sessions).
+- ✓ Abstract provider interface; concrete Qiskit / Braket / Cirq implementations.
+- ✓ Amazon Braket execution: local simulator, managed simulators, and QPUs by
+  name or ARN, with `shots` enforced for hardware at construction time.
+- ✓ Measurement reduction via qubit-wise-commuting operator grouping; shot-noise
+  estimator (`shot_noise_estimate`) for pre-submission cost planning.
+- Concrete `IBMBackend` via `qiskit-ibm-runtime` (Sampler/Estimator, sessions)
+  **(planned)**.
 - Transpilation pipeline targeting device coupling maps and basis gates;
-  layout/routing tuned for low two-qubit depth.
-- Local simulators (statevector, noisy `AerSimulator` with device noise models)
-  behind the same interface for offline testing.
-- Job management: submission, retrieval, retry, and result caching.
+  layout/routing tuned for low two-qubit depth **(planned)**.
+- Noisy `AerSimulator` with device noise models behind the same interface
+  **(planned)**.
+- Job management: submission, retrieval, retry, and result caching **(planned)**.
 
 **Deliverables:** the Phase 4 VQE and Phase 5 ADAPT-VQE run unchanged against a
-real QPU.
-**Acceptance:** a small VQE/ADAPT run (e.g. H₂, 2 qubits after tapering)
-completes on an IBM device; results logged with backend/calibration metadata.
+real QPU. ✓ *delivered for Braket* — only `device=` and `shots=` change:
+
+```python
+atoms.calc = VQE(basis="FAO", device="braket-ionq-aria", shots=8192)
+```
+
+**Acceptance:** ✓ the shot-based path reproduces the exact energy within its
+statistical bound on the Braket local simulator (the identical code path a QPU
+takes), and the emitted gate set is verified Braket-native on every run
+(`examples/13_braket_aws_compatibility.py`). A billed run on a physical QPU has
+not yet been performed, and results are not yet logged with a calibration
+snapshot.
+
+> **Known limitation (explicit).** Only the **energy evaluation** is
+> hardware-native. ADAPT-VQE's *pool-gradient screening* still computes
+> `⟨ψ|[H, Aᵢ]|ψ⟩` classically from the state vector; a fully hardware-native
+> adaptive loop must measure each pool gradient too (grouped commutator
+> estimation). Until then, fixed-ansatz **`VQE` is the hardware-native driver** —
+> every cost evaluation in its optimization is measured on the device.
 
 ---
 
@@ -427,15 +482,29 @@ to FCI than the unmitigated run.
 ### Phase 8 — Documentation, Examples & Release
 *Goal: usable, citable, published.*
 
-- Sphinx docs: API reference (autodoc) + hands-on tutorials — VQE, ADAPT-VQE,
+> **Status — largely delivered.** Sphinx docs build clean and cover the API
+> (autodoc over every module, including `backends.hardware` / `backends.providers`
+> / `backends.measurement` and `core.serialization`), the theory pages, the
+> tutorials, and a new **How-To Guides** section (`docs/source/guide/`):
+> Hamiltonian caching, backend providers, AWS Braket / QPUs, and the `quenching`
+> parametrization policy. `examples/` holds 17 runnable scripts, all writing their
+> artifacts to `examples/data/`. Remaining: Hubbard dimer, a *billed* hardware-run
+> walkthrough, Zenodo DOI, and the software paper.
+
+- ✓ Sphinx docs: API reference (autodoc) + hands-on tutorials — VQE, ADAPT-VQE,
   **excited states (deflation)**, **subspace-search (SSVQE)**, **VASQE**, periodic
-  **Bloch crystals**, and PES scans (all live under `docs/source/tutorial/`).
-- Worked examples/notebooks: H₂ dissociation curve, Hubbard dimer, a hardware
-  run walkthrough, and an **ADAPT-VQE pool comparison** (fermionic vs qubit vs
-  QEB vs CEO: energy error vs CNOT count).
-- Quickstart in the README's empty "Getting started" section.
-- Versioning + PyPI release automation; archive a release on Zenodo for a DOI.
-- (Stretch) a short methods/software paper (JOSS-style).
+  **Bloch crystals**, and PES scans (`docs/source/tutorial/`) — plus task-oriented
+  how-to guides (`docs/source/guide/`).
+- Worked examples: ✓ H₂/LiH dissociation curves, ✓ an **ADAPT-VQE pool comparison**
+  (and a mapping comparison) in `examples/16_ADAPTVQE_LiH_dissociation.py`,
+  ✓ **expressibility growth vs Haar** (`15`), ✓ **multi-backend equivalence** (`12`),
+  ✓ **Braket/QPU compatibility report** (`13`), ✓ **VASQE annealing convergence**
+  (`14`), ✓ **Hamiltonian cache round-trip** (`17`). Hubbard dimer and a billed
+  hardware-run walkthrough remain **(planned)**.
+- ✓ Quickstart in the README (seven worked snippets, from integrals to QPUs).
+- Versioning + PyPI release automation; archive a release on Zenodo for a DOI
+  **(planned)**.
+- (Stretch) a short methods/software paper (JOSS-style) **(planned)**.
 
 **Deliverables:** docs live on ReadTheDocs; tagged release on PyPI.
 **Acceptance:** a new user reproduces the H₂ tutorial end-to-end from `pip install`.
@@ -469,7 +538,10 @@ release at the end.
   pool size, ADAPT iterations, and wall-clock per VQE/ADAPT iteration.
 - **Reproducibility:** global seeding; serialize run configs and results;
   serialize the **selected ADAPT ansatz** (ordered operators + parameters) so a
-  converged circuit can be replayed without re-running the adaptive loop.
+  converged circuit can be replayed without re-running the adaptive loop
+  **(planned)**. ✓ The **qubit Hamiltonian** is already serializable
+  (`save_hamiltonian` / `load_hamiltonian`, Parquet or JSON with format
+  auto-detection), which removes the integral + mapping cost from every replay.
 - **Provenance & logging:** every hardware run records backend name,
   calibration snapshot, and transpilation settings.
 - **Extensibility:** plugin/registry pattern (entry points) for mappings,
@@ -480,7 +552,9 @@ release at the end.
   `carcara run config.yaml` command; results and ansatz emitted as artifacts.
 - **Resource estimation:** a dry-run mode that reports qubit count, pool size,
   per-operator and total CNOT cost, and estimated shots **before** submitting to
-  hardware.
+  hardware. ✓ *Partly delivered:* per-iteration CNOT/depth profiling on any
+  provider, `BraketProvider.measurement_groups` (quantum tasks per energy
+  evaluation) and `shot_noise_estimate` (shots needed for a target accuracy).
 
 ---
 
@@ -492,9 +566,9 @@ release at the end.
 | **M2 — Ansatz + optimizers** | 2, 3 | ✅ done | UCCSD built; SciPy optimizers tested |
 | **M3 — VQE on simulator** | 4 | ✅ done | H₂ within chemical accuracy on the exact state-vector backend |
 | **M4 — ADAPT-VQE + pools** | 5 | ✅ done | Fermionic/qubit/QEB/CEO pools all reach FCI on H₂; qubit pool reaches it in 6 CNOTs vs 48 (fermionic) |
-| **M5 — Hardware run** | 6 | ⬜ pending | VQE/ADAPT completes on IBM QPU (device registry ready; runtime not written) |
+| **M5 — Hardware run** | 6 | ◐ partial | **Amazon Braket path delivered** — device registry (local/SV1/DM1/TN1/IonQ/IQM/Rigetti + raw ARNs), three circuit providers agreeing to machine precision, and shot-based `⟨H⟩` via qubit-wise-commuting grouping, all verified on the local simulator (the identical QPU code path). Outstanding: a *billed* QPU run with calibration provenance, the IBM Runtime backend, and hardware-native ADAPT gradient screening |
 | **M6 — Mitigated results** | 7 | ⬜ pending | ZNE improves noisy accuracy |
-| **M7 — Public release** | 8 | ◐ partial | Docs + PyPI + tutorial reproducible (Sphinx tutorials live; PW/ASE features documented) |
+| **M7 — Public release** | 8 | ◐ partial | Docs + PyPI + tutorial reproducible (Sphinx API/theory/tutorials/how-to guides build clean; 17 runnable examples). Outstanding: Zenodo DOI, paper |
 
 *Also landed beyond the original milestones:* **excited states** (deflation
 `energy_levels` + subspace-search SSVQE), the stochastic **VASQE** with
@@ -505,6 +579,16 @@ basis** (`PlaneWaveIntegrals`, PBC), an **ASE-calculator** front-end for the
 molecular drivers (grid-from-cell, `basis` dicts, Monkhorst-Pack `kpts`, `spin`,
 `initial_state`, frozen core), per-axis / non-orthogonal grids in the C backend,
 and a timing / memory / cores profiling layer with a start-up banner.
+
+*And, most recently:* a **Hamiltonian disk cache** (`core/serialization.py` —
+Apache Parquet or JSON with automatic format detection; `load_hamiltonian=`
+bypasses the integrals *and* the fermion-to-qubit mapping and needs no geometry),
+**multi-SDK circuit providers** (`backends/providers.py` — Qiskit / Amazon Braket
+/ Cirq from one exact Pauli-rotation decomposition), the **shot-based hardware
+measurement path** (`backends/measurement.py` — qubit-wise-commuting grouping),
+an expanded **device registry** covering Braket simulators and QPUs, the
+**`quenching`** dynamic-parametrization policy, and a **column-aligned iteration
+log** replacing the per-iteration Pauli-string dump.
 
 ---
 
@@ -544,5 +628,4 @@ and a timing / memory / cores profiling layer with a start-up banner.
 
 ---
 
-*Living document — update milestones and statuses as phases complete. Keep
-`CHANGELOG.md` in sync with each merged phase.*
+*Living document — update milestones and statuses as phases complete.*

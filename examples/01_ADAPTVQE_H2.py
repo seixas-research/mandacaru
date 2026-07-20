@@ -25,11 +25,18 @@ The argument surface exercised here is ``pool`` / ``basis`` / ``mapping`` /
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE
 from carcara.units import from_hartree
+
+# All generated files (logs, CSV, plots) go to examples/data/.
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA, exist_ok=True)
+
 
 
 atoms = Atoms("H2",
@@ -47,7 +54,7 @@ atoms.calc = ADAPTVQE(
               h=0.10,
               max_iterations=15,
               gradient_tolerance=1e-4,
-              output="output_H2.txt")
+              output=os.path.join(DATA, "output_H2.txt"))
 
 energy_ev = atoms.get_total_energy()
 result = atoms.calc.adapt_result

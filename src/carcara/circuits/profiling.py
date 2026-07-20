@@ -64,12 +64,30 @@ def _pauli_evolution_gate(generator: PauliSum, time=1.0):
 
 
 def profile_ansatz(n_qubits: int, occupied: tuple[int, ...],
-                   operators: list[PoolOperator]) -> CircuitMetrics:
+                   operators: list[PoolOperator],
+                   provider=None) -> CircuitMetrics:
     """Compile ``|HF>`` + product of ``exp(A_k)`` to ``{cx, u}`` and count cost.
 
     Returns a :class:`CircuitMetrics`; ``cnot_count`` / ``depth`` are ``None`` if
-    Qiskit is not installed.
+    the SDK is not installed.
+
+    With ``provider`` given (a :class:`~carcara.backends.providers.CircuitProvider`)
+    the ansatz is compiled and counted with **that** SDK -- Qiskit, Amazon Braket
+    or Cirq -- from the explicit Pauli-rotation decomposition.  Counts differ
+    between providers because only Qiskit re-optimizes the circuit during
+    transpilation; the *unitary* is identical either way.
     """
+    if provider is not None:
+        try:
+            counts = provider.profile(n_qubits, list(occupied),
+                                      [op.generator for op in operators])
+        except Exception:
+            return CircuitMetrics(None, None, len(operators))
+        return CircuitMetrics(cnot_count=counts["cnot_count"],
+                              depth=counts["depth"],
+                              num_operators=len(operators),
+                              num_1q_gates=counts["num_1q_gates"],
+                              total_gates=counts["total_gates"])
     try:
         from qiskit import QuantumCircuit, transpile
     except Exception:

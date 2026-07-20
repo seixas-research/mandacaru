@@ -50,7 +50,7 @@ from ..circuits.adapt_ansatz import AdaptAnsatz
 from ..circuits.pools import PoolBase, PoolOperator, build_pool
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
 from ..units import ANGSTROM_TO_BOHR, from_hartree
-from .base import VariationalDriver, format_pauli_sum
+from .base import VariationalDriver
 from .deflation import DeflationMixin, deflation_penalty
 
 
@@ -282,6 +282,44 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     hamiltonian_builder : callable, optional
         ``atoms -> (hamiltonian, num_particles, n_spatial_orbitals)``.  An
         explicit override for the built-in ``basis`` builder in calculator mode.
+    save_hamiltonian : bool or str
+        Write the qubit Hamiltonian (as Pauli strings) to disk once it has been
+        built (default ``False``); ``True`` uses ``"hamiltonian"`` plus the
+        extension of ``hamiltonian_format``, a string is used as the path.  See
+        :mod:`carcara.core.serialization`.
+    hamiltonian_format : {"parquet", "json"}
+        Format written by ``save_hamiltonian`` (default ``"parquet"``).
+        ``"json"`` is plain text and needs no Parquet engine.  Loading
+        auto-detects the format, so the two are interchangeable.
+    load_hamiltonian : str, optional
+        Path of a Hamiltonian file written by ``save_hamiltonian``.  The qubit
+        Hamiltonian is then read from disk and **the molecular integrals and the
+        fermion-to-qubit mapping are skipped entirely**; because the file also
+        records ``num_particles`` and ``n_spatial_orbitals``, the pool is rebuilt
+        without a geometry, so a loaded driver runs directly (no ``Atoms``
+        needed).  This makes a pool / optimizer / temperature sweep over the same
+        molecule essentially free after the first build.
+    backend_provider : str
+        Quantum SDK used to construct the ansatz circuits -- ``"qiskit"``
+        (default), ``"braket"`` (``amazon-braket-sdk``) or ``"cirq"``.  Circuit
+        *profiling* always uses this SDK; circuit *execution* is governed by
+        ``execute_circuits``.  See :mod:`carcara.backends.providers`.
+    execute_circuits : bool, optional
+        Prepare each ansatz state by executing the compiled circuit on the
+        provider's local state-vector simulator, instead of the internal NumPy /
+        sparse state-vector backend.  Defaults to ``True`` for ``"braket"`` and
+        ``"cirq"`` and ``False`` for ``"qiskit"`` (whose fast default numerics are
+        kept unless execution is requested).  The Pauli-rotation decomposition is
+        exact for these generators, so all providers agree with the internal
+        backend to machine precision -- only the runtime differs.
+    quenching : bool
+        Dynamic parametrization (default ``True``).  ``True`` re-optimizes **all**
+        variational parameters at every growth step -- standard ADAPT-VQE, and
+        what makes the method reach FCI.  ``False`` optimizes only the newly
+        appended parameter and freezes every earlier one at its previous optimum:
+        a much cheaper one-dimensional line search per step, at the cost of
+        variational freedom (the energy is then an upper bound to the quenched
+        result).
     run_options : dict, optional
         Extra keyword arguments forwarded to :meth:`run` on each calculator
         evaluation (e.g. ``{"log_expressivity": False}``).  Only arguments that
@@ -321,6 +359,13 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  frozen_core=False,
                  frozen_orbitals=None,
                  hamiltonian_builder=None,
+                 save_hamiltonian: bool | str = False,
+                 load_hamiltonian: str | None = None,
+                 hamiltonian_format: str = "parquet",
+                 backend_provider: str | None = None,
+                 execute_circuits: bool | None = None,
+                 backend_options: dict | None = None, shots: int = 0,
+                 quenching: bool = True,
                  run_options: dict | None = None, **calc_kwargs):
         super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
                          device=device, grid=grid, h=h, kpts=kpts, spin=spin,
@@ -328,6 +373,13 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                          n_electrons=n_electrons, frozen_core=frozen_core,
                          frozen_orbitals=frozen_orbitals,
                          hamiltonian_builder=hamiltonian_builder,
+                         save_hamiltonian=save_hamiltonian,
+                         load_hamiltonian=load_hamiltonian,
+                         hamiltonian_format=hamiltonian_format,
+                         backend_provider=backend_provider,
+                         execute_circuits=execute_circuits,
+                         backend_options=backend_options, shots=shots,
+                         quenching=quenching,
                          run_options=run_options, verbose=verbose,
                          sparse=sparse, **calc_kwargs)
 
@@ -351,6 +403,15 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         self._pool_spec = pool
         # Seeded RNG for reproducible expressivity logging (output.txt).
         self._expr_rng = np.random.default_rng(0)
+
+        # A cached Hamiltonian is a complete problem specification (operator plus
+        # num_particles / n_spatial_orbitals), so loading one puts the driver in
+        # direct mode without a geometry -- no integrals, no mapping.
+        if hamiltonian is None and self.load_hamiltonian is not None:
+            hamiltonian, loaded_particles, loaded_orbitals = \
+                self._load_hamiltonian_record()
+            num_particles = num_particles or loaded_particles
+            n_spatial_orbitals = n_spatial_orbitals or loaded_orbitals
 
         # Configure eagerly when a Hamiltonian is given (direct mode); otherwise
         # defer to the first calculator evaluation (the ASE hook in the base).
@@ -383,6 +444,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # operators (in the growable ansatz).
         qubit_h = self._as_pauli_sum(hamiltonian, self.pool.n_qubits)
         self._materialize_hamiltonian(qubit_h, self.pool.n_qubits)
+        self._maybe_save_hamiltonian(self.num_particles,
+                                     self.pool.n_qubits // 2)
 
         self._pool_ops = self.pool.operators()
         if self._sparse:
@@ -500,10 +563,29 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         return int(np.argmax(np.abs(grads)))
 
+    def _new_ansatz(self) -> AdaptAnsatz:
+        """A fresh growable ansatz on the configured evaluation backend.
+
+        Routes through :meth:`~carcara.algorithms.base.VariationalDriver.circuit_provider`,
+        so the ansatz evaluates its states either with the internal state-vector
+        backend or by executing circuits on Qiskit / Braket / Cirq.
+        """
+        return AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
+                           self.mapping, sparse=getattr(self, "_sparse", False),
+                           provider=self.circuit_provider())
+
+    def _profile(self, ansatz) -> CircuitMetrics:
+        """Compiled-circuit metrics for ``ansatz`` on the configured provider."""
+        if not self.profile:
+            return CircuitMetrics(None, None, ansatz.num_parameters)
+        from ..backends.providers import build_provider
+        provider = (None if self.backend_provider == "qiskit"
+                    else build_provider(self.backend_provider))
+        return profile_ansatz(self.n_qubits, ansatz.occupied, ansatz.operators,
+                              provider=provider)
+
     def reference_energy(self) -> float:
-        ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
-                             self.mapping, sparse=getattr(self, "_sparse", False))
-        return self.energy(ansatz.reference_state())
+        return self.energy(self._new_ansatz().reference_state())
 
     # -- output.txt logging ---------------------------------------------- #
 
@@ -627,8 +709,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # the integration too; in direct mode it starts here.
         timings, run_t0 = self._make_timings()
 
-        ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
-                             self.mapping, sparse=self._sparse)
+        ansatz = self._new_ansatz()
         params = (np.asarray(initial_parameters, dtype=float).ravel()
                   if initial_parameters is not None else np.zeros(0))
         ref_energy = self.energy(ansatz.reference_state())
@@ -643,6 +724,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
         if verbose:
             self._print_header(ref_energy, e_unit)
+            self._print_iteration_heading(e_unit)
 
         iterations: list[AdaptIteration] = []
         selected: list[str] = []
@@ -670,23 +752,23 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 selected.append(op.label)
 
                 # Warm start: reuse previous optimum, new parameter set to 0.
-                x0 = np.concatenate([params, [0.0]])
+                # `quenching` decides whether the previous angles are re-optimized
+                # alongside the new one or frozen at their prior values.
+                previous_energy = energy
                 with timings.time("parameter optimization"):
-                    result = self.optimizer.minimize(
-                        lambda t: self.energy(ansatz.state(t)), x0)
+                    result = self._optimize_grown(
+                        lambda t: self.ansatz_energy(ansatz, t), params)
                 params = np.asarray(result.x, dtype=float)
                 energy = float(result.fun)
                 total_evals += result.nfev
 
+                with timings.time("circuit profiling"):
+                    metrics = self._profile(ansatz)
+
                 if verbose:
                     self._print_iteration(len(iterations) + 1, op, max_grad,
-                                          energy, e_unit)
-
-                with timings.time("circuit profiling"):
-                    metrics = (profile_ansatz(self.n_qubits, ansatz.occupied,
-                                              ansatz.operators)
-                               if self.profile else
-                               CircuitMetrics(None, None, ansatz.num_parameters))
+                                          energy, energy - previous_energy,
+                                          metrics, e_unit)
                 iterations.append(AdaptIteration(
                     operator_label=op.label, operator_kind=op.kind,
                     max_gradient=max_grad, energy=energy,
@@ -809,8 +891,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         from .deflation import deflation_penalty
 
-        ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
-                             self.mapping, sparse=self._sparse)
+        ansatz = self._new_ansatz()
         params = np.zeros(0)
         total_evals = 0
         for _ in range(int(max_iterations)):
@@ -821,13 +902,12 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 break
             idx = self._select_operator(grads, ansatz.num_parameters)
             ansatz.append(self._pool_ops[idx])
-            x0 = np.concatenate([params, [0.0]])
 
             def cost(t, _states=states):
                 phi = ansatz.state(t)
                 return self.energy(phi) + deflation_penalty(phi, _states, beta)
 
-            result = self.optimizer.minimize(cost, x0)
+            result = self._optimize_grown(cost, params)
             params = np.asarray(result.x, dtype=float)
             total_evals += result.nfev
         psi = (ansatz.state(params) if ansatz.num_parameters
@@ -836,8 +916,42 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
     # -- standard-output trace ------------------------------------------- #
 
+    #: Column layout of the per-iteration table: (heading, width).
+    _ITERATION_COLUMNS = (("iter", 5), ("max|grad|", 12), ("energy", 18),
+                          ("dE", 11), ("npar", 5), ("cnot", 6), ("depth", 6),
+                          ("operator", 1))
+
+    def _extra_header_lines(self) -> list[str]:
+        """Extra configuration lines for the verbose header (subclass hook).
+
+        Overridden by :class:`~carcara.algorithms.vasqe.VASQE` to report its
+        stochastic-selection temperature schedule.
+        """
+        return []
+
+    def _iteration_heading(self, e_unit: str) -> str:
+        """The column-heading line of the per-iteration table."""
+        cells = []
+        for name, width in self._ITERATION_COLUMNS:
+            label = f"energy ({e_unit})" if name == "energy" else name
+            cells.append(f"{label:<{width}}" if name == "operator"
+                         else f"{label:>{width}}")
+        return "  ".join(cells).rstrip()
+
+    def _iteration_rule(self) -> str:
+        """Horizontal rule matching the width of the iteration table."""
+        return "-" * len(self._iteration_heading(self._energy_unit_label()))
+
     def _print_header(self, ref_energy: float, e_unit: str) -> None:
-        """Print the run banner and the qubit Hamiltonian as Pauli strings."""
+        """Print the run configuration banner.
+
+        The qubit Hamiltonian's Pauli-string expansion is deliberately **not**
+        printed -- it runs to thousands of lines for a realistic active space and
+        drowns the run trace.  Only its size is reported; the operator itself is
+        on ``self.hamiltonian`` and can be rendered with
+        :func:`~carcara.algorithms.base.format_pauli_sum` or saved with
+        ``save_hamiltonian=``.
+        """
         rule = "=" * 70
         print(rule)
         print(f"ADAPT-VQE  |  mapping: {self.mapping}  |  {self.n_qubits} qubits "
@@ -848,28 +962,56 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
               f"optimizer: {self.optimizer.method}  |  gradient: {grad_label}")
         print(f"k-points: {self._kpts_label()}  |  spin-polarized: {self.spin}  "
               f"|  initial state: {self.initial_state}")
+        print(f"backend provider: {self.backend_provider}  |  circuit execution: "
+              f"{self.execute_circuits}  |  quenching: {self.quenching}")
+        for line in self._extra_header_lines():
+            print(line)
         print(rule)
         n_terms = len(self.hamiltonian.simplify().terms)
-        print(f"Qubit Hamiltonian ({n_terms} Pauli terms):")
-        print(format_pauli_sum(self.hamiltonian))
+        print(f"Qubit Hamiltonian: {n_terms} Pauli terms")
         print(f"Hartree-Fock reference energy = "
               f"{self._to_energy_units(ref_energy):+.8f} {e_unit}")
         print(rule)
 
+    def _print_iteration_heading(self, e_unit: str) -> None:
+        """Print the column heading of the per-iteration table."""
+        print(self._iteration_heading(e_unit))
+        print(self._iteration_rule())
+
     def _print_iteration(self, iteration: int, op: PoolOperator,
-                         max_grad: float, energy: float, e_unit: str) -> None:
-        """Print one iteration: the selected operator as Pauli strings."""
-        print(f"\n[iter {iteration}] selected {op.label}  "
-              f"(kind={op.kind}, |grad|={max_grad:.6e})")
-        print("  ansatz operator (Pauli strings):")
-        print(format_pauli_sum(op.generator, indent="    "))
-        print(f"  energy = {self._to_energy_units(energy):+.8f} {e_unit}")
+                         max_grad: float, energy: float, delta: float,
+                         metrics: CircuitMetrics | None, e_unit: str) -> None:
+        """Print one iteration as a single, column-aligned line.
+
+        Columns: iteration index, the largest pool gradient that drove the
+        selection, the current energy and its change, the parameter count, the
+        compiled CNOT count and depth, and the selected operator's label.  The
+        operator's Pauli-string expansion is deliberately *not* printed -- it is
+        many lines per iteration and is available on ``result.operators`` and in
+        the structured ``output.txt`` log.
+        """
+        cnots = "-" if metrics is None or metrics.cnot_count is None \
+            else str(metrics.cnot_count)
+        depth = "-" if metrics is None or metrics.depth is None \
+            else str(metrics.depth)
+        npar = "-" if metrics is None else str(metrics.num_operators)
+        widths = dict(self._ITERATION_COLUMNS)
+        print("  ".join([
+            f"{iteration:>{widths['iter']}d}",
+            f"{max_grad:>{widths['max|grad|']}.4e}",
+            f"{self._to_energy_units(energy):>{widths['energy']}.8f}",
+            f"{self._to_energy_units(delta):>{widths['dE']}.2e}",
+            f"{npar:>{widths['npar']}}",
+            f"{cnots:>{widths['cnot']}}",
+            f"{depth:>{widths['depth']}}",
+            f"{op.label:<{widths['operator']}}",
+        ]).rstrip())
 
     def _print_summary(self, result: ADAPTVQEResult, e_unit: str,
                        timings=None) -> None:
         """Print the closing summary: result line plus timings / resources."""
         rule = "=" * 70
-        print(rule)
+        print(self._iteration_rule())
         status = "converged" if result.converged else "not converged"
         print(f"ADAPT-VQE finished ({status}): "
               f"E = {self._to_energy_units(result.optimal_energy):+.8f} {e_unit}, "

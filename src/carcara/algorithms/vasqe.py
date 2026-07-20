@@ -221,8 +221,8 @@ class VASQE(ADAPTVQE):
 
     # -- verbose header extra -------------------------------------------- #
 
-    def _print_header(self, ref_energy: float, e_unit: str) -> None:
-        super()._print_header(ref_energy, e_unit)
+    def _extra_header_lines(self) -> list[str]:
+        """Report the stochastic-selection temperature schedule in the header."""
         horizon = (self.annealing_steps if self.annealing_steps is not None
                    else self.max_iterations)
         if self.schedule == "constant":
@@ -231,8 +231,8 @@ class VASQE(ADAPTVQE):
             temp = (f"tau: {self.initial_temperature:g} -> "
                     f"{self.final_temperature:g} ({self.schedule}, "
                     f"{horizon} steps)")
-        print(f"VASQE stochastic selection  |  {temp}  |  seed: {self.seed}")
-        print("=" * 70)
+        return [*super()._extra_header_lines(),
+                f"VASQE stochastic selection  |  {temp}  |  seed: {self.seed}"]
 
 
 # --------------------------------------------------------------------------- #

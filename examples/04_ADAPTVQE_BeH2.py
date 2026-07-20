@@ -26,11 +26,18 @@ ADAPT-VQE with the CEO pool and returns the energy in **eV**.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE
 from carcara.units import from_hartree
+
+# All generated files (logs, CSV, plots) go to examples/data/.
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA, exist_ok=True)
+
 
 # 1. Linear BeH2 (Be at the cell centre, H atoms at +/- 1.334 A along z).
 d = 1.334
@@ -51,7 +58,7 @@ atoms.calc = ADAPTVQE(
               h=0.10,
               max_iterations=25,
               gradient_tolerance=1e-3,
-              output="output_BeH2.txt")
+              output=os.path.join(DATA, "output_BeH2.txt"))
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)

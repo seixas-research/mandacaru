@@ -34,11 +34,18 @@ returns the energy in **eV**.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE
 from carcara.units import from_hartree
+
+# All generated files (logs, CSV, plots) go to examples/data/.
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA, exist_ok=True)
+
 
 
 def sector_fci(pauli_hamiltonian, n_qubits, na, nb):
@@ -80,7 +87,7 @@ atoms.calc = ADAPTVQE(
               max_iterations=20,
               gradient_tolerance=1e-3,
               profile=False,                 # skip per-iteration circuit transpile
-              output="output_H2O.txt",
+              output=os.path.join(DATA, "output_H2O.txt"),
               # expressibility sampling is costly at 12 qubits; skip it in the log
               run_options={"log_expressivity": False})
 

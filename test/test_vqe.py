@@ -190,12 +190,15 @@ class TestVQEMirrorsADAPT:
         assert res.correlation_energy == pytest.approx(
             res.optimal_energy - res.reference_energy)
 
-    def test_verbose_prints_hamiltonian_pauli_strings(self, h2_hamiltonian,
-                                                      capsys):
-        VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=True).run()
+    def test_verbose_summarizes_hamiltonian_without_dumping_paulis(
+            self, h2_hamiltonian, capsys):
+        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=True)
+        vqe.run()
         out = capsys.readouterr().out
-        assert "Qubit Hamiltonian" in out
-        assert "* ZIII" in out
+        # Only the term count is printed, not the Pauli-string expansion.
+        n_terms = len(vqe.hamiltonian.simplify().terms)
+        assert f"Qubit Hamiltonian: {n_terms} Pauli terms" in out
+        assert "* ZIII" not in out
         assert "VQE finished" in out
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):

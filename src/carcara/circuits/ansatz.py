@@ -64,24 +64,41 @@ class UCCSD:
         If ``True``, prepare the state as the first-order Trotter product of
         single-generator exponentials (circuit-faithful but approximate); if
         ``False`` (default), exponentiate the full cluster operator exactly.
+    provider : CircuitProvider, optional
+        Execute the ansatz as a real quantum circuit on an SDK's local
+        state-vector simulator (Qiskit / Amazon Braket / Cirq; see
+        :mod:`carcara.backends.providers`).  A circuit realizes the **Trotter
+        product** form, so ``trotter=True`` is required when a provider is given.
     """
 
     def __init__(self, n_spatial_orbitals: int, num_particles: tuple[int, int],
                  mapping: str = "jordan_wigner", include_singles: bool = True,
-                 trotter: bool = False):
+                 trotter: bool = False, provider=None):
         self.n_spatial_orbitals = int(n_spatial_orbitals)
         self.num_particles = (int(num_particles[0]), int(num_particles[1]))
         self.mapping = mapping
         self.include_singles = include_singles
         self.trotter = trotter
+        self.provider = provider
         self.n_qubits = 2 * self.n_spatial_orbitals
+        if provider is not None and not trotter:
+            raise ValueError(
+                "a circuit backend realizes the Trotter product form of UCCSD; "
+                "build the ansatz with trotter=True to execute it on "
+                f"{getattr(provider, 'name', provider)!r} (the exact "
+                "exponential of the summed cluster operator is not a circuit)")
 
         self._occupied, self._virtual = self._reference_partition()
         self.excitations = self._build_excitations()
-        # Pre-map and pre-materialize each anti-Hermitian generator matrix once.
-        self._generators = [
-            g.map_to_qubits(self.mapping, n_modes=self.n_qubits).to_matrix()
+        # Qubit (Pauli) form of each anti-Hermitian generator: the matrices drive
+        # the state-vector backends, the PauliSums the circuit backends.
+        self._pauli_generators = [
+            g.map_to_qubits(self.mapping, n_modes=self.n_qubits)
             for g in self.excitations]
+        # Pre-materialize each generator matrix once (skipped for circuit
+        # execution, where the 2^N matrices are never needed).
+        self._generators = ([] if provider is not None else
+                            [g.to_matrix() for g in self._pauli_generators])
         self._hf = self._reference_vector()
 
     # -- reference determinant -------------------------------------------- #
@@ -137,6 +154,16 @@ class UCCSD:
     def num_parameters(self) -> int:
         return len(self.excitations)
 
+    @property
+    def pauli_generators(self):
+        """The cluster generators as qubit operators (for circuit backends)."""
+        return list(self._pauli_generators)
+
+    def reference_qubits(self) -> list[int]:
+        """Qubit indices set to ``|1>`` in the Hartree-Fock determinant."""
+        from ..backends.providers import _occupied_qubits, basis_state_index
+        return _occupied_qubits(basis_state_index(self._hf), self.n_qubits)
+
     def reference_state(self) -> np.ndarray:
         """The Hartree-Fock reference state vector (a copy)."""
         return self._hf.copy()
@@ -167,6 +194,9 @@ class UCCSD:
         single = refs.ndim == 1
         if single:
             refs = refs[:, None]
+        if self.provider is not None:
+            out = self._evolve_on_provider(theta, refs)
+            return out[:, 0] if single else out
         if self.trotter:
             out = refs.copy()
             for angle, gen in zip(theta, self._generators):
@@ -177,6 +207,28 @@ class UCCSD:
                 np.zeros((2 ** self.n_qubits,) * 2, dtype=complex))
             out = expm(cluster) @ refs
         return out[:, 0] if single else out
+
+    def _evolve_on_provider(self, theta, refs: np.ndarray) -> np.ndarray:
+        """Run the Trotterized UCCSD circuit once per reference column.
+
+        Mirrors :meth:`~carcara.circuits.adapt_ansatz.AdaptAnsatz._evolve_on_provider`:
+        each column must be a computational-basis (Slater-determinant) state, as
+        a circuit cannot be initialized in a superposition.
+        """
+        from ..backends.providers import basis_state_index, _occupied_qubits
+
+        columns = []
+        for j in range(refs.shape[1]):
+            index = basis_state_index(refs[:, j])
+            if index is None:
+                raise ValueError(
+                    f"the {self.provider.name} circuit backend can only evolve "
+                    "computational-basis (Slater-determinant) reference states; "
+                    f"column {j} of `references` is a superposition")
+            columns.append(self.provider.statevector(
+                self.n_qubits, _occupied_qubits(index, self.n_qubits),
+                self._pauli_generators, theta))
+        return np.asarray(columns, dtype=complex).T
 
     def __repr__(self) -> str:
         return (f"UCCSD(n_qubits={self.n_qubits}, "

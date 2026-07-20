@@ -46,16 +46,27 @@ class AdaptAnsatz:
       the identity fall back to :func:`scipy.sparse.linalg.expm_multiply`.  This is
       what keeps 12+-qubit active spaces tractable.
 
+    A third, **circuit-executing** backend is selected by passing a ``provider``
+    (see :mod:`carcara.backends.providers`): the ansatz is then compiled to a real
+    quantum circuit -- an ``X``-gate reference preparation followed by the exact
+    Pauli-rotation decomposition of each ``exp(theta_k A_k)`` -- and run on that
+    SDK's local state-vector simulator (Qiskit, Amazon Braket or Cirq).  The
+    decomposition is exact for these generators, so the executed state matches the
+    matrix backends to machine precision; it is simply much slower, and is what
+    makes the driver's ``backend_provider`` argument meaningful.
+
     Exposes the :class:`~carcara.circuits.base.Ansatz` protocol
     (``num_parameters``, ``n_qubits``, ``state``, ``reference_state``, ``evolve``).
     """
 
     def __init__(self, n_qubits: int, occupied: tuple[int, ...],
-                 mapping: str = "jordan_wigner", sparse: bool = False):
+                 mapping: str = "jordan_wigner", sparse: bool = False,
+                 provider=None):
         self.n_qubits = int(n_qubits)
         self.mapping = mapping
         self.occupied = tuple(occupied)
         self.sparse = bool(sparse)
+        self.provider = provider
         self._ops: list[PoolOperator] = []
         self._eig: list[tuple[np.ndarray, np.ndarray]] = []   # dense (w, V)
         self._sparse_ops: list[tuple] = []                    # (A, A2, rodrigues)
@@ -77,6 +88,10 @@ class AdaptAnsatz:
     def append(self, op: PoolOperator) -> None:
         """Add a generator to the end of the ansatz."""
         self._ops.append(op)
+        if self.provider is not None:
+            # Circuit execution needs only the generator's Pauli terms; skip the
+            # (expensive) dense eigendecomposition / sparse powers entirely.
+            return
         if self.sparse:
             A = op.generator.to_sparse_matrix()
             A2 = (A @ A).tocsr()
@@ -97,6 +112,16 @@ class AdaptAnsatz:
     @property
     def operators(self) -> list[PoolOperator]:
         return list(self._ops)
+
+    @property
+    def pauli_generators(self):
+        """The appended generators as qubit operators (for circuit backends)."""
+        return [op.generator for op in self._ops]
+
+    def reference_qubits(self) -> list[int]:
+        """Qubit indices set to ``|1>`` in the reference determinant."""
+        from ..backends.providers import _occupied_qubits, basis_state_index
+        return _occupied_qubits(basis_state_index(self._hf), self.n_qubits)
 
     def reference_state(self) -> np.ndarray:
         return self._hf.copy()
@@ -122,6 +147,9 @@ class AdaptAnsatz:
         refs = np.asarray(references, dtype=complex)
         single = refs.ndim == 1
         out = refs[:, None].copy() if single else refs.copy()
+        if self.provider is not None:
+            out = self._evolve_on_provider(theta, out)
+            return out[:, 0] if single else out
         if self.sparse:
             for angle, (A, A2, rodrigues) in zip(theta, self._sparse_ops):
                 if rodrigues:
@@ -134,3 +162,26 @@ class AdaptAnsatz:
             for angle, (w, V) in zip(theta, self._eig):
                 out = V @ (np.exp(1j * angle * w)[:, None] * (V.conj().T @ out))
         return out[:, 0] if single else out
+
+    def _evolve_on_provider(self, theta, refs: np.ndarray) -> np.ndarray:
+        """Run the ansatz circuit once per reference column on the SDK simulator.
+
+        A circuit can only be *initialized* in a computational basis state, so
+        every column must be a Slater determinant -- which is exactly what the
+        Hartree-Fock reference and the SSVQE reference determinants are.
+        """
+        from ..backends.providers import basis_state_index, _occupied_qubits
+
+        generators = [op.generator for op in self._ops]
+        columns = []
+        for j in range(refs.shape[1]):
+            index = basis_state_index(refs[:, j])
+            if index is None:
+                raise ValueError(
+                    f"the {self.provider.name} circuit backend can only evolve "
+                    "computational-basis (Slater-determinant) reference states; "
+                    f"column {j} of `references` is a superposition")
+            occupied = _occupied_qubits(index, self.n_qubits)
+            columns.append(self.provider.statevector(
+                self.n_qubits, occupied, generators, theta))
+        return np.asarray(columns, dtype=complex).T

@@ -30,15 +30,22 @@ across every driver.
 
 from __future__ import annotations
 
+import os
 from time import perf_counter as _perf
 
 import numpy as np
 
 from ase.calculators.calculator import Calculator, all_changes
 
-from ..backends.hardware import normalize_device, require_runnable
+from ..backends.hardware import (device_arn, device_provider, is_aws_device,
+                                 normalize_device, require_runnable,
+                                 requires_shots)
+from ..backends.providers import build_provider, normalize_provider
 from ..core.mapping import Fermion, PauliSum
-from ..optimizers.optim import NAMED_OPTIMIZERS, resolve_optimizer
+from ..core.serialization import (DEFAULT_FORMAT, load_hamiltonian,
+                                  resolve_format, resolve_save_path,
+                                  save_hamiltonian)
+from ..optimizers.optim import NAMED_OPTIMIZERS, OptimizeResult, resolve_optimizer
 from ..units import from_hartree
 from ._hamiltonian_from_atoms import monkhorst_pack_kpts, resolve_initial_state
 
@@ -78,6 +85,42 @@ class VariationalDriver(Calculator):
     surface shared by every driver; algorithm-specific arguments (ansatz, pool,
     stopping controls, ...) are added by the subclass and passed through
     ``**shared`` to :meth:`__init__`.
+
+    Parameters
+    ----------
+    save_hamiltonian : bool or str
+        Serialize the qubit Hamiltonian (as Pauli strings) to disk once it has
+        been built (default ``False``).  ``True`` writes ``"hamiltonian"`` with
+        the extension of ``hamiltonian_format``; a path writes there.  See
+        :mod:`carcara.core.serialization`.
+    load_hamiltonian : str, optional
+        Path of a Hamiltonian file written by ``save_hamiltonian``.  When given,
+        the driver loads the qubit Hamiltonian from disk and **skips the molecular
+        integrals (one- and two-body) and the fermion-to-qubit transformation
+        entirely** -- the file also carries ``num_particles`` /
+        ``n_spatial_orbitals``, so the pool / ansatz are rebuilt without a
+        geometry.  The format is detected from the file, so this accepts either.
+    hamiltonian_format : {"parquet", "json"}
+        Format ``save_hamiltonian`` writes (default ``"parquet"``: compact,
+        compressed and columnar).  ``"json"`` is plain text and needs no Parquet
+        engine, which sidesteps the Qiskit/pyarrow interaction documented in
+        :mod:`carcara.core.serialization`.  Loading ignores this and
+        auto-detects instead.
+    backend_provider : str
+        Quantum SDK used to construct (and, when executing, run) the ansatz
+        circuits -- ``"qiskit"`` (default), ``"braket"`` (amazon-braket-sdk) or
+        ``"cirq"``.  See :mod:`carcara.backends.providers`.
+    execute_circuits : bool, optional
+        Evaluate the ansatz by *executing* the compiled circuit on the provider's
+        local state-vector simulator instead of the internal NumPy state-vector
+        backend.  Defaults to ``True`` for ``"braket"`` / ``"cirq"`` (naming them
+        is a request to use them) and ``False`` for ``"qiskit"``, which keeps the
+        fast default numerics; the results agree to machine precision either way.
+    quenching : bool
+        Dynamic parametrization (default ``True``).  ``True`` re-optimizes **all**
+        variational parameters at every iteration.  ``False`` optimizes only the
+        most recently added parameter, freezing all previous ones at their
+        already-optimized values.
     """
 
     implemented_properties = ["energy", "free_energy"]
@@ -94,7 +137,14 @@ class VariationalDriver(Calculator):
                  initial_state: str | None = "hartree-fock", charge: int = 0,
                  n_electrons=None, frozen_core=False, frozen_orbitals=None,
                  hamiltonian_builder=None, run_options: dict | None = None,
-                 verbose: bool = True, sparse=None, **calc_kwargs):
+                 verbose: bool = True, sparse=None,
+                 save_hamiltonian: bool | str = False,
+                 load_hamiltonian: str | None = None,
+                 hamiltonian_format: str = DEFAULT_FORMAT,
+                 backend_provider: str | None = None,
+                 execute_circuits: bool | None = None,
+                 backend_options: dict | None = None, shots: int = 0,
+                 quenching: bool = True, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
 
         self.verbose = bool(verbose)
@@ -116,6 +166,51 @@ class VariationalDriver(Calculator):
         self.hamiltonian_builder = hamiltonian_builder
         self.run_options = dict(run_options or {})
         self.sparse = self._default_sparse if sparse is None else sparse
+
+        # Hamiltonian disk cache: `load_hamiltonian` short-circuits the integral
+        # engine and the fermion-to-qubit mapping; `save_hamiltonian` dumps the
+        # qubit Hamiltonian (Pauli strings) once it has been built.
+        self.load_hamiltonian = (None if load_hamiltonian is None
+                                 else str(load_hamiltonian))
+        self.save_hamiltonian = save_hamiltonian
+        # The format applies to *saving*; loading detects it from the file.
+        self.hamiltonian_format = resolve_format(hamiltonian_format)
+        self._save_path = resolve_save_path(save_hamiltonian,
+                                            self.hamiltonian_format)
+
+        # Circuit-construction / execution SDK.  Naming an Amazon Braket device
+        # implies the braket provider, so `device="braket-sv1"` alone is enough.
+        if backend_provider is None:
+            backend_provider = device_provider(self.device) or "qiskit"
+        self.backend_provider = normalize_provider(backend_provider)
+        # `execute_circuits` defaults to True for the non-Qiskit providers
+        # (naming them is a request to use them); the Qiskit default keeps the
+        # fast NumPy state-vector numerics unless execution is asked for.
+        self.execute_circuits = (self.backend_provider != "qiskit"
+                                 if execute_circuits is None
+                                 else bool(execute_circuits))
+        self.backend_options = dict(backend_options or {})
+
+        # Measurement shots.  Real QPUs never return a state vector, so they
+        # require shots > 0 and the energy is estimated from measured
+        # qubit-wise-commuting groups (see carcara.backends.measurement).
+        self.shots = int(shots)
+        if requires_shots(self.device) and self.shots <= 0:
+            raise ValueError(
+                f"device {self.device!r} is real quantum hardware, which cannot "
+                "return a state vector: pass shots > 0 (e.g. shots=8192) so the "
+                "energy is estimated from measurements.")
+        if self.shots and self.backend_provider != "braket":
+            raise NotImplementedError(
+                f"shot-based execution is implemented for the 'braket' provider "
+                f"only, not {self.backend_provider!r}; use "
+                "backend_provider='braket' (optionally with an AWS device).")
+        if self.shots:
+            self.execute_circuits = True
+
+        # Dynamic parametrization: True re-optimizes every parameter each
+        # iteration; False freezes the previous ones (see `_optimize_grown`).
+        self.quenching = bool(quenching)
 
         self._integration_profile = None
         self._configured = False
@@ -193,14 +288,171 @@ class VariationalDriver(Calculator):
         r"""Expectation value ``<psi| H |psi>`` (real) for a state vector ``psi``."""
         return float(np.real(np.vdot(psi, self._h_matrix @ psi)))
 
+    def ansatz_energy(self, ansatz, theta) -> float:
+        r"""Energy of ``ansatz`` at parameters ``theta`` on the configured backend.
+
+        This is the single place the *hardware* path diverges from the simulator
+        path.  With ``shots = 0`` the state vector is prepared (internally or by
+        executing a circuit) and contracted with the Hamiltonian.  With
+        ``shots > 0`` -- mandatory on a real QPU, which never exposes amplitudes
+        -- the provider measures ``<H>`` from qubit-wise-commuting groups instead
+        (:mod:`carcara.backends.measurement`).
+        """
+        if not self.shots:
+            return self.energy(ansatz.state(theta))
+        provider = self.circuit_provider()
+        return provider.energy(ansatz.n_qubits, ansatz.reference_qubits(),
+                               ansatz.pauli_generators, theta, self.hamiltonian)
+
+    # -- circuit provider ------------------------------------------------- #
+
+    def circuit_provider(self):
+        """The :class:`~carcara.backends.providers.CircuitProvider`, or ``None``.
+
+        ``None`` means the driver evaluates the ansatz with the internal
+        (NumPy / SciPy-sparse) state-vector backend; a provider means every state
+        preparation is compiled to a circuit and executed on that SDK's
+        simulator or, for an Amazon Braket device, on the AWS service.  Both
+        produce the same unitary -- see :mod:`carcara.backends.providers`.
+
+        The provider is configured from :attr:`device` (Braket devices carry an
+        ARN), :attr:`shots` and :attr:`backend_options`.
+        """
+        if not self.execute_circuits:
+            return None
+        return build_provider(self.backend_provider, **self._provider_options())
+
+    def _provider_options(self) -> dict:
+        """Constructor options for the configured circuit provider."""
+        options = dict(self.backend_options)
+        if self.backend_provider != "braket":
+            return options
+        options.setdefault("shots", self.shots)
+        if "device" not in options:
+            arn = device_arn(self.device)
+            if arn is not None:
+                options["device"] = arn         # run through the AWS service
+            elif is_aws_device(self.device) or self.device == "braket-local":
+                options["device"] = "braket_sv"
+        return options
+
+    # -- Hamiltonian disk cache ------------------------------------------- #
+
+    def _load_hamiltonian_record(self):
+        """Read the cached qubit Hamiltonian named by ``load_hamiltonian``.
+
+        Returns ``(PauliSum, num_particles, n_spatial_orbitals)``.  This is the
+        whole point of the cache: neither the one-/two-body integrals nor the
+        fermion-to-qubit mapping is touched, and the driver's ``mapping`` is
+        adopted from the file so the ansatz / pool stay consistent with it.
+        """
+        record = load_hamiltonian(self.load_hamiltonian)
+        self.mapping = record.mapping
+        self._loaded_record = record
+        return (record.hamiltonian, record.num_particles,
+                record.n_spatial_orbitals)
+
+    def _maybe_save_hamiltonian(self, num_particles=None,
+                                n_spatial_orbitals=None) -> str | None:
+        """Dump the materialized qubit Hamiltonian when ``save_hamiltonian`` is set.
+
+        A no-op when saving is off, or when the Hamiltonian was just read from the
+        very file it would be written to.  Returns the path written, if any.
+        """
+        if self._save_path is None:
+            return None
+        if (self.load_hamiltonian is not None
+                and os.path.abspath(self.load_hamiltonian)
+                == os.path.abspath(self._save_path)):
+            return None
+        return save_hamiltonian(
+            self._save_path, self.hamiltonian, mapping=self.mapping,
+            num_particles=num_particles, n_spatial_orbitals=n_spatial_orbitals,
+            format=self.hamiltonian_format,
+            metadata={"driver": type(self).__name__,
+                      "basis": self.basis if isinstance(self.basis, str)
+                      else dict(self.basis),
+                      "frozen_core": self.frozen_core,
+                      "n_qubits": int(self.n_qubits)})
+
+    # -- optimization policy (quenching) ---------------------------------- #
+
+    def _optimize_grown(self, cost, previous_parameters) -> OptimizeResult:
+        """Optimize after appending one new parameter, honouring :attr:`quenching`.
+
+        ``quenching=True`` (default) hands **all** parameters to the classical
+        optimizer, warm-started from the previous optimum with the new angle at
+        zero -- standard ADAPT-VQE.  ``quenching=False`` freezes the previously
+        optimized parameters and varies only the newly added one, a cheaper
+        one-dimensional line search per growth step that trades variational
+        freedom for cost-function evaluations.
+
+        ``cost`` takes the **full** parameter vector in both cases; the returned
+        :class:`~carcara.optimizers.optim.OptimizeResult` also carries the full
+        vector, so callers need no branching.
+        """
+        previous = np.asarray(previous_parameters, dtype=float).ravel()
+        x0 = np.concatenate([previous, [0.0]])
+        if self.quenching:
+            return self.optimizer.minimize(cost, x0)
+
+        def last_only(tail):
+            return cost(np.concatenate(
+                [previous, np.asarray(tail, dtype=float).ravel()]))
+
+        result = self.optimizer.minimize(last_only, np.zeros(1))
+        full = np.concatenate([previous,
+                               np.asarray(result.x, dtype=float).ravel()])
+        return OptimizeResult(x=full, fun=result.fun, nfev=result.nfev,
+                              history=result.history, success=result.success,
+                              message=result.message)
+
+    def _optimize_all(self, cost, x0) -> OptimizeResult:
+        """Optimize a fixed-size parameter vector, honouring :attr:`quenching`.
+
+        ``quenching=True`` (default) is a single joint minimization over every
+        parameter.  ``quenching=False`` sweeps the parameters one at a time in
+        order -- parameter ``k`` is optimized alone with ``0..k-1`` frozen at their
+        already-optimized values and ``k+1..`` held at their starting values --
+        the fixed-ansatz analogue of freezing previous growth steps.
+        """
+        x0 = np.asarray(x0, dtype=float).ravel()
+        if self.quenching or x0.size <= 1:
+            return self.optimizer.minimize(cost, x0)
+
+        params = x0.copy()
+        history: list[float] = []
+        nfev = 0
+        value = float(cost(params))
+        success = True
+        for k in range(params.size):
+            def single(t, _k=k, _p=params):
+                trial = _p.copy()
+                trial[_k] = float(np.asarray(t, dtype=float).ravel()[0])
+                return cost(trial)
+
+            step = self.optimizer.minimize(single, np.atleast_1d(params[k]))
+            params[k] = float(np.asarray(step.x, dtype=float).ravel()[0])
+            history.extend(step.history)
+            nfev += step.nfev
+            value = float(step.fun)
+            success = success and step.success
+        return OptimizeResult(x=params, fun=value, nfev=nfev, history=history,
+                              success=success,
+                              message="sequential (quenching=False) sweep")
+
     # -- geometry -> Hamiltonian (calculator mode) ------------------------ #
 
     def _build_hamiltonian(self, atoms):
         """Build ``(hamiltonian, num_particles, n_spatial_orbitals)`` from ``atoms``.
 
-        Uses an explicit ``hamiltonian_builder`` if given, otherwise the built-in
-        ``basis`` engine (stashing its integration profile for the run summary).
+        Reads the cached Pauli-string Hamiltonian when ``load_hamiltonian`` is set
+        (skipping the integrals *and* the mapping entirely); otherwise uses an
+        explicit ``hamiltonian_builder`` if given, or the built-in ``basis`` engine
+        (stashing its integration profile for the run summary).
         """
+        if self.load_hamiltonian is not None:
+            return self._load_hamiltonian_record()
         if self.hamiltonian_builder is not None:
             hamiltonian, num_particles, n_orbitals = \
                 self.hamiltonian_builder(atoms)

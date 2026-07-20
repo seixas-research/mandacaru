@@ -1,0 +1,87 @@
+========================================================================
+ ADAPT-VQE (QubitPool, 4 qubits)
+========================================================================
+
+[METADATA]
+units: Angstrom
+n_atoms: 2
+geometry:
+  H       6.0000000000     6.0000000000     5.6300000000
+  H       6.0000000000     6.0000000000     6.3700000000
+cell_present: True
+cell_vectors:
+  a1 = [ 12.0000000000   0.0000000000   0.0000000000]
+  a2 = [  0.0000000000  12.0000000000   0.0000000000]
+  a3 = [  0.0000000000   0.0000000000  12.0000000000]
+cell_lengths: a=12.0000000000 b=12.0000000000 c=12.0000000000
+cell_angles: alpha=90.000000 beta=90.000000 gamma=90.000000
+
+[OPTIMIZATION SETUP]
+classical_optimizer: COBYLA
+energy_unit: eV
+max_iterations: 15
+gradient_tol: 0.0001
+reference_energy_eV: -29.5361990146
+initial_ansatz: |HF> (0 parameters)
+mapping: jordan_wigner
+num_particles: (1, 1)
+pool_size: 12
+
+------------------------------------------------------------------------
+[ITERATION 1]
+selected_operator: iP[XXYX]
+  kind: pauli
+  gradient: 2.795877e-01
+  pauli: +1j XXYX
+expressivity_E: 1.934351
+energy_eV: -29.9604463345
+num_parameters: 1
+cnot_count: 6
+circuit_depth: 9
+total_gates: 15
+one_qubit_gates: 9
+pool_size: 12
+operator_pool:
+  [  0] iP[YXII]  |grad|=0.000000e+00
+        pauli: +1j YXII
+  [  1] iP[XYII]  |grad|=0.000000e+00
+        pauli: +1j XYII
+  [  2] iP[IIYX]  |grad|=0.000000e+00
+        pauli: +1j IIYX
+  [  3] iP[IIXY]  |grad|=0.000000e+00
+        pauli: +1j IIXY
+  [  4] iP[XXYX]  |grad|=2.795877e-01 (selected)
+        pauli: +1j XXYX
+  [  5] iP[YXXX]  |grad|=2.795877e-01
+        pauli: +1j YXXX
+  [  6] iP[YXYY]  |grad|=2.795877e-01
+        pauli: +1j YXYY
+  [  7] iP[XXXY]  |grad|=2.795877e-01
+        pauli: +1j XXXY
+  [  8] iP[YYYX]  |grad|=2.795877e-01
+        pauli: +1j YYYX
+  [  9] iP[XYXX]  |grad|=2.795877e-01
+        pauli: +1j XYXX
+  [ 10] iP[XYYY]  |grad|=2.795877e-01
+        pauli: +1j XYYY
+  [ 11] iP[YYXY]  |grad|=2.795877e-01
+        pauli: +1j YYXY
+
+========================================================================
+[SUMMARY]
+converged: True
+classical_optimizer: COBYLA
+optimal_energy_eV: -29.9604463345
+reference_energy_eV: -29.5361990146
+correlation_energy_eV: -0.4242473199
+num_operators: 1
+num_parameters: 1
+final_expressivity_E: 1.934351
+final_max_gradient: 8.095270e-05
+cost_evaluations: 23
+cnot_count: 6
+circuit_depth: 9
+one_qubit_gates: 9
+total_gates: 15
+operator_sequence: iP[XXYX]
+========================================================================

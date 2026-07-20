@@ -18,7 +18,7 @@
 
 # Carcará
 
-**Carcará** is a lightweight, high-performance Python framework for fermionic quantum simulations based on variational quantum algorithms (VQAs). Developed with an end-to-end physical simulation pipeline, it targets both noise-free research validation and real NISQ-era quantum computing execution (driven via IBM Qiskit).
+**Carcará** is a lightweight, high-performance Python framework for fermionic quantum simulations based on variational quantum algorithms (VQAs). Developed with an end-to-end physical simulation pipeline, it targets both noise-free research validation and real NISQ-era quantum hardware — running on **IBM Qiskit**, **Amazon Braket** (including real QPUs) and **Google Cirq** through one unchanged API.
 
 From molecular geometry inputs, Carcará constructs real-space grids, evaluates one- and two-body integrals, performs Hartree-Fock reference calculations, maps operators to qubit systems, and executes variational eigensolving through both standard VQE and adaptive growth algorithms (ADAPT-VQE) with multiple operator pools. Beyond ground states, it computes **excited states** (variational deflation and subspace-search / SSVQE), offers a **stochastic adaptive** solver (VASQE) with temperature annealing, and handles **periodic crystals** (Bloch band structure and Born–von Kármán total energies). All solvers share a common, extensible driver architecture.
 
@@ -61,8 +61,44 @@ A robust second-quantized algebra layer implements:
 - **Spin-Polarized References:** The initial spin state is set the ASE way, through the atoms' initial magnetic moments (`Atoms(..., magmoms=[1, 1])` for a triplet); the calculators read it and build a reference with `n_alpha - n_beta` unpaired electrons.
 - **Sparse Large Active Spaces:** For 12+ qubits `ADAPTVQE` automatically switches to a sparse operator pool (`sparse="auto"`) that screens with the exact analytic gradient and applies each excitation with a closed-form `exp(θA)`, keeping frozen-core problems such as water tractable on an exact state-vector backend.
 - **Expressibility & Profiling Analysis:** Evaluates parameterized quantum circuit expressibility (KL-divergence vs. Haar distribution within symmetry-conserving subspaces) and tracks circuit complexity (CNOT counts and depth compilation).
+- **Dynamic Parametrization (`quenching`):** `True` (default) re-optimizes every variational parameter at each iteration — standard ADAPT-VQE. `False` freezes previously optimized angles and varies only the newest one, turning each growth step into a cheap one-dimensional line search.
 
-### 5. ASE Calculator Integration
+### 5. Multi-Backend Execution (Qiskit / Braket / Cirq)
+`backend_provider` selects which quantum SDK builds — and, with `execute_circuits=True`, runs — the ansatz circuits. Each generator is an anti-Hermitian `PauliSum` whose terms commute, so `exp(θA)` factorizes **exactly** into Pauli rotations (no Trotter error). One shared gate stream (`X`, `H`, `S`, `S†`, `CNOT`, `Rz`) is translated per SDK, so all three reproduce the internal NumPy state vector **to machine precision**:
+
+```text
+provider            E (Ha)   err vs FCI   ops  cnots  depth
+(matrix)       -6.88824276     1.34e-07     8    208    273
+qiskit         -6.88824283     6.27e-08     8    208    273
+braket         -6.88824279     1.09e-07     8    208    359
+cirq           -6.88824281     8.17e-08     8    208    358
+```
+
+### 6. Real Quantum Hardware via Amazon Braket
+A QPU never returns a state vector — Braket rejects the `StateVector` result type whenever `shots > 0`, and every QPU requires it. Carcará therefore implements the **shot-based** protocol hardware actually supports:
+
+- **Qubit-wise commuting (QWC) grouping** partitions `H = Σ cⱼ Pⱼ` into simultaneously measurable sets — 118 Pauli terms collapse to 29 measurement circuits for LiH — and `⟨H⟩` is assembled from the returned bit-string counts, converging as `1/√shots`.
+- **Device registry:** the local simulator, the AWS managed simulators (SV1/DM1/TN1), and the IonQ / IQM / Rigetti QPUs — or any Braket ARN. Naming a QPU without `shots` is rejected up front rather than at submission.
+
+```python
+atoms.calc = VQE(basis="FAO", device="braket-ionq-aria", shots=8192)
+atoms.get_total_energy()          # measured on a trapped-ion QPU
+```
+
+> **Scope:** the *energy evaluation* is hardware-native. ADAPT-VQE's pool-gradient screening is still classical, so fixed-ansatz `VQE` is the fully hardware-native driver today. Run `examples/13_braket_aws_compatibility.py` for a verified compatibility report (no AWS account needed).
+
+### 7. Reusable Hamiltonians (Parquet / JSON Cache)
+Building the qubit Hamiltonian — integrals plus the fermion-to-qubit mapping — is the most expensive stage of a run and is independent of the algorithm that follows. It can be serialized and replayed:
+
+```python
+ADAPTVQE(basis="FAO", save_hamiltonian="lih.parquet")   # build once
+ADAPTVQE(pool="ceo", load_hamiltonian="lih.parquet")    # reload: no geometry,
+                                                        # no integrals, no mapping
+```
+
+Two formats, selected with `hamiltonian_format`: **Parquet** (compressed, columnar, queryable straight from pandas; ~4× smaller) and **JSON** (plain text, no native dependency). Loading **detects the format automatically** — from the extension, else from the file's leading bytes. Because the file also records `num_particles` and `n_spatial_orbitals`, a reloaded driver runs with no `Atoms` object at all, turning a pool/optimizer/mapping sweep into seconds.
+
+### 8. ASE Calculator Integration
 The molecular drivers (`VQE`, `ADAPTVQE`, `VASQE`, and their subspace variants) act as standard calculators for the **Atomic Simulation Environment (ASE)**:
 ```python
 atoms.calc = VQE(basis="FAO", optimizer="COBYLA", h=0.20)
@@ -70,7 +106,7 @@ atoms.calc = VQE(basis="FAO", optimizer="COBYLA", h=0.20)
 energy_ev = atoms.get_total_energy()
 ```
 
-### 6. Extensible Driver Architecture
+### 9. Extensible Driver Architecture
 Every variational solver subclasses a single `VariationalDriver` base that owns the shared machinery — the ASE-calculator surface (basis / grid / k-points / spin / frozen core), Hamiltonian materialization (dense or sparse), the state-vector expectation `energy(psi)`, and timing/profiling. Concrete algorithms implement only their optimization loop, and cross-cutting capabilities are **composable mixins**: excited-state deflation (`energy_levels`) and subspace search plug into any driver. Adding a new method (a new operator-selection rule, ansatz, or excited-state technique) requires no changes to the setup code.
 
 ---
@@ -84,22 +120,39 @@ carcara/
 │       ├── algorithms/  # VariationalDriver base; VQE, ADAPT-VQE, VASQE, subspace
 │       │                #   (SSVQE) + deflation excited states, Bloch crystals,
 │       │                #   HF (RHF/UHF), expressibility
-│       ├── backends/    # Hardware and simulation devices, error mitigation
+│       ├── backends/    # hardware.py    device registry (ideal sim, Braket, QPUs)
+│       │                # providers.py   Qiskit / Braket / Cirq circuit builders
+│       │                # measurement.py QWC grouping, shot-based <H>
+│       │                # mitigation.py  error mitigation (stub)
 │       ├── basis/       # Localized basis sets (FAO, NAO, GTO/STO-nG, Pople)
 │       ├── circuits/    # Ansatz protocol, UCCSD & AdaptAnsatz, gates, pools, profiling
-│       ├── core/        # Fermionic operators, mappings, molecular integrals
+│       ├── core/        # Fermionic operators, mappings, molecular integrals,
+│       │                #   Parquet/JSON Hamiltonian serialization
 │       ├── integrals/   # Real-space grid and Poisson engine, C backend
 │       │   └── csrc/    # C implementation and CMake build files
 │       ├── optimizers/  # Classical optimizers for hybrid loops
 │       ├── utils/       # Profiling (timing/memory), logging, start-up banner
 │       ├── units.py     # Unified conversion factors (Angstrom/eV <-> Bohr/Hartree)
 │       └── version.py   # Package versioning (CalVer YY.M.patch)
-├── examples/            # Walkthroughs: ADAPT-VQE (H2, LiH, H2O frozen core, BeH2,
-│                        #   mappings, O2 triplet), H-chain bands, energy levels
-│                        #   (deflation), Subspace-VQE (SSVQE), and VASQE
-├── test/                # Comprehensive pytest suite
+├── examples/            # 17 runnable walkthroughs (see below)
+│   └── data/            #   all generated logs, CSV and plots land here
+├── test/                # Comprehensive pytest suite (609 tests)
 └── docs/                # Sphinx source files and configuration
 ```
+
+### Examples
+
+| | |
+|---|---|
+| `01`–`06` | ADAPT-VQE: H₂, LiH, H₂O (frozen core), BeH₂, mapping comparison, O₂ triplet |
+| `07`, `11` | Periodic crystals: H-chain bands, the three Bloch drivers |
+| `08`, `09` | Excited states: deflation (`energy_levels`) and Subspace-VQE (SSVQE) |
+| `10`, `14` | VASQE: H₂ schedules; LiH with **exponential annealing** + convergence plot |
+| `12` | ADAPT-VQE on LiH across **all three backend providers**, from one cached Hamiltonian |
+| `13` | **Amazon Braket compatibility report** — gate set, shots constraint, QWC grouping, QPU cost |
+| `15` | **Expressibility growth** during ADAPT-VQE + PQC-vs-Haar fidelity distributions |
+| `16` | LiH energy vs. bond distance across **pools × mappings** (two-column subplots) |
+| `17` | Hamiltonian cache round-trip in **Parquet and JSON** |
 
 ---
 
@@ -275,11 +328,49 @@ print(f"Operators: {result.operators}")
 print(f"Selection temperatures: {result.temperatures}")
 ```
 
+### Example 6: Cache the Hamiltonian, then sweep
+Build the expensive part once and replay it — the reload needs no geometry,
+no integrals and no fermion-to-qubit mapping:
+```python
+from ase import Atoms
+from carcara.algorithms import ADAPTVQE
+
+atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
+              cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
+
+# Build once (use hamiltonian_format="json" for a plain-text cache).
+atoms.calc = ADAPTVQE(basis="FAO", h=0.25, save_hamiltonian="lih.parquet")
+atoms.get_total_energy()
+
+# Compare every pool against the *same* operator, in seconds.
+for pool in ("fermionic", "qubit", "qeb", "ceo"):
+    result = ADAPTVQE(pool=pool, load_hamiltonian="lih.parquet",
+                      verbose=False).run()
+    print(f"{pool:<10} {result.optimal_energy:.8f} Ha  "
+          f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
+```
+
+### Example 7: Choose a backend — or a real QPU
+The driver API does not change; only the device does:
+```python
+from carcara.algorithms import ADAPTVQE, VQE
+
+# Build and execute the circuits with Cirq (or "braket", or "qiskit").
+ADAPTVQE(basis="FAO", backend_provider="cirq", execute_circuits=True)
+
+# Braket's local simulator, shot-based -- the same protocol a QPU uses.
+VQE(basis="FAO", device="braket-local", shots=8192)
+
+# The AWS managed simulator, or a real trapped-ion QPU.
+VQE(basis="FAO", device="braket-sv1",       shots=8192)
+VQE(basis="FAO", device="braket-ionq-aria", shots=8192)   # needs AWS credentials
+```
+
 ---
 
 ## Testing
 
-Carcará features a comprehensive unit testing suite verifying integrals, basis definitions, operators, Hartree-Fock solvers, VQE, and ADAPT-VQE algorithms. 
+Carcará features a comprehensive unit testing suite (609 tests) verifying integrals, basis definitions, operators, Hartree-Fock solvers, VQE/ADAPT-VQE/VASQE, the Hamiltonian cache, backend-provider equivalence, and the Braket shot-based measurement path.
 
 To run the complete test suite:
 ```bash

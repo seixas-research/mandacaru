@@ -51,6 +51,13 @@
 .. toctree::
    :maxdepth: 2
    :hidden:
+   :caption: How-To Guides
+
+   guide/index
+
+.. toctree::
+   :maxdepth: 2
+   :hidden:
    :caption: Theory
 
    theory/index
@@ -74,7 +81,9 @@ The design of Carcará is built around **loose coupling** and **strict unit boun
       ↳ Integral Engine (One- & Two-body integrals)
         ↳ Molecular Hamiltonian (Fermionic Operators)
           ↳ Fermion-to-Qubit Mappings (PauliSum qubit Hamiltonian)
-            ↳ VQE / ADAPT-VQE Drivers (parameterized circuit compiled to backend & optimized classically)
+            ↳ *(optional)* Parquet/JSON cache — replay later, skipping everything above
+              ↳ VQE / ADAPT-VQE Drivers (parameterized circuit compiled to a backend & optimized classically)
+                ↳ Execution: internal state vector, or Qiskit / Amazon Braket / Cirq circuits (simulator or QPU)
 
 1. Basis-Agnostic Integrals
 ---------------------------
@@ -93,12 +102,25 @@ To avoid the cognitive load of switching units between physics calculations and 
 * **Internal Core:** The mathematical core—orbital evaluations, grid coordinates, Poisson solvers, and C-backend integrals—operates strictly in **atomic units** (lengths in Bohr, energies in Hartree).
 * **User Boundary:** All user-facing APIs (``Grid``, ``FullAtomicOrbital``, ``IntegralEngine``) default to standard chemistry units: **lengths in Ångström** and **energies in electronvolts (eV)**. Conversions happen automatically at the API boundaries (configured via ``units`` / ``energy_units``).
 
+3. SDK-Agnostic Circuits
+------------------------
+
+The ansatz layer is not tied to one quantum SDK. Every generator is an anti-Hermitian ``PauliSum`` whose terms commute, so :math:`e^{\theta A}` factorizes **exactly** into Pauli rotations. A single provider-independent gate stream (``X``, ``H``, ``S``, ``S^\dagger``, ``CNOT``, ``R_z``) is then translated by :mod:`carcara.backends.providers` into Qiskit, Amazon Braket or Cirq circuits.
+
+* Because the decomposition is exact (no Trotter error), all three SDKs produce the *same* unitary and agree with the internal NumPy state vector to machine precision.
+* The same abstraction reaches **real hardware**: with ``shots > 0`` the Braket provider measures :math:`\langle H \rangle` from qubit-wise commuting Pauli groups instead of reading amplitudes — the only protocol a QPU supports.
+
+4. Reusable Hamiltonians
+------------------------
+
+Building the qubit Hamiltonian (integrals + mapping) is the most expensive stage of a run and is independent of the algorithm that follows. It can be serialized to **Apache Parquet or JSON** and replayed: ``load_hamiltonian=...`` skips the integral engine and the fermion-to-qubit transformation entirely, and — since the file also records the electron and orbital counts — needs no geometry at all.
+
 ----
 
 Current Development State
 =========================
 
-Carcará is currently mid-build. The core physical and simulation pipelines are fully implemented and validated, while hardware execution and error mitigation features remain as design stubs.
+Carcará is currently mid-build. The core physical and simulation pipelines are fully implemented and validated. **Execution on real quantum hardware is available** through Amazon Braket (shot-based measurement of :math:`\langle H \rangle`); error mitigation remains a design stub.
 
 .. list-table::
    :header-rows: 1
@@ -118,24 +140,36 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - **Complete**
    * - **carcara.core**
      - Operator algebra & mappings
-     - ``Fermion`` creation/annihilation algebra, Jordan-Wigner, Parity (with optional 2-qubit reduction), and Bravyi-Kitaev mappings.
+     - ``Fermion`` creation/annihilation algebra, Jordan-Wigner, Parity (with optional 2-qubit reduction), and Bravyi-Kitaev mappings; Parquet/JSON Hamiltonian serialization with automatic format detection.
      - **Complete**
    * - **carcara.circuits**
      - Parameterized circuits
-     - Exact UCC unitary and Trotterized UCCSD circuits, single/double excitation gates, ADAPT operator pools (``fermionic``, ``qubit``, ``qeb``, ``ceo``).
+     - Exact UCC unitary and Trotterized UCCSD circuits, single/double excitation gates, ADAPT operator pools (``fermionic``, ``qubit``, ``qeb``, ``ceo``); ansätze execute on any provider.
      - **Complete**
    * - **carcara.algorithms**
      - Solvers & profiling
-     - Exact state-vector VQE & ADAPT-VQE solvers, RHF/UHF molecular-orbital (MO) solvers, PQC expressibility trackers (KL-divergence vs. Haar), and Qiskit-based CNOT/depth compilers.
+     - Exact state-vector VQE & ADAPT-VQE solvers, RHF/UHF molecular-orbital (MO) solvers, PQC expressibility trackers (KL-divergence vs. Haar), CNOT/depth compilers, and the ``quenching`` parametrization policy.
      - **Complete**
    * - **carcara.optimizers**
      - Parameter optimization
      - Classical optimizer wrapper (SPSA, COBYLA, Nelder-Mead, SLSQP, Adam, L-BFGS-B) with evaluation counting and history tracking.
      - **Complete**
-   * - **carcara.backends**
-     - Quantum backends
-     - Aer simulator integration, device definitions, execution stubs.
-     - **Basic Simulator Ready**
+   * - **carcara.backends.providers**
+     - Circuit construction & execution
+     - Qiskit, Amazon Braket and Cirq providers sharing one exact Pauli-rotation decomposition; verified to agree to machine precision.
+     - **Complete**
+   * - **carcara.backends.hardware**
+     - Device registry
+     - Ideal simulator, Braket local & managed simulators (SV1/DM1/TN1), and the IonQ / IQM / Rigetti QPUs (or any Braket ARN). ``ibm-quantum`` reserved.
+     - **Complete**
+   * - **carcara.backends.measurement**
+     - Shot-based estimation
+     - Qubit-wise commuting Pauli grouping, expectation values from bit-string counts, shot-noise estimates — the protocol a QPU requires.
+     - **Complete**
+   * - **Hardware execution**
+     - Running on a QPU
+     - Energy evaluation runs on Amazon Braket devices via the shot path. ADAPT-VQE's *pool-gradient screening* is still classical, so fixed-ansatz ``VQE`` is the fully hardware-native driver.
+     - **Partial**
    * - **carcara.backends.mitigation**
      - Error mitigation
      - Zero-noise extrapolation (ZNE) and readout mitigation stubs.
@@ -204,8 +238,23 @@ carcara.algorithms
 * **ADAPT-VQE:** Calculates the commutator gradients :math:`\langle \psi | [H, A_i] | \psi \rangle` for all pool operators, selects the operator with the largest gradient, appends it to the ansatz, and performs a warm-started VQE optimization. Loop terminates when the maximum gradient falls below ``gradient_tolerance``.
 * **Hartree-Fock (RHF/UHF):** Solves the self-consistent field equations to yield the molecular-orbital basis. Transforming the Hamiltonian to the MO basis is critical for ADAPT-VQE; it ensures that the starting Hartree-Fock reference is stationary, making single excitation gradients vanish and allowing the algorithm to focus on electron correlations.
 * **Expressibility:** Computes Kullback-Leibler divergences between random-ansatz state fidelities and the Haar distribution. Because fermionic ansätze conserve symmetries, expressibility is computed against the Haar distribution of the active space dimension:
-  
+
   .. math::
      d = \binom{M}{n_\alpha}\binom{M}{n_\beta}
-  
+
   rather than the full :math:`2^N` Hilbert space.
+* **Dynamic parametrization (``quenching``):** ``True`` (default) re-optimizes every variational parameter at each iteration — standard ADAPT-VQE. ``False`` freezes the previously optimized angles and varies only the newest one, trading variational freedom for a one-dimensional line search per growth step. See :doc:`guide/quenching`.
+
+carcara.backends
+----------------
+
+Two orthogonal registries plus the hardware measurement protocol:
+
+* **Devices** (``backends.hardware``) — *where* a run executes. ``AER_simulator`` is the ideal state-vector default; the Amazon Braket entries cover the local simulator, the managed SV1/DM1/TN1 simulators, and the IonQ / IQM / Rigetti QPUs (any Braket ARN is also accepted verbatim). Naming a QPU without ``shots`` is rejected up front, since hardware cannot return amplitudes.
+* **Circuit providers** (``backends.providers``) — *which SDK* builds and runs the circuits: ``"qiskit"``, ``"braket"`` or ``"cirq"``. Each generator's exponential factorizes exactly into commuting Pauli rotations, so one shared gate stream is translated per SDK and all three reproduce the internal state vector to machine precision.
+* **Shot-based measurement** (``backends.measurement``) — on real hardware the energy must be *measured*, not read off. The Hamiltonian is partitioned into **qubit-wise commuting** groups (118 Pauli terms → 29 circuits for LiH), one circuit is run per group with the appropriate basis rotation, and :math:`\langle H \rangle` is assembled from the bit-string counts with error falling as :math:`1/\sqrt{\text{shots}}`.
+
+carcara.core.serialization
+--------------------------
+
+The qubit Hamiltonian is serializable to **Apache Parquet** (compressed, columnar, queryable from pandas) or **JSON** (plain text, no native dependency), chosen with ``hamiltonian_format``. Loading detects the format automatically — from the extension, else from the file's leading bytes — and skips the integral engine and the fermion-to-qubit mapping entirely. Because the file also records ``num_particles`` and ``n_spatial_orbitals``, a reloaded driver runs with no geometry at all. See :doc:`guide/hamiltonian_cache`.

@@ -45,7 +45,7 @@ import numpy as np
 
 from ase.calculators.calculator import all_changes
 
-from ..circuits import AdaptAnsatz, CircuitMetrics, profile_ansatz
+from ..circuits import CircuitMetrics
 from ..core.mapping import reference_qubit_bits
 from .adapt_vqe import ADAPTVQE
 from .deflation import EnergyLevels
@@ -380,7 +380,7 @@ class SubspaceVQE(SubspaceMixin, VQE):
             return sum(weights[j] * self.energy(evolved[:, j]) for j in range(k))
 
         with timings.time("parameter optimization"):
-            result = self.optimizer.minimize(weighted_cost, x0)
+            result = self._optimize_all(weighted_cost, x0)
 
         evolved = self._evolve(result.x, refs)
         energies = [self.energy(evolved[:, j]) for j in range(k)]
@@ -453,14 +453,17 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
         max_iterations = self.max_iterations
         gradient_tol = self.gradient_tolerance
 
-        ansatz = AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
-                             self.mapping, sparse=self._sparse)
+        ansatz = self._new_ansatz()
         params = (np.asarray(initial_parameters, float).ravel()
                   if initial_parameters is not None else np.zeros(0))
         selected: list[str] = []
         total_evals = 0
         converged = False
         max_grad = np.inf
+        energy = min(self.energy(ansatz.evolve(params, refs)[:, j])
+                     for j in range(k))
+        if self.verbose:
+            self._print_iteration_heading(self._energy_unit_label())
 
         for _ in range(max_iterations):
             with timings.time("gradient screening"):
@@ -475,32 +478,32 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
             op = self._pool_ops[idx]
             ansatz.append(op)
             selected.append(op.label)
-            x0 = np.concatenate([params, [0.0]])
 
             def weighted_cost(theta, _ansatz=ansatz):
                 ev = _ansatz.evolve(theta, refs)
                 return sum(weights[j] * self.energy(ev[:, j]) for j in range(k))
 
+            previous_energy = energy
             with timings.time("parameter optimization"):
-                result = self.optimizer.minimize(weighted_cost, x0)
+                result = self._optimize_grown(weighted_cost, params)
             params = np.asarray(result.x, float)
             total_evals += result.nfev
+            energy = min(self.energy(ansatz.evolve(params, refs)[:, j])
+                         for j in range(k))
 
             if self.verbose:
-                energies_now = [self.energy(ansatz.evolve(params, refs)[:, j])
-                                for j in range(k)]
-                print(f"\n[iter {len(selected)}] selected {op.label} "
-                      f"(|grad|={max_grad:.6e})  "
-                      f"E0={min(energies_now):+.8f} Ha")
+                self._print_iteration(len(selected), op, max_grad, energy,
+                                      energy - previous_energy,
+                                      CircuitMetrics(None, None,
+                                                     ansatz.num_parameters),
+                                      self._energy_unit_label())
 
         # Final per-level energies (bare expectation values).
         evolved = ansatz.evolve(params, refs)
         energies = [self.energy(evolved[:, j]) for j in range(k)]
         states = [evolved[:, j].copy() for j in range(k)]
 
-        metrics = (profile_ansatz(self.n_qubits, ansatz.occupied, ansatz.operators)
-                   if self.profile else
-                   CircuitMetrics(None, None, ansatz.num_parameters))
+        metrics = self._profile(ansatz)
 
         if not converged and len(selected) == max_iterations:
             max_grad = float(np.max(np.abs(

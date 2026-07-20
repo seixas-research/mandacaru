@@ -25,13 +25,25 @@ pip install carcara
 ```
 
 This installs all core Python dependencies:
+
+**Numerical core**
 * `numpy` (>= 2.0.0)
 * `scipy`
-* `matplotlib`
-* `ase` (Atomic Simulation Environment)
-* `qiskit`
+* `matplotlib` — plotting helpers (expressibility, band structures)
+* `ase` (Atomic Simulation Environment) — geometries and the calculator interface
+
+**Hamiltonian cache**
+* `fastparquet` — the default Apache Parquet engine
+* `pandas` — its table interface
+
+**Quantum SDKs** (backend providers and the device registry)
+* `qiskit` — default circuit provider and gate-count profiling
 * `qiskit-nature`
-* `qiskit-ibm-runtime`
+* `qiskit-ibm-runtime` — the reserved `ibm-quantum` device
+* `amazon-braket-sdk` — local simulator plus the AWS Braket devices and QPUs
+* `cirq`
+
+**Testing**
 * `pytest`
 
 ### Method B: Install from Source (Developer Setup)
@@ -84,12 +96,48 @@ print(f"C backend active: {HAS_C_BACKEND}")
 
 ---
 
-## Optional Acceleration Packages
+## Optional Dependency Groups
 
-To enable accelerated numerical operations on CPU, you can install the optional performance bundle:
+| Extra | Installs | Purpose |
+|---|---|---|
+| `pyarrow` | `pyarrow` | An alternative Apache Parquet engine for the Hamiltonian cache. |
+| `docs` | `sphinx`, `sphinx-rtd-theme`, `myst-parser`, `furo` | Building this documentation. |
+| `dev` | everything above | Full development environment. |
 
 ```bash
-pip install "carcara[accel]"
+pip install "carcara[dev]"
 ```
 
-This installs `numba` (>= 0.60), which accelerates intermediate python loops.
+### A note on the `pyarrow` extra
+
+The Hamiltonian cache reads and writes Parquet through either `fastparquet` (the
+default, installed with the package) or `pyarrow`. Both produce standard Parquet
+files, so they are interchangeable.
+
+```{warning}
+`fastparquet` is the default **on purpose**. On some platforms — reproduced on
+CPython 3.14 with `qiskit` 2.5 and `pyarrow` 25 — calling
+`pyarrow.parquet.write_table` in a process that has *also* run Qiskit's
+`transpile` crashes the interpreter, since both ship their own native runtimes.
+Carcará transpiles circuits for gate-count profiling in the same process that
+saves the Hamiltonian, so the default engine avoids that combination.
+
+If your environment is unaffected, pass `engine="pyarrow"` explicitly. If you
+would rather not depend on a Parquet engine at all, use
+`hamiltonian_format="json"`, which needs only the standard library.
+```
+
+---
+
+## AWS Braket Credentials (Optional)
+
+Running on the Amazon Braket **service** — the managed simulators or a real QPU —
+needs AWS credentials configured on your machine:
+
+```bash
+aws configure
+```
+
+Local Braket simulation (`device="braket-local"`) needs no credentials and costs
+nothing. See {doc}`guide/aws_braket` for the details, including how to estimate
+the cost of a hardware run before submitting it.

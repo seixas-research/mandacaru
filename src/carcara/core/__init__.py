@@ -12,12 +12,17 @@
   Hamiltonian over a localized basis;
 * :class:`Fermion` -- second-quantized fermionic operators and the three
   fermion-to-qubit mappings (Jordan-Wigner, parity, Bravyi-Kitaev);
-* :class:`PauliSum` -- the qubit-operator output type.
+* :class:`PauliSum` -- the qubit-operator output type;
+* :func:`save_hamiltonian` / :func:`load_hamiltonian` -- the on-disk Pauli-string
+  cache (Apache Parquet or JSON) that lets a run skip the integrals and the
+  mapping entirely; the format is auto-detected on load.
 """
 
 from .hamiltonian import MolecularIntegrals, minimal_fao_basis
 from .mapping import Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity
 from .planewave import PlaneWaveIntegrals, plane_wave_vectors
+from .serialization import (HAMILTONIAN_FORMATS, HamiltonianRecord,
+                            detect_format, load_hamiltonian, save_hamiltonian)
 
 __all__ = [
     "MolecularIntegrals",
@@ -29,4 +34,9 @@ __all__ = [
     "jordan_wigner",
     "parity",
     "bravyi_kitaev",
+    "HamiltonianRecord",
+    "HAMILTONIAN_FORMATS",
+    "save_hamiltonian",
+    "load_hamiltonian",
+    "detect_format",
 ]
