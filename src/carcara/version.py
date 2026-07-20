@@ -6,4 +6,4 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br> 
 
-__version__ = "26.7.39"
+__version__ = "26.7.40"
