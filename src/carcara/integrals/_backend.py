@@ -114,6 +114,17 @@ def _bind(lib):
         _C128_W,                     # out_eri (M^4)
     ]
 
+    lib.carcara_kb_project.restype = None
+    lib.carcara_kb_project.argtypes = [
+        _C128,                       # psi (M * ngrid)
+        _C128,                       # chi (P * ngrid)
+        ctypes.c_int,                # M
+        ctypes.c_int,                # P
+        ctypes.c_long,               # ngrid
+        ctypes.c_double,             # dV
+        _C128_W,                     # out_P (M * P)
+    ]
+
     lib.carcara_num_threads.restype = ctypes.c_int
     lib.carcara_num_threads.argtypes = []
     return lib
@@ -187,6 +198,40 @@ def one_body_matrices(psi_stack, Vext, grid):
             ginv.reshape(-1), dV, T.reshape(-1), V.reshape(-1))
         return T, V
     return _one_body_numpy(psi_stack, Vext, ginv, dV, (nx, ny, nz))
+
+
+def kb_projections(psi_stack, chi_stack, dV):
+    r"""Overlaps ``<phi_a|chi_p>`` of a basis against Kleinman-Bylander projectors.
+
+    Returns an ``(M, P)`` complex array,
+    ``out[a, p] = dV * sum_g conj(psi_a[g]) chi_p[g]``.
+
+    This is the only grid work the nonlocal pseudopotential needs: the nonlocal
+    matrix itself is the small outer product ``P diag(E_KB) P^dagger``, which is
+    why the separable form costs ``O(M P)`` instead of the ``O(M^2)`` radial
+    integrals a semilocal form would need.
+
+    Uses the C backend when available; the NumPy fallback is a single BLAS
+    ``gemm`` and is already close to optimal, so the two differ mainly in
+    threading.
+    """
+    psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
+    chi_stack = np.ascontiguousarray(chi_stack, dtype=np.complex128)
+    M, ngrid = psi_stack.shape
+    P = chi_stack.shape[0]
+    if chi_stack.shape[1] != ngrid:
+        raise ValueError(
+            f"projectors are sampled on {chi_stack.shape[1]} points but the "
+            f"basis on {ngrid}")
+    if P == 0:
+        return np.zeros((M, 0), dtype=np.complex128)
+
+    if HAS_C_BACKEND:
+        out = np.empty((M, P), dtype=np.complex128)
+        _LIB.carcara_kb_project(psi_stack, chi_stack, M, P, ngrid,
+                                float(dV), out)
+        return out
+    return (np.conj(psi_stack) @ chi_stack.T) * dV
 
 
 def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0):

@@ -29,9 +29,10 @@ From molecular geometry inputs, Carcará constructs real-space grids, evaluates 
 ### 1. Localized Basis Sets (Generated Native)
 All basis set functions are generated from scratch mathematically rather than relying on tabulated basis databases. Supported localized single-particle basis sets include:
 - **FAO (Full Atomic Orbital):** Analytic hydrogen-like orbitals built from the actual atomic number (bare nuclear charge, no Slater screening), one per occupied subshell.
-- **NAO (Numerical Atomic Orbital):** Confined Sankey/SIESTA-type atomic orbitals solved numerically on radial grids within a hard-wall sphere boundary dictated by a user-specified energy shift.
+- **NAO (Numerical Atomic Orbital):** Confined Sankey/SIESTA-type atomic orbitals solved numerically on radial grids within a hard-wall sphere boundary dictated by a user-specified energy shift. A `size` argument selects **multiple-zeta and polarized** variants (`SZ`, `DZ`, `DZP`, `TZP`, `TZ2P`, `QZP`, ...): extra zetas are built by the SIESTA split-valence construction, polarization by an $l+1$ shell solved in the same confining sphere.
 - **GTO (Gaussian-Type Orbital):** Minimal STO-nG bases generated via scale-covariant least-squares fitting of primitives to Slater-type orbitals.
 - **Pople Split-Valence:** Contracted GTO split-valence bases (e.g., 6-31G and 6-31G(d)), featuring native polarization d-shells.
+- **Norm-Conserving Pseudopotentials:** Troullier-Martins pseudopotentials with Kleinman-Bylander projectors, generated from scratch by an LDA radial atomic solver and shipped for **every element with Z < 90** in `pseudos/` (Parquet, with JSON as an option and format auto-detection on load). Enabled with `pseudopotentials=True` on any driver; without them, the uniform real-space grid cannot resolve a heavy-atom core and forces diverge under refinement.
 
 ### 2. High-Performance C-Accelerated Integral Engine
 A basis-agnostic integration engine handles the heavy lifting of one-body (kinetic $T$, nuclear attraction $V$) and two-body electron-repulsion integrals (ERI, $\langle ab|cd \rangle$ in physicists' notation) in real space:

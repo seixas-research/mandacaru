@@ -132,7 +132,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - Status
    * - **carcara.basis**
      - Orbital generation
-     - FAO (analytic hydrogenic), NAO (numerical confinement), GTO (minimal STO-nG), Pople 6-31G & 6-31G(d) (with d-polarization). Exponents fitted from scratch via least-squares.
+     - FAO (analytic hydrogenic), NAO (numerical confinement, multiple-zeta and polarized), GTO (minimal STO-nG), Pople 6-31G & 6-31G(d) (with d-polarization). Exponents fitted from scratch via least-squares. Norm-conserving Troullier-Martins pseudopotentials for Z < 90.
      - **Complete**
    * - **carcara.integrals**
      - Integral evaluation
@@ -185,7 +185,7 @@ carcara.basis
 
 Carcará does not ship database tables of basis-set exponents. Instead, it generates all basis sets **from first principles**:
 
-* **Numerical Atomic Orbitals (NAOs):** Confinement is defined by an ``energy_shift`` parameter :math:`\delta E` (default 0.03 eV). The radial Schrödinger equation is solved numerically via finite differences inside a hard-wall sphere of radius :math:`r_c = \pi / \sqrt{2\delta E}` using a screened nuclear potential.
+* **Numerical Atomic Orbitals (NAOs):** Confinement is defined by an ``energy_shift`` parameter :math:`\delta E` (default 0.03 eV). The radial Schrödinger equation is solved numerically via finite differences inside a hard-wall sphere of radius :math:`r_c = \pi / \sqrt{2\delta E}` using a screened nuclear potential. A ``size`` argument selects **multiple-zeta and polarized** variants (``SZ``, ``DZ``, ``DZP``, ``TZP``, ``QZP``, ...): extra zetas come from the SIESTA split-valence construction, polarization from an :math:`l+1` shell solved in the same sphere. See :doc:`guide/basis_sets`.
 * **Gaussian-Type Orbitals (GTOs):** Exponents and coefficients are computed by a least-squares fit to Slater-Type Orbitals (STOs) with exponents :math:`\zeta` determined by Slater's rules. A reference fit is cached for :math:`\zeta=1` and scaled dynamically by :math:`\zeta^2` for any target atom.
 * **Pople Bases:** Contracted split-valence bases (6-31G) are built using a similar dynamic fit, including Slater-heuristic polarization d-shells for non-Hydrogen atoms.
 

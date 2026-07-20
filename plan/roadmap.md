@@ -45,6 +45,8 @@ Core dependencies: `numpy`, `scipy`, `ase`, `matplotlib`, `fastparquet`, `pandas
 |---|---|---|
 | Package init | `src/carcara/__init__.py` | exports `__version__` |
 | Localized basis sets (FAO, NAO, native STO-nG, Pople 6-31G(d)) | `src/carcara/basis/` | **implemented** — generated from scratch, no external data |
+| Multiple-zeta + polarized NAO (`size="SZ"…"QZ2P"`, SIESTA split valence) | `src/carcara/basis/multizeta.py` | **implemented** |
+| Norm-conserving pseudopotentials (Troullier-Martins + Kleinman-Bylander), library for Z < 90 | `src/carcara/basis/{pseudopotential,pseudo_io,pseudo_orbital}.py`, `pseudos/` | **implemented** — Parquet (default) / JSON with format auto-detection |
 | Integral engine (real-space one-/two-body, FFT Poisson, C backend; per-axis + non-orthogonal grids) | `src/carcara/integrals/` | **implemented** |
 | Molecular Hamiltonian (`MolecularIntegrals`, + `hartree_fock_hamiltonian`) | `src/carcara/core/hamiltonian.py` | **implemented** |
 | Periodic plane-wave basis (`PlaneWaveIntegrals`, reciprocal-space PBC integrals) | `src/carcara/core/planewave.py` | **implemented** |

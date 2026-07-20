@@ -29,6 +29,10 @@ dependencies = [
     'qiskit-ibm-runtime', # IBM Qiskit Runtime -- the reserved 'ibm-quantum' device
     'amazon-braket-sdk',  # Amazon Braket SDK -- local simulator + AWS devices/QPUs
     'cirq',               # Google Cirq
+    # -- nuclear gradients -------------------------------------------------- #
+    # JAX differentiates the small algebraic layer (Loewdin / SCF / integral
+    # transforms) that the Pulay force needs; see carcara.algorithms.forces.
+    'jax',
     # -- test suite -------------------------------------------------------- #
     'pytest',             # `python -m pytest test/` ships with the package
 ]

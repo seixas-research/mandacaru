@@ -481,14 +481,39 @@ def _read_json(path):
     return columns, meta
 
 
+def native_pandas_strings():
+    """Context manager keeping pandas off its Arrow-backed string dtype.
+
+    pandas 3 sets ``future.infer_string`` by default, so even a *fastparquet*
+    read builds its column index as a ``pyarrow`` string array -- which drags
+    pyarrow into a process that chose fastparquet precisely to avoid it.  In a
+    run that has also called Qiskit's ``transpile`` the result is not a clean
+    import error but corruption: ``UnicodeDecodeError`` or ``ArrowException:
+    Wrapping <garbage> failed`` while decoding column names.  See the module
+    warning above.
+
+    Turning the option off for the duration of the read keeps the whole path in
+    NumPy-backed object strings.  It is a no-op on pandas versions without the
+    option.
+    """
+    import pandas as pd
+
+    try:
+        return pd.option_context("future.infer_string", False)
+    except Exception:                       # pragma: no cover - older pandas
+        from contextlib import nullcontext
+        return nullcontext()
+
+
 def _read_fastparquet(path):
     import fastparquet
 
     parquet_file = fastparquet.ParquetFile(path)
     meta = {str(k): str(v)
             for k, v in (parquet_file.key_value_metadata or {}).items()}
-    frame = parquet_file.to_pandas()
-    columns = {name: frame[name].tolist() for name in frame.columns}
+    with native_pandas_strings():
+        frame = parquet_file.to_pandas()
+        columns = {name: frame[name].tolist() for name in frame.columns}
     return columns, meta
 
 

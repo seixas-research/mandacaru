@@ -121,6 +121,18 @@ class VariationalDriver(Calculator):
         variational parameters at every iteration.  ``False`` optimizes only the
         most recently added parameter, freezing all previous ones at their
         already-optimized values.
+    pseudopotentials : bool or dict
+        Use norm-conserving pseudopotentials (default ``False``).  ``True`` loads
+        the bundled Troullier-Martins library from ``pseudos/``; a dict passes
+        options (currently ``{"directory": ...}`` to point at another library).
+
+        This replaces the all-electron problem with a **valence-only** one: the
+        core electrons are removed, the basis becomes the smooth pseudo-atomic
+        orbitals, and the singular :math:`-Z/r` is replaced by a bounded local
+        channel plus Kleinman-Bylander projectors.  It is the cure for the
+        heavy-atom grid artefacts documented in
+        :mod:`carcara.algorithms.forces`, and it shrinks the qubit count as a
+        side effect.  Incompatible with ``frozen_core`` (which it subsumes).
     """
 
     implemented_properties = ["energy", "free_energy"]
@@ -136,6 +148,7 @@ class VariationalDriver(Calculator):
                  h: float = 0.20, kpts=None, spin: bool = False,
                  initial_state: str | None = "hartree-fock", charge: int = 0,
                  n_electrons=None, frozen_core=False, frozen_orbitals=None,
+                 pseudopotentials=False,
                  hamiltonian_builder=None, run_options: dict | None = None,
                  verbose: bool = True, sparse=None,
                  save_hamiltonian: bool | str = False,
@@ -157,6 +170,9 @@ class VariationalDriver(Calculator):
         self.spin = bool(spin)
         self.frozen_core = frozen_core
         self.frozen_orbitals = frozen_orbitals
+        # Norm-conserving pseudopotentials: replace the core + the -Z/r
+        # singularity with a smooth valence-only problem.
+        self.pseudopotentials = pseudopotentials
         self.initial_state = resolve_initial_state(initial_state)
         # Monkhorst-Pack mesh (ASE); the engine is Gamma-point (molecular), so a
         # denser mesh is stored on ``kpoints`` but rejected at run time.
@@ -213,6 +229,7 @@ class VariationalDriver(Calculator):
         self.quenching = bool(quenching)
 
         self._integration_profile = None
+        self._gradient_context = None
         self._configured = False
         # True when a Hamiltonian was supplied at construction (direct mode); the
         # ASE hook then never rebuilds it.  In calculator mode it stays False and
@@ -458,11 +475,16 @@ class VariationalDriver(Calculator):
                 self.hamiltonian_builder(atoms)
             return hamiltonian, num_particles, n_orbitals
         from ._hamiltonian_from_atoms import build_basis_hamiltonian
-        hamiltonian, num_particles, n_orbitals, profile = build_basis_hamiltonian(
+        (hamiltonian, num_particles, n_orbitals, profile,
+         context) = build_basis_hamiltonian(
             atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons,
             spin=self.spin, frozen_core=self.frozen_core,
-            frozen_orbitals=self.frozen_orbitals)
+            frozen_orbitals=self.frozen_orbitals,
+            pseudopotentials=self.pseudopotentials)
         self._integration_profile = profile
+        # Kept for the nuclear gradient: the integral engine that produced this
+        # Hamiltonian, and which atom each basis function belongs to.
+        self._gradient_context = context
         return hamiltonian, num_particles, n_orbitals
 
     # -- ASE calculator hook ---------------------------------------------- #

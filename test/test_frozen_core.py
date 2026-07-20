@@ -133,9 +133,9 @@ class TestActiveSpaceReduction:
     def test_lih_frozen_core_reduces_qubits(self):
         atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]],
                       cell=[6, 6, 6], pbc=True)
-        _, np_full, norb_full, _ = build_basis_hamiltonian(
+        _, np_full, norb_full, _, _ctx = build_basis_hamiltonian(
             atoms, "FAO", None, 0.5, 0, None, frozen_core=False)
-        _, np_fc, norb_fc, _ = build_basis_hamiltonian(
+        _, np_fc, norb_fc, _, _ctx2 = build_basis_hamiltonian(
             atoms, "FAO", None, 0.5, 0, None, frozen_core=True)
 
         assert (norb_full, np_full) == (3, (2, 2))       # 6 qubits

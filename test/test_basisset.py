@@ -25,16 +25,25 @@ class TestBuild:
 
 class TestNAOFactory:
     def test_hydrogen_valence(self):
-        nao = BasisSet.build(method="NAO", energy_shift=0.5)
+        # size="SZ" is the minimal one-function-per-subshell set; the factory
+        # default is DZP (see test_default_size_is_dzp in test_multizeta.py).
+        nao = BasisSet.build(method="NAO", energy_shift=0.5, size="SZ")
         orbs = nao.atom("H", center=[0, 0, 0], units="bohr")
         assert len(orbs) == 1                       # 1s only
         assert all(isinstance(o, BasisFunction) for o in orbs)
 
     def test_carbon_valence_counts(self):
-        # Carbon valence = 2s + 2p -> 1 + 3 = 4 orbitals.
-        nao = BasisSet.build(method="NAO", energy_shift=1.0)
+        # Carbon valence = 2s + 2p -> 1 + 3 = 4 orbitals, at single zeta.
+        nao = BasisSet.build(method="NAO", energy_shift=1.0, size="SZ")
         orbs = nao.atom(6, center=[0, 0, 0], units="bohr")
         assert len(orbs) == 4
+
+    def test_default_is_polarized_double_zeta(self):
+        """The default gained radial and angular freedom; SZ is now opt-in."""
+        default = BasisSet.build(method="NAO", energy_shift=1.0)
+        minimal = BasisSet.build(method="NAO", energy_shift=1.0, size="SZ")
+        assert len(default.atom(6)) > len(minimal.atom(6))
+        assert any(getattr(o, "polarization", False) for o in default.atom(6))
 
 
 class TestGTOFactory:

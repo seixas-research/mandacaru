@@ -49,16 +49,47 @@ class Potentials:
         (Slater) charges used for the basis orbitals.
     softening : float, optional
         Lower bound on ``|r - R_A|`` in Bohr, regularizing the ``r -> R_A``
-        Coulomb singularity on the grid (default ``1e-12``).
+        Coulomb singularity on the grid (default ``1e-12``).  Irrelevant to
+        :meth:`pseudopotential`, which has no singularity to regularize.
+    pseudopotentials : sequence, optional
+        One :class:`~carcara.basis.pseudopotential.PseudoPotential` per nucleus,
+        enabling :meth:`pseudopotential`.
     units : {"angstrom", "bohr"}
         Unit of the nuclear centers (default ``"angstrom"``).
     """
 
     def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
-                 softening: float = 1e-12, units: str = "angstrom"):
+                 softening: float = 1e-12, units: str = "angstrom",
+                 pseudopotentials=None):
         self.nuclei = [(float(Z), to_bohr(center, units))
                        for Z, center in nuclei]
         self.softening = float(softening)
+        #: Per-nucleus pseudopotentials, aligned with ``nuclei`` (or ``None``).
+        self.pseudopotentials = (list(pseudopotentials)
+                                 if pseudopotentials is not None else None)
+
+    def pseudopotential(self, x, y, z) -> np.ndarray:
+        r"""Local channel of a set of pseudopotentials, :math:`\sum_A V^A_{loc}`.
+
+        A drop-in replacement for :meth:`nuclear_potential` with the same
+        signature, so the integral engine (and its C kernel) needs **no change**
+        at all to run with pseudopotentials -- it only ever sees a sampled
+        potential array.  The difference is that this one is smooth: the
+        :math:`-Z/r` singularity the grid cannot resolve has been removed, and
+        each :math:`V^A_{loc}` decays to :math:`-Z^A_{ion}/r` only outside the
+        core region.
+
+        Requires :attr:`pseudopotentials` to have been supplied.
+        """
+        if not getattr(self, "pseudopotentials", None):
+            raise ValueError(
+                "no pseudopotentials were supplied to this Potentials object")
+        v = np.zeros_like(x, dtype=float)
+        for pp, (_Z, centre) in zip(self.pseudopotentials, self.nuclei):
+            r = np.sqrt((x - centre[0]) ** 2 + (y - centre[1]) ** 2
+                        + (z - centre[2]) ** 2)
+            v += pp.local_potential(r)
+        return v
 
     def nuclear_potential(self, x, y, z) -> np.ndarray:
         r"""Electron-nuclear attraction :math:`V(\mathbf r) = -\sum_A Z_A/|\mathbf r - \mathbf R_A|`.

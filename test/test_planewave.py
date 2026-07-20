@@ -113,7 +113,7 @@ class TestBasisDict:
         # A GTO dict routes n_gaussians through to BasisSet.build.
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-        H, npart, norb, _ = build_basis_hamiltonian(
+        H, npart, norb, _, _ctx = build_basis_hamiltonian(
             atoms, {"name": "GTO", "n_gaussians": 3}, None, 0.4, 0, None)
         assert norb == 2 and npart == (1, 1)       # STO-3G H2 -> 2 orbitals
 
@@ -122,7 +122,7 @@ class TestBasisDict:
         atoms = Atoms("H2", positions=[[2 * B2A, 2 * B2A, 2 * B2A - 0.37],
                                        [2 * B2A, 2 * B2A, 2 * B2A + 0.37]],
                       cell=cell, pbc=True)
-        H, npart, norb, prof = build_basis_hamiltonian(
+        H, npart, norb, prof, _ctx = build_basis_hamiltonian(
             atoms, {"name": "PW", "energy_cutoff": 60}, None, 0.2, 0, None)
         assert norb == 7                            # 4 Bohr cube, 60 eV -> 7 PWs
         assert H.map_to_qubits("jordan_wigner").is_hermitian()

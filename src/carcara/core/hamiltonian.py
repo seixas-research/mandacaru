@@ -67,15 +67,22 @@ class MolecularIntegrals:
 
     def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
                  basis, grid: Grid, units: str = "angstrom",
-                 orthogonalize: bool = True, softening: float = 1e-12):
+                 orthogonalize: bool = True, softening: float = 1e-12,
+                 pseudopotentials=None, kb_projectors=None):
         self.nuclei = [(float(Z), np.asarray(R, dtype=float)) for Z, R in nuclei]
         self.basis = list(basis)
         self.grid = grid
         self.units = units
         self.orthogonalize = orthogonalize
         self._engine = IntegralEngine(self.basis, grid)
+        # With pseudopotentials the "nuclei" carry the *ionic* charges Z_ion, so
+        # the nuclear repulsion below is already the ion-ion term.
+        self.pseudopotentials = (list(pseudopotentials)
+                                 if pseudopotentials is not None else None)
+        self.kb_projectors = list(kb_projectors) if kb_projectors else []
         self._potentials = Potentials(self.nuclei, softening=softening,
-                                      units=units)
+                                      units=units,
+                                      pseudopotentials=self.pseudopotentials)
         self._S: np.ndarray | None = None
         self._h1: np.ndarray | None = None
         self._eri: np.ndarray | None = None
@@ -112,10 +119,46 @@ class MolecularIntegrals:
         w, U = np.linalg.eigh(S)
         return (U * (1.0 / np.sqrt(w))) @ U.conj().T
 
+    @property
+    def uses_pseudopotentials(self) -> bool:
+        """True when the external potential is a sum of pseudopotentials."""
+        return bool(self.pseudopotentials)
+
+    def external_potential(self):
+        """The callable the engine samples: pseudopotential or bare ``-Z/r``."""
+        return (self._potentials.pseudopotential if self.uses_pseudopotentials
+                else self._potentials.nuclear_potential)
+
+    def kb_nonlocal(self) -> np.ndarray:
+        r"""Kleinman-Bylander nonlocal matrix in the basis.
+
+        .. math::
+
+            H^{NL}_{\mu\nu} = \sum_p \langle\phi_\mu|\chi_p\rangle\,
+                E^{KB}_p\, \langle\chi_p|\phi_\nu\rangle ,
+
+        a sum of rank-one terms.  Only the ``(M, P)`` overlap matrix touches the
+        grid (via :func:`carcara.integrals._backend.kb_projections`, C-accelerated);
+        the rest is a small outer product.  Returns zeros when there are no
+        projectors.
+        """
+        M = len(self.basis)
+        if not self.kb_projectors:
+            return np.zeros((M, M), dtype=complex)
+        from ..integrals import _backend
+
+        chi = np.stack([p.evaluate(self.grid.X, self.grid.Y,
+                                   self.grid.Z).ravel()
+                        for p in self.kb_projectors])
+        overlaps = _backend.kb_projections(self._engine._psi, chi, self.grid.dV)
+        energies = np.array([p.kb_energy for p in self.kb_projectors])
+        return (overlaps * energies) @ overlaps.conj().T
+
     def _compute(self):
-        T, V = self._engine.one_body(self._potentials.nuclear_potential,
+        T, V = self._engine.one_body(self.external_potential(),
                                      energy_units="Ha")
-        h = 0.5 * ((T + V) + (T + V).conj().T)   # symmetrize away grid noise
+        one = T + V + self.kb_nonlocal()
+        h = 0.5 * (one + one.conj().T)           # symmetrize away grid noise
         eri = self._engine.two_body(method="fft", energy_units="Ha")
         if self.orthogonalize:
             # Lowdin-orthonormalize the basis; the second-quantized Hamiltonian

@@ -95,6 +95,28 @@ void carcara_two_body(const double _Complex *psi,
                       int M, int ngrid, double dV, double softening,
                       double _Complex *out_eri);
 
+/* Kleinman-Bylander projector overlaps.
+ *
+ * The nonlocal part of a norm-conserving pseudopotential is a sum of rank-one
+ * terms,  V_NL = sum_p |chi_p> E_p <chi_p|,  so the only grid work it needs is
+ * the overlap of every basis function with every projector:
+ *
+ *     out_P[a * P + p] = dV * sum_g conj(psi_a[g]) * chi_p[g].
+ *
+ * The nonlocal matrix is then the small outer product P diag(E) P^dagger,
+ * assembled by the caller.  This is O(M * P * ngrid) rather than the
+ * O(M^2 * ngrid) a semilocal form would cost -- the whole point of the
+ * Kleinman-Bylander transformation.
+ *
+ * psi   : (M * ngrid) complex basis samples.
+ * chi   : (P * ngrid) complex projector samples.
+ * out_P : (M * P) complex, caller-allocated.
+ */
+void carcara_kb_project(const double _Complex *psi,
+                        const double _Complex *chi,
+                        int M, int P, long ngrid, double dV,
+                        double _Complex *out_P);
+
 /* Optional helper: sample all M functions via a callback into `psi`
  * (M * ngrid).  Lets callers stream a basis (e.g. Wannier) into the same
  * kernels without materializing it in Python. */

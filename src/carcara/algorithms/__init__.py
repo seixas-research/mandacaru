@@ -45,6 +45,9 @@ from .vasqe import (
     annealed_temperature,
     softmax_selection_probabilities,
 )
+from .calculator import DRIVERS, QuantumCalculator, resolve_driver
+from .forces import ForceResult, hellmann_feynman_gradient, nuclear_gradient
+from .rdm import electronic_energy, one_rdm, particle_number, two_rdm
 from .vqe import VQE, VQEResult
 
 __all__ = [
@@ -84,4 +87,14 @@ __all__ = [
     "track_adapt_expressivity",
     "plot_fidelity_distribution",
     "plot_expressivity_growth",
+    "QuantumCalculator",
+    "DRIVERS",
+    "resolve_driver",
+    "nuclear_gradient",
+    "hellmann_feynman_gradient",
+    "ForceResult",
+    "one_rdm",
+    "two_rdm",
+    "electronic_energy",
+    "particle_number",
 ]

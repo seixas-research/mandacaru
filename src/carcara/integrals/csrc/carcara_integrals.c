@@ -206,6 +206,27 @@ void carcara_one_body(const double _Complex *psi,
     free(lap);
 }
 
+void carcara_kb_project(const double _Complex *psi,
+                        const double _Complex *chi,
+                        int M, int P, long ngrid, double dV,
+                        double _Complex *out_P) {
+    /* Parallel over the flattened (basis, projector) pair.  Each entry is an
+     * independent reduction over the grid, so there is nothing to synchronize. */
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) collapse(2)
+#endif
+    for (int a = 0; a < M; ++a) {
+        for (int p = 0; p < P; ++p) {
+            const double _Complex *pa = psi + (long)a * ngrid;
+            const double _Complex *cp = chi + (long)p * ngrid;
+            double _Complex acc = 0.0;
+            for (long g = 0; g < ngrid; ++g)
+                acc += conj(pa[g]) * cp[g];
+            out_P[(long)a * P + p] = acc * dV;
+        }
+    }
+}
+
 void carcara_two_body(const double _Complex *psi,
                       const double *xg, const double *yg, const double *zg,
                       int M, int ngrid, double dV, double softening,
