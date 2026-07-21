@@ -9,10 +9,11 @@
 </a>
 </h1> 
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge)](LICENSE)
-[![Python 3.11](https://img.shields.io/badge/Python-3.11+-fcbc2c.svg?style=for-the-badge)](https://www.python.org/downloads/)
-[![PyPI version](https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge)](https://pypi.org/project/carcara/)
-[![Documentation Status](https://readthedocs.org/projects/carcara/badge/?version=latest&style=for-the-badge)](https://carcara.readthedocs.io/en/latest/?badge=latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](LICENSE)
+[![Python 3.11](https://img.shields.io/badge/Python-3.11+-fcbc2c.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![PyPI version](https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge&logo=pypi&logoColor=white)](https://pypi.org/project/carcara/)
+[![Documentation Status](https://readthedocs.org/projects/carcara/badge/?version=latest&style=for-the-badge&logo=readthedocs&logoColor=white)](https://carcara.readthedocs.io/en/latest/?badge=latest)
+
 <!-- ![Size](https://img.shields.io/github/repo-size/leseixas/carcara?style=for-the-badge&color=orange) -->
 
 
