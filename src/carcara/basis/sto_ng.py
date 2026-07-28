@@ -125,11 +125,11 @@ def _fit_reference(n: int, l: int, n_gaussians: int):
     """
     if n_gaussians < 1:
         raise ValueError("n_gaussians must be >= 1")
-    centre = 1.0 / max(n - 1, 1) ** 2
+    center = 1.0 / max(n - 1, 1) ** 2
     idx = np.arange(n_gaussians) - (n_gaussians - 1) / 2.0
     best = None
     for spread in (1.6, 2.2, 3.0):                 # a few geometric start widths
-        t0 = np.log(centre * spread ** idx)
+        t0 = np.log(center * spread ** idx)
         res = minimize(_neg_overlap_sq, t0, args=(n, l), method="Nelder-Mead",
                        options=dict(xatol=1e-9, fatol=1e-12, maxiter=20000))
         if best is None or res.fun < best.fun:

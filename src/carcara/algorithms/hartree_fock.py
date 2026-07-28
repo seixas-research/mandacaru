@@ -13,7 +13,7 @@ Variational quantum algorithms are almost always run in the **molecular-orbital
 Hartree-Fock ground state, a *stationary* point of the energy.  By Brillouin's
 theorem single-excitation gradients vanish there, so ADAPT-VQE
 (:mod:`carcara.algorithms.adapt_vqe`) selects the physically relevant double
-excitations first and converges to the FCI ground state -- behaviour that does
+excitations first and converges to the FCI ground state -- behavior that does
 *not* hold from an arbitrary (e.g. raw orthogonalized-AO) reference determinant.
 
 :class:`RHF` is a small closed-shell self-consistent-field solver operating on an

@@ -59,7 +59,7 @@ larger sector -- there the empirical estimate is the safe choice.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.special import comb
@@ -149,7 +149,7 @@ def calculate_haar_distribution(d: int, bins: int) -> np.ndarray:
     Integrates the Haar density :math:`P_{\text{Haar}}(F) = (d-1)(1-F)^{d-2}` over
     each of ``bins`` equal-width bins on ``[0, 1]`` using its closed-form CDF
     :math:`\mathrm{CDF}(F) = 1 - (1-F)^{d-1}`, so the returned array is exact and
-    sums to 1 (more accurate than sampling the density at bin centres).
+    sums to 1 (more accurate than sampling the density at bin centers).
     """
     if d < 2:
         raise ValueError(f"Haar distribution needs dimension d >= 2, got {d}")
@@ -361,7 +361,7 @@ def track_adapt_expressivity(adapt_vqe, dim: int | None = None,
                              **run_kwargs):
     """Run an :class:`ADAPTVQE` while tracking expressibility per ADAPT step.
 
-    Returns ``(adapt_result, history)`` where ``history`` is the tracker's list of
+    Returns ``(result, history)`` where ``history`` is the tracker's list of
     :class:`ExpressibilityStep`.  The Haar reference dimension is fixed to
     ``dim`` (or the number-conserving sector inferred from
     ``adapt_vqe.num_particles``).  Extra keyword arguments are forwarded to

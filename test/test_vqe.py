@@ -214,7 +214,7 @@ class TestVQEAsASECalculator:
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
         atoms.calc = VQE(basis="FAO", optimizer="COBYLA", h=0.30, verbose=False)
         energy_ev = atoms.get_total_energy()
-        result = atoms.calc.vqe_result
+        result = atoms.calc.result
         # ASE returns eV; must equal the Ha result converted to eV.
         assert energy_ev == pytest.approx(result.optimal_energy * 27.211386245988,
                                           rel=1e-9)
@@ -276,7 +276,7 @@ class TestVQEProfiling:
         atoms.get_total_energy()
         out = capsys.readouterr().out
         assert "integration:" in out              # integration stage is timed
-        assert atoms.calc.vqe_result.integration_profile is not None
+        assert atoms.calc.result.integration_profile is not None
 
 
 # --- Monkhorst-Pack k-points (requirement: kpts via ASE) ---

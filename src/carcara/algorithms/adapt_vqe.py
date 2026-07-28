@@ -244,7 +244,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         Monkhorst-Pack k-point mesh, resolved with ASE
         (:func:`ase.dft.kpoints.monkhorst_pack`); default ``None`` (a single
         Gamma point).  Accepts a size triple ``(n1, n2, n3)`` or the ASE dict
-        ``{"size": (n1, n2, n3), "gamma": True}`` (``gamma=True`` centres the mesh
+        ``{"size": (n1, n2, n3), "gamma": True}`` (``gamma=True`` centers the mesh
         on Gamma).  The real-space engine solves a Gamma-point (molecular)
         problem, so a denser mesh is generated and exposed on :attr:`kpoints` but
         raises ``NotImplementedError`` at run time.
@@ -329,7 +329,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     """
 
     _GRADIENTS = ("finite_difference", "parameter-shift")
-    _result_attr = "adapt_result"
     _default_sparse = "auto"
 
     def __init__(self,

@@ -239,8 +239,8 @@ class TestHamiltonianAndDrivers:
         """H2 with pseudopotentials: two valence electrons, four qubits."""
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = VQE(basis="FAO", grid=grid, pseudopotentials=True,
-                         verbose=False)
+        atoms.calc = QuantumCalculator(method="vqe", basis="FAO", grid=grid,
+                                       pseudopotentials=True, verbose=False)
         energy = atoms.get_potential_energy()
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 4
@@ -254,8 +254,8 @@ class TestPseudopotentialForces:
     def test_forces_are_finite_and_balanced(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = QuantumCalculator(driver="vqe", basis="FAO", grid=grid,
-                                       pseudopotentials=True)
+        atoms.calc = QuantumCalculator(method="vqe", basis="FAO", grid=grid,
+                                       pseudopotentials=True, verbose=False)
         forces = atoms.get_forces()
         assert np.isfinite(forces).all()
         # Newton's third law on a two-atom molecule.
@@ -264,8 +264,8 @@ class TestPseudopotentialForces:
     def test_force_breakdown_is_available(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = QuantumCalculator(driver="vqe", basis="FAO", grid=grid,
-                                       pseudopotentials=True)
+        atoms.calc = QuantumCalculator(method="vqe", basis="FAO", grid=grid,
+                                       pseudopotentials=True, verbose=False)
         atoms.get_forces()
         local, pulay = atoms.calc.get_force_breakdown()
         assert local.shape == (2, 3) and pulay.shape == (2, 3)
@@ -285,9 +285,9 @@ class TestGridPathologyIsCured:
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=spacing)
         atoms = lone_atom("O", grid)
         atoms.calc = QuantumCalculator(
-            driver="adapt-vqe", basis="FAO", grid=grid,
+            method="adapt-vqe", basis="FAO", grid=grid,
             pseudopotentials=pseudopotentials,
-            frozen_core=not pseudopotentials, pool="qeb",
+            frozen_core=not pseudopotentials, pool="qeb", verbose=False,
             max_iterations=6, gradient_tolerance=1e-3, profile=False)
         atoms.get_potential_energy()
         return float(np.abs(atoms.get_forces()).max())
@@ -357,7 +357,7 @@ class TestPseudoBasisSize:
         np.testing.assert_allclose(first.radial(oxygen.r), expected, atol=1e-8)
 
 
-class TestBasisArgumentIsHonoured:
+class TestBasisArgumentIsHonored:
     """Silently substituting a different basis is worse than refusing."""
 
     def test_size_is_forwarded(self):

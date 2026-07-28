@@ -77,7 +77,7 @@ def h2_cache(tmp_path, h2_atoms):
     h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4, verbose=False,
                              max_iterations=4, save_hamiltonian=path)
     h2_atoms.get_total_energy()
-    return path, h2_atoms.calc.adapt_result.optimal_energy
+    return path, h2_atoms.calc.result.optimal_energy
 
 
 # --------------------------------------------------------------------------- #
@@ -355,7 +355,7 @@ class TestDriverFileFormats:
                                  verbose=False, max_iterations=4,
                                  save_hamiltonian=path, hamiltonian_format=fmt)
         h2_atoms.get_total_energy()
-        built = h2_atoms.calc.adapt_result.optimal_energy
+        built = h2_atoms.calc.result.optimal_energy
 
         assert detect_format(path) == fmt
         loaded = ADAPTVQE(pool="fermionic", load_hamiltonian=path,

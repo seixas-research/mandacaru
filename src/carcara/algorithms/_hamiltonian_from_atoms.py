@@ -17,7 +17,7 @@ along the way.
 
 **Placement is irrelevant.**  carcará solves an *isolated-molecule* (Gamma-point,
 open-boundary) electronic-structure problem: the cell only sets the size of the
-real-space box.  The box is centred on the molecule -- and, when the geometry is
+real-space box.  The box is centered on the molecule -- and, when the geometry is
 periodic (``pbc``), the molecule is first made whole under the minimum-image
 convention (ASE :func:`~ase.geometry.find_mic`) -- so it does not matter *where*
 in the cell the atoms sit, nor whether the molecule straddles a cell face.  This
@@ -53,7 +53,7 @@ def grid_from_cell(atoms, h: float, center=None):
     """Build the real-space integration grid from the ASE ``atoms.cell``.
 
     The cell's lattice vectors fix the extent (and shape) of the box and ``h``
-    (Angstrom) sets the uniform node spacing.  The box is **centred on the
+    (Angstrom) sets the uniform node spacing.  The box is **centered on the
     molecule** (``center``, defaulting to the minimum-image centroid) rather than
     on the cell, so wherever the atoms are placed the orbitals stay inside the
     grid.  The same grid feeds both the one- and two-body integral kernels.
@@ -71,7 +71,7 @@ def grid_from_cell(atoms, h: float, center=None):
             "atoms.set_cell(...)), or pass an explicit `grid=`.  The grid is then "
             f"built from the cell at resolution h={h:g} Angstrom.")
     if center is None:
-        center = coherent_positions(atoms).mean(axis=0)   # centre on the molecule
+        center = coherent_positions(atoms).mean(axis=0)   # center on the molecule
     return Grid(center=center, box_size=0.0, h=h, units="angstrom", cell=cell)
 
 
@@ -213,7 +213,7 @@ def _num_particles(n_el: int, n_unpaired: int, basis) -> tuple[int, int]:
     return ((n_el + n_unpaired) // 2, (n_el - n_unpaired) // 2)
 
 
-#: Basis families whose radial functions the pseudopotential path can honour.
+#: Basis families whose radial functions the pseudopotential path can honor.
 #: ``"PP"`` names the pseudo-atomic family explicitly; ``"NAO"`` is accepted
 #: because the multiple-zeta construction is shared with it.
 _PSEUDO_BASIS_NAMES = ("PP", "PSEUDO", "NAO")
@@ -240,7 +240,7 @@ def _merge_pseudo_basis_options(basis, options):
     if unusable or key not in _PSEUDO_BASIS_NAMES:
         if key in ("FAO",) and not unusable:
             # The historical default: nothing was actually requested, so there
-            # is nothing to honour or refuse.
+            # is nothing to honor or refuse.
             return options
         raise ValueError(
             f"basis {basis!r} cannot be used with pseudopotentials. The "
@@ -319,7 +319,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     integration_profile, context)``, where ``context`` carries the objects a
     *nuclear gradient* needs -- the live
     :class:`~carcara.core.MolecularIntegrals` (basis, grid, nuclei, softening)
-    and ``atom_of_orbital``, which atom each basis function is centred on.  It is
+    and ``atom_of_orbital``, which atom each basis function is centered on.  It is
     ``None`` for the plane-wave family, whose basis does not move with the
     nuclei.
 
@@ -413,7 +413,7 @@ def _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
     num_particles = _num_particles(n_el, n_unpaired, name)
     hamiltonian = pw.molecular_hamiltonian(mo_basis=True, n_electrons=n_el)
-    # No context: the plane-wave basis is not atom-centred, so it contributes
+    # No context: the plane-wave basis is not atom-centered, so it contributes
     # no Pulay forces and the gradient machinery does not apply to it.
     return (hamiltonian, num_particles, pw.n_orbitals,
             pw.integration_profile(), None)
@@ -444,11 +444,11 @@ def monkhorst_pack_kpts(kpts):
     * ``None`` or ``(1, 1, 1)`` -- a single Gamma point;
     * a triple ``(n1, n2, n3)`` -- a Monkhorst-Pack grid;
     * a dict ``{"size": (n1, n2, n3), "gamma": True}`` -- the ASE spelling, where
-      ``gamma=True`` shifts the mesh so it is Gamma-centred (includes the Gamma
+      ``gamma=True`` shifts the mesh so it is Gamma-centered (includes the Gamma
       point even for even mesh sizes).
 
     Returns ``(size, gamma, mesh)``: the ``(n1, n2, n3)`` size, whether the mesh is
-    Gamma-centred, and the ``(Nk, 3)`` array of fractional k-point coordinates
+    Gamma-centered, and the ``(Nk, 3)`` array of fractional k-point coordinates
     built with :func:`ase.dft.kpoints.monkhorst_pack`.
     """
     from ase.dft.kpoints import monkhorst_pack
@@ -468,7 +468,7 @@ def monkhorst_pack_kpts(kpts):
 
     mesh = monkhorst_pack(size)
     if gamma:
-        # Gamma-centred: shift by 0.5/n on even axes so Gamma is on the mesh.
+        # Gamma-centered: shift by 0.5/n on even axes so Gamma is on the mesh.
         offset = np.array([0.5 / n if n % 2 == 0 else 0.0 for n in size])
         mesh = mesh + offset
     return size, bool(gamma), mesh

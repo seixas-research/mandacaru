@@ -19,7 +19,7 @@ The script runs four stages:
    against a central finite difference of the driver's own energy.  This is the
    only check that proves the gradient is the derivative of the energy.
 2. **Hellmann-Feynman vs Pulay** -- the breakdown, showing that for an
-   atom-centred basis the Pulay term is not a small correction.
+   atom-centered basis the Pulay term is not a small correction.
 3. **H2 relaxation** -- a complete BFGS optimization; the forces converge to
    ~0.1 eV/Angstrom, which is the mechanical proof that energy and gradient are
    consistent.
@@ -68,9 +68,9 @@ def h2(distance: float) -> Atoms:
     return Atoms("H2", positions=[[0, 0, -distance / 2], [0, 0, distance / 2]])
 
 
-def bond_angle(atoms, centre=0, a=1, b=2) -> float:
-    v1 = atoms.positions[a] - atoms.positions[centre]
-    v2 = atoms.positions[b] - atoms.positions[centre]
+def bond_angle(atoms, center=0, a=1, b=2) -> float:
+    v1 = atoms.positions[a] - atoms.positions[center]
+    v2 = atoms.positions[b] - atoms.positions[center]
     cosine = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
     return float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
 
@@ -84,7 +84,7 @@ print("1. Force validation: analytic gradient vs finite difference (H2)")
 print(RULE)
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
-options = dict(driver="vqe", basis="FAO", grid=grid)
+options = dict(method="vqe", basis="FAO", grid=grid, verbose=False)
 
 atoms = h2(0.74)
 atoms.calc = QuantumCalculator(**options)
@@ -154,12 +154,14 @@ print(RULE)
 start = 0.65
 fine_grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.10)
 relaxing = h2(start)
-relaxing.calc = QuantumCalculator(driver="vqe", basis="FAO", grid=fine_grid)
+relaxing.calc = QuantumCalculator(method="vqe", basis="FAO", grid=fine_grid,
+                                  verbose=False)
 BFGS(relaxing, logfile=os.path.join(DATA, "h2_relaxation.log")).run(
     fmax=0.15, steps=40)
 
 initial = h2(start)
-initial.calc = QuantumCalculator(driver="vqe", basis="FAO", grid=fine_grid)
+initial.calc = QuantumCalculator(method="vqe", basis="FAO", grid=fine_grid,
+                                 verbose=False)
 initial_force = float(np.max(np.linalg.norm(initial.get_forces(), axis=1)))
 
 final = float(np.linalg.norm(relaxing.positions[1] - relaxing.positions[0]))
@@ -188,15 +190,16 @@ water = molecule("H2O")
 water_grid = Grid(center=water.get_positions().mean(axis=0), box_size=6.0,
                   h=0.30)
 water.calc = QuantumCalculator(
-    driver="adapt-vqe", basis="FAO", grid=water_grid, frozen_core=True,
-    pool="qeb", max_iterations=12, gradient_tolerance=1e-3, profile=False)
+    method="adapt-vqe", basis="FAO", grid=water_grid, frozen_core=True,
+    pool="qeb", max_iterations=12, gradient_tolerance=1e-3, profile=False,
+    verbose=False)
 
 energy = water.get_potential_energy()
 water_forces = water.get_forces()
 print(f"start geometry: d(O-H) = "
       f"{np.linalg.norm(water.positions[1] - water.positions[0]):.4f} A, "
       f"angle = {bond_angle(water):.2f} deg")
-print(f"active space  : {water.calc.driver.n_qubits} qubits "
+print(f"active space  : {water.calc.n_qubits} qubits "
       f"(O 1s frozen), E = {energy:.4f} eV")
 print(f"\nforces (eV/Angstrom):")
 for symbol, force in zip(water.get_chemical_symbols(), water_forces):
@@ -213,7 +216,7 @@ print("a finite difference of the same energy reproduces it to ~1 %.  It is the"
 print("oxygen 1s cusp being under-resolved by the uniform grid, which puts a")
 print("large spurious gradient on the nucleus.")
 
-# Quantify the grid artefact that bounds any relaxation.
+# Quantify the grid artifact that bounds any relaxation.
 print("\negg-box test -- rigidly translating H2O across the grid:")
 shifts = np.linspace(0.0, water_grid.dx * 0.529177, 4)
 energies = []
@@ -221,8 +224,9 @@ for shift in shifts:
     probe = molecule("H2O")
     probe.set_positions(probe.get_positions() + np.array([0.0, 0.0, shift]))
     probe.calc = QuantumCalculator(
-        driver="adapt-vqe", basis="FAO", grid=water_grid, frozen_core=True,
-        pool="qeb", max_iterations=8, gradient_tolerance=1e-3, profile=False)
+        method="adapt-vqe", basis="FAO", grid=water_grid, frozen_core=True,
+        pool="qeb", max_iterations=8, gradient_tolerance=1e-3, profile=False,
+        verbose=False)
     energies.append(probe.get_potential_energy())
 amplitude = float(np.max(energies) - np.min(energies))
 print(f"  shift (A): {np.round(shifts, 4)}")
@@ -241,7 +245,7 @@ print()
 print("What is *not* yet possible is a physically meaningful H2O relaxation.")
 print(f"A rigid translation costs {amplitude:.2f} eV and the oxygen carries a "
       f"{oxygen_force:.0f} eV/A")
-print("spurious force, so an optimizer would chase discretization artefacts")
+print("spurious force, so an optimizer would chase discretization artifacts")
 print("rather than chemistry.  The blocker is the real-space integral engine's")
 print("treatment of heavy-atom cores, not the force theory: hydrogen-only")
 print("systems (stage 3) relax correctly today.")

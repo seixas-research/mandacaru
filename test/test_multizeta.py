@@ -106,7 +106,7 @@ class TestSplitValence:
         assert norms == sorted(norms, reverse=True)
         assert norms[0] == pytest.approx(1.0, abs=1e-3)
 
-    def test_zeta_count_is_honoured(self, hydrogen_1s):
+    def test_zeta_count_is_honored(self, hydrogen_1s):
         r, radial = hydrogen_1s
         for n_zeta in (1, 2, 3, 4):
             assert len(zeta_tables(r, radial, 1, 0, n_zeta)) == n_zeta

@@ -70,7 +70,7 @@ def main():
     ax.plot(kp, band_path, color="#1f77b4", lw=2, label="1s band")
     ax.plot(km, band_mp, "o", color="#1f77b4", ms=6,
             label="Monkhorst-Pack k-points")
-    ax.axhline(e_fermi, ls="--", color="grey", lw=1,
+    ax.axhline(e_fermi, ls="--", color="gray", lw=1,
                label=f"Fermi level ({e_fermi:.1f} eV)")
 
     ax.set_xticks([-k_boundary, 0.0, k_boundary])

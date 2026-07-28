@@ -73,7 +73,7 @@ class PseudoAtomicOrbital(_RadialTabulated):
     l, m : int
         Angular momentum and magnetic quantum number.
     center : array_like
-        Cartesian centre in ``units``.
+        Cartesian center in ``units``.
     """
 
     def __init__(self, pseudopotential, l: int, m: int, center=None,

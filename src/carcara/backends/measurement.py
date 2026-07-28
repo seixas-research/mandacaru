@@ -28,7 +28,7 @@ non-trivially, they carry the *same* Pauli.  A QWC set can be measured by a
 single circuit: rotate each qubit once into the basis its group prescribes,
 measure everything, and read every term's expectation value out of the same
 bit-strings.  :func:`qubit_wise_commuting_groups` builds those groups with a
-greedy largest-first colouring, typically cutting the circuit count by one to
+greedy largest-first coloring, typically cutting the circuit count by one to
 two orders of magnitude.
 
 This module is deliberately provider-independent -- it only produces *basis
@@ -90,7 +90,7 @@ def qubit_wise_commuting_groups(hamiltonian: PauliSum,
     which needs no measurement and is added to the energy as a constant.
 
     The partition is greedy, largest-coefficient-first (so the terms that
-    dominate the energy land in the earliest, largest groups).  Greedy colouring
+    dominate the energy land in the earliest, largest groups).  Greedy coloring
     is not optimal -- finding the minimum number of groups is NP-hard -- but it
     is fast and close enough in practice.
     """

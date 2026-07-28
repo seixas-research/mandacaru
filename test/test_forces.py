@@ -58,7 +58,7 @@ def run_vqe(atoms, grid):
     work.calc = VQE(basis="FAO", grid=grid, verbose=False)
     work.get_potential_energy()
     driver = work.calc
-    psi = driver.ansatz.state(driver.vqe_result.optimal_parameters)
+    psi = driver.ansatz.state(driver.result.optimal_parameters)
     return driver, psi
 
 
@@ -106,7 +106,7 @@ class TestReducedDensityMatrices:
         h_so, g_so = spin_block_integrals(rhf.h_mo, rhf.eri_mo)
         energy = (electronic_energy(gamma, gamma2, h_so, g_so)
                   + integrals.nuclear_repulsion)
-        assert energy == pytest.approx(driver.vqe_result.optimal_energy,
+        assert energy == pytest.approx(driver.result.optimal_energy,
                                        abs=1e-10)
 
 
@@ -138,7 +138,7 @@ class TestJaxEnergyLayer:
             S, h, eri, gamma, gamma2, n_electrons=2,
             nuclear_repulsion=integrals.nuclear_repulsion)
         assert float(energy) == pytest.approx(
-            driver.vqe_result.optimal_energy, abs=1e-10)
+            driver.result.optimal_energy, abs=1e-10)
 
     def test_dE_dh_is_the_ao_density_matrix(self, fixed_grid):
         driver, psi = run_vqe(h2(0.74), fixed_grid)
@@ -186,7 +186,7 @@ def driver_energy(atoms, grid) -> float:
     work = atoms.copy()
     work.calc = VQE(basis="FAO", grid=grid, verbose=False)
     work.get_potential_energy()
-    return work.calc.vqe_result.optimal_energy
+    return work.calc.result.optimal_energy
 
 
 @needs_jax
@@ -279,7 +279,7 @@ def isolated_atom_force(symbol, n_electrons, spacing, box=5.0, offset=0.37,
 
     The atom is deliberately placed ``offset`` grid steps away from a node, so
     the test probes a generic sub-grid position rather than a symmetric one that
-    would cancel the artefact by luck.
+    would cancel the artifact by luck.
     """
     from carcara.algorithms.forces import (hellmann_feynman_gradient,
                                            orbital_gradients)
@@ -323,7 +323,7 @@ class TestIsolatedAtom:
     """
 
     def test_light_atom_is_far_better_than_a_heavy_one(self):
-        """The artefact grows steeply with Z -- the core is the culprit.
+        """The artifact grows steeply with Z -- the core is the culprit.
 
         Helium's 1s length scale (a0/Z = 0.26 A) is within reach of a practical
         grid; oxygen's (0.066 A) is not, and the spurious force is orders of
@@ -369,7 +369,7 @@ class TestIsolatedAtom:
 
         With a *faithful* (analytic) density gradient the by-parts form is no
         better than the standard one.  Its apparent advantage when the density
-        gradient is finite-differenced is a smoothing artefact across the nuclear
+        gradient is finite-differenced is a smoothing artifact across the nuclear
         cusp, not accuracy -- see `hellmann_feynman_gradient`.
         """
         from carcara.algorithms.forces import orbital_gradients
@@ -379,7 +379,7 @@ class TestIsolatedAtom:
                                        use_analytic_density_gradient=True)
         assert faithful > 0.5 * standard, (
             "by-parts with an analytic density gradient unexpectedly fixed the "
-            f"heavy-atom artefact ({standard:.0f} -> {faithful:.0f}); if real, "
+            f"heavy-atom artifact ({standard:.0f} -> {faithful:.0f}); if real, "
             "update the guidance in forces.py and the LaTeX note")
 
     def test_unknown_form_rejected(self):
@@ -435,8 +435,8 @@ class TestByPartsMode:
 
     def test_calculator_exposes_the_option(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(driver="vqe", basis="FAO",
-                                       grid=fixed_grid,
+        atoms.calc = QuantumCalculator(method="vqe", basis="FAO",
+                                       grid=fixed_grid, verbose=False,
                                        hellmann_feynman="by-parts")
         forces = atoms.get_forces()
         assert atoms.calc.force_result.details["hellmann_feynman"] == "by-parts"
@@ -450,43 +450,45 @@ class TestByPartsMode:
 @needs_jax
 class TestQuantumCalculator:
     def test_implements_energy_and_forces(self):
-        calc = QuantumCalculator(driver="vqe", basis="FAO", h=SPACING)
+        calc = QuantumCalculator(method="vqe", basis="FAO", h=SPACING,
+                                 verbose=False)
         assert "energy" in calc.implemented_properties
         assert "forces" in calc.implemented_properties
 
     def test_get_forces_matches_the_driver(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(driver="vqe", basis="FAO",
-                                       grid=fixed_grid)
+        atoms.calc = QuantumCalculator(method="vqe", basis="FAO",
+                                       grid=fixed_grid, verbose=False)
         forces = atoms.get_forces()
         expected = analytic_forces(h2(0.74), fixed_grid).forces
         assert np.allclose(forces, expected, atol=1e-8)
 
     def test_energy_matches_the_bare_driver(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(driver="vqe", basis="FAO",
-                                       grid=fixed_grid)
+        atoms.calc = QuantumCalculator(method="vqe", basis="FAO",
+                                       grid=fixed_grid, verbose=False)
         energy = atoms.get_potential_energy()
         reference = driver_energy(h2(0.74), fixed_grid) * HARTREE_TO_EV
         assert energy == pytest.approx(reference, abs=1e-8)
 
     def test_grid_is_frozen_across_geometries(self):
         """The grid must not follow the atoms, or forces stop matching energies."""
-        calc = QuantumCalculator(driver="vqe", basis="FAO", h=SPACING,
-                                 vacuum=2.5)
+        calc = QuantumCalculator(method="vqe", basis="FAO", h=SPACING,
+                                 vacuum=2.5, verbose=False)
         atoms = h2(0.74)
         atoms.calc = calc
-        atoms.get_potential_energy()
+        atoms.get_forces()
         first = calc._grid
+        assert first is not None
 
         atoms.set_positions(atoms.get_positions() + 0.3)
-        atoms.get_potential_energy()
+        atoms.get_forces()
         assert calc._grid is first
 
     def test_force_breakdown_is_exposed(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(driver="vqe", basis="FAO",
-                                       grid=fixed_grid)
+        atoms.calc = QuantumCalculator(method="vqe", basis="FAO",
+                                       grid=fixed_grid, verbose=False)
         atoms.get_forces()
         hf, pulay = atoms.calc.get_force_breakdown()
         assert hf.shape == (2, 3) and pulay.shape == (2, 3)
@@ -494,28 +496,31 @@ class TestQuantumCalculator:
 
     def test_adapt_vqe_driver_also_works(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(driver="adapt-vqe", basis="FAO",
-                                       grid=fixed_grid, pool="qeb")
+        atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO",
+                                       grid=fixed_grid, pool="qeb",
+                                       verbose=False)
         forces = atoms.get_forces()
         # Same physics as the fixed-ansatz driver: H2 UCCSD and ADAPT both
         # reach FCI in this two-orbital space.
         expected = analytic_forces(h2(0.74), fixed_grid).forces
         assert np.allclose(forces, expected, atol=2e-3)
 
-    def test_unknown_driver_rejected(self):
-        with pytest.raises(ValueError, match="unknown driver"):
-            QuantumCalculator(driver="qaoa")
+    def test_unknown_method_rejected(self):
+        with pytest.raises(ValueError, match="unknown method"):
+            QuantumCalculator(method="qaoa")
 
     def test_plane_wave_basis_is_rejected(self):
         """A plane-wave basis does not move with the nuclei: no Pulay machinery."""
         from carcara.units import BOHR_TO_ANGSTROM
 
         edge = 4 * BOHR_TO_ANGSTROM
-        centre = edge / 2
-        atoms = Atoms("H2", positions=[[centre, centre, centre - 0.37],
-                                       [centre, centre, centre + 0.37]],
+        center = edge / 2
+        atoms = Atoms("H2", positions=[[center, center, center - 0.37],
+                                       [center, center, center + 0.37]],
                       cell=np.diag([edge, edge, edge]), pbc=True)
-        # Rejected at construction, before any expensive variational run.
-        with pytest.raises(NotImplementedError, match="atom-centred"):
-            QuantumCalculator(driver="vqe",
-                              basis={"name": "PW", "energy_cutoff": 60})
+        # Rejected as soon as forces are requested, before any expensive
+        # variational run (the energy path stays open for plane waves).
+        atoms.calc = QuantumCalculator(method="vqe", verbose=False,
+                                       basis={"name": "PW", "energy_cutoff": 60})
+        with pytest.raises(NotImplementedError, match="atom-centered"):
+            atoms.get_forces()

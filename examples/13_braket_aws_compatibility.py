@@ -30,13 +30,13 @@ What it checks
 
 Running on real hardware
 ------------------------
-Only the device changes -- the driver API does not::
+Only the device changes -- the calculator API does not::
 
-    from carcara.algorithms import ADAPTVQE
+    from carcara.algorithms import QuantumCalculator
 
-    atoms.calc = ADAPTVQE(pool="qeb", basis="FAO",
-                          device="braket-ionq-aria",   # or the full ARN
-                          shots=8192)
+    atoms.calc = QuantumCalculator(method="adapt-vqe", pool="qeb", basis="FAO",
+                                   device="braket-ionq-aria",  # or the full ARN
+                                   shots=8192)
     atoms.get_total_energy()
 
 That needs configured AWS credentials (``aws configure``) and bills your
@@ -47,8 +47,8 @@ Known limitation (stated plainly)
 The **energy evaluation** runs on hardware, but ADAPT-VQE's *operator screening*
 gradient is still computed classically from the state vector.  A fully
 hardware-native ADAPT loop would have to measure each pool gradient too; that is
-not implemented yet.  For a fixed ansatz (:class:`~carcara.algorithms.VQE`) the
-whole optimization is hardware-native today.
+not implemented yet.  For a fixed ansatz (``method="vqe"``) the whole
+optimization is hardware-native today.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 from carcara.backends.hardware import (describe_devices, device_arn,
                                        requires_shots)
 from carcara.backends.measurement import (qubit_wise_commuting_groups,
@@ -90,9 +90,10 @@ if not provider_available("braket"):
 
 atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
               cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-atoms.calc = ADAPTVQE(pool="qeb", basis="FAO", h=0.35, verbose=False,
-                      max_iterations=1,
-                      save_hamiltonian=os.path.join(DATA, "h2_braket.parquet"))
+atoms.calc = QuantumCalculator(method="adapt-vqe", pool="qeb", basis="FAO",
+                               h=0.35, verbose=False, max_iterations=1,
+                               save_hamiltonian=os.path.join(
+                                   DATA, "h2_braket.parquet"))
 atoms.get_total_energy()
 
 hamiltonian = atoms.calc.hamiltonian

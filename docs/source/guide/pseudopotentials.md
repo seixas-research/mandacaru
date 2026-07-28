@@ -1,7 +1,8 @@
 # Pseudopotentials
 
 ```python
-atoms.calc = ADAPTVQE(basis="FAO", pseudopotentials=True, h=0.15)
+atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO",
+                               pseudopotentials=True, h=0.15)
 ```
 
 That switch turns an all-electron calculation into a valence-only one: the core
@@ -96,7 +97,8 @@ with an unrelated all-electron radial function would be inconsistent, so an
 all-electron family is **refused** rather than silently ignored:
 
 ```python
-ADAPTVQE(basis="6-31G(d)", pseudopotentials=True)   # ValueError
+QuantumCalculator(method="adapt-vqe", basis="6-31G(d)",
+                  pseudopotentials=True)   # ValueError
 ```
 
 What you *can* vary is the size hierarchy, which refines that pseudo-orbital
@@ -105,7 +107,8 @@ pseudized function, and the polarization shell is split from the outermost
 channel:
 
 ```python
-ADAPTVQE(basis={"name": "PP", "size": "DZP"}, pseudopotentials=True)
+QuantumCalculator(method="adapt-vqe", basis={"name": "PP", "size": "DZP"},
+                  pseudopotentials=True)
 ```
 
 Sizes are the same names as for [the NAO family](basis_sets.md). The default

@@ -80,7 +80,7 @@ class TestSoftmax:
         p = softmax_selection_probabilities(np.array([-0.9, 0.1]), 0.05)
         assert np.argmax(p) == 0
 
-    def test_favours_larger_gradient(self):
+    def test_favors_larger_gradient(self):
         p = softmax_selection_probabilities(np.array([0.3, 0.6]), 1.0)
         assert p[1] > p[0]                          # larger |g| -> larger P
 
@@ -179,7 +179,7 @@ class TestVASQE:
                            profile=False, gradient_tolerance=1e-4,
                            max_iterations=10)
         atoms.get_potential_energy()
-        assert isinstance(atoms.calc.vasqe_result, VASQEResult)
+        assert isinstance(atoms.calc.result, VASQEResult)
 
 
 # --------------------------------------------------------------------------- #
@@ -216,7 +216,7 @@ class TestVASQEExcitedStates:
 
 
 # --------------------------------------------------------------------------- #
-# Selection hook is behaviour-preserving for ADAPTVQE.
+# Selection hook is behavior-preserving for ADAPTVQE.
 # --------------------------------------------------------------------------- #
 
 def test_schedule_names_exported():

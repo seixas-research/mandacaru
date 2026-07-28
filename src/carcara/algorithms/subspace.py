@@ -43,7 +43,6 @@ from itertools import combinations
 
 import numpy as np
 
-from ase.calculators.calculator import all_changes
 
 from ..circuits import CircuitMetrics
 from ..core.mapping import reference_qubit_bits
@@ -230,8 +229,8 @@ class SubspaceMixin:
     """Shared SSVQE scaffolding: one unitary over several orthogonal references.
 
     Owns the outer :meth:`run` (weights, reference determinants, timings, banner,
-    sort, result assembly) and the ASE ``calculate`` that also stores the spectrum
-    on :attr:`subspace_result`.  A concrete driver supplies the parts that differ:
+    sort, result assembly); as an ASE calculator the full spectrum is stored on
+    :attr:`result`.  A concrete driver supplies the parts that differ:
 
     * :meth:`_reference_occupied` -- the reference determinant's occupied orbitals;
     * :meth:`_subspace_optimize` -- the actual optimization (fixed ansatz or grow);
@@ -244,13 +243,6 @@ class SubspaceMixin:
             raise ValueError("num_states must be >= 1")
         self.num_states = int(num_states)
         self._weights_spec = weights
-
-    # -- ASE calculator: also expose the spectrum on `subspace_result` ---- #
-
-    def calculate(self, atoms=None, properties=("energy",),
-                  system_changes=all_changes):
-        super().calculate(atoms, properties, system_changes)
-        self.subspace_result = getattr(self, self._result_attr)
 
     # -- references ------------------------------------------------------- #
 
@@ -339,7 +331,7 @@ class SubspaceVQE(SubspaceMixin, VQE):
     particle-number sector; the ansatz must supply ``evolve(theta, references)``
     (as :class:`~carcara.circuits.UCCSD` does) so one shared unitary can act on
     all of them.  As an ASE calculator the reported energy is the ground state;
-    the full spectrum is on :attr:`subspace_result`.
+    the full spectrum is on :attr:`result`.
     """
 
     def __init__(self, hamiltonian=None, ansatz=None, *, num_states: int = 2,
@@ -426,7 +418,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
     re-optimization minimizes the weighted energy.
 
     As an ASE calculator the reported energy is the ground state; the spectrum is
-    on :attr:`subspace_result`.
+    on :attr:`result`.
     """
 
     def __init__(self, hamiltonian=None, pool="fermionic", *,

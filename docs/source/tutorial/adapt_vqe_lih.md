@@ -12,18 +12,19 @@ $$g_i = \langle\psi^{(n)}| [H, A_i] |\psi^{(n)}\rangle$$
 
 and grows the ansatz dynamically.
 
-Here, we attach `ADAPTVQE` as an ASE calculator to solve for the ground state of $LiH$ using the hardware-efficient Coupled-Exchange Operator (`"ceo"`) pool:
+Here, we attach a `QuantumCalculator` with `method="adapt-vqe"` as an ASE calculator to solve for the ground state of $LiH$ using the hardware-efficient Coupled-Exchange Operator (`"ceo"`) pool:
 
 ```python
 from ase import Atoms
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 
 # Setup LiH molecule in a cell
 atoms = Atoms("LiH", positions=[[4.0, 4.0, 3.20], [4.0, 4.0, 4.80]],
               cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
-# Attach ADAPTVQE calculator
-atoms.calc = ADAPTVQE(
+# Attach the calculator, selecting the ADAPT-VQE method
+atoms.calc = QuantumCalculator(
+    method="adapt-vqe",
     pool="ceo",
     basis="FAO",
     mapping="jordan_wigner",
@@ -36,7 +37,7 @@ atoms.calc = ADAPTVQE(
 
 # Run calculation (energy returned in eV)
 energy_ev = atoms.get_total_energy()
-result = atoms.calc.adapt_result
+result = atoms.calc.result
 
 print(f"ADAPT-VQE Converged: {result.converged}")
 print(f"Optimal Energy: {result.optimal_energy:.8f} Ha")
@@ -60,7 +61,7 @@ We can run the comparative analysis across these pools on $H_2$:
 
 ```python
 from ase import Atoms
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 from carcara.optimizers import Optimizer
 
 # H2 molecule
@@ -71,7 +72,8 @@ pools = ["fermionic", "qubit", "qeb", "ceo"]
 results = {}
 
 for name in pools:
-    atoms.calc = ADAPTVQE(
+    atoms.calc = QuantumCalculator(
+        method="adapt-vqe",
         pool=name,
         basis="FAO",
         h=0.20,
@@ -81,7 +83,7 @@ for name in pools:
         verbose=False
     )
     atoms.get_total_energy()
-    results[name] = atoms.calc.adapt_result
+    results[name] = atoms.calc.result
 
 # Print comparison
 print(f"{'Pool':12s} | {'Energy (Ha)':>12s} | {'CNOT Count':>10s} | {'Depth':>8s}")

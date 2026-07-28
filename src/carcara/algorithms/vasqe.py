@@ -164,8 +164,6 @@ class VASQE(ADAPTVQE):
     deflation, and :class:`SubspaceVASQE`) inherit the stochastic selection.
     """
 
-    _result_attr = "vasqe_result"
-
     def __init__(self, hamiltonian=None, pool="fermionic", *,
                  temperature: float = 1.0, final_temperature: float = 1e-2,
                  schedule: str = "constant", annealing_steps: int | None = None,

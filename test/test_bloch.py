@@ -6,13 +6,12 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Bloch / k-point variational drivers -- band structure and total energy.
+"""Bloch / k-point variational calculator -- band structure and total energy.
 
-Covers the shared :class:`BlochVariationalDriver` base and its three concrete
-crystal drivers (:class:`BlochVQE`, :class:`BlochADAPTVQE`, :class:`BlochVASQE`):
-the single-particle Bloch Hamiltonian / band structure (solver-independent, on the
-base), and the total energy using all k-points via the Born-von Karman supercell
-equivalence (per molecular solver).
+Covers :class:`BlochCalculator` for every variational ``method`` (``"vqe"``,
+``"adapt-vqe"``, ``"vasqe"``): the single-particle Bloch Hamiltonian / band
+structure (method-independent), and the total energy using all k-points via the
+Born-von Karman supercell equivalence (per method).
 """
 
 import numpy as np
@@ -22,19 +21,16 @@ from ase import Atoms
 from carcara.algorithms import (
     ADAPTVQEResult,
     BandStructure,
-    BlochADAPTVQE,
-    BlochVASQE,
-    BlochVQE,
-    BlochVariationalDriver,
+    BlochCalculator,
     VASQEResult,
     VQEResult,
 )
 from carcara.optimizers import Optimizer
 
-BLOCH_DRIVERS = [BlochVQE, BlochADAPTVQE, BlochVASQE]
+METHODS = ["vqe", "adapt-vqe", "vasqe"]
 
 
-def _chain(cls, **kwargs):
+def _chain(method="vqe", **kwargs):
     """1-D hydrogen chain, one atom per cell (fast, coarse settings)."""
     atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                   cell=[[1.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
@@ -44,69 +40,61 @@ def _chain(cls, **kwargs):
     kwargs.setdefault("n_cells", 3)
     kwargs.setdefault("n_images", 5)
     kwargs.setdefault("h", 0.30)
-    return cls(atoms, **kwargs)
+    return BlochCalculator(atoms, method=method, **kwargs)
 
 
 @pytest.fixture(scope="module")
 def band_driver():
-    # The band structure is solver-independent, so any concrete driver serves.
-    return _chain(BlochVQE)
+    # The band structure is method-independent, so any method serves.
+    return _chain("vqe")
 
 
-# total_energy kwargs differ per calculator (VQE has no adaptive controls).
+# total_energy kwargs differ per method (VQE has no adaptive controls).
 _TOTAL_ENERGY_KWARGS = {
-    BlochVQE: dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000)),
-    BlochADAPTVQE: dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
-                        max_iterations=6, gradient_tolerance=1e-3),
-    BlochVASQE: dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
-                     temperature=1.0, max_iterations=6, gradient_tolerance=1e-3),
+    "vqe": dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000)),
+    "adapt-vqe": dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                      max_iterations=6, gradient_tolerance=1e-3),
+    "vasqe": dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                  temperature=1.0, max_iterations=6, gradient_tolerance=1e-3),
 }
-_RESULT_TYPES = {BlochVQE: VQEResult, BlochADAPTVQE: ADAPTVQEResult,
-                 BlochVASQE: VASQEResult}
+_RESULT_TYPES = {"vqe": VQEResult, "adapt-vqe": ADAPTVQEResult,
+                 "vasqe": VASQEResult}
 
 
 # --------------------------------------------------------------------------- #
 # Construction / geometry.
 # --------------------------------------------------------------------------- #
 class TestConstruction:
-    @pytest.mark.parametrize("cls", BLOCH_DRIVERS)
-    def test_dimension_and_bands(self, cls):
-        d = _chain(cls)
+    @pytest.mark.parametrize("method", METHODS)
+    def test_dimension_and_bands(self, method):
+        d = _chain(method)
         assert d.dimension == 1
         assert d.n_bands == 1                       # one FAO 1s per cell
 
-    @pytest.mark.parametrize("cls", BLOCH_DRIVERS)
-    def test_requires_a_periodic_direction(self, cls):
+    @pytest.mark.parametrize("method", METHODS)
+    def test_requires_a_periodic_direction(self, method):
         molecule = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
                          cell=[10, 10, 10], pbc=False)
         with pytest.raises(ValueError):
-            cls(molecule)
+            BlochCalculator(molecule, method=method)
+
+    def test_unknown_method_rejected(self):
+        atoms = Atoms("H", positions=[[0, 0, 0]],
+                      cell=[[1.0, 0, 0], [0, 10, 0], [0, 0, 10]],
+                      pbc=[True, False, False])
+        with pytest.raises(ValueError, match="unknown method"):
+            BlochCalculator(atoms, method="qaoa")
 
     def test_n_images_at_least_n_cells(self):
         atoms = Atoms("H", positions=[[0, 0, 0]],
                       cell=[[1.0, 0, 0], [0, 10, 0], [0, 0, 10]],
                       pbc=[True, False, False])
-        b = BlochVQE(atoms, n_cells=6, n_images=2)
+        b = BlochCalculator(atoms, n_cells=6, n_images=2)
         assert b.n_images >= b.n_cells
 
 
 # --------------------------------------------------------------------------- #
-# Abstract base.
-# --------------------------------------------------------------------------- #
-class TestAbstractBase:
-    def test_base_total_energy_is_abstract(self):
-        driver = _chain(BlochVariationalDriver)
-        with pytest.raises(NotImplementedError):
-            driver.total_energy((2, 1, 1))
-
-    def test_base_still_does_bands(self):
-        # The band structure lives on the base and needs no calculator.
-        driver = _chain(BlochVariationalDriver)
-        assert driver.bands([0.0, 0, 0]).shape == (1, 1)
-
-
-# --------------------------------------------------------------------------- #
-# Bloch Hamiltonian and bands (solver-independent).
+# Bloch Hamiltonian and bands (method-independent).
 # --------------------------------------------------------------------------- #
 class TestBands:
     def test_bloch_matrices_hermitian(self, band_driver):
@@ -134,21 +122,21 @@ class TestBands:
         assert bs.x.shape == (10,)
         assert "G" in bs.labels and "X" in bs.labels
 
-    def test_monkhorst_pack_gamma_centred(self, band_driver):
+    def test_monkhorst_pack_gamma_centered(self, band_driver):
         mesh = band_driver.monkhorst_pack((10, 1, 1), gamma=True)
         assert mesh.shape == (10, 3)
         assert np.isclose(np.abs(mesh[:, 0]).min(), 0.0)   # Gamma is on the mesh
 
-    def test_bands_identical_across_drivers(self):
-        # Bands are single-particle: all three drivers must agree exactly.
+    def test_bands_identical_across_methods(self):
+        # Bands are single-particle: every method must agree exactly.
         kpts = np.array([[0, 0, 0], [0.25, 0, 0], [0.5, 0, 0]])
-        ref = _chain(BlochVQE).bands(kpts)
-        for cls in (BlochADAPTVQE, BlochVASQE):
-            np.testing.assert_allclose(_chain(cls).bands(kpts), ref)
+        ref = _chain("vqe").bands(kpts)
+        for method in ("adapt-vqe", "vasqe"):
+            np.testing.assert_allclose(_chain(method).bands(kpts), ref)
 
 
 # --------------------------------------------------------------------------- #
-# Generality: a 2-D crystal.
+# Generality: a 2-D periodic system.
 # --------------------------------------------------------------------------- #
 class TestTwoDimensional:
     @pytest.fixture(scope="class")
@@ -156,7 +144,7 @@ class TestTwoDimensional:
         atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                       cell=[[2.0, 0, 0], [0, 2.0, 0], [0, 0, 10.0]],
                       pbc=[True, True, False])
-        return BlochVQE(atoms, basis="FAO", n_cells=2, n_images=3, h=0.40)
+        return BlochCalculator(atoms, basis="FAO", n_cells=2, n_images=3, h=0.40)
 
     def test_dimension(self, square):
         assert square.dimension == 2
@@ -177,20 +165,21 @@ class TestTotalEnergy:
         sc = band_driver.supercell((4, 1, 1))
         assert len(sc) == 4                                # 4 cells -> 4 atoms
 
-    @pytest.mark.parametrize("cls", BLOCH_DRIVERS)
-    def test_total_energy_lowers_and_per_cell(self, cls):
-        driver = _chain(cls)
-        e_cell, result = driver.total_energy((2, 1, 1), **_TOTAL_ENERGY_KWARGS[cls])
-        assert isinstance(result, _RESULT_TYPES[cls])
+    @pytest.mark.parametrize("method", METHODS)
+    def test_total_energy_lowers_and_per_cell(self, method):
+        driver = _chain(method)
+        e_cell, result = driver.total_energy((2, 1, 1),
+                                             **_TOTAL_ENERGY_KWARGS[method])
+        assert isinstance(result, _RESULT_TYPES[method])
         assert e_cell < 0.0
         # the solver lowered the energy below the Hartree-Fock reference.
         assert result.optimal_energy < result.reference_energy
 
-    def test_all_drivers_agree_on_total_energy(self):
+    def test_all_methods_agree_on_total_energy(self):
         # Same Hamiltonian, different solvers -> same ground-state energy per cell.
         energies = []
-        for cls in BLOCH_DRIVERS:
-            e_cell, _ = _chain(cls).total_energy((2, 1, 1),
-                                                 **_TOTAL_ENERGY_KWARGS[cls])
+        for method in METHODS:
+            e_cell, _ = _chain(method).total_energy(
+                (2, 1, 1), **_TOTAL_ENERGY_KWARGS[method])
             energies.append(e_cell)
         assert max(energies) - min(energies) < 1e-3        # eV

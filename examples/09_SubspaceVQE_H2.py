@@ -14,10 +14,10 @@ reference determinants through one shared unitary ``U(theta)`` and minimizes a
 weighted energy sum ``sum_j w_j <phi_j|U' H U|phi_j>`` with descending weights, so
 ``U|phi_0>`` becomes the ground state, ``U|phi_1>`` the first excited state, etc.
 
-Both :class:`~carcara.algorithms.SubspaceVQE` and
-:class:`~carcara.algorithms.SubspaceADAPTVQE` are ASE calculators; here H2 is
-defined once and a subspace calculator returns the whole low-lying spectrum on
-``subspace_result``.
+Both subspace methods are driven through
+:class:`~carcara.algorithms.QuantumCalculator` (``method="subspace-vqe"`` and
+``method="subspace-adapt-vqe"``); here H2 is defined once and a subspace
+calculator returns the whole low-lying spectrum on ``atoms.calc.result``.
 
 The returned energies are variational **upper bounds** on the exact levels
 (Hylleraas-Undheim): the ground state is recovered exactly, while excited-state
@@ -29,7 +29,7 @@ from __future__ import annotations
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import SubspaceADAPTVQE, SubspaceVQE
+from carcara.algorithms import QuantumCalculator
 
 
 atoms = Atoms("H2",
@@ -52,10 +52,11 @@ def report(name, result, exact):
 
 
 # --- Subspace-search VQE (fixed UCCSD ansatz) --------------------------------
-atoms.calc = SubspaceVQE(basis="FAO", h=0.20, mapping="jordan_wigner",
-                         num_states=2, weights=[2.0, 1.0], verbose=False)
+atoms.calc = QuantumCalculator(method="subspace-vqe", basis="FAO", h=0.20,
+                               mapping="jordan_wigner", num_states=2,
+                               weights=[2.0, 1.0], verbose=False)
 atoms.get_potential_energy()
-ssvqe = atoms.calc.subspace_result
+ssvqe = atoms.calc.result
 
 # Exact eigenvalues of the qubit Hamiltonian for comparison.
 h = atoms.calc.hamiltonian.to_matrix()
@@ -64,11 +65,12 @@ exact = np.sort(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).real)
 report("Subspace-VQE", ssvqe, exact)
 
 # --- Subspace-search ADAPT-VQE (one shared, adaptively grown ansatz) ---------
-atoms.calc = SubspaceADAPTVQE(basis="FAO", h=0.20, pool="fermionic",
-                              num_states=2, verbose=False, profile=False,
-                              gradient_tolerance=1e-4, max_iterations=20)
+atoms.calc = QuantumCalculator(method="subspace-adapt-vqe", basis="FAO", h=0.20,
+                               pool="fermionic", num_states=2, verbose=False,
+                               profile=False, gradient_tolerance=1e-4,
+                               max_iterations=20)
 atoms.get_potential_energy()
-ss_adapt = atoms.calc.subspace_result
+ss_adapt = atoms.calc.result
 report("Subspace-ADAPT-VQE", ss_adapt, exact)
 print(f"  ansatz grew {ss_adapt.num_operators} operator(s)")
 

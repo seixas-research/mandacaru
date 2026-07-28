@@ -20,7 +20,7 @@ with each $\langle P_j\rangle$ estimated from shots in that Pauli's own
 eigenbasis.
 :::
 
-Carcará implements that path. Pass `shots > 0` and the driver switches from
+Carcará implements that path. Pass `shots > 0` and the calculator switches from
 amplitudes to measurements automatically.
 
 ---
@@ -29,25 +29,28 @@ amplitudes to measurements automatically.
 
 ```python
 from ase import Atoms
-from carcara.algorithms import VQE
+from carcara.algorithms import QuantumCalculator
 
 atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
               cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
 
 # Local Braket simulator, shot-based (identical protocol to a QPU).
-atoms.calc = VQE(basis="FAO", h=0.35, device="braket-local", shots=8192)
+atoms.calc = QuantumCalculator(method="vqe", basis="FAO", h=0.35,
+                               device="braket-local", shots=8192)
 atoms.get_total_energy()
 
 # The AWS managed simulator.
-atoms.calc = VQE(basis="FAO", h=0.35, device="braket-sv1", shots=8192)
+atoms.calc = QuantumCalculator(method="vqe", basis="FAO", h=0.35,
+                               device="braket-sv1", shots=8192)
 
 # A real trapped-ion QPU.
-atoms.calc = VQE(basis="FAO", h=0.35, device="braket-ionq-aria", shots=8192)
+atoms.calc = QuantumCalculator(method="vqe", basis="FAO", h=0.35,
+                               device="braket-ionq-aria", shots=8192)
 ```
 
 Naming a Braket device selects the `braket` provider automatically, so
 `backend_provider` is optional. Anything beyond `device=` and `shots=` is
-unchanged — the whole driver API is identical.
+unchanged — the whole calculator API is identical.
 
 :::{warning}
 AWS devices need configured credentials (`aws configure`) and **bill your
@@ -113,15 +116,16 @@ A **raw ARN** is accepted too, so a device released after this version can still
 be named:
 
 ```python
-VQE(basis="FAO", device="arn:aws:braket:eu-west-2::device/qpu/vendor/New-1",
-    shots=4096)
+QuantumCalculator(method="vqe", basis="FAO",
+                  device="arn:aws:braket:eu-west-2::device/qpu/vendor/New-1",
+                  shots=4096)
 ```
 
-Naming a QPU **without** `shots` is refused in the constructor rather than at
-submission time:
+Naming a QPU **without** `shots` is refused up front, when the solver is built,
+rather than at submission time:
 
 ```python
->>> ADAPTVQE(device="braket-ionq-aria")
+>>> QuantumCalculator(method="adapt-vqe", device="braket-ionq-aria").run()
 ValueError: device 'braket-ionq-aria' is real quantum hardware, which cannot
 return a state vector: pass shots > 0 (e.g. shots=8192) so the energy is
 estimated from measurements.
@@ -171,7 +175,7 @@ still computed classically** from the state vector. A fully hardware-native
 adaptive loop would have to measure each pool gradient as well; that is not
 implemented yet.
 
-For a fixed ansatz, {class}`~carcara.algorithms.VQE` is fully hardware-native
+For a fixed ansatz, `method="vqe"` is fully hardware-native
 today — every cost evaluation in the optimization is measured on the device.
 :::
 

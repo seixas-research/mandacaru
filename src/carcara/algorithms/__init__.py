@@ -10,13 +10,7 @@
 
 from .adapt_vqe import ADAPTVQE, ADAPTVQEResult, AdaptIteration
 from .deflation import DeflationMixin, EnergyLevels
-from .bloch import (
-    BandStructure,
-    BlochADAPTVQE,
-    BlochVASQE,
-    BlochVQE,
-    BlochVariationalDriver,
-)
+from .bloch import BandStructure, BlochCalculator
 from .expressivity import (
     ADAPTExpressivityTracker,
     ExpressibilityResult,
@@ -45,7 +39,8 @@ from .vasqe import (
     annealed_temperature,
     softmax_selection_probabilities,
 )
-from .calculator import DRIVERS, QuantumCalculator, resolve_driver
+from .base import format_pauli_sum
+from .calculator import METHODS, QuantumCalculator, resolve_method
 from .forces import ForceResult, hellmann_feynman_gradient, nuclear_gradient
 from .rdm import electronic_energy, one_rdm, particle_number, two_rdm
 from .vqe import VQE, VQEResult
@@ -60,10 +55,7 @@ __all__ = [
     "ADAPTVQE",
     "ADAPTVQEResult",
     "AdaptIteration",
-    "BlochVariationalDriver",
-    "BlochVQE",
-    "BlochADAPTVQE",
-    "BlochVASQE",
+    "BlochCalculator",
     "BandStructure",
     "EnergyLevels",
     "SubspaceVQE",
@@ -88,8 +80,9 @@ __all__ = [
     "plot_fidelity_distribution",
     "plot_expressivity_growth",
     "QuantumCalculator",
-    "DRIVERS",
-    "resolve_driver",
+    "METHODS",
+    "resolve_method",
+    "format_pauli_sum",
     "nuclear_gradient",
     "hellmann_feynman_gradient",
     "ForceResult",

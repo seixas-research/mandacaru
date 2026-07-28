@@ -11,7 +11,8 @@
 Molecular oxygen has a **triplet** (spin-polarized) ground state -- two unpaired
 electrons in the degenerate pi* orbitals.  That initial spin state is set the ASE
 way, through the atoms' **initial magnetic moments** (``magmoms=[1, 1]`` -> a
-total moment of 2, i.e. two unpaired electrons); the ADAPT-VQE calculator reads
+total moment of 2, i.e. two unpaired electrons); the
+:class:`~carcara.algorithms.QuantumCalculator` (``method="adapt-vqe"``) reads
 it and builds the reference with ``n_alpha - n_beta = 2`` (see
 :func:`carcara.algorithms._hamiltonian_from_atoms.resolve_num_unpaired`).  The
 grown ansatz then conserves ``S_z``, so the whole simulation stays in the triplet
@@ -38,7 +39,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 from carcara.units import from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
@@ -66,7 +67,8 @@ atoms = Atoms("O2",
               pbc=True,
               magmoms=[1.0, 1.0])                 # two unpaired electrons -> triplet
 
-atoms.calc = ADAPTVQE(
+atoms.calc = QuantumCalculator(
+              method="adapt-vqe",
               pool="fermionic",
               basis={"name": "FAO"},
               mapping="jordan_wigner",
@@ -78,7 +80,7 @@ atoms.calc = ADAPTVQE(
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)
-result = atoms.calc.adapt_result
+result = atoms.calc.result
 energy_ha = result.optimal_energy
 na, nb = atoms.calc.num_particles
 

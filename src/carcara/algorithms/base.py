@@ -130,7 +130,7 @@ class VariationalDriver(Calculator):
         core electrons are removed, the basis becomes the smooth pseudo-atomic
         orbitals, and the singular :math:`-Z/r` is replaced by a bounded local
         channel plus Kleinman-Bylander projectors.  It is the cure for the
-        heavy-atom grid artefacts documented in
+        heavy-atom grid artifacts documented in
         :mod:`carcara.algorithms.forces`, and it shrinks the qubit count as a
         side effect.  Incompatible with ``frozen_core`` (which it subsumes).
     """
@@ -138,8 +138,6 @@ class VariationalDriver(Calculator):
     implemented_properties = ["energy", "free_energy"]
     _OPTIMIZERS = NAMED_OPTIMIZERS
 
-    #: Attribute name the ASE hook stores the run result under (``vqe_result`` ...).
-    _result_attr = "result"
     #: Default ``sparse`` policy (``False`` dense; ``"auto"`` for adaptive drivers).
     _default_sparse = False
 
@@ -231,6 +229,8 @@ class VariationalDriver(Calculator):
         self._integration_profile = None
         self._gradient_context = None
         self._configured = False
+        #: Result of the most recent run (set by :meth:`run` / the ASE hook).
+        self.result = None
         # True when a Hamiltonian was supplied at construction (direct mode); the
         # ASE hook then never rebuilds it.  In calculator mode it stays False and
         # the Hamiltonian is (re)built from the geometry on each ``calculate``.
@@ -249,11 +249,11 @@ class VariationalDriver(Calculator):
 
     def _kpts_label(self) -> str:
         n1, n2, n3 = self.kpts
-        centred = ", Gamma-centred" if self.kpts_gamma else ""
+        centered = ", Gamma-centered" if self.kpts_gamma else ""
         if len(self.kpoints) == 1:
             return f"Gamma ({n1}x{n2}x{n3} Monkhorst-Pack)"
         return (f"{len(self.kpoints)} k-points ({n1}x{n2}x{n3} "
-                f"Monkhorst-Pack{centred})")
+                f"Monkhorst-Pack{centered})")
 
     # -- Hamiltonian materialization -------------------------------------- #
 
@@ -395,7 +395,7 @@ class VariationalDriver(Calculator):
     # -- optimization policy (quenching) ---------------------------------- #
 
     def _optimize_grown(self, cost, previous_parameters) -> OptimizeResult:
-        """Optimize after appending one new parameter, honouring :attr:`quenching`.
+        """Optimize after appending one new parameter, honoring :attr:`quenching`.
 
         ``quenching=True`` (default) hands **all** parameters to the classical
         optimizer, warm-started from the previous optimum with the new angle at
@@ -425,7 +425,7 @@ class VariationalDriver(Calculator):
                               message=result.message)
 
     def _optimize_all(self, cost, x0) -> OptimizeResult:
-        """Optimize a fixed-size parameter vector, honouring :attr:`quenching`.
+        """Optimize a fixed-size parameter vector, honoring :attr:`quenching`.
 
         ``quenching=True`` (default) is a single joint minimization over every
         parameter.  ``quenching=False`` sweeps the parameters one at a time in
@@ -496,7 +496,7 @@ class VariationalDriver(Calculator):
         In calculator mode the Hamiltonian is (re)built from the current geometry
         each call, so energies track the geometry; in direct mode the Hamiltonian
         supplied at construction is reused.  The run result is stored on
-        :attr:`_result_attr` and the ground-state energy (eV) in ``results``.
+        :attr:`result` and the ground-state energy (eV) in ``results``.
         """
         require_runnable(self.device)     # e.g. 'ibm-quantum' is not runnable yet
         self._wall_start = _perf()        # wall clock spans integration + run
@@ -508,7 +508,7 @@ class VariationalDriver(Calculator):
             self._configure(hamiltonian, num_particles, n_orbitals)
 
         result = self.run(**self._run_kwargs(atoms))
-        setattr(self, self._result_attr, result)
+        self.result = result
 
         energy_ev = float(from_hartree(result.optimal_energy, "eV"))
         self.results["energy"] = energy_ev

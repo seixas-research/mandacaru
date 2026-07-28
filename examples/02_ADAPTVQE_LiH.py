@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
-# file: examples/lih_adapt_ceo_ase.py
+# file: examples/02_ADAPTVQE_LiH.py
 
 # This code is part of Carcará.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""LiH ground state with ADAPT-VQE (CEO pool) as an ASE calculator.
+"""LiH ground state with ADAPT-VQE (CEO pool) through the QuantumCalculator.
 
-LiH is defined as an ASE :class:`ase.Atoms` object and :class:`~carcara.algorithms.ADAPTVQE`
-is attached as its *calculator*; with ``basis={"name": "FAO"}`` the Full Atomic Orbitals of
+LiH is defined as an ASE :class:`ase.Atoms` object and
+:class:`~carcara.algorithms.QuantumCalculator` is attached as its *calculator*
+(``atoms.calc = QuantumCalculator(method="adapt-vqe", ...)``); with
+``basis={"name": "FAO"}`` the Full Atomic Orbitals of
 each atom (Li {1s, 2s} + H {1s} = 3 spatial orbitals -> 6 qubits) are generated
 from the geometry, and ``atoms.get_total_energy()`` drives ADAPT-VQE with the CEO
-pool, returning the energy in **eV**.
+pool, returning the energy in **eV**; the full run result is on
+``atoms.calc.result``.
 
 .. note::
 
@@ -29,7 +32,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 from carcara.units import from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
@@ -37,9 +40,9 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
 
-# 1. Define LiH via ASE and attach ADAPTVQE as its calculator.  The molecule is
-#    placed at the centre of the cell (7.5, 7.5, 7.5): the auto-generated grid is
-#    centred on the cell, so the atoms must sit inside it -- putting them at the
+# 1. Define LiH via ASE and attach the QuantumCalculator.  The molecule is
+#    placed at the center of the cell (7.5, 7.5, 7.5): the auto-generated grid is
+#    centered on the cell, so the atoms must sit inside it -- putting them at the
 #    origin would leave the orbitals hanging off the box corner and wreck the
 #    integrals.
 atoms = Atoms("LiH",
@@ -47,7 +50,8 @@ atoms = Atoms("LiH",
               cell=[[15.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 15.0]],
               pbc=True)
 
-atoms.calc = ADAPTVQE(
+atoms.calc = QuantumCalculator(
+              method="adapt-vqe",
               pool="ceo",
               basis={"name": "FAO"},
               mapping="jordan_wigner",
@@ -60,7 +64,7 @@ atoms.calc = ADAPTVQE(
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)
-result = atoms.calc.adapt_result
+result = atoms.calc.result
 energy_ha = result.optimal_energy
 n_orbitals = atoms.calc.n_qubits // 2
 

@@ -6,7 +6,7 @@ generation is now controlled by a `size` argument, which selects how much
 variational freedom each valence shell gets.
 
 ```python
-atoms.calc = VQE(basis={"name": "NAO", "size": "DZP"})
+atoms.calc = QuantumCalculator(method="vqe", basis={"name": "NAO", "size": "DZP"})
 ```
 
 ## Why a single zeta is not enough
@@ -21,7 +21,7 @@ contracts under a more positive environment and expands under a more negative
 one. Describing that needs a second function of the same symmetry but a
 different width.
 
-**Angular.** A bond pulls charge off-centre in a direction the shell's own
+**Angular.** A bond pulls charge off-center in a direction the shell's own
 angular momentum cannot express. A hydrogen 1s is spherical; the moment it bonds,
 the density is not. Fixing that requires $l+1$ character.
 

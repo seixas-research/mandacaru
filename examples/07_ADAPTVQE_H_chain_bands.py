@@ -13,24 +13,23 @@ A **linear chain of hydrogen atoms 1.0 Angstrom apart**, periodic along *x* with
 the **one-atom primitive cell** of the chain (one H per cell -> one 1s band); basis
 **FAO**, fermion-to-qubit map **Jordan-Wigner**.
 
-The calculation uses the Bloch crystal driver family (all sharing the
-:class:`carcara.algorithms.BlochVariationalDriver` base):
+The calculation uses the periodic :class:`~carcara.algorithms.BlochCalculator`,
+whose ``method`` argument selects the variational eigensolver:
 
 * **Band structure** -- ``bloch.bands(...)`` solves the single-particle generalized
   Bloch eigenproblem ``H(k) c = eps(k) S(k) c`` at each **ASE**-generated k-point (a
   dense Gamma--X path plus the Monkhorst-Pack mesh).  The band structure is
-  *single-particle*, hence identical for every driver, so we use the lightweight
-  fixed-ansatz :class:`~carcara.algorithms.BlochVQE`.
+  *single-particle*, hence identical for every method, so we use the lightweight
+  fixed-ansatz ``method="vqe"``.
 
 * **Total energy using all k-points** -- ``bloch.total_energy((Nk, 1, 1))``.  A
   correlated solver cannot be run independently per k-point and summed (the
   two-electron interaction couples crystal momenta), so this uses the Born-von
   Karman equivalence: an ``Nk``-point mesh is a Gamma-point calculation on the
   ``Nk``-cell supercell, and ``E/cell = E(supercell) / Nk``.  The correlated
-  supercell energy is grown adaptively with
-  :class:`~carcara.algorithms.BlochADAPTVQE`.  Running ``Nk = 2, 4, 6`` converges it
-  toward the bulk limit; the requested ``(10, 1, 1)`` mesh is the ``Nk = 10``
-  (20-qubit) member of the same call.
+  supercell energy is grown adaptively with ``method="adapt-vqe"``.  Running
+  ``Nk = 2, 4, 6`` converges it toward the bulk limit; the requested
+  ``(10, 1, 1)`` mesh is the ``Nk = 10`` (20-qubit) member of the same call.
 
 The band points are written to ``examples/data/h_chain_bands.csv``; plotting is a **separate**
 script, ``examples/plot_h_chain_bands.py``.
@@ -44,7 +43,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import BlochADAPTVQE, BlochVQE
+from carcara.algorithms import BlochCalculator
 
 SPACING = 1.0            # H-H distance = lattice constant a (Angstrom)
 VACUUM = 10.0            # y/z vacuum gap (Angstrom)
@@ -61,10 +60,10 @@ atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
               pbc=[True, False, False])
 settings = dict(basis="FAO", mapping="jordan_wigner", n_cells=4, n_images=7, h=0.20)
 
-# Correlated total energy -> adaptive driver; single-particle bands -> fixed-ansatz
-# driver (bands are solver-independent, so BlochVQE is the cheapest choice).
-adapt = BlochADAPTVQE(atoms, **settings)
-bands = BlochVQE(atoms, **settings)
+# Correlated total energy -> adaptive method; single-particle bands -> fixed-ansatz
+# method (bands are solver-independent, so method="vqe" is the cheapest choice).
+adapt = BlochCalculator(atoms, method="adapt-vqe", **settings)
+bands = BlochCalculator(atoms, method="vqe", **settings)
 print(f"Periodic H chain: {SPACING:.2f} A spacing (one-atom cell), "
       f"{VACUUM:.0f} A vacuum, {bands.dimension}-D, {bands.n_bands} band(s)")
 

@@ -11,25 +11,25 @@ optimizers, ansätze, mappings or temperature schedules essentially for free.
 
 ```python
 from ase import Atoms
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 
 atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
               cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
 
 # 1. Build once and save.
-atoms.calc = ADAPTVQE(pool="qeb", basis="FAO", h=0.25,
-                      save_hamiltonian="lih.parquet")
+atoms.calc = QuantumCalculator(method="adapt-vqe", pool="qeb", basis="FAO",
+                               h=0.25, save_hamiltonian="lih.parquet")
 atoms.get_total_energy()
 
 # 2. Reload -- no geometry, no integrals, no mapping.
-driver = ADAPTVQE(pool="ceo", load_hamiltonian="lih.parquet")
-result = driver.run()
+result = QuantumCalculator(method="adapt-vqe", pool="ceo",
+                           load_hamiltonian="lih.parquet").run()
 ```
 
 The second run needs **no `Atoms` object at all**. The file records
 `num_particles` and `n_spatial_orbitals` alongside the operator, which is exactly
-what the ADAPT pool and the UCCSD ansatz are built from, so a loaded driver is in
-*direct mode* immediately.
+what the ADAPT pool and the UCCSD ansatz are built from, so a loaded calculator is
+in *direct mode* immediately.
 
 :::{admonition} What is bypassed
 :class: note
@@ -56,7 +56,8 @@ Two interchangeable formats are selected with `hamiltonian_format`:
 | Best for | large active spaces; analysis in pandas/Arrow/Spark | inspection, diffing, dependency-free environments |
 
 ```python
-ADAPTVQE(basis="FAO", save_hamiltonian="lih", hamiltonian_format="json")
+QuantumCalculator(method="adapt-vqe", basis="FAO",
+                  save_hamiltonian="lih", hamiltonian_format="json")
 # -> writes lih.json
 ```
 
@@ -162,17 +163,19 @@ dependency and cannot be affected.
 Caching turns a pool comparison into a few seconds of work:
 
 ```python
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 
 # Build once ...
-atoms.calc = ADAPTVQE(basis="FAO", h=0.25, save_hamiltonian="lih.parquet",
-                      max_iterations=1, verbose=False)
+atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO", h=0.25,
+                               save_hamiltonian="lih.parquet",
+                               max_iterations=1, verbose=False)
 atoms.get_total_energy()
 
 # ... compare every pool against the *same* operator.
 for pool in ("fermionic", "qubit", "qeb", "ceo"):
-    result = ADAPTVQE(pool=pool, load_hamiltonian="lih.parquet",
-                      verbose=False).run()
+    result = QuantumCalculator(method="adapt-vqe", pool=pool,
+                               load_hamiltonian="lih.parquet",
+                               verbose=False).run()
     print(f"{pool:<10} E = {result.optimal_energy:.8f} Ha  "
           f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
 ```

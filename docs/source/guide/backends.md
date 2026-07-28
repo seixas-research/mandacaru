@@ -8,11 +8,11 @@ The `backend_provider` argument chooses which quantum SDK **constructs** those
 circuits — and, with `execute_circuits=True`, which SDK **runs** them.
 
 ```python
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 
-ADAPTVQE(basis="FAO", backend_provider="qiskit")   # default
-ADAPTVQE(basis="FAO", backend_provider="braket")   # amazon-braket-sdk
-ADAPTVQE(basis="FAO", backend_provider="cirq")     # cirq
+QuantumCalculator(method="adapt-vqe", basis="FAO", backend_provider="qiskit")   # default
+QuantumCalculator(method="adapt-vqe", basis="FAO", backend_provider="braket")   # amazon-braket-sdk
+QuantumCalculator(method="adapt-vqe", basis="FAO", backend_provider="cirq")     # cirq
 ```
 
 | provider | package | executes on |
@@ -64,10 +64,12 @@ wire `n-1-k`. Gate counts are unaffected — relabeling is an isomorphism.
 profiling) or actually *run* to prepare each state:
 
 ```python
-ADAPTVQE(backend_provider="qiskit")                        # execute_circuits=False
-ADAPTVQE(backend_provider="braket")                        # execute_circuits=True
-ADAPTVQE(backend_provider="qiskit", execute_circuits=True)  # opt in
-ADAPTVQE(backend_provider="cirq",  execute_circuits=False)  # opt out
+QuantumCalculator(method="adapt-vqe", backend_provider="qiskit")   # execute_circuits=False
+QuantumCalculator(method="adapt-vqe", backend_provider="braket")   # execute_circuits=True
+QuantumCalculator(method="adapt-vqe", backend_provider="qiskit",
+                  execute_circuits=True)                           # opt in
+QuantumCalculator(method="adapt-vqe", backend_provider="cirq",
+                  execute_circuits=False)                          # opt out
 ```
 
 It defaults to `True` for `"braket"` and `"cirq"` — naming them is a request to
@@ -84,7 +86,7 @@ because only Qiskit re-optimizes during transpilation; the unitary does not.
 
 ## Using an ansatz directly
 
-The providers are also usable below the driver level:
+The providers are also usable below the calculator level:
 
 ```python
 from carcara.backends.providers import build_provider
@@ -114,7 +116,7 @@ from carcara.circuits import UCCSD
 UCCSD(2, (1, 1), trotter=True, provider=build_provider("braket"))
 ```
 
-The VQE driver does this automatically when circuit execution is on.
+The VQE method does this automatically when circuit execution is on.
 
 :::{note}
 A circuit can only be *initialized* in a computational basis state, so provider

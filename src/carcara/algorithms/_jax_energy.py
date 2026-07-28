@@ -95,7 +95,7 @@ def _inverse_sqrt(jnp, S, steps: int = NEWTON_SCHULZ_STEPS):
     from the oxygen :math:`2p_x`/:math:`2p_y` pair, which is enough to poison the
     whole gradient.
 
-    The degeneracy is an artefact of the eigenvector parameterization, not of the
+    The degeneracy is an artifact of the eigenvector parameterization, not of the
     matrix function: :math:`S \mapsto S^{-1/2}` is perfectly smooth there.  So we
     compute it with the coupled Newton-Schulz iteration
 

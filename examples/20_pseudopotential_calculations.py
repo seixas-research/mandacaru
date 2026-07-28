@@ -8,7 +8,7 @@
 
 r"""Running the variational solvers with norm-conserving pseudopotentials.
 
-``pseudopotentials=True`` switches any driver from an all-electron calculation to
+``pseudopotentials=True`` switches any solver from an all-electron calculation to
 a **valence-only** one:
 
 * the core electrons are removed (oxygen keeps 6 of its 8);
@@ -18,7 +18,8 @@ a **valence-only** one:
 
 .. code-block:: python
 
-    atoms.calc = ADAPTVQE(basis="FAO", pseudopotentials=True, h=0.15)
+    atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO",
+                                   pseudopotentials=True, h=0.15)
 
 The library under ``pseudos/`` covers every element with Z < 90 (H through
 Ac) and is loaded automatically.
@@ -42,7 +43,7 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, QuantumCalculator, VQE
+from carcara.algorithms import QuantumCalculator
 from carcara.basis.pseudo_io import available_elements, get_pseudopotential
 from carcara.integrals import Grid
 from carcara.units import BOHR_TO_ANGSTROM
@@ -81,7 +82,8 @@ for label, options in (("all-electron", {}),
                        ("pseudopotential", {"pseudopotentials": True})):
     atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
     start = time.perf_counter()
-    atoms.calc = VQE(basis="FAO", grid=grid, verbose=False, **options)
+    atoms.calc = QuantumCalculator(method="vqe", basis="FAO", grid=grid,
+                                   verbose=False, **options)
     energy = atoms.get_potential_energy()
     print(f"  {label:<17} E = {energy:>12.4f} eV   "
           f"{atoms.calc.n_qubits} qubits   "
@@ -104,10 +106,11 @@ def isolated_force(spacing, use_pseudopotentials):
     shift = 0.37 * box.dx * BOHR_TO_ANGSTROM
     atoms = Atoms("O", positions=[[shift, 0.0, 0.0]])
     atoms.calc = QuantumCalculator(
-        driver="adapt-vqe", basis="FAO", grid=box,
+        method="adapt-vqe", basis="FAO", grid=box,
         pseudopotentials=use_pseudopotentials,
         frozen_core=not use_pseudopotentials, pool="qeb",
-        max_iterations=6, gradient_tolerance=1e-3, profile=False)
+        max_iterations=6, gradient_tolerance=1e-3, profile=False,
+        verbose=False)
     atoms.get_potential_energy()
     return float(np.abs(atoms.get_forces()).max())
 
@@ -144,9 +147,10 @@ water = Atoms("OH2", positions=[[0.0, 0.0, 0.0],
 water_grid = Grid(center=water.get_positions().mean(axis=0), box_size=8.0,
                   h=0.15)
 start = time.perf_counter()
-water.calc = ADAPTVQE(basis="FAO", grid=water_grid, pseudopotentials=True,
-                      pool="qeb", max_iterations=12, gradient_tolerance=1e-3,
-                      verbose=False, profile=False)
+water.calc = QuantumCalculator(method="adapt-vqe", basis="FAO", grid=water_grid,
+                               pseudopotentials=True, pool="qeb",
+                               max_iterations=12, gradient_tolerance=1e-3,
+                               verbose=False, profile=False)
 energy = water.get_potential_energy()
 print(f"  E = {energy:.4f} eV   {water.calc.n_qubits} qubits   "
       f"num_particles = {water.calc.num_particles}   "
@@ -187,7 +191,7 @@ print(f"\n{RULE}")
 print("STATUS")
 print(RULE)
 print("Working: the library (H-Ac, Z < 90), the valence-only Hamiltonian, the")
-print("Kleinman-Bylander nonlocal term (C-accelerated), the driver argument,")
+print("Kleinman-Bylander nonlocal term (C-accelerated), the calculator argument,")
 print("and forces that now converge with grid refinement instead of diverging.")
 print()
 print("Not yet good enough for production geometry optimization: the residual")

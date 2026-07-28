@@ -111,7 +111,7 @@ def _local_derivatives(r: np.ndarray, values: np.ndarray, r0: float,
                        order: int = 4, window: int = 25, degree: int = 8):
     """Derivatives of ``values(r)`` at ``r0``, up to ``order``.
 
-    Fits a polynomial in ``(r - r0)`` over a window of grid points centred on
+    Fits a polynomial in ``(r - r0)`` over a window of grid points centered on
     ``r0`` and reads the derivatives off its coefficients.  A local polynomial is
     used rather than repeated finite differencing because the Troullier-Martins
     matching needs the *fourth* derivative, which naive differencing renders

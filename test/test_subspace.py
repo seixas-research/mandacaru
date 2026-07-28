@@ -142,7 +142,7 @@ class TestSubspaceVQE:
                       cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
         atoms.calc = SubspaceVQE(basis="FAO", h=0.30, num_states=2, verbose=False)
         energy_ev = atoms.get_potential_energy()
-        result = atoms.calc.subspace_result
+        result = atoms.calc.result
         assert isinstance(result, SubspaceVQEResult)
         assert result.num_states == 2
         # ASE energy is the ground state (eV).
@@ -184,8 +184,8 @@ class TestSubspaceADAPTVQE:
                                       profile=False, gradient_tolerance=1e-4,
                                       max_iterations=20)
         atoms.get_potential_energy()
-        assert isinstance(atoms.calc.subspace_result, SubspaceADAPTVQEResult)
-        assert atoms.calc.subspace_result.num_states == 2
+        assert isinstance(atoms.calc.result, SubspaceADAPTVQEResult)
+        assert atoms.calc.result.num_states == 2
 
 
 # --------------------------------------------------------------------------- #

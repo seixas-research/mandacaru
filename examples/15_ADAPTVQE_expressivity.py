@@ -58,7 +58,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 from carcara.algorithms.expressivity import (active_space_dimension,
                                              calculate_kl_divergence,
                                              haar_density,
@@ -87,9 +87,10 @@ atoms = Atoms("LiH",
               positions=[[7.5, 7.5, 7.5 - 0.7975], [7.5, 7.5, 7.5 + 0.7975]],
               cell=[[15.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 15.0]],
               pbc=True)
-atoms.calc = ADAPTVQE(pool=POOL, basis={"name": "FAO"}, h=0.25, verbose=False,
-                      profile=False, max_iterations=1,
-                      save_hamiltonian=HAMILTONIAN_FILE)
+atoms.calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+                               basis={"name": "FAO"}, h=0.25, verbose=False,
+                               profile=False, max_iterations=1,
+                               save_hamiltonian=HAMILTONIAN_FILE)
 atoms.get_total_energy()
 
 n_qubits = atoms.calc.n_qubits
@@ -133,10 +134,11 @@ def record(info):
         snapshots[step] = fidelities
 
 
-driver = ADAPTVQE(pool=POOL, load_hamiltonian=HAMILTONIAN_FILE, verbose=False,
-                  profile=False, optimizer="L-BFGS-B",
-                  max_iterations=MAX_ITERATIONS, gradient_tolerance=1e-6)
-result = driver.run(callback=record)
+calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+                         load_hamiltonian=HAMILTONIAN_FILE, verbose=False,
+                         profile=False, optimizer="L-BFGS-B",
+                         max_iterations=MAX_ITERATIONS, gradient_tolerance=1e-6)
+result = calc.run(callback=record)
 
 print(f"{'step':>5}  {'#params':>8}  {'E (Ha)':>15}  {'E - FCI':>11}  "
       f"{'expressibility':>15}  operator")

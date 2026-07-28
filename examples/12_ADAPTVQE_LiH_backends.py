@@ -15,7 +15,11 @@ the real-space one- and two-body integrals and then the Jordan-Wigner mapping --
 by far the most expensive stage, and completely independent of which SDK runs the
 circuits.  So it is built **once** with ``save_hamiltonian=...`` and every backend
 run afterwards uses ``load_hamiltonian=...``, which skips the integrals and the
-fermion-to-qubit transformation entirely.
+fermion-to-qubit transformation entirely.  Both modes go through
+:class:`~carcara.algorithms.QuantumCalculator`: the build is the ASE-calculator
+path (``atoms.calc = QuantumCalculator(method="adapt-vqe", ...)``), the cached
+runs use its **direct mode**
+(``QuantumCalculator(method="adapt-vqe", load_hamiltonian=...).run()``).
 
 **2. Multi-backend circuit execution.**  With ``execute_circuits=True`` the ansatz
 is no longer evaluated by the internal NumPy state-vector backend: each
@@ -45,7 +49,7 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 from carcara.backends.providers import BACKEND_PROVIDERS, provider_available
 from carcara.units import from_hartree
 
@@ -61,7 +65,7 @@ MAX_ITERATIONS = 12
 # 1. Build the Hamiltonian once and cache it to disk.
 # --------------------------------------------------------------------------- #
 
-# LiH at the centre of the cell: the auto-generated grid is centred on the cell,
+# LiH at the center of the cell: the auto-generated grid is centered on the cell,
 # so the atoms must sit inside it (see examples/02_ADAPTVQE_LiH.py).
 atoms = Atoms("LiH",
               positions=[[7.5, 7.5, 7.5 - 0.7975], [7.5, 7.5, 7.5 + 0.7975]],
@@ -69,13 +73,15 @@ atoms = Atoms("LiH",
               pbc=True)
 
 t0 = time.perf_counter()
-atoms.calc = ADAPTVQE(pool=POOL, basis={"name": "FAO"}, h=0.25,
-                      mapping="jordan_wigner", max_iterations=MAX_ITERATIONS,
-                      verbose=False, save_hamiltonian=HAMILTONIAN_FILE)
+atoms.calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+                               basis={"name": "FAO"}, h=0.25,
+                               mapping="jordan_wigner",
+                               max_iterations=MAX_ITERATIONS,
+                               verbose=False, save_hamiltonian=HAMILTONIAN_FILE)
 atoms.get_total_energy()
 build_seconds = time.perf_counter() - t0
 
-reference = atoms.calc.adapt_result
+reference = atoms.calc.result
 n_qubits = atoms.calc.n_qubits
 
 # Exact reference: lowest eigenvalue of the qubit Hamiltonian (FCI).
@@ -101,8 +107,10 @@ print("-" * len(header))
 
 # The internal NumPy state-vector backend, for comparison.
 t0 = time.perf_counter()
-matrix_run = ADAPTVQE(pool=POOL, load_hamiltonian=HAMILTONIAN_FILE,
-                      max_iterations=MAX_ITERATIONS, verbose=False).run()
+matrix_run = QuantumCalculator(method="adapt-vqe", pool=POOL,
+                               load_hamiltonian=HAMILTONIAN_FILE,
+                               max_iterations=MAX_ITERATIONS,
+                               verbose=False).run()
 print(f"{'(matrix)':<10}{matrix_run.optimal_energy:>16.8f}"
       f"{matrix_run.optimal_energy - exact_ha:>13.2e}"
       f"{matrix_run.num_operators:>6}{matrix_run.metrics.cnot_count:>7}"
@@ -115,7 +123,9 @@ for provider in BACKEND_PROVIDERS:
         continue
 
     t0 = time.perf_counter()
-    driver = ADAPTVQE(pool=POOL,
+    driver = QuantumCalculator(
+                      method="adapt-vqe",
+                      pool=POOL,
                       load_hamiltonian=HAMILTONIAN_FILE,   # no integrals, no map
                       backend_provider=provider,
                       execute_circuits=True,               # really run circuits
@@ -131,7 +141,7 @@ for provider in BACKEND_PROVIDERS:
           f"{result.metrics.depth:>7}{elapsed:>8.1f}s")
 
 # --------------------------------------------------------------------------- #
-# 3. Verify behavioural equivalence.
+# 3. Verify behavioral equivalence.
 # --------------------------------------------------------------------------- #
 
 print()

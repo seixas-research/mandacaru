@@ -82,7 +82,7 @@ The design of Carcará is built around **loose coupling** and **strict unit boun
         ↳ Molecular Hamiltonian (Fermionic Operators)
           ↳ Fermion-to-Qubit Mappings (PauliSum qubit Hamiltonian)
             ↳ *(optional)* Parquet/JSON cache — replay later, skipping everything above
-              ↳ VQE / ADAPT-VQE Drivers (parameterized circuit compiled to a backend & optimized classically)
+              ↳ QuantumCalculator (``method=`` selects VQE / ADAPT-VQE / VASQE / subspace variants; parameterized circuit compiled to a backend & optimized classically)
                 ↳ Execution: internal state vector, or Qiskit / Amazon Braket / Cirq circuits (simulator or QPU)
 
 1. Basis-Agnostic Integrals
@@ -148,7 +148,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - **Complete**
    * - **carcara.algorithms**
      - Solvers & profiling
-     - Exact state-vector VQE & ADAPT-VQE solvers, RHF/UHF molecular-orbital (MO) solvers, PQC expressibility trackers (KL-divergence vs. Haar), CNOT/depth compilers, and the ``quenching`` parametrization policy.
+     - The unified ``QuantumCalculator`` (solver selected with ``method=``) and periodic ``BlochCalculator`` front ends; exact state-vector VQE & ADAPT-VQE solvers, RHF/UHF molecular-orbital (MO) solvers, PQC expressibility trackers (KL-divergence vs. Haar), CNOT/depth compilers, and the ``quenching`` parametrization policy.
      - **Complete**
    * - **carcara.optimizers**
      - Parameter optimization
@@ -168,7 +168,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - **Complete**
    * - **Hardware execution**
      - Running on a QPU
-     - Energy evaluation runs on Amazon Braket devices via the shot path. ADAPT-VQE's *pool-gradient screening* is still classical, so fixed-ansatz ``VQE`` is the fully hardware-native driver.
+     - Energy evaluation runs on Amazon Braket devices via the shot path. ADAPT-VQE's *pool-gradient screening* is still classical, so fixed-ansatz ``method="vqe"`` is the fully hardware-native method.
      - **Partial**
    * - **carcara.backends.mitigation**
      - Error mitigation
@@ -234,7 +234,9 @@ For adaptive VQE algorithms, four operator pools define the candidate generators
 carcara.algorithms
 ------------------
 
-* **VQE:** Driver that computes :math:`\langle \psi(\boldsymbol{\theta})| H |\psi(\boldsymbol{\theta}) \rangle` on exact state vectors, updating parameters until convergence.
+All molecular runs go through the unified ASE calculator ``QuantumCalculator``, which selects the variational method with ``method=`` (``"vqe"``, ``"adapt-vqe"``, ``"vasqe"``, ``"subspace-vqe"``, ``"subspace-adapt-vqe"``, ``"subspace-vasqe"``); periodic systems go through ``BlochCalculator``.
+
+* **VQE:** Computes :math:`\langle \psi(\boldsymbol{\theta})| H |\psi(\boldsymbol{\theta}) \rangle` on exact state vectors, updating parameters until convergence.
 * **ADAPT-VQE:** Calculates the commutator gradients :math:`\langle \psi | [H, A_i] | \psi \rangle` for all pool operators, selects the operator with the largest gradient, appends it to the ansatz, and performs a warm-started VQE optimization. Loop terminates when the maximum gradient falls below ``gradient_tolerance``.
 * **Hartree-Fock (RHF/UHF):** Solves the self-consistent field equations to yield the molecular-orbital basis. Transforming the Hamiltonian to the MO basis is critical for ADAPT-VQE; it ensures that the starting Hartree-Fock reference is stationary, making single excitation gradients vanish and allowing the algorithm to focus on electron correlations.
 * **Expressibility:** Computes Kullback-Leibler divergences between random-ansatz state fidelities and the Haar distribution. Because fermionic ansätze conserve symmetries, expressibility is computed against the Haar distribution of the active space dimension:
@@ -257,4 +259,4 @@ Two orthogonal registries plus the hardware measurement protocol:
 carcara.core.serialization
 --------------------------
 
-The qubit Hamiltonian is serializable to **Apache Parquet** (compressed, columnar, queryable from pandas) or **JSON** (plain text, no native dependency), chosen with ``hamiltonian_format``. Loading detects the format automatically — from the extension, else from the file's leading bytes — and skips the integral engine and the fermion-to-qubit mapping entirely. Because the file also records ``num_particles`` and ``n_spatial_orbitals``, a reloaded driver runs with no geometry at all. See :doc:`guide/hamiltonian_cache`.
+The qubit Hamiltonian is serializable to **Apache Parquet** (compressed, columnar, queryable from pandas) or **JSON** (plain text, no native dependency), chosen with ``hamiltonian_format``. Loading detects the format automatically — from the extension, else from the file's leading bytes — and skips the integral engine and the fermion-to-qubit mapping entirely. Because the file also records ``num_particles`` and ``n_spatial_orbitals``, a reloaded calculator runs with no geometry at all. See :doc:`guide/hamiltonian_cache`.

@@ -287,7 +287,7 @@ class TestADAPTProfiling:
         atoms.get_total_energy()
         out = capsys.readouterr().out
         assert "integration:" in out
-        assert atoms.calc.adapt_result.integration_profile is not None
+        assert atoms.calc.result.integration_profile is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -317,12 +317,12 @@ class TestKPoints:
             ADAPTVQE(pool="ceo", basis="FAO", kpts=(1, 1))       # not length-3
 
     def test_dict_spec_with_gamma_centering(self):
-        # ASE dict form {"size": ..., "gamma": True}: Gamma-centred mesh.
+        # ASE dict form {"size": ..., "gamma": True}: Gamma-centered mesh.
         adapt = ADAPTVQE(pool="ceo", basis="FAO",
                          kpts={"size": (2, 2, 1), "gamma": True})
         assert adapt.kpts == (2, 2, 1)
         assert adapt.kpts_gamma is True
-        # Gamma-centring shifts the even-axis mesh so it includes the Gamma point.
+        # Gamma-centering shifts the even-axis mesh so it includes the Gamma point.
         assert any(np.allclose(k, [0, 0, 0]) for k in adapt.kpoints)
 
     def test_dict_gamma_only(self):
@@ -365,8 +365,8 @@ class TestSpinAndInitialState:
 
 class TestPlacementInvariance:
     def test_energy_independent_of_position_in_cell(self):
-        # PBC-aware grid: the molecule is centred on itself, so placing H2 at the
-        # cell corner vs. the cell centre gives the same Hamiltonian and energy.
+        # PBC-aware grid: the molecule is centered on itself, so placing H2 at the
+        # cell corner vs. the cell center gives the same Hamiltonian and energy.
         def energy(pos):
             atoms = Atoms("H2", positions=pos,
                           cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=True)
@@ -375,8 +375,8 @@ class TestPlacementInvariance:
             return atoms.get_total_energy()
 
         corner = energy([[0, 0, -0.37], [0, 0, 0.37]])
-        centre = energy([[4, 4, 3.63], [4, 4, 4.37]])
-        assert corner == pytest.approx(centre, abs=1e-6)
+        center = energy([[4, 4, 3.63], [4, 4, 4.37]])
+        assert corner == pytest.approx(center, abs=1e-6)
 
 
 # --------------------------------------------------------------------------- #

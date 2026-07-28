@@ -85,9 +85,9 @@ class Potentials:
             raise ValueError(
                 "no pseudopotentials were supplied to this Potentials object")
         v = np.zeros_like(x, dtype=float)
-        for pp, (_Z, centre) in zip(self.pseudopotentials, self.nuclei):
-            r = np.sqrt((x - centre[0]) ** 2 + (y - centre[1]) ** 2
-                        + (z - centre[2]) ** 2)
+        for pp, (_Z, center) in zip(self.pseudopotentials, self.nuclei):
+            r = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2
+                        + (z - center[2]) ** 2)
             v += pp.local_potential(r)
         return v
 

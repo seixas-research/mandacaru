@@ -11,7 +11,9 @@
 The same LiH molecule and fermionic pool are run through each of Carcará's three
 fermion-to-qubit mappings -- **Jordan-Wigner**, **parity** and **Bravyi-Kitaev**
 -- selected with the ``mapping`` argument of
-:class:`~carcara.algorithms.ADAPTVQE`.  The mappings encode the fermionic
+:class:`~carcara.algorithms.QuantumCalculator`
+(``atoms.calc = QuantumCalculator(method="adapt-vqe", ...)``).  The mappings
+encode the fermionic
 Hamiltonian into *different* qubit Pauli operators, but all describe the same
 physics, so ADAPT-VQE must recover the **same** ground-state energy (the FCI
 eigenvalue of the mapping's qubit Hamiltonian) in every case.
@@ -33,10 +35,10 @@ from __future__ import annotations
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 from carcara.units import from_hartree
 
-# LiH centred in the cell so the auto-generated grid covers both orbitals.
+# LiH centered in the cell so the auto-generated grid covers both orbitals.
 atoms = Atoms("LiH",
               positions=[[7.5, 7.5, 7.5 - 0.7975], [7.5, 7.5, 7.5 + 0.7975]],
               cell=[[15.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 15.0]],
@@ -44,7 +46,8 @@ atoms = Atoms("LiH",
 
 energies = {}
 for mapping in ("jordan_wigner", "parity", "bravyi_kitaev"):
-    atoms.calc = ADAPTVQE(
+    atoms.calc = QuantumCalculator(
+                  method="adapt-vqe",
                   pool="fermionic",
                   basis={"name": "FAO"},
                   mapping=mapping,
@@ -55,7 +58,7 @@ for mapping in ("jordan_wigner", "parity", "bravyi_kitaev"):
                   verbose=False)                    # keep the loop output compact
 
     energy_ev = atoms.get_total_energy()            # eV (ASE convention)
-    result = atoms.calc.adapt_result
+    result = atoms.calc.result
     energy_ha = result.optimal_energy
 
     # FCI reference: lowest eigenvalue of *this* mapping's qubit Hamiltonian.

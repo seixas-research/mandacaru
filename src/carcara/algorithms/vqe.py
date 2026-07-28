@@ -153,7 +153,6 @@ class VQE(DeflationMixin, VariationalDriver):
         fixed-ansatz analogue of ADAPT-VQE's frozen-parameter growth.
     """
 
-    _result_attr = "vqe_result"
     _default_sparse = False
 
     def __init__(self, hamiltonian=None, ansatz=None,

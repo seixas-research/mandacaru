@@ -29,7 +29,7 @@ be held fixed and only the **integrals** have to be differentiated:
 
 Why Pulay terms are **not** optional here
 -----------------------------------------
-Carcará's orbitals are atom-centred: when a nucleus moves, its basis functions
+Carcará's orbitals are atom-centered: when a nucleus moves, its basis functions
 move with it, so the basis itself depends on :math:`\mathbf R`.  The
 Hellmann-Feynman theorem assumes a fixed basis and is therefore *incomplete*.
 The size of the omission is not academic -- for H\ :sub:`2` in the FAO basis the
@@ -40,8 +40,8 @@ separately so the split can be inspected.
 
 How each piece is obtained
 --------------------------
-* **Orbital derivatives.** For an atom-centred function
-  :math:`\phi_\mu(\mathbf r) = f(\mathbf r - \mathbf R_A)`, moving the centre is
+* **Orbital derivatives.** For an atom-centered function
+  :math:`\phi_\mu(\mathbf r) = f(\mathbf r - \mathbf R_A)`, moving the center is
   the same as shifting the sampling point:
   :math:`\partial\phi_\mu/\partial R_{A,k}` is evaluated by central differences of
   the analytic orbital on a displaced grid.  No integral is recomputed.
@@ -125,11 +125,11 @@ def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None):
     r"""``d phi_mu / d R_{A,k}`` sampled on the grid, for one atom.
 
     Returns a ``(3, M, ngrid)`` array; row ``k`` is the derivative with respect to
-    Cartesian direction ``k``.  Rows for orbitals *not* centred on ``atom`` are
+    Cartesian direction ``k``.  Rows for orbitals *not* centered on ``atom`` are
     zero, since only that atom's functions move.
 
     Because :math:`\phi_\mu(\mathbf r) = f(\mathbf r - \mathbf R_A)`, displacing
-    the centre by :math:`+\delta` equals evaluating the unchanged function at
+    the center by :math:`+\delta` equals evaluating the unchanged function at
     :math:`\mathbf r - \delta`, so this needs no rebuilt basis objects -- only two
     extra samplings per direction.
     """
@@ -170,7 +170,7 @@ def orbital_gradients(basis, grid, delta=None):
 
     Returns ``(3, M, ngrid)``.  Related to :func:`orbital_derivatives` by
     :math:`\nabla\phi_\mu = -\partial\phi_\mu/\partial\mathbf R_A` -- moving the
-    centre one way is the same as moving the sampling point the other -- but
+    center one way is the same as moving the sampling point the other -- but
     computed for all orbitals at once, since the density gradient needs them all
     regardless of which atom they sit on.
     """
@@ -248,7 +248,7 @@ def _electronic_by_parts(rho, grid, nuclei_bohr, charges, softening,
        ===========  ==========  =========================  =============================
 
        The apparently excellent finite-difference column is a **smoothing
-       artefact**, not accuracy: differencing the sampled density across the
+       artifact**, not accuracy: differencing the sampled density across the
        nuclear cusp acts as a low-pass filter that happens to damp the spurious
        force.  It is not a method -- it also gets H\ :sub:`2`, where the standard
        form is verified correct to 0.04 %, wrong by a factor of two.  This
@@ -353,7 +353,7 @@ u}
 angle\langle\chi_p|\phi_
 u
 angle`, and *two* things
-    move when atom :math:`A` shifts: the basis functions centred on it (a Pulay
+    move when atom :math:`A` shifts: the basis functions centered on it (a Pulay
     term) and the projectors belonging to it.  Both derivatives are taken by the
     same displaced-sampling trick used for the orbitals, so no integral is
     recomputed from scratch.
@@ -376,7 +376,7 @@ angle`, and *two* things
             shift = [np.zeros_like(X), np.zeros_like(Y), np.zeros_like(Z)]
             shift[k] = np.full_like(X, delta)
 
-            # d(basis)/dR_A: only functions centred on this atom move.
+            # d(basis)/dR_A: only functions centered on this atom move.
             dpsi = np.zeros_like(psi)
             for mu, fn in enumerate(basis):
                 if atom_of_orbital[mu] != atom:
@@ -559,13 +559,13 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
     n_electrons : int
         Total electron count (including any frozen core).
     atom_of_orbital : sequence of int
-        Which atom each basis function is centred on.
+        Which atom each basis function is centered on.
     frozen : sequence of int
         Frozen spatial molecular orbitals, if the frozen-core approximation was
         used.
     include_pulay : bool
         Compute the Pulay terms (default ``True``).  ``False`` returns the bare
-        Hellmann-Feynman force -- much cheaper, but for an atom-centred basis it
+        Hellmann-Feynman force -- much cheaper, but for an atom-centered basis it
         is *not* the physical gradient (see the module docstring).
     hellmann_feynman : {"analytic", "by-parts"}
         How the electron-nucleus term is evaluated (default ``"analytic"``).

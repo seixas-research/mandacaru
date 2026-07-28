@@ -151,7 +151,7 @@ class TestPlaneWaveDrivers:
                               verbose=False, max_iterations=6,
                               gradient_tolerance=1e-3)
         assert np.isfinite(atoms.get_total_energy())
-        assert atoms.calc.adapt_result.integration_profile is not None
+        assert atoms.calc.result.integration_profile is not None
 
     def test_pw_requires_cell(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])  # no cell

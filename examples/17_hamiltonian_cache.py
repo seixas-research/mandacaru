@@ -17,8 +17,8 @@ schedules for free.
 This example builds LiH once in each format, reloads it, and checks that
 
 * the reloaded Hamiltonian is bit-for-bit the operator that was saved;
-* a driver reconstructed from the file reproduces the original energy **without
-  a geometry** -- no integrals, no mapping;
+* a calculator reconstructed from the file reproduces the original energy
+  **without a geometry** -- no integrals, no mapping;
 * the two formats are interchangeable, and :func:`~carcara.core.detect_format`
   identifies either one automatically (from the extension, or failing that from
   the file's own leading bytes).
@@ -44,7 +44,7 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 from carcara.core import detect_format, load_hamiltonian
 
 # All generated files (logs, CSV, plots) go to examples/data/.
@@ -73,21 +73,23 @@ for fmt in ("parquet", "json"):
 
     # -- build (integrals + mapping) and save ---------------------------- #
     atoms = lih()
-    atoms.calc = ADAPTVQE(pool=POOL, basis={"name": "FAO"}, h=0.25,
-                          verbose=False, profile=False,
-                          max_iterations=MAX_ITERATIONS,
-                          save_hamiltonian=path, hamiltonian_format=fmt)
+    atoms.calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+                                   basis={"name": "FAO"}, h=0.25,
+                                   verbose=False, profile=False,
+                                   max_iterations=MAX_ITERATIONS,
+                                   save_hamiltonian=path, hamiltonian_format=fmt)
     t0 = time.perf_counter()
     atoms.get_total_energy()
     build_seconds = time.perf_counter() - t0
-    built = atoms.calc.adapt_result.optimal_energy
+    built = atoms.calc.result.optimal_energy
     live = atoms.calc.hamiltonian.simplify()
 
     # -- reload, with no geometry at all --------------------------------- #
     t0 = time.perf_counter()
-    driver = ADAPTVQE(pool=POOL, load_hamiltonian=path, verbose=False,
-                      profile=False, max_iterations=MAX_ITERATIONS)
-    reloaded = driver.run()
+    calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+                             load_hamiltonian=path, verbose=False,
+                             profile=False, max_iterations=MAX_ITERATIONS)
+    reloaded = calc.run()
     load_seconds = time.perf_counter() - t0
 
     record = load_hamiltonian(path)

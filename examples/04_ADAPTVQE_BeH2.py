@@ -13,8 +13,11 @@ hydrogens symmetric about the central beryllium along ``z``.  With
 ``basis={"name": "FAO"}`` each atom contributes its Full Atomic Orbitals
 (Be {1s, 2s} + 2 H {1s} = 4 spatial orbitals), and ``frozen_core=True`` freezes
 the Be ``1s`` core -- leaving a 3-orbital / 6-qubit active space with 4 active
-electrons (a ``(2, 2)`` closed shell).  ``atoms.get_total_energy()`` then drives
-ADAPT-VQE with the CEO pool and returns the energy in **eV**.
+electrons (a ``(2, 2)`` closed shell).  The solver is attached through
+:class:`~carcara.algorithms.QuantumCalculator`
+(``atoms.calc = QuantumCalculator(method="adapt-vqe", ...)``);
+``atoms.get_total_energy()`` then drives ADAPT-VQE with the CEO pool and returns
+the energy in **eV**, with the full run result on ``atoms.calc.result``.
 
 .. note::
 
@@ -31,7 +34,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
+from carcara.algorithms import QuantumCalculator
 from carcara.units import from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
@@ -39,7 +42,7 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
 
-# 1. Linear BeH2 (Be at the cell centre, H atoms at +/- 1.334 A along z).
+# 1. Linear BeH2 (Be at the cell center, H atoms at +/- 1.334 A along z).
 d = 1.334
 atoms = Atoms("BeH2",
               positions=[[5.0, 5.0, 5.0],
@@ -48,7 +51,8 @@ atoms = Atoms("BeH2",
               cell=[[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
               pbc=True)
 
-atoms.calc = ADAPTVQE(
+atoms.calc = QuantumCalculator(
+              method="adapt-vqe",
               pool="ceo",
               basis={"name": "FAO"},
               sparse=True,
@@ -62,7 +66,7 @@ atoms.calc = ADAPTVQE(
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)
-result = atoms.calc.adapt_result
+result = atoms.calc.result
 energy_ha = result.optimal_energy
 n_orbitals = atoms.calc.n_qubits // 2
 

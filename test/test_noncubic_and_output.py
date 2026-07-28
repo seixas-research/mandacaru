@@ -324,7 +324,7 @@ class TestADAPTVQECalculator:
         atoms.calc = ADAPTVQE(pool="ceo", hamiltonian_builder=builder,
                               max_iterations=6, gradient_tolerance=1e-4)
         energy_ev = atoms.get_total_energy()
-        result = atoms.calc.adapt_result
+        result = atoms.calc.result
 
         # ASE returns eV; it must equal the Ha result converted to eV.
         expected_ev = result.optimal_energy * 27.211386245988
