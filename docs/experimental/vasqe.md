@@ -1,7 +1,13 @@
 # Stochastic Adaptive Eigensolving with VASQE
 
+> **Experimental.** VASQE lives in `carcara.experimental` and is *not* part of
+> the stable API: it is still under development and not fully validated. This
+> page is deliberately kept outside the Sphinx manual (`docs/source/`) and is
+> not built with it. The production adaptive solver is ADAPT-VQE
+> (`method="adapt-vqe"`, the default everywhere).
+
 **VASQE** — the **Variational Adaptive Stochastic Quantum Eigensolver**, selected
-with `method="vasqe"` on {class}`~carcara.algorithms.QuantumCalculator` — is
+with `method="vasqe"` on `QuantumCalculator` — is
 ADAPT-VQE with a **stochastic operator-selection** rule.
 ADAPT-VQE greedily appends the pool operator with the largest gradient magnitude;
 VASQE instead **samples** the operator from a Boltzmann-like softmax of the
@@ -111,3 +117,21 @@ with VASQE's stochastic selection.
 
 A complete, runnable script comparing the temperature schedules on H\ :sub:`2` is
 `examples/10_VASQE_H2.py`.
+
+
+---
+
+## Periodic systems: VASQE through the Bloch calculator
+
+`method="vasqe"` runs the crystal supercell through VASQE, so the ansatz grows by
+**stochastic softmax selection** with an optional temperature **annealing**
+schedule — useful for exploring the operator space on a larger supercell before
+settling on the greedy (ADAPT) choice:
+
+```python
+e_cell, res = BlochCalculator(atoms, method="vasqe", h=0.20).total_energy(
+    (4, 1, 1), temperature=2.0, final_temperature=0.02, schedule="exponential",
+    max_iterations=10, gradient_tolerance=1e-3, seed=1)
+print(res.temperatures)          # the selection temperature at each growth step
+```
+

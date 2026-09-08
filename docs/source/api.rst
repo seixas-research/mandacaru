@@ -12,12 +12,41 @@ Algorithms & Drivers
    :undoc-members:
    :show-inheritance:
 
+Dry Run
+~~~~~~~
+
+The qubit estimate of a calculation, made without integrals, mapping or
+circuits.  See :doc:`guide/dry_run`.
+
+.. automodule:: carcara.algorithms.dry_run
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Command Line
+~~~~~~~~~~~~
+
+.. automodule:: carcara.cli
+   :members: main, build_parser, load_geometry, solver_options
+   :undoc-members:
+
 ----
 
 Basis Sets
 ----------
 
 .. automodule:: carcara.basis
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+All-Electron Numerical Atomic Orbitals
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``NAO-AE`` family -- the LDA atom's own shells under a smooth wall plus
+hydrogen-like tiers sized from the atom.  See :doc:`guide/nao_ae`.
+
+.. automodule:: carcara.basis.nao_ae
    :members:
    :undoc-members:
    :show-inheritance:

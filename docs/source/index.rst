@@ -82,7 +82,7 @@ The design of Carcará is built around **loose coupling** and **strict unit boun
         ↳ Molecular Hamiltonian (Fermionic Operators)
           ↳ Fermion-to-Qubit Mappings (PauliSum qubit Hamiltonian)
             ↳ *(optional)* Parquet/JSON cache — replay later, skipping everything above
-              ↳ QuantumCalculator (``method=`` selects VQE / ADAPT-VQE / VASQE / subspace variants; parameterized circuit compiled to a backend & optimized classically)
+              ↳ QuantumCalculator (``method=`` selects ADAPT-VQE (default) / VQE / subspace variants; parameterized circuit compiled to a backend & optimized classically)
                 ↳ Execution: internal state vector, or Qiskit / Amazon Braket / Cirq circuits (simulator or QPU)
 
 1. Basis-Agnostic Integrals
@@ -132,7 +132,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - Status
    * - **carcara.basis**
      - Orbital generation
-     - FAO (analytic hydrogenic), NAO (numerical confinement, multiple-zeta and polarized), GTO (minimal STO-nG), Pople 6-31G & 6-31G(d) (with d-polarization). Exponents fitted from scratch via least-squares. Norm-conserving Troullier-Martins pseudopotentials for Z < 90.
+     - FAO (analytic hydrogenic), NAO (numerical confinement, multiple-zeta and polarized), NAO-AE (all-electron numerical orbitals under a smooth wall with hydrogen-like tiers), GTO (minimal STO-nG), Pople 6-31G & 6-31G(d) (with d-polarization). Exponents fitted from scratch via least-squares. Norm-conserving Troullier-Martins pseudopotentials for Z < 90.
      - **Complete**
    * - **carcara.integrals**
      - Integral evaluation
@@ -148,7 +148,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - **Complete**
    * - **carcara.algorithms**
      - Solvers & profiling
-     - The unified ``QuantumCalculator`` (solver selected with ``method=``) and periodic ``BlochCalculator`` front ends; exact state-vector VQE & ADAPT-VQE solvers, RHF/UHF molecular-orbital (MO) solvers, PQC expressibility trackers (KL-divergence vs. Haar), CNOT/depth compilers, and the ``quenching`` parametrization policy.
+     - The unified ``QuantumCalculator`` (solver selected with ``method=``, ADAPT-VQE by default) and periodic ``BlochCalculator`` front ends; exact state-vector VQE & ADAPT-VQE solvers, RHF/UHF molecular-orbital (MO) solvers, PQC expressibility trackers (KL-divergence vs. Haar), CNOT/depth compilers, the ``quenching`` parametrization policy, and the ``dry_run`` qubit estimate (also the ``carcara --dry-run`` command line).
      - **Complete**
    * - **carcara.optimizers**
      - Parameter optimization
@@ -185,6 +185,7 @@ carcara.basis
 
 Carcará does not ship database tables of basis-set exponents. Instead, it generates all basis sets **from first principles**:
 
+* **All-Electron Numerical Atomic Orbitals (NAO-AE):** every occupied shell of the self-consistent LDA atom (core included) re-solved under a smooth exponential-wall confinement, plus hydrogen-like polarization / diffuse / contracted *tiers* whose effective charges are derived from the atom's own valence radius; each :math:`l` channel is Gram-Schmidt orthonormalized. See :doc:`guide/nao_ae`.
 * **Numerical Atomic Orbitals (NAOs):** Confinement is defined by an ``energy_shift`` parameter :math:`\delta E` (default 0.03 eV). The radial Schrödinger equation is solved numerically via finite differences inside a hard-wall sphere of radius :math:`r_c = \pi / \sqrt{2\delta E}` using a screened nuclear potential. A ``size`` argument selects **multiple-zeta and polarized** variants (``SZ``, ``DZ``, ``DZP``, ``TZP``, ``QZP``, ...): extra zetas come from the SIESTA split-valence construction, polarization from an :math:`l+1` shell solved in the same sphere. See :doc:`guide/basis_sets`.
 * **Gaussian-Type Orbitals (GTOs):** Exponents and coefficients are computed by a least-squares fit to Slater-Type Orbitals (STOs) with exponents :math:`\zeta` determined by Slater's rules. A reference fit is cached for :math:`\zeta=1` and scaled dynamically by :math:`\zeta^2` for any target atom.
 * **Pople Bases:** Contracted split-valence bases (6-31G) are built using a similar dynamic fit, including Slater-heuristic polarization d-shells for non-Hydrogen atoms.
@@ -234,7 +235,7 @@ For adaptive VQE algorithms, four operator pools define the candidate generators
 carcara.algorithms
 ------------------
 
-All molecular runs go through the unified ASE calculator ``QuantumCalculator``, which selects the variational method with ``method=`` (``"vqe"``, ``"adapt-vqe"``, ``"vasqe"``, ``"subspace-vqe"``, ``"subspace-adapt-vqe"``, ``"subspace-vasqe"``); periodic systems go through ``BlochCalculator``.
+All molecular runs go through the unified ASE calculator ``QuantumCalculator``, which selects the variational method with ``method=`` (``"adapt-vqe"`` -- the default -- ``"vqe"``, ``"subspace-vqe"``, ``"subspace-adapt-vqe"``); periodic systems go through ``BlochCalculator``, with the same default. Methods still under development live in ``carcara.experimental`` and are documented separately, outside this manual.
 
 * **VQE:** Computes :math:`\langle \psi(\boldsymbol{\theta})| H |\psi(\boldsymbol{\theta}) \rangle` on exact state vectors, updating parameters until convergence.
 * **ADAPT-VQE:** Calculates the commutator gradients :math:`\langle \psi | [H, A_i] | \psi \rangle` for all pool operators, selects the operator with the largest gradient, appends it to the ansatz, and performs a warm-started VQE optimization. Loop terminates when the maximum gradient falls below ``gradient_tolerance``.

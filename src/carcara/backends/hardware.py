@@ -57,6 +57,9 @@ class Device:
     provider: str | None     # circuit provider that drives it
     arn: str | None = None   # Amazon Braket ARN, for AWS devices
     description: str = ""
+    #: Qubit capacity of a real QPU (``None`` for simulators and for devices
+    #: whose size is not fixed by the name, e.g. the reserved IBM entry).
+    qubits: int | None = None
 
     @property
     def is_aws(self) -> bool:
@@ -84,16 +87,20 @@ _DEVICES: dict[str, Device] = {
                description="Braket managed tensor-network simulator (TN1)"),
         Device("braket-ionq-aria", False, True, "braket",
                arn="arn:aws:braket:us-east-1::device/qpu/ionq/Aria-1",
-               description="IonQ Aria-1 trapped-ion QPU (25 qubits)"),
+               description="IonQ Aria-1 trapped-ion QPU (25 qubits)",
+               qubits=25),
         Device("braket-ionq-forte", False, True, "braket",
                arn="arn:aws:braket:us-east-1::device/qpu/ionq/Forte-1",
-               description="IonQ Forte-1 trapped-ion QPU (36 qubits)"),
+               description="IonQ Forte-1 trapped-ion QPU (36 qubits)",
+               qubits=36),
         Device("braket-iqm-garnet", False, True, "braket",
                arn="arn:aws:braket:eu-north-1::device/qpu/iqm/Garnet",
-               description="IQM Garnet superconducting QPU (20 qubits)"),
+               description="IQM Garnet superconducting QPU (20 qubits)",
+               qubits=20),
         Device("braket-rigetti-ankaa", False, True, "braket",
                arn="arn:aws:braket:us-west-1::device/qpu/rigetti/Ankaa-3",
-               description="Rigetti Ankaa-3 superconducting QPU (84 qubits)"),
+               description="Rigetti Ankaa-3 superconducting QPU (84 qubits)",
+               qubits=84),
     )
 }
 
@@ -175,6 +182,17 @@ def get_device(name: str) -> Device:
 def device_arn(name: str) -> str | None:
     """The Amazon Braket ARN of ``name``, or ``None`` if it is not an AWS device."""
     return get_device(name).arn
+
+
+def device_qubits(name: str) -> int | None:
+    """Qubit capacity of ``name``, or ``None`` when it is not fixed by the name.
+
+    Simulators are bounded by memory rather than a qubit register, and the
+    reserved ``"ibm-quantum"`` label does not pin one processor, so both return
+    ``None``; the registered Braket QPUs report their register size.  Used by
+    the dry-run qubit estimate to say whether a problem fits a device.
+    """
+    return get_device(name).qubits
 
 
 def device_provider(name: str) -> str | None:

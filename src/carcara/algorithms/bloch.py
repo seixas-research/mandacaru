@@ -13,7 +13,8 @@ molecular :class:`~carcara.algorithms.calculator.QuantumCalculator` to treat a
 **periodic system** given as an ASE ``Atoms`` primitive cell (its ``cell`` and
 ``pbc`` define the lattice and which directions are periodic).  Like the
 molecular calculator, the variational eigensolver is selected by the ``method``
-argument (``"vqe"`` / ``"adapt-vqe"`` / ``"vasqe"``).  It provides the two
+argument (``"adapt-vqe"`` by default, or ``"vqe"``; the experimental
+``"vasqe"`` is accepted as well).  It provides the two
 things a periodic calculation needs:
 
 * **Band structure** -- the single-particle Bloch Hamiltonian
@@ -94,8 +95,9 @@ class BlochCalculator:
         vacuum.
     method : str
         Which variational eigensolver evaluates the supercell energy --
-        ``"vqe"`` (default), ``"adapt-vqe"`` or ``"vasqe"`` (any method accepted
-        by :class:`~carcara.algorithms.calculator.QuantumCalculator`).
+        ``"adapt-vqe"`` (default) or ``"vqe"`` (any method accepted by
+        :class:`~carcara.algorithms.calculator.QuantumCalculator`, including
+        the experimental ``"vasqe"`` from :mod:`carcara.experimental`).
     basis : str or dict
         Localized basis passed to :class:`~carcara.basis.BasisSet` and to the
         molecular calculator (default ``"FAO"``).
@@ -117,7 +119,7 @@ class BlochCalculator:
         (default ``5.0``).
     """
 
-    def __init__(self, atoms, method: str = "vqe", basis="FAO",
+    def __init__(self, atoms, method: str = "adapt-vqe", basis="FAO",
                  mapping: str = "jordan_wigner",
                  n_cells: int = 4, n_images: int = 7, h: float = 0.20,
                  vacuum: float = 5.0):
@@ -293,8 +295,7 @@ class BlochCalculator:
         valid depends on the selected method.
 
         Returns ``(energy_per_cell_eV, result)`` where ``result`` is the
-        method's result object (``VQEResult`` / ``ADAPTVQEResult`` /
-        ``VASQEResult``).
+        method's result object (``ADAPTVQEResult`` / ``VQEResult``).
         """
         from .calculator import QuantumCalculator
 

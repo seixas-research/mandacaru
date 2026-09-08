@@ -7,14 +7,13 @@ selected with `method=`:
 
 | `method=` | Supercell solver |
 | :--- | :--- |
+| `"adapt-vqe"` | adaptive ansatz (ADAPT-VQE) — the default |
 | `"vqe"` | fixed UCCSD ansatz (VQE) |
-| `"adapt-vqe"` | adaptive ansatz (ADAPT-VQE) |
-| `"vasqe"` | stochastic, annealed selection (VASQE) |
 
 The calculator does two things: it solves the single-particle **Bloch Hamiltonian**
 at each k-point for the band structure, and it computes a **total energy that uses
 all k-points** with the selected molecular method. The band structure is
-single-particle, so it is **identical across all three methods** — it is
+single-particle, so it is **identical across the methods** — it is
 method-independent. Only the correlated total energy differs by method.
 
 The crystal is given as an ASE `Atoms` **primitive cell** — `atoms.cell` sets the
@@ -42,7 +41,7 @@ print(bloch.dimension, "D crystal,", bloch.n_bands, "band(s)")
 `n_cells` sets how many lattice translations enter the Bloch sum, `n_images` the
 width of the nuclei window used to build the periodic potential, and `h` the
 real-space grid spacing (Ångström). The constructor is the same for every method —
-swap `method="vqe"` for `method="adapt-vqe"` or `method="vasqe"`.
+swap `method="adapt-vqe"` (the default) for `method="vqe"`.
 
 ---
 
@@ -90,8 +89,8 @@ $$E_\text{cell} = \frac{E_\Gamma\big(\text{supercell}\big)}{n_\text{cells}} .$$
 
 `total_energy` builds that supercell with `atoms.repeat`, runs it through the
 selected molecular method (the box is the supercell's own cell), and returns
-`(energy_per_cell_eV, result)` — the `result` being a `VQEResult`,
-`ADAPTVQEResult`, or `VASQEResult` depending on the method:
+`(energy_per_cell_eV, result)` — the `result` being an `ADAPTVQEResult` or a
+`VQEResult` depending on the method:
 
 ```python
 # Fixed-ansatz VQE.
@@ -111,20 +110,6 @@ that converges to the bulk total energy as the mesh is refined (exact in the
 infinite-mesh limit). Note the supercell size — and therefore the qubit count —
 grows with the mesh, so a dense mesh such as `(10, 1, 1)` (a 20-qubit supercell) is
 heavy for exact state-vector simulation.
-
-### Stochastic selection with method="vasqe"
-
-`method="vasqe"` runs the crystal supercell through VASQE, so the ansatz grows by
-**stochastic softmax selection** with an optional temperature **annealing**
-schedule — useful for exploring the operator space on a larger supercell before
-settling on the greedy (ADAPT) choice:
-
-```python
-e_cell, res = BlochCalculator(atoms, method="vasqe", h=0.20).total_energy(
-    (4, 1, 1), temperature=2.0, final_temperature=0.02, schedule="exponential",
-    max_iterations=10, gradient_tolerance=1e-3, seed=1)
-print(res.temperatures)          # the selection temperature at each growth step
-```
 
 ---
 

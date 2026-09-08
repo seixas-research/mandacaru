@@ -81,7 +81,9 @@ def resolve_basis(basis):
     Accepts a plain method name (``"FAO"``) or a dict giving the name plus that
     family's options: ``{"name": "FAO"}``, ``{"name": "NAO", "energy_shift": 0.03}``,
     ``{"name": "NAO", "size": "DZP"}`` (multiple-zeta and polarized -- see
-    :mod:`carcara.basis.multizeta`), ``{"name": "GTO", "n_gaussians": 3}``,
+    :mod:`carcara.basis.multizeta`), ``{"name": "NAO-AE", "tier": 1,
+    "onset": 3.0}`` (all-electron NAOs, :mod:`carcara.basis.nao_ae`),
+    ``{"name": "GTO", "n_gaussians": 3}``,
     ``{"name": "6-31G(d)"}`` or the plane-wave basis
     ``{"name": "PW", "energy_cutoff": 300}``.  Returns the name string and a dict
     of the remaining keyword options.

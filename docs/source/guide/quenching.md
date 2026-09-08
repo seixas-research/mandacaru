@@ -78,6 +78,7 @@ accuracy comes from re-optimization rather than from operator selection.
 {class}`~carcara.algorithms.base.VariationalDriver` and is honored by every
 driver that inherits from it:
 
-- `_optimize_grown` — the growth loop of `ADAPTVQE`, `VASQE`, the deflation
-  excited-state growth, and `SubspaceADAPTVQE`;
+- `_optimize_grown` — the growth loop of `ADAPTVQE`, the deflation
+  excited-state growth, and `SubspaceADAPTVQE` (and any subclass that only
+  overrides operator selection);
 - `_optimize_all` — `VQE.run`, its deflated excited states, and `SubspaceVQE`.

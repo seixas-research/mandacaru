@@ -31,7 +31,7 @@ come from a quantum variational eigensolver:
 
 The run result of the most recent evaluation is available uniformly on
 :attr:`QuantumCalculator.result`, whatever the method
-(``VQEResult`` / ``ADAPTVQEResult`` / ``VASQEResult`` / the subspace results).
+(``VQEResult`` / ``ADAPTVQEResult`` / the subspace results).
 The calculator also exposes the two non-ASE entry points of the underlying
 solvers: :meth:`run` (direct mode, e.g. from a cached Hamiltonian via
 ``load_hamiltonian=``) and :meth:`energy_levels` (excited states by variational
@@ -61,22 +61,37 @@ from __future__ import annotations
 import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
 
-#: Method names accepted by ``method=``.
-METHODS = ("vqe", "adapt-vqe", "vasqe",
-           "subspace-vqe", "subspace-adapt-vqe", "subspace-vasqe")
+#: The default method: ADAPT-VQE, everywhere a ``method`` is not given.
+DEFAULT_METHOD = "adapt-vqe"
+
+#: Stable method names accepted by ``method=``.
+STABLE_METHODS = ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe")
+
+#: Experimental methods (:mod:`carcara.experimental`) -- accepted, but not
+#: part of the stable API and never a default.
+EXPERIMENTAL_METHODS = ("vasqe", "subspace-vasqe")
+
+#: Every method name accepted by ``method=``.
+METHODS = STABLE_METHODS + EXPERIMENTAL_METHODS
 
 
 def resolve_method(name: str):
-    """Return ``(canonical_name, solver_class)`` for a method spec."""
+    """Return ``(canonical_name, solver_class)`` for a method spec.
+
+    The stable solvers come from :mod:`carcara.algorithms`; the experimental
+    ones (``"vasqe"`` / ``"subspace-vasqe"``) are imported lazily from
+    :mod:`carcara.experimental` so the stable package never depends on them.
+    """
     key = str(name).strip().lower()
     if key not in METHODS:
         raise ValueError(f"unknown method {name!r}; use one of {METHODS}")
-    from . import (ADAPTVQE, VASQE, VQE, SubspaceADAPTVQE, SubspaceVASQE,
-                   SubspaceVQE)
-    return key, {"vqe": VQE, "adapt-vqe": ADAPTVQE, "vasqe": VASQE,
+    if key in EXPERIMENTAL_METHODS:
+        from ..experimental import VASQE, SubspaceVASQE
+        return key, {"vasqe": VASQE, "subspace-vasqe": SubspaceVASQE}[key]
+    from . import ADAPTVQE, VQE, SubspaceADAPTVQE, SubspaceVQE
+    return key, {"vqe": VQE, "adapt-vqe": ADAPTVQE,
                  "subspace-vqe": SubspaceVQE,
-                 "subspace-adapt-vqe": SubspaceADAPTVQE,
-                 "subspace-vasqe": SubspaceVASQE}[key]
+                 "subspace-adapt-vqe": SubspaceADAPTVQE}[key]
 
 
 class QuantumCalculator(Calculator):
@@ -85,11 +100,13 @@ class QuantumCalculator(Calculator):
     Parameters
     ----------
     method : str
-        Which variational eigensolver evaluates the energy -- ``"vqe"``,
-        ``"adapt-vqe"`` (default), ``"vasqe"``, or the subspace-search variants
-        ``"subspace-vqe"`` / ``"subspace-adapt-vqe"`` / ``"subspace-vasqe"``.
-        ADAPT-VQE is the practical choice for anything beyond a couple of
-        orbitals: a fixed UCCSD ansatz becomes very slow past ~8 qubits.
+        Which variational eigensolver evaluates the energy -- ``"adapt-vqe"``
+        (the default), ``"vqe"``, or the subspace-search variants
+        ``"subspace-vqe"`` / ``"subspace-adapt-vqe"``.  ADAPT-VQE is the
+        practical choice for anything beyond a couple of orbitals: a fixed UCCSD
+        ansatz becomes very slow past ~8 qubits.  The experimental stochastic
+        solvers ``"vasqe"`` / ``"subspace-vasqe"`` (:mod:`carcara.experimental`)
+        are accepted too, but are not part of the stable API.
     basis : str or dict
         Basis family, as for the solvers (default ``"FAO"``); accepts a
         ``{"name": ..., <options>}`` dict, including the periodic plane-wave
@@ -121,6 +138,11 @@ class QuantumCalculator(Calculator):
         measurements.
     charge, frozen_core, frozen_orbitals, mapping, optimizer, pool, ... :
         Forwarded to the solver selected by ``method``.
+    dry_run : bool
+        Forwarded too: with ``dry_run=True`` every evaluation only *estimates*
+        the qubit requirements (no integrals, no mapping, no circuits), stores
+        them on :attr:`dry_run_result` and reports ``NaN`` energies.  For a
+        one-off estimate without changing the calculator, use :meth:`dry_run`.
 
     Notes
     -----
@@ -132,7 +154,7 @@ class QuantumCalculator(Calculator):
 
     implemented_properties = ["energy", "free_energy", "forces"]
 
-    def __init__(self, method: str = "adapt-vqe", *, basis="FAO",
+    def __init__(self, method: str = DEFAULT_METHOD, *, basis="FAO",
                  h: float = 0.20, vacuum: float = 3.0, grid=None,
                  include_pulay: bool = True,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
@@ -164,6 +186,29 @@ class QuantumCalculator(Calculator):
     def result(self):
         """Run result of the most recent evaluation (``None`` before any run)."""
         return getattr(self.solver, "result", None)
+
+    @property
+    def dry_run_result(self):
+        """:class:`~carcara.algorithms.dry_run.QubitEstimate` of the last dry run."""
+        return getattr(self.solver, "dry_run_result", None)
+
+    def dry_run(self, atoms=None):
+        """Estimate the qubit requirements **without running** anything.
+
+        Counts the basis functions of ``atoms`` (or of the attached geometry),
+        resolves the charge / spin / frozen-core bookkeeping and the mapping
+        exactly as a run would, and returns a
+        :class:`~carcara.algorithms.dry_run.QubitEstimate` -- no integrals, no
+        Hamiltonian, no circuits.  In direct mode (``load_hamiltonian=``) the
+        cached file's header is all that is read.
+        """
+        if atoms is None:
+            atoms = self.atoms
+        solver = self._make_solver(grid=self._grid)
+        estimate = solver.estimate_qubits(atoms)
+        solver.dry_run_result = estimate
+        self.solver = solver
+        return estimate
 
     def _require_solver(self):
         if self.solver is None:
@@ -278,6 +323,10 @@ class QuantumCalculator(Calculator):
         self.results["energy"] = energy_ev
         self.results["free_energy"] = energy_ev
 
+        if want_forces and solver.dry_run:
+            # A dry run computes nothing to differentiate.
+            self.results["forces"] = np.full((len(atoms), 3), np.nan)
+            return
         if want_forces:
             self.force_result = self._forces(solver)
             self.results["forces"] = self.force_result.forces

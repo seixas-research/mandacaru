@@ -22,9 +22,9 @@ from carcara.algorithms import (
     ADAPTVQEResult,
     BandStructure,
     BlochCalculator,
-    VASQEResult,
     VQEResult,
 )
+from carcara.experimental import VASQEResult
 from carcara.optimizers import Optimizer
 
 METHODS = ["vqe", "adapt-vqe", "vasqe"]

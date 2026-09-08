@@ -254,6 +254,8 @@ class SubspaceMixin:
 
     def run(self, initial_parameters=None, **_ignored):
         """Optimize the shared unitary and return the ``num_states`` levels."""
+        if self.dry_run:
+            return self._dry_run_estimate()
         if not self._configured:
             raise RuntimeError(
                 f"{type(self).__name__} has no Hamiltonian; construct it with one, "

@@ -24,7 +24,8 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, VASQE, VQE
+from carcara.algorithms import ADAPTVQE, VQE
+from carcara.experimental import VASQE
 from carcara.core import PauliSum
 from carcara.core.serialization import (DEFAULT_FILENAME, DEFAULT_FORMAT,
                                         FILE_EXTENSION, FILE_EXTENSIONS,

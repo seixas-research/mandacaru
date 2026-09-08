@@ -9,7 +9,6 @@ vqe_lih
 adapt_vqe_lih
 energy_levels
 subspace_vqe
-vasqe
 pes_scan
 bloch_crystals
 ```

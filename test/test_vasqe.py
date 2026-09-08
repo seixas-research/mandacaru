@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 # file: test_vasqe.py
 
-"""VASQE: ADAPT-VQE with stochastic (softmax) operator selection.
+"""VASQE (experimental): ADAPT-VQE with stochastic (softmax) operator selection.
+
+VASQE lives in :mod:`carcara.experimental`; it is not exported from the stable
+:mod:`carcara.algorithms` package.
 
 Checks the selection probabilities and temperature schedules, that VASQE reduces
 to ADAPT-VQE at low temperature (reaching FCI on H2), that selection is genuinely
@@ -12,15 +15,15 @@ and subspace) inherit the stochastic selection.
 import numpy as np
 import pytest
 
-from carcara.algorithms import (
+from carcara.algorithms.adapt_vqe import ADAPTVQEResult
+from carcara.experimental import (
     SubspaceVASQE,
+    TEMPERATURE_SCHEDULES,
     VASQE,
     VASQEResult,
     annealed_temperature,
     softmax_selection_probabilities,
 )
-from carcara.algorithms.adapt_vqe import ADAPTVQEResult
-from carcara.algorithms.vasqe import TEMPERATURE_SCHEDULES
 from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 from carcara.optimizers import Optimizer
@@ -222,3 +225,45 @@ class TestVASQEExcitedStates:
 def test_schedule_names_exported():
     assert TEMPERATURE_SCHEDULES == ("constant", "exponential", "linear",
                                      "logarithmic")
+
+
+# --------------------------------------------------------------------------- #
+# Packaging: VASQE is experimental, ADAPT-VQE is the default.
+# --------------------------------------------------------------------------- #
+
+class TestExperimentalPackaging:
+    def test_not_exported_from_stable_algorithms(self):
+        import carcara.algorithms as algorithms
+        for name in ("VASQE", "VASQEResult", "SubspaceVASQE"):
+            assert not hasattr(algorithms, name)
+            assert name not in algorithms.__all__
+
+    def test_method_names_are_flagged_experimental(self):
+        from carcara.algorithms import (DEFAULT_METHOD, EXPERIMENTAL_METHODS,
+                                        METHODS, STABLE_METHODS,
+                                        resolve_method)
+        assert DEFAULT_METHOD == "adapt-vqe"
+        assert "vasqe" in EXPERIMENTAL_METHODS
+        assert "subspace-vasqe" in EXPERIMENTAL_METHODS
+        assert not set(EXPERIMENTAL_METHODS) & set(STABLE_METHODS)
+        assert set(METHODS) == set(STABLE_METHODS) | set(EXPERIMENTAL_METHODS)
+        assert resolve_method("vasqe")[1] is VASQE
+        assert resolve_method("subspace-vasqe")[1] is SubspaceVASQE
+
+    def test_calculators_default_to_adapt_vqe(self):
+        from ase import Atoms
+        from carcara.algorithms import ADAPTVQE, BlochCalculator, QuantumCalculator
+        calc = QuantumCalculator(verbose=False)
+        assert calc.method == "adapt-vqe" and calc._solver_class is ADAPTVQE
+        chain = Atoms("H", positions=[[0, 0, 0]], cell=[1.0, 10.0, 10.0],
+                      pbc=[True, False, False])
+        assert BlochCalculator(chain).method == "adapt-vqe"
+
+    def test_legacy_import_path_warns(self):
+        import importlib
+        import sys
+        import warnings
+        sys.modules.pop("carcara.algorithms.vasqe", None)
+        with pytest.warns(DeprecationWarning, match="carcara.experimental"):
+            legacy = importlib.import_module("carcara.algorithms.vasqe")
+        assert legacy.VASQE is VASQE

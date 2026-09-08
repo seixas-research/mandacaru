@@ -15,6 +15,9 @@ grid), so any of them drops straight into the integral engine.  Built-ins:
   effective charges);
 * :class:`NumericalAtomicOrbital` -- confined Sankey/SIESTA-type numerical
   orbitals on a radial grid;
+* the **NAO-AE** family (:mod:`carcara.basis.nao_ae`) -- all-electron
+  numerical atomic orbitals: the LDA atom's own shells under a smooth wall,
+  plus hydrogen-like polarization / diffuse tiers sized from the atom;
 * :class:`GaussianOrbital` -- contracted Gaussian-type orbitals, used by the
   native STO-nG basis (:mod:`carcara.basis.sto_ng`).
 
@@ -32,12 +35,15 @@ core that the real-space grid cannot resolve:
 
 from .atomic_solver import AtomicResult, solve_atom, solve_radial
 from .base import BasisFunction
-from .factory import (BasisSet, FAOBasisSet, GTOBasisSet, NAOBasisSet,
-                      Pople631GBasisSet)
+from .factory import (BasisSet, FAOBasisSet, GTOBasisSet, NAOAEBasisSet,
+                      NAOBasisSet, Pople631GBasisSet)
 from .gaussian import GaussianOrbital
 from .fao import FullAtomicOrbital
 from .nao import (DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital,
                   energy_shift_to_rc)
+from .nao_ae import (RadialFunction, build_species, confinement_potential,
+                     effective_charge_for_radius, hydrogenic_function,
+                     tier_specification)
 from .pople import pople_631g_shells
 from .pseudopotential import (Channel, PseudoPotential, check_channel,
                               generate_pseudopotential, pseudize_channel,
@@ -53,7 +59,14 @@ __all__ = [
     "BasisSet",
     "FAOBasisSet",
     "NAOBasisSet",
+    "NAOAEBasisSet",
     "GTOBasisSet",
+    "RadialFunction",
+    "build_species",
+    "confinement_potential",
+    "effective_charge_for_radius",
+    "hydrogenic_function",
+    "tier_specification",
     "Pople631GBasisSet",
     "energy_shift_to_rc",
     "DEFAULT_ENERGY_SHIFT",

@@ -365,7 +365,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  backend_provider: str | None = None,
                  execute_circuits: bool | None = None,
                  backend_options: dict | None = None, shots: int = 0,
-                 quenching: bool = True,
+                 quenching: bool = True, dry_run: bool = False,
                  run_options: dict | None = None, **calc_kwargs):
         super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
                          device=device, grid=grid, h=h, kpts=kpts, spin=spin,
@@ -380,7 +380,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                          backend_provider=backend_provider,
                          execute_circuits=execute_circuits,
                          backend_options=backend_options, shots=shots,
-                         quenching=quenching,
+                         quenching=quenching, dry_run=dry_run,
                          run_options=run_options, verbose=verbose,
                          sparse=sparse, **calc_kwargs)
 
@@ -557,7 +557,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
         ADAPT-VQE's greedy rule: the largest-magnitude gradient.  This is the
         single **selection hook** subclasses override to change *which* operator
-        grows the ansatz -- e.g. :class:`~carcara.algorithms.vasqe.VASQE` samples
+        grows the ansatz -- e.g. :class:`~carcara.experimental.vasqe.VASQE` samples
         it stochastically from a softmax of the gradients.  Convergence
         (``max|grad| < tol``) is decided by the caller, independently of the
         selection, so overriding this never changes the stopping criterion.
@@ -694,6 +694,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             Compute and log the expressivity score each iteration when the
             instance's ``output`` path is set (default ``True``).
         """
+        if self.dry_run:
+            return self._dry_run_estimate()
         if not self._configured:
             raise RuntimeError(
                 "ADAPTVQE has no Hamiltonian; construct it with one, or use it "
@@ -925,7 +927,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     def _extra_header_lines(self) -> list[str]:
         """Extra configuration lines for the verbose header (subclass hook).
 
-        Overridden by :class:`~carcara.algorithms.vasqe.VASQE` to report its
+        Overridden by :class:`~carcara.experimental.vasqe.VASQE` to report its
         stochastic-selection temperature schedule.
         """
         return []

@@ -171,7 +171,7 @@ class VQE(DeflationMixin, VariationalDriver):
                  backend_provider: str | None = None,
                  execute_circuits: bool | None = None,
                  backend_options: dict | None = None, shots: int = 0,
-                 quenching: bool = True,
+                 quenching: bool = True, dry_run: bool = False,
                  run_options: dict | None = None, **calc_kwargs):
         super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
                          device=device, grid=grid, h=h, kpts=kpts, spin=spin,
@@ -186,7 +186,7 @@ class VQE(DeflationMixin, VariationalDriver):
                          backend_provider=backend_provider,
                          execute_circuits=execute_circuits,
                          backend_options=backend_options, shots=shots,
-                         quenching=quenching,
+                         quenching=quenching, dry_run=dry_run,
                          run_options=run_options, verbose=verbose, **calc_kwargs)
         self.ansatz_builder = ansatz_builder
         self._preset_ansatz = ansatz
@@ -266,6 +266,8 @@ class VQE(DeflationMixin, VariationalDriver):
         only argument is ``initial_parameters`` (which the constructor does not
         carry), defaulting to all-zero (the reference state).
         """
+        if self.dry_run:
+            return self._dry_run_estimate()
         if not self._configured:
             raise RuntimeError(
                 "VQE has no Hamiltonian/ansatz; construct it with both, or use it "

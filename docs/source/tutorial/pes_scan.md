@@ -48,7 +48,7 @@ for r in distances:
     print(f"R = {r:.2f} A -> E - E_atoms = {binding_ev:+.4f} eV")
 ```
 
-The curve is bound near equilibrium and returns to $E = 0$ at large $R$. The complete script — including a VASQE sweep of the same curve and the CSV/plot output — is `examples/22_H2_dissociation.py`.
+The curve is bound near equilibrium and returns to $E = 0$ at large $R$. The complete script — including the CSV/plot output — is `examples/22_H2_dissociation.py`.
 
 ---
 

@@ -203,7 +203,7 @@ class AtomicResult:
 def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
                r_max: float = DEFAULT_R_MAX, max_iterations: int = 200,
                tolerance: float = 1e-6, mixing: float = 0.3,
-               configuration=None) -> AtomicResult:
+               configuration=None, confinement=None) -> AtomicResult:
     r"""Self-consistent spherical LDA atom.
 
     Parameters
@@ -218,6 +218,13 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         Linear density-mixing fraction.  Small values are slower but stable.
     configuration : dict, optional
         ``{(n, l): occupancy}``.  Defaults to the aufbau ground state.
+    confinement : callable or ndarray, optional
+        An extra external potential (Hartree) added **only when integrating
+        the orbitals** -- a confining wall for a localized basis (see
+        :mod:`carcara.basis.nao_ae`).  A callable is evaluated on the radial
+        grid; an array must already be on it.  It is *not* part of the
+        returned ``v_effective`` / ``v_hartree`` / ``v_xc``, which remain the
+        genuine self-consistent potentials of the (confined) density.
 
     Returns
     -------
@@ -231,6 +238,14 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
     step = r_max / (points + 1)
     r = np.arange(1, points + 1) * step
     nuclear = -Z / r
+    if confinement is None:
+        wall = np.zeros_like(r)
+    elif callable(confinement):
+        wall = np.asarray(confinement(r), dtype=float)
+    else:
+        wall = np.asarray(confinement, dtype=float)
+        if wall.shape != r.shape:
+            raise ValueError("confinement array must match the radial grid")
 
     # Thomas-Fermi-like starting density: a screened exponential holding Z
     # electrons is close enough for the mixing to take over.
@@ -254,7 +269,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         for (n, l), occupancy in occupations.items():
             if occupancy <= 0:
                 continue
-            u, eps = solve_radial(r, v_effective, l, n - l - 1)
+            u, eps = solve_radial(r, v_effective + wall, l, n - l - 1)
             orbitals[(n, l)] = u
             eigenvalues[(n, l)] = eps
             new_density += occupancy * u * u / (4.0 * np.pi * r * r)
@@ -282,4 +297,5 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         occupations=occupations, density=density, v_effective=v_effective,
         v_hartree=v_hartree, v_xc=v_xc, total_energy=float(total),
         converged=converged, iterations=iteration,
-        details={"points": points, "r_max": r_max, "mixing": mixing})
+        details={"points": points, "r_max": r_max, "mixing": mixing,
+                 "confined": confinement is not None})

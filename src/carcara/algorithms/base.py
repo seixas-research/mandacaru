@@ -121,6 +121,14 @@ class VariationalDriver(Calculator):
         variational parameters at every iteration.  ``False`` optimizes only the
         most recently added parameter, freezing all previous ones at their
         already-optimized values.
+    dry_run : bool
+        Estimate the qubit requirements and **stop** (default ``False``).  In a
+        dry run no integral is computed, no Hamiltonian is mapped and no circuit
+        is executed: the ASE hook stores a
+        :class:`~carcara.algorithms.dry_run.QubitEstimate` on
+        :attr:`dry_run_result`, reports ``NaN`` as the energy, and :meth:`run`
+        returns the estimate instead of a result.  See
+        :mod:`carcara.algorithms.dry_run` and :meth:`estimate_qubits`.
     pseudopotentials : bool or dict
         Use norm-conserving pseudopotentials (default ``False``).  ``True`` loads
         the bundled Troullier-Martins library from ``pseudos/``; a dict passes
@@ -155,7 +163,8 @@ class VariationalDriver(Calculator):
                  backend_provider: str | None = None,
                  execute_circuits: bool | None = None,
                  backend_options: dict | None = None, shots: int = 0,
-                 quenching: bool = True, **calc_kwargs):
+                 quenching: bool = True, dry_run: bool = False,
+                 **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
 
         self.verbose = bool(verbose)
@@ -225,6 +234,12 @@ class VariationalDriver(Calculator):
         # Dynamic parametrization: True re-optimizes every parameter each
         # iteration; False freezes the previous ones (see `_optimize_grown`).
         self.quenching = bool(quenching)
+
+        # Dry run: estimate the qubit budget and stop before any integral,
+        # mapping or circuit (see `estimate_qubits` / `_dry_run_estimate`).
+        self.dry_run = bool(dry_run)
+        #: :class:`~carcara.algorithms.dry_run.QubitEstimate` of the last dry run.
+        self.dry_run_result = None
 
         self._integration_profile = None
         self._gradient_context = None
@@ -458,6 +473,78 @@ class VariationalDriver(Calculator):
                               success=success,
                               message="sequential (quenching=False) sweep")
 
+    # -- dry run ---------------------------------------------------------- #
+
+    def _method_name(self) -> str:
+        """The ``method=`` name of this driver, for reports."""
+        from .calculator import METHODS, resolve_method
+        for name in METHODS:
+            try:
+                if resolve_method(name)[1] is type(self):
+                    return name
+            except Exception:                        # pragma: no cover
+                continue
+        return type(self).__name__
+
+    def estimate_qubits(self, atoms=None):
+        """Qubit requirements of this driver's problem, **without running it**.
+
+        Uses the driver's own settings (``basis`` / ``charge`` / ``spin`` /
+        ``frozen_core`` / ``pseudopotentials`` / ``mapping`` / ``device`` /
+        ``load_hamiltonian``).  ``atoms`` is needed in calculator mode; in
+        direct mode (a Hamiltonian given or loaded at construction) it is
+        ignored.  Nothing is integrated, mapped or executed.
+
+        Returns a :class:`~carcara.algorithms.dry_run.QubitEstimate`.
+        """
+        from .dry_run import estimate_qubits
+
+        common = dict(mapping=self.mapping, method=self._method_name(),
+                      device=self.device)
+        if self.load_hamiltonian is not None:
+            # The cache header is the whole specification (and fixes the
+            # mapping), whether or not the driver has already adopted it.
+            return estimate_qubits(load_hamiltonian=self.load_hamiltonian,
+                                   **common)
+        if self._built_from_hamiltonian and getattr(self, "hamiltonian", None) \
+                is not None:
+            # Direct mode: the occupation lives on the driver (ADAPT) or on
+            # its fixed ansatz (VQE).
+            ansatz = getattr(self, "ansatz", None)
+            particles = getattr(self, "num_particles", None)
+            if particles is None:
+                particles = getattr(ansatz, "num_particles", None)
+            n_orb = getattr(self, "n_spatial_orbitals", None)
+            if n_orb is None:
+                n_orb = getattr(ansatz, "n_spatial_orbitals", None)
+            return estimate_qubits(
+                hamiltonian=self.hamiltonian, num_particles=particles,
+                n_spatial_orbitals=n_orb,
+                basis=self.basis if isinstance(self.basis, str)
+                else str(self.basis), **common)
+        if atoms is None:
+            atoms = getattr(self, "atoms", None)
+        if atoms is None:
+            raise ValueError(
+                "estimate_qubits needs a geometry: pass `atoms`, attach the "
+                "calculator to an Atoms object, or construct the driver with a "
+                "Hamiltonian / load_hamiltonian")
+        return estimate_qubits(
+            atoms, basis=self.basis, charge=self.charge,
+            n_electrons=self.n_electrons, spin=self.spin,
+            frozen_core=self.frozen_core, frozen_orbitals=self.frozen_orbitals,
+            pseudopotentials=self.pseudopotentials, **common)
+
+    def _dry_run_estimate(self, atoms=None):
+        """Perform the dry run: store, optionally print, and return the estimate."""
+        estimate = self.estimate_qubits(atoms)
+        self.dry_run_result = estimate
+        self.result = None
+        if self.verbose:
+            self._show_banner()
+            print(estimate.summary())
+        return estimate
+
     # -- geometry -> Hamiltonian (calculator mode) ------------------------ #
 
     def _build_hamiltonian(self, atoms):
@@ -498,10 +585,19 @@ class VariationalDriver(Calculator):
         supplied at construction is reused.  The run result is stored on
         :attr:`result` and the ground-state energy (eV) in ``results``.
         """
-        require_runnable(self.device)     # e.g. 'ibm-quantum' is not runnable yet
-        self._wall_start = _perf()        # wall clock spans integration + run
         Calculator.calculate(self, atoms, properties, system_changes)
         atoms = self.atoms                # the Atoms copy stored by the base class
+
+        if self.dry_run:
+            # Estimate the qubit budget and stop: nothing is built or executed
+            # (so even a reserved device is fine to *ask about*).
+            self._dry_run_estimate(atoms)
+            self.results["energy"] = float("nan")
+            self.results["free_energy"] = float("nan")
+            return
+
+        require_runnable(self.device)     # e.g. 'ibm-quantum' is not runnable yet
+        self._wall_start = _perf()        # wall clock spans integration + run
 
         if not self._built_from_hamiltonian:
             hamiltonian, num_particles, n_orbitals = self._build_hamiltonian(atoms)

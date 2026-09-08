@@ -38,6 +38,7 @@ from .multizeta import (DEFAULT_NAO_SIZE, DEFAULT_SPLIT_NORM, build_shells,
                         orbitals_from_tables, resolve_zeta)
 from .nao import (DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital,
                   energy_shift_to_rc, solve_confined_radial)
+from . import nao_ae
 from .pople import pople_631g_shells
 from .sto_ng import sto_ng_shells
 from ._config import ground_state_config, valence_subshells
@@ -64,7 +65,9 @@ class BasisSet:
 
         Supported methods: ``"FAO"`` (Full Atomic Orbitals -- the minimal
         analytic single-zeta atomic family),
-        ``"NAO"`` (confined numerical atomic orbitals), ``"GTO"`` / ``"STO-3G"``
+        ``"NAO"`` (confined numerical atomic orbitals), ``"NAO-AE"``
+        (all-electron numerical atomic orbitals with hydrogen-like tiers, see
+        :mod:`carcara.basis.nao_ae`), ``"GTO"`` / ``"STO-3G"``
         (native STO-nG minimal Gaussian) and ``"6-31G"`` / ``"6-31G(d)"`` (native
         Pople split-valence, optionally with ``d`` polarization).
         """
@@ -73,6 +76,8 @@ class BasisSet:
             return FAOBasisSet(**kwargs)
         if key == "NAO":
             return NAOBasisSet(**kwargs)
+        if key in ("NAO-AE", "NAOAE", "NAO_AE", "AE-NAO", "AENAO"):
+            return NAOAEBasisSet(**kwargs)
         if key == "GTO":
             return GTOBasisSet(**kwargs)
         if key in ("STO-3G", "STO3G"):
@@ -84,8 +89,8 @@ class BasisSet:
         if key in ("6-31G(D)", "631G(D)", "6-31G*", "631G*", "6-31GD"):
             return Pople631GBasisSet(polarization=True, **kwargs)
         raise ValueError(
-            f"unknown basis method {method!r}; use 'FAO', 'NAO', 'GTO', "
-            f"'STO-3G', '6-31G' or '6-31G(d)'")
+            f"unknown basis method {method!r}; use 'FAO', 'NAO', 'NAO-AE', "
+            f"'GTO', 'STO-3G', '6-31G' or '6-31G(d)'")
 
     # -- interface --------------------------------------------------------- #
 
@@ -196,6 +201,102 @@ class NAOBasisSet(BasisSet):
     def __repr__(self) -> str:
         return (f"NAOBasisSet(size={self.size!r}, "
                 f"energy_shift={self.energy_shift}, r_c={self.r_c:.3f})")
+
+
+class NAOAEBasisSet(BasisSet):
+    r"""All-electron numerical atomic orbitals with hydrogen-like tiers.
+
+    The minimal basis is every occupied shell of the self-consistent LDA atom
+    (core included), re-solved under a smooth confining wall; ``tier`` adds
+    hydrogen-like polarization / diffuse / contracted functions sized from the
+    atom's own valence radius; each ``l`` channel is Gram-Schmidt
+    orthonormalized.  See :mod:`carcara.basis.nao_ae` for the construction.
+
+    Parameters
+    ----------
+    tier : int
+        ``0`` -- minimal (atomic orbitals only); ``1`` (default) -- plus one
+        polarization shell and one diffuse function per valence channel;
+        ``2`` -- plus a second polarization channel, a noded polarization
+        function and one contracted function per valence channel.
+    onset, width : float
+        Confinement onset and ramp width in Ångström (defaults ``3.0`` /
+        ``1.0``); every function is exactly zero beyond ``onset + width``.
+        The real-space box must extend at least that far around every atom.
+    scale : float
+        Wall strength (Hartree * Bohr^2, default ``1.0``).
+    extra : sequence of (n, l, z), optional
+        Additional hydrogen-like functions with explicit effective charges.
+    linear_dependence_tol : float
+        Gram-Schmidt rejection threshold on the residual norm (``1e-4``).
+    tail_norm : float or None
+        Tier functions are shortened until at most this fraction of their norm
+        lies beyond the onset (``1e-4``; ``None`` disables).
+    points, r_max : int, float
+        Radial grid of the atomic solver (see
+        :func:`~carcara.basis.atomic_solver.solve_atom`).
+    """
+
+    method = "NAO-AE"
+    name = "NAO-AE"
+
+    def __init__(self, tier: int = nao_ae.DEFAULT_TIER,
+                 onset: float = nao_ae.DEFAULT_ONSET,
+                 width: float = nao_ae.DEFAULT_WIDTH,
+                 scale: float = nao_ae.DEFAULT_SCALE, extra=None,
+                 linear_dependence_tol: float = nao_ae.DEFAULT_LINEAR_DEPENDENCE_TOL,
+                 tail_norm: float | None = nao_ae.DEFAULT_TAIL_NORM,
+                 points: int = nao_ae.DEFAULT_POINTS,
+                 r_max: float = nao_ae.DEFAULT_R_MAX):
+        self.tier = int(tier)
+        if not (0 <= self.tier <= nao_ae.MAX_TIER):
+            raise ValueError(
+                f"tier must be in [0, {nao_ae.MAX_TIER}], got {tier}")
+        self.onset = float(onset)
+        self.width = float(width)
+        self.scale = float(scale)
+        self.extra = (None if extra is None
+                      else tuple((int(n), int(l), float(z)) for n, l, z in extra))
+        self.linear_dependence_tol = float(linear_dependence_tol)
+        self.tail_norm = None if tail_norm is None else float(tail_norm)
+        self.points = int(points)
+        self.r_max = float(r_max)
+        self._species: dict[int, list] = {}
+
+    @property
+    def wall_radius(self) -> float:
+        """Radius (Bohr) beyond which every function is exactly zero."""
+        from ..units import to_bohr
+        return float(to_bohr(self.onset + self.width, "angstrom"))
+
+    def species(self, element) -> list:
+        """The orthonormalized :class:`~carcara.basis.nao_ae.RadialFunction` list."""
+        Z = _to_atomic_number(element)
+        if Z not in self._species:
+            self._species[Z] = nao_ae.build_species(
+                Z, tier=self.tier, onset=self.onset, width=self.width,
+                scale=self.scale, extra=self.extra,
+                linear_dependence_tol=self.linear_dependence_tol,
+                tail_norm=self.tail_norm, points=self.points,
+                r_max=self.r_max, units="angstrom")
+        return self._species[Z]
+
+    def tables(self, element) -> list:
+        """Radial tables of ``element`` (see :func:`~carcara.basis.nao_ae.radial_tables`)."""
+        return nao_ae.radial_tables(self.species(element), self.wall_radius)
+
+    def atom(self, element, center=(0.0, 0.0, 0.0),
+             units: str = "angstrom") -> list[BasisFunction]:
+        return orbitals_from_tables(self.tables(element), center=center,
+                                    units=units)
+
+    def describe(self, element) -> str:
+        """Human-readable listing of the radial functions of ``element``."""
+        return nao_ae.describe_species(self.species(element))
+
+    def __repr__(self) -> str:
+        return (f"NAOAEBasisSet(tier={self.tier}, onset={self.onset}, "
+                f"width={self.width})")
 
 
 class GTOBasisSet(BasisSet):

@@ -54,6 +54,9 @@ pyarrow = ['pyarrow']
 docs = ['sphinx', 'sphinx-rtd-theme', 'myst-parser', 'furo']
 dev = ['pyarrow', 'sphinx', 'sphinx-rtd-theme', 'myst-parser', 'furo']
 
+[project.scripts]
+carcara = "carcara.cli:main"
+
 [project.urls]
 "Homepage" = "https://github.com/seixas-research/carcara"
 "Documentation" = "https://carcara.readthedocs.io/en/latest/"
