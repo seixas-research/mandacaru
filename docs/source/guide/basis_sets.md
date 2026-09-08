@@ -44,8 +44,7 @@ the density is not. Fixing that requires $l+1$ character.
 An explicit `(n_zeta, n_polarization)` pair works too. **`size` defaults to
 `"DZP"`** — single zeta has neither radial nor angular freedom, so it is a poor
 default for chemistry. Pass `size="SZ"` for the older minimal basis, which is
-far cheaper and is still what the pseudopotential path uses unless you ask
-otherwise.
+far cheaper.
 
 Other NAO options combine freely in the same dict:
 

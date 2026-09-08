@@ -96,7 +96,5 @@ print(bset.describe("O"))
   $\langle r\rangle \approx 0.2\,a_0$). The uniform real-space grid resolves them
   no better than it resolves the `FAO` core, so use `frozen_core=True` for
   anything heavier than the first row, exactly as with `FAO`.
-- NAO-AE is all-electron by definition and is refused together with
-  `pseudopotentials=True`; use `basis={"name": "PP", "size": ...}` there.
 
 See `examples/23_NAO_AE_basis.py` and {mod}`carcara.basis.nao_ae`.

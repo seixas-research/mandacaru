@@ -130,7 +130,9 @@ class VariationalDriver(Calculator):
         returns the estimate instead of a result.  See
         :mod:`carcara.algorithms.dry_run` and :meth:`estimate_qubits`.
     pseudopotentials : bool or dict
-        Use norm-conserving pseudopotentials (default ``False``).  ``True`` loads
+        **Experimental** -- outside the stable API; see
+        ``docs/experimental/pseudopotentials.md``.  Use norm-conserving
+        pseudopotentials (default ``False``).  ``True`` loads
         the bundled Troullier-Martins library from ``pseudos/``; a dict passes
         options (currently ``{"directory": ...}`` to point at another library).
 

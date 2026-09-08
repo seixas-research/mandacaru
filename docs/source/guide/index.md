@@ -10,7 +10,6 @@ reach real quantum hardware, and how to control the classical optimization loop.
 :maxdepth: 1
 basis_sets
 nao_ae
-pseudopotentials
 dry_run
 hamiltonian_cache
 backends

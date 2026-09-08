@@ -39,6 +39,7 @@ Basis Sets
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: generate_pseudopotential, PseudoPotential, Channel, pseudize_channel, check_channel, report
 
 All-Electron Numerical Atomic Orbitals
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

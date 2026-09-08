@@ -28,7 +28,7 @@ Dry run -- no integrals computed, no circuits executed.
 ```
 
 Every solver option is a flag (`--basis`, `--basis-option size=DZP`,
-`--charge`, `--magmoms`, `--frozen-core`, `--pseudopotentials`, `--mapping`,
+`--charge`, `--magmoms`, `--frozen-core`, `--mapping`,
 `--device`, ...), so the estimate is for exactly the run you would launch by
 dropping `--dry-run`. The geometry can be a file (`.xyz`, `.cif`, `POSCAR`, ...)
 or an ASE `g2` molecule name (`H2O`, `LiH`, `NH3`, ...). With
@@ -84,8 +84,8 @@ $$N_\text{qubits} = 2\,(M_\text{basis} - M_\text{frozen}),$$
 one qubit per active **spin-orbital**: the basis family is instantiated exactly
 as a run would (so `size`, polarization and cutoff options are honoured) and
 its functions are *counted* rather than integrated; the frozen core removes
-doubly occupied spatial orbitals; pseudopotentials count valence orbitals and
-valence electrons; the plane-wave family counts plane waves below the cutoff.
+doubly occupied spatial orbitals; the plane-wave family counts plane waves
+below the cutoff.
 Jordan-Wigner, parity and Bravyi-Kitaev all use this many qubits — the parity
 mapping's optional two-qubit symmetry reduction is reported separately.
 

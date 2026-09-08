@@ -1,5 +1,14 @@
 # Pseudopotentials
 
+> **Experimental.** Norm-conserving pseudopotentials are still under
+> development and are not part of the stable API. This page is deliberately
+> kept outside the Sphinx manual (`docs/source/`) and is not built with it;
+> the code stays importable (`pseudopotentials=True` on any driver,
+> `carcara --pseudopotentials`), but expect the interface and the numerics to
+> change. The stable way to cut the qubit count is the frozen-core
+> approximation (`frozen_core=True`).
+
+
 ```python
 atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO",
                                pseudopotentials=True, h=0.15)

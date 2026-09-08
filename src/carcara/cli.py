@@ -149,8 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
     basis.add_argument("--frozen-orbitals", type=int, nargs="+", default=None,
                        help="explicit spatial-MO indices to freeze")
     basis.add_argument("--pseudopotentials", action="store_true",
-                       help="valence-only run with the bundled "
-                            "Troullier-Martins pseudopotentials")
+                       help="(experimental) valence-only run with the bundled "
+                            "Troullier-Martins pseudopotentials; not part of "
+                            "the stable API")
     basis.add_argument("--mapping", default="jordan_wigner",
                        choices=("jordan_wigner", "parity", "bravyi_kitaev"),
                        help="fermion-to-qubit mapping (default jordan_wigner)")

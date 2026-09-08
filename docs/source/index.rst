@@ -132,7 +132,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - Status
    * - **carcara.basis**
      - Orbital generation
-     - FAO (analytic hydrogenic), NAO (numerical confinement, multiple-zeta and polarized), NAO-AE (all-electron numerical orbitals under a smooth wall with hydrogen-like tiers), GTO (minimal STO-nG), Pople 6-31G & 6-31G(d) (with d-polarization). Exponents fitted from scratch via least-squares. Norm-conserving Troullier-Martins pseudopotentials for Z < 90.
+     - FAO (analytic hydrogenic), NAO (numerical confinement, multiple-zeta and polarized), NAO-AE (all-electron numerical orbitals under a smooth wall with hydrogen-like tiers), GTO (minimal STO-nG), Pople 6-31G & 6-31G(d) (with d-polarization). Exponents fitted from scratch via least-squares.
      - **Complete**
    * - **carcara.integrals**
      - Integral evaluation

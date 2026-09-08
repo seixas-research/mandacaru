@@ -34,7 +34,6 @@ All basis set functions are generated from scratch mathematically rather than re
 - **NAO-AE (All-Electron Numerical Atomic Orbital):** every occupied shell of the self-consistent LDA atom — core included — re-solved under a smooth *exponential-wall* confinement (zero up to an onset radius, divergent at `onset + width`), plus hydrogen-like **tiers**: a polarization shell at $l_\max+1$ and diffuse / contracted functions per valence channel, whose effective charges are derived from the atom's own valence radius rather than tabulated. Each $l$ channel is Gram–Schmidt orthonormalized. `basis={"name": "NAO-AE", "tier": 1}`.
 - **GTO (Gaussian-Type Orbital):** Minimal STO-nG bases generated via scale-covariant least-squares fitting of primitives to Slater-type orbitals.
 - **Pople Split-Valence:** Contracted GTO split-valence bases (e.g., 6-31G and 6-31G(d)), featuring native polarization d-shells.
-- **Norm-Conserving Pseudopotentials:** Troullier-Martins pseudopotentials with Kleinman-Bylander projectors, generated from scratch by an LDA radial atomic solver and shipped for **every element with Z < 90** in `pseudos/` (Parquet, with JSON as an option and format auto-detection on load). Enabled with `pseudopotentials=True` on any calculator; without them, the uniform real-space grid cannot resolve a heavy-atom core and forces diverge under refinement.
 
 ### 2. High-Performance C-Accelerated Integral Engine
 A basis-agnostic integration engine handles the heavy lifting of one-body (kinetic $T$, nuclear attraction $V$) and two-body electron-repulsion integrals (ERI, $\langle ab|cd \rangle$ in physicists' notation) in real space:
@@ -113,7 +112,7 @@ energy_ev = atoms.get_total_energy()
 ```
 
 ### 9. Dry Run and the Command Line
-A **dry run** reports the qubit budget of a calculation — one qubit per active spin-orbital, after the frozen core, pseudopotentials or plane-wave cutoff are accounted for — without computing an integral, mapping a Hamiltonian or executing a circuit, and compares it with the capacity of the target device:
+A **dry run** reports the qubit budget of a calculation — one qubit per active spin-orbital, after the frozen core or plane-wave cutoff is accounted for — without computing an integral, mapping a Hamiltonian or executing a circuit, and compares it with the capacity of the target device:
 ```bash
 carcara water.xyz --frozen-core --dry-run                  # 12 qubits
 carcara H2O --basis NAO --basis-option size=DZP --device braket-ionq-aria --dry-run
