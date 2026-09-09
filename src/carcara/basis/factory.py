@@ -33,6 +33,8 @@ from ase.data import atomic_numbers
 
 from .base import BasisFunction
 from .gaussian import GaussianOrbital
+from .gaussian_families import (GaussianRecipe, gaussian_shells,
+                                parse_basis_name, shell_notation)
 from .fao import FullAtomicOrbital
 from .multizeta import (DEFAULT_NAO_SIZE, DEFAULT_SPLIT_NORM, build_shells,
                         orbitals_from_tables, resolve_zeta)
@@ -67,9 +69,14 @@ class BasisSet:
         analytic single-zeta atomic family),
         ``"NAO"`` (confined numerical atomic orbitals), ``"NAO-AE"``
         (all-electron numerical atomic orbitals with hydrogen-like tiers, see
-        :mod:`carcara.basis.nao_ae`), ``"GTO"`` / ``"STO-3G"``
-        (native STO-nG minimal Gaussian) and ``"6-31G"`` / ``"6-31G(d)"`` (native
-        Pople split-valence, optionally with ``d`` polarization).
+        :mod:`carcara.basis.nao_ae`), ``"GTO"`` / ``"STO-nG"`` (native
+        minimal Gaussian), and every **named Gaussian family** understood by
+        :func:`~carcara.basis.gaussian_families.parse_basis_name` -- the Pople
+        split-valence sets (``"6-31G"``, ``"6-31+G*"``, ``"6-311+G(2df,2p)"``,
+        ``"3-21G"``, ...), the Dunning correlation-consistent sets
+        (``"cc-pVDZ"`` ... ``"cc-pV5Z"``, ``"aug-cc-pVDZ"``, ``"cc-pCVDZ"``)
+        and the Karlsruhe ``"def2-..."`` sets -- all generated natively with the
+        published shell structure (see :mod:`carcara.basis.gaussian_families`).
         """
         key = method.upper().replace(" ", "")
         if key in ("FAO", "FULLATOMICORBITALS"):
@@ -80,17 +87,24 @@ class BasisSet:
             return NAOAEBasisSet(**kwargs)
         if key == "GTO":
             return GTOBasisSet(**kwargs)
-        if key in ("STO-3G", "STO3G"):
-            return GTOBasisSet(n_gaussians=3, **kwargs)
-        if key in ("STO-6G", "STO6G"):
-            return GTOBasisSet(n_gaussians=6, **kwargs)
+        if key in ("STO-3G", "STO3G", "STO-4G", "STO4G", "STO-5G", "STO5G",
+                   "STO-6G", "STO6G"):
+            return GTOBasisSet(n_gaussians=int(key[3:].lstrip("-")[0]),
+                               **kwargs)
         if key in ("6-31G", "631G"):
             return Pople631GBasisSet(polarization=False, **kwargs)
         if key in ("6-31G(D)", "631G(D)", "6-31G*", "631G*", "6-31GD"):
             return Pople631GBasisSet(polarization=True, **kwargs)
-        raise ValueError(
-            f"unknown basis method {method!r}; use 'FAO', 'NAO', 'NAO-AE', "
-            f"'GTO', 'STO-3G', '6-31G' or '6-31G(d)'")
+        # Every other named Gaussian family: Pople, Dunning, Karlsruhe.
+        try:
+            recipe = parse_basis_name(method)
+        except ValueError:
+            raise ValueError(
+                f"unknown basis method {method!r}; use 'FAO', 'NAO', 'NAO-AE', "
+                f"'GTO', an STO-nG name, or a named Gaussian family such as "
+                f"'6-31+G*', '6-311+G(2df,2p)', 'cc-pVTZ', 'aug-cc-pVDZ' or "
+                f"'def2-TZVP'") from None
+        return GaussianBasisSet(recipe, **kwargs)
 
     # -- interface --------------------------------------------------------- #
 
@@ -360,6 +374,54 @@ class FAOBasisSet(BasisSet):
     def __repr__(self) -> str:
         return "FAOBasisSet()"
 
+
+
+class GaussianBasisSet(BasisSet):
+    """A named Gaussian basis set (Pople / Dunning / Karlsruhe / STO-nG).
+
+    Built from a :class:`~carcara.basis.gaussian_families.GaussianRecipe` --
+    the structure the name encodes -- with exponents and contraction
+    coefficients generated natively per atom (see
+    :mod:`carcara.basis.gaussian_families`).  ``BasisSet.build("cc-pVTZ")``,
+    ``BasisSet.build("def2-SVP")`` and ``BasisSet.build("6-311+G(2df,2p)")``
+    all land here.
+
+    Parameters
+    ----------
+    recipe : GaussianRecipe or str
+        The recipe, or a basis-set name to parse.
+    """
+
+    method = "gaussian"
+
+    def __init__(self, recipe):
+        if isinstance(recipe, str):
+            recipe = parse_basis_name(recipe)
+        if not isinstance(recipe, GaussianRecipe):
+            raise TypeError("recipe must be a GaussianRecipe or a basis name")
+        self.recipe = recipe
+        self.name = recipe.name
+        self.family = recipe.family
+
+    def shells(self, element) -> list:
+        """``(l, exponents, coefficients)`` contracted shells of ``element``."""
+        return gaussian_shells(_to_atomic_number(element), self.recipe)
+
+    def notation(self, element) -> str:
+        """Contracted-shell notation, e.g. ``"[4s3p2d1f]"`` for cc-pVTZ carbon."""
+        return shell_notation(_to_atomic_number(element), self.recipe)
+
+    def atom(self, element, center=(0.0, 0.0, 0.0),
+             units: str = "angstrom") -> list[BasisFunction]:
+        orbitals: list[BasisFunction] = []
+        for (l, exps, coeffs) in self.shells(element):
+            for m in range(-l, l + 1):
+                orbitals.append(GaussianOrbital(l, m, exps, coeffs,
+                                                center=center, units=units))
+        return orbitals
+
+    def __repr__(self) -> str:
+        return f"GaussianBasisSet(name={self.name!r})"
 
 
 class Pople631GBasisSet(BasisSet):

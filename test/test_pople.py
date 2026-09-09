@@ -66,8 +66,9 @@ class TestFactory:
         assert len(b.atom("Li")) == 2            # 1s + 2s
 
     def test_unknown_method_rejected(self):
+        # cc-pVQZ is a named Gaussian family now; an unknown name still raises.
         with pytest.raises(ValueError):
-            BasisSet.build("cc-pVQZ")
+            BasisSet.build("WannierZ")
 
 
 class TestNormalization:

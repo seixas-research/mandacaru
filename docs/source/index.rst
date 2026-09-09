@@ -132,7 +132,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - Status
    * - **carcara.basis**
      - Orbital generation
-     - FAO (analytic hydrogenic), NAO (numerical confinement, multiple-zeta and polarized), NAO-AE (all-electron numerical orbitals under a smooth wall with hydrogen-like tiers), GTO (minimal STO-nG), Pople 6-31G & 6-31G(d) (with d-polarization). Exponents fitted from scratch via least-squares.
+     - FAO (analytic hydrogenic), NAO (numerical confinement, multiple-zeta and polarized), NAO-AE (all-electron numerical orbitals under a smooth wall with hydrogen-like tiers), STO-3G to STO-6G, and the named Gaussian families -- Pople (3-21G ... 6-311+G(2df,2p)), Dunning (cc-pVDZ ... cc-pV5Z, aug-cc-pVDZ, cc-pCVDZ) and Karlsruhe (def2-SV(P) ... def2-QZVPPD) -- generated from the structure their names encode, with the published shell structure and function count. Exponents fitted from scratch via least-squares.
      - **Complete**
    * - **carcara.integrals**
      - Integral evaluation
@@ -188,7 +188,7 @@ Carcará does not ship database tables of basis-set exponents. Instead, it gener
 * **All-Electron Numerical Atomic Orbitals (NAO-AE):** every occupied shell of the self-consistent LDA atom (core included) re-solved under a smooth exponential-wall confinement, plus hydrogen-like polarization / diffuse / contracted *tiers* whose effective charges are derived from the atom's own valence radius; each :math:`l` channel is Gram-Schmidt orthonormalized. See :doc:`guide/nao_ae`.
 * **Numerical Atomic Orbitals (NAOs):** Confinement is defined by an ``energy_shift`` parameter :math:`\delta E` (default 0.03 eV). The radial Schrödinger equation is solved numerically via finite differences inside a hard-wall sphere of radius :math:`r_c = \pi / \sqrt{2\delta E}` using a screened nuclear potential. A ``size`` argument selects **multiple-zeta and polarized** variants (``SZ``, ``DZ``, ``DZP``, ``TZP``, ``QZP``, ...): extra zetas come from the SIESTA split-valence construction, polarization from an :math:`l+1` shell solved in the same sphere. See :doc:`guide/basis_sets`.
 * **Gaussian-Type Orbitals (GTOs):** Exponents and coefficients are computed by a least-squares fit to Slater-Type Orbitals (STOs) with exponents :math:`\zeta` determined by Slater's rules. A reference fit is cached for :math:`\zeta=1` and scaled dynamically by :math:`\zeta^2` for any target atom.
-* **Pople Bases:** Contracted split-valence bases (6-31G) are built using a similar dynamic fit, including Slater-heuristic polarization d-shells for non-Hydrogen atoms.
+* **Named Gaussian families (Pople, Dunning, Karlsruhe):** a basis-set name such as ``6-311+G(2df,2p)``, ``aug-cc-pVTZ`` or ``def2-TZVP`` is parsed into its *structure* -- core contraction length, valence split, polarization, diffuse and core-correlating functions -- and generated for each atom from the same Slater-orbital fits: contracted and split-valence functions from one fit partitioned tightest-first, polarization exponents scaled from the valence Slater exponent, diffuse and tight functions placed by fixed ratios. The published shell structure and function count are reproduced (``cc-pVTZ`` carbon is ``[4s3p2d1f]``); the exponents are Carcará's own. See :doc:`guide/basis_sets`.
 
 carcara.integrals
 -----------------

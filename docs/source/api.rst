@@ -41,6 +41,17 @@ Basis Sets
    :show-inheritance:
    :exclude-members: generate_pseudopotential, PseudoPotential, Channel, pseudize_channel, check_channel, report
 
+Named Gaussian Families
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The Pople, Dunning and Karlsruhe basis sets, generated from the structure
+their names encode.  See :doc:`guide/basis_sets`.
+
+.. automodule:: carcara.basis.gaussian_families
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 All-Electron Numerical Atomic Orbitals
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

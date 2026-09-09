@@ -133,7 +133,10 @@ def build_parser() -> argparse.ArgumentParser:
     basis = parser.add_argument_group("basis and Hamiltonian")
     basis.add_argument("--basis", default="FAO",
                        help="basis family: FAO (default), NAO, NAO-AE, GTO, "
-                            "STO-3G, 6-31G, 6-31G(d), PW")
+                            "PW, or a named Gaussian set -- STO-nG, Pople "
+                            "(6-31+G*, 6-311+G(2df,2p), ...), Dunning "
+                            "(cc-pVDZ, aug-cc-pVTZ, cc-pCVDZ) or Karlsruhe "
+                            "(def2-SVP, def2-TZVP, ...)")
     basis.add_argument("--basis-option", action="append", type=_key_value,
                        default=[], metavar="KEY=VALUE",
                        help="basis option, repeatable (size=DZP, "

@@ -1,9 +1,12 @@
-# Basis sets: multiple zeta and polarization
+# Basis sets: multiple zeta, polarization, and the named Gaussian families
 
 Every basis in Carcará is generated from scratch — there are no tabulated
-exponents anywhere in the package. For the numerical atomic orbitals (NAO) that
-generation is now controlled by a `size` argument, which selects how much
-variational freedom each valence shell gets.
+exponents anywhere in the package. This page covers the two ways to buy
+variational freedom: the `size` argument of the numerical atomic orbitals
+(NAO), which selects how much radial and angular freedom each valence shell
+gets, and — at the end — the standard **named Gaussian families** (Pople,
+Dunning, Karlsruhe), which are accepted by name and generated with the
+published shell structure.
 
 ```python
 atoms.calc = QuantumCalculator(method="vqe", basis={"name": "NAO", "size": "DZP"})
@@ -136,3 +139,56 @@ high sizes are specialist tools.
 
 See `examples/21_multizeta_basis.py`, which reproduces every table above and
 plots the zeta hierarchy.
+
+
+## Named Gaussian families: Pople, Dunning, Karlsruhe
+
+The standard Gaussian basis-set names are accepted directly, and every one of
+them is **generated natively** the same way 6-31G(d) already is: the name is
+parsed into its *structure* — core contraction length, valence split,
+polarization, diffuse and core-correlating functions — and the exponents and
+contraction coefficients are produced for the atom at hand from the cached
+Slater-orbital fits and Slater's rules
+({mod}`carcara.basis.gaussian_families`). No basis-set table is read.
+
+```python
+atoms.calc = QuantumCalculator(basis="cc-pVDZ")
+atoms.calc = QuantumCalculator(basis="6-311+G(2df,2p)")
+atoms.calc = QuantumCalculator(basis="def2-TZVP")
+```
+
+| Family | Names |
+| :--- | :--- |
+| Minimal | `STO-3G`, `STO-4G`, `STO-5G`, `STO-6G` |
+| Pople | `3-21G`, `3-21G*`, `3-21G**`, `3-21+G`, `3-21++G`, `3-21+G*`, `3-21+G**`, `4-21G`, `4-31G`, `6-21G`, `6-31G`, `6-31G*`, `6-31+G*`, `6-31G(3df,3pd)`, `6-311G`, `6-311G*`, `6-311+G*`, `6-311+G(2df,2p)` — and any other name of the form `K-NL[M][+|++]G[*|**|(…)]` |
+| Dunning | `cc-pVDZ`, `cc-pVTZ`, `cc-pVQZ`, `cc-pV5Z`, `aug-cc-pVDZ`, `cc-pCVDZ` — and any `[aug-]cc-p[C]VXZ` |
+| Karlsruhe | `def2-SV(P)`, `def2-SVP`, `def2-SVPD`, `def2-TZVP` (also spelled `def2-TZDP`), `def2-TZVPD`, `def2-TZVPP`, `def2-TZVPPD`, `def2-QZVP`, `def2-QZVPD`, `def2-QZVPP`, `def2-QZVPPD` |
+
+What is reproduced is the **shell structure and function count** of the
+published set — `cc-pVTZ` carbon is `[4s3p2d1f]` (30 functions), `def2-TZVP`
+carbon `[5s3p2d1f]`, `6-311+G(2df,2p)` hydrogen `[3s2p]`:
+
+```python
+from carcara.basis import BasisSet, parse_basis_name, shell_notation
+
+bset = BasisSet.build("aug-cc-pVDZ")
+bset.notation("C")                       # '[4s3p2d]'
+len(bset.atom("C"))                      # 23
+parse_basis_name("6-31+G*").summary()
+```
+
+What is *not* reproduced are the published exponents, which come from
+molecular energy optimizations. Carcará's are its own: a Slater-orbital fit
+partitioned tightest-first for the contracted and split-valence functions,
+polarization exponents `f_l · ζ_val²` spread geometrically, diffuse functions
+at the atom's most diffuse exponent divided by 3.5, and tight
+(core-correlating) functions at three times the tightest valence exponent.
+Treat the result as a self-contained basis *of the same size and shape* as its
+namesake — the right thing for qubit-count planning and for comparing solvers
+across basis sizes — not as a drop-in for a literature number quoted in that
+basis.
+
+Two conventions to know. Shells are **spherical** (5 `d`, 7 `f`), so `6-31G*`
+carbon has 14 functions, not the 15 of a Cartesian-`d` program. And Pople's
+`3-21G*` puts its `d` functions on second-row atoms only, exactly as
+published, while `6-31G*` and `6-311G*` polarize every atom beyond helium.

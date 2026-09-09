@@ -92,7 +92,11 @@ def _slater_moment(alpha: np.ndarray, q: int) -> np.ndarray:
     nu = q + 1.0
     z = 1.0 / np.sqrt(2.0 * alpha)
     D = np.array([pbdv(-nu, zi)[0] for zi in np.atleast_1d(z)])
-    return (2.0 * alpha) ** (-nu / 2.0) * gamma(nu) * np.exp(1.0 / (8.0 * alpha)) * D
+    # A trial exponent far below the Slater scale overflows exp(1/8a); the
+    # caller treats a non-finite projection as an infeasible trial.
+    with np.errstate(over="ignore", invalid="ignore"):
+        return ((2.0 * alpha) ** (-nu / 2.0) * gamma(nu)
+                * np.exp(1.0 / (8.0 * alpha)) * D)
 
 
 def _slater_projection(alpha: np.ndarray, n: int, l: int) -> np.ndarray:
@@ -104,16 +108,46 @@ def _slater_projection(alpha: np.ndarray, n: int, l: int) -> np.ndarray:
     return norm * sto_norm * integ
 
 
-def _neg_overlap_sq(log_alpha: np.ndarray, n: int, l: int) -> float:
-    """``-<S|P_g|S>``: minus the squared overlap recovered by the fit."""
-    alpha = np.exp(log_alpha)
+#: Trial exponent sets whose primitive overlap matrix is worse conditioned
+#: than this are rejected: the projected overlap is then numerical noise.
+_MAX_CONDITION = 1.0e12
+#: Bounds on log(alpha) explored by the fit (alpha in ~[1e-5, 1e5] at zeta=1).
+_LOG_ALPHA_BOUNDS = (-12.0, 12.0)
+
+
+def _projected_overlap(alpha: np.ndarray, n: int, l: int):
+    """``(<S|P_g|S>, c)`` for exponents ``alpha``, or ``None`` if infeasible.
+
+    Infeasible means the primitives are (numerically) linearly dependent --
+    two nearly equal exponents, or an exponent so far off the Slater scale
+    that the projection overflows -- in which case the linear solve returns
+    garbage that can exceed the exact bound ``<S|P|S> <= 1`` by orders of
+    magnitude.  Rejecting such trials is what keeps the fit stable for
+    contractions of eight to ten primitives.
+    """
+    if not np.all(np.isfinite(alpha)) or np.any(alpha <= 0):
+        return None
     S = _primitive_overlap(alpha, l)
     b = _slater_projection(alpha, n, l)
+    if not np.all(np.isfinite(b)) or np.linalg.cond(S) > _MAX_CONDITION:
+        return None
     try:
         c = np.linalg.solve(S, b)
     except np.linalg.LinAlgError:
+        return None
+    value = float(b @ c)
+    if not np.isfinite(value) or value > 1.0 + 1.0e-9 or value < 0.0:
+        return None
+    return value, c
+
+
+def _neg_overlap_sq(log_alpha: np.ndarray, n: int, l: int) -> float:
+    """``-<S|P_g|S>``: minus the squared overlap recovered by the fit."""
+    lo, hi = _LOG_ALPHA_BOUNDS
+    if np.any(log_alpha < lo) or np.any(log_alpha > hi):
         return 1.0
-    return -float(b @ c)
+    result = _projected_overlap(np.exp(log_alpha), n, l)
+    return 1.0 if result is None else -result[0]
 
 
 @lru_cache(maxsize=None)
@@ -135,8 +169,13 @@ def _fit_reference(n: int, l: int, n_gaussians: int):
         if best is None or res.fun < best.fun:
             best = res
     alpha = np.exp(best.x)
-    c = np.linalg.solve(_primitive_overlap(alpha, l),
-                        _slater_projection(alpha, n, l))
+    result = _projected_overlap(alpha, n, l)
+    if result is None or best.fun >= 0.0:
+        raise RuntimeError(
+            f"the STO-{n_gaussians}G fit of the ({n}, {l}) Slater orbital did "
+            "not converge to a well-conditioned contraction; use fewer "
+            "primitives")
+    _value, c = result
     order = np.argsort(alpha)[::-1]
     return tuple(alpha[order]), tuple(c[order]), -float(best.fun)
 
