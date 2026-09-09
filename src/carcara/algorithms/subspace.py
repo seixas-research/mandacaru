@@ -46,7 +46,7 @@ import numpy as np
 
 from ..circuits import CircuitMetrics
 from ..core.mapping import reference_qubit_bits
-from .adapt_vqe import ADAPTVQE
+from .adapt_vqe import ADAPTVQE, _max_abs
 from .deflation import EnergyLevels
 from .vqe import VQE
 
@@ -463,7 +463,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
             with timings.time("gradient screening"):
                 evolved = ansatz.evolve(params, refs)
                 grads = self._weighted_gradients(evolved, weights)
-            max_grad = float(np.max(np.abs(grads)))
+            max_grad = _max_abs(grads)
             if max_grad < gradient_tol:
                 converged = True
                 break
@@ -500,8 +500,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
         metrics = self._profile(ansatz)
 
         if not converged and len(selected) == max_iterations:
-            max_grad = float(np.max(np.abs(
-                self._weighted_gradients(evolved, weights))))
+            max_grad = _max_abs(self._weighted_gradients(evolved, weights))
 
         extra = {"converged": converged, "final_max_gradient": max_grad,
                  "operators": selected, "metrics": metrics,

@@ -232,14 +232,30 @@ class PlaneWaveIntegrals:
         from ..algorithms.hartree_fock import RHF
         return RHF(self.one_body(), self.two_body(), n_electrons).run()
 
+    def open_shell_hartree_fock(self, n_alpha: int, n_beta: int):
+        """Unrestricted Hartree-Fock for ``(n_alpha, n_beta)`` electrons.
+
+        Returns a :class:`~carcara.algorithms.hartree_fock.UHFResult` whose
+        ``h_mo`` / ``eri_mo`` are in the natural-orbital basis of the UHF total
+        density -- the basis an odd-electron plane-wave Hamiltonian is written
+        in.  The plane-wave integrals are complex, which the solver handles.
+        """
+        from ..algorithms.hartree_fock import UHF
+        return UHF(self.one_body(), self.two_body(), n_alpha, n_beta).solve()
+
     def molecular_hamiltonian(self, include_nuclear_repulsion: bool = True,
                               mo_basis: bool = False,
-                              n_electrons: int | None = None):
+                              n_electrons: int | None = None,
+                              num_particles=None,
+                              open_shell: bool | None = None):
         """Assemble the second-quantized plane-wave :class:`Fermion` Hamiltonian.
 
         Mirrors :meth:`carcara.core.MolecularIntegrals.molecular_hamiltonian`:
-        ``mo_basis=True`` first rotates the integrals into the RHF molecular-orbital
-        basis (``n_electrons`` required).
+        ``mo_basis=True`` first rotates the integrals into a Hartree-Fock
+        molecular-orbital basis (``n_electrons`` required) -- closed-shell RHF
+        for an even electron count, the **UHF natural-orbital basis** for an
+        odd count or whenever ``open_shell=True`` (``num_particles`` gives the
+        ``(n_alpha, n_beta)`` reference; the default is the lowest spin state).
         """
         from .hamiltonian import spin_block_integrals
         from .mapping import Fermion
@@ -247,8 +263,28 @@ class PlaneWaveIntegrals:
         if mo_basis:
             if n_electrons is None:
                 raise ValueError("mo_basis=True requires n_electrons")
-            rhf = self.hartree_fock(n_electrons)
-            h_so, g_so = spin_block_integrals(rhf.h_mo, rhf.eri_mo)
+            n_el = int(n_electrons)
+            if num_particles is None:
+                n_unpaired = n_el % 2
+                num_particles = ((n_el + n_unpaired) // 2,
+                                 (n_el - n_unpaired) // 2)
+            na, nb = (int(v) for v in num_particles)
+            if na + nb != n_el:
+                raise ValueError(
+                    f"num_particles {num_particles} does not sum to "
+                    f"n_electrons={n_el}")
+            if open_shell is None:
+                open_shell = n_el % 2 == 1
+            if open_shell:
+                uhf = self.open_shell_hartree_fock(na, nb)
+                h_so, g_so = spin_block_integrals(uhf.h_mo, uhf.eri_mo)
+            else:
+                if n_el % 2:
+                    raise ValueError(
+                        "open_shell=False (closed-shell RHF) needs an even "
+                        f"electron count; got {n_el}")
+                rhf = self.hartree_fock(n_el)
+                h_so, g_so = spin_block_integrals(rhf.h_mo, rhf.eri_mo)
         else:
             h_so, g_so = spin_block_integrals(self.one_body(), self.two_body())
         H = Fermion.from_integrals(h_so, g_so)

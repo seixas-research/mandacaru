@@ -150,6 +150,18 @@ class ADAPTVQEResult:
 # ADAPT-VQE driver.
 # --------------------------------------------------------------------------- #
 
+
+def _max_abs(values) -> float:
+    """``max |g|`` over the pool gradients -- ``0.0`` for an empty pool.
+
+    A one-electron, one-orbital problem (the hydrogen atom in a minimal basis)
+    has no excitation at all, so the pool is empty and the reference is already
+    exact; an empty pool therefore reads as converged rather than as an error.
+    """
+    values = np.asarray(values, dtype=float).ravel()
+    return float(np.max(np.abs(values))) if values.size else 0.0
+
+
 class ADAPTVQE(DeflationMixin, VariationalDriver):
     """Adaptive VQE on an exact state-vector backend; also an ASE calculator.
 
@@ -249,16 +261,13 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         problem, so a denser mesh is generated and exposed on :attr:`kpoints` but
         raises ``NotImplementedError`` at run time.
     spin : bool
-        Spin polarization (default ``False``).  ``False`` is a closed-shell
-        reference (``n_alpha == n_beta``); ``True`` is a spin-polarized (high-spin)
-        reference.  The **initial spin state is read primarily from the ASE
-        geometry's initial magnetic moments** (``Atoms(..., magmoms=...)``): their
-        rounded total is the number of unpaired electrons, so a triplet is set with
-        ``magmoms=[1, 1]`` (see
-        :func:`~carcara.algorithms._hamiltonian_from_atoms.resolve_num_unpaired`).
-        ``spin`` is the fallback when no magnetic moments are set.  Only affects the
-        calculator-mode Hamiltonian builder; genuinely open-shell (odd-electron)
-        systems raise ``NotImplementedError`` (RHF-only integrals).
+        Kept for compatibility; the reference spin state is read from the
+        geometry's initial magnetic moments (``Atoms(..., magmoms=...)``): their
+        rounded total is the number of unpaired electrons.  Without magnetic
+        moments an even electron count is a closed-shell singlet and an odd
+        count a doublet.  Odd-electron (open-shell) systems are built in the
+        UHF natural-orbital basis, even counts in the RHF basis -- see
+        :meth:`~carcara.core.hamiltonian.MolecularIntegrals.molecular_hamiltonian`.
     initial_state : str, optional
         The ansatz reference state; ``"hartree-fock"`` (default) is the
         Hartree-Fock determinant.  ``None`` is treated as ``"hartree-fock"``.
@@ -744,7 +753,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     psi = ansatz.state(params) if ansatz.num_parameters else \
                         ansatz.reference_state()
                     grads = self._gradients(psi)
-                max_grad = float(np.max(np.abs(grads)))
+                max_grad = _max_abs(grads)
                 if max_grad < gradient_tol:
                     converged = True
                     break
@@ -822,7 +831,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             with timings.time("gradient screening"):
                 psi = ansatz.state(params) if ansatz.num_parameters else \
                     ansatz.reference_state()
-                max_grad = float(np.max(np.abs(self._gradients(psi))))
+                max_grad = _max_abs(self._gradients(psi))
 
         # Fold the (calculator-mode) integration stage in, then set the wall time.
         self._finalize_timings(timings, run_t0)
@@ -901,7 +910,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             psi = (ansatz.state(params) if ansatz.num_parameters
                    else ansatz.reference_state())
             grads = self._deflated_gradients(psi, states, beta)
-            if float(np.max(np.abs(grads))) < gradient_tol:
+            if _max_abs(grads) < gradient_tol:
                 break
             idx = self._select_operator(grads, ansatz.num_parameters)
             ansatz.append(self._pool_ops[idx])

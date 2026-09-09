@@ -122,7 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
     system = parser.add_argument_group("system")
     system.add_argument("--charge", type=int, default=0)
     system.add_argument("--spin", action="store_true",
-                        help="spin-polarized (high-spin) reference")
+                        help="kept for compatibility: the spin state comes from "
+                             "--magmoms; an odd electron count is a doublet "
+                             "by default (open-shell UHF natural orbitals)")
     system.add_argument("--magmoms", type=float, nargs="+", default=None,
                         help="initial magnetic moment per atom (their sum is "
                              "the number of unpaired electrons)")

@@ -32,7 +32,8 @@ from .expressivity import (
     sample_pqc_fidelities,
     track_adapt_expressivity,
 )
-from .hartree_fock import RHF, RHFResult, UHF, transform_integrals
+from .hartree_fock import (RHF, RHFResult, UHF, UHFResult, natural_orbitals,
+                           transform_integrals)
 from .subspace import (
     SubspaceADAPTVQE,
     SubspaceADAPTVQEResult,
@@ -52,6 +53,8 @@ __all__ = [
     "RHF",
     "RHFResult",
     "UHF",
+    "UHFResult",
+    "natural_orbitals",
     "transform_integrals",
     "ADAPTVQE",
     "ADAPTVQEResult",

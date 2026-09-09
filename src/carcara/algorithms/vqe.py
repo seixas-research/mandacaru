@@ -221,6 +221,13 @@ class VQE(DeflationMixin, VariationalDriver):
                   else self._default_ansatz(n_orbitals, num_particles))
         self.ansatz = ansatz
         self.mapping = getattr(ansatz, "mapping", self.mapping)
+        # Expose the occupation / active-space size like ADAPTVQE does, so the
+        # calculator's `num_particles` and the dry run read them uniformly.
+        particles = getattr(ansatz, "num_particles", num_particles)
+        self.num_particles = (None if particles is None
+                              else tuple(int(v) for v in particles))
+        self.n_spatial_orbitals = getattr(ansatz, "n_spatial_orbitals",
+                                          n_orbitals)
         qubit_h = self._as_pauli_sum(hamiltonian, ansatz.n_qubits)
         self._materialize_hamiltonian(qubit_h, ansatz.n_qubits)
         self._maybe_save_hamiltonian(

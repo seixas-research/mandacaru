@@ -224,22 +224,42 @@ class MolecularIntegrals:
         from ..algorithms.hartree_fock import RHF
         return RHF(self.one_body(), self.two_body(), n_electrons).run()
 
+    def open_shell_hartree_fock(self, n_alpha: int, n_beta: int):
+        """Run unrestricted Hartree-Fock for ``(n_alpha, n_beta)`` electrons.
+
+        Returns an :class:`~carcara.algorithms.hartree_fock.UHFResult` whose
+        ``h_mo`` / ``eri_mo`` are in the **natural-orbital** basis of the UHF
+        total density -- the single spatial basis an open-shell (odd-electron or
+        spin-polarized) molecular Hamiltonian is written in.
+        """
+        from ..algorithms.hartree_fock import UHF
+        return UHF(self.one_body(), self.two_body(), n_alpha, n_beta).solve()
+
     # -- molecular Hamiltonian -------------------------------------------- #
 
     def molecular_hamiltonian(self, include_nuclear_repulsion: bool = True,
                               mo_basis: bool = False,
                               n_electrons: int | None = None,
-                              frozen_orbitals=None) -> Fermion:
+                              frozen_orbitals=None, num_particles=None,
+                              open_shell: bool | None = None) -> Fermion:
         """Assemble the second-quantized :class:`Fermion` Hamiltonian.
 
         Spin-orbitals are ordered alpha-block then beta-block, so the parity
         mapping's two-qubit reduction (which taper the alpha- and total-parity
         qubits) applies directly.
 
-        With ``mo_basis=True`` the spatial integrals are first transformed to the
-        restricted Hartree-Fock molecular-orbital basis (``n_electrons`` required),
-        so the reference determinant is the HF ground state -- the basis expected
-        by ADAPT-VQE and by variational algorithms in general.
+        With ``mo_basis=True`` the spatial integrals are first transformed to a
+        Hartree-Fock molecular-orbital basis (``n_electrons`` required), so the
+        reference determinant is the HF ground state -- the basis expected by
+        ADAPT-VQE and by variational algorithms in general.  For an **even**
+        electron count that is the closed-shell RHF basis.  For an **odd** count
+        -- or whenever ``open_shell=True`` -- it is the **natural-orbital basis
+        of the unrestricted (UHF) solution** for ``num_particles =
+        (n_alpha, n_beta)`` (default: the lowest spin state, one unpaired
+        electron), one spatial basis shared by both spins, so the Hamiltonian
+        keeps the same alpha/beta-block form; see
+        :mod:`carcara.algorithms.hartree_fock`.  ``open_shell=False`` forces
+        RHF (and rejects an odd count).
 
         ``frozen_orbitals`` applies the **frozen-core approximation**: the given
         (doubly occupied) spatial MO indices are removed from the active space and
@@ -254,8 +274,28 @@ class MolecularIntegrals:
         if mo_basis:
             if n_electrons is None:
                 raise ValueError("mo_basis=True requires n_electrons")
-            rhf = self.hartree_fock(n_electrons)
-            h_mo, eri_mo = rhf.h_mo, rhf.eri_mo
+            n_el = int(n_electrons)
+            if num_particles is None:
+                n_unpaired = n_el % 2
+                num_particles = ((n_el + n_unpaired) // 2,
+                                 (n_el - n_unpaired) // 2)
+            na, nb = (int(v) for v in num_particles)
+            if na + nb != n_el:
+                raise ValueError(
+                    f"num_particles {num_particles} does not sum to "
+                    f"n_electrons={n_el}")
+            if open_shell is None:
+                open_shell = n_el % 2 == 1
+            if open_shell:
+                uhf = self.open_shell_hartree_fock(na, nb)
+                h_mo, eri_mo = uhf.h_mo, uhf.eri_mo
+            else:
+                if n_el % 2:
+                    raise ValueError(
+                        "open_shell=False (closed-shell RHF) needs an even "
+                        f"electron count; got {n_el}")
+                rhf = self.hartree_fock(n_el)
+                h_mo, eri_mo = rhf.h_mo, rhf.eri_mo
             if frozen:
                 active = [p for p in range(self.n_orbitals) if p not in frozen]
                 h_mo, eri_mo, core_energy = freeze_core_integrals(

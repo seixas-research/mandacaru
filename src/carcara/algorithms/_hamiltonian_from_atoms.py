@@ -144,16 +144,17 @@ def _auto_frozen_count(frozen_core, numbers) -> int:
 
 
 def resolve_frozen_core(frozen_core, frozen_orbitals, numbers, n_el: int,
-                        n_orbitals: int) -> list[int]:
+                        n_orbitals: int, n_doubly=None) -> list[int]:
     """Resolve the frozen-core spec to a sorted list of frozen spatial-MO indices.
 
     ``frozen_orbitals`` (an explicit list of spatial MO indices) takes precedence;
     otherwise the lowest ``_auto_frozen_count(frozen_core, numbers)`` MOs are
     frozen.  Every frozen orbital must be doubly occupied in the reference
-    (index ``< n_el // 2``), since the frozen-core approximation removes doubly
-    occupied core orbitals.
+    (index ``< n_doubly``, the number of doubly occupied orbitals -- ``n_beta``,
+    defaulting to ``n_el // 2``), since the frozen-core approximation removes
+    doubly occupied core orbitals.
     """
-    n_occ = n_el // 2
+    n_occ = int(n_doubly) if n_doubly is not None else n_el // 2
     if frozen_orbitals is not None:
         frozen = sorted({int(i) for i in frozen_orbitals})
     else:
@@ -177,9 +178,10 @@ def resolve_num_unpaired(atoms, spin, n_el: int) -> int:
     :meth:`ase.Atoms.set_initial_magnetic_moments`): their rounded total is the
     number of unpaired electrons -- e.g. a triplet O₂ with ``magmoms=[1, 1]``
     gives ``2``.  When no magnetic moments are set, falls back to the boolean
-    ``spin`` flag: ``spin=True`` requests a single unpaired electron for an
-    odd-electron count (a high-spin doublet) and, for an even count, keeps the
-    closed-shell singlet (``0``); ``spin=False`` is always ``0``.
+    ``spin`` flag.  An odd electron count always has at least one unpaired
+    electron, so with no magnetic moments it is a doublet whatever ``spin``
+    says; for an even count ``spin`` keeps the closed-shell singlet (``0``) --
+    a high-spin even-electron state is requested through the magnetic moments.
     """
     total = 0.0
     if atoms is not None:
@@ -189,29 +191,26 @@ def resolve_num_unpaired(atoms, spin, n_el: int) -> int:
             total = 0.0
     if abs(total) > 1e-8:
         return int(round(abs(total)))
-    if spin:
-        return 1 if n_el % 2 == 1 else 0
-    return 0
+    return n_el % 2
 
 
 def _num_particles(n_el: int, n_unpaired: int, basis) -> tuple[int, int]:
     """Reference occupation ``(n_alpha, n_beta)`` for ``n_unpaired = n_alpha - n_beta``.
 
-    Validates the shell for the restricted (closed-shell RHF) integral builders:
-    the electron count must be even (odd-electron open shells are not yet
-    supported) and the requested spin state ``n_unpaired`` must share its parity
-    and not exceed ``n_el``.
+    The requested spin state must share the parity of the electron count (an
+    odd count is a doublet, quartet, ...; an even count a singlet, triplet,
+    ...) and cannot exceed it.  Odd counts are built in the open-shell
+    (UHF natural-orbital) basis -- see
+    :meth:`~carcara.core.hamiltonian.MolecularIntegrals.molecular_hamiltonian`.
     """
-    if n_el % 2 != 0:
-        raise NotImplementedError(
-            f"the built-in {basis!r} builder uses restricted (closed-shell RHF) "
-            f"integrals and needs an even electron count; got {n_el}.  Open-shell "
-            "odd-electron systems are not yet supported (pass a "
-            "hamiltonian_builder for those).")
-    if n_unpaired < 0 or n_unpaired > n_el or n_unpaired % 2 != 0:
+    if n_el < 0:
+        raise ValueError(f"negative electron count {n_el}")
+    if n_unpaired < 0 or n_unpaired > n_el or (n_unpaired - n_el) % 2 != 0:
+        parity = "odd" if n_el % 2 else "even"
         raise ValueError(
             f"the requested spin state (n_unpaired={n_unpaired}) is incompatible "
-            f"with {n_el} electrons: n_unpaired must be even and in [0, {n_el}].")
+            f"with {n_el} electrons: n_unpaired must be {parity} and in "
+            f"[0, {n_el}] (basis {basis!r}).")
     return ((n_el + n_unpaired) // 2, (n_el - n_unpaired) // 2)
 
 
@@ -290,14 +289,15 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, options):
     g = (grid if grid is not None
          else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
 
+    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
+    num_particles = _num_particles(n_el, n_unpaired, "PP")
     integrals = MolecularIntegrals(nuclei, basis_fns, g, softening=0.0,
                                    pseudopotentials=[potentials[s]
                                                      for s in symbols],
                                    kb_projectors=projectors)
     hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,
-                                                  n_electrons=n_el)
-    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
-    num_particles = _num_particles(n_el, n_unpaired, "PP")
+                                                  n_electrons=n_el,
+                                                  num_particles=num_particles)
 
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
                "frozen": (), "n_electrons": n_el,
@@ -325,10 +325,12 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     ``None`` for the plane-wave family, whose basis does not move with the
     nuclei.
 
-    ``spin`` selects the reference occupation: ``False`` (default) is closed-shell
-    (``n_alpha == n_beta``, requires an even electron count); ``True`` is a
-    spin-polarized (high-spin) reference.  A genuinely open-shell (odd-electron)
-    system raises ``NotImplementedError`` (RHF-only integrals).
+    The reference occupation comes from the geometry's magnetic moments (see
+    :func:`resolve_num_unpaired`): an even electron count defaults to the
+    closed-shell singlet, an **odd** count to the doublet.  Odd-electron (and
+    any ``n_alpha != n_beta``) systems are built in the open-shell
+    **UHF natural-orbital** basis, even counts in the closed-shell RHF basis --
+    see :meth:`~carcara.core.hamiltonian.MolecularIntegrals.molecular_hamiltonian`.
 
     ``frozen_core`` / ``frozen_orbitals`` apply the frozen-core approximation (see
     :func:`resolve_frozen_core`): the resolved core spatial MOs are removed from
@@ -370,10 +372,11 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     g = (grid if grid is not None
          else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
 
-    frozen = resolve_frozen_core(frozen_core, frozen_orbitals, numbers, n_el,
-                                 len(basis_fns))
-    n_active_el = n_el - 2 * len(frozen)
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
+    n_alpha, n_beta = _num_particles(n_el, n_unpaired, name)
+    frozen = resolve_frozen_core(frozen_core, frozen_orbitals, numbers, n_el,
+                                 len(basis_fns), n_doubly=n_beta)
+    n_active_el = n_el - 2 * len(frozen)
     num_particles = _num_particles(n_active_el, n_unpaired, name)
 
     # Soften the -Z/r cusp to half a grid step (Bohr): a nucleus that lands on a
@@ -383,7 +386,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     softening = 0.5 * float(min(g.dx, g.dy, g.dz))
     integrals = MolecularIntegrals(nuclei, basis_fns, g, softening=softening)
     hamiltonian = integrals.molecular_hamiltonian(
-        mo_basis=True, n_electrons=n_el,
+        mo_basis=True, n_electrons=n_el, num_particles=(n_alpha, n_beta),
         frozen_orbitals=frozen if frozen else None)
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
                "frozen": tuple(frozen), "n_electrons": n_el}
@@ -414,7 +417,8 @@ def _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
     pw = PlaneWaveIntegrals(nuclei, cell, units="angstrom", **options)
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
     num_particles = _num_particles(n_el, n_unpaired, name)
-    hamiltonian = pw.molecular_hamiltonian(mo_basis=True, n_electrons=n_el)
+    hamiltonian = pw.molecular_hamiltonian(mo_basis=True, n_electrons=n_el,
+                                           num_particles=num_particles)
     # No context: the plane-wave basis is not atom-centered, so it contributes
     # no Pulay forces and the gradient machinery does not apply to it.
     return (hamiltonian, num_particles, pw.n_orbitals,

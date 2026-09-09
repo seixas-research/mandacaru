@@ -34,9 +34,10 @@ class TestResolveNumUnpaired:
         atoms = Atoms("O2", positions=[[0, 0, 0], [0, 0, 1.2]], magmoms=[1.0, 1.0])
         assert resolve_num_unpaired(atoms, spin=True, n_el=16) == 2
 
-    def test_spin_flag_high_spin_doublet_for_odd(self):
+    def test_odd_count_is_a_doublet_with_or_without_the_flag(self):
         atoms = Atoms("H", positions=[[0, 0, 0]])
         assert resolve_num_unpaired(atoms, spin=True, n_el=1) == 1
+        assert resolve_num_unpaired(atoms, spin=False, n_el=1) == 1
 
     def test_spin_flag_noop_for_even(self):
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
@@ -50,9 +51,11 @@ class TestNumParticles:
     def test_triplet(self):
         assert _num_particles(16, 2, "FAO") == (9, 7)
 
-    def test_odd_electron_not_supported(self):
-        with pytest.raises(NotImplementedError):
-            _num_particles(7, 1, "FAO")
+    def test_odd_electron_doublet_and_quartet(self):
+        assert _num_particles(7, 1, "FAO") == (4, 3)
+        assert _num_particles(7, 3, "FAO") == (5, 2)
+        with pytest.raises(ValueError):
+            _num_particles(7, 0, "FAO")     # even n_unpaired with odd electrons
 
     def test_incompatible_spin_parity(self):
         with pytest.raises(ValueError):
