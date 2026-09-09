@@ -14,14 +14,12 @@
 [![PyPI version](https://img.shields.io/pypi/v/carcara.svg?style=for-the-badge&logo=pypi&logoColor=white)](https://pypi.org/project/carcara/)
 [![Documentation Status](https://readthedocs.org/projects/carcara/badge/?version=latest&style=for-the-badge&logo=readthedocs&logoColor=white)](https://carcara.readthedocs.io/en/latest/?badge=latest)
 
-<!-- ![Size](https://img.shields.io/github/repo-size/leseixas/carcara?style=for-the-badge&color=orange) -->
-
 
 # Carcará
 
 **Carcará** is a lightweight, high-performance Python framework for fermionic quantum simulations based on variational quantum algorithms (VQAs). Developed with an end-to-end physical simulation pipeline, it targets both noise-free research validation and real NISQ-era quantum hardware — running on **IBM Qiskit**, **Amazon Braket** (including real QPUs) and **Google Cirq** through one unchanged API.
 
-From molecular geometry inputs, Carcará constructs real-space grids, evaluates one- and two-body integrals, performs Hartree-Fock reference calculations, maps operators to qubit systems, and executes variational eigensolving through both standard VQE and adaptive growth algorithms (**ADAPT-VQE**, the default method) with multiple operator pools. Beyond ground states, it computes **excited states** (variational deflation and subspace-search / SSVQE) and handles **periodic systems** (Bloch band structure and Born–von Kármán total energies). All algorithms are reached through a single ASE calculator, `QuantumCalculator`, which selects the solver with a `method=` argument, and share a common, extensible driver architecture underneath. Methods still under development (the stochastic VASQE solver) live in `carcara.experimental`, outside the stable API.
+From molecular geometry inputs, Carcará constructs real-space grids, evaluates one- and two-body integrals, performs Hartree-Fock reference calculations, maps operators to qubit systems, and executes variational eigensolving through both standard VQE and adaptive growth algorithms (**ADAPT-VQE**, the default method) with multiple operator pools. Beyond ground states, it computes **excited states** (variational deflation and subspace-search / SSVQE) and handles **periodic systems** (Bloch band structure and Born–von Kármán total energies). All algorithms are reached through a single ASE calculator, `Carcara`, which selects the solver with a `method=` argument, and share a common, extensible driver architecture underneath.
 
 ---
 
@@ -33,8 +31,6 @@ All basis set functions are generated from scratch mathematically rather than re
 - **NAO (Numerical Atomic Orbital):** Confined Sankey/SIESTA-type atomic orbitals solved numerically on radial grids within a hard-wall sphere boundary dictated by a user-specified energy shift. A `size` argument selects **multiple-zeta and polarized** variants (`SZ`, `DZ`, `DZP`, `TZP`, `TZ2P`, `QZP`, ...): extra zetas are built by the SIESTA split-valence construction, polarization by an $l+1$ shell solved in the same confining sphere.
 - **Named Gaussian families (Pople, Dunning, Karlsruhe):** the standard basis-set names — `3-21G` … `6-311+G(2df,2p)`, `cc-pVDZ` … `cc-pV5Z`, `aug-cc-pVDZ`, `cc-pCVDZ`, `def2-SV(P)` … `def2-QZVPPD`, plus `STO-3G` … `STO-6G` — are parsed into their structure (core contraction, valence split, polarization, diffuse and tight functions) and generated natively with the **published shell structure and function count** (`cc-pVTZ` C = `[4s3p2d1f]`), exponents from Carcará's own Slater-orbital fits rather than a basis-set table. `basis="cc-pVDZ"`, `basis="def2-TZVP"`.
 - **NAO-AE (All-Electron Numerical Atomic Orbital):** every occupied shell of the self-consistent LDA atom — core included — re-solved under a smooth *exponential-wall* confinement (zero up to an onset radius, divergent at `onset + width`), plus hydrogen-like **tiers**: a polarization shell at $l_\max+1$ and diffuse / contracted functions per valence channel, whose effective charges are derived from the atom's own valence radius rather than tabulated. Each $l$ channel is Gram–Schmidt orthonormalized. `basis={"name": "NAO-AE", "tier": 1}`.
-- **GTO (Gaussian-Type Orbital):** Minimal STO-nG bases generated via scale-covariant least-squares fitting of primitives to Slater-type orbitals.
-- **Pople Split-Valence:** Contracted GTO split-valence bases (e.g., 6-31G and 6-31G(d)), featuring native polarization d-shells.
 
 ### 2. High-Performance C-Accelerated Integral Engine
 A basis-agnostic integration engine handles the heavy lifting of one-body (kinetic $T$, nuclear attraction $V$) and two-body electron-repulsion integrals (ERI, $\langle ab|cd \rangle$ in physicists' notation) in real space:
@@ -56,10 +52,9 @@ A robust second-quantized algebra layer implements:
   - `qubit` (individual JW Pauli strings, providing the shallowest individual operators).
   - `qeb` (qubit-excitation generators with Jordan-Wigner Z-strings dropped).
   - `ceo` (coupled-exchange operators sharing entangling structures, yielding the highest accuracy per CNOT).
-- **Excited States:** Every `QuantumCalculator` exposes `energy_levels(num_states=...)`, computing the ground state and low-lying excited states by **variational quantum deflation** (VQD); every returned level is a true eigenvalue within the ansatz's reachable sector. `method="subspace-vqe"` / `method="subspace-adapt-vqe"` implement **subspace-search VQE (SSVQE)**, finding the ground state and several excited states *simultaneously* in one optimization (one shared unitary over orthogonal references, weighted-energy cost) — returning variational upper bounds (Hylleraas–Undheim).
-- **Experimental — VASQE:** a stochastic variant of ADAPT-VQE (softmax operator selection with temperature annealing) is available as `method="vasqe"` / `"subspace-vasqe"` from `carcara.experimental`. It is under development, not part of the stable API, and documented separately in `docs/experimental/vasqe.md`.
+- **Excited States:** Every `Carcara` exposes `energy_levels(num_states=...)`, computing the ground state and low-lying excited states by **variational quantum deflation** (VQD); every returned level is a true eigenvalue within the ansatz's reachable sector. `method="subspace-vqe"` / `method="subspace-adapt-vqe"` implement **subspace-search VQE (SSVQE)**, finding the ground state and several excited states *simultaneously* in one optimization (one shared unitary over orthogonal references, weighted-energy cost) — returning variational upper bounds (Hylleraas–Undheim).
 - **Periodic Systems (`BlochCalculator`):** A general 1-/2-/3-D crystal calculator from an ASE primitive cell, with the correlated solver selected by `method=` (`"adapt-vqe"` by default, or `"vqe"`). Solves the single-particle **Bloch Hamiltonian** `H(k)c = ε(k)S(k)c` for the band structure, and computes a correlated **total energy over all k-points** via the Born–von Kármán supercell equivalence.
-- **Hartree-Fock Reference Drivers:** Restricted Hartree-Fock (RHF) supplies the molecular-orbital basis and stationary reference for closed shells; **open-shell systems** — any odd electron count, or a high-spin state set through `magmoms` — are built in the **natural-orbital basis of the unrestricted (UHF) solution**, one spatial basis shared by both spins, so radicals and doublets run through the same solvers, pools and mappings (`QuantumCalculator` on an `OH` radical gives a `(5, 4)` reference on 12 qubits).
+- **Hartree-Fock Reference Drivers:** Restricted Hartree-Fock (RHF) supplies the molecular-orbital basis and stationary reference for closed shells; **open-shell systems** — any odd electron count, or a high-spin state set through `magmoms` — are built in the **natural-orbital basis of the unrestricted (UHF) solution**, one spatial basis shared by both spins, so radicals and doublets run through the same solvers, pools and mappings (`Carcara` on an `OH` radical gives a `(5, 4)` reference on 12 qubits).
 - **Frozen-Core Approximation:** Every method accepts `frozen_core` (`True`/`"auto"` for the chemical noble-gas core, or an integer count of lowest MOs) and `frozen_orbitals` (an explicit list of core spatial-MO indices). Frozen core orbitals are removed from the active space and replaced by their mean-field contribution (a constant core energy plus an effective one-body potential), shrinking the qubit count.
 - **Spin States & Open Shells:** The initial spin state is set the ASE way, through the atoms' initial magnetic moments (`Atoms(..., magmoms=[1, 1])` for a triplet, `[1, 1, 1]` for a quartet); an odd electron count is a doublet by default. Odd-electron systems — radicals, ions, single atoms — are built in the UHF natural-orbital basis in every basis family, plane waves included, and run through the same solvers, pools, mappings, frozen core and dry run.
 - **Sparse Large Active Spaces:** For 12+ qubits the adaptive methods automatically switch to a sparse operator pool (`sparse="auto"`) that screens with the exact analytic gradient and applies each excitation with a closed-form `exp(θA)`, keeping frozen-core problems such as water tractable on an exact state-vector backend.
@@ -84,7 +79,7 @@ A QPU never returns a state vector — Braket rejects the `StateVector` result t
 - **Device registry:** the local simulator, the AWS managed simulators (SV1/DM1/TN1), and the IonQ / IQM / Rigetti QPUs — or any Braket ARN. Naming a QPU without `shots` is rejected up front rather than at submission.
 
 ```python
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO",
+atoms.calc = Carcara(method="vqe", basis="FAO",
                                device="braket-ionq-aria", shots=8192)
 atoms.get_total_energy()          # measured on a trapped-ion QPU
 ```
@@ -95,9 +90,9 @@ atoms.get_total_energy()          # measured on a trapped-ion QPU
 Building the qubit Hamiltonian — integrals plus the fermion-to-qubit mapping — is the most expensive stage of a run and is independent of the algorithm that follows. It can be serialized and replayed:
 
 ```python
-QuantumCalculator(method="adapt-vqe", basis="FAO",
+Carcara(method="adapt-vqe", basis="FAO",
                   save_hamiltonian="lih.parquet")   # build once
-QuantumCalculator(method="adapt-vqe", pool="ceo",
+Carcara(method="adapt-vqe", pool="ceo",
                   load_hamiltonian="lih.parquet")   # reload: no geometry,
                                                     # no integrals, no mapping
 ```
@@ -105,9 +100,9 @@ QuantumCalculator(method="adapt-vqe", pool="ceo",
 Two formats, selected with `hamiltonian_format`: **Parquet** (compressed, columnar, queryable straight from pandas; ~4× smaller) and **JSON** (plain text, no native dependency). Loading **detects the format automatically** — from the extension, else from the file's leading bytes. Because the file also records `num_particles` and `n_spatial_orbitals`, a reloaded calculator runs with no `Atoms` object at all, turning a pool/optimizer/mapping sweep into seconds.
 
 ### 8. ASE Calculator Integration
-`QuantumCalculator` is a standard calculator for the **Atomic Simulation Environment (ASE)**; the `method` argument selects the solver (`"adapt-vqe"` — the default — `"vqe"`, `"subspace-vqe"`, `"subspace-adapt-vqe"`; the experimental `"vasqe"` / `"subspace-vasqe"` are accepted too):
+`Carcara` is a standard calculator for the **Atomic Simulation Environment (ASE)**; the `method` argument selects the solver (`"adapt-vqe"` — the default — `"vqe"`, `"subspace-vqe"`, `"subspace-adapt-vqe"`):
 ```python
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO", optimizer="COBYLA", h=0.20)
+atoms.calc = Carcara(method="vqe", basis="FAO", optimizer="COBYLA", h=0.20)
 # Asking ASE for the energy executes the entire quantum simulation pipeline!
 energy_ev = atoms.get_total_energy()
 ```
@@ -119,10 +114,10 @@ carcara water.xyz --frozen-core --dry-run                  # 12 qubits
 carcara H2O --basis NAO --basis-option size=DZP --device braket-ionq-aria --dry-run
 carcara --load-hamiltonian lih.parquet --dry-run --json
 ```
-The same `carcara` command runs the full calculation without `--dry-run`. From Python, `QuantumCalculator(...).dry_run(atoms)` returns the `QubitEstimate`, and `dry_run=True` makes every driver stop before the Hamiltonian is built.
+The same `carcara` command runs the full calculation without `--dry-run`. From Python, `Carcara(...).dry_run(atoms)` returns the `QubitEstimate`, and `dry_run=True` makes every driver stop before the Hamiltonian is built.
 
 ### 10. Extensible Driver Architecture
-Underneath `QuantumCalculator`, every variational solver subclasses a single `VariationalDriver` base that owns the shared machinery — the ASE-calculator surface (basis / grid / k-points / spin / frozen core), Hamiltonian materialization (dense or sparse), the state-vector expectation `energy(psi)`, and timing/profiling. Concrete algorithms implement only their optimization loop, and cross-cutting capabilities are **composable mixins**: excited-state deflation (`energy_levels`) and subspace search plug into any driver. Adding a new method (a new operator-selection rule, ansatz, or excited-state technique) requires no changes to the setup code.
+Underneath `Carcara`, every variational solver subclasses a single `VariationalDriver` base that owns the shared machinery — the ASE-calculator surface (basis / grid / k-points / spin / frozen core), Hamiltonian materialization (dense or sparse), the state-vector expectation `energy(psi)`, and timing/profiling. Concrete algorithms implement only their optimization loop, and cross-cutting capabilities are **composable mixins**: excited-state deflation (`energy_levels`) and subspace search plug into any driver. Adding a new method (a new operator-selection rule, ansatz, or excited-state technique) requires no changes to the setup code.
 
 ---
 
@@ -134,8 +129,8 @@ carcara/
 │   └── carcara/
 │       ├── algorithms/  # VariationalDriver base; VQE, ADAPT-VQE (default), subspace
 │       │                #   (SSVQE) + deflation excited states, Bloch crystals,
-│       │                #   HF (RHF/UHF), expressibility
-│       ├── experimental/ # methods under development (VASQE) -- not stable API
+│       │                #   HF (RHF/UHF), expressibility, the Carcara calculator, dry run
+│       ├── experimental/ # features under development -- not stable API
 │       ├── backends/    # hardware.py    device registry (ideal sim, Braket, QPUs)
 │       │                # providers.py   Qiskit / Braket / Cirq circuit builders
 │       │                # measurement.py QWC grouping, shot-based <H>
@@ -161,9 +156,8 @@ carcara/
 | | |
 |---|---|
 | `01`–`06` | ADAPT-VQE: H₂, LiH, H₂O (frozen core), BeH₂, mapping comparison, O₂ triplet |
-| `07`, `11` | Periodic systems: H-chain bands, `BlochCalculator` across the three methods |
+| `07`, `11` | Periodic systems: H-chain bands, `BlochCalculator` with both methods |
 | `08`, `09` | Excited states: deflation (`energy_levels`) and Subspace-VQE (SSVQE) |
-| `10`, `14` | *Experimental* VASQE: H₂ schedules; LiH with **exponential annealing** + convergence plot |
 | `12` | ADAPT-VQE on LiH across **all three backend providers**, from one cached Hamiltonian |
 | `13` | **Amazon Braket compatibility report** — gate set, shots constraint, QWC grouping, QPU cost |
 | `15` | **Expressibility growth** during ADAPT-VQE + PQC-vs-Haar fidelity distributions |
@@ -252,7 +246,7 @@ print(f"On-site repulsion <00|00> (eV): {eri[0,0,0,0].real:.3f}")
 Use the Atomic Simulation Environment (ASE) to run a standard VQE simulation with UCCSD ansatz:
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 # Define H2 molecule in a unit cell
 atoms = Atoms("H2",
@@ -261,7 +255,7 @@ atoms = Atoms("H2",
               pbc=True)
 
 # Attach the calculator with the VQE method
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO", mapping="jordan_wigner",
+atoms.calc = Carcara(method="vqe", basis="FAO", mapping="jordan_wigner",
                                optimizer="COBYLA", h=0.20)
 
 # Run calculation (energy returned in eV)
@@ -275,7 +269,7 @@ print(f"VQE Energy: {result.optimal_energy:.6f} Ha ({energy_ev:.6f} eV)")
 Compute H₂ ground state adaptively using the hardware-optimized Coupled-Exchange Operator (`"ceo"`) pool:
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 atoms = Atoms("H2",
               positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
@@ -283,7 +277,7 @@ atoms = Atoms("H2",
               pbc=True)
 
 # Attach the calculator with the ADAPT-VQE method
-atoms.calc = QuantumCalculator(
+atoms.calc = Carcara(
               method="adapt-vqe",
               pool="ceo",
               basis="FAO",
@@ -308,46 +302,22 @@ Compute the ground state and the first excited state, either one after another
 (deflation) or simultaneously (SSVQE):
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
 # (a) Deflation: excited states one after another.
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO", h=0.20)
+atoms.calc = Carcara(method="vqe", basis="FAO", h=0.20)
 atoms.get_potential_energy()                     # configures the solver
 levels = atoms.calc.energy_levels(num_states=2, restarts=4)
 print("levels (eV):", levels.in_units("eV"))
 
 # (b) SSVQE: ground + excited states in a single optimization.
-atoms.calc = QuantumCalculator(method="subspace-vqe", basis="FAO", h=0.20,
+atoms.calc = Carcara(method="subspace-vqe", basis="FAO", h=0.20,
                                num_states=2)
 atoms.get_potential_energy()
 print("levels (eV):", atoms.calc.result.in_units("eV"))
-```
-
-### Example 5: VASQE (experimental — stochastic ADAPT with temperature annealing)
-Grow the ansatz by sampling operators from a softmax of the gradients, annealing
-the selection temperature from exploratory to greedy. VASQE is an experimental
-method (`carcara.experimental`); see `docs/experimental/vasqe.md`:
-```python
-from ase import Atoms
-from carcara.algorithms import QuantumCalculator
-
-atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
-              cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
-
-atoms.calc = QuantumCalculator(method="vasqe", basis="FAO", pool="fermionic",
-                               h=0.20, optimizer="L-BFGS-B",
-                               temperature=2.0, final_temperature=0.01,
-                               schedule="exponential",
-                               max_iterations=12, gradient_tolerance=1e-5)
-atoms.get_total_energy()
-result = atoms.calc.result
-
-print(f"Energy: {result.optimal_energy:.8f} Ha")
-print(f"Operators: {result.operators}")
-print(f"Selection temperatures: {result.temperatures}")
 ```
 
 ### Example 6: Cache the Hamiltonian, then sweep
@@ -355,19 +325,19 @@ Build the expensive part once and replay it — the reload needs no geometry,
 no integrals and no fermion-to-qubit mapping:
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
               cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
 
 # Build once (use hamiltonian_format="json" for a plain-text cache).
-atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO", h=0.25,
+atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.25,
                                save_hamiltonian="lih.parquet")
 atoms.get_total_energy()
 
 # Compare every pool against the *same* operator, in seconds.
 for pool in ("fermionic", "qubit", "qeb", "ceo"):
-    result = QuantumCalculator(method="adapt-vqe", pool=pool,
+    result = Carcara(method="adapt-vqe", pool=pool,
                                load_hamiltonian="lih.parquet",
                                verbose=False).run()
     print(f"{pool:<10} {result.optimal_energy:.8f} Ha  "
@@ -377,18 +347,18 @@ for pool in ("fermionic", "qubit", "qeb", "ceo"):
 ### Example 7: Choose a backend — or a real QPU
 The calculator API does not change; only the device does:
 ```python
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 # Build and execute the circuits with Cirq (or "braket", or "qiskit").
-QuantumCalculator(method="adapt-vqe", basis="FAO",
+Carcara(method="adapt-vqe", basis="FAO",
                   backend_provider="cirq", execute_circuits=True)
 
 # Braket's local simulator, shot-based -- the same protocol a QPU uses.
-QuantumCalculator(method="vqe", basis="FAO", device="braket-local", shots=8192)
+Carcara(method="vqe", basis="FAO", device="braket-local", shots=8192)
 
 # The AWS managed simulator, or a real trapped-ion QPU.
-QuantumCalculator(method="vqe", basis="FAO", device="braket-sv1", shots=8192)
-QuantumCalculator(method="vqe", basis="FAO", device="braket-ionq-aria",
+Carcara(method="vqe", basis="FAO", device="braket-sv1", shots=8192)
+Carcara(method="vqe", basis="FAO", device="braket-ionq-aria",
                   shots=8192)   # needs AWS credentials
 ```
 
@@ -396,7 +366,7 @@ QuantumCalculator(method="vqe", basis="FAO", device="braket-ionq-aria",
 
 ## Testing
 
-Carcará features a comprehensive unit testing suite (900+ tests) verifying integrals, basis definitions, operators, Hartree-Fock solvers, VQE/ADAPT-VQE (plus the experimental VASQE), the Hamiltonian cache, backend-provider equivalence, and the Braket shot-based measurement path.
+Carcará features a comprehensive unit testing suite (900+ tests) verifying integrals, basis definitions, operators, Hartree-Fock solvers, VQE/ADAPT-VQE, the Hamiltonian cache, backend-provider equivalence, and the Braket shot-based measurement path.
 
 To run the complete test suite:
 ```bash

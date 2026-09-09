@@ -9,7 +9,7 @@
 """Bloch / k-point variational calculator -- band structure and total energy.
 
 Covers :class:`BlochCalculator` for every variational ``method`` (``"vqe"``,
-``"adapt-vqe"``, ``"vasqe"``): the single-particle Bloch Hamiltonian / band
+``"adapt-vqe"``): the single-particle Bloch Hamiltonian / band
 structure (method-independent), and the total energy using all k-points via the
 Born-von Karman supercell equivalence (per method).
 """
@@ -24,10 +24,9 @@ from carcara.algorithms import (
     BlochCalculator,
     VQEResult,
 )
-from carcara.experimental import VASQEResult
 from carcara.optimizers import Optimizer
 
-METHODS = ["vqe", "adapt-vqe", "vasqe"]
+METHODS = ["vqe", "adapt-vqe"]
 
 
 def _chain(method="vqe", **kwargs):
@@ -54,11 +53,8 @@ _TOTAL_ENERGY_KWARGS = {
     "vqe": dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000)),
     "adapt-vqe": dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
                       max_iterations=6, gradient_tolerance=1e-3),
-    "vasqe": dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
-                  temperature=1.0, max_iterations=6, gradient_tolerance=1e-3),
 }
-_RESULT_TYPES = {"vqe": VQEResult, "adapt-vqe": ADAPTVQEResult,
-                 "vasqe": VASQEResult}
+_RESULT_TYPES = {"vqe": VQEResult, "adapt-vqe": ADAPTVQEResult}
 
 
 # --------------------------------------------------------------------------- #
@@ -131,7 +127,7 @@ class TestBands:
         # Bands are single-particle: every method must agree exactly.
         kpts = np.array([[0, 0, 0], [0.25, 0, 0], [0.5, 0, 0]])
         ref = _chain("vqe").bands(kpts)
-        for method in ("adapt-vqe", "vasqe"):
+        for method in ("adapt-vqe",):
             np.testing.assert_allclose(_chain(method).bands(kpts), ref)
 
 

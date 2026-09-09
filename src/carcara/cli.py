@@ -8,7 +8,7 @@
 
 r"""The ``carcara`` command line.
 
-A thin front end over :class:`~carcara.algorithms.QuantumCalculator`: a geometry
+A thin front end over :class:`~carcara.algorithms.Carcara`: a geometry
 in, an energy out, with every solver option exposed as a flag.  The one feature
 that is *only* natural on the command line is the **dry run**:
 
@@ -76,7 +76,7 @@ def _frozen_core(text: str):
 
 def build_parser() -> argparse.ArgumentParser:
     """The ``carcara`` argument parser."""
-    from .algorithms.calculator import DEFAULT_METHOD, METHODS
+    from .algorithms.calculator import DEFAULT_METHOD, STABLE_METHODS
     from .backends.hardware import available_devices
     from .optimizers.optim import NAMED_OPTIMIZERS
 
@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
                           "--quiet for the banner)")
     run.add_argument("--quiet", "-q", action="store_true",
                      help="suppress the banner and the solver trace")
-    run.add_argument("--method", default=DEFAULT_METHOD, choices=METHODS,
+    run.add_argument("--method", default=DEFAULT_METHOD, choices=STABLE_METHODS,
                      help=f"variational method (default {DEFAULT_METHOD})")
     run.add_argument("--device", default="AER_simulator",
                      help="execution device: " + ", ".join(available_devices())
@@ -215,7 +215,7 @@ def load_geometry(spec: str, vacuum: float = 3.0, magmoms=None):
 
 
 def solver_options(args) -> dict:
-    """Keyword arguments for :class:`~carcara.algorithms.QuantumCalculator`."""
+    """Keyword arguments for :class:`~carcara.algorithms.Carcara`."""
     from .algorithms.calculator import resolve_method
 
     basis = args.basis if not args.basis_option else \
@@ -292,12 +292,12 @@ def main(argv=None) -> int:
         parser.error("a geometry (file or molecule name) is required unless "
                      "--load-hamiltonian is given")
 
-    from .algorithms import QuantumCalculator
+    from .algorithms import Carcara
 
     atoms = None
     if args.geometry is not None:
         atoms = load_geometry(args.geometry, args.vacuum, args.magmoms)
-    calc = QuantumCalculator(**solver_options(args))
+    calc = Carcara(**solver_options(args))
     if args.dry_run:
         return run_dry(calc, atoms, args)
     return run_full(calc, atoms, args)

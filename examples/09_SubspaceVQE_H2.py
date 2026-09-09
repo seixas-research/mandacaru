@@ -15,7 +15,7 @@ weighted energy sum ``sum_j w_j <phi_j|U' H U|phi_j>`` with descending weights, 
 ``U|phi_0>`` becomes the ground state, ``U|phi_1>`` the first excited state, etc.
 
 Both subspace methods are driven through
-:class:`~carcara.algorithms.QuantumCalculator` (``method="subspace-vqe"`` and
+:class:`~carcara.algorithms.Carcara` (``method="subspace-vqe"`` and
 ``method="subspace-adapt-vqe"``); here H2 is defined once and a subspace
 calculator returns the whole low-lying spectrum on ``atoms.calc.result``.
 
@@ -29,7 +29,7 @@ from __future__ import annotations
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 
 atoms = Atoms("H2",
@@ -52,7 +52,7 @@ def report(name, result, exact):
 
 
 # --- Subspace-search VQE (fixed UCCSD ansatz) --------------------------------
-atoms.calc = QuantumCalculator(method="subspace-vqe", basis="FAO", h=0.20,
+atoms.calc = Carcara(method="subspace-vqe", basis="FAO", h=0.20,
                                mapping="jordan_wigner", num_states=2,
                                weights=[2.0, 1.0], verbose=False)
 atoms.get_potential_energy()
@@ -65,7 +65,7 @@ exact = np.sort(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).real)
 report("Subspace-VQE", ssvqe, exact)
 
 # --- Subspace-search ADAPT-VQE (one shared, adaptively grown ansatz) ---------
-atoms.calc = QuantumCalculator(method="subspace-adapt-vqe", basis="FAO", h=0.20,
+atoms.calc = Carcara(method="subspace-adapt-vqe", basis="FAO", h=0.20,
                                pool="fermionic", num_states=2, verbose=False,
                                profile=False, gradient_tolerance=1e-4,
                                max_iterations=20)

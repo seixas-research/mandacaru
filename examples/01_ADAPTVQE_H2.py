@@ -6,13 +6,13 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""H2 ground state with ADAPT-VQE (qubit pool) through the QuantumCalculator.
+"""H2 ground state with ADAPT-VQE (qubit pool) through the Carcara.
 
 End-to-end demonstration wiring the pieces together through the ASE interface:
 
 * the molecule is defined once as an ASE :class:`ase.Atoms` object and
-  :class:`~carcara.algorithms.QuantumCalculator` is attached to it as an ASE
-  *calculator* (``atoms.calc = QuantumCalculator(method="adapt-vqe", ...)``);
+  :class:`~carcara.algorithms.Carcara` is attached to it as an ASE
+  *calculator* (``atoms.calc = Carcara(method="adapt-vqe", ...)``);
 * the calculator builds the Hamiltonian from the current geometry using the
   chosen ``basis`` (here ``"FAO"`` -- Full Atomic Orbitals), so no manual
   integral wiring is needed;
@@ -31,7 +31,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.units import from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
@@ -44,7 +44,7 @@ atoms = Atoms("H2",
               cell=[[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]],
               pbc=True)
 
-atoms.calc = QuantumCalculator(
+atoms.calc = Carcara(
               method="adapt-vqe",
               pool="qubit",
               basis={"name": "FAO"},

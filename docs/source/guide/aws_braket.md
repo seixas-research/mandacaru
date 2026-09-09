@@ -29,22 +29,22 @@ amplitudes to measurements automatically.
 
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
               cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
 
 # Local Braket simulator, shot-based (identical protocol to a QPU).
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO", h=0.35,
+atoms.calc = Carcara(method="vqe", basis="FAO", h=0.35,
                                device="braket-local", shots=8192)
 atoms.get_total_energy()
 
 # The AWS managed simulator.
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO", h=0.35,
+atoms.calc = Carcara(method="vqe", basis="FAO", h=0.35,
                                device="braket-sv1", shots=8192)
 
 # A real trapped-ion QPU.
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO", h=0.35,
+atoms.calc = Carcara(method="vqe", basis="FAO", h=0.35,
                                device="braket-ionq-aria", shots=8192)
 ```
 
@@ -116,7 +116,7 @@ A **raw ARN** is accepted too, so a device released after this version can still
 be named:
 
 ```python
-QuantumCalculator(method="vqe", basis="FAO",
+Carcara(method="vqe", basis="FAO",
                   device="arn:aws:braket:eu-west-2::device/qpu/vendor/New-1",
                   shots=4096)
 ```
@@ -125,7 +125,7 @@ Naming a QPU **without** `shots` is refused up front, when the solver is built,
 rather than at submission time:
 
 ```python
->>> QuantumCalculator(method="adapt-vqe", device="braket-ionq-aria").run()
+>>> Carcara(method="adapt-vqe", device="braket-ionq-aria").run()
 ValueError: device 'braket-ionq-aria' is real quantum hardware, which cannot
 return a state vector: pass shots > 0 (e.g. shots=8192) so the energy is
 estimated from measurements.

@@ -6,17 +6,16 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""The Bloch crystal calculator: vqe / adapt-vqe / vasqe methods on a chain.
+"""The Bloch crystal calculator: vqe / adapt-vqe methods on a chain.
 
 A single :class:`~carcara.algorithms.BlochCalculator` covers periodic systems;
 its ``method`` argument selects the variational eigensolver.  The
 single-particle **band structure** is solver-independent (identical across the
-three methods), while the correlated **total energy per cell** is computed on
+two methods), while the correlated **total energy per cell** is computed on
 the Born-von Karman supercell by the selected molecular solver:
 
 * ``method="vqe"``       -- fixed UCCSD ansatz,
 * ``method="adapt-vqe"`` -- adaptive ansatz growth,
-* ``method="vasqe"``     -- stochastic (annealed) selection.
 
 A 1-D hydrogen chain (one atom per cell, 1.0 A spacing) is used throughout.
 """
@@ -59,15 +58,8 @@ e_adapt, r_adapt = make("adapt-vqe").total_energy(
 print(f"adapt-vqe  E/cell = {e_adapt:+.4f} eV   "
       f"({r_adapt.num_operators} operators grown)")
 
-# VASQE with exponential temperature annealing (explore -> exploit).
-e_vasqe, r_vasqe = make("vasqe").total_energy(
-    mesh, optimizer=opt, temperature=2.0, final_temperature=0.02,
-    schedule="exponential", max_iterations=10, gradient_tolerance=1e-3, seed=1)
-taus = ", ".join(f"{t:.2g}" for t in r_vasqe.temperatures)
-print(f"vasqe      E/cell = {e_vasqe:+.4f} eV   "
-      f"(annealed tau=[{taus}])")
 
-spread = max(e_vqe, e_adapt, e_vasqe) - min(e_vqe, e_adapt, e_vasqe)
-print(f"\nAll three solvers target the same per-cell ground state and agree to "
+spread = max(e_vqe, e_adapt) - min(e_vqe, e_adapt)
+print(f"\nBoth solvers target the same per-cell ground state and agree to "
       f"within chemical accuracy (spread {spread * 1e3:.1f} meV = "
       f"{spread / 0.0272114:.2f} mHa).")

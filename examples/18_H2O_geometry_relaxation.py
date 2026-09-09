@@ -8,7 +8,7 @@
 
 r"""Geometry relaxation driven by quantum-computed forces (H2O and H2).
 
-:class:`~carcara.algorithms.QuantumCalculator` is an ASE calculator that returns
+:class:`~carcara.algorithms.Carcara` is an ASE calculator that returns
 both the variational energy *and* the analytic nuclear gradient
 (Hellmann-Feynman **plus** Pulay), so any ASE optimizer can relax a molecule on a
 potential energy surface produced by a quantum eigensolver.
@@ -53,7 +53,7 @@ from ase import Atoms
 from ase.build import molecule
 from ase.optimize import BFGS
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.integrals import Grid
 from carcara.units import HARTREE_TO_EV
 
@@ -87,7 +87,7 @@ grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
 options = dict(method="vqe", basis="FAO", grid=grid, verbose=False)
 
 atoms = h2(0.74)
-atoms.calc = QuantumCalculator(**options)
+atoms.calc = Carcara(**options)
 forces = atoms.get_forces()
 reference = atoms.get_positions()
 
@@ -95,7 +95,7 @@ reference = atoms.get_positions()
 def energy_at(positions) -> float:
     probe = h2(0.74)
     probe.set_positions(positions)
-    probe.calc = QuantumCalculator(**options)
+    probe.calc = Carcara(**options)
     return probe.get_potential_energy()
 
 
@@ -154,13 +154,13 @@ print(RULE)
 start = 0.65
 fine_grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.10)
 relaxing = h2(start)
-relaxing.calc = QuantumCalculator(method="vqe", basis="FAO", grid=fine_grid,
+relaxing.calc = Carcara(method="vqe", basis="FAO", grid=fine_grid,
                                   verbose=False)
 BFGS(relaxing, logfile=os.path.join(DATA, "h2_relaxation.log")).run(
     fmax=0.15, steps=40)
 
 initial = h2(start)
-initial.calc = QuantumCalculator(method="vqe", basis="FAO", grid=fine_grid,
+initial.calc = Carcara(method="vqe", basis="FAO", grid=fine_grid,
                                  verbose=False)
 initial_force = float(np.max(np.linalg.norm(initial.get_forces(), axis=1)))
 
@@ -189,7 +189,7 @@ print(RULE)
 water = molecule("H2O")
 water_grid = Grid(center=water.get_positions().mean(axis=0), box_size=6.0,
                   h=0.30)
-water.calc = QuantumCalculator(
+water.calc = Carcara(
     method="adapt-vqe", basis="FAO", grid=water_grid, frozen_core=True,
     pool="qeb", max_iterations=12, gradient_tolerance=1e-3, profile=False,
     verbose=False)
@@ -223,7 +223,7 @@ energies = []
 for shift in shifts:
     probe = molecule("H2O")
     probe.set_positions(probe.get_positions() + np.array([0.0, 0.0, shift]))
-    probe.calc = QuantumCalculator(
+    probe.calc = Carcara(
         method="adapt-vqe", basis="FAO", grid=water_grid, frozen_core=True,
         pool="qeb", max_iterations=8, gradient_tolerance=1e-3, profile=False,
         verbose=False)

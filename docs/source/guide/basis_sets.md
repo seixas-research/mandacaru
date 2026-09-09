@@ -9,7 +9,7 @@ Dunning, Karlsruhe), which are accepted by name and generated with the
 published shell structure.
 
 ```python
-atoms.calc = QuantumCalculator(method="vqe", basis={"name": "NAO", "size": "DZP"})
+atoms.calc = Carcara(method="vqe", basis={"name": "NAO", "size": "DZP"})
 ```
 
 ## Why a single zeta is not enough
@@ -152,9 +152,9 @@ Slater-orbital fits and Slater's rules
 ({mod}`carcara.basis.gaussian_families`). No basis-set table is read.
 
 ```python
-atoms.calc = QuantumCalculator(basis="cc-pVDZ")
-atoms.calc = QuantumCalculator(basis="6-311+G(2df,2p)")
-atoms.calc = QuantumCalculator(basis="def2-TZVP")
+atoms.calc = Carcara(basis="cc-pVDZ")
+atoms.calc = Carcara(basis="6-311+G(2df,2p)")
+atoms.calc = Carcara(basis="def2-TZVP")
 ```
 
 | Family | Names |

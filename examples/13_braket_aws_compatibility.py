@@ -32,9 +32,9 @@ Running on real hardware
 ------------------------
 Only the device changes -- the calculator API does not::
 
-    from carcara.algorithms import QuantumCalculator
+    from carcara.algorithms import Carcara
 
-    atoms.calc = QuantumCalculator(method="adapt-vqe", pool="qeb", basis="FAO",
+    atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
                                    device="braket-ionq-aria",  # or the full ARN
                                    shots=8192)
     atoms.get_total_energy()
@@ -58,7 +58,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.backends.hardware import (describe_devices, device_arn,
                                        requires_shots)
 from carcara.backends.measurement import (qubit_wise_commuting_groups,
@@ -90,7 +90,7 @@ if not provider_available("braket"):
 
 atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
               cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-atoms.calc = QuantumCalculator(method="adapt-vqe", pool="qeb", basis="FAO",
+atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
                                h=0.35, verbose=False, max_iterations=1,
                                save_hamiltonian=os.path.join(
                                    DATA, "h2_braket.parquet"))

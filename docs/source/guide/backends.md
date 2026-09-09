@@ -8,11 +8,11 @@ The `backend_provider` argument chooses which quantum SDK **constructs** those
 circuits — and, with `execute_circuits=True`, which SDK **runs** them.
 
 ```python
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
-QuantumCalculator(method="adapt-vqe", basis="FAO", backend_provider="qiskit")   # default
-QuantumCalculator(method="adapt-vqe", basis="FAO", backend_provider="braket")   # amazon-braket-sdk
-QuantumCalculator(method="adapt-vqe", basis="FAO", backend_provider="cirq")     # cirq
+Carcara(method="adapt-vqe", basis="FAO", backend_provider="qiskit")   # default
+Carcara(method="adapt-vqe", basis="FAO", backend_provider="braket")   # amazon-braket-sdk
+Carcara(method="adapt-vqe", basis="FAO", backend_provider="cirq")     # cirq
 ```
 
 | provider | package | executes on |
@@ -64,11 +64,11 @@ wire `n-1-k`. Gate counts are unaffected — relabeling is an isomorphism.
 profiling) or actually *run* to prepare each state:
 
 ```python
-QuantumCalculator(method="adapt-vqe", backend_provider="qiskit")   # execute_circuits=False
-QuantumCalculator(method="adapt-vqe", backend_provider="braket")   # execute_circuits=True
-QuantumCalculator(method="adapt-vqe", backend_provider="qiskit",
+Carcara(method="adapt-vqe", backend_provider="qiskit")   # execute_circuits=False
+Carcara(method="adapt-vqe", backend_provider="braket")   # execute_circuits=True
+Carcara(method="adapt-vqe", backend_provider="qiskit",
                   execute_circuits=True)                           # opt in
-QuantumCalculator(method="adapt-vqe", backend_provider="cirq",
+Carcara(method="adapt-vqe", backend_provider="cirq",
                   execute_circuits=False)                          # opt out
 ```
 

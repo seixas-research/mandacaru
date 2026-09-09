@@ -6,10 +6,10 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""H2 potential energy curve with ADAPT-VQE and VASQE, referenced to the atoms.
+r"""H2 potential energy curve with ADAPT-VQE, referenced to the atoms.
 
-Scans the H--H bond length with the :class:`~carcara.algorithms.QuantumCalculator`
-(``method="adapt-vqe"`` and ``method="vasqe"``) and references every point to the
+Scans the H--H bond length with the :class:`~carcara.algorithms.Carcara`
+(``method="adapt-vqe"``) and references every point to the
 **sum of the isolated hydrogen atom energies**, so ``E = 0`` is the
 separated-atom limit and the well depth is the binding energy:
 
@@ -39,7 +39,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.basis import BasisSet
 from carcara.units import HARTREE_TO_EV
 
@@ -58,10 +58,9 @@ GRID_SPEC = GridSpec(box_size=8.0, spacing=0.16)
 #: Bond lengths stepped by 2h (0.42, 0.74, 1.06, ... A).
 DISTANCES = commensurate_distances(0.42, 3.0, GRID_SPEC)
 
-#: The two adaptive methods compared on the same curve.
+#: The adaptive method that traces the curve.
 METHOD_OPTIONS = {
     "adapt-vqe": {},
-    "vasqe": {"temperature": 0.05, "seed": 7},
 }
 SOLVER = dict(pool="qeb", basis="FAO", optimizer="L-BFGS-B", verbose=False,
               profile=False, max_iterations=10, gradient_tolerance=1e-5)
@@ -93,7 +92,7 @@ for method, options in METHOD_OPTIONS.items():
     total = np.empty(len(DISTANCES))
     for i, distance in enumerate(DISTANCES):
         atoms = h2(float(distance))
-        atoms.calc = QuantumCalculator(method=method, grid=grid,
+        atoms.calc = Carcara(method=method, grid=grid,
                                        **SOLVER, **options)
         atoms.get_total_energy()
         total[i] = atoms.calc.result.optimal_energy          # Hartree
@@ -120,11 +119,6 @@ for method, rel in binding.items():
     # The curve must return to the separated-atom limit E = 0 at large R.
     assert abs(rel[-1]) < 0.4, f"{method}: no dissociation to the atoms"
 
-# The two adaptive methods solve the same Hamiltonians: same curve.
-spread = np.abs(curves["adapt-vqe"] - curves["vasqe"]).max()
-assert spread < 1.6e-3, f"ADAPT-VQE and VASQE disagree by {spread:.2e} Ha"
-print(f"\nADAPT-VQE and VASQE agree along the curve to {spread:.1e} Ha")
-
 with open(CSV_PATH, "w", newline="") as fh:
     writer = csv.writer(fh)
     writer.writerow(["distance_A", "e_atoms_Ha"]
@@ -147,8 +141,8 @@ try:
 except ImportError:                             # pragma: no cover
     raise SystemExit("matplotlib is not installed; the CSV was still written")
 
-COLORS = {"adapt-vqe": "#0072B2", "vasqe": "#D55E00"}
-MARKERS = {"adapt-vqe": "o", "vasqe": "s"}
+COLORS = {"adapt-vqe": "#0072B2"}
+MARKERS = {"adapt-vqe": "o"}
 
 fig, ax = plt.subplots(figsize=(7.0, 4.6))
 ax.axhline(0.0, color="0.35", lw=1.2, ls="--", zorder=1)

@@ -10,8 +10,8 @@
 
 The stable solvers: VQE, **ADAPT-VQE** (the default method everywhere), the
 excited-state extensions and the periodic :class:`BlochCalculator`, all reached
-through :class:`QuantumCalculator`.  Methods still under development (VASQE)
-live in :mod:`carcara.experimental` and are not exported from here.
+through :class:`Carcara`.  Solvers outside the stable API plug in through
+:func:`register_method` and are not exported from here.
 """
 
 from .adapt_vqe import ADAPTVQE, ADAPTVQEResult, AdaptIteration
@@ -41,8 +41,9 @@ from .subspace import (
     SubspaceVQEResult,
 )
 from .base import format_pauli_sum
-from .calculator import (DEFAULT_METHOD, EXPERIMENTAL_METHODS, METHODS,
-                         STABLE_METHODS, QuantumCalculator, resolve_method)
+from .calculator import (DEFAULT_METHOD, METHODS, STABLE_METHODS, Carcara,
+                         available_methods, experimental_methods,
+                         register_method, resolve_method)
 from .forces import ForceResult, hellmann_feynman_gradient, nuclear_gradient
 from .rdm import electronic_energy, one_rdm, particle_number, two_rdm
 from .vqe import VQE, VQEResult
@@ -78,14 +79,16 @@ __all__ = [
     "track_adapt_expressivity",
     "plot_fidelity_distribution",
     "plot_expressivity_growth",
-    "QuantumCalculator",
+    "Carcara",
     "QubitEstimate",
     "estimate_qubits",
     "count_basis_functions",
     "METHODS",
     "STABLE_METHODS",
-    "EXPERIMENTAL_METHODS",
     "DEFAULT_METHOD",
+    "available_methods",
+    "experimental_methods",
+    "register_method",
     "resolve_method",
     "format_pauli_sum",
     "nuclear_gradient",

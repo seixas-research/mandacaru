@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: basis/pseudo_io.py
+# file: experimental/pseudopotentials/io.py
 
 # This code is part of Carcará.
 # MIT License
@@ -12,7 +12,7 @@ Generating a pseudopotential means running a self-consistent all-electron atom
 and solving a nonlinear fit per channel -- a second or two per element.  That is
 far too slow to repeat inside a geometry optimization, and it is also pure
 overhead: the result depends only on the element, never on the molecule.  So the
-library is generated once and shipped as plain JSON under ``pseudos/``.
+library is generated once and shipped as plain JSON under ``library/``.
 
 File format
 -----------
@@ -52,7 +52,7 @@ import os
 
 import numpy as np
 
-from .pseudopotential import Channel, PseudoPotential, generate_pseudopotential
+from .generation import Channel, PseudoPotential, generate_pseudopotential
 
 #: Identifies a Carcará pseudopotential file.
 FORMAT_TAG = "carcara-pseudopotential"
@@ -110,12 +110,12 @@ LIBRARY_Z_MAX = 89
 
 
 def library_elements(z_max: int = LIBRARY_Z_MAX) -> tuple:
-    """Chemical symbols shipped in ``pseudos/`` -- everything with ``Z <= z_max``."""
+    """Chemical symbols shipped in ``library/`` -- everything with ``Z <= z_max``."""
     from ase.data import chemical_symbols
     return tuple(chemical_symbols[z] for z in range(1, int(z_max) + 1))
 
 
-#: Elements shipped in ``pseudos/``.
+#: Elements shipped in ``library/``.
 LIBRARY_ELEMENTS = library_elements()
 
 
@@ -133,7 +133,7 @@ def generation_points(atomic_number: int, minimum: int = 6000) -> int:
 
 
 def default_library_path() -> str:
-    """Absolute path of the bundled ``pseudos/`` directory.
+    """Absolute path of the bundled ``library/`` directory.
 
     Resolved relative to the repository root so it works from a source checkout;
     the ``CARCARA_PSEUDO_PATH`` environment variable overrides it.
@@ -142,8 +142,7 @@ def default_library_path() -> str:
     if override:
         return os.path.abspath(override)
     here = os.path.dirname(os.path.abspath(__file__))
-    root = os.path.abspath(os.path.join(here, "..", "..", ".."))
-    return os.path.join(root, "pseudos")
+    return os.path.join(here, "library")
 
 
 #: Keep every ``STRIDE``-th radial point when writing **the bundled library**.
@@ -245,7 +244,7 @@ def _radial_columns(payload):
 
 def _write_parquet(path, payload, engine):
     """Radial tables as columns; everything scalar as key/value metadata."""
-    from ..core.serialization import native_pandas_strings, resolve_engine
+    from ...core.serialization import native_pandas_strings, resolve_engine
 
     columns = _radial_columns(payload)
     scalars = {k: v for k, v in payload.items()
@@ -274,7 +273,7 @@ def _write_parquet(path, payload, engine):
 
 def _read_parquet(path, engine):
     """Reassemble the JSON-shaped payload from a Parquet file."""
-    from ..core.serialization import native_pandas_strings, resolve_engine
+    from ...core.serialization import native_pandas_strings, resolve_engine
 
     if resolve_engine(engine) == "fastparquet":
         import fastparquet
@@ -423,7 +422,7 @@ def get_pseudopotential(symbol: str, directory=None) -> PseudoPotential:
             f"no pseudopotential for {symbol!r} at {path!r}. Available: "
             f"{', '.join(available_elements(directory)) or '(none)'}. "
             "Regenerate the library with "
-            "`python -m carcara.basis.pseudo_io` or call "
+            "`python -m carcara.experimental.pseudopotentials.io` or call "
             "`build_library()`.")
     pp = load_pseudopotential(path)
     _CACHE[key] = pp

@@ -53,17 +53,17 @@ specific processor. `--json` prints the estimate as machine-readable JSON.
 
 ```python
 from ase.build import molecule
-from carcara.algorithms import QuantumCalculator, estimate_qubits
+from carcara.algorithms import Carcara, estimate_qubits
 
 water = molecule("H2O"); water.center(vacuum=3.0)
 
 # One-off, on an existing calculator:
-calc = QuantumCalculator(frozen_core=True)
+calc = Carcara(frozen_core=True)
 estimate = calc.dry_run(water)          # -> QubitEstimate
 print(estimate.n_qubits)                # 12
 
 # Or make every evaluation a dry run (energies come back as NaN):
-water.calc = QuantumCalculator(frozen_core=True, dry_run=True)
+water.calc = Carcara(frozen_core=True, dry_run=True)
 water.get_potential_energy()            # nan
 water.calc.dry_run_result.summary()
 

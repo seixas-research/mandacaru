@@ -82,7 +82,7 @@ The design of Carcará is built around **loose coupling** and **strict unit boun
         ↳ Molecular Hamiltonian (Fermionic Operators)
           ↳ Fermion-to-Qubit Mappings (PauliSum qubit Hamiltonian)
             ↳ *(optional)* Parquet/JSON cache — replay later, skipping everything above
-              ↳ QuantumCalculator (``method=`` selects ADAPT-VQE (default) / VQE / subspace variants; parameterized circuit compiled to a backend & optimized classically)
+              ↳ Carcara (``method=`` selects ADAPT-VQE (default) / VQE / subspace variants; parameterized circuit compiled to a backend & optimized classically)
                 ↳ Execution: internal state vector, or Qiskit / Amazon Braket / Cirq circuits (simulator or QPU)
 
 1. Basis-Agnostic Integrals
@@ -148,7 +148,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - **Complete**
    * - **carcara.algorithms**
      - Solvers & profiling
-     - The unified ``QuantumCalculator`` (solver selected with ``method=``, ADAPT-VQE by default) and periodic ``BlochCalculator`` front ends; exact state-vector VQE & ADAPT-VQE solvers, RHF/UHF molecular-orbital (MO) solvers, PQC expressibility trackers (KL-divergence vs. Haar), CNOT/depth compilers, the ``quenching`` parametrization policy, and the ``dry_run`` qubit estimate (also the ``carcara --dry-run`` command line).
+     - The unified ``Carcara`` (solver selected with ``method=``, ADAPT-VQE by default) and periodic ``BlochCalculator`` front ends; exact state-vector VQE & ADAPT-VQE solvers, RHF/UHF molecular-orbital (MO) solvers, PQC expressibility trackers (KL-divergence vs. Haar), CNOT/depth compilers, the ``quenching`` parametrization policy, and the ``dry_run`` qubit estimate (also the ``carcara --dry-run`` command line).
      - **Complete**
    * - **carcara.optimizers**
      - Parameter optimization
@@ -235,7 +235,7 @@ For adaptive VQE algorithms, four operator pools define the candidate generators
 carcara.algorithms
 ------------------
 
-All molecular runs go through the unified ASE calculator ``QuantumCalculator``, which selects the variational method with ``method=`` (``"adapt-vqe"`` -- the default -- ``"vqe"``, ``"subspace-vqe"``, ``"subspace-adapt-vqe"``); periodic systems go through ``BlochCalculator``, with the same default. Methods still under development live in ``carcara.experimental`` and are documented separately, outside this manual.
+All molecular runs go through the unified ASE calculator ``Carcara``, which selects the variational method with ``method=`` (``"adapt-vqe"`` -- the default -- ``"vqe"``, ``"subspace-vqe"``, ``"subspace-adapt-vqe"``); periodic systems go through ``BlochCalculator``, with the same default. Methods still under development live in ``carcara.experimental`` and are documented separately, outside this manual.
 
 * **VQE:** Computes :math:`\langle \psi(\boldsymbol{\theta})| H |\psi(\boldsymbol{\theta}) \rangle` on exact state vectors, updating parameters until convergence.
 * **ADAPT-VQE:** Calculates the commutator gradients :math:`\langle \psi | [H, A_i] | \psi \rangle` for all pool operators, selects the operator with the largest gradient, appends it to the ansatz, and performs a warm-started VQE optimization. Loop terminates when the maximum gradient falls below ``gradient_tolerance``.

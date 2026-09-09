@@ -16,7 +16,7 @@ import os
 import numpy as np
 import pytest
 
-from carcara.basis.pseudo_io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
+from carcara.experimental.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
                                      PARQUET_MAGIC, PSEUDO_FORMATS, STRIDE,
                                      available_elements, detect_format,
                                      generation_points, get_pseudopotential,
@@ -199,7 +199,7 @@ class TestArrowStringIsolation:
 
 
 class TestLibrary:
-    """The bundled library under ``pseudos/``."""
+    """The bundled library under ``library/``."""
 
     def test_covers_z_below_90(self):
         elements = library_elements()

@@ -9,7 +9,7 @@
 r"""LiH potential energy curve with ADAPT-VQE: operator pools and qubit mappings.
 
 Scans the Li--H bond distance and, at every geometry, solves the *same*
-electronic problem with ``QuantumCalculator(method="adapt-vqe", ...)`` under
+electronic problem with ``Carcara(method="adapt-vqe", ...)`` under
 
 * four **operator pools** -- ``fermionic``, ``qubit``, ``qeb`` and ``ceo`` -- all
   under Jordan-Wigner, and
@@ -67,7 +67,7 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.basis import BasisSet
 from carcara.integrals import Grid
 from carcara.units import HARTREE_TO_EV
@@ -109,7 +109,7 @@ def lih(distance):
 def solve(distance, pool, mapping):
     """ADAPT-VQE total energy (Hartree) and operator count at one geometry."""
     atoms = lih(distance)
-    atoms.calc = QuantumCalculator(method="adapt-vqe", pool=pool, basis=BASIS,
+    atoms.calc = Carcara(method="adapt-vqe", pool=pool, basis=BASIS,
                                    mapping=mapping, h=GRID_SPACING,
                                    optimizer="L-BFGS-B", verbose=False,
                                    profile=False, max_iterations=MAX_ITERATIONS,

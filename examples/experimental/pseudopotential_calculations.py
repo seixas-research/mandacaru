@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: examples/20_pseudopotential_calculations.py
+# file: examples/experimental/pseudopotential_calculations.py
 
 # This code is part of Carcará.
 # MIT License
@@ -18,10 +18,10 @@ a **valence-only** one:
 
 .. code-block:: python
 
-    atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO",
+    atoms.calc = Carcara(method="adapt-vqe", basis="FAO",
                                    pseudopotentials=True, h=0.15)
 
-The library under ``pseudos/`` covers every element with Z < 90 (H through
+The bundled library covers every element with Z < 90 (H through
 Ac) and is loaded automatically.
 
 What this script measures
@@ -43,8 +43,8 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
-from carcara.basis.pseudo_io import available_elements, get_pseudopotential
+from carcara.algorithms import Carcara
+from carcara.experimental.pseudopotentials.io import available_elements, get_pseudopotential
 from carcara.integrals import Grid
 from carcara.units import BOHR_TO_ANGSTROM
 
@@ -58,7 +58,7 @@ RULE = "=" * 76
 # --------------------------------------------------------------------------- #
 
 print(RULE)
-print("1. The bundled pseudopotential library (pseudos/)")
+print("1. The bundled pseudopotential library (experimental/pseudopotentials/library/)")
 print(RULE)
 elements = available_elements()
 print(f"{len(elements)} elements: {' '.join(elements)}\n")
@@ -82,7 +82,7 @@ for label, options in (("all-electron", {}),
                        ("pseudopotential", {"pseudopotentials": True})):
     atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
     start = time.perf_counter()
-    atoms.calc = QuantumCalculator(method="vqe", basis="FAO", grid=grid,
+    atoms.calc = Carcara(method="vqe", basis="FAO", grid=grid,
                                    verbose=False, **options)
     energy = atoms.get_potential_energy()
     print(f"  {label:<17} E = {energy:>12.4f} eV   "
@@ -105,7 +105,7 @@ def isolated_force(spacing, use_pseudopotentials):
     box = Grid(center=[0, 0, 0], box_size=6.0, h=spacing)
     shift = 0.37 * box.dx * BOHR_TO_ANGSTROM
     atoms = Atoms("O", positions=[[shift, 0.0, 0.0]])
-    atoms.calc = QuantumCalculator(
+    atoms.calc = Carcara(
         method="adapt-vqe", basis="FAO", grid=box,
         pseudopotentials=use_pseudopotentials,
         frozen_core=not use_pseudopotentials, pool="qeb",
@@ -147,7 +147,7 @@ water = Atoms("OH2", positions=[[0.0, 0.0, 0.0],
 water_grid = Grid(center=water.get_positions().mean(axis=0), box_size=8.0,
                   h=0.15)
 start = time.perf_counter()
-water.calc = QuantumCalculator(method="adapt-vqe", basis="FAO", grid=water_grid,
+water.calc = Carcara(method="adapt-vqe", basis="FAO", grid=water_grid,
                                pseudopotentials=True, pool="qeb",
                                max_iterations=12, gradient_tolerance=1e-3,
                                verbose=False, profile=False)

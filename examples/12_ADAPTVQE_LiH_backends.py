@@ -16,10 +16,10 @@ by far the most expensive stage, and completely independent of which SDK runs th
 circuits.  So it is built **once** with ``save_hamiltonian=...`` and every backend
 run afterwards uses ``load_hamiltonian=...``, which skips the integrals and the
 fermion-to-qubit transformation entirely.  Both modes go through
-:class:`~carcara.algorithms.QuantumCalculator`: the build is the ASE-calculator
-path (``atoms.calc = QuantumCalculator(method="adapt-vqe", ...)``), the cached
+:class:`~carcara.algorithms.Carcara`: the build is the ASE-calculator
+path (``atoms.calc = Carcara(method="adapt-vqe", ...)``), the cached
 runs use its **direct mode**
-(``QuantumCalculator(method="adapt-vqe", load_hamiltonian=...).run()``).
+(``Carcara(method="adapt-vqe", load_hamiltonian=...).run()``).
 
 **2. Multi-backend circuit execution.**  With ``execute_circuits=True`` the ansatz
 is no longer evaluated by the internal NumPy state-vector backend: each
@@ -49,7 +49,7 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.backends.providers import BACKEND_PROVIDERS, provider_available
 from carcara.units import from_hartree
 
@@ -73,7 +73,7 @@ atoms = Atoms("LiH",
               pbc=True)
 
 t0 = time.perf_counter()
-atoms.calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+atoms.calc = Carcara(method="adapt-vqe", pool=POOL,
                                basis={"name": "FAO"}, h=0.25,
                                mapping="jordan_wigner",
                                max_iterations=MAX_ITERATIONS,
@@ -107,7 +107,7 @@ print("-" * len(header))
 
 # The internal NumPy state-vector backend, for comparison.
 t0 = time.perf_counter()
-matrix_run = QuantumCalculator(method="adapt-vqe", pool=POOL,
+matrix_run = Carcara(method="adapt-vqe", pool=POOL,
                                load_hamiltonian=HAMILTONIAN_FILE,
                                max_iterations=MAX_ITERATIONS,
                                verbose=False).run()
@@ -123,7 +123,7 @@ for provider in BACKEND_PROVIDERS:
         continue
 
     t0 = time.perf_counter()
-    driver = QuantumCalculator(
+    driver = Carcara(
                       method="adapt-vqe",
                       pool=POOL,
                       load_hamiltonian=HAMILTONIAN_FILE,   # no integrals, no map

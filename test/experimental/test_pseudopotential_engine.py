@@ -25,14 +25,14 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, QuantumCalculator, VQE
+from carcara.algorithms import ADAPTVQE, Carcara, VQE
 from carcara.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
-from carcara.basis.pseudo_io import (LIBRARY_ELEMENTS, available_elements,
+from carcara.experimental.pseudopotentials.io import (LIBRARY_ELEMENTS, available_elements,
                                      default_library_path,
                                      get_pseudopotential, library_file,
                                      load_pseudopotential,
                                      save_pseudopotential)
-from carcara.basis.pseudo_orbital import (KBProjector, PseudoAtomicOrbital,
+from carcara.experimental.pseudopotentials.orbitals import (KBProjector, PseudoAtomicOrbital,
                                           kb_projectors, pseudo_basis,
                                           valence_electrons)
 from carcara.integrals import Grid, Potentials, _backend
@@ -98,7 +98,9 @@ class TestLibrary:
             get_pseudopotential("Fe", directory=tmp_path)
 
     def test_library_lives_where_documented(self):
-        assert default_library_path().endswith("pseudos")
+        path = default_library_path()
+        assert path.endswith("library")
+        assert "experimental" in path and "pseudopotentials" in path
         assert library_file("O").endswith("O.parquet")     # Parquet by default
 
 
@@ -239,7 +241,7 @@ class TestHamiltonianAndDrivers:
         """H2 with pseudopotentials: two valence electrons, four qubits."""
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = QuantumCalculator(method="vqe", basis="FAO", grid=grid,
+        atoms.calc = Carcara(method="vqe", basis="FAO", grid=grid,
                                        pseudopotentials=True, verbose=False)
         energy = atoms.get_potential_energy()
         assert np.isfinite(energy)
@@ -254,7 +256,7 @@ class TestPseudopotentialForces:
     def test_forces_are_finite_and_balanced(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = QuantumCalculator(method="vqe", basis="FAO", grid=grid,
+        atoms.calc = Carcara(method="vqe", basis="FAO", grid=grid,
                                        pseudopotentials=True, verbose=False)
         forces = atoms.get_forces()
         assert np.isfinite(forces).all()
@@ -264,7 +266,7 @@ class TestPseudopotentialForces:
     def test_force_breakdown_is_available(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = QuantumCalculator(method="vqe", basis="FAO", grid=grid,
+        atoms.calc = Carcara(method="vqe", basis="FAO", grid=grid,
                                        pseudopotentials=True, verbose=False)
         atoms.get_forces()
         local, pulay = atoms.calc.get_force_breakdown()
@@ -284,7 +286,7 @@ class TestGridPathologyIsCured:
     def _isolated_force(spacing, pseudopotentials):
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=spacing)
         atoms = lone_atom("O", grid)
-        atoms.calc = QuantumCalculator(
+        atoms.calc = Carcara(
             method="adapt-vqe", basis="FAO", grid=grid,
             pseudopotentials=pseudopotentials,
             frozen_core=not pseudopotentials, pool="qeb", verbose=False,
@@ -317,8 +319,8 @@ class TestPseudoBasisSize:
                 np.array([[0, 0, 0], [0, 0.76, 0.59], [0, -0.76, 0.59]]))
 
     def _basis(self, size):
-        from carcara.basis.pseudo_io import get_pseudopotential
-        from carcara.basis.pseudo_orbital import pseudo_basis
+        from carcara.experimental.pseudopotentials.io import get_pseudopotential
+        from carcara.experimental.pseudopotentials.orbitals import pseudo_basis
 
         symbols, positions = self._water()
         pots = {s: get_pseudopotential(s) for s in set(symbols)}
@@ -340,14 +342,14 @@ class TestPseudoBasisSize:
         assert owners == sorted(owners)          # grouped per atom
 
     def test_single_zeta_path_is_unchanged(self):
-        from carcara.basis.pseudo_orbital import PseudoAtomicOrbital
+        from carcara.experimental.pseudopotentials.orbitals import PseudoAtomicOrbital
 
         functions, _ = self._basis("SZ")
         assert all(isinstance(f, PseudoAtomicOrbital) for f in functions)
 
     def test_first_zeta_comes_from_the_pseudopotential(self):
         """It must be the pseudized orbital the KB projectors were built from."""
-        from carcara.basis.pseudo_io import get_pseudopotential
+        from carcara.experimental.pseudopotentials.io import get_pseudopotential
 
         oxygen = get_pseudopotential("O")
         functions, _ = self._basis("DZP")

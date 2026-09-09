@@ -44,7 +44,7 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.core import detect_format, load_hamiltonian
 
 # All generated files (logs, CSV, plots) go to examples/data/.
@@ -73,7 +73,7 @@ for fmt in ("parquet", "json"):
 
     # -- build (integrals + mapping) and save ---------------------------- #
     atoms = lih()
-    atoms.calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+    atoms.calc = Carcara(method="adapt-vqe", pool=POOL,
                                    basis={"name": "FAO"}, h=0.25,
                                    verbose=False, profile=False,
                                    max_iterations=MAX_ITERATIONS,
@@ -86,7 +86,7 @@ for fmt in ("parquet", "json"):
 
     # -- reload, with no geometry at all --------------------------------- #
     t0 = time.perf_counter()
-    calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+    calc = Carcara(method="adapt-vqe", pool=POOL,
                              load_hamiltonian=path, verbose=False,
                              profile=False, max_iterations=MAX_ITERATIONS)
     reloaded = calc.run()

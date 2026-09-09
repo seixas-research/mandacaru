@@ -7,7 +7,7 @@ radial problems. Like every other family in Carcará it carries no tabulated
 basis-set data.
 
 ```python
-atoms.calc = QuantumCalculator(basis={"name": "NAO-AE", "tier": 1, "onset": 3.0})
+atoms.calc = Carcara(basis={"name": "NAO-AE", "tier": 1, "onset": 3.0})
 ```
 
 ## What "all-electron" means here

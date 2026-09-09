@@ -58,7 +58,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.algorithms.expressivity import (active_space_dimension,
                                              calculate_kl_divergence,
                                              haar_density,
@@ -87,7 +87,7 @@ atoms = Atoms("LiH",
               positions=[[7.5, 7.5, 7.5 - 0.7975], [7.5, 7.5, 7.5 + 0.7975]],
               cell=[[15.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 15.0]],
               pbc=True)
-atoms.calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+atoms.calc = Carcara(method="adapt-vqe", pool=POOL,
                                basis={"name": "FAO"}, h=0.25, verbose=False,
                                profile=False, max_iterations=1,
                                save_hamiltonian=HAMILTONIAN_FILE)
@@ -134,7 +134,7 @@ def record(info):
         snapshots[step] = fidelities
 
 
-calc = QuantumCalculator(method="adapt-vqe", pool=POOL,
+calc = Carcara(method="adapt-vqe", pool=POOL,
                          load_hamiltonian=HAMILTONIAN_FILE, verbose=False,
                          profile=False, optimizer="L-BFGS-B",
                          max_iterations=MAX_ITERATIONS, gradient_tolerance=1e-6)

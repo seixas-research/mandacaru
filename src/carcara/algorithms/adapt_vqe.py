@@ -566,7 +566,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
         ADAPT-VQE's greedy rule: the largest-magnitude gradient.  This is the
         single **selection hook** subclasses override to change *which* operator
-        grows the ansatz -- e.g. :class:`~carcara.experimental.vasqe.VASQE` samples
+        grows the ansatz -- a subclass may, for instance, sample
         it stochastically from a softmax of the gradients.  Convergence
         (``max|grad| < tol``) is decided by the caller, independently of the
         selection, so overriding this never changes the stopping criterion.
@@ -936,7 +936,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     def _extra_header_lines(self) -> list[str]:
         """Extra configuration lines for the verbose header (subclass hook).
 
-        Overridden by :class:`~carcara.experimental.vasqe.VASQE` to report its
+        A subclass overrides this to report its own
         stochastic-selection temperature schedule.
         """
         return []

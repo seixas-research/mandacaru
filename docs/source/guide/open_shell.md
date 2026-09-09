@@ -6,10 +6,10 @@ high-spin state, runs through the same calculator as a closed-shell molecule:
 
 ```python
 from ase.build import molecule
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 oh = molecule("OH"); oh.center(vacuum=3.0)          # 9 electrons: a doublet
-oh.calc = QuantumCalculator(method="adapt-vqe", basis="FAO", frozen_core=True)
+oh.calc = Carcara(method="adapt-vqe", basis="FAO", frozen_core=True)
 oh.get_potential_energy()
 oh.calc.num_particles                                 # (4, 3) after freezing the O 1s
 ```

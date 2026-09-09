@@ -11,8 +11,8 @@
 The same LiH molecule and fermionic pool are run through each of Carcará's three
 fermion-to-qubit mappings -- **Jordan-Wigner**, **parity** and **Bravyi-Kitaev**
 -- selected with the ``mapping`` argument of
-:class:`~carcara.algorithms.QuantumCalculator`
-(``atoms.calc = QuantumCalculator(method="adapt-vqe", ...)``).  The mappings
+:class:`~carcara.algorithms.Carcara`
+(``atoms.calc = Carcara(method="adapt-vqe", ...)``).  The mappings
 encode the fermionic
 Hamiltonian into *different* qubit Pauli operators, but all describe the same
 physics, so ADAPT-VQE must recover the **same** ground-state energy (the FCI
@@ -35,7 +35,7 @@ from __future__ import annotations
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.units import from_hartree
 
 # LiH centered in the cell so the auto-generated grid covers both orbitals.
@@ -46,7 +46,7 @@ atoms = Atoms("LiH",
 
 energies = {}
 for mapping in ("jordan_wigner", "parity", "bravyi_kitaev"):
-    atoms.calc = QuantumCalculator(
+    atoms.calc = Carcara(
                   method="adapt-vqe",
                   pool="fermionic",
                   basis={"name": "FAO"},

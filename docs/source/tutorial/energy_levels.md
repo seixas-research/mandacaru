@@ -2,7 +2,7 @@
 
 Ground-state VQE finds the lowest eigenvalue of the molecular Hamiltonian. To get
 the **energy levels** — the ground state *and* excited states —
-{class}`~carcara.algorithms.QuantumCalculator` exposes an `energy_levels` method
+{class}`~carcara.algorithms.Carcara` exposes an `energy_levels` method
 built on **variational quantum deflation** (VQD), available for every `method=`
 (in particular `"vqe"` and `"adapt-vqe"`).
 
@@ -27,11 +27,11 @@ Attach the calculator with `method="vqe"`, evaluate the ground-state energy once
 ```python
 import numpy as np
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO", h=0.20, verbose=False)
+atoms.calc = Carcara(method="vqe", basis="FAO", h=0.20, verbose=False)
 atoms.get_potential_energy()                 # configures the solver
 
 levels = atoms.calc.energy_levels(num_states=2, restarts=4)
@@ -58,7 +58,7 @@ re-optimization carry the penalty term, so the adaptive ansatz builds itself
 toward the next excited state:
 
 ```python
-atoms.calc = QuantumCalculator(method="adapt-vqe", pool="fermionic",
+atoms.calc = Carcara(method="adapt-vqe", pool="fermionic",
                                basis="FAO", h=0.20, verbose=False)
 atoms.get_potential_energy()
 

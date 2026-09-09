@@ -10,7 +10,7 @@
 
 
 ```python
-atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO",
+atoms.calc = Carcara(method="adapt-vqe", basis="FAO",
                                pseudopotentials=True, h=0.15)
 ```
 
@@ -43,12 +43,12 @@ optimization on this grid is not merely inaccurate — it does not converge.
 
 ## The bundled library
 
-`pseudos/` ships norm-conserving Troullier–Martins pseudopotentials for **every
+`src/carcara/experimental/pseudopotentials/library/` ships norm-conserving Troullier–Martins pseudopotentials for **every
 element with Z < 90** (H through Ac), generated from scratch by Carcará's own
 LDA radial atomic solver. They are loaded automatically by symbol.
 
 ```python
-from carcara.basis.pseudo_io import available_elements, get_pseudopotential
+from carcara.experimental.pseudopotentials.io import available_elements, get_pseudopotential
 
 pp = get_pseudopotential("Fe")
 pp.valence_charge     # 8.0  -- 3d^6 4s^2
@@ -61,7 +61,7 @@ eight-electron atom with a d channel rather than a two-electron 4s² one.
 To regenerate or extend the library:
 
 ```python
-from carcara.basis.pseudo_io import build_library
+from carcara.experimental.pseudopotentials.io import build_library
 
 written, failures = build_library()               # all of Z < 90
 written, failures = build_library(["Ti", "V"])    # or a subset
@@ -106,7 +106,7 @@ with an unrelated all-electron radial function would be inconsistent, so an
 all-electron family is **refused** rather than silently ignored:
 
 ```python
-QuantumCalculator(method="adapt-vqe", basis="6-31G(d)",
+Carcara(method="adapt-vqe", basis="6-31G(d)",
                   pseudopotentials=True)   # ValueError
 ```
 
@@ -116,7 +116,7 @@ pseudized function, and the polarization shell is split from the outermost
 channel:
 
 ```python
-QuantumCalculator(method="adapt-vqe", basis={"name": "PP", "size": "DZP"},
+Carcara(method="adapt-vqe", basis={"name": "PP", "size": "DZP"},
                   pseudopotentials=True)
 ```
 

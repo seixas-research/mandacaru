@@ -2,7 +2,7 @@
 
 Notes for the experimental parts of Carcará — code that is usable but still
 under development and not yet fully validated (the `carcara.experimental`
-package, and the pseudopotential path in `carcara.basis`). This folder is **independent of
+package: VASQE and the pseudopotentials). This folder is **independent of
 the Sphinx manual**: nothing here is referenced from `docs/source/`, so it is
 never part of the documentation build (`cd docs && make html`) or the hosted
 manual. Read the Markdown files directly.

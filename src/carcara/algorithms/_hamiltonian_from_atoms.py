@@ -267,8 +267,8 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, options):
     "nuclei" carry the *ionic* charges, so the constant term is the ion-ion
     repulsion.
     """
-    from ..basis.pseudo_io import get_pseudopotential
-    from ..basis.pseudo_orbital import (kb_projectors, pseudo_basis,
+    from ..experimental.pseudopotentials.io import get_pseudopotential
+    from ..experimental.pseudopotentials.orbitals import (kb_projectors, pseudo_basis,
                                         valence_electrons)
     from ..core import MolecularIntegrals
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: basis/pseudopotential.py
+# file: experimental/pseudopotentials/generation.py
 
 # This code is part of Carcará.
 # MIT License
@@ -92,8 +92,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.optimize import root
 
-from ._config import ground_state_config, valence_subshells
-from .atomic_solver import (AtomicResult, hartree_potential, lda_xc,
+from ...basis._config import ground_state_config, valence_subshells
+from ...basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
                             solve_atom, solve_radial)
 
 #: Powers of ``r`` in the Troullier-Martins polynomial ``p(r)``.

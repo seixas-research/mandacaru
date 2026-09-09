@@ -25,7 +25,6 @@ import pytest
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE, VQE
-from carcara.experimental import VASQE
 from carcara.core import PauliSum
 from carcara.core.serialization import (DEFAULT_FILENAME, DEFAULT_FORMAT,
                                         FILE_EXTENSION, FILE_EXTENSIONS,
@@ -538,12 +537,6 @@ class TestDriverLoadsHamiltonian:
         assert vqe.ansatz.num_particles == (1, 1)
         # UCCSD reaches the same ground state as the (converged) ADAPT run.
         assert vqe.run().optimal_energy == pytest.approx(built_energy, abs=1e-6)
-
-    def test_vasqe_loads_too(self, h2_cache):
-        path, built_energy = h2_cache
-        result = VASQE(pool="fermionic", load_hamiltonian=path, verbose=False,
-                       temperature=1e-3, max_iterations=4, seed=1).run()
-        assert result.optimal_energy == pytest.approx(built_energy, abs=1e-6)
 
     def test_save_then_load_same_path_is_not_reserialized(self, tmp_path,
                                                           h2_cache):

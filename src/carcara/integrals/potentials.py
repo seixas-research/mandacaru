@@ -52,7 +52,7 @@ class Potentials:
         Coulomb singularity on the grid (default ``1e-12``).  Irrelevant to
         :meth:`pseudopotential`, which has no singularity to regularize.
     pseudopotentials : sequence, optional
-        One :class:`~carcara.basis.pseudopotential.PseudoPotential` per nucleus,
+        One :class:`~carcara.experimental.pseudopotentials.generation.PseudoPotential` per nucleus,
         enabling :meth:`pseudopotential`.
     units : {"angstrom", "bohr"}
         Unit of the nuclear centers (default ``"angstrom"``).

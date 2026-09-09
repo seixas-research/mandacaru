@@ -6,27 +6,31 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Experimental algorithms -- under development, not part of the stable API.
+"""Experimental features -- under development, not part of the stable API.
 
 Everything in this package is usable but **not yet fully validated**: the
 interfaces may change between releases, the numerics have been exercised on
-small molecules only, and the methods are deliberately kept out of the main
-documentation build (their notes live in ``docs/experimental/``).  Nothing here
-is a default anywhere in Carcará -- the production adaptive solver is
-:class:`~carcara.algorithms.adapt_vqe.ADAPTVQE`.
+small systems only, and the features are deliberately kept out of the main
+documentation build (their notes live in ``docs/experimental/``) and off the
+website.  Nothing here is a default anywhere in Carcará.
 
-Current contents:
+Contents:
 
 * :mod:`carcara.experimental.vasqe` -- **VASQE**, the Variational Adaptive
-  Stochastic Quantum Eigensolver (ADAPT-VQE with softmax operator selection and
-  temperature annealing), plus its subspace-search variant
-  :class:`~carcara.experimental.vasqe.SubspaceVASQE`.
-
-The experimental methods remain reachable from the unified calculator by name
-(``QuantumCalculator(method="vasqe")`` / ``"subspace-vasqe"``), which imports
-them lazily from here.
+  Stochastic Quantum Eigensolver (ADAPT-VQE with softmax operator selection
+  and temperature annealing), plus its subspace-search variant
+  :class:`~carcara.experimental.vasqe.SubspaceVASQE`.  Importing this package
+  registers them with the unified calculator, so after
+  ``import carcara.experimental`` the names ``Carcara(method="vasqe")`` and
+  ``Carcara(method="subspace-vasqe")`` work; without that import they are
+  unknown, by design.
+* :mod:`carcara.experimental.pseudopotentials` -- norm-conserving
+  Troullier-Martins pseudopotentials with Kleinman-Bylander projectors, their
+  generation, the bundled library (``library/``) and the pseudo-atomic
+  orbitals; reached through ``pseudopotentials=True`` on any driver.
 """
 
+from ..algorithms.calculator import register_method
 from .vasqe import (
     SubspaceVASQE,
     TEMPERATURE_SCHEDULES,
@@ -35,6 +39,9 @@ from .vasqe import (
     annealed_temperature,
     softmax_selection_probabilities,
 )
+
+register_method("vasqe", VASQE)
+register_method("subspace-vasqe", SubspaceVASQE)
 
 __all__ = [
     "VASQE",

@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Dynamic parametrization (``quenching``) across VQE, ADAPT-VQE and VASQE.
+"""Dynamic parametrization (``quenching``) across VQE and ADAPT-VQE.
 
 ``quenching=True`` (the default) hands every variational parameter to the
 classical optimizer at each iteration -- textbook ADAPT-VQE.  ``quenching=False``
@@ -23,7 +23,6 @@ import pytest
 from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE, VQE
-from carcara.experimental import VASQE
 
 
 @pytest.fixture(scope="module")
@@ -46,9 +45,8 @@ class TestQuenchingArgument:
     def test_defaults_to_true_on_every_driver(self):
         assert ADAPTVQE().quenching is True
         assert VQE().quenching is True
-        assert VASQE().quenching is True
 
-    @pytest.mark.parametrize("driver", [ADAPTVQE, VQE, VASQE])
+    @pytest.mark.parametrize("driver", [ADAPTVQE, VQE])
     def test_flag_is_stored(self, driver):
         assert driver(quenching=False).quenching is False
 
@@ -177,29 +175,3 @@ class TestVQEQuenching:
         assert swept.nfev == joint.nfev
 
 
-# --------------------------------------------------------------------------- #
-# VASQE inherits the policy through ADAPT-VQE's growth loop.
-# --------------------------------------------------------------------------- #
-
-class TestVASQEQuenching:
-    def test_quenched_vasqe_freezes_earlier_parameters(self, lih_cache):
-        seen: list[np.ndarray] = []
-        VASQE(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
-              max_iterations=5, temperature=1e-3, seed=2,
-              quenching=False).run(callback=lambda info: seen.append(
-                  np.array(info["parameters"], dtype=float)))
-
-        assert len(seen) >= 3
-        for earlier, later in zip(seen, seen[1:]):
-            assert np.array_equal(later[:earlier.size], earlier)
-
-    def test_low_temperature_quenched_vasqe_tracks_quenched_adapt(self,
-                                                                 lih_cache):
-        """tau -> 0 reduces VASQE to ADAPT-VQE, quenching policy included."""
-        common = dict(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
-                      max_iterations=5, quenching=False)
-        adapt = ADAPTVQE(**common).run()
-        vasqe = VASQE(**common, temperature=1e-6, seed=0).run()
-        assert vasqe.operators == adapt.operators
-        assert vasqe.optimal_energy == pytest.approx(adapt.optimal_energy,
-                                                     abs=1e-6)

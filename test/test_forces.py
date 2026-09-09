@@ -18,7 +18,7 @@ All finite-difference comparisons use a **fixed grid**.  The drivers regenerate
 the grid per geometry by default, which makes it move with the molecule and adds
 a spurious grid-drag term to the energy; the gradient is taken at fixed grid, so
 that is the configuration in which the two must agree (see
-:class:`~carcara.algorithms.QuantumCalculator`).
+:class:`~carcara.algorithms.Carcara`).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import (ADAPTVQE, QuantumCalculator, VQE, nuclear_gradient,
+from carcara.algorithms import (ADAPTVQE, Carcara, VQE, nuclear_gradient,
                                 one_rdm, two_rdm)
 from carcara.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
 from carcara.algorithms._jax_energy import (energy_from_integrals,
@@ -431,11 +431,11 @@ class TestByPartsMode:
         assert result.details["hellmann_feynman"] == "by-parts"
 
     def test_default_is_the_verified_form(self):
-        assert QuantumCalculator().hellmann_feynman == "analytic"
+        assert Carcara().hellmann_feynman == "analytic"
 
     def test_calculator_exposes_the_option(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(method="vqe", basis="FAO",
+        atoms.calc = Carcara(method="vqe", basis="FAO",
                                        grid=fixed_grid, verbose=False,
                                        hellmann_feynman="by-parts")
         forces = atoms.get_forces()
@@ -448,16 +448,16 @@ class TestByPartsMode:
 # --------------------------------------------------------------------------- #
 
 @needs_jax
-class TestQuantumCalculator:
+class TestCarcara:
     def test_implements_energy_and_forces(self):
-        calc = QuantumCalculator(method="vqe", basis="FAO", h=SPACING,
+        calc = Carcara(method="vqe", basis="FAO", h=SPACING,
                                  verbose=False)
         assert "energy" in calc.implemented_properties
         assert "forces" in calc.implemented_properties
 
     def test_get_forces_matches_the_driver(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(method="vqe", basis="FAO",
+        atoms.calc = Carcara(method="vqe", basis="FAO",
                                        grid=fixed_grid, verbose=False)
         forces = atoms.get_forces()
         expected = analytic_forces(h2(0.74), fixed_grid).forces
@@ -465,7 +465,7 @@ class TestQuantumCalculator:
 
     def test_energy_matches_the_bare_driver(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(method="vqe", basis="FAO",
+        atoms.calc = Carcara(method="vqe", basis="FAO",
                                        grid=fixed_grid, verbose=False)
         energy = atoms.get_potential_energy()
         reference = driver_energy(h2(0.74), fixed_grid) * HARTREE_TO_EV
@@ -473,7 +473,7 @@ class TestQuantumCalculator:
 
     def test_grid_is_frozen_across_geometries(self):
         """The grid must not follow the atoms, or forces stop matching energies."""
-        calc = QuantumCalculator(method="vqe", basis="FAO", h=SPACING,
+        calc = Carcara(method="vqe", basis="FAO", h=SPACING,
                                  vacuum=2.5, verbose=False)
         atoms = h2(0.74)
         atoms.calc = calc
@@ -487,7 +487,7 @@ class TestQuantumCalculator:
 
     def test_force_breakdown_is_exposed(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(method="vqe", basis="FAO",
+        atoms.calc = Carcara(method="vqe", basis="FAO",
                                        grid=fixed_grid, verbose=False)
         atoms.get_forces()
         hf, pulay = atoms.calc.get_force_breakdown()
@@ -496,7 +496,7 @@ class TestQuantumCalculator:
 
     def test_adapt_vqe_driver_also_works(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO",
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO",
                                        grid=fixed_grid, pool="qeb",
                                        verbose=False)
         forces = atoms.get_forces()
@@ -507,7 +507,7 @@ class TestQuantumCalculator:
 
     def test_unknown_method_rejected(self):
         with pytest.raises(ValueError, match="unknown method"):
-            QuantumCalculator(method="qaoa")
+            Carcara(method="qaoa")
 
     def test_plane_wave_basis_is_rejected(self):
         """A plane-wave basis does not move with the nuclei: no Pulay machinery."""
@@ -520,7 +520,7 @@ class TestQuantumCalculator:
                       cell=np.diag([edge, edge, edge]), pbc=True)
         # Rejected as soon as forces are requested, before any expensive
         # variational run (the energy path stays open for plane waves).
-        atoms.calc = QuantumCalculator(method="vqe", verbose=False,
+        atoms.calc = Carcara(method="vqe", verbose=False,
                                        basis={"name": "PW", "energy_cutoff": 60})
         with pytest.raises(NotImplementedError, match="atom-centered"):
             atoms.get_forces()

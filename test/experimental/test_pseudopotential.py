@@ -29,7 +29,7 @@ import pytest
 
 from carcara.basis.atomic_solver import (hartree_potential, lda_xc, solve_atom,
                                          solve_radial)
-from carcara.basis.pseudopotential import (TM_POWERS, PseudoPotential,
+from carcara.experimental.pseudopotentials.generation import (TM_POWERS, PseudoPotential,
                                            check_channel,
                                            generate_pseudopotential,
                                            pseudize_channel, report)

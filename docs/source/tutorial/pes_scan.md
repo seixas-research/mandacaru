@@ -2,7 +2,7 @@
 
 A potential-energy curve represents the ground-state energy of a molecule as a function of its nuclear coordinates. Scanning the bond length of diatomic molecules like $H_2$ and $LiH$ across varying distances allows us to observe chemical bonding wells, equilibrium distances, and dissociation limits.
 
-This tutorial guides you through scanning potential-energy curves with the `QuantumCalculator`, referencing every curve to the **sum of isolated-atom energies**, and managing numerical grid effects.
+This tutorial guides you through scanning potential-energy curves with the `Carcara`, referencing every curve to the **sum of isolated-atom energies**, and managing numerical grid effects.
 
 ---
 
@@ -35,12 +35,12 @@ For a simple system like $H_2$, the electron clouds are relatively diffuse and c
 
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.units import HARTREE_TO_EV
 
 for r in distances:
     atoms = Atoms("H2", positions=molecule_positions(float(r)))
-    atoms.calc = QuantumCalculator(method="adapt-vqe", pool="qeb", basis="FAO",
+    atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
                                    grid=grid, optimizer="L-BFGS-B",
                                    verbose=False)
     atoms.get_total_energy()
@@ -68,7 +68,7 @@ The following script scans the $LiH$ potential energy curve using ADAPT-VQE with
 ```python
 import numpy as np
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 # Set grid resolution h (Angstrom)
 h_val = 0.15
@@ -83,7 +83,7 @@ for r in distances:
                   cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
     # Attach the calculator with the ADAPT-VQE method
-    atoms.calc = QuantumCalculator(
+    atoms.calc = Carcara(
         method="adapt-vqe",
         pool="ceo",
         basis="FAO",

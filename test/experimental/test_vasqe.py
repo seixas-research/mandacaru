@@ -3,8 +3,10 @@
 
 """VASQE (experimental): ADAPT-VQE with stochastic (softmax) operator selection.
 
-VASQE lives in :mod:`carcara.experimental`; it is not exported from the stable
-:mod:`carcara.algorithms` package.
+VASQE lives in :mod:`carcara.experimental` and registers its methods with the
+unified calculator on import; the stable code never names it.  Everything that
+exercises VASQE -- selection, schedules, quenching, the Hamiltonian cache, the
+periodic calculator, the packaging rules -- lives in this file.
 
 Checks the selection probabilities and temperature schedules, that VASQE reduces
 to ADAPT-VQE at low temperature (reaching FCI on H2), that selection is genuinely
@@ -15,6 +17,7 @@ and subspace) inherit the stochastic selection.
 import numpy as np
 import pytest
 
+import carcara.experimental  # noqa: F401  (registers the methods)
 from carcara.algorithms.adapt_vqe import ADAPTVQEResult
 from carcara.experimental import (
     SubspaceVASQE,
@@ -238,32 +241,112 @@ class TestExperimentalPackaging:
             assert not hasattr(algorithms, name)
             assert name not in algorithms.__all__
 
-    def test_method_names_are_flagged_experimental(self):
-        from carcara.algorithms import (DEFAULT_METHOD, EXPERIMENTAL_METHODS,
-                                        METHODS, STABLE_METHODS,
-                                        resolve_method)
+    def test_registered_with_the_calculator(self):
+        from carcara.algorithms import (DEFAULT_METHOD, STABLE_METHODS,
+                                        available_methods,
+                                        experimental_methods, resolve_method)
         assert DEFAULT_METHOD == "adapt-vqe"
-        assert "vasqe" in EXPERIMENTAL_METHODS
-        assert "subspace-vasqe" in EXPERIMENTAL_METHODS
-        assert not set(EXPERIMENTAL_METHODS) & set(STABLE_METHODS)
-        assert set(METHODS) == set(STABLE_METHODS) | set(EXPERIMENTAL_METHODS)
+        assert "vasqe" in experimental_methods()
+        assert "subspace-vasqe" in experimental_methods()
+        assert not set(experimental_methods()) & set(STABLE_METHODS)
+        assert set(available_methods()) == (set(STABLE_METHODS)
+                                            | set(experimental_methods()))
         assert resolve_method("vasqe")[1] is VASQE
         assert resolve_method("subspace-vasqe")[1] is SubspaceVASQE
 
+    def test_stable_code_never_names_vasqe(self):
+        import pathlib
+        import carcara
+        root = pathlib.Path(carcara.__file__).parent
+        for path in root.rglob("*.py"):
+            if "experimental" in path.parts:
+                continue
+            assert "vasqe" not in path.read_text().lower(), path
+
     def test_calculators_default_to_adapt_vqe(self):
         from ase import Atoms
-        from carcara.algorithms import ADAPTVQE, BlochCalculator, QuantumCalculator
-        calc = QuantumCalculator(verbose=False)
+        from carcara.algorithms import ADAPTVQE, BlochCalculator, Carcara
+        calc = Carcara(verbose=False)
         assert calc.method == "adapt-vqe" and calc._solver_class is ADAPTVQE
         chain = Atoms("H", positions=[[0, 0, 0]], cell=[1.0, 10.0, 10.0],
                       pbc=[True, False, False])
         assert BlochCalculator(chain).method == "adapt-vqe"
 
-    def test_legacy_import_path_warns(self):
-        import importlib
-        import sys
-        import warnings
-        sys.modules.pop("carcara.algorithms.vasqe", None)
-        with pytest.warns(DeprecationWarning, match="carcara.experimental"):
-            legacy = importlib.import_module("carcara.algorithms.vasqe")
-        assert legacy.VASQE is VASQE
+    def test_calculator_and_dry_run_accept_the_method(self):
+        from ase import Atoms
+        from carcara.algorithms import Carcara
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
+        for method in ("vasqe", "subspace-vasqe"):
+            atoms.calc = Carcara(method=method, dry_run=True, verbose=False)
+            assert np.isnan(atoms.get_potential_energy())
+            assert atoms.calc.dry_run_result.method == method
+
+
+# --------------------------------------------------------------------------- #
+# Moved from the stable test files: quenching, the Hamiltonian cache and the
+# periodic Bloch calculator, each exercised with VASQE.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture(scope="module")
+def lih_cache(tmp_path_factory):
+    from ase import Atoms
+    from carcara.algorithms import ADAPTVQE
+    path = str(tmp_path_factory.mktemp("cache") / "lih.json")
+    atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7.0] * 3)
+    atoms.calc = ADAPTVQE(pool="qeb", basis="FAO", h=0.4, verbose=False,
+                          profile=False, max_iterations=1,
+                          save_hamiltonian=path, hamiltonian_format="json")
+    atoms.get_potential_energy()
+    return path
+
+
+class TestVASQEQuenching:
+    def test_default_is_quenched(self):
+        assert VASQE().quenching is True
+
+    def test_quenched_vasqe_freezes_earlier_parameters(self, lih_cache):
+        result = VASQE(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
+                       profile=False, quenching=False, max_iterations=3,
+                       gradient_tolerance=1e-8, temperature=1e-6,
+                       seed=0).run()
+        assert result.num_operators >= 2
+
+    def test_low_temperature_quenched_vasqe_tracks_quenched_adapt(self,
+                                                                   lih_cache):
+        """tau -> 0 reduces VASQE to ADAPT-VQE, quenching policy included."""
+        from carcara.algorithms import ADAPTVQE
+        common = dict(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
+                      profile=False, quenching=False, max_iterations=3,
+                      gradient_tolerance=1e-8)
+        adapt = ADAPTVQE(**common).run()
+        vasqe = VASQE(**common, temperature=1e-6, seed=0).run()
+        # Symmetry-degenerate operators tie on their gradient, so the *set*
+        # selected (and the energy) must match, not the tie-broken order.
+        assert set(vasqe.operators) == set(adapt.operators)
+        assert vasqe.optimal_energy == pytest.approx(adapt.optimal_energy,
+                                                     abs=1e-8)
+
+
+class TestHamiltonianCache:
+    def test_vasqe_loads_a_cached_hamiltonian(self, lih_cache):
+        result = VASQE(pool="fermionic", load_hamiltonian=lih_cache,
+                       verbose=False, profile=False, max_iterations=2,
+                       temperature=1e-6).run()
+        assert isinstance(result, VASQEResult)
+
+
+class TestBloch:
+    def test_total_energy_through_the_bloch_calculator(self):
+        from ase import Atoms
+        from carcara.algorithms import BlochCalculator
+        atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
+                      cell=[[1.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
+                      pbc=[True, False, False])
+        driver = BlochCalculator(atoms, method="vasqe", basis="FAO",
+                                 n_cells=3, n_images=5, h=0.30)
+        e_cell, result = driver.total_energy(
+            (2, 1, 1), h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+            temperature=1.0, max_iterations=6, gradient_tolerance=1e-3,
+            verbose=False, profile=False)
+        assert isinstance(result, VASQEResult) and np.isfinite(e_cell)
+        assert len(result.temperatures) == result.num_operators

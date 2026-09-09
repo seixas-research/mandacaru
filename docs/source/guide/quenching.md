@@ -4,9 +4,9 @@ Every method accepts a `quenching` flag that controls **how many
 parameters the classical optimizer varies at each step**.
 
 ```python
-QuantumCalculator(method="adapt-vqe", basis="FAO",
+Carcara(method="adapt-vqe", basis="FAO",
                   quenching=True)    # default: re-optimize everything
-QuantumCalculator(method="adapt-vqe", basis="FAO",
+Carcara(method="adapt-vqe", basis="FAO",
                   quenching=False)   # freeze the past, tune only the newest
 ```
 
@@ -33,7 +33,7 @@ cost of variational freedom.
 
 ```python
 seen = []
-calc = QuantumCalculator(method="adapt-vqe", pool="qeb",
+calc = Carcara(method="adapt-vqe", pool="qeb",
                          load_hamiltonian="lih.parquet", quenching=False)
 calc.run(callback=lambda info: seen.append(info["parameters"].copy()))
 

@@ -85,13 +85,13 @@ classically using the COBYLA optimizer:
 
 ```python
 from carcara.circuits import UCCSD
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 # 2 spatial orbitals -> 4 spin-orbitals; 2 electrons (1 alpha, 1 beta)
 ansatz = UCCSD(n_spatial_orbitals=2, num_particles=(1, 1), mapping="jordan_wigner")
 
 # Run VQE in direct mode (explicit Hamiltonian, no geometry)
-calc = QuantumCalculator(method="vqe", hamiltonian=H_fermion, ansatz=ansatz,
+calc = Carcara(method="vqe", hamiltonian=H_fermion, ansatz=ansatz,
                          optimizer="COBYLA")
 result = calc.run()
 
@@ -106,14 +106,14 @@ Carcará provides a standard Atomic Simulation Environment (ASE) calculator. Thi
 
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 # Define H2 molecule in a cubic unit cell
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
 # Attach the calculator, selecting the VQE method
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO", mapping="jordan_wigner",
+atoms.calc = Carcara(method="vqe", basis="FAO", mapping="jordan_wigner",
                                optimizer="COBYLA", h=0.20)
 
 # Execute calculation (energy returned in eV)

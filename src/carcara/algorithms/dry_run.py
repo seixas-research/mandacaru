@@ -229,8 +229,8 @@ def count_basis_functions(atoms, basis="FAO", pseudopotentials=False):
 
     symbols = list(atoms.get_chemical_symbols())
     if pseudopotentials:
-        from ..basis.pseudo_io import get_pseudopotential
-        from ..basis.pseudo_orbital import pseudo_basis
+        from ..experimental.pseudopotentials.io import get_pseudopotential
+        from ..experimental.pseudopotentials.orbitals import pseudo_basis
 
         options = ({} if pseudopotentials is True else dict(pseudopotentials))
         options = _merge_pseudo_basis_options(basis, options)
@@ -374,8 +374,8 @@ def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
     if pseudopotentials:
         if frozen_core or frozen_orbitals:
             raise ValueError("frozen_core is redundant with pseudopotentials")
-        from ..basis.pseudo_io import get_pseudopotential
-        from ..basis.pseudo_orbital import valence_electrons
+        from ..experimental.pseudopotentials.io import get_pseudopotential
+        from ..experimental.pseudopotentials.orbitals import valence_electrons
 
         options = ({} if pseudopotentials is True else dict(pseudopotentials))
         symbols = atoms.get_chemical_symbols()

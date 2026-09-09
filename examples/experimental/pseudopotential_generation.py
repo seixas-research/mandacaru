@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: examples/19_pseudopotential_generation.py
+# file: examples/experimental/pseudopotential_generation.py
 
 # This code is part of Carcará.
 # MIT License
@@ -32,8 +32,9 @@ import os
 
 import numpy as np
 
-from carcara.basis import generate_pseudopotential, solve_atom
-from carcara.basis.pseudopotential import check_channel, report
+from carcara.basis import solve_atom
+from carcara.experimental.pseudopotentials import generate_pseudopotential
+from carcara.experimental.pseudopotentials.generation import check_channel, report
 from carcara.units import BOHR_TO_ANGSTROM
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -193,7 +194,7 @@ print("  H_nl[mu,nu] = sum_l <phi_mu|chi_lm> E_KB,l <chi_lm|phi_nu>,")
 print("with the derivative of those projector overlaps carried into the force.")
 print()
 print("Any driver takes them as one argument:")
-print("    atoms.calc = QuantumCalculator(method='adapt-vqe', basis='FAO', pseudopotentials=True, h=0.15)")
+print("    atoms.calc = Carcara(method='adapt-vqe', basis='FAO', pseudopotentials=True, h=0.15)")
 print()
 print("The bundled library covers every element with Z < 90 and is loaded by")
 print("symbol.  See example 20 for what it buys.")

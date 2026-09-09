@@ -16,7 +16,7 @@ from a table (see :mod:`carcara.basis.nao_ae`).
 
 .. code-block:: python
 
-    atoms.calc = QuantumCalculator(basis={"name": "NAO-AE", "tier": 1})
+    atoms.calc = Carcara(basis={"name": "NAO-AE", "tier": 1})
 
 What this script shows
 ----------------------

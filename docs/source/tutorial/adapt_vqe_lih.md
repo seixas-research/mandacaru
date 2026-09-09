@@ -12,18 +12,18 @@ $$g_i = \langle\psi^{(n)}| [H, A_i] |\psi^{(n)}\rangle$$
 
 and grows the ansatz dynamically.
 
-Here, we attach a `QuantumCalculator` with `method="adapt-vqe"` as an ASE calculator to solve for the ground state of $LiH$ using the hardware-efficient Coupled-Exchange Operator (`"ceo"`) pool:
+Here, we attach a `Carcara` with `method="adapt-vqe"` as an ASE calculator to solve for the ground state of $LiH$ using the hardware-efficient Coupled-Exchange Operator (`"ceo"`) pool:
 
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 # Setup LiH molecule in a cell
 atoms = Atoms("LiH", positions=[[4.0, 4.0, 3.20], [4.0, 4.0, 4.80]],
               cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
 # Attach the calculator, selecting the ADAPT-VQE method
-atoms.calc = QuantumCalculator(
+atoms.calc = Carcara(
     method="adapt-vqe",
     pool="ceo",
     basis="FAO",
@@ -61,7 +61,7 @@ We can run the comparative analysis across these pools on $H_2$:
 
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.optimizers import Optimizer
 
 # H2 molecule
@@ -72,7 +72,7 @@ pools = ["fermionic", "qubit", "qeb", "ceo"]
 results = {}
 
 for name in pools:
-    atoms.calc = QuantumCalculator(
+    atoms.calc = Carcara(
         method="adapt-vqe",
         pool=name,
         basis="FAO",

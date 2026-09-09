@@ -8,7 +8,7 @@
 
 r"""The unified ASE calculator for every molecular variational method.
 
-:class:`QuantumCalculator` is the single user-facing entry point for running a
+:class:`Carcara` is the single user-facing entry point for running a
 variational quantum simulation: the eigensolver is selected by the ``method``
 argument and every method-specific option is forwarded to it.  It reports the
 **energy** for any method and, for the atom-centered bases, the analytic
@@ -21,16 +21,16 @@ come from a quantum variational eigensolver:
 
     from ase.build import molecule
     from ase.optimize import BFGS
-    from carcara.algorithms import QuantumCalculator
+    from carcara.algorithms import Carcara
 
     water = molecule("H2O")
     water.center(vacuum=3.0)
-    water.calc = QuantumCalculator(method="adapt-vqe", basis="FAO", h=0.30,
+    water.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.30,
                                    frozen_core=True, verbose=False)
     BFGS(water).run(fmax=0.05)
 
 The run result of the most recent evaluation is available uniformly on
-:attr:`QuantumCalculator.result`, whatever the method
+:attr:`Carcara.result`, whatever the method
 (``VQEResult`` / ``ADAPTVQEResult`` / the subspace results).
 The calculator also exposes the two non-ASE entry points of the underlying
 solvers: :meth:`run` (direct mode, e.g. from a cached Hamiltonian via
@@ -47,7 +47,7 @@ relaxation that would make the grid *move with the atoms*, adding a spurious
 would then disagree with the finite difference of the energies, and the
 optimizer would chase an artifact.
 
-Whenever forces are requested, :class:`QuantumCalculator` therefore builds the
+Whenever forces are requested, :class:`Carcara` therefore builds the
 grid **once**, from the initial geometry plus ``vacuum`` padding, and reuses it
 for every subsequent geometry.  Energies along the trajectory are then all
 evaluated on one common grid, which is exactly the condition under which the
@@ -67,34 +67,57 @@ DEFAULT_METHOD = "adapt-vqe"
 #: Stable method names accepted by ``method=``.
 STABLE_METHODS = ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe")
 
-#: Experimental methods (:mod:`carcara.experimental`) -- accepted, but not
-#: part of the stable API and never a default.
-EXPERIMENTAL_METHODS = ("vasqe", "subspace-vasqe")
+#: Kept as the historical name of the stable list.
+METHODS = STABLE_METHODS
 
-#: Every method name accepted by ``method=``.
-METHODS = STABLE_METHODS + EXPERIMENTAL_METHODS
+# Methods registered by packages outside the stable API (see
+# :func:`register_method`); nothing here names them.
+_REGISTERED: dict[str, type] = {}
+
+
+def register_method(name: str, solver_class: type) -> None:
+    """Make ``Carcara(method=name)`` build ``solver_class``.
+
+    The hook a package outside the stable API uses to plug its solvers into
+    the unified calculator without the stable code knowing them by name.  The
+    class must be a :class:`~carcara.algorithms.base.VariationalDriver`.
+    """
+    key = str(name).strip().lower()
+    if key in STABLE_METHODS:
+        raise ValueError(f"{name!r} is a stable method and cannot be replaced")
+    _REGISTERED[key] = solver_class
+
+
+def experimental_methods() -> tuple[str, ...]:
+    """Names registered by :func:`register_method` (imported packages only)."""
+    return tuple(_REGISTERED)
+
+
+def available_methods() -> tuple[str, ...]:
+    """Every method name ``method=`` accepts right now."""
+    return STABLE_METHODS + experimental_methods()
 
 
 def resolve_method(name: str):
     """Return ``(canonical_name, solver_class)`` for a method spec.
 
-    The stable solvers come from :mod:`carcara.algorithms`; the experimental
-    ones (``"vasqe"`` / ``"subspace-vasqe"``) are imported lazily from
-    :mod:`carcara.experimental` so the stable package never depends on them.
+    The stable solvers come from :mod:`carcara.algorithms`; any other name
+    must have been registered with :func:`register_method` first (the
+    :mod:`carcara.experimental` package does so when it is imported).
     """
     key = str(name).strip().lower()
-    if key not in METHODS:
-        raise ValueError(f"unknown method {name!r}; use one of {METHODS}")
-    if key in EXPERIMENTAL_METHODS:
-        from ..experimental import VASQE, SubspaceVASQE
-        return key, {"vasqe": VASQE, "subspace-vasqe": SubspaceVASQE}[key]
-    from . import ADAPTVQE, VQE, SubspaceADAPTVQE, SubspaceVQE
-    return key, {"vqe": VQE, "adapt-vqe": ADAPTVQE,
-                 "subspace-vqe": SubspaceVQE,
-                 "subspace-adapt-vqe": SubspaceADAPTVQE}[key]
+    if key in STABLE_METHODS:
+        from . import ADAPTVQE, VQE, SubspaceADAPTVQE, SubspaceVQE
+        return key, {"vqe": VQE, "adapt-vqe": ADAPTVQE,
+                     "subspace-vqe": SubspaceVQE,
+                     "subspace-adapt-vqe": SubspaceADAPTVQE}[key]
+    if key in _REGISTERED:
+        return key, _REGISTERED[key]
+    raise ValueError(
+        f"unknown method {name!r}; use one of {available_methods()}")
 
 
-class QuantumCalculator(Calculator):
+class Carcara(Calculator):
     """ASE calculator running the variational method named by ``method``.
 
     Parameters
@@ -104,9 +127,8 @@ class QuantumCalculator(Calculator):
         (the default), ``"vqe"``, or the subspace-search variants
         ``"subspace-vqe"`` / ``"subspace-adapt-vqe"``.  ADAPT-VQE is the
         practical choice for anything beyond a couple of orbitals: a fixed UCCSD
-        ansatz becomes very slow past ~8 qubits.  The experimental stochastic
-        solvers ``"vasqe"`` / ``"subspace-vasqe"`` (:mod:`carcara.experimental`)
-        are accepted too, but are not part of the stable API.
+        ansatz becomes very slow past ~8 qubits.  A method registered through
+        :func:`register_method` is accepted by name as well.
     basis : str or dict
         Basis family, as for the solvers (default ``"FAO"``); accepts a
         ``{"name": ..., <options>}`` dict, including the periodic plane-wave
@@ -399,5 +421,6 @@ class QuantumCalculator(Calculator):
         return (self.force_result.hellmann_feynman, self.force_result.pulay)
 
     def __repr__(self) -> str:
-        return (f"QuantumCalculator(method={self.method!r}, "
+        return (f"Carcara(method={self.method!r}, "
                 f"basis={self.basis!r}, h={self.h})")
+

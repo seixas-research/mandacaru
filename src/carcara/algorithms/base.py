@@ -133,7 +133,7 @@ class VariationalDriver(Calculator):
         **Experimental** -- outside the stable API; see
         ``docs/experimental/pseudopotentials.md``.  Use norm-conserving
         pseudopotentials (default ``False``).  ``True`` loads
-        the bundled Troullier-Martins library from ``pseudos/``; a dict passes
+        the bundled Troullier-Martins library; a dict passes
         options (currently ``{"directory": ...}`` to point at another library).
 
         This replaces the all-electron problem with a **valence-only** one: the
@@ -479,8 +479,8 @@ class VariationalDriver(Calculator):
 
     def _method_name(self) -> str:
         """The ``method=`` name of this driver, for reports."""
-        from .calculator import METHODS, resolve_method
-        for name in METHODS:
+        from .calculator import available_methods, resolve_method
+        for name in available_methods():
             try:
                 if resolve_method(name)[1] is type(self):
                     return name

@@ -14,8 +14,8 @@ hydrogens symmetric about the central beryllium along ``z``.  With
 (Be {1s, 2s} + 2 H {1s} = 4 spatial orbitals), and ``frozen_core=True`` freezes
 the Be ``1s`` core -- leaving a 3-orbital / 6-qubit active space with 4 active
 electrons (a ``(2, 2)`` closed shell).  The solver is attached through
-:class:`~carcara.algorithms.QuantumCalculator`
-(``atoms.calc = QuantumCalculator(method="adapt-vqe", ...)``);
+:class:`~carcara.algorithms.Carcara`
+(``atoms.calc = Carcara(method="adapt-vqe", ...)``);
 ``atoms.get_total_energy()`` then drives ADAPT-VQE with the CEO pool and returns
 the energy in **eV**, with the full run result on ``atoms.calc.result``.
 
@@ -34,7 +34,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.units import from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
@@ -51,7 +51,7 @@ atoms = Atoms("BeH2",
               cell=[[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
               pbc=True)
 
-atoms.calc = QuantumCalculator(
+atoms.calc = Carcara(
               method="adapt-vqe",
               pool="ceo",
               basis={"name": "FAO"},

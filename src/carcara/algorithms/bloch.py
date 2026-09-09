@@ -9,12 +9,11 @@
 r"""Bloch / k-point variational eigensolver for periodic systems (1-, 2-, 3-D).
 
 :class:`BlochCalculator` wraps the localized-basis integral engine and the
-molecular :class:`~carcara.algorithms.calculator.QuantumCalculator` to treat a
+molecular :class:`~carcara.algorithms.calculator.Carcara` to treat a
 **periodic system** given as an ASE ``Atoms`` primitive cell (its ``cell`` and
 ``pbc`` define the lattice and which directions are periodic).  Like the
 molecular calculator, the variational eigensolver is selected by the ``method``
-argument (``"adapt-vqe"`` by default, or ``"vqe"``; the experimental
-``"vasqe"`` is accepted as well).  It provides the two
+argument (``"adapt-vqe"`` by default, or ``"vqe"``).  It provides the two
 things a periodic calculation needs:
 
 * **Band structure** -- the single-particle Bloch Hamiltonian
@@ -83,7 +82,7 @@ class BlochCalculator:
 
     The variational eigensolver that solves the Born-von Karman supercell in
     :meth:`total_energy` is selected by ``method``, exactly as for
-    :class:`~carcara.algorithms.calculator.QuantumCalculator`; the Bloch
+    :class:`~carcara.algorithms.calculator.Carcara`; the Bloch
     Hamiltonian, band structure and supercell construction are method-independent.
 
     Parameters
@@ -96,8 +95,7 @@ class BlochCalculator:
     method : str
         Which variational eigensolver evaluates the supercell energy --
         ``"adapt-vqe"`` (default) or ``"vqe"`` (any method accepted by
-        :class:`~carcara.algorithms.calculator.QuantumCalculator`, including
-        the experimental ``"vasqe"`` from :mod:`carcara.experimental`).
+        :class:`~carcara.algorithms.calculator.Carcara`).
     basis : str or dict
         Localized basis passed to :class:`~carcara.basis.BasisSet` and to the
         molecular calculator (default ``"FAO"``).
@@ -287,7 +285,7 @@ class BlochCalculator:
     def total_energy(self, kmesh, **solver_kwargs):
         """Total energy **per cell** (eV) using all ``kmesh`` k-points.
 
-        Runs a molecular :class:`~carcara.algorithms.calculator.QuantumCalculator`
+        Runs a molecular :class:`~carcara.algorithms.calculator.Carcara`
         with the selected ``method`` on the ``kmesh`` Born-von Karman supercell
         (box = the supercell's ``cell``) and divides by the number of cells.
         Extra keyword arguments (``h``, ``pool``, ``max_iterations``,
@@ -297,13 +295,13 @@ class BlochCalculator:
         Returns ``(energy_per_cell_eV, result)`` where ``result`` is the
         method's result object (``ADAPTVQEResult`` / ``VQEResult``).
         """
-        from .calculator import QuantumCalculator
+        from .calculator import Carcara
 
         atoms = self.supercell(kmesh)
         options = dict(basis=self.basis, mapping=self.mapping, h=self.h,
                        verbose=False)
         options.update(solver_kwargs)
-        atoms.calc = QuantumCalculator(method=self.method, **options)
+        atoms.calc = Carcara(method=self.method, **options)
         energy = atoms.get_total_energy()                 # eV
         n_cells = int(np.prod([int(k) for k in kmesh]))
         return energy / n_cells, atoms.calc.result

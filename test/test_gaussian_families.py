@@ -337,9 +337,9 @@ class TestIntegration:
 
     def test_adapt_vqe_reaches_fci_with_a_named_set(self, h2):
         """A full run through the calculator with an STO-nG name."""
-        from carcara.algorithms import QuantumCalculator
+        from carcara.algorithms import Carcara
         atoms = h2.copy()
-        atoms.calc = QuantumCalculator(method="adapt-vqe", basis="STO-4G",
+        atoms.calc = Carcara(method="adapt-vqe", basis="STO-4G",
                                        pool="qeb", h=0.35, verbose=False,
                                        profile=False, optimizer="L-BFGS-B",
                                        gradient_tolerance=1e-5)

@@ -28,15 +28,9 @@ grid), so any of them drops straight into the integral engine.  Built-ins:
 Use the :class:`BasisSet` factory to build NAO or (STO-nG) GTO bases.  All
 families are generated from scratch -- no tabulated basis-set data.
 
-Two further modules support **pseudopotentials** (**experimental** -- under
-development, outside the stable API and documented only in
-``docs/experimental/``), which remove the heavy-atom core that the real-space
-grid cannot resolve:
-
-* :mod:`carcara.basis.atomic_solver` -- the self-consistent spherical LDA atom
-  that provides the all-electron reference;
-* :mod:`carcara.basis.pseudopotential` -- Troullier-Martins norm-conserving
-  pseudization in Kleinman-Bylander separable form.
+:mod:`carcara.basis.atomic_solver` is the self-consistent spherical LDA atom
+behind the NAO-AE minimal basis (and behind the experimental pseudopotentials
+in :mod:`carcara.experimental.pseudopotentials`).
 """
 
 from .atomic_solver import AtomicResult, solve_atom, solve_radial
@@ -55,9 +49,6 @@ from .nao_ae import (RadialFunction, build_species, confinement_potential,
                      effective_charge_for_radius, hydrogenic_function,
                      tier_specification)
 from .pople import pople_631g_shells
-from .pseudopotential import (Channel, PseudoPotential, check_channel,
-                              generate_pseudopotential, pseudize_channel,
-                              report)
 from .sto_ng import (occupied_subshells, slater_exponent, sto_ng_contraction,
                      sto_ng_shells)
 
@@ -96,10 +87,4 @@ __all__ = [
     "solve_atom",
     "solve_radial",
     "AtomicResult",
-    "generate_pseudopotential",
-    "PseudoPotential",
-    "Channel",
-    "pseudize_channel",
-    "check_channel",
-    "report",
 ]

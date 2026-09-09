@@ -6,11 +6,11 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""LiH ground state with ADAPT-VQE (CEO pool) through the QuantumCalculator.
+"""LiH ground state with ADAPT-VQE (CEO pool) through the Carcara.
 
 LiH is defined as an ASE :class:`ase.Atoms` object and
-:class:`~carcara.algorithms.QuantumCalculator` is attached as its *calculator*
-(``atoms.calc = QuantumCalculator(method="adapt-vqe", ...)``); with
+:class:`~carcara.algorithms.Carcara` is attached as its *calculator*
+(``atoms.calc = Carcara(method="adapt-vqe", ...)``); with
 ``basis={"name": "FAO"}`` the Full Atomic Orbitals of
 each atom (Li {1s, 2s} + H {1s} = 3 spatial orbitals -> 6 qubits) are generated
 from the geometry, and ``atoms.get_total_energy()`` drives ADAPT-VQE with the CEO
@@ -32,7 +32,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 from carcara.units import from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
@@ -40,7 +40,7 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
 
-# 1. Define LiH via ASE and attach the QuantumCalculator.  The molecule is
+# 1. Define LiH via ASE and attach the Carcara.  The molecule is
 #    placed at the center of the cell (7.5, 7.5, 7.5): the auto-generated grid is
 #    centered on the cell, so the atoms must sit inside it -- putting them at the
 #    origin would leave the orbitals hanging off the box corner and wreck the
@@ -50,7 +50,7 @@ atoms = Atoms("LiH",
               cell=[[15.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 15.0]],
               pbc=True)
 
-atoms.calc = QuantumCalculator(
+atoms.calc = Carcara(
               method="adapt-vqe",
               pool="ceo",
               basis={"name": "FAO"},

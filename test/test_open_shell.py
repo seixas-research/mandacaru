@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import (ADAPTVQE, RHF, UHF, QuantumCalculator,
+from carcara.algorithms import (ADAPTVQE, RHF, UHF, Carcara,
                                 estimate_qubits, natural_orbitals)
 from carcara.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
 from carcara.core import MolecularIntegrals, minimal_fao_basis
@@ -223,7 +223,7 @@ class TestGeometryPath:
 class TestSolvers:
     def test_adapt_vqe_hydrogen_atom(self):
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[5.0] * 3)
-        atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO", h=0.25,
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.25,
                                        verbose=False, profile=False)
         atoms.get_potential_energy()
         calc = atoms.calc
@@ -247,7 +247,7 @@ class TestSolvers:
     def test_vqe_h3_doublet_through_the_calculator(self):
         atoms = Atoms("H3", positions=[[0, 0, -0.9], [0, 0, 0], [0, 0, 0.9]],
                       cell=[6.5] * 3)
-        atoms.calc = QuantumCalculator(method="vqe", basis="FAO", h=0.30,
+        atoms.calc = Carcara(method="vqe", basis="FAO", h=0.30,
                                        verbose=False, optimizer="L-BFGS-B")
         atoms.get_potential_energy()
         calc = atoms.calc
@@ -302,7 +302,7 @@ class TestPlaneWaves:
         atoms = Atoms("H2", positions=[[8 * B2A - 0.37, 1.5 * B2A, 1.5 * B2A],
                                        [8 * B2A + 0.37, 1.5 * B2A, 1.5 * B2A]],
                       cell=cell, pbc=True)
-        atoms.calc = QuantumCalculator(method="adapt-vqe",
+        atoms.calc = Carcara(method="adapt-vqe",
                                        basis={"name": "PW", "energy_cutoff": 8},
                                        charge=1, verbose=False, profile=False,
                                        optimizer="L-BFGS-B",

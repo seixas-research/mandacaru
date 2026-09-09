@@ -69,13 +69,13 @@ We map the MO Hamiltonian to qubits and run VQE using the UCCSD ansatz. For LiH,
 
 ```python
 from carcara.circuits import UCCSD
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 # 4 spatial orbitals, 2 electrons (1 alpha, 1 beta)
 ansatz = UCCSD(n_spatial_orbitals=4, num_particles=(1, 1), mapping="jordan_wigner")
 
 # Execute VQE in direct mode (explicit Hamiltonian, no geometry)
-calc = QuantumCalculator(method="vqe", hamiltonian=H_mo, ansatz=ansatz,
+calc = Carcara(method="vqe", hamiltonian=H_mo, ansatz=ansatz,
                          optimizer="COBYLA")
 result = calc.run()
 
@@ -90,14 +90,14 @@ Just like $H_2$, $LiH$ can be simulated cleanly using the ASE calculator interfa
 
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 # Define LiH molecule in a unit cell
 atoms = Atoms("LiH", positions=[[4.0, 4.0, 3.20], [4.0, 4.0, 4.80]],
               cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
 # Attach the calculator, selecting the VQE method
-atoms.calc = QuantumCalculator(method="vqe", basis="FAO", mapping="jordan_wigner",
+atoms.calc = Carcara(method="vqe", basis="FAO", mapping="jordan_wigner",
                                optimizer="COBYLA", h=0.15)
 
 # Energy in eV

@@ -11,18 +11,18 @@ optimizers, ansätze, mappings or temperature schedules essentially for free.
 
 ```python
 from ase import Atoms
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
               cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
 
 # 1. Build once and save.
-atoms.calc = QuantumCalculator(method="adapt-vqe", pool="qeb", basis="FAO",
+atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
                                h=0.25, save_hamiltonian="lih.parquet")
 atoms.get_total_energy()
 
 # 2. Reload -- no geometry, no integrals, no mapping.
-result = QuantumCalculator(method="adapt-vqe", pool="ceo",
+result = Carcara(method="adapt-vqe", pool="ceo",
                            load_hamiltonian="lih.parquet").run()
 ```
 
@@ -56,7 +56,7 @@ Two interchangeable formats are selected with `hamiltonian_format`:
 | Best for | large active spaces; analysis in pandas/Arrow/Spark | inspection, diffing, dependency-free environments |
 
 ```python
-QuantumCalculator(method="adapt-vqe", basis="FAO",
+Carcara(method="adapt-vqe", basis="FAO",
                   save_hamiltonian="lih", hamiltonian_format="json")
 # -> writes lih.json
 ```
@@ -163,17 +163,17 @@ dependency and cannot be affected.
 Caching turns a pool comparison into a few seconds of work:
 
 ```python
-from carcara.algorithms import QuantumCalculator
+from carcara.algorithms import Carcara
 
 # Build once ...
-atoms.calc = QuantumCalculator(method="adapt-vqe", basis="FAO", h=0.25,
+atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.25,
                                save_hamiltonian="lih.parquet",
                                max_iterations=1, verbose=False)
 atoms.get_total_energy()
 
 # ... compare every pool against the *same* operator.
 for pool in ("fermionic", "qubit", "qeb", "ceo"):
-    result = QuantumCalculator(method="adapt-vqe", pool=pool,
+    result = Carcara(method="adapt-vqe", pool=pool,
                                load_hamiltonian="lih.parquet",
                                verbose=False).run()
     print(f"{pool:<10} E = {result.optimal_energy:.8f} Ha  "
