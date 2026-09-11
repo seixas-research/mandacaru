@@ -231,6 +231,10 @@ def zeta_tables(r: np.ndarray, radial: np.ndarray, n: int, l: int,
         values = split_valence_tail(r, current, l, r_split)
         if not np.any(np.abs(values) > 1e-12):
             break                              # nothing left to split
+        # Normalize the extra zeta.  Its span is unchanged, but a function
+        # carrying a few percent of the norm makes the overlap matrix (and the
+        # grid kinetic energy that screens it) needlessly ill-conditioned.
+        values = values / np.sqrt(np.trapezoid(values * values * r * r, r))
         tables.append(RadialTable(r=r, values=values, n=n, l=l, zeta=zeta))
         current, norm = values, norm * 0.5
     return tables

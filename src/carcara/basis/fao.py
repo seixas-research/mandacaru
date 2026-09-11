@@ -150,6 +150,13 @@ class FullAtomicOrbital(BasisFunction):
         Z = cls.slater_effective_charge(atomic_number, n, l)
         return cls(n, l, m, Z=Z, center=center, units=units)
 
+    def radial(self, r) -> np.ndarray:
+        """Radial function ``R_nl(r)`` (Bohr), normalized as ``int R^2 r^2 dr = 1``."""
+        r = np.asarray(r, dtype=float)
+        rho = (2 * self.Z * r) / (self.n * _A0)
+        return (self._radial_norm * np.exp(-rho / 2) * (rho ** self.l)
+                * self._laguerre(rho))
+
     def evaluate(self, x, y, z) -> np.ndarray:
         """Sample :math:`\\psi_{nlm}` on Cartesian coordinates (Bohr)."""
         xr = np.asarray(x, dtype=float) - self.center[0]

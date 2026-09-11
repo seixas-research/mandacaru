@@ -121,6 +121,13 @@ class VariationalDriver(Calculator):
         variational parameters at every iteration.  ``False`` optimizes only the
         most recently added parameter, freezing all previous ones at their
         already-optimized values.
+    kinetic : {"fd", "spectral"}, optional
+        Laplacian discretization of the real-space integrals: the 3-point
+        finite-difference stencil (``"fd"``) or the FFT Laplacian
+        (``"spectral"``), which never underestimates a compact function's
+        kinetic energy.  ``None`` (default) means ``"fd"``, the operator the
+        force code differentiates; use ``"spectral"`` for single-point
+        energies on coarse grids.
     dry_run : bool
         Estimate the qubit requirements and **stop** (default ``False``).  In a
         dry run no integral is computed, no Hamiltonian is mapped and no circuit
@@ -166,7 +173,7 @@ class VariationalDriver(Calculator):
                  execute_circuits: bool | None = None,
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
-                 **calc_kwargs):
+                 kinetic: str | None = None, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
 
         self.verbose = bool(verbose)
@@ -182,6 +189,11 @@ class VariationalDriver(Calculator):
         # Norm-conserving pseudopotentials: replace the core + the -Z/r
         # singularity with a smooth valence-only problem.
         self.pseudopotentials = pseudopotentials
+        # Laplacian discretization ("fd" / "spectral"; None = path default).
+        if kinetic not in (None, "fd", "spectral"):
+            raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
+                             "'fd', 'spectral' or None")
+        self.kinetic = kinetic
         self.initial_state = resolve_initial_state(initial_state)
         # Monkhorst-Pack mesh (ASE); the engine is Gamma-point (molecular), so a
         # denser mesh is stored on ``kpoints`` but rejected at run time.
@@ -569,7 +581,7 @@ class VariationalDriver(Calculator):
             atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons,
             spin=self.spin, frozen_core=self.frozen_core,
             frozen_orbitals=self.frozen_orbitals,
-            pseudopotentials=self.pseudopotentials)
+            pseudopotentials=self.pseudopotentials, kinetic=self.kinetic)
         self._integration_profile = profile
         # Kept for the nuclear gradient: the integral engine that produced this
         # Hamiltonian, and which atom each basis function belongs to.

@@ -63,9 +63,19 @@ pip install -e .
 
 ## Compiling the C Backend (Recommended)
 
-Carcará features an OpenMP-parallelized C backend (`libcarcara_integrals`) for real-space integrals. If the compiled library is missing, the framework automatically falls back to a vectorized NumPy implementation, which is correct but substantially slower.
+Carcará features an OpenMP-parallelized C backend (`libcarcara_integrals`) for real-space integrals, and it prefers that backend for every integration. **You normally do not have to build it by hand:** the first integral engine created in a process checks for the library and, when it is missing or stale, compiles it on the spot for the current machine (CMake when installed, otherwise the system C compiler; OpenMP through Homebrew's `libomp` on macOS). A full log lands in `src/carcara/integrals/csrc/build/build.log`. Only when that compile fails does the framework fall back to the vectorized NumPy reference kernels, and it says so once with a `RuntimeWarning`.
 
-To compile the C shared library:
+```python
+from carcara.integrals import check_backend, ensure_backend, build_backend
+
+print(check_backend())     # what is loaded now, no build
+print(ensure_backend())    # the check the engine runs: build if needed, then load
+build_backend(verbose=True)  # force a (re)compile by hand
+```
+
+The policy is the environment variable `CARCARA_BACKEND`: `auto` (default) prefers C and builds when needed; `c` does the same but raises instead of falling back; `numpy` forces the reference kernels (for benchmarks and debugging).
+
+To compile the C shared library by hand:
 
 ### On Linux
 ```bash
@@ -90,9 +100,13 @@ cmake --build build
 The compiled dynamic library (`.so` or `.dylib`) will be built under `src/carcara/integrals/csrc/build/`. Carcará's loading system detects it automatically. You can verify that it is loaded in Python:
 
 ```python
-from carcara.integrals import HAS_C_BACKEND
-print(f"C backend active: {HAS_C_BACKEND}")
+from carcara.integrals import check_backend
+print(check_backend().label)   # e.g. "C (OpenMP, 8 threads)"
 ```
+
+### Memory
+
+The C backend speeds up the one-body, projector and direct two-body kernels, but it does not change the memory peak of a calculation: that peak is the FFT two-body step, which forms the pair densities and their Coulomb potentials on the grid. That step now runs in memory-bounded blocks over the Hermitian pairs (`rho_ji = conj(rho_ij)`, so only `M(M+1)/2` pairs are ever built or solved), with a working-set budget of 256 MB by default. Lower or raise it with `CARCARA_ERI_MEMORY_MB` or per call with `IntegralEngine.two_body(max_memory_mb=...)`; the result is the same tensor to round-off, and a smaller budget only costs a little wall time.
 
 ---
 

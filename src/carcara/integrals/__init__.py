@@ -8,11 +8,13 @@
 
 """Real-space integral engine and its high-performance C backend."""
 
-from ._backend import HAS_C_BACKEND
+from ._backend import (HAS_C_BACKEND, BackendStatus, build_backend,
+                       check_backend, ensure_backend)
 from .engine import IntegralEngine
 from .grid import Grid
 from .poisson import PoissonFFTSolver
 from .potentials import Potentials
 
 __all__ = ["IntegralEngine", "Grid", "PoissonFFTSolver", "Potentials",
-           "HAS_C_BACKEND"]
+           "HAS_C_BACKEND", "BackendStatus", "build_backend", "check_backend",
+           "ensure_backend"]

@@ -12,6 +12,17 @@ Algorithms & Drivers
    :undoc-members:
    :show-inheritance:
 
+Interaction Energies
+~~~~~~~~~~~~~~~~~~~~
+
+``E(complex) - sum E(fragments)`` with every energy on one shared grid.  See
+:doc:`guide/interaction_energy`.
+
+.. automodule:: carcara.algorithms.interaction
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Dry Run
 ~~~~~~~
 

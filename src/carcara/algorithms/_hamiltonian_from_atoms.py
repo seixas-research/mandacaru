@@ -75,6 +75,61 @@ def grid_from_cell(atoms, h: float, center=None):
     return Grid(center=center, box_size=0.0, h=h, units="angstrom", cell=cell)
 
 
+#: The ``name`` :func:`resolve_basis` returns for a per-element mapping.
+PER_ELEMENT = "per-element"
+#: Key of a per-element mapping that supplies the basis of unlisted elements.
+DEFAULT_ELEMENT_KEY = "*"
+
+
+def is_per_element_basis(basis) -> bool:
+    """True for a ``{"O": ..., "H": ..., "*": ...}`` mapping of element -> basis.
+
+    Distinguished from a single-family dict by the absence of a ``"name"`` key:
+    every key must be a chemical symbol (or ``"*"`` for the default).
+    """
+    if not isinstance(basis, dict) or "name" in basis or not basis:
+        return False
+    from ase.data import atomic_numbers
+    return all(key == DEFAULT_ELEMENT_KEY
+               or (isinstance(key, str) and key.capitalize() in atomic_numbers)
+               for key in basis)
+
+
+def per_element_basis(basis, symbols) -> dict:
+    """``{symbol: (name, options)}`` for every symbol, from a per-element mapping.
+
+    An element with no entry takes the ``"*"`` entry; without one it is an
+    error -- a silently defaulted basis on one atom would be invisible in the
+    result.  Plane waves are not atom-centered and cannot be mixed in.
+    """
+    if not is_per_element_basis(basis):
+        raise TypeError("expected a per-element basis mapping")
+    table = {(k if k == DEFAULT_ELEMENT_KEY else k.capitalize()): v
+             for k, v in basis.items()}
+    resolved = {}
+    for symbol in dict.fromkeys(symbols):
+        spec = table.get(symbol.capitalize(), table.get(DEFAULT_ELEMENT_KEY))
+        if spec is None:
+            raise ValueError(
+                f"no basis given for element {symbol!r} in the per-element "
+                f"mapping {sorted(k for k in table if k != DEFAULT_ELEMENT_KEY)}; "
+                f"add it, or a '{DEFAULT_ELEMENT_KEY}' default entry")
+        name, options = resolve_basis(spec)
+        if name == PER_ELEMENT:
+            raise ValueError("per-element mappings cannot be nested")
+        if _is_plane_wave(name):
+            raise ValueError(
+                "the plane-wave basis is not atom-centered and cannot be "
+                "assigned to a single element")
+        resolved[symbol.capitalize()] = (name, options)
+    return resolved
+
+
+def _is_plane_wave(name) -> bool:
+    return isinstance(name, str) and \
+        name.upper().replace("-", "").replace(" ", "") in ("PW", "PLANEWAVE")
+
+
 def resolve_basis(basis):
     """Normalize a ``basis`` spec to ``(name, options)``.
 
@@ -87,19 +142,28 @@ def resolve_basis(basis):
     ``{"name": "6-31G(d)"}`` or the plane-wave basis
     ``{"name": "PW", "energy_cutoff": 300}``.  Returns the name string and a dict
     of the remaining keyword options.
+
+    A **per-element mapping** -- a dict keyed by chemical symbols (plus an
+    optional ``"*"`` default), each value itself a basis spec, e.g.
+    ``{"O": {"name": "NAO", "size": "DZP"}, "H": "6-31G", "*": "FAO"}`` --
+    returns ``(PER_ELEMENT, mapping)``; see :func:`per_element_basis`.
     """
     if isinstance(basis, str):
         return basis, {}
     if isinstance(basis, dict):
+        if is_per_element_basis(basis):
+            return PER_ELEMENT, dict(basis)
         options = dict(basis)
         name = options.pop("name", None)
         if name is None:
             raise ValueError(
                 "a basis dict must include a 'name' key, e.g. {'name': 'FAO'} "
-                "or {'name': 'PW', 'energy_cutoff': 300}")
+                "or {'name': 'PW', 'energy_cutoff': 300}, or be a per-element "
+                "mapping such as {'O': 'FAO', 'H': '6-31G'}")
         return name, options
     raise TypeError(
-        "basis must be a name string or a dict like {'name': 'FAO', ...}")
+        "basis must be a name string, a dict like {'name': 'FAO', ...}, or a "
+        "per-element mapping like {'O': 'FAO', 'H': '6-31G'}")
 
 
 # Noble-gas core: (highest Z of the row, core electrons of that row's atoms).
@@ -234,6 +298,27 @@ def _merge_pseudo_basis_options(basis, options):
     no indication anything had been dropped.
     """
     name, basis_options = resolve_basis(basis)
+    if name == PER_ELEMENT:
+        # One size per element: every entry must itself be a pseudo-basis spec;
+        # the first zeta is always the potential's own orbital, so only the
+        # size hierarchy can differ from atom to atom.
+        sizes = {}
+        for symbol, spec in basis_options.items():
+            sub_name, sub_options = resolve_basis(spec)
+            sub_key = str(sub_name).upper().replace("-", "").replace(" ", "")
+            extra = {k: v for k, v in sub_options.items()
+                     if k not in ("size", "split_norm")}
+            if extra or sub_key not in _PSEUDO_BASIS_NAMES:
+                raise ValueError(
+                    f"per-element basis {spec!r} for {symbol!r} cannot be used "
+                    "with pseudopotentials; use {'name': 'PP', 'size': ...} "
+                    "entries (the pseudopotential supplies the radial "
+                    "functions, only the size hierarchy is selectable)")
+            sizes[symbol if symbol == DEFAULT_ELEMENT_KEY
+                  else symbol.capitalize()] = sub_options.get("size", "SZ")
+        merged = dict(options)
+        merged["size"] = sizes
+        return merged
     key = str(name).upper().replace("-", "").replace(" ", "")
 
     unusable = {k: v for k, v in basis_options.items()
@@ -258,7 +343,44 @@ def _merge_pseudo_basis_options(basis, options):
     return merged
 
 
-def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, options):
+#: Default Laplacian per path.  Both keep the finite-difference stencil: it
+#: is what the nuclear-gradient code differentiates, so energies and forces
+#: stay consistent.  ``kinetic="spectral"`` is the more accurate choice for a
+#: single-point energy on a coarse grid (the stencil under-estimates the
+#: kinetic energy of compact functions by up to ~15% at 0.2-0.3 Angstrom).
+DEFAULT_KINETIC = {"all-electron": "fd", "pseudopotentials": "fd"}
+
+
+def _warn_unresolved(integrals, basis_fns, h):
+    """Warn about basis functions / projectors the grid does not resolve."""
+    import warnings
+    functions, projectors = integrals.unresolved()
+    if not functions and not projectors:
+        return
+    parts = []
+    if functions:
+        labels = [f"{i}:{type(basis_fns[i]).__name__}(l={getattr(basis_fns[i], 'l', '?')})"
+                  for i in functions[:6]]
+        ratios = [f"{integrals.resolution_ratios[i]:.2f}" for i in functions[:6]]
+        parts.append(f"{len(functions)} basis function(s) whose grid kinetic "
+                     f"energy is off by more than {int(100 * 0.25)}% of the exact "
+                     f"value ({', '.join(labels)}; T_grid/T_exact = "
+                     f"{', '.join(ratios)}{', ...' if len(functions) > 6 else ''})")
+    if projectors:
+        ratios = [f"{integrals.kb_resolution_ratios[i]:.2f}" for i in projectors[:6]]
+        parts.append(f"{len(projectors)} Kleinman-Bylander projector(s) whose "
+                     f"grid norm is off ({', '.join(ratios)}"
+                     f"{', ...' if len(projectors) > 6 else ''})")
+    warnings.warn(
+        f"the real-space grid (h = {h:g} Angstrom) does not resolve "
+        + " and ".join(parts)
+        + ".  Energies involving them are not trustworthy: refine h, or drop "
+        "the compact functions (a smaller basis size / no polarization).",
+        RuntimeWarning, stacklevel=3)
+
+
+def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, options,
+                                 kinetic=None):
     """Valence-only Hamiltonian from norm-conserving pseudopotentials.
 
     The core electrons are gone entirely: the basis is the set of valence
@@ -291,13 +413,15 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, options):
 
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
     num_particles = _num_particles(n_el, n_unpaired, "PP")
-    integrals = MolecularIntegrals(nuclei, basis_fns, g, softening=0.0,
-                                   pseudopotentials=[potentials[s]
-                                                     for s in symbols],
-                                   kb_projectors=projectors)
+    integrals = MolecularIntegrals(
+        nuclei, basis_fns, g, softening=0.0,
+        pseudopotentials=[potentials[s] for s in symbols],
+        kb_projectors=projectors,
+        kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"])
     hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,
                                                   n_electrons=n_el,
                                                   num_particles=num_particles)
+    _warn_unresolved(integrals, basis_fns, h)
 
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
                "frozen": (), "n_electrons": n_el,
@@ -309,7 +433,7 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, options):
 def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                             n_electrons, spin: bool = False,
                             frozen_core=False, frozen_orbitals=None,
-                            pseudopotentials=None):
+                            pseudopotentials=None, kinetic=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
@@ -336,6 +460,12 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     :func:`resolve_frozen_core`): the resolved core spatial MOs are removed from
     the active space, so the returned ``num_particles`` and ``n_spatial_orbitals``
     describe the reduced active space.
+
+    ``kinetic`` selects the Laplacian discretization (``"fd"`` or
+    ``"spectral"``); ``None`` takes :data:`DEFAULT_KINETIC` for the path.  After
+    the integrals, basis functions and projectors the grid does not resolve
+    (see :meth:`~carcara.core.hamiltonian.MolecularIntegrals.unresolved`) raise a
+    :class:`RuntimeWarning` naming them.
     """
     if pseudopotentials:
         if frozen_core or frozen_orbitals:
@@ -345,14 +475,14 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         options = ({} if pseudopotentials is True else dict(pseudopotentials))
         options = _merge_pseudo_basis_options(basis, options)
         return _pseudopotential_hamiltonian(atoms, grid, h, charge, spin,
-                                            options)
+                                            options, kinetic=kinetic)
 
     name, options = resolve_basis(basis)
     numbers = atoms.get_atomic_numbers()
     n_el = (int(n_electrons) if n_electrons is not None
             else int(sum(int(z) for z in numbers)) - int(charge))
 
-    if name.upper().replace("-", "").replace(" ", "") in ("PW", "PLANEWAVE"):
+    if _is_plane_wave(name):
         return _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
                                        frozen_core, frozen_orbitals)
 
@@ -361,7 +491,11 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
 
     symbols = atoms.get_chemical_symbols()
     positions = coherent_positions(atoms)                 # minimum-image whole
-    bset = BasisSet.build(name, **options)
+    if name == PER_ELEMENT:
+        per_element_basis(options, symbols)      # validate for these symbols
+        bset = BasisSet.build(options)
+    else:
+        bset = BasisSet.build(name, **options)
     basis_fns, nuclei, atom_of_orbital = [], [], []
     for atom_index, (Z, sym, pos) in enumerate(zip(numbers, symbols, positions)):
         functions = bset.atom(sym, center=pos, units="angstrom")
@@ -384,10 +518,13 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     # core integral.  Half a step keeps the well-resolved region untouched while
     # bounding the on-node case, so heavier-atom cores stay finite on a coarse grid.
     softening = 0.5 * float(min(g.dx, g.dy, g.dz))
-    integrals = MolecularIntegrals(nuclei, basis_fns, g, softening=softening)
+    integrals = MolecularIntegrals(
+        nuclei, basis_fns, g, softening=softening,
+        kinetic=kinetic or DEFAULT_KINETIC["all-electron"])
     hamiltonian = integrals.molecular_hamiltonian(
         mo_basis=True, n_electrons=n_el, num_particles=(n_alpha, n_beta),
         frozen_orbitals=frozen if frozen else None)
+    _warn_unresolved(integrals, basis_fns, h)
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
                "frozen": tuple(frozen), "n_electrons": n_el}
     return (hamiltonian, num_particles, len(basis_fns) - len(frozen),

@@ -224,6 +224,12 @@ class Grid:
         return (self.nx, self.ny, self.nz)
 
     @property
+    def is_orthogonal(self) -> bool:
+        """True when the voxel basis is diagonal (cubic or orthorhombic)."""
+        off = self.step - np.diag(np.diag(self.step))
+        return bool(np.all(np.abs(off) < 1e-12))
+
+    @property
     def is_cubic(self) -> bool:
         """True when every axis has the same node count and spacing (a cube)."""
         return (self.nx == self.ny == self.nz and self.is_orthorhombic

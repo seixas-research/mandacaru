@@ -129,7 +129,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
 
     ``size`` selects the multiple-zeta / polarized hierarchy exactly as it does
     for the all-electron NAO family (``"SZ"``, ``"DZ"``, ``"DZP"``, ``"TZP"``,
-    ...).  The **first zeta always comes from the pseudopotential** and cannot be
+    ...); a ``{symbol: size}`` mapping (with an optional ``"*"`` default)
+    gives each element its own size.  The **first zeta always comes from the pseudopotential** and cannot be
     replaced: the Troullier-Martins construction pseudizes each valence orbital
     inside its cutoff radius and the Kleinman-Bylander projectors are built from
     those specific pseudo-orbitals, so pairing the potential with an unrelated
@@ -141,12 +142,26 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     from ...basis.multizeta import (DEFAULT_SPLIT_NORM, RadialTable,
                             orbitals_from_tables, resolve_zeta, zeta_tables)
 
-    n_zeta, n_polarization = resolve_zeta(size)
     split_norm = DEFAULT_SPLIT_NORM if split_norm is None else float(split_norm)
+
+    def size_of(symbol):
+        """``size`` may be one spec for all atoms or ``{symbol: spec}`` with an
+        optional ``"*"`` default -- a polarized water next to a minimal ion."""
+        if isinstance(size, dict):
+            table = {(k if k == "*" else k.capitalize()): v
+                     for k, v in size.items()}
+            spec = table.get(symbol.capitalize(), table.get("*"))
+            if spec is None:
+                raise ValueError(
+                    f"no pseudo-basis size for element {symbol!r}; add it or "
+                    "a '*' default to the size mapping")
+            return spec
+        return size
 
     functions, owners = [], []
     for index, (symbol, position) in enumerate(zip(symbols, positions)):
         pp = potentials[symbol]
+        n_zeta, n_polarization = resolve_zeta(size_of(symbol))
         if n_zeta == 1 and n_polarization == 0:
             # Minimal valence set: the original path, unchanged.
             for l in sorted(pp.channels):

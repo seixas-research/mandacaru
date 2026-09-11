@@ -45,6 +45,7 @@ from .calculator import (DEFAULT_METHOD, METHODS, STABLE_METHODS, Carcara,
                          available_methods, experimental_methods,
                          register_method, resolve_method)
 from .forces import ForceResult, hellmann_feynman_gradient, nuclear_gradient
+from .interaction import InteractionEnergy, interaction_energy
 from .rdm import electronic_energy, one_rdm, particle_number, two_rdm
 from .vqe import VQE, VQEResult
 
@@ -92,6 +93,8 @@ __all__ = [
     "resolve_method",
     "format_pauli_sum",
     "nuclear_gradient",
+    "interaction_energy",
+    "InteractionEnergy",
     "hellmann_feynman_gradient",
     "ForceResult",
     "one_rdm",

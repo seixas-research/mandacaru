@@ -172,6 +172,7 @@ class VQE(DeflationMixin, VariationalDriver):
                  execute_circuits: bool | None = None,
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
+                 kinetic: str | None = None,
                  run_options: dict | None = None, **calc_kwargs):
         super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
                          device=device, grid=grid, h=h, kpts=kpts, spin=spin,
@@ -186,7 +187,7 @@ class VQE(DeflationMixin, VariationalDriver):
                          backend_provider=backend_provider,
                          execute_circuits=execute_circuits,
                          backend_options=backend_options, shots=shots,
-                         quenching=quenching, dry_run=dry_run,
+                         quenching=quenching, dry_run=dry_run, kinetic=kinetic,
                          run_options=run_options, verbose=verbose, **calc_kwargs)
         self.ansatz_builder = ansatz_builder
         self._preset_ansatz = ansatz

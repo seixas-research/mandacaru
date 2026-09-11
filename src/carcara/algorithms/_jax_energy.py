@@ -122,8 +122,8 @@ def _inverse_sqrt(jnp, S, steps: int = NEWTON_SCHULZ_STEPS):
 
 def _transform_eri(jnp, eri, C):
     """``eri_pqrs -> sum C*_ap C*_bq C_cr C_ds <ab|cd>`` (physicists')."""
-    return jnp.einsum("ap,bq,cr,ds,abcd->pqrs", C, C, C, C, eri,
-                      optimize=True)
+    return jnp.einsum("ap,bq,cr,ds,abcd->pqrs", jnp.conj(C), jnp.conj(C),
+                      C, C, eri, optimize=True)
 
 
 #: Density-matrix convergence threshold for the SCF probe below.
@@ -152,8 +152,8 @@ def scf_iterations_required(h, eri, n_occ, tol: float = SCF_DENSITY_TOL,
     for iteration in range(int(cap)):
         occ = C[:, :n_occ]
         D = 2.0 * (occ @ occ.T)
-        J = np.einsum("rs,prqs->pq", D, eri, optimize=True)
-        K = np.einsum("rs,prsq->pq", D, eri, optimize=True)
+        J = np.einsum("sr,prqs->pq", D, eri, optimize=True)
+        K = np.einsum("sr,prsq->pq", D, eri, optimize=True)
         F = h + J - 0.5 * K
         F = 0.5 * (F + F.T)
         _e, C = np.linalg.eigh(F)
@@ -190,8 +190,8 @@ def _scf(jnp, h, eri, n_occ, n_iter):
     for _ in range(n_iter):
         occ = C[:, :n_occ]
         D = 2.0 * (occ @ occ.T)
-        J = jnp.einsum("rs,prqs->pq", D, eri, optimize=True)
-        K = jnp.einsum("rs,prsq->pq", D, eri, optimize=True)
+        J = jnp.einsum("sr,prqs->pq", D, eri, optimize=True)
+        K = jnp.einsum("sr,prsq->pq", D, eri, optimize=True)
         F = h + J - 0.5 * K
         F = 0.5 * (F + F.T)
         _w, C = jnp.linalg.eigh(F)
@@ -302,8 +302,8 @@ def _resolve_scf_iterations(S, h_ao, eri_ao, kwargs) -> int:
         w, U = np.linalg.eigh(np.real(np.asarray(S, dtype=float)))
         X = (U * (1.0 / np.sqrt(w))) @ U.T
         h = X.T @ h @ X
-        eri = np.einsum("ap,bq,cr,ds,abcd->pqrs", X, X, X, X, eri,
-                        optimize=True)
+        eri = np.einsum("ap,bq,cr,ds,abcd->pqrs", np.conj(X), np.conj(X),
+                        X, X, eri, optimize=True)
 
     n_occ = int(kwargs["n_electrons"]) // 2
     needed = scf_iterations_required(h, eri, n_occ)

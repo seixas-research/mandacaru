@@ -91,7 +91,7 @@ class TestSplitValence:
         assert abs(tail[inside[-1]]) < 1e-3
 
     def test_zeta_hierarchy_is_strictly_shorter_ranged(self, hydrogen_1s):
-        """Each added zeta lives inside the previous one and carries less norm."""
+        """Each added zeta lives inside the previous one."""
         r, radial = hydrogen_1s
         tables = zeta_tables(r, radial, 1, 0, 4)
         assert [t.zeta for t in tables] == [1, 2, 3, 4]
@@ -103,8 +103,9 @@ class TestSplitValence:
             norms.append(np.trapezoid(table.values ** 2 * r ** 2, r))
 
         assert ranges == sorted(ranges, reverse=True)
-        assert norms == sorted(norms, reverse=True)
-        assert norms[0] == pytest.approx(1.0, abs=1e-3)
+        # Every zeta is normalized (the extra ones used to carry a few percent
+        # of the norm, which conditioned the overlap matrix needlessly).
+        assert norms == pytest.approx([1.0] * len(norms), abs=1e-3)
 
     def test_zeta_count_is_honored(self, hydrogen_1s):
         r, radial = hydrogen_1s

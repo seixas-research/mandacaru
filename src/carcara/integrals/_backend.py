@@ -29,7 +29,13 @@ from __future__ import annotations
 
 import ctypes
 import os
+import platform
+import shutil
+import subprocess
+import time
+import warnings
 from ctypes.util import find_library
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -132,6 +138,283 @@ def _bind(lib):
 
 _LIB = _load()
 HAS_C_BACKEND = _LIB is not None
+
+
+# --------------------------------------------------------------------------- #
+# Backend check and on-demand compilation.
+# --------------------------------------------------------------------------- #
+
+_SRC_DIR = _PKG_DIR / "csrc"
+_BUILD_DIR = _SRC_DIR / "build"
+_LIB_NAMES = {"Darwin": "libcarcara_integrals.dylib",
+              "Windows": "carcara_integrals.dll"}
+_BUILD_TIMEOUT = 600.0        # seconds; a compile that runs longer is abandoned
+_build_attempted = False       # one compile attempt per process
+_fallback_warned = False       # one NumPy-fallback warning per process
+
+
+@dataclass(frozen=True)
+class BackendStatus:
+    """Outcome of :func:`ensure_backend` / :func:`check_backend`.
+
+    Attributes
+    ----------
+    available : bool
+        ``True`` when the C library is loaded and the integrals run in C.
+    path : str or None
+        The shared library in use (``None`` on the NumPy fallback).
+    n_threads : int or None
+        OpenMP threads the C kernels run with (``None`` on the fallback).
+    compiled : bool
+        ``True`` when the library was compiled during *this* check.
+    message : str
+        One line saying how the backend was resolved (or why it was not).
+    """
+    available: bool
+    path: str | None
+    n_threads: int | None
+    compiled: bool
+    message: str
+
+    @property
+    def label(self) -> str:
+        """Short backend label for summaries (``"C (OpenMP, 8 threads)"``)."""
+        if not self.available:
+            return "NumPy (C backend unavailable)"
+        if self.n_threads and self.n_threads > 1:
+            return f"C (OpenMP, {self.n_threads} threads)"
+        return "C (serial)"
+
+
+def backend_preference() -> str:
+    """The ``CARCARA_BACKEND`` policy: ``"auto"`` (default), ``"c"`` or ``"numpy"``.
+
+    ``"auto"`` prefers the C library and compiles it when it is missing;
+    ``"c"`` does the same but raises when no C backend can be had;
+    ``"numpy"`` forces the reference NumPy kernels (benchmarks, debugging).
+    """
+    value = os.environ.get("CARCARA_BACKEND", "auto").strip().lower() or "auto"
+    if value not in ("auto", "c", "numpy"):
+        raise ValueError(
+            f"CARCARA_BACKEND={value!r} is not one of 'auto', 'c', 'numpy'")
+    return value
+
+
+def _reload() -> bool:
+    """Re-run the library search and rebind the module globals."""
+    global _LIB, HAS_C_BACKEND
+    _LIB = _load()
+    HAS_C_BACKEND = _LIB is not None
+    return HAS_C_BACKEND
+
+
+def _c_compiler() -> str | None:
+    for name in (os.environ.get("CC"), "cc", "clang", "gcc"):
+        if name and shutil.which(name):
+            return shutil.which(name)
+    return None
+
+
+def _homebrew_libomp() -> Path | None:
+    """Homebrew's ``libomp`` prefix on macOS, or ``None``."""
+    brew = shutil.which("brew")
+    if brew is None:
+        return None
+    try:
+        out = subprocess.run([brew, "--prefix", "libomp"], capture_output=True,
+                             text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    prefix = Path(out.stdout.strip())
+    if out.returncode == 0 and (prefix / "lib").is_dir():
+        return prefix
+    return None
+
+
+def _compile_attempts(system: str, build_dir: Path) -> list[list[list[str]]]:
+    """The ways to build the library on this system, best first.
+
+    Each attempt is a list of commands run in order; :func:`build_backend`
+    moves to the next attempt when one fails.  CMake is preferred (it carries
+    the OpenMP discovery for every platform).  Without CMake the bare
+    compiler is used: first with its native ``-fopenmp`` (GCC, LLVM clang),
+    then -- on macOS, where Apple's clang ships no OpenMP runtime -- through
+    Homebrew's ``libomp``, and finally serial.  Returns an empty list when no
+    tool chain is found.
+    """
+    cmake = shutil.which("cmake")
+    if cmake is not None:
+        configure = [cmake, "-S", str(_SRC_DIR), "-B", str(build_dir),
+                     "-DCMAKE_BUILD_TYPE=Release"]
+        if system == "Darwin":
+            libomp = _homebrew_libomp()
+            if libomp is not None:
+                configure.append(f"-DOpenMP_ROOT={libomp}")
+        return [[configure,
+                 [cmake, "--build", str(build_dir), "--config", "Release"]]]
+
+    cc = _c_compiler()
+    if cc is None or system == "Windows":
+        return []
+    source = str(_SRC_DIR / "carcara_integrals.c")
+    common = [cc, "-std=c11", "-O3", "-ffast-math", "-funroll-loops", "-fPIC",
+              f"-I{_SRC_DIR}", source]
+    if system == "Darwin":
+        link = ["-dynamiclib", "-o", str(build_dir / _LIB_NAMES["Darwin"])]
+        attempts = [[common + ["-fopenmp"] + link]]
+        libomp = _homebrew_libomp()
+        if libomp is not None:
+            attempts.append([common + [
+                "-Xpreprocessor", "-fopenmp", f"-I{libomp / 'include'}",
+                f"-L{libomp / 'lib'}", "-lomp",
+                "-Wl,-rpath," + str(libomp / "lib")] + link])
+        attempts.append([common + link])                      # serial
+        return attempts
+    link = ["-shared", "-o", str(build_dir / "libcarcara_integrals.so"), "-lm"]
+    return [[common + ["-fopenmp"] + link], [common + link]]
+
+
+def _run_attempt(commands, log, timeout, verbose) -> bool:
+    for cmd in commands:
+        log.write("$ " + " ".join(cmd) + "\n")
+        if verbose:
+            print("[carcara] " + " ".join(cmd))
+        try:
+            run = subprocess.run(cmd, cwd=str(_SRC_DIR), capture_output=True,
+                                 text=True, timeout=timeout, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.write(f"failed to run: {exc}\n")
+            return False
+        log.write(run.stdout)
+        log.write(run.stderr)
+        if run.returncode != 0:
+            log.write(f"exit status {run.returncode}\n")
+            return False
+    return True
+
+
+def build_backend(build_dir: str | os.PathLike | None = None, *,
+                  verbose: bool = False,
+                  timeout: float = _BUILD_TIMEOUT) -> Path | None:
+    """Compile ``libcarcara_integrals`` for this machine.
+
+    Detects the platform and tool chain (CMake when installed, otherwise the
+    system C compiler; OpenMP through Homebrew's ``libomp`` on macOS, natively
+    elsewhere) and builds the shared library into ``build_dir`` (default:
+    ``csrc/build``, where the loader looks).  A full log is written to
+    ``<build_dir>/build.log``.
+
+    Returns
+    -------
+    Path or None
+        The compiled library, or ``None`` when no tool chain was found or the
+        compile failed (the log says why).  Never raises for a build failure.
+    """
+    system = platform.system()
+    build_dir = Path(build_dir) if build_dir is not None else _BUILD_DIR
+    try:
+        build_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        if verbose:
+            print(f"[carcara] cannot create {build_dir}: {exc}")
+        return None
+    attempts = _compile_attempts(system, build_dir)
+    log_path = build_dir / "build.log"
+    with open(log_path, "w") as log:
+        log.write(f"# carcara C backend build on {system} "
+                  f"{platform.machine()}, {time.ctime()}\n")
+        if not attempts:
+            log.write("no tool chain found: install cmake or a C compiler\n")
+            if verbose:
+                print("[carcara] no C tool chain found (cmake / cc)")
+            return None
+        for n, commands in enumerate(attempts, 1):
+            log.write(f"# attempt {n}/{len(attempts)}\n")
+            if _run_attempt(commands, log, timeout, verbose):
+                break
+        else:
+            if verbose:
+                print(f"[carcara] build failed, see {log_path}")
+            return None
+    for name in (_LIB_NAMES.get(system, "libcarcara_integrals.so"),
+                 "libcarcara_integrals.so", "libcarcara_integrals.dylib"):
+        candidate = build_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def check_backend() -> BackendStatus:
+    """Report which integral backend is in use, without trying to build."""
+    if HAS_C_BACKEND:
+        return BackendStatus(True, _find_library(), num_threads(), False,
+                             "C backend loaded")
+    return BackendStatus(False, None, None, False,
+                         "C backend not built; NumPy reference kernels in use")
+
+
+def ensure_backend(*, build: bool = True, verbose: bool = False) -> BackendStatus:
+    """Make sure the C integral backend is available, compiling it if needed.
+
+    Call this before integrating.  The policy is ``CARCARA_BACKEND``
+    (:func:`backend_preference`): under ``"auto"`` (default) and ``"c"`` a
+    missing or stale library is compiled once per process with
+    :func:`build_backend` and loaded on the spot; the NumPy reference kernels
+    are used only when that compile fails (``"c"`` raises instead).
+    ``"numpy"`` skips the C library altogether.
+
+    Returns
+    -------
+    BackendStatus
+    """
+    global _build_attempted
+    preference = backend_preference()
+    if preference == "numpy":
+        if HAS_C_BACKEND:
+            _unload()
+        return BackendStatus(False, None, None, False,
+                             "CARCARA_BACKEND=numpy: reference kernels forced")
+    if HAS_C_BACKEND or _reload():
+        return check_backend()
+    compiled = False
+    message = "C backend not built"
+    if build and not _build_attempted:
+        _build_attempted = True
+        path = build_backend(verbose=verbose)
+        if path is not None and _reload():
+            compiled = True
+            return BackendStatus(True, _find_library(), num_threads(), True,
+                                 f"C backend compiled into {path.parent}")
+        message = ("C backend compile failed" if path is None
+                   else f"compiled library at {path} could not be loaded")
+        message += f" (see {_BUILD_DIR / 'build.log'})"
+    elif build:
+        message = f"C backend compile already failed (see {_BUILD_DIR / 'build.log'})"
+    if preference == "c":
+        raise RuntimeError(f"{message}; CARCARA_BACKEND=c refuses the NumPy fallback")
+    return BackendStatus(False, None, None, compiled,
+                         message + "; NumPy reference kernels in use")
+
+
+def _unload() -> None:
+    global _LIB, HAS_C_BACKEND
+    _LIB = None
+    HAS_C_BACKEND = False
+
+
+def warn_fallback(status: BackendStatus) -> None:
+    """Emit (once per process) the warning that the integrals run in NumPy."""
+    global _fallback_warned
+    if status.available or _fallback_warned:
+        return
+    _fallback_warned = True
+    warnings.warn(
+        "the real-space integrals are running on the NumPy reference kernels: "
+        + status.message + ".  They are slower and use more memory than the "
+        "C backend; build it with `carcara.integrals.build_backend()` or "
+        "`cmake -S src/carcara/integrals/csrc -B src/carcara/integrals/csrc/build"
+        " && cmake --build src/carcara/integrals/csrc/build`.",
+        RuntimeWarning, stacklevel=3)
 
 
 # --------------------------------------------------------------------------- #

@@ -62,8 +62,15 @@ class BasisSet:
     method: str = ""
 
     @staticmethod
-    def build(method: str, **kwargs) -> "BasisSet":
+    def build(method, **kwargs) -> "BasisSet":
         """Construct a basis set of the requested ``method``.
+
+        ``method`` may also be a **per-element mapping** -- a dict of chemical
+        symbol (or ``"*"`` for the default) to a basis spec, each a name or a
+        ``{"name": ..., <options>}`` dict -- giving a
+        :class:`PerElementBasisSet` that uses a different family on different
+        elements: ``BasisSet.build({"O": {"name": "NAO", "size": "DZP"}, "H":
+        "6-31G", "*": "FAO"})``.
 
         Supported methods: ``"FAO"`` (Full Atomic Orbitals -- the minimal
         analytic single-zeta atomic family),
@@ -78,6 +85,10 @@ class BasisSet:
         and the Karlsruhe ``"def2-..."`` sets -- all generated natively with the
         published shell structure (see :mod:`carcara.basis.gaussian_families`).
         """
+        if isinstance(method, dict):
+            if kwargs:
+                raise TypeError("a per-element mapping takes no extra options")
+            return PerElementBasisSet(method)
         key = method.upper().replace(" ", "")
         if key in ("FAO", "FULLATOMICORBITALS"):
             return FAOBasisSet(**kwargs)
@@ -120,6 +131,67 @@ class BasisSet:
         for sym, pos in zip(symbols, positions):
             basis.extend(self.atom(sym, center=pos, units=units))
         return basis
+
+
+class PerElementBasisSet(BasisSet):
+    """A different basis family on different elements.
+
+    Built from a mapping of chemical symbol to basis spec (name or
+    ``{"name": ..., <options>}`` dict), with ``"*"`` as the default for
+    elements not listed.  Each element's functions come from that family's own
+    :class:`BasisSet`, so a polarized double-zeta water next to a minimal
+    sodium ion is ``{"O": {"name": "NAO", "size": "DZP"}, "H": {"name": "NAO",
+    "size": "DZP"}, "Na": "FAO"}``.  Plane waves, which are not atom-centered,
+    are refused.
+    """
+
+    method = "per-element"
+
+    def __init__(self, mapping: dict):
+        from ..algorithms._hamiltonian_from_atoms import (
+            DEFAULT_ELEMENT_KEY, is_per_element_basis, resolve_basis)
+        if not is_per_element_basis(mapping):
+            raise ValueError(
+                "expected a mapping of chemical symbols (or '*') to basis "
+                "specs, e.g. {'O': 'FAO', 'H': '6-31G'}")
+        self.mapping = {(k if k == DEFAULT_ELEMENT_KEY else k.capitalize()): v
+                        for k, v in mapping.items()}
+        self._default_key = DEFAULT_ELEMENT_KEY
+        self._resolve = resolve_basis
+        self._sets: dict[str, BasisSet] = {}
+        labels = []
+        for symbol, spec in self.mapping.items():
+            name, options = resolve_basis(spec)
+            labels.append(f"{symbol}: {name}"
+                          + (f" {options}" if options else ""))
+        self.name = "per-element {" + ", ".join(labels) + "}"
+
+    def family_for(self, element) -> BasisSet:
+        """The :class:`BasisSet` that serves ``element``."""
+        from ase.data import chemical_symbols
+        symbol = (chemical_symbols[element] if isinstance(element, int)
+                  else str(element).capitalize())
+        if symbol not in self._sets:
+            spec = self.mapping.get(symbol, self.mapping.get(self._default_key))
+            if spec is None:
+                raise ValueError(
+                    f"no basis given for element {symbol!r}; add it to the "
+                    f"per-element mapping or a '{self._default_key}' default")
+            name, options = self._resolve(spec)
+            if isinstance(name, str) and name.upper().replace("-", "") in (
+                    "PW", "PLANEWAVE"):
+                raise ValueError("the plane-wave basis is not atom-centered "
+                                 "and cannot be assigned to one element")
+            self._sets[symbol] = BasisSet.build(name, **options)
+        return self._sets[symbol]
+
+    def atom(self, element, center=(0.0, 0.0, 0.0),
+             units: str = "angstrom") -> list[BasisFunction]:
+        return self.family_for(element).atom(element, center=center,
+                                             units=units)
+
+    def __repr__(self) -> str:
+        return f"PerElementBasisSet({self.mapping!r})"
 
 
 class NAOBasisSet(BasisSet):

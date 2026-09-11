@@ -247,6 +247,12 @@ def count_basis_functions(atoms, basis="FAO", pseudopotentials=False):
                 f"PP ({size}, pseudopotentials)")
 
     name, options = resolve_basis(basis)
+    if name == "per-element":
+        from ..basis import BasisSet
+        from ._hamiltonian_from_atoms import per_element_basis
+        per_element_basis(options, symbols)      # validate for these symbols
+        bset = BasisSet.build(options)
+        return [(s, len(bset.atom(s))) for s in symbols], bset.name
     if _basis_key(name) in ("PW", "PLANEWAVE"):
         from ..core.planewave import (DEFAULT_ENERGY_CUTOFF_EV,
                                       plane_wave_vectors)

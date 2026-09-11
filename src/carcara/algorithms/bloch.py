@@ -168,9 +168,14 @@ class BlochCalculator:
         symbols = self.atoms.get_chemical_symbols()
         numbers = self.atoms.get_atomic_numbers()
         prim = self.atoms.get_positions()
-        from ._hamiltonian_from_atoms import resolve_basis
+        from ._hamiltonian_from_atoms import (PER_ELEMENT, per_element_basis,
+                                              resolve_basis)
         name, options = resolve_basis(self.basis)
-        bset = BasisSet.build(name, **options)
+        if name == PER_ELEMENT:
+            per_element_basis(options, symbols)  # validate for these symbols
+            bset = BasisSet.build(options)
+        else:
+            bset = BasisSet.build(name, **options)
 
         # Orbitals live on the block cells (|n| <= n_cells); the crystal potential
         # is built from a wider nuclei window (|n| <= n_images).

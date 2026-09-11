@@ -275,6 +275,24 @@ class Carcara(Calculator):
         self.solver.result = self.solver.run(**run_kwargs)
         return self.solver.result
 
+    def interaction_energy(self, atoms, fragments, charges=None, **overrides):
+        """``E(complex) - sum E(fragments)`` on one shared grid, with this
+        calculator's method, basis and solver options.
+
+        See :func:`~carcara.algorithms.interaction.interaction_energy`; the
+        complex charge is this calculator's ``charge`` unless overridden.
+        """
+        from .interaction import interaction_energy
+
+        options = dict(self.solver_kwargs)
+        charge = int(options.pop("charge", 0))
+        options.update(overrides)
+        charge = int(options.pop("charge", charge))
+        return interaction_energy(atoms, fragments, charges, charge=charge,
+                                  method=self.method, basis=self.basis,
+                                  h=self.h, grid=self._grid,
+                                  verbose=self.verbose, **options)
+
     def energy_levels(self, num_states: int = 2, **solver_kwargs):
         """Excited states by variational deflation (see :mod:`carcara.algorithms.deflation`).
 
@@ -309,9 +327,11 @@ class Carcara(Calculator):
         means the user finds out immediately instead of after a full
         variational run.
         """
-        from ._hamiltonian_from_atoms import resolve_basis
+        from ._hamiltonian_from_atoms import PER_ELEMENT, resolve_basis
 
         name, _options = resolve_basis(basis)
+        if name == PER_ELEMENT:
+            return                        # atom-centered by construction
         if name.upper().replace("-", "").replace(" ", "") in ("PW", "PLANEWAVE"):
             raise NotImplementedError(
                 "nuclear forces need an atom-centered basis whose orbitals move "

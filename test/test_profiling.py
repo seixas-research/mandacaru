@@ -82,7 +82,7 @@ class TestIntegrationProfile:
         # Cores: an int with the C backend, None with the NumPy fallback.
         if _backend.HAS_C_BACKEND:
             assert prof["n_cores"] == _backend.num_threads()
-            assert prof["backend"] == "C (OpenMP)"
+            assert prof["backend"].startswith("C (")
         else:
             assert prof["n_cores"] is None
 

@@ -192,3 +192,27 @@ Two conventions to know. Shells are **spherical** (5 `d`, 7 `f`), so `6-31G*`
 carbon has 14 functions, not the 15 of a Cartesian-`d` program. And Pople's
 `3-21G*` puts its `d` functions on second-row atoms only, exactly as
 published, while `6-31G*` and `6-311G*` polarize every atom beyond helium.
+
+
+## A different basis on different elements
+
+The `basis` argument also takes a **per-element mapping**: a dict keyed by
+chemical symbol (plus an optional `"*"` default), each entry a basis spec of
+its own. The typical use is a polarized basis on the atoms whose chemistry
+matters next to a minimal one on a spectator ion — the qubit count is the sum
+over atoms, so this is how a large system is kept inside a state-vector
+budget:
+
+```python
+basis = {"O": {"name": "NAO", "size": "DZP"},
+         "H": {"name": "NAO", "size": "DZP"},
+         "*": "FAO"}                              # every other element
+atoms.calc = Carcara(basis=basis, frozen_core=True)
+```
+
+Every driver, the dry run and `BasisSet.build(mapping)` accept it; an element
+without an entry and without a `"*"` default is an error rather than a silent
+fallback, and the plane-wave family, which is not atom-centered, cannot be
+assigned to one element. On the (experimental) pseudopotential path the same
+mapping selects a per-element *size*, since the radial functions there come
+from each potential.

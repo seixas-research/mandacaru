@@ -36,7 +36,8 @@ in :mod:`carcara.experimental.pseudopotentials`).
 from .atomic_solver import AtomicResult, solve_atom, solve_radial
 from .base import BasisFunction
 from .factory import (BasisSet, FAOBasisSet, GaussianBasisSet, GTOBasisSet,
-                      NAOAEBasisSet, NAOBasisSet, Pople631GBasisSet)
+                      NAOAEBasisSet, NAOBasisSet, PerElementBasisSet,
+                      Pople631GBasisSet)
 from .gaussian_families import (NAMED_BASIS_SETS, GaussianRecipe,
                                 available_basis_names, count_functions,
                                 gaussian_shells, parse_basis_name,
@@ -70,6 +71,7 @@ __all__ = [
     "tier_specification",
     "Pople631GBasisSet",
     "GaussianBasisSet",
+    "PerElementBasisSet",
     "GaussianRecipe",
     "NAMED_BASIS_SETS",
     "available_basis_names",

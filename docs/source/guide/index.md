@@ -11,6 +11,7 @@ reach real quantum hardware, and how to control the classical optimization loop.
 basis_sets
 nao_ae
 open_shell
+interaction_energy
 dry_run
 hamiltonian_cache
 backends

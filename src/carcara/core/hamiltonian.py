@@ -43,6 +43,21 @@ from ..units import to_bohr
 from .mapping import Fermion
 
 
+def _radial_norm(fn) -> float:
+    """``int R^2 r^2 dr`` of a radially tabulated function (``nan`` if none)."""
+    radial = getattr(fn, "radial", None)
+    if radial is None:
+        return float("nan")
+    r = np.linspace(0.0, 40.0, 20001)
+    R = np.nan_to_num(np.asarray(radial(r), dtype=float))
+    return float(np.trapezoid(R * R * r * r, r))
+
+
+#: Resolution ratios outside ``[1 - RESOLUTION_TOLERANCE, 1 + RESOLUTION_TOLERANCE]``
+#: mark a basis function (or projector) the grid does not resolve.
+RESOLUTION_TOLERANCE = 0.25
+
+
 class MolecularIntegrals:
     """One- and two-body integrals over a localized basis for a molecule.
 
@@ -63,12 +78,27 @@ class MolecularIntegrals:
         bounds the singularity a nucleus samples when it sits on (or very near) a
         grid node.  The ASE-calculator path sets it to a fraction of the grid step
         so heavier-atom cores stay numerically finite on a coarse grid.
+    kinetic : {"fd", "spectral"}
+        Discretization of the Laplacian (default ``"fd"``, the 3-point
+        finite-difference stencil).  ``"spectral"`` uses the FFT Laplacian,
+        which never underestimates a function's kinetic energy and so prevents
+        the collapse of compact functions into deep potentials; see
+        :meth:`carcara.integrals.IntegralEngine.one_body`.
     """
 
     def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
                  basis, grid: Grid, units: str = "angstrom",
                  orthogonalize: bool = True, softening: float = 1e-12,
-                 pseudopotentials=None, kb_projectors=None):
+                 pseudopotentials=None, kb_projectors=None,
+                 kinetic: str = "fd"):
+        if kinetic not in ("fd", "spectral"):
+            raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
+                             "'fd' or 'spectral'")
+        self.kinetic = kinetic
+        #: ``T_grid / T_exact`` per basis function, filled by the integrals.
+        self.resolution_ratios: np.ndarray | None = None
+        #: ``<chi|chi>_grid / <chi|chi>_radial`` per KB projector, likewise.
+        self.kb_resolution_ratios: np.ndarray | None = None
         self.nuclei = [(float(Z), np.asarray(R, dtype=float)) for Z, R in nuclei]
         self.basis = list(basis)
         self.grid = grid
@@ -150,13 +180,21 @@ class MolecularIntegrals:
         chi = np.stack([p.evaluate(self.grid.X, self.grid.Y,
                                    self.grid.Z).ravel()
                         for p in self.kb_projectors])
+        # Resolution check: the projector's norm on the grid against its
+        # exact radial norm.  A projector the grid cannot resolve makes the
+        # nonlocal energy of its channel meaningless.
+        grid_norm = np.real(np.einsum("pg,pg->p", np.conj(chi), chi)) * self.grid.dV
+        radial_norm = np.array([_radial_norm(p) for p in self.kb_projectors])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            self.kb_resolution_ratios = grid_norm / radial_norm
         overlaps = _backend.kb_projections(self._engine._psi, chi, self.grid.dV)
         energies = np.array([p.kb_energy for p in self.kb_projectors])
         return (overlaps * energies) @ overlaps.conj().T
 
     def _compute(self):
         T, V = self._engine.one_body(self.external_potential(),
-                                     energy_units="Ha")
+                                     energy_units="Ha", kinetic=self.kinetic)
+        self.resolution_ratios = self._engine.resolution(T, kinetic=self.kinetic)
         one = T + V + self.kb_nonlocal()
         h = 0.5 * (one + one.conj().T)           # symmetrize away grid noise
         eri = self._engine.two_body(method="fft", energy_units="Ha")
@@ -165,9 +203,33 @@ class MolecularIntegrals:
             # requires an orthonormal orbital set.
             X = self._lowdin_x()
             h = X.conj().T @ h @ X
+            # Physicists' <pq|rs> = int p*(1) q*(2) r(1) s(2): the bra indices
+            # (p, q) take X* and the ket indices (r, s) take X.  The overlap --
+            # hence X -- is complex whenever the basis carries l > 0 functions
+            # off a symmetry plane, so the conjugation pattern matters: the
+            # former (X*, X, X*, X) broke the tensor's symmetries and shifted
+            # water's Hartree-Fock energy by 1.2 Ha.
             eri = np.einsum("ap,bq,cr,ds,abcd->pqrs",
-                            X.conj(), X, X.conj(), X, eri, optimize=True)
+                            X.conj(), X.conj(), X, X, eri, optimize=True)
         self._h1, self._eri = h, eri
+
+    def unresolved(self, tolerance: float = RESOLUTION_TOLERANCE):
+        """Indices of basis functions and projectors the grid does not resolve.
+
+        Returns ``(functions, projectors)``: the basis-function indices whose
+        kinetic-energy ratio :attr:`resolution_ratios` and the projector
+        indices whose norm ratio :attr:`kb_resolution_ratios` fall outside
+        ``1 +/- tolerance``.  Runs the integrals if they have not been run.
+        """
+        if self.resolution_ratios is None:
+            self._compute()
+        def outside(ratios):
+            if ratios is None:
+                return []
+            ratios = np.asarray(ratios, dtype=float)
+            bad = np.isfinite(ratios) & (np.abs(ratios - 1.0) > tolerance)
+            return [int(i) for i in np.nonzero(bad)[0]]
+        return outside(self.resolution_ratios), outside(self.kb_resolution_ratios)
 
     # -- spatial integrals (Hartree) -------------------------------------- #
 
