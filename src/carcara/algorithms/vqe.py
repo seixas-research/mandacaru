@@ -173,6 +173,7 @@ class VQE(DeflationMixin, VariationalDriver):
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
                  kinetic: str | None = None,
+                 two_qubit_reduction: bool = False,
                  run_options: dict | None = None, **calc_kwargs):
         super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
                          device=device, grid=grid, h=h, kpts=kpts, spin=spin,
@@ -188,6 +189,7 @@ class VQE(DeflationMixin, VariationalDriver):
                          execute_circuits=execute_circuits,
                          backend_options=backend_options, shots=shots,
                          quenching=quenching, dry_run=dry_run, kinetic=kinetic,
+                         two_qubit_reduction=two_qubit_reduction,
                          run_options=run_options, verbose=verbose, **calc_kwargs)
         self.ansatz_builder = ansatz_builder
         self._preset_ansatz = ansatz
@@ -229,7 +231,7 @@ class VQE(DeflationMixin, VariationalDriver):
                               else tuple(int(v) for v in particles))
         self.n_spatial_orbitals = getattr(ansatz, "n_spatial_orbitals",
                                           n_orbitals)
-        qubit_h = self._as_pauli_sum(hamiltonian, ansatz.n_qubits)
+        qubit_h = self._as_pauli_sum(hamiltonian, ansatz.n_qubits, particles)
         self._materialize_hamiltonian(qubit_h, ansatz.n_qubits)
         self._maybe_save_hamiltonian(
             getattr(ansatz, "num_particles", num_particles),
@@ -253,7 +255,8 @@ class VQE(DeflationMixin, VariationalDriver):
                      # A circuit realizes the Trotter product, so the state
                      # matches the executed circuit whenever one is run.
                      trotter=provider is not None or bool(self.shots),
-                     provider=provider)
+                     provider=provider,
+                     two_qubit_reduction=self.two_qubit_reduction)
 
     # -- energy ----------------------------------------------------------- #
 

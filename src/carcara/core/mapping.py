@@ -471,8 +471,33 @@ def _canonical_method(method: str) -> str:
             f"or 'bravyi_kitaev'") from None
 
 
-def reference_qubit_bits(method: str, n_modes: int,
-                         occupied) -> np.ndarray:
+def parity_tapered_qubits(n_modes: int) -> tuple[int, int]:
+    """The two parity-register qubits the two-qubit reduction removes.
+
+    In the spin-blocked ordering qubit ``n/2 - 1`` holds the alpha-sector
+    parity and qubit ``n - 1`` the total parity; both are fixed by the
+    particle numbers, so they carry no information.
+    """
+    n = int(n_modes)
+    return (n // 2 - 1, n - 1)
+
+
+def two_qubit_reduce(op: PauliSum, n_modes: int,
+                     num_particles: tuple[int, int]) -> PauliSum:
+    """Taper a parity-mapped operator to ``n_modes - 2`` qubits.
+
+    Valid for operators that conserve the alpha and total particle numbers
+    (the Hamiltonian, and the spin-conserving excitation generators): on the
+    two tapered qubits they carry only ``I`` or ``Z``, and ``Z`` evaluates to
+    the sector's parity eigenvalue.
+    """
+    return _parity_two_qubit_reduction(op, int(n_modes), tuple(num_particles))
+
+
+def reference_qubit_bits(method: str, n_modes: int, occupied,
+                         two_qubit_reduction: bool = False,
+                         num_particles: tuple[int, int] | None = None
+                         ) -> np.ndarray:
     r"""Qubit bit-string of a Slater determinant under a fermion-to-qubit map.
 
     A determinant is the occupation vector ``x`` (``x_j = 1`` iff spin-orbital
@@ -487,7 +512,14 @@ def reference_qubit_bits(method: str, n_modes: int,
     for j in occupied:
         x[int(j)] = 1
     beta = _encoding_matrix(_canonical_method(method), int(n_modes))
-    return (beta @ x) % 2
+    bits = (beta @ x) % 2
+    if two_qubit_reduction:
+        if _canonical_method(method) != "parity":
+            raise ValueError("two-qubit reduction requires method='parity'")
+        drop = parity_tapered_qubits(n_modes)
+        bits = np.array([b for k, b in enumerate(bits) if k not in drop],
+                        dtype=np.int8)
+    return bits
 
 
 def _numeric_annihilators(n: int) -> list[np.ndarray]:

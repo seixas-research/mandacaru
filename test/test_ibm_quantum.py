@@ -188,6 +188,26 @@ class TestEstimatorEnergies:
             QiskitProvider(device="fake_manila", shots=0).energies(
                 [h2_run.ansatz_problem()])
 
+    def test_physical_qubits_pin_the_layout(self):
+        out = _isolated(_H2_RUN + """
+    provider = QiskitProvider(device="fake_manila", shots=1024,
+                              physical_qubits=[3, 4, 1, 2])
+    isa, observable = provider.pub(*calc.ansatz_problem())
+    # Carcará qubit k -> physical_qubits[k]; wire n-1-k carries qubit k.
+    # (The *initial* layout is what the pin fixes; routing may permute the
+    # final one, which apply_layout accounts for.)
+    layout = isa.layout.initial_index_layout(filter_ancillas=True)
+    print([layout[4 - 1 - k] for k in range(4)])
+    energy = calc.measured_energy(provider)
+    print(abs(energy - exact) < 0.4)
+""")
+        assert out.split("\n")[0] == "[3, 4, 1, 2]"
+        assert out.split()[-1] == "True"
+        with pytest.raises(ValueError, match="entries"):
+            QiskitProvider(device="fake_manila", shots=1,
+                           physical_qubits=[0, 1]).pub(
+                4, [0, 2], [], [], __import__("carcara.core", fromlist=["PauliSum"]).PauliSum({"ZIII": 1.0}))
+
     def test_unknown_fake_backend(self):
         with pytest.raises(ValueError, match="fake backend"):
             QiskitProvider(device="fake_nowhere", shots=1).backend()

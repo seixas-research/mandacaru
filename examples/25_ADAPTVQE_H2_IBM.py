@@ -6,8 +6,9 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""H2 dissociation curve with ADAPT-VQE (CEO pool, Jordan-Wigner mapping),
-optimized locally and measured on IBM Quantum hardware.
+"""H2 dissociation curve with ADAPT-VQE on two qubits (fermionic pool, parity
+mapping with the two-qubit reduction), optimized locally and measured on IBM
+Quantum hardware.
 
 The variational optimization runs on the local state vector.  The optimized
 states are then measured with the Qiskit Runtime ``Estimator`` on a real
@@ -31,6 +32,13 @@ from carcara.backends.providers import QiskitProvider
 
 HARDWARE = None
 SHOTS = 4096
+#: Qiskit Runtime error mitigation: level 2 adds gate twirling and
+#: zero-noise extrapolation to the readout mitigation of level 1.
+ESTIMATOR_OPTIONS = {"resilience_level": 2}
+#: Physical qubits to run on (Carcara qubit k on PHYSICAL_QUBITS[k]); None
+#: lets the transpiler choose.  Pin a pair with good *current* readout: a
+#: drifted qubit ruins the energy while its calibration record looks fine.
+PHYSICAL_QUBITS = None
 
 DISTANCES = [0.5, 0.6, 0.74, 0.9, 1.1, 1.4, 1.8]   # Angstrom
 CELL = 10.0                                         # cubic cell edge (Angstrom)
@@ -47,10 +55,11 @@ def h2(distance):
 def calculator():
     return Carcara(
         method="adapt-vqe",
-        pool="ceo",
-        mapping="jordan_wigner",
+        pool="fermionic",
+        mapping="parity",
+        two_qubit_reduction=True,       # H2 on 2 qubits instead of 4
         basis="FAO",
-        h=0.20,
+        h=0.10,
         charge=0,
         spin=False,
         frozen_core=False,
@@ -87,7 +96,9 @@ plt.plot(DISTANCES, energies, "o-", label="local state vector")
 # 2. Measure the optimized states on hardware, one Estimator job.
 measured, stds, backend_name, job_id = [], [], "", ""
 if HARDWARE:
-    provider = QiskitProvider(device=HARDWARE, shots=SHOTS)
+    provider = QiskitProvider(device=HARDWARE, shots=SHOTS,
+                              estimator_options=ESTIMATOR_OPTIONS,
+                              physical_qubits=PHYSICAL_QUBITS)
     backend_name = provider.backend().name
     print(f"\nmeasuring on {backend_name} ({SHOTS} shots)")
     measured = measure_energies(solvers, provider)
@@ -115,6 +126,6 @@ with open("h2_dissociation_ibm.csv", "w", newline="") as fh:
 
 plt.xlabel("H-H distance (Angstrom)")
 plt.ylabel("energy (Ha)")
-plt.title("H2 (FAO), ADAPT-VQE (ceo pool, Jordan-Wigner)")
+plt.title("H2 (FAO), ADAPT-VQE, parity mapping, 2 qubits")
 plt.legend()
 plt.savefig("h2_dissociation_ibm.png", dpi=150)

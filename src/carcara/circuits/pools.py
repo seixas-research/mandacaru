@@ -170,12 +170,26 @@ class PoolBase:
 
     name = "base"
 
+    #: Pools built from Jordan-Wigner strings cannot be tapered.
+    supports_two_qubit_reduction = False
+
     def __init__(self, n_spatial_orbitals: int, num_particles: tuple[int, int],
-                 mapping: str = "jordan_wigner"):
+                 mapping: str = "jordan_wigner",
+                 two_qubit_reduction: bool = False):
         self.n_spatial_orbitals = int(n_spatial_orbitals)
         self.num_particles = (int(num_particles[0]), int(num_particles[1]))
         self.mapping = mapping
-        self.n_qubits = 2 * self.n_spatial_orbitals
+        self.two_qubit_reduction = bool(two_qubit_reduction)
+        #: Spin-orbital (mode) count; the register is two smaller when tapered.
+        self.n_modes = 2 * self.n_spatial_orbitals
+        self.n_qubits = self.n_modes
+        if self.two_qubit_reduction:
+            if not self.supports_two_qubit_reduction:
+                raise ValueError(
+                    f"the {self.name!r} pool is built from Jordan-Wigner "
+                    "strings and cannot be tapered; the two-qubit reduction "
+                    "needs mapping='parity' with the 'fermionic' pool")
+            self.n_qubits = self.n_modes - 2
         (self._occ, self._virt, self._singles,
          self._doubles) = _spin_conserving_excitations(
             self.n_spatial_orbitals, self.num_particles)
@@ -224,11 +238,15 @@ class FermionicPool(PoolBase):
     """Spin-adapted single + double fermionic excitation generators (JW-mapped)."""
 
     name = "fermionic"
+    supports_two_qubit_reduction = True
 
     def _build(self) -> list[PoolOperator]:
         ops: list[PoolOperator] = []
         for label, gen, support in self._fermionic_generators():
-            pauli = gen.map_to_qubits(self.mapping, n_modes=self.n_qubits).simplify()
+            pauli = gen.map_to_qubits(
+                self.mapping, n_modes=self.n_modes,
+                two_qubit_reduction=self.two_qubit_reduction,
+                num_particles=self.num_particles).simplify()
             if not pauli.terms:
                 continue
             kind = "fermionic-single" if label[0] == "S" else "fermionic-double"
@@ -375,7 +393,16 @@ def available_pools() -> list[str]:
 
 def build_pool(name: str, n_spatial_orbitals: int,
                num_particles: tuple[int, int],
-               mapping: str = "jordan_wigner") -> PoolBase:
+               mapping: str = "jordan_wigner",
+               two_qubit_reduction: bool = False) -> PoolBase:
+    return _build_pool(name, n_spatial_orbitals, num_particles, mapping,
+                       two_qubit_reduction)
+
+
+def _build_pool(name: str, n_spatial_orbitals: int,
+               num_particles: tuple[int, int],
+               mapping: str = "jordan_wigner",
+               two_qubit_reduction: bool = False) -> PoolBase:
     """Construct an :class:`PoolBase` by name.
 
     ``name`` is one of ``"fermionic"``, ``"qubit"``, ``"qeb"``, ``"ceo"`` (plus a
@@ -391,4 +418,5 @@ def build_pool(name: str, n_spatial_orbitals: int,
         raise ValueError(
             f"unknown pool {name!r}; choose from {sorted(_POOLS)} "
             f"(or aliases {sorted(_POOL_ALIASES)})") from None
-    return cls(n_spatial_orbitals, num_particles, mapping=mapping)
+    return cls(n_spatial_orbitals, num_particles, mapping=mapping,
+               two_qubit_reduction=two_qubit_reduction)

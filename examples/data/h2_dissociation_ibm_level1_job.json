@@ -1,125 +1,94 @@
 {
-  "job_id": "daicn7r9k43c73afrj5g",
+  "job_id": "daicj6omhr3c73e7jngg",
   "backend": "ibm_kingston",
-  "usage_seconds": 59,
+  "usage_seconds": 27,
   "usage_estimation": {
-    "quantum_seconds": 93.837384113
+    "quantum_seconds": 33.771492992
   },
-  "creation_date": "2026-09-12 00:48:47.440783-03:00",
+  "creation_date": "2026-09-12 00:40:11.536312-03:00",
   "register": "parity mapping, two-qubit reduction (2 qubits)",
-  "estimator_options": {
-    "resilience_level": 2
-  },
   "pubs": [
     {
       "distance_A": 0.5,
-      "evs": -0.9707085324641709,
-      "stds": 0.03772880992986038,
+      "evs": -0.9349638735919393,
+      "stds": 0.049120092580716604,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
         "circuit_metadata": {},
-        "resilience": {
-          "zne": {
-            "extrapolator": "multiple"
-          }
-        },
+        "resilience": {},
         "num_randomizations": 32
       }
     },
     {
       "distance_A": 0.6,
-      "evs": -1.0348012432305467,
-      "stds": 0.040277344203037926,
+      "evs": -1.0778869091020993,
+      "stds": 0.03853248903003681,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
         "circuit_metadata": {},
-        "resilience": {
-          "zne": {
-            "extrapolator": "multiple"
-          }
-        },
+        "resilience": {},
         "num_randomizations": 32
       }
     },
     {
       "distance_A": 0.74,
-      "evs": -1.099351044226323,
-      "stds": 0.03339726422808229,
+      "evs": -1.0860834069425387,
+      "stds": 0.03324792175269432,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
         "circuit_metadata": {},
-        "resilience": {
-          "zne": {
-            "extrapolator": "multiple"
-          }
-        },
+        "resilience": {},
         "num_randomizations": 32
       }
     },
     {
       "distance_A": 0.9,
-      "evs": -1.132402802592763,
-      "stds": 0.05895936289430532,
+      "evs": -1.1158273115778121,
+      "stds": 0.02849422427729532,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
         "circuit_metadata": {},
-        "resilience": {
-          "zne": {
-            "extrapolator": "multiple"
-          }
-        },
+        "resilience": {},
         "num_randomizations": 32
       }
     },
     {
       "distance_A": 1.1,
-      "evs": -1.1253894106273277,
-      "stds": 0.01317234691031075,
+      "evs": -1.091395945815357,
+      "stds": 0.02108720100539834,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
         "circuit_metadata": {},
-        "resilience": {
-          "zne": {
-            "extrapolator": "multiple"
-          }
-        },
+        "resilience": {},
         "num_randomizations": 32
       }
     },
     {
       "distance_A": 1.4,
-      "evs": -1.0872639591050972,
-      "stds": 0.030916247038386347,
+      "evs": -1.1006363233518257,
+      "stds": 0.015378663188860251,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
         "circuit_metadata": {},
-        "resilience": {
-          "zne": {
-            "extrapolator": "multiple"
-          }
-        },
+        "resilience": {},
         "num_randomizations": 32
       }
     },
     {
       "distance_A": 1.8,
-      "evs": -1.0848718849653964,
-      "stds": 0.00679548161193428,
+      "evs": -1.1089688720446145,
+      "stds": 0.015613820801998817,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
         "circuit_metadata": {},
-        "resilience": {
-          "zne": {
-            "extrapolator": "multiple"
-          }
-        },
+        "resilience": {},
         "num_randomizations": 32
       }
     }
@@ -132,7 +101,7 @@
       "scheduling_method": "alap"
     },
     "twirling": {
-      "enable_gates": true,
+      "enable_gates": false,
       "enable_measure": true,
       "num_randomizations": "auto",
       "shots_per_randomization": "auto",
@@ -141,25 +110,8 @@
     },
     "resilience": {
       "measure_mitigation": true,
-      "zne_mitigation": true,
-      "pec_mitigation": false,
-      "zne": {
-        "noise_factors": [
-          1.0,
-          3.0,
-          5.0
-        ],
-        "extrapolator": [
-          "exponential",
-          "linear"
-        ],
-        "extrapolated_noise_factors": [
-          0,
-          1.0,
-          3.0,
-          5.0
-        ]
-      }
+      "zne_mitigation": false,
+      "pec_mitigation": false
     },
     "version": 2
   }

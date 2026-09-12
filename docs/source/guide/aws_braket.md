@@ -126,6 +126,16 @@ e_hw = atoms.calc.solver.measured_energy(provider)        # one job
 e_curve = measure_energies(solvers, provider)             # many geometries, one job
 ```
 
+**Keep the circuit small.** Hardware noise, not shot noise, limited the first
+LiH and H₂ runs (0.5 Ha off for 92 CZ gates; a few hundredths for 17). For
+molecules with a closed-shell reference the parity mapping's two-qubit
+reduction removes two qubits and their gates at no cost in physics:
+
+```python
+Carcara(method="adapt-vqe", pool="fermionic", mapping="parity",
+        two_qubit_reduction=True, basis="FAO")     # H2 on 2 qubits
+```
+
 A driver with `shots > 0` and an IBM device (`Carcara(..., device="ibm_kingston",
 shots=4096)`) runs the whole optimization through the Estimator instead, one
 job per energy evaluation; do that on a fake backend, not on a budget.

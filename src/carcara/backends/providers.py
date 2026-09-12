@@ -302,6 +302,12 @@ class QiskitProvider(CircuitProvider):
         Transpiler level for the target processor (default ``3``).
     estimator_options : dict, optional
         Options of the Runtime ``Estimator`` (resilience, twirling, ...).
+    physical_qubits : sequence of int, optional
+        Pin the circuit to these physical qubits (Carcará qubit ``k`` on
+        ``physical_qubits[k]``) instead of letting the transpiler choose.
+        Worth doing on hardware: a qubit whose readout has drifted since the
+        last calibration ruins an energy while its recorded error still looks
+        fine.
     """
 
     name = "qiskit"
@@ -314,8 +320,11 @@ class QiskitProvider(CircuitProvider):
     def __init__(self, device: str = "statevector", shots: int = 0,
                  instance: str | None = None, token: str | None = None,
                  channel: str | None = None, optimization_level: int = 3,
-                 estimator_options: dict | None = None):
+                 estimator_options: dict | None = None,
+                 physical_qubits=None):
         self.device_spec = str(device).strip()
+        self.physical_qubits = (None if physical_qubits is None
+                                else [int(q) for q in physical_qubits])
         self.shots = int(shots)
         self.instance = instance
         self.token = token
@@ -481,8 +490,18 @@ class QiskitProvider(CircuitProvider):
         if backend is None:
             return (qc, observable)
         from qiskit import transpile
+        initial_layout = None
+        if self.physical_qubits is not None:
+            if len(self.physical_qubits) != n_qubits:
+                raise ValueError(
+                    f"physical_qubits has {len(self.physical_qubits)} entries "
+                    f"for a {n_qubits}-qubit circuit")
+            # Carcará qubit k sits on Qiskit wire n-1-k.
+            initial_layout = [self.physical_qubits[n_qubits - 1 - w]
+                              for w in range(n_qubits)]
         isa = transpile(qc, backend=backend,
-                        optimization_level=self.optimization_level)
+                        optimization_level=self.optimization_level,
+                        initial_layout=initial_layout)
         return (isa, observable.apply_layout(isa.layout))
 
     def energies(self, problems) -> list[float]:

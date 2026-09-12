@@ -1,0 +1,135 @@
+{
+  "distance_A": 1.8,
+  "backend": "ibm_kingston",
+  "exact_Ha": -1.020698507864947,
+  "theta": [
+    -0.4293499999999999
+  ],
+  "levels": {
+    "0": {
+      "job_id": "daicqfj9k43c73afrmkg",
+      "evs": -0.8903596997514416,
+      "stds": 0.0031750996238305313,
+      "usage_seconds": 4,
+      "pub_metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "num_randomizations": 1
+      },
+      "result_metadata": {
+        "dynamical_decoupling": {
+          "enable": false,
+          "sequence_type": "XX",
+          "extra_slack_distribution": "middle",
+          "scheduling_method": "alap"
+        },
+        "twirling": {
+          "enable_gates": false,
+          "enable_measure": false,
+          "num_randomizations": "auto",
+          "shots_per_randomization": "auto",
+          "interleave_randomizations": true,
+          "strategy": "active-accum"
+        },
+        "resilience": {
+          "measure_mitigation": false,
+          "zne_mitigation": false,
+          "pec_mitigation": false
+        },
+        "version": 2
+      }
+    },
+    "1": {
+      "job_id": "daicqfphvn6c73ct2d2g",
+      "evs": -1.055590070200695,
+      "stds": 0.013827510533861147,
+      "usage_seconds": 13,
+      "pub_metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "resilience": {},
+        "num_randomizations": 32
+      },
+      "result_metadata": {
+        "dynamical_decoupling": {
+          "enable": false,
+          "sequence_type": "XX",
+          "extra_slack_distribution": "middle",
+          "scheduling_method": "alap"
+        },
+        "twirling": {
+          "enable_gates": false,
+          "enable_measure": true,
+          "num_randomizations": "auto",
+          "shots_per_randomization": "auto",
+          "interleave_randomizations": true,
+          "strategy": "active-accum"
+        },
+        "resilience": {
+          "measure_mitigation": true,
+          "zne_mitigation": false,
+          "pec_mitigation": false
+        },
+        "version": 2
+      }
+    },
+    "2": {
+      "job_id": "daicqg8mhr3c73e7jvgg",
+      "evs": -1.0722339458641246,
+      "stds": 0.026682100093011828,
+      "usage_seconds": 18,
+      "pub_metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "resilience": {
+          "zne": {
+            "extrapolator": "multiple"
+          }
+        },
+        "num_randomizations": 32
+      },
+      "result_metadata": {
+        "dynamical_decoupling": {
+          "enable": false,
+          "sequence_type": "XX",
+          "extra_slack_distribution": "middle",
+          "scheduling_method": "alap"
+        },
+        "twirling": {
+          "enable_gates": true,
+          "enable_measure": true,
+          "num_randomizations": "auto",
+          "shots_per_randomization": "auto",
+          "interleave_randomizations": true,
+          "strategy": "active-accum"
+        },
+        "resilience": {
+          "measure_mitigation": true,
+          "zne_mitigation": true,
+          "pec_mitigation": false,
+          "zne": {
+            "noise_factors": [
+              1.0,
+              3.0,
+              5.0
+            ],
+            "extrapolator": [
+              "exponential",
+              "linear"
+            ],
+            "extrapolated_noise_factors": [
+              0,
+              1.0,
+              3.0,
+              5.0
+            ]
+          }
+        },
+        "version": 2
+      }
+    }
+  }
+}

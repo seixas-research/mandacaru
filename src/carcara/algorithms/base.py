@@ -173,12 +173,23 @@ class VariationalDriver(Calculator):
                  execute_circuits: bool | None = None,
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
-                 kinetic: str | None = None, **calc_kwargs):
+                 kinetic: str | None = None,
+                 two_qubit_reduction: bool = False, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
 
         self.verbose = bool(verbose)
         self.optimizer = resolve_optimizer(optimizer, allowed=self._OPTIMIZERS)
         self.mapping = mapping
+        # Parity mapping's Z2 tapering: two qubits fewer, same physics.
+        self.two_qubit_reduction = bool(two_qubit_reduction)
+        if self.two_qubit_reduction:
+            from ..core.mapping import _canonical_method
+            if _canonical_method(mapping) != "parity":
+                raise ValueError("two_qubit_reduction requires mapping='parity'")
+            if not self._supports_two_qubit_reduction:
+                raise NotImplementedError(
+                    f"{type(self).__name__} does not support the two-qubit "
+                    "reduction (its reference determinants are not tapered)")
         self.basis = basis
         self.device = normalize_device(device)      # raises on unknown device
         self.grid = grid
@@ -302,11 +313,25 @@ class VariationalDriver(Calculator):
                 f"unknown sparse spec {sparse!r}; use True, False or 'auto'")
         return bool(sparse)
 
-    def _as_pauli_sum(self, hamiltonian, n_qubits: int) -> PauliSum:
-        """Coerce a ``PauliSum`` / ``Fermion`` Hamiltonian to a ``PauliSum``."""
+    #: Drivers whose reference states cannot be tapered override this.
+    _supports_two_qubit_reduction = True
+
+    def _as_pauli_sum(self, hamiltonian, n_qubits: int,
+                      num_particles=None) -> PauliSum:
+        """Coerce a ``PauliSum`` / ``Fermion`` Hamiltonian to a ``PauliSum``.
+
+        ``n_qubits`` is the register size; with the two-qubit reduction the
+        fermionic operator has two more modes than that.
+        """
         if isinstance(hamiltonian, PauliSum):
             return hamiltonian
         if isinstance(hamiltonian, Fermion):
+            if self.two_qubit_reduction:
+                particles = (num_particles if num_particles is not None
+                             else getattr(self, "num_particles", None))
+                return hamiltonian.map_to_qubits(
+                    self.mapping, n_modes=n_qubits + 2,
+                    two_qubit_reduction=True, num_particles=particles)
             return hamiltonian.map_to_qubits(self.mapping, n_modes=n_qubits)
         raise TypeError("hamiltonian must be a PauliSum or Fermion")
 
@@ -596,6 +621,12 @@ class VariationalDriver(Calculator):
     def _dry_run_estimate(self, atoms=None):
         """Perform the dry run: store, optionally print, and return the estimate."""
         estimate = self.estimate_qubits(atoms)
+        if self.two_qubit_reduction:
+            import dataclasses
+            estimate = dataclasses.replace(
+                estimate, n_qubits=estimate.n_qubits_reduced,
+                notes=list(estimate.notes) + [
+                    "parity two-qubit reduction applied: two qubits fewer"])
         self.dry_run_result = estimate
         self.result = None
         if self.verbose:

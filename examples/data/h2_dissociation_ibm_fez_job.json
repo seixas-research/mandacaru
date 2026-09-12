@@ -1,11 +1,15 @@
 {
-  "job_id": "daicn7r9k43c73afrj5g",
-  "backend": "ibm_kingston",
-  "usage_seconds": 59,
+  "job_id": "daicus1hvn6c73ct2je0",
+  "backend": "ibm_fez",
+  "physical_qubits": [
+    22,
+    23
+  ],
+  "usage_seconds": 58,
   "usage_estimation": {
-    "quantum_seconds": 93.837384113
+    "quantum_seconds": null
   },
-  "creation_date": "2026-09-12 00:48:47.440783-03:00",
+  "creation_date": "2026-09-12 01:05:04.217469-03:00",
   "register": "parity mapping, two-qubit reduction (2 qubits)",
   "estimator_options": {
     "resilience_level": 2
@@ -13,8 +17,8 @@
   "pubs": [
     {
       "distance_A": 0.5,
-      "evs": -0.9707085324641709,
-      "stds": 0.03772880992986038,
+      "evs": -0.953402681311613,
+      "stds": 0.005057599765542111,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
@@ -29,8 +33,8 @@
     },
     {
       "distance_A": 0.6,
-      "evs": -1.0348012432305467,
-      "stds": 0.040277344203037926,
+      "evs": -1.0291051278113132,
+      "stds": 0.0013977139360192006,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
@@ -45,8 +49,8 @@
     },
     {
       "distance_A": 0.74,
-      "evs": -1.099351044226323,
-      "stds": 0.03339726422808229,
+      "evs": -1.0847575240948137,
+      "stds": 0.00950852477712766,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
@@ -61,8 +65,8 @@
     },
     {
       "distance_A": 0.9,
-      "evs": -1.132402802592763,
-      "stds": 0.05895936289430532,
+      "evs": -1.1090261284973597,
+      "stds": 0.006401217534536371,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
@@ -77,8 +81,8 @@
     },
     {
       "distance_A": 1.1,
-      "evs": -1.1253894106273277,
-      "stds": 0.01317234691031075,
+      "evs": -1.103331043538845,
+      "stds": 0.007225102813620497,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
@@ -93,8 +97,8 @@
     },
     {
       "distance_A": 1.4,
-      "evs": -1.0872639591050972,
-      "stds": 0.030916247038386347,
+      "evs": -1.05120101387205,
+      "stds": 0.005611722245933672,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,
@@ -109,8 +113,8 @@
     },
     {
       "distance_A": 1.8,
-      "evs": -1.0848718849653964,
-      "stds": 0.00679548161193428,
+      "evs": -1.018029196648009,
+      "stds": 0.0021669148935287265,
       "metadata": {
         "shots": 4096,
         "target_precision": 0.015625,

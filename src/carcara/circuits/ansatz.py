@@ -73,14 +73,17 @@ class UCCSD:
 
     def __init__(self, n_spatial_orbitals: int, num_particles: tuple[int, int],
                  mapping: str = "jordan_wigner", include_singles: bool = True,
-                 trotter: bool = False, provider=None):
+                 trotter: bool = False, provider=None,
+                 two_qubit_reduction: bool = False):
         self.n_spatial_orbitals = int(n_spatial_orbitals)
         self.num_particles = (int(num_particles[0]), int(num_particles[1]))
         self.mapping = mapping
         self.include_singles = include_singles
         self.trotter = trotter
         self.provider = provider
-        self.n_qubits = 2 * self.n_spatial_orbitals
+        self.two_qubit_reduction = bool(two_qubit_reduction)
+        self.n_modes = 2 * self.n_spatial_orbitals
+        self.n_qubits = self.n_modes - (2 if self.two_qubit_reduction else 0)
         if provider is not None and not trotter:
             raise ValueError(
                 "a circuit backend realizes the Trotter product form of UCCSD; "
@@ -93,7 +96,9 @@ class UCCSD:
         # Qubit (Pauli) form of each anti-Hermitian generator: the matrices drive
         # the state-vector backends, the PauliSums the circuit backends.
         self._pauli_generators = [
-            g.map_to_qubits(self.mapping, n_modes=self.n_qubits)
+            g.map_to_qubits(self.mapping, n_modes=self.n_modes,
+                            two_qubit_reduction=self.two_qubit_reduction,
+                            num_particles=self.num_particles)
             for g in self.excitations]
         # Pre-materialize each generator matrix once (skipped for circuit
         # execution, where the 2^N matrices are never needed).
@@ -113,10 +118,19 @@ class UCCSD:
         return occ, virt
 
     def _reference_vector(self) -> np.ndarray:
-        """Hartree-Fock computational-basis state (qubit 0 is the MSB)."""
+        """Hartree-Fock computational-basis state (qubit 0 is the MSB).
+
+        The bits follow the fermion-to-qubit map (occupations for
+        Jordan-Wigner, parity sums otherwise), tapered when the two-qubit
+        reduction is on.
+        """
+        from ..core.mapping import reference_qubit_bits
+        bits = reference_qubit_bits(self.mapping, self.n_modes, self._occupied,
+                                    self.two_qubit_reduction, self.num_particles)
         index = 0
-        for j in self._occupied:
-            index |= 1 << (self.n_qubits - 1 - j)
+        for k, bit in enumerate(bits):
+            if bit:
+                index |= 1 << (self.n_qubits - 1 - k)
         vec = np.zeros(2 ** self.n_qubits, dtype=complex)
         vec[index] = 1.0
         return vec

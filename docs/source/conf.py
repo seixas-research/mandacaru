@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath('../../src')) # root
 project = 'Carcará'
 copyright = '2026, Leandro Seixas Rocha'
 author = 'Leandro Seixas Rocha'
-release = '26.9.9'
+release = '26.9.10'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

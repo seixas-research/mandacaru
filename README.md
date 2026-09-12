@@ -86,6 +86,8 @@ atoms.calc = Carcara(method="vqe", basis="FAO",
 atoms.get_total_energy()          # measured on a trapped-ion QPU
 ```
 
+> **Tip:** `mapping="parity", two_qubit_reduction=True` (with the `fermionic` pool) removes two qubits and their gates — H₂ runs on 2 qubits — which is what makes a hardware curve usable.
+>
 > **Scope:** the *energy evaluation* is hardware-native. ADAPT-VQE's pool-gradient screening is still classical, so fixed-ansatz `method="vqe"` is the fully hardware-native method today. Run `examples/13_braket_aws_compatibility.py` for a verified compatibility report (no AWS account needed), and `examples/24_ADAPTVQE_LiH_IBM.py` for a LiH curve optimized locally and then measured on an IBM processor in a single Estimator job (set its `HARDWARE` constant).
 
 ### 7. Reusable Hamiltonians (Parquet / JSON Cache)

@@ -376,6 +376,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
                  kinetic: str | None = None,
+                 two_qubit_reduction: bool = False,
                  run_options: dict | None = None, **calc_kwargs):
         super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
                          device=device, grid=grid, h=h, kpts=kpts, spin=spin,
@@ -391,6 +392,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                          execute_circuits=execute_circuits,
                          backend_options=backend_options, shots=shots,
                          quenching=quenching, dry_run=dry_run, kinetic=kinetic,
+                         two_qubit_reduction=two_qubit_reduction,
                          run_options=run_options, verbose=verbose,
                          sparse=sparse, **calc_kwargs)
 
@@ -443,7 +445,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     "building a pool by name requires n_spatial_orbitals and "
                     "num_particles")
             self.pool = build_pool(pool, n_spatial_orbitals, num_particles,
-                                   mapping=self.mapping)
+                                   mapping=self.mapping,
+                                   two_qubit_reduction=self.two_qubit_reduction)
         self.num_particles = (tuple(num_particles) if num_particles is not None
                               else self.pool.num_particles)
 
@@ -453,10 +456,11 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # ``sparse="auto"`` keeps large active spaces as sparse matrices and
         # screens with the exact analytic gradient, densifying only selected
         # operators (in the growable ansatz).
-        qubit_h = self._as_pauli_sum(hamiltonian, self.pool.n_qubits)
+        qubit_h = self._as_pauli_sum(hamiltonian, self.pool.n_qubits,
+                                     self.num_particles)
         self._materialize_hamiltonian(qubit_h, self.pool.n_qubits)
         self._maybe_save_hamiltonian(self.num_particles,
-                                     self.pool.n_qubits // 2)
+                                     self.pool.n_spatial_orbitals)
 
         self._pool_ops = self.pool.operators()
         if self._sparse:
@@ -583,7 +587,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         return AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                            self.mapping, sparse=getattr(self, "_sparse", False),
-                           provider=self.ansatz_provider())
+                           provider=self.ansatz_provider(),
+                           two_qubit_reduction=self.two_qubit_reduction,
+                           num_particles=self.num_particles)
 
     def _profile(self, ansatz) -> CircuitMetrics:
         """Compiled-circuit metrics for ``ansatz`` on the configured provider."""
@@ -592,8 +598,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         from ..backends.providers import build_provider
         provider = (None if self.backend_provider == "qiskit"
                     else build_provider(self.backend_provider))
-        return profile_ansatz(self.n_qubits, ansatz.occupied, ansatz.operators,
-                              provider=provider)
+        # The reference *qubits* (not the spin-orbital occupations): they
+        # differ under the parity / Bravyi-Kitaev maps and the tapered register.
+        return profile_ansatz(self.n_qubits, ansatz.reference_qubits(),
+                              ansatz.operators, provider=provider)
 
     def reference_energy(self) -> float:
         return self.energy(self._new_ansatz().reference_state())

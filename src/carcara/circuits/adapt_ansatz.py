@@ -61,10 +61,16 @@ class AdaptAnsatz:
 
     def __init__(self, n_qubits: int, occupied: tuple[int, ...],
                  mapping: str = "jordan_wigner", sparse: bool = False,
-                 provider=None):
+                 provider=None, two_qubit_reduction: bool = False,
+                 num_particles=None):
         self.n_qubits = int(n_qubits)
         self.mapping = mapping
         self.occupied = tuple(occupied)
+        # With the parity two-qubit reduction the register is two qubits
+        # smaller than the spin-orbital count the occupations refer to.
+        self.two_qubit_reduction = bool(two_qubit_reduction)
+        self.num_particles = num_particles
+        self.n_modes = self.n_qubits + (2 if self.two_qubit_reduction else 0)
         self.sparse = bool(sparse)
         self.provider = provider
         self._ops: list[PoolOperator] = []
@@ -76,7 +82,8 @@ class AdaptAnsatz:
         # The Hartree-Fock determinant is a computational basis state whose bits
         # depend on the fermion-to-qubit map (occupation for JW, parity sums for
         # parity / Bravyi-Kitaev).
-        bits = reference_qubit_bits(self.mapping, self.n_qubits, self.occupied)
+        bits = reference_qubit_bits(self.mapping, self.n_modes, self.occupied,
+                                    self.two_qubit_reduction, self.num_particles)
         index = 0
         for i, bit in enumerate(bits):
             if bit:
