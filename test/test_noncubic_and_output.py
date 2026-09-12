@@ -345,11 +345,10 @@ class TestADAPTVQECalculator:
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 4        # H2 in FAO -> 2 orbitals
 
-    def test_ibm_quantum_device_not_runnable(self):
-        atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", device="ibm-quantum")
-        with pytest.raises(NotImplementedError):
-            atoms.get_total_energy()
+    def test_ibm_quantum_device_requires_shots(self):
+        # Real hardware never returns a state vector: refused up front.
+        with pytest.raises(ValueError, match="shots > 0"):
+            ADAPTVQE(pool="ceo", basis="FAO", device="ibm-quantum")
 
     def test_grid_auto_generated_from_cell(self):
         # No explicit grid: the calculator builds one from atoms.cell at

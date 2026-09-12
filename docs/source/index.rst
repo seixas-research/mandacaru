@@ -160,7 +160,7 @@ Carcará is currently mid-build. The core physical and simulation pipelines are 
      - **Complete**
    * - **carcara.backends.hardware**
      - Device registry
-     - Ideal simulator, Braket local & managed simulators (SV1/DM1/TN1), and the IonQ / IQM / Rigetti QPUs (or any Braket ARN). ``ibm-quantum`` reserved.
+     - Ideal simulator, IBM Quantum hardware via Qiskit Runtime (``ibm-quantum`` least-busy, any ``ibm_*`` processor, ``fake_*`` local rehearsals), Braket local & managed simulators (SV1/DM1/TN1), and the IonQ / IQM / Rigetti QPUs (or any Braket ARN).
      - **Complete**
    * - **carcara.backends.measurement**
      - Shot-based estimation

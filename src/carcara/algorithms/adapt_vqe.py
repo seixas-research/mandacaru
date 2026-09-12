@@ -583,7 +583,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         return AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                            self.mapping, sparse=getattr(self, "_sparse", False),
-                           provider=self.circuit_provider())
+                           provider=self.ansatz_provider())
 
     def _profile(self, ansatz) -> CircuitMetrics:
         """Compiled-circuit metrics for ``ansatz`` on the configured provider."""

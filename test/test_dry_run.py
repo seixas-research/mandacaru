@@ -156,7 +156,7 @@ class TestDevices:
     def test_reserved_device_is_estimated_not_refused(self):
         est = estimate_qubits(_h2(), device="ibm-quantum")
         assert est.device == "ibm-quantum" and est.n_qubits == 4
-        assert any("reserved" in n for n in est.notes)
+        assert any("shots > 0" in n for n in est.notes)
 
     def test_registry_exposes_capacities(self):
         from carcara.backends.hardware import device_qubits

@@ -39,7 +39,7 @@ This installs all core Python dependencies:
 **Quantum SDKs** (backend providers and the device registry)
 * `qiskit` — default circuit provider and gate-count profiling
 * `qiskit-nature`
-* `qiskit-ibm-runtime` — the reserved `ibm-quantum` device
+* `qiskit-ibm-runtime` — IBM Quantum hardware (`ibm-quantum`, `ibm_torino`, ...) and the local `fake_*` rehearsal backends
 * `amazon-braket-sdk` — local simulator plus the AWS Braket devices and QPUs
 * `cirq`
 

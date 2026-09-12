@@ -248,9 +248,12 @@ class VQE(DeflationMixin, VariationalDriver):
             return self.ansatz_builder(n_spatial_orbitals, num_particles,
                                        self.mapping)
         from ..circuits import UCCSD
-        provider = self.circuit_provider()
+        provider = self.ansatz_provider()
         return UCCSD(n_spatial_orbitals, num_particles, mapping=self.mapping,
-                     trotter=provider is not None, provider=provider)
+                     # A circuit realizes the Trotter product, so the state
+                     # matches the executed circuit whenever one is run.
+                     trotter=provider is not None or bool(self.shots),
+                     provider=provider)
 
     # -- energy ----------------------------------------------------------- #
 

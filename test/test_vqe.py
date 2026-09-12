@@ -245,11 +245,9 @@ class TestVQEAsASECalculator:
         with pytest.raises(ValueError, match="no unit cell"):
             atoms.get_total_energy()
 
-    def test_ibm_quantum_device_not_runnable(self):
-        atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        atoms.calc = VQE(basis="FAO", device="ibm-quantum", verbose=False)
-        with pytest.raises(NotImplementedError):
-            atoms.get_total_energy()
+    def test_ibm_quantum_device_requires_shots(self):
+        with pytest.raises(ValueError, match="shots > 0"):
+            VQE(basis="FAO", device="ibm-quantum", verbose=False)
 
 
 # --- Timing / memory / cores in the result and the summary (requirements 2-3) ---

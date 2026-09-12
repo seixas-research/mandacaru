@@ -92,6 +92,42 @@ The estimate converges as $1/\sqrt{\text{shots}}$:
 
 ---
 
+## IBM Quantum hardware (Qiskit Runtime)
+
+The same measured-energy protocol runs on **IBM Quantum** processors through
+the `"qiskit"` provider and Qiskit Runtime's `SamplerV2`. Three device
+spellings cover the whole workflow, from rehearsal to the real machine:
+
+```python
+# 1. Local sampler: the shot protocol on the exact state vector, no account.
+atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO",
+                     device="AER_simulator", shots=4096)
+
+# 2. Fake backend: transpiled to that processor's gate set and coupling map
+#    and run by the Runtime sampler *locally* -- the rehearsal of a real run.
+atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO",
+                     device="fake_torino", shots=4096)
+
+# 3. Real hardware: the least-busy operational QPU of your account, or a
+#    named processor.  Needs a saved account (or QISKIT_IBM_TOKEN) and bills it.
+atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO",
+                     device="ibm-quantum", shots=4096,
+                     backend_options={"instance": "<your instance CRN>",
+                                      "optimization_level": 3})
+atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO",
+                     device="ibm_torino", shots=4096)
+```
+
+Credentials come from `QiskitRuntimeService.save_account(...)` run once, or
+from `backend_options={"token": ..., "instance": ..., "channel": ...}`. On real
+hardware the sampler enables dynamical decoupling and measurement twirling by
+default; override with `backend_options={"sampler_options": {...}}`. Every
+energy evaluation submits its qubit-wise-commuting measurement circuits as
+**one** Runtime job (`provider.measurement_groups(H)` counts them), so the
+cost of a run is *jobs = energy evaluations*, and ADAPT-VQE's pool-gradient
+screening still runs classically (see the limitation below). Example
+`24_ADAPTVQE_LiH_IBM.py` is written to run unchanged in all three modes.
+
 ## Registered devices
 
 ```python

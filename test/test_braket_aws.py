@@ -173,9 +173,9 @@ class TestDeviceRegistry:
     def test_braket_devices_are_runnable(self):
         for name in ("braket-local", "braket-sv1", "braket-ionq-aria"):
             assert require_runnable(name) == normalize_device(name)
-        # ibm-quantum is still only a reserved label.
-        with pytest.raises(NotImplementedError):
-            require_runnable("ibm-quantum")
+        # ibm-quantum is runnable too (Qiskit Runtime), shots required.
+        assert require_runnable("ibm-quantum") == "ibm-quantum"
+        assert requires_shots("ibm-quantum") is True
 
     def test_unknown_device_rejected(self):
         with pytest.raises(ValueError, match="unknown device"):

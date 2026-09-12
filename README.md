@@ -74,11 +74,11 @@ braket         -6.88824279     1.09e-07     8    208    359
 cirq           -6.88824281     8.17e-08     8    208    358
 ```
 
-### 6. Real Quantum Hardware via Amazon Braket
+### 6. Real Quantum Hardware: IBM Quantum and Amazon Braket
 A QPU never returns a state vector — Braket rejects the `StateVector` result type whenever `shots > 0`, and every QPU requires it. Carcará therefore implements the **shot-based** protocol hardware actually supports:
 
 - **Qubit-wise commuting (QWC) grouping** partitions `H = Σ cⱼ Pⱼ` into simultaneously measurable sets — 118 Pauli terms collapse to 29 measurement circuits for LiH — and `⟨H⟩` is assembled from the returned bit-string counts, converging as `1/√shots`.
-- **Device registry:** the local simulator, the AWS managed simulators (SV1/DM1/TN1), and the IonQ / IQM / Rigetti QPUs — or any Braket ARN. Naming a QPU without `shots` is rejected up front rather than at submission.
+- **Device registry:** IBM Quantum processors through Qiskit Runtime (`device="ibm-quantum"` for the least-busy QPU of your account, or a name such as `"ibm_torino"`; `"fake_torino"` rehearses the same path locally), the Braket local simulator, the AWS managed simulators (SV1/DM1/TN1), and the IonQ / IQM / Rigetti QPUs — or any Braket ARN. Naming a QPU without `shots` is rejected up front rather than at submission.
 
 ```python
 atoms.calc = Carcara(method="vqe", basis="FAO",
@@ -86,7 +86,7 @@ atoms.calc = Carcara(method="vqe", basis="FAO",
 atoms.get_total_energy()          # measured on a trapped-ion QPU
 ```
 
-> **Scope:** the *energy evaluation* is hardware-native. ADAPT-VQE's pool-gradient screening is still classical, so fixed-ansatz `method="vqe"` is the fully hardware-native method today. Run `examples/13_braket_aws_compatibility.py` for a verified compatibility report (no AWS account needed).
+> **Scope:** the *energy evaluation* is hardware-native. ADAPT-VQE's pool-gradient screening is still classical, so fixed-ansatz `method="vqe"` is the fully hardware-native method today. Run `examples/13_braket_aws_compatibility.py` for a verified compatibility report (no AWS account needed), and `examples/24_ADAPTVQE_LiH_IBM.py` for a LiH curve that moves from the laptop to an IBM processor by changing its `DEVICE` / `SHOTS` constants.
 
 ### 7. Reusable Hamiltonians (Parquet / JSON Cache)
 Building the qubit Hamiltonian — integrals plus the fermion-to-qubit mapping — is the most expensive stage of a run and is independent of the algorithm that follows. It can be serialized and replayed:

@@ -45,9 +45,8 @@ $ carcara H2O --basis NAO --basis-option size=DZP --device braket-ionq-aria --dr
   device capacity   : 25 qubits  -> DOES NOT FIT
 ```
 
-The reserved `ibm-quantum` label is accepted in a dry run (it is only *running*
-on it that is not implemented); pass `--device-qubits 127` to compare against a
-specific processor. `--json` prints the estimate as machine-readable JSON.
+The `ibm-quantum` label (the least-busy IBM processor) does not fix a register
+size, so pass `--device-qubits 127` to compare against a specific processor. `--json` prints the estimate as machine-readable JSON.
 
 ## From Python
 

@@ -21,9 +21,17 @@ Supported names
     the exact state-vector backend; it is the device used by the tests and
     examples.
 ``"ibm-quantum"``
-    Real IBM Quantum hardware (via Qiskit Runtime).  **Reserved** -- the
-    dispatch is not implemented yet; naming it is accepted so code can be written
-    against the final API, but running raises :class:`NotImplementedError`.
+    Real IBM Quantum hardware via **Qiskit Runtime**: the least-busy
+    operational QPU of your account (or of the ``instance`` named in the
+    driver's ``backend_options``).  Runnable with ``shots > 0`` through
+    :class:`~carcara.backends.providers.QiskitProvider`; a specific processor
+    is named directly, e.g. ``"ibm_torino"`` (any ``ibm_*`` name is accepted
+    verbatim).  Billed to your IBM Quantum account.
+``"fake_*"``
+    A Qiskit Runtime **fake backend** (``qiskit_ibm_runtime.fake_provider``,
+    e.g. ``"fake_manila"``): the real IBM execution path -- transpilation to
+    that processor's gate set and coupling map, the Runtime ``SamplerV2`` --
+    run locally.  The way to rehearse a hardware run without a queue or a bill.
 ``"braket-local"``
     Amazon Braket's local state-vector simulator, driven by
     :class:`~carcara.backends.providers.BraketProvider`.
@@ -35,8 +43,8 @@ Supported names
     :class:`~carcara.backends.providers.BraketProvider` with ``shots > 0`` --
     see :func:`device_arn` and :mod:`carcara.backends.measurement`.
 
-Any string starting with ``arn:aws:braket`` is also accepted verbatim, so a
-device that post-dates this release can still be named.
+Any string starting with ``arn:aws:braket``, ``ibm_`` or ``fake_`` is also
+accepted verbatim, so a device that post-dates this release can still be named.
 """
 
 from __future__ import annotations
@@ -45,6 +53,10 @@ from dataclasses import dataclass
 
 #: Prefix identifying an Amazon Braket device ARN.
 AWS_ARN_PREFIX = "arn:aws:braket"
+#: Prefix of a named IBM Quantum processor (``ibm_torino``, ``ibm_fez``, ...).
+IBM_PREFIX = "ibm_"
+#: Prefix of a Qiskit Runtime fake backend (``fake_manila``, ``fake_torino``).
+FAKE_PREFIX = "fake_"
 
 
 @dataclass(frozen=True)
@@ -58,12 +70,22 @@ class Device:
     arn: str | None = None   # Amazon Braket ARN, for AWS devices
     description: str = ""
     #: Qubit capacity of a real QPU (``None`` for simulators and for devices
-    #: whose size is not fixed by the name, e.g. the reserved IBM entry).
+    #: whose size is not fixed by the name, e.g. the least-busy IBM entry).
     qubits: int | None = None
 
     @property
     def is_aws(self) -> bool:
         return self.arn is not None
+
+    @property
+    def is_ibm(self) -> bool:
+        """True for IBM Quantum hardware (the least-busy entry or a named QPU)."""
+        return self.provider == "qiskit" and not self.simulator
+
+    @property
+    def is_fake(self) -> bool:
+        """True for a Qiskit Runtime fake backend (local rehearsal of the IBM path)."""
+        return self.name.startswith(FAKE_PREFIX)
 
 
 # Canonical device name -> Device.
@@ -71,8 +93,9 @@ _DEVICES: dict[str, Device] = {
     d.name: d for d in (
         Device("AER_simulator", True, True, None,
                description="ideal state-vector simulator (default)"),
-        Device("ibm-quantum", False, False, "qiskit",
-               description="IBM Quantum hardware via Qiskit Runtime (reserved)"),
+        Device("ibm-quantum", False, True, "qiskit",
+               description="IBM Quantum hardware via Qiskit Runtime "
+                           "(least-busy operational QPU of your account)"),
         # -- Amazon Braket --------------------------------------------------- #
         Device("braket-local", True, True, "braket",
                description="Braket local state-vector simulator"),
@@ -162,9 +185,12 @@ def normalize_device(name: str) -> str:
             if device.arn == key:
                 return device.name
         return key                      # an ARN this build does not know by name
+    if key.lower().startswith((IBM_PREFIX, FAKE_PREFIX)):
+        return key.lower()              # a named IBM processor / fake backend
     raise ValueError(
         f"unknown device {name!r}; available: {', '.join(_DEVICES)} "
-        "(or any 'arn:aws:braket...' device ARN)")
+        "(or any 'arn:aws:braket...' device ARN, an IBM processor name such as "
+        "'ibm_torino', or a Qiskit Runtime fake backend such as 'fake_manila')")
 
 
 def get_device(name: str) -> Device:
@@ -173,6 +199,14 @@ def get_device(name: str) -> Device:
     device = _DEVICES.get(canon)
     if device is not None:
         return device
+    if canon.startswith(FAKE_PREFIX):
+        return Device(canon, simulator=True, runnable=True, provider="qiskit",
+                      description="Qiskit Runtime fake backend (local rehearsal "
+                                  "of the IBM execution path)")
+    if canon.startswith(IBM_PREFIX):
+        return Device(canon, simulator=False, runnable=True, provider="qiskit",
+                      description="IBM Quantum processor via Qiskit Runtime "
+                                  "(by name)")
     # An Amazon Braket ARN this build has no entry for: assume a QPU (the
     # conservative reading -- it is billed and shot-based either way).
     return Device(canon, simulator=False, runnable=True, provider="braket",
@@ -188,9 +222,9 @@ def device_qubits(name: str) -> int | None:
     """Qubit capacity of ``name``, or ``None`` when it is not fixed by the name.
 
     Simulators are bounded by memory rather than a qubit register, and the
-    reserved ``"ibm-quantum"`` label does not pin one processor, so both return
-    ``None``; the registered Braket QPUs report their register size.  Used by
-    the dry-run qubit estimate to say whether a problem fits a device.
+    ``"ibm-quantum"`` label (least-busy) does not pin one processor, so both
+    return ``None``; the registered Braket QPUs report their register size.
+    Used by the dry-run qubit estimate to say whether a problem fits a device.
     """
     return get_device(name).qubits
 
@@ -210,6 +244,16 @@ def is_aws_device(name: str) -> bool:
     return get_device(name).is_aws
 
 
+def is_ibm_device(name: str) -> bool:
+    """True when the device is IBM Quantum hardware (Qiskit Runtime)."""
+    return get_device(name).is_ibm
+
+
+def is_fake_device(name: str) -> bool:
+    """True when the device is a Qiskit Runtime fake backend (runs locally)."""
+    return get_device(name).is_fake
+
+
 def requires_shots(name: str) -> bool:
     """True when the device can only be run with ``shots > 0`` (every QPU).
 
@@ -220,16 +264,18 @@ def requires_shots(name: str) -> bool:
 
 
 def require_runnable(name: str) -> str:
-    """Return the canonical device, or raise if it cannot be executed yet.
+    """Return the canonical device, or raise if it cannot be executed.
 
-    ``"ibm-quantum"`` is accepted as a label but not yet wired to an execution
-    path, so attempting to *run* on it raises :class:`NotImplementedError`.
+    Every registered device is wired to an execution path in this build; the
+    check is kept so a future reserved entry fails at *run* time with a clear
+    message rather than deep inside a provider.
     """
     device = get_device(name)
     if not device.runnable:
         raise NotImplementedError(
             f"device {device.name!r} is not implemented yet; execution on "
             f"{device.description} is planned for a later release. Use "
-            "'AER_simulator', or an Amazon Braket device "
+            "'AER_simulator', an IBM Quantum device ('ibm-quantum', "
+            "'ibm_torino', ...) or an Amazon Braket device "
             "(e.g. 'braket-sv1', 'braket-ionq-aria').")
     return device.name

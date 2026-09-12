@@ -287,6 +287,10 @@ def _device_fields(device, notes):
     if not dev.runnable:
         notes.append(f"device {dev.name!r} is reserved (not runnable in this "
                      "build); the estimate is what a run there would need")
+    elif not dev.simulator:
+        notes.append(f"device {dev.name!r} is real quantum hardware: a run "
+                     "there needs shots > 0 (energies are measured, not read "
+                     "off a state vector)")
     return canon, capacity
 
 

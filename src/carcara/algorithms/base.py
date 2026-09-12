@@ -232,16 +232,18 @@ class VariationalDriver(Calculator):
         # require shots > 0 and the energy is estimated from measured
         # qubit-wise-commuting groups (see carcara.backends.measurement).
         self.shots = int(shots)
-        if requires_shots(self.device) and self.shots <= 0:
+        # A dry run only *estimates* the register, so hardware may be named
+        # without shots there.
+        if requires_shots(self.device) and self.shots <= 0 and not dry_run:
             raise ValueError(
                 f"device {self.device!r} is real quantum hardware, which cannot "
                 "return a state vector: pass shots > 0 (e.g. shots=8192) so the "
                 "energy is estimated from measurements.")
-        if self.shots and self.backend_provider != "braket":
+        if self.shots and self.backend_provider not in ("braket", "qiskit"):
             raise NotImplementedError(
-                f"shot-based execution is implemented for the 'braket' provider "
-                f"only, not {self.backend_provider!r}; use "
-                "backend_provider='braket' (optionally with an AWS device).")
+                f"shot-based execution is implemented for the 'qiskit' and "
+                f"'braket' providers, not {self.backend_provider!r}; use "
+                "backend_provider='qiskit' (IBM Quantum) or 'braket' (AWS).")
         if self.shots:
             self.execute_circuits = True
 
@@ -362,15 +364,38 @@ class VariationalDriver(Calculator):
         produce the same unitary -- see :mod:`carcara.backends.providers`.
 
         The provider is configured from :attr:`device` (Braket devices carry an
-        ARN), :attr:`shots` and :attr:`backend_options`.
+        ARN; IBM and fake devices their Qiskit name), :attr:`shots` and
+        :attr:`backend_options`.
         """
         if not self.execute_circuits:
             return None
         return build_provider(self.backend_provider, **self._provider_options())
 
+    def ansatz_provider(self):
+        """The provider an *ansatz* should prepare its state vector with.
+
+        With ``shots = 0`` this is :meth:`circuit_provider` (the SDK's exact
+        simulator, or ``None`` for the internal backend).  With ``shots > 0``
+        it is always ``None``: a shot-based provider cannot return amplitudes,
+        so the state vector that ADAPT's classical pool-gradient screening
+        needs comes from the internal backend, while every *energy* goes
+        through :meth:`ansatz_energy` -- i.e. through the provider's
+        measurement protocol.
+        """
+        if self.shots:
+            return None
+        return self.circuit_provider()
+
     def _provider_options(self) -> dict:
         """Constructor options for the configured circuit provider."""
         options = dict(self.backend_options)
+        if self.backend_provider == "qiskit":
+            # Only a shot-based or IBM/fake target needs a configured provider;
+            # the exact local path keeps the shared default instance.
+            if self.shots or device_provider(self.device) == "qiskit":
+                options.setdefault("shots", self.shots)
+                options.setdefault("device", self.device)
+            return options
         if self.backend_provider != "braket":
             return options
         options.setdefault("shots", self.shots)
