@@ -325,7 +325,10 @@ class QiskitProvider(CircuitProvider):
                                   else dict(estimator_options))
         self._backend = None
         self._estimator = None
+        #: The Runtime job of the last hardware submission (``None`` locally).
         self.last_job = None
+        #: The ``PrimitiveResult`` of the last ``energies`` call.
+        self.last_result = None
 
     def __repr__(self) -> str:
         return f"QiskitProvider(device={self.device_spec!r}, shots={self.shots})"
@@ -406,9 +409,6 @@ class QiskitProvider(CircuitProvider):
                 self._estimator = StatevectorEstimator(
                     default_precision=self.precision)
             elif self.is_fake_device:
-                # Synchronous, in the calling thread (the Runtime primitive's
-                # local mode runs on a worker thread, and circuits freed
-                # across threads can deadlock Qiskit's allocator at GC).
                 from qiskit.primitives import BackendEstimatorV2
                 self._estimator = BackendEstimatorV2(
                     backend=self.backend(),
@@ -488,13 +488,23 @@ class QiskitProvider(CircuitProvider):
     def energies(self, problems) -> list[float]:
         """Expectation values of several ``(n_qubits, occupied, generators,
         thetas, hamiltonian)`` problems, submitted as **one** Estimator job."""
-        pubs = [self.pub(*problem) for problem in problems]
-        kwargs = {} if self.is_local else {"precision": self.precision}
         if not self.is_local and self.shots <= 0:
             raise ValueError(f"{self!r}: a processor needs shots > 0")
-        job = self.estimator().run(pubs, **kwargs)
-        self.last_job = job
-        result = job.result()
+        pubs = [self.pub(*problem) for problem in problems]
+        estimator = self.estimator()
+        if self.is_ibm_device:
+            self.last_job = estimator.run(pubs, precision=self.precision)
+            result = self.last_job.result()
+        else:
+            # Run the local primitives *synchronously*.  Their ``run()`` hands
+            # the work to a one-off worker thread (``PrimitiveJob``), and
+            # Qiskit circuit data allocated on another thread can make a
+            # later garbage collection spin forever in its Rust allocator
+            # (reproduced on macOS / Python 3.14 / qiskit 2.5).
+            from qiskit.primitives.containers.estimator_pub import EstimatorPub
+            result = estimator._run([EstimatorPub.coerce(pub, self.precision)
+                                     for pub in pubs])
+        self.last_result = result
         return [float(np.asarray(result[i].data.evs).reshape(-1)[0])
                 for i in range(len(pubs))]
 

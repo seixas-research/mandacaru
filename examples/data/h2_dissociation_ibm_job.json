@@ -1,0 +1,117 @@
+{
+  "job_id": "daicd9vi3e6s738osrdg",
+  "backend": "ibm_kingston",
+  "usage_seconds": 51,
+  "usage_estimation": {
+    "quantum_seconds": null
+  },
+  "creation_date": "2026-09-12 00:27:35.286529-03:00",
+  "pubs": [
+    {
+      "distance_A": 0.5,
+      "evs": -0.9290066342801124,
+      "stds": 0.03571341532098045,
+      "metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "resilience": {},
+        "num_randomizations": 32
+      }
+    },
+    {
+      "distance_A": 0.6,
+      "evs": -1.0620318367620976,
+      "stds": 0.03412501713032507,
+      "metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "resilience": {},
+        "num_randomizations": 32
+      }
+    },
+    {
+      "distance_A": 0.74,
+      "evs": -1.0393344586892637,
+      "stds": 0.026009277783533836,
+      "metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "resilience": {},
+        "num_randomizations": 32
+      }
+    },
+    {
+      "distance_A": 0.9,
+      "evs": -1.101250799451455,
+      "stds": 0.027025761583545554,
+      "metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "resilience": {},
+        "num_randomizations": 32
+      }
+    },
+    {
+      "distance_A": 1.1,
+      "evs": -1.0911076858762327,
+      "stds": 0.024412215317262655,
+      "metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "resilience": {},
+        "num_randomizations": 32
+      }
+    },
+    {
+      "distance_A": 1.4,
+      "evs": -1.1129251636724844,
+      "stds": 0.02309078411356783,
+      "metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "resilience": {},
+        "num_randomizations": 32
+      }
+    },
+    {
+      "distance_A": 1.8,
+      "evs": -1.109087333249114,
+      "stds": 0.02124677814721925,
+      "metadata": {
+        "shots": 4096,
+        "target_precision": 0.015625,
+        "circuit_metadata": {},
+        "resilience": {},
+        "num_randomizations": 32
+      }
+    }
+  ],
+  "result_metadata": {
+    "dynamical_decoupling": {
+      "enable": false,
+      "sequence_type": "XX",
+      "extra_slack_distribution": "middle",
+      "scheduling_method": "alap"
+    },
+    "twirling": {
+      "enable_gates": false,
+      "enable_measure": true,
+      "num_randomizations": "auto",
+      "shots_per_randomization": "auto",
+      "interleave_randomizations": true,
+      "strategy": "active-accum"
+    },
+    "resilience": {
+      "measure_mitigation": true,
+      "zne_mitigation": false,
+      "pec_mitigation": false
+    },
+    "version": 2
+  }
+}

@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-# file: examples/24_ADAPTVQE_LiH_IBM.py
+# file: examples/25_ADAPTVQE_H2_IBM.py
 
 # This code is part of Carcará.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""LiH dissociation curve with ADAPT-VQE (CEO pool, Jordan-Wigner mapping),
+"""H2 dissociation curve with ADAPT-VQE (CEO pool, Jordan-Wigner mapping),
 optimized locally and measured on IBM Quantum hardware.
 
 The variational optimization runs on the local state vector.  The optimized
@@ -32,14 +32,14 @@ from carcara.backends.providers import QiskitProvider
 HARDWARE = None
 SHOTS = 4096
 
-DISTANCES = [1.0, 1.3, 1.6, 1.9, 2.2, 2.6, 2.8]     # Angstrom
-CELL = 15.0                                         # cubic cell edge (Angstrom)
+DISTANCES = [0.5, 0.6, 0.74, 0.9, 1.1, 1.4, 1.8]   # Angstrom
+CELL = 10.0                                         # cubic cell edge (Angstrom)
 
 
-def lih(distance):
-    """LiH along z, centered in a cubic cell."""
+def h2(distance):
+    """H2 along z, centered in a cubic cell."""
     c = CELL / 2.0
-    return Atoms("LiH",
+    return Atoms("H2",
                  positions=[[c, c, c - distance / 2.0], [c, c, c + distance / 2.0]],
                  cell=[CELL, CELL, CELL], pbc=True)
 
@@ -49,8 +49,8 @@ def calculator():
         method="adapt-vqe",
         pool="ceo",
         mapping="jordan_wigner",
-        basis={"name": "GTO", "n_gaussians": 3},
-        h=0.15,
+        basis="FAO",
+        h=0.20,
         charge=0,
         spin=False,
         frozen_core=False,
@@ -74,7 +74,7 @@ def calculator():
 solvers, energies = [], []
 print(f"{'d (A)':>8}{'E local (Ha)':>16}{'ops':>6}")
 for distance in DISTANCES:
-    atoms = lih(distance)
+    atoms = h2(distance)
     atoms.calc = calculator()
     atoms.get_total_energy()
     result = atoms.calc.result
@@ -100,7 +100,7 @@ if HARDWARE:
     plt.errorbar(DISTANCES, measured, yerr=stds, fmt="s--", label=backend_name)
 
 # 3. Raw data, one row per distance.
-with open("lih_dissociation_ibm.csv", "w", newline="") as fh:
+with open("h2_dissociation_ibm.csv", "w", newline="") as fh:
     writer = csv.writer(fh)
     writer.writerow(["distance_A", "energy_local_Ha", "num_operators",
                      "energy_measured_Ha", "std_measured_Ha", "shots",
@@ -113,8 +113,8 @@ with open("lih_dissociation_ibm.csv", "w", newline="") as fh:
                          backend_name, job_id,
                          " ".join(f"{t:.10f}" for t in result.optimal_parameters)])
 
-plt.xlabel("Li-H distance (Angstrom)")
+plt.xlabel("H-H distance (Angstrom)")
 plt.ylabel("energy (Ha)")
-plt.title("LiH, ADAPT-VQE (ceo pool, Jordan-Wigner)")
+plt.title("H2 (FAO), ADAPT-VQE (ceo pool, Jordan-Wigner)")
 plt.legend()
-plt.savefig("lih_dissociation_ibm.png", dpi=150)
+plt.savefig("h2_dissociation_ibm.png", dpi=150)
