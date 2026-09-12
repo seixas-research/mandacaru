@@ -371,6 +371,25 @@ class VariationalDriver(Calculator):
             return None
         return build_provider(self.backend_provider, **self._provider_options())
 
+    def ansatz_problem(self, theta=None):
+        """``(n_qubits, occupied, generators, theta, hamiltonian)`` of the
+        optimized ansatz -- what a provider's ``energy``/``energies`` takes."""
+        ansatz = self.ansatz
+        if theta is None:
+            theta = self.result.optimal_parameters
+        return (ansatz.n_qubits, ansatz.reference_qubits(),
+                ansatz.pauli_generators, np.asarray(theta, dtype=float),
+                self.hamiltonian)
+
+    def measured_energy(self, provider, theta=None) -> float:
+        """``<H>`` of the optimized ansatz evaluated on ``provider`` (Hartree).
+
+        The way to run on real hardware within a budget: optimize locally,
+        then measure the final state once -- e.g. with
+        ``QiskitProvider(device="ibm_kingston", shots=4096)``.
+        """
+        return provider.energy(*self.ansatz_problem(theta))
+
     def ansatz_provider(self):
         """The provider an *ansatz* should prepare its state vector with.
 
@@ -693,3 +712,17 @@ class VariationalDriver(Calculator):
     def run(self, *args, **kwargs):
         """Run the optimization and return the driver's result dataclass."""
         raise NotImplementedError
+
+
+def measure_energies(drivers, provider) -> list[float]:
+    """Energies (Hartree) of several optimized drivers, in **one** provider job.
+
+    ``drivers`` are run calculators/solvers (each has ``.ansatz``, ``.result``
+    and ``.hamiltonian``); ``provider`` is typically a
+    :class:`~carcara.backends.providers.QiskitProvider` on IBM hardware, so a
+    whole dissociation curve costs a single job.
+    """
+    problems = [d.ansatz_problem() for d in drivers]
+    if hasattr(provider, "energies"):
+        return provider.energies(problems)
+    return [provider.energy(*p) for p in problems]

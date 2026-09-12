@@ -34,13 +34,12 @@ Providers
     least significant bit of the state-vector index) while Carcará -- like Braket
     and Cirq -- puts qubit 0 in the *most* significant position, so the Qiskit
     provider lays Carcará qubit ``k`` on Qiskit wire ``n-1-k``.  The gate counts
-    are unaffected (relabeling is an isomorphism).  With ``shots > 0`` it runs
-    the **hardware protocol** -- the same qubit-wise-commuting measurement
-    circuits as the Braket path -- on Qiskit's local sampler, on a Qiskit
-    Runtime *fake backend* (``device="fake_manila"``: transpiled to that
+    are unaffected (relabeling is an isomorphism).  With ``shots > 0`` the
+    energy comes from the **Estimator** primitive -- locally, on a Qiskit
+    Runtime *fake backend* (``device="fake_kingston"``: transpiled to that
     processor, run locally) or on **real IBM Quantum hardware** through the
-    Qiskit Runtime ``SamplerV2`` (``device="ibm-quantum"`` for the least-busy
-    QPU, or a name such as ``"ibm_torino"``).
+    Qiskit Runtime ``Estimator`` (``device="ibm_kingston"``, or
+    ``"ibm_kingston,ibm_fez,ibm_marrakesh"`` for the least busy of those).
 ``"braket"``
     Amazon Braket SDK, executed on the local state-vector simulator
     (``LocalSimulator("braket_sv")``).
@@ -271,61 +270,62 @@ class CircuitProvider(ABC):
 # --------------------------------------------------------------------------- #
 
 class QiskitProvider(CircuitProvider):
-    """Qiskit circuits: exact state vectors, or shots on a sampler / IBM QPU.
+    """Qiskit circuits: exact state vectors, or energies from the ``Estimator``.
+
+    With ``shots > 0`` the energy is the expectation value returned by the
+    Estimator primitive -- ``qiskit.primitives.StatevectorEstimator`` locally,
+    ``BackendEstimatorV2`` on a Qiskit Runtime *fake backend*, and the Qiskit
+    Runtime ``Estimator`` on **IBM Quantum hardware** -- for the Hamiltonian as
+    a ``SparsePauliOp`` observable, transpiled to the target (``transpile(qc,
+    backend=backend)`` + ``observable.apply_layout``), exactly as an IBM
+    notebook does it by hand.
 
     Parameters
     ----------
     device : str
-        ``"statevector"`` (default; ``"AER_simulator"`` / ``"aer"`` are
-        accepted spellings) runs shots on Qiskit's local
-        :class:`~qiskit.primitives.StatevectorSampler`.  A ``fake_*`` name
-        (``qiskit_ibm_runtime.fake_provider``, e.g. ``"fake_manila"``) runs the
-        IBM path locally -- transpiled to that processor, executed by the
-        Runtime ``SamplerV2`` in local mode.  ``"ibm-quantum"`` submits to the
-        least-busy operational QPU of your account and an ``ibm_*`` name to
-        that processor, both through :class:`qiskit_ibm_runtime.SamplerV2`.
+        ``"statevector"`` (default; ``"AER_simulator"`` accepted) -- the local
+        estimator, exact for ``shots = 0`` and sampled to the matching
+        precision otherwise.  A ``fake_*`` name (``"fake_kingston"``) -- that
+        processor's fake backend, run locally.  ``"ibm-quantum"`` -- the
+        least-busy operational QPU of your account; ``"ibm_kingston"`` -- that
+        processor; ``"ibm_kingston,ibm_fez,ibm_marrakesh"`` -- the least busy
+        of those.
     shots : int
-        Measurement shots per circuit (default ``0`` = exact state vector; a
-        QPU requires ``shots > 0``).
+        Shots per circuit; the estimator precision is ``1/sqrt(shots)``.
+        ``0`` (default) is the exact local expectation value; a QPU requires
+        ``shots > 0``.
     instance, token, channel : str, optional
-        Passed to :class:`qiskit_ibm_runtime.QiskitRuntimeService`.  With none
-        given the account saved by ``QiskitRuntimeService.save_account`` (or
-        the ``QISKIT_IBM_TOKEN`` / ``QISKIT_IBM_INSTANCE`` environment
-        variables) is used.
+        Passed to :class:`qiskit_ibm_runtime.QiskitRuntimeService`; with none
+        given the account saved by ``QiskitRuntimeService.save_account`` is
+        used.
     optimization_level : int
-        Preset transpiler level for the target processor (default ``3``).
-    sampler_options : dict, optional
-        Runtime ``SamplerV2`` options (see ``qiskit_ibm_runtime.options``).
-        By default dynamical decoupling and measurement twirling are enabled
-        on real hardware; pass ``{}``-style overrides to change them.
+        Transpiler level for the target processor (default ``3``).
+    estimator_options : dict, optional
+        Options of the Runtime ``Estimator`` (resilience, twirling, ...).
     """
 
     name = "qiskit"
     supports_shots = True
 
-    #: Local shot-based sampler (no IBM account needed).
     LOCAL_DEVICES = ("statevector", "aer_simulator", "aer", "simulator", "local")
-    IBM_PREFIX = "ibm_"
+    LEAST_BUSY = ("ibm-quantum", "ibm", "ibmq", "ibm_quantum")
     FAKE_PREFIX = "fake_"
-    #: Runtime options applied on real hardware unless overridden.
-    HARDWARE_OPTIONS = {"dynamical_decoupling": {"enable": True},
-                        "twirling": {"enable_measure": True}}
 
     def __init__(self, device: str = "statevector", shots: int = 0,
                  instance: str | None = None, token: str | None = None,
                  channel: str | None = None, optimization_level: int = 3,
-                 sampler_options: dict | None = None):
+                 estimator_options: dict | None = None):
         self.device_spec = str(device).strip()
         self.shots = int(shots)
         self.instance = instance
         self.token = token
         self.channel = channel
         self.optimization_level = int(optimization_level)
-        self.sampler_options = (None if sampler_options is None
-                                else dict(sampler_options))
+        self.estimator_options = (None if estimator_options is None
+                                  else dict(estimator_options))
         self._backend = None
-        self._sampler = None
-        self._pass_manager = None
+        self._estimator = None
+        self.last_job = None
 
     def __repr__(self) -> str:
         return f"QiskitProvider(device={self.device_spec!r}, shots={self.shots})"
@@ -334,18 +334,21 @@ class QiskitProvider(CircuitProvider):
 
     @property
     def is_local(self) -> bool:
-        """True for the local sampler (no processor model, no account)."""
         return self.device_spec.lower() in self.LOCAL_DEVICES
 
     @property
     def is_fake_device(self) -> bool:
-        """True for a Qiskit Runtime fake backend (runs locally)."""
         return self.device_spec.lower().startswith(self.FAKE_PREFIX)
 
     @property
     def is_ibm_device(self) -> bool:
         """True when this provider submits to IBM Quantum hardware."""
         return not (self.is_local or self.is_fake_device)
+
+    @property
+    def precision(self) -> float:
+        """Estimator target precision: ``1/sqrt(shots)`` (``0`` = exact)."""
+        return 0.0 if self.shots <= 0 else 1.0 / np.sqrt(self.shots)
 
     def _service(self):
         from qiskit_ibm_runtime import QiskitRuntimeService
@@ -359,31 +362,32 @@ class QiskitProvider(CircuitProvider):
         return QiskitRuntimeService(**kwargs)
 
     def backend(self):
-        """The resolved Qiskit backend (cached); ``None`` for the local sampler.
-
-        A fake name resolves to the matching class of
-        ``qiskit_ibm_runtime.fake_provider``; an IBM name contacts the service
-        (credentials required) -- ``"ibm-quantum"`` picks the least-busy
-        operational QPU.
-        """
+        """The resolved backend (cached); ``None`` for the local estimator."""
         if self.is_local:
             return None
         if self._backend is None:
             if self.is_fake_device:
                 self._backend = self._fake_backend(self.device_spec)
             else:
-                service = self._service()
-                name = self.device_spec.lower()
-                if name in ("ibm-quantum", "ibm", "ibmq", "ibm_quantum"):
-                    self._backend = service.least_busy(operational=True,
-                                                       simulator=False)
-                else:
-                    self._backend = service.backend(name)
+                self._backend = self._ibm_backend(self._service())
         return self._backend
+
+    def _ibm_backend(self, service):
+        name = self.device_spec.lower()
+        if name in self.LEAST_BUSY:
+            return service.least_busy(operational=True, simulator=False)
+        names = [n.strip() for n in name.split(",") if n.strip()]
+        if len(names) == 1:
+            return service.backend(names[0])
+        # The least busy of the named processors.
+        candidates = [service.backend(n) for n in names]
+        operational = [b for b in candidates if b.status().operational]
+        if not operational:
+            raise RuntimeError(f"none of {names} is operational right now")
+        return min(operational, key=lambda b: b.status().pending_jobs)
 
     @staticmethod
     def _fake_backend(name: str):
-        """Instantiate ``qiskit_ibm_runtime.fake_provider.Fake<Name>V2``."""
         from qiskit_ibm_runtime import fake_provider
         stem = name[len("fake_"):].replace("_", " ").title().replace(" ", "")
         for attr in (f"Fake{stem}V2", f"Fake{stem}"):
@@ -394,75 +398,55 @@ class QiskitProvider(CircuitProvider):
             f"unknown fake backend {name!r}: qiskit_ibm_runtime.fake_provider "
             f"has no Fake{stem}V2")
 
-    def sampler(self):
-        """The shot-based sampler for :attr:`device_spec` (cached)."""
-        if self._sampler is None:
+    def estimator(self):
+        """The Estimator primitive for :attr:`device_spec` (cached)."""
+        if self._estimator is None:
             if self.is_local:
-                from qiskit.primitives import StatevectorSampler
-                self._sampler = StatevectorSampler(default_shots=self.shots)
+                from qiskit.primitives import StatevectorEstimator
+                self._estimator = StatevectorEstimator(
+                    default_precision=self.precision)
+            elif self.is_fake_device:
+                # Synchronous, in the calling thread (the Runtime primitive's
+                # local mode runs on a worker thread, and circuits freed
+                # across threads can deadlock Qiskit's allocator at GC).
+                from qiskit.primitives import BackendEstimatorV2
+                self._estimator = BackendEstimatorV2(
+                    backend=self.backend(),
+                    options={"default_precision": self.precision})
             else:
-                from qiskit_ibm_runtime import SamplerV2
-                options = {} if self.is_fake_device else dict(self.HARDWARE_OPTIONS)
-                if self.sampler_options:
-                    options.update(self.sampler_options)
-                self._sampler = SamplerV2(mode=self.backend(), options=options)
-        return self._sampler
-
-    def transpile(self, circuit):
-        """Compile ``circuit`` for the target processor (identity when local)."""
-        if self.is_local:
-            return circuit
-        if self._pass_manager is None:
-            from qiskit.transpiler import generate_preset_pass_manager
-            self._pass_manager = generate_preset_pass_manager(
-                backend=self.backend(),
-                optimization_level=self.optimization_level)
-        return self._pass_manager.run(circuit)
+                from qiskit_ibm_runtime import Estimator
+                self._estimator = Estimator(mode=self.backend(),
+                                            options=self.estimator_options)
+        return self._estimator
 
     # -- circuit construction --------------------------------------------- #
 
-    @staticmethod
-    def _wire(n_qubits: int, k) -> int:
-        # Qiskit is little-endian: Carcará qubit k lives on wire n-1-k so the
-        # simulated amplitude ordering matches Carcará's without a permutation.
-        return n_qubits - 1 - int(k)
-
-    def build(self, n_qubits: int, occupied, generators, thetas,
-              measure_basis: str | None = None):
-        """Build the Qiskit circuit, optionally rotated into ``measure_basis``.
-
-        With ``measure_basis`` given, the single-qubit rotations that map that
-        Pauli basis onto ``Z`` are appended and every wire is measured, so a
-        computational-basis readout samples the requested basis -- the
-        hardware measurement path.
-        """
+    def build(self, n_qubits: int, occupied, generators, thetas):
         from qiskit import QuantumCircuit
 
         qc = QuantumCircuit(n_qubits)
-        stream = list(self._emit(n_qubits, list(occupied), generators, thetas))
-        if measure_basis is not None:
-            stream += list(self._measurement_rotation(measure_basis))
-        for op in stream:
+        # Qiskit is little-endian: Carcará qubit k lives on wire n-1-k so the
+        # simulated amplitude ordering matches Carcará's without a permutation.
+        def wire(k):
+            return n_qubits - 1 - int(k)
+
+        for op in self._emit(n_qubits, list(occupied), generators, thetas):
             gate = op[0]
             if gate == "cx":
-                qc.cx(self._wire(n_qubits, op[1]), self._wire(n_qubits, op[2]))
+                qc.cx(wire(op[1]), wire(op[2]))
             elif gate == "rz":
-                qc.rz(op[2], self._wire(n_qubits, op[1]))
+                qc.rz(op[2], wire(op[1]))
             else:
-                getattr(qc, gate)(self._wire(n_qubits, op[1]))
-        if measure_basis is not None:
-            qc.measure_all()
+                getattr(qc, gate)(wire(op[1]))
         return qc
 
     def statevector(self, n_qubits: int, occupied, generators, thetas):
         from qiskit.quantum_info import Statevector
 
-        if self.shots:
+        if self.shots or not self.is_local:
             raise ValueError(
-                f"{self!r} is configured for shot-based execution, which cannot "
-                "return a state vector (a QPU never exposes amplitudes).  Use "
-                "provider.energy(...) for the shot-based expectation value, or "
-                "set shots=0 for an exact run.")
+                f"{self!r} cannot return a state vector (a processor never "
+                "exposes amplitudes); use provider.energy(...) instead")
         qc = self.build(n_qubits, occupied, generators, thetas)
         return np.asarray(Statevector(qc).data, dtype=complex)
 
@@ -478,52 +462,50 @@ class QiskitProvider(CircuitProvider):
                 "num_1q_gates": int(counts.get("u", 0)),
                 "total_gates": int(sum(counts.values()))}
 
-    # -- shot-based energy (QPU compatible) -------------------------------- #
+    # -- Estimator energies (the hardware path) ---------------------------- #
+
+    @staticmethod
+    def observable(hamiltonian):
+        """The Hamiltonian as a ``SparsePauliOp``.
+
+        Carcará labels list qubit 0 first and Qiskit labels list the highest
+        wire first; with qubit ``k`` on wire ``n-1-k`` the strings coincide.
+        """
+        return hamiltonian.to_sparse_pauli_op()
+
+    def pub(self, n_qubits: int, occupied, generators, thetas, hamiltonian):
+        """One Estimator PUB ``(isa_circuit, observable)`` for this target."""
+        qc = self.build(n_qubits, occupied, generators, thetas)
+        observable = self.observable(hamiltonian)
+        backend = self.backend()
+        if backend is None:
+            return (qc, observable)
+        from qiskit import transpile
+        isa = transpile(qc, backend=backend,
+                        optimization_level=self.optimization_level)
+        return (isa, observable.apply_layout(isa.layout))
+
+    def energies(self, problems) -> list[float]:
+        """Expectation values of several ``(n_qubits, occupied, generators,
+        thetas, hamiltonian)`` problems, submitted as **one** Estimator job."""
+        pubs = [self.pub(*problem) for problem in problems]
+        kwargs = {} if self.is_local else {"precision": self.precision}
+        if not self.is_local and self.shots <= 0:
+            raise ValueError(f"{self!r}: a processor needs shots > 0")
+        job = self.estimator().run(pubs, **kwargs)
+        self.last_job = job
+        result = job.result()
+        return [float(np.asarray(result[i].data.evs).reshape(-1)[0])
+                for i in range(len(pubs))]
 
     def energy(self, n_qubits: int, occupied, generators, thetas,
                hamiltonian) -> float:
-        r"""Estimate ``<H>``, from shots when ``shots > 0``.
-
-        With ``shots = 0`` this is the exact state-vector expectation.  With
-        ``shots > 0`` it runs the hardware protocol: partition ``H`` into
-        qubit-wise-commuting groups, build one measurement circuit per group,
-        transpile them for the target processor and submit them **as one
-        sampler job** (one Runtime job per energy evaluation, not one per
-        group), then assemble ``<H>`` from the bit-string counts.
-        """
-        if not self.shots:
+        """``<psi(thetas)| H |psi(thetas)>`` from the Estimator (see the class)."""
+        if not self.shots and self.is_local:
             return super().energy(n_qubits, occupied, generators, thetas,
                                   hamiltonian)
-        from .measurement import (energy_from_group_counts,
-                                  qubit_wise_commuting_groups)
-
-        groups, identity = qubit_wise_commuting_groups(hamiltonian)
-        circuits = [self.transpile(self.build(n_qubits, occupied, generators,
-                                              thetas, measure_basis=basis))
-                    for basis, _payload in groups]
-        result = self.sampler().run(circuits, shots=self.shots).result()
-        counts_per_group = [self._counts(result[i]) for i in range(len(groups))]
-        return energy_from_group_counts(groups, identity, counts_per_group)
-
-    @staticmethod
-    def _counts(pub_result) -> dict:
-        """Sampler counts as ``{bitstring: n}`` with Carcará qubit 0 leftmost.
-
-        Qiskit prints bit-strings little-endian -- wire ``n-1`` first -- and
-        Carcará qubit ``k`` sits on wire ``n-1-k``, so the string is already in
-        Carcará order.
-        """
-        return {str(bits): int(n)
-                for bits, n in pub_result.data.meas.get_counts().items()}
-
-    def measurement_groups(self, hamiltonian):
-        """QWC measurement groups for ``hamiltonian`` (one circuit each).
-
-        ``len(...)`` is the number of circuits one energy evaluation submits
-        (all in a single sampler job).
-        """
-        from .measurement import qubit_wise_commuting_groups
-        return qubit_wise_commuting_groups(hamiltonian)[0]
+        return self.energies([(n_qubits, occupied, generators, thetas,
+                               hamiltonian)])[0]
 
 
 # --------------------------------------------------------------------------- #

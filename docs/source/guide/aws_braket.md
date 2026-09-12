@@ -94,39 +94,42 @@ The estimate converges as $1/\sqrt{\text{shots}}$:
 
 ## IBM Quantum hardware (Qiskit Runtime)
 
-The same measured-energy protocol runs on **IBM Quantum** processors through
-the `"qiskit"` provider and Qiskit Runtime's `SamplerV2`. Three device
-spellings cover the whole workflow, from rehearsal to the real machine:
+On IBM processors the energy is the expectation value returned by the Qiskit
+Runtime **Estimator**: the Hamiltonian becomes a `SparsePauliOp` observable,
+the ansatz circuit is transpiled to the processor and the observable mapped to
+its layout, and one job returns $\langle H\rangle$ with its standard error.
+Three device spellings cover the workflow, from rehearsal to the real machine:
 
 ```python
-# 1. Local sampler: the shot protocol on the exact state vector, no account.
-atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO",
-                     device="AER_simulator", shots=4096)
+from carcara.backends.providers import QiskitProvider
 
-# 2. Fake backend: transpiled to that processor's gate set and coupling map
-#    and run by the Runtime sampler *locally* -- the rehearsal of a real run.
-atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO",
-                     device="fake_torino", shots=4096)
-
-# 3. Real hardware: the least-busy operational QPU of your account, or a
-#    named processor.  Needs a saved account (or QISKIT_IBM_TOKEN) and bills it.
-atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO",
-                     device="ibm-quantum", shots=4096,
-                     backend_options={"instance": "<your instance CRN>",
-                                      "optimization_level": 3})
-atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO",
-                     device="ibm_torino", shots=4096)
+QiskitProvider(shots=4096)                          # local estimator, sampled
+QiskitProvider(device="fake_kingston", shots=4096)  # that processor's fake backend, locally
+QiskitProvider(device="ibm_kingston,ibm_fez,ibm_marrakesh", shots=4096)  # least busy of these
 ```
 
 Credentials come from `QiskitRuntimeService.save_account(...)` run once, or
-from `backend_options={"token": ..., "instance": ..., "channel": ...}`. On real
-hardware the sampler enables dynamical decoupling and measurement twirling by
-default; override with `backend_options={"sampler_options": {...}}`. Every
-energy evaluation submits its qubit-wise-commuting measurement circuits as
-**one** Runtime job (`provider.measurement_groups(H)` counts them), so the
-cost of a run is *jobs = energy evaluations*, and ADAPT-VQE's pool-gradient
-screening still runs classically (see the limitation below). Example
-`24_ADAPTVQE_LiH_IBM.py` is written to run unchanged in all three modes.
+from `QiskitProvider(instance=..., token=..., channel=...)`.
+
+**Optimize locally, measure once.** QPU time is scarce (the open plan gives
+ten minutes a month), and a variational optimization needs hundreds of energy
+evaluations. So run the optimization on the local state vector and measure
+only the optimized states on hardware:
+
+```python
+from carcara.algorithms.base import measure_energies
+
+atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO")
+atoms.get_total_energy()                                  # local
+provider = QiskitProvider(device="ibm_kingston", shots=4096)
+e_hw = atoms.calc.solver.measured_energy(provider)        # one job
+e_curve = measure_energies(solvers, provider)             # many geometries, one job
+```
+
+A driver with `shots > 0` and an IBM device (`Carcara(..., device="ibm_kingston",
+shots=4096)`) runs the whole optimization through the Estimator instead, one
+job per energy evaluation; do that on a fake backend, not on a budget.
+Example `24_ADAPTVQE_LiH_IBM.py` follows the optimize-locally pattern.
 
 ## Registered devices
 

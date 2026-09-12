@@ -723,6 +723,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         timings, run_t0 = self._make_timings()
 
         ansatz = self._new_ansatz()
+        self.ansatz = ansatz        # the grown ansatz, for measured energies
         params = (np.asarray(initial_parameters, dtype=float).ravel()
                   if initial_parameters is not None else np.zeros(0))
         ref_energy = self.energy(ansatz.reference_state())

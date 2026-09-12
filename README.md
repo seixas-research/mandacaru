@@ -86,7 +86,7 @@ atoms.calc = Carcara(method="vqe", basis="FAO",
 atoms.get_total_energy()          # measured on a trapped-ion QPU
 ```
 
-> **Scope:** the *energy evaluation* is hardware-native. ADAPT-VQE's pool-gradient screening is still classical, so fixed-ansatz `method="vqe"` is the fully hardware-native method today. Run `examples/13_braket_aws_compatibility.py` for a verified compatibility report (no AWS account needed), and `examples/24_ADAPTVQE_LiH_IBM.py` for a LiH curve that moves from the laptop to an IBM processor by changing its `DEVICE` / `SHOTS` constants.
+> **Scope:** the *energy evaluation* is hardware-native. ADAPT-VQE's pool-gradient screening is still classical, so fixed-ansatz `method="vqe"` is the fully hardware-native method today. Run `examples/13_braket_aws_compatibility.py` for a verified compatibility report (no AWS account needed), and `examples/24_ADAPTVQE_LiH_IBM.py` for a LiH curve optimized locally and then measured on an IBM processor in a single Estimator job (set its `HARDWARE` constant).
 
 ### 7. Reusable Hamiltonians (Parquet / JSON Cache)
 Building the qubit Hamiltonian — integrals plus the fermion-to-qubit mapping — is the most expensive stage of a run and is independent of the algorithm that follows. It can be serialized and replayed:

@@ -6,25 +6,31 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""LiH dissociation curve with ADAPT-VQE (CEO pool, Jordan-Wigner mapping).
+"""LiH dissociation curve with ADAPT-VQE (CEO pool, Jordan-Wigner mapping),
+optimized locally and measured on IBM Quantum hardware.
 
-Runs locally as written.  To run on IBM Quantum hardware, set
+The variational optimization runs on the local state vector.  The optimized
+states are then measured with the Qiskit Runtime ``Estimator`` on a real
+processor -- one job for the whole curve -- when ``HARDWARE`` names one:
 
-    DEVICE = "ibm-quantum"      # least-busy QPU of your account, or e.g. "ibm_torino"
-    SHOTS = 4096                # hardware never returns a state vector
+    HARDWARE = "ibm_kingston,ibm_fez,ibm_marrakesh"   # least busy of these
+    HARDWARE = "fake_kingston"                        # local rehearsal
+    HARDWARE = None                                   # local only
 
-after saving your account once with ``QiskitRuntimeService.save_account(...)``.
-``DEVICE = "fake_torino"`` with ``SHOTS > 0`` rehearses the hardware run locally.
+Your IBM account must be saved once with ``QiskitRuntimeService.save_account``.
 """
 
+import csv
+
 import matplotlib.pyplot as plt
-import numpy as np
 from ase import Atoms
 
 from carcara.algorithms import Carcara
+from carcara.algorithms.base import measure_energies
+from carcara.backends.providers import QiskitProvider
 
-DEVICE = "AER_simulator"
-SHOTS = 0
+HARDWARE = None
+SHOTS = 4096
 
 DISTANCES = [1.0, 1.3, 1.6, 1.9, 2.2, 2.6, 2.8]     # Angstrom
 CELL = 15.0                                         # cubic cell edge (Angstrom)
@@ -55,27 +61,60 @@ def calculator():
         gradient_tolerance=1e-3,
         quenching=True,
         sparse="auto",
-        device=DEVICE,
-        shots=SHOTS,
+        device="AER_simulator",
+        shots=0,
         backend_provider="qiskit",
-        execute_circuits=SHOTS > 0,
+        execute_circuits=False,
         profile=True,
         verbose=False,
     )
 
 
-energies = []
-print(f"{'d (A)':>8}{'E (Ha)':>16}{'ops':>6}")
+# 1. Optimize locally.
+solvers, energies = [], []
+print(f"{'d (A)':>8}{'E local (Ha)':>16}{'ops':>6}")
 for distance in DISTANCES:
     atoms = lih(distance)
     atoms.calc = calculator()
     atoms.get_total_energy()
     result = atoms.calc.result
+    solvers.append(atoms.calc.solver)
     energies.append(result.optimal_energy)
     print(f"{distance:>8.2f}{result.optimal_energy:>16.8f}{result.num_operators:>6}")
 
-plt.plot(DISTANCES, energies, "o-")
+plt.plot(DISTANCES, energies, "o-", label="local state vector")
+
+# 2. Measure the optimized states on hardware, one Estimator job.
+measured, stds, backend_name, job_id = [], [], "", ""
+if HARDWARE:
+    provider = QiskitProvider(device=HARDWARE, shots=SHOTS)
+    backend_name = provider.backend().name
+    print(f"\nmeasuring on {backend_name} ({SHOTS} shots)")
+    measured = measure_energies(solvers, provider)
+    job_id = getattr(provider.last_job, "job_id", lambda: "")()
+    stds = [float(r.data.stds) for r in provider.last_job.result()]
+    print(f"job {job_id}")
+    print(f"{'d (A)':>8}{'E measured (Ha)':>18}{'std (Ha)':>12}")
+    for distance, energy, std in zip(DISTANCES, measured, stds):
+        print(f"{distance:>8.2f}{energy:>18.8f}{std:>12.5f}")
+    plt.errorbar(DISTANCES, measured, yerr=stds, fmt="s--", label=backend_name)
+
+# 3. Raw data, one row per distance.
+with open("lih_dissociation_ibm.csv", "w", newline="") as fh:
+    writer = csv.writer(fh)
+    writer.writerow(["distance_A", "energy_local_Ha", "num_operators",
+                     "energy_measured_Ha", "std_measured_Ha", "shots",
+                     "backend", "job_id", "optimal_parameters"])
+    for i, distance in enumerate(DISTANCES):
+        result = solvers[i].result
+        writer.writerow([distance, energies[i], result.num_operators,
+                         measured[i] if measured else "",
+                         stds[i] if stds else "", SHOTS if HARDWARE else 0,
+                         backend_name, job_id,
+                         " ".join(f"{t:.10f}" for t in result.optimal_parameters)])
+
 plt.xlabel("Li-H distance (Angstrom)")
 plt.ylabel("energy (Ha)")
-plt.title(f"LiH, ADAPT-VQE (ceo pool, Jordan-Wigner) on {DEVICE}")
+plt.title("LiH, ADAPT-VQE (ceo pool, Jordan-Wigner)")
+plt.legend()
 plt.savefig("lih_dissociation_ibm.png", dpi=150)
