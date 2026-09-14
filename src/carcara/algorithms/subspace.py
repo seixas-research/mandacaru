@@ -129,9 +129,13 @@ def resolve_weights(weights, num_states: int) -> np.ndarray:
 
 @dataclass
 class SubspaceVQEResult:
-    """Result of a :class:`SubspaceVQE` run (ground + excited states)."""
+    """Result of a :class:`SubspaceVQE` run (ground + excited states).
 
-    energies: np.ndarray                 # per-level energy, ascending (Hartree)
+    Every energy is in :attr:`energy_unit` -- **eV** by default, Hartree when
+    the driver was built with ``atomic_units=True``; :meth:`in_units` converts.
+    """
+
+    energies: np.ndarray                 # per-level energy, ascending
     optimal_parameters: np.ndarray       # shared ansatz parameters
     weights: np.ndarray                  # SSVQE weights used
     states: list = field(default_factory=list)      # optimal state vectors
@@ -140,6 +144,7 @@ class SubspaceVQEResult:
     success: bool = True
     timings: dict | None = None
     integration_profile: dict | None = None
+    energy_unit: str = "eV"              # unit of every energy above
 
     @property
     def optimal_energy(self) -> float:
@@ -160,22 +165,27 @@ class SubspaceVQEResult:
         return EnergyLevels(energies=np.asarray(self.energies, float),
                             states=list(self.states),
                             reference_energy=self.reference_energy,
-                            num_evaluations=self.num_evaluations)
+                            num_evaluations=self.num_evaluations,
+                            energy_unit=self.energy_unit)
 
     def in_units(self, units: str = "eV") -> np.ndarray:
         return self.levels.in_units(units)
 
     def __repr__(self) -> str:
         levels = ", ".join(f"{e:.6f}" for e in np.asarray(self.energies))
-        return (f"SubspaceVQEResult([{levels}] Ha, "
+        return (f"SubspaceVQEResult([{levels}] {self.energy_unit}, "
                 f"num_states={self.num_states}, success={self.success})")
 
 
 @dataclass
 class SubspaceADAPTVQEResult:
-    """Result of a :class:`SubspaceADAPTVQE` run (ground + excited states)."""
+    """Result of a :class:`SubspaceADAPTVQE` run (ground + excited states).
 
-    energies: np.ndarray                 # per-level energy, ascending (Hartree)
+    Every energy is in :attr:`energy_unit` -- **eV** by default, Hartree when
+    the driver was built with ``atomic_units=True``; :meth:`in_units` converts.
+    """
+
+    energies: np.ndarray                 # per-level energy, ascending
     optimal_parameters: np.ndarray
     weights: np.ndarray
     converged: bool
@@ -187,6 +197,7 @@ class SubspaceADAPTVQEResult:
     metrics: CircuitMetrics | None = None
     timings: dict | None = None
     integration_profile: dict | None = None
+    energy_unit: str = "eV"              # unit of every energy above
 
     @property
     def optimal_energy(self) -> float:
@@ -209,14 +220,15 @@ class SubspaceADAPTVQEResult:
         return EnergyLevels(energies=np.asarray(self.energies, float),
                             states=list(self.states),
                             reference_energy=self.reference_energy,
-                            num_evaluations=self.num_evaluations)
+                            num_evaluations=self.num_evaluations,
+                            energy_unit=self.energy_unit)
 
     def in_units(self, units: str = "eV") -> np.ndarray:
         return self.levels.in_units(units)
 
     def __repr__(self) -> str:
         levels = ", ".join(f"{e:.6f}" for e in np.asarray(self.energies))
-        return (f"SubspaceADAPTVQEResult([{levels}] Ha, "
+        return (f"SubspaceADAPTVQEResult([{levels}] {self.energy_unit}, "
                 f"num_states={self.num_states}, n_ops={self.num_operators}, "
                 f"converged={self.converged})")
 
@@ -283,8 +295,10 @@ class SubspaceMixin:
         states = [states[i] for i in order]
 
         self._finalize_timings(timings, run_t0)
-        result = self._make_subspace_result(energies, params, weights, states,
-                                            ref_energy, timings, extra)
+        # The single Hartree -> output-unit boundary of the subspace search.
+        result = self._make_subspace_result(
+            self._to_energy_units(energies), params, weights, states,
+            self._to_energy_units(ref_energy), timings, extra)
         if self.verbose:
             self._print_subspace_summary(result, timings)
         return result
@@ -300,6 +314,7 @@ class SubspaceMixin:
 
     def _make_subspace_result(self, energies, params, weights, states,
                               ref_energy, timings, extra):
+        """Build the result; ``energies`` / ``ref_energy`` are already in output units."""
         raise NotImplementedError
 
     def _emit_run_header(self, ref_energy) -> None:
@@ -391,7 +406,8 @@ class SubspaceVQE(SubspaceMixin, VQE):
             states=states, reference_energy=ref_energy,
             num_evaluations=extra["num_evaluations"], success=extra["success"],
             timings=timings.as_dict(),
-            integration_profile=self._integration_profile)
+            integration_profile=self._integration_profile,
+            energy_unit=self._energy_unit_label())
 
     def _print_subspace_summary(self, result: SubspaceVQEResult, timings) -> None:
         rule = "=" * 70
@@ -400,7 +416,7 @@ class SubspaceVQE(SubspaceMixin, VQE):
         print(f"Subspace-VQE finished ({status}): {result.num_states} levels")
         for i, e in enumerate(result.energies):
             tag = "ground" if i == 0 else f"excited {i}"
-            print(f"  E[{i}] ({tag:>9s}) = {e:+.8f} Ha")
+            print(f"  E[{i}] ({tag:>9s}) = {e:+.8f} {result.energy_unit}")
         if timings is not None:
             print(timings.format_report())
         print(rule)
@@ -520,7 +536,8 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
             reference_energy=ref_energy,
             num_evaluations=extra["num_evaluations"], metrics=extra["metrics"],
             timings=timings.as_dict(),
-            integration_profile=self._integration_profile)
+            integration_profile=self._integration_profile,
+            energy_unit=self._energy_unit_label())
 
     def _print_subspace_summary(self, result: SubspaceADAPTVQEResult,
                                 timings) -> None:
@@ -532,7 +549,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
               f"final |grad| = {result.final_max_gradient:.6e}")
         for i, e in enumerate(result.energies):
             tag = "ground" if i == 0 else f"excited {i}"
-            print(f"  E[{i}] ({tag:>9s}) = {e:+.8f} Ha")
+            print(f"  E[{i}] ({tag:>9s}) = {e:+.8f} {result.energy_unit}")
         if timings is not None:
             print(timings.format_report())
         print(rule)

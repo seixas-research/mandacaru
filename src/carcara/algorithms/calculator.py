@@ -431,7 +431,7 @@ class Carcara(Calculator):
     # -- convenience ------------------------------------------------------- #
 
     def get_force_breakdown(self):
-        """``(hellmann_feynman, pulay)`` gradients of the last step (Ha/Bohr).
+        """``(hellmann_feynman, pulay)`` gradients of the last step (eV/Angstrom).
 
         Useful for showing how much of the force the Hellmann-Feynman term alone
         accounts for -- for an atom-centered basis, typically not enough.

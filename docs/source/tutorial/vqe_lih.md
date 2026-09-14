@@ -79,7 +79,7 @@ calc = Carcara(method="vqe", hamiltonian=H_mo, ansatz=ansatz,
                          optimizer="COBYLA")
 result = calc.run()
 
-print(f"LiH VQE Ground-State Energy: {result.optimal_energy:.6f} Ha")
+print(f"LiH VQE Ground-State Energy: {result.optimal_energy:.6f} eV")
 ```
 
 ---
@@ -104,5 +104,5 @@ atoms.calc = Carcara(method="vqe", basis="FAO", mapping="jordan_wigner",
 energy_ev = atoms.get_total_energy()
 result = atoms.calc.result
 
-print(f"LiH Ground-State Energy: {result.optimal_energy:.6f} Ha ({energy_ev:.6f} eV)")
+print(f"LiH Ground-State Energy: {result.optimal_energy:.6f} eV")   # == energy_ev
 ```

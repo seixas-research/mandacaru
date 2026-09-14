@@ -22,7 +22,8 @@ One file per element, ``<symbol>.json``:
 
     {
       "format": "carcara-pseudopotential",
-      "version": 1,
+      "version": 2,
+      "family": "tm",                      // pseudopotential family (v2+)
       "symbol": "O",
       "atomic_number": 8,
       "valence_charge": 6.0,
@@ -56,8 +57,39 @@ from .generation import Channel, PseudoPotential, generate_pseudopotential
 
 #: Identifies a Carcará pseudopotential file.
 FORMAT_TAG = "carcara-pseudopotential"
-#: Current schema version.
-FORMAT_VERSION = 1
+#: Current schema version.  Version 2 (2026-09-14) added the ``family`` field;
+#: a version-1 file (no field) loads as the Troullier-Martins family.
+FORMAT_VERSION = 2
+#: Family assumed for files written before the field existed.
+LEGACY_FAMILY = "tm"
+#: Family whose files carry several projectors per channel (see :mod:`.oncv`).
+ONCV_FAMILY = "oncvpsp"
+#: Family whose files carry partial waves, projectors and one-center matrices
+#: (see :mod:`.paw`).
+PAW_FAMILY = "paw"
+#: Families whose payload keeps every radial table under ``"radial_tables"``
+#: and whose record is (de)serialized by the family's own module
+#: (``to_payload`` / ``from_payload``).  A file of another family -- or a
+#: plain :class:`PseudoPotential` that merely *carries* one of these names --
+#: uses the Troullier-Martins layout.
+TABLE_FAMILIES = {ONCV_FAMILY: ".oncv", PAW_FAMILY: ".paw"}
+
+
+def _codec(family: str):
+    """The module holding ``to_payload``/``from_payload`` for ``family``."""
+    import importlib
+    return importlib.import_module(TABLE_FAMILIES[family], __package__)
+
+
+def _table_record(pp) -> str | None:
+    """The table family ``pp`` is an instance of, or ``None``."""
+    from .oncv import ONCVPseudoPotential
+    from .paw import PAWDataset
+    if isinstance(pp, PAWDataset):
+        return PAW_FAMILY
+    if isinstance(pp, ONCVPseudoPotential):
+        return ONCV_FAMILY
+    return None
 
 #: File formats understood by ``format=``.
 PSEUDO_FORMATS = ("parquet", "json")
@@ -192,9 +224,21 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
         format = _EXTENSION_FORMATS.get(extension, DEFAULT_FORMAT)
     format = resolve_format(format)
 
+    family = str(getattr(pp, "family", LEGACY_FAMILY))
+    table_family = _table_record(pp)
+    if table_family is not None:
+        # ONCVPSP / PAW records carry several projectors per channel, coupling
+        # matrices, partial waves...; their payload is assembled by their own
+        # module and every radial table lives under ``radial_tables``.
+        payload = {"format": FORMAT_TAG, "version": FORMAT_VERSION,
+                   "family": table_family,
+                   **_codec(table_family).to_payload(pp, stride)}
+        return _write_payload(path, payload, format, engine)
+
     payload = {
         "format": FORMAT_TAG,
         "version": FORMAT_VERSION,
+        "family": family,
         "symbol": pp.symbol,
         "atomic_number": int(pp.atomic_number),
         "valence_charge": float(pp.valence_charge),
@@ -219,6 +263,10 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
                        for l, chi in pp.projectors.items()},
         "kb_energies": {str(l): float(e) for l, e in pp.kb_energies.items()},
     }
+    return _write_payload(path, payload, format, engine)
+
+
+def _write_payload(path, payload, format, engine) -> str:
     path = os.fspath(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     if format == "json":
@@ -232,6 +280,8 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
 
 def _radial_columns(payload):
     """Split the payload into the radial table and the scalar metadata."""
+    if "radial_tables" in payload:
+        return dict(payload["radial_tables"])
     columns = {"r": payload["r"], "v_local": payload["v_local"],
                "valence_density": payload["valence_density"]}
     for key, entry in payload["channels"].items():
@@ -247,13 +297,16 @@ def _write_parquet(path, payload, engine):
     from ...core.serialization import native_pandas_strings, resolve_engine
 
     columns = _radial_columns(payload)
-    scalars = {k: v for k, v in payload.items()
-               if k not in ("r", "v_local", "valence_density", "projectors")}
-    # Channels keep their scalars but drop the (now columnar) radial tables.
-    scalars["channels"] = {
-        key: {k: v for k, v in entry.items()
-              if k not in ("pseudo_radial", "v_ionic")}
-        for key, entry in payload["channels"].items()}
+    if "radial_tables" in payload:
+        scalars = {k: v for k, v in payload.items() if k != "radial_tables"}
+    else:
+        scalars = {k: v for k, v in payload.items()
+                   if k not in ("r", "v_local", "valence_density", "projectors")}
+        # Channels keep their scalars but drop the (now columnar) radial tables.
+        scalars["channels"] = {
+            key: {k: v for k, v in entry.items()
+                  if k not in ("pseudo_radial", "v_ionic")}
+            for key, entry in payload["channels"].items()}
     metadata = {"carcara.pseudopotential": json.dumps(scalars)}
 
     if resolve_engine(engine) == "fastparquet":
@@ -295,6 +348,10 @@ def _read_parquet(path, engine):
         raise ValueError(
             f"{path!r} is not a Carcará pseudopotential Parquet file")
     payload = json.loads(raw["carcara.pseudopotential"])
+    if "local_l" not in payload:
+        # Not the Troullier-Martins layout: a table family (ONCVPSP / PAW).
+        payload["radial_tables"] = columns
+        return payload
     payload["r"] = columns["r"]
     payload["v_local"] = columns["v_local"]
     payload["valence_density"] = columns["valence_density"]
@@ -334,6 +391,14 @@ def load_pseudopotential(path, format: str | None = None,
             f"{path!r} uses pseudopotential format version "
             f"{payload['version']}, newer than this build ({FORMAT_VERSION})")
 
+    family = str(payload.get("family", LEGACY_FAMILY))
+    if "radial_tables" in payload:
+        if family not in TABLE_FAMILIES:
+            raise ValueError(
+                f"{path!r} declares family {family!r} with a table layout "
+                "this build cannot read")
+        return _codec(family).from_payload(payload)
+
     r = np.asarray(payload["r"], dtype=float)
     channels = {}
     for key, entry in payload["channels"].items():
@@ -361,7 +426,8 @@ def load_pseudopotential(path, format: str | None = None,
         kb_energies={int(k): float(v)
                      for k, v in payload["kb_energies"].items()},
         valence_density=np.asarray(payload["valence_density"], dtype=float),
-        atom=None)
+        atom=None,
+        family=str(payload.get("family", LEGACY_FAMILY)))
 
 
 # --------------------------------------------------------------------------- #

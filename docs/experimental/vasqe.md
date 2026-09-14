@@ -47,7 +47,7 @@ atoms.calc = Carcara(method="vasqe", basis="FAO", pool="fermionic",
 energy_ev = atoms.get_total_energy()
 
 result = atoms.calc.result            # a VASQEResult (subclass of ADAPTVQEResult)
-print(result.optimal_energy)          # Hartree
+print(result.optimal_energy)          # eV (Hartree only with atomic_units=True)
 print(result.operators)               # the (stochastically) selected sequence
 print(result.temperatures)            # the tau used at each growth step
 ```
@@ -104,14 +104,14 @@ growing its ansatz **stochastically**:
 ```python
 # Deflation: ground + excited states, one after another.
 levels = atoms.calc.energy_levels(num_states=2)
-print(levels.in_units("eV"))
+print(levels.energies)                # eV
 
 # Subspace search: ground + excited states simultaneously.
 atoms.calc = Carcara(method="subspace-vasqe", basis="FAO",
                                pool="fermionic", num_states=2,
                                temperature=0.5, h=0.20, gradient_tolerance=1e-5)
 atoms.get_total_energy()
-print(atoms.calc.result.in_units("eV"))
+print(atoms.calc.result.energies)     # eV
 ```
 
 `method="subspace-vasqe"` combines the subspace-search machinery

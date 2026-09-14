@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..optimizers.optim import Optimizer
+from ..units import convert_energy
 from .base import VariationalDriver
 from .deflation import DeflationMixin, deflation_penalty
 
@@ -55,7 +56,10 @@ class VQEResult:
     the optimal energy/parameters, the reference energy, the evaluation count and
     the full cost history, exposes the same convenience views
     (:attr:`num_parameters`, :attr:`energy_history`), and records the timing /
-    cores / memory profile of the run.
+    cores / memory profile of the run.  Every energy (``optimal_energy``,
+    ``reference_energy``, ``history``) is in :attr:`energy_unit` -- **eV** by
+    default, Hartree when the driver was built with ``atomic_units=True``;
+    :meth:`in_units` converts.
     """
 
     optimal_energy: float                 # minimized energy <psi|H|psi>
@@ -66,6 +70,7 @@ class VQEResult:
     success: bool = True
     timings: dict | None = None           # per-stage wall time / cores / memory
     integration_profile: dict | None = None   # real-space integration profile
+    energy_unit: str = "eV"               # unit of every energy above
 
     @property
     def num_parameters(self) -> int:
@@ -80,8 +85,12 @@ class VQEResult:
         """Energy lowered relative to the reference (``E - E_ref``)."""
         return self.optimal_energy - self.reference_energy
 
+    def in_units(self, units: str = "eV") -> float:
+        """The optimal energy converted to ``units`` (``"eV"`` or ``"Ha"``)."""
+        return float(convert_energy(self.optimal_energy, self.energy_unit, units))
+
     def __repr__(self) -> str:
-        return (f"VQEResult(energy={self.optimal_energy:.6f}, "
+        return (f"VQEResult(energy={self.optimal_energy:.6f} {self.energy_unit}, "
                 f"n_params={self.num_parameters}, "
                 f"nfev={self.num_evaluations}, success={self.success})")
 
@@ -305,15 +314,17 @@ class VQE(DeflationMixin, VariationalDriver):
 
         self._finalize_timings(timings, run_t0)
 
+        # The single Hartree -> output-unit boundary of the run.
         vqe_result = VQEResult(
-            optimal_energy=result.fun,
+            optimal_energy=self._to_energy_units(result.fun),
             optimal_parameters=result.x,
-            reference_energy=ref_energy,
+            reference_energy=self._to_energy_units(ref_energy),
             num_evaluations=result.nfev,
-            history=result.history,
+            history=[self._to_energy_units(e) for e in result.history],
             success=result.success,
             timings=timings.as_dict(),
-            integration_profile=self._integration_profile)
+            integration_profile=self._integration_profile,
+            energy_unit=self._energy_unit_label())
 
         if self.verbose:
             self._print_summary(vqe_result, timings)
@@ -379,7 +390,9 @@ class VQE(DeflationMixin, VariationalDriver):
         print(rule)
         n_terms = len(self.hamiltonian.simplify().terms)
         print(f"Qubit Hamiltonian: {n_terms} Pauli terms")
-        print(f"Reference (all-zero) energy = {ref_energy:+.8f} Ha")
+        print(f"Reference (all-zero) energy = "
+              f"{self._to_energy_units(ref_energy):+.8f} "
+              f"{self._energy_unit_label()}")
         print(rule)
 
     def _print_summary(self, result: VQEResult, timings=None) -> None:
@@ -388,7 +401,7 @@ class VQE(DeflationMixin, VariationalDriver):
         print(rule)
         status = "converged" if result.success else "did not converge"
         print(f"VQE finished ({status}): "
-              f"E = {result.optimal_energy:+.8f} Ha, "
+              f"E = {result.optimal_energy:+.8f} {result.energy_unit}, "
               f"{result.num_parameters} parameters, {result.num_evaluations} "
               f"evaluations")
         if timings is not None:

@@ -49,6 +49,7 @@ from carcara.basis.nao import solve_confined_radial
 from carcara.basis.fao import FullAtomicOrbital
 from carcara.core import MolecularIntegrals
 from carcara.integrals import Grid
+from carcara.units import BOHR_TO_ANGSTROM, from_hartree
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
@@ -107,7 +108,10 @@ print(RULE)
 
 
 def restricted_hartree_fock(size, spacing):
-    """RHF total energy of H2 in Hartree, for one basis size and grid."""
+    """RHF total energy of H2 in eV, for one basis size and grid.
+
+    The SCF runs in the integrals' Hartree; it is converted once, on return.
+    """
     grid = Grid(center=[0, 0, 0], box_size=6.0, h=spacing)
     basis = BasisSet.build("NAO", size=size)
     functions, nuclei = [], []
@@ -118,7 +122,8 @@ def restricted_hartree_fock(size, spacing):
         nuclei, functions, grid,
         softening=0.5 * min(grid.dx, grid.dy, grid.dz))
     energy = integrals.hartree_fock(2).electronic_energy
-    return energy + integrals.nuclear_repulsion, len(functions)
+    return (float(from_hartree(energy + integrals.nuclear_repulsion, "eV")),
+            len(functions))
 
 
 SPACINGS = (0.20, 0.12)
@@ -131,10 +136,11 @@ for size in ("SZ", "DZ", "TZ", "DZP"):
         energy, orbitals = restricted_hartree_fock(size, spacing)
         curves.setdefault(spacing, {})[size] = energy
         reference = curves[spacing].get("SZ", energy)
-        row += f"{energy:>13.6f}{energy - reference:>10.4f}"
+        row += f"{energy:>13.4f}{energy - reference:>10.4f}"
     print(f"{size:>6}{orbitals:>10}" + row[6:])
+print("(energies in eV)")
 
-print("\nDouble zeta is worth ~28 mHa at h = 0.20 A and ~32 mHa at h = 0.12 A;")
+print("\nDouble zeta is worth ~0.76 eV at h = 0.20 A and ~0.87 eV at h = 0.12 A;")
 print("polarization adds a little more.  The third zeta adds almost nothing")
 print("here -- not because it is redundant, but because of point 4.")
 
@@ -171,11 +177,11 @@ fig, (left, right) = plt.subplots(1, 2, figsize=(12.0, 4.8))
 
 colors = ("#0072B2", "#D55E00", "#009E73", "#CC79A7")
 for table, color in zip(tables, colors):
-    left.plot(radius, table.values, lw=2.0, color=color,
+    left.plot(radius * BOHR_TO_ANGSTROM, table.values, lw=2.0, color=color,
               label=f"zeta {table.zeta}")
-left.set_xlim(0.0, 4.0)
+left.set_xlim(0.0, 4.0 * BOHR_TO_ANGSTROM)
 left.axhline(0.0, color="0.75", lw=0.8)
-left.set_xlabel("r (Bohr)")
+left.set_xlabel("r (Angstrom)")
 left.set_ylabel("R(r)")
 left.set_title("Split-valence hierarchy, H 1s\n"
                "each zeta strictly shorter-ranged")
@@ -185,14 +191,13 @@ order = ("SZ", "DZ", "TZ", "DZP")
 width = 0.38
 positions = np.arange(len(order))
 for offset, spacing in enumerate(SPACINGS):
-    gains = [1000.0 * (curves[spacing]["SZ"] - curves[spacing][s])
-             for s in order]
+    gains = [curves[spacing]["SZ"] - curves[spacing][s] for s in order]   # eV
     right.bar(positions + (offset - 0.5) * width, gains, width,
               label=f"h = {spacing} A",
               color=("#0072B2", "#D55E00")[offset])
 right.set_xticks(positions)
 right.set_xticklabels(order)
-right.set_ylabel("energy lowering vs SZ (mHa)")
+right.set_ylabel("energy lowering vs SZ (eV)")
 right.set_title("Variational payoff, H2 at Hartree-Fock\n"
                 "(higher is better)")
 right.legend(frameon=False)

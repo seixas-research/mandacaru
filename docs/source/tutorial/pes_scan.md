@@ -36,7 +36,9 @@ For a simple system like $H_2$, the electron clouds are relatively diffuse and c
 ```python
 from ase import Atoms
 from carcara.algorithms import Carcara
-from carcara.units import HARTREE_TO_EV
+from carcara.units import from_hartree
+
+e_atoms_ev = from_hartree(e_atoms, "eV")   # the UHF atomic reference is Hartree
 
 for r in distances:
     atoms = Atoms("H2", positions=molecule_positions(float(r)))
@@ -44,7 +46,7 @@ for r in distances:
                                    grid=grid, optimizer="L-BFGS-B",
                                    verbose=False)
     atoms.get_total_energy()
-    binding_ev = (atoms.calc.result.optimal_energy - e_atoms) * HARTREE_TO_EV
+    binding_ev = atoms.calc.result.optimal_energy - e_atoms_ev   # results are eV
     print(f"R = {r:.2f} A -> E - E_atoms = {binding_ev:+.4f} eV")
 ```
 

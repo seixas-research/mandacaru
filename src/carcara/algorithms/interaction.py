@@ -39,8 +39,8 @@ to check the setup before the variational runs.
     result = interaction_energy(complex_atoms, fragments=[[0, 1, 2], [3]],
                                 charges=[0, 1], method="adapt-vqe",
                                 basis="FAO", frozen_core=True, h=0.25)
-    result.energy            # Hartree
-    result.in_units("eV")
+    result.energy            # eV (Hartree with atomic_units=True)
+    result.in_units("Ha")
 """
 
 from __future__ import annotations
@@ -49,30 +49,35 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..units import from_hartree
+from ..units import convert_energy, energy_unit_label, from_hartree
 
 
 @dataclass
 class InteractionEnergy:
-    """``E(complex) - sum E(fragments)`` and everything that went into it."""
+    """``E(complex) - sum E(fragments)`` and everything that went into it.
 
-    energy: float                       # Hartree
-    complex_energy: float               # Hartree
-    fragment_energies: list[float]      # Hartree, one per fragment
+    Every energy is in :attr:`energy_unit` -- **eV** by default, Hartree when
+    ``atomic_units=True`` was passed to the solver; :meth:`in_units` converts.
+    """
+
+    energy: float                       # E(complex) - sum E(fragments)
+    complex_energy: float
+    fragment_energies: list[float]      # one per fragment
     fragments: list[list[int]]          # atom indices of each fragment
     charges: list[int]
     method: str
     grid: object                        # the shared Grid
     results: list = field(default_factory=list)   # per-run result objects
     complex_result: object = None
+    energy_unit: str = "eV"             # unit of every energy above
 
     def in_units(self, units: str = "eV") -> float:
-        return float(from_hartree(self.energy, units))
+        """The interaction energy converted to ``units`` (``"eV"`` or ``"Ha"``)."""
+        return float(convert_energy(self.energy, self.energy_unit, units))
 
     def __repr__(self) -> str:
-        return (f"InteractionEnergy(E_int={self.energy:+.6f} Ha "
-                f"({self.in_units('eV'):+.4f} eV), method={self.method!r}, "
-                f"fragments={self.fragments})")
+        return (f"InteractionEnergy(E_int={self.energy:+.6f} {self.energy_unit}, "
+                f"method={self.method!r}, fragments={self.fragments})")
 
 
 def _check_fragments(atoms, fragments, charges, charge):
@@ -171,6 +176,8 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
     frags, frag_charges = _check_fragments(atoms, fragments, charges, charge)
     shared = _shared_grid(atoms, h, grid)
     method_key = str(method).strip().lower()
+    # Output units follow the solver's convention (eV unless atomic_units).
+    unit = energy_unit_label("Ha" if solver_kwargs.get("atomic_units") else "eV")
 
     pieces = [(list(range(len(atoms))), int(charge))] + list(zip(frags, frag_charges))
     energies: list[float] = []
@@ -187,6 +194,7 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
                 solver_kwargs.get("pseudopotentials", False),
                 solver_kwargs.get("spin", False),
                 solver_kwargs.get("kinetic"))
+            energy = float(from_hartree(energy, unit))   # RHF works in Hartree
             results.append(None)
         else:
             from .calculator import Carcara
@@ -194,7 +202,7 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
                            charge=q, verbose=verbose, **solver_kwargs)
             sub.calc = calc
             sub.get_potential_energy()
-            energy = float(calc.result.optimal_energy)
+            energy = float(calc.result.optimal_energy)   # already in `unit`
             results.append(calc.result)
         energies.append(energy)
 
@@ -203,4 +211,4 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
         energy=float(e_complex - sum(e_frags)), complex_energy=e_complex,
         fragment_energies=e_frags, fragments=frags, charges=frag_charges,
         method=method_key, grid=shared, results=results[1:],
-        complex_result=results[0])
+        complex_result=results[0], energy_unit=unit)

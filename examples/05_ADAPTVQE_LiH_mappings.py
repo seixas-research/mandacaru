@@ -36,7 +36,7 @@ import numpy as np
 from ase import Atoms
 
 from carcara.algorithms import Carcara
-from carcara.units import from_hartree
+from carcara.units import HARTREE_TO_EV, from_hartree
 
 # LiH centered in the cell so the auto-generated grid covers both orbitals.
 atoms = Atoms("LiH",
@@ -58,21 +58,23 @@ for mapping in ("jordan_wigner", "parity", "bravyi_kitaev"):
                   verbose=False)                    # keep the loop output compact
 
     energy_ev = atoms.get_total_energy()            # eV (ASE convention)
-    result = atoms.calc.result
-    energy_ha = result.optimal_energy
+    result = atoms.calc.result                      # result.optimal_energy is eV
 
-    # FCI reference: lowest eigenvalue of *this* mapping's qubit Hamiltonian.
+    # FCI reference: lowest eigenvalue of *this* mapping's qubit Hamiltonian
+    # (internal, Hartree -- converted once for the comparison).
     h_matrix = atoms.calc.hamiltonian.to_matrix()
-    exact_ha = float(np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min())
-    assert abs(energy_ha - exact_ha) < 1e-4, f"{mapping}: ADAPT missed FCI"
+    exact_ev = float(from_hartree(
+        np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min(), "eV"))
+    assert abs(energy_ev - exact_ev) < 1e-4 * HARTREE_TO_EV, \
+        f"{mapping}: ADAPT missed FCI"
 
-    energies[mapping] = energy_ha
+    energies[mapping] = energy_ev
     print(f"{mapping:16s}  {atoms.calc.n_qubits} qubits  "
-          f"E = {energy_ev:.6f} eV ({energy_ha:.8f} Ha)  "
+          f"E = {energy_ev:.6f} eV  "
           f"{result.num_operators} ops, {result.metrics.cnot_count} CNOTs")
 
 # All three mappings describe the same physics -> the same ground-state energy.
-spread = max(energies.values()) - min(energies.values())
-assert spread < 1e-4, "mappings disagree on the ground-state energy"
-print(f"\nmapping spread = {from_hartree(spread, 'eV'):.2e} eV "
+spread = max(energies.values()) - min(energies.values())          # eV
+assert spread < 1e-4 * HARTREE_TO_EV, "mappings disagree on the ground-state energy"
+print(f"\nmapping spread = {spread:.2e} eV "
       f"(all mappings agree on the FCI ground state)")

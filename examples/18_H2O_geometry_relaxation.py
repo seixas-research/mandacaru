@@ -55,7 +55,6 @@ from ase.optimize import BFGS
 
 from carcara.algorithms import Carcara
 from carcara.integrals import Grid
-from carcara.units import HARTREE_TO_EV
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -129,7 +128,7 @@ print(RULE)
 
 hellmann_feynman, pulay = atoms.calc.get_force_breakdown()
 result = atoms.calc.force_result
-print(f"{'':>18}{'dE/dR_z atom 0':>18}{'dE/dR_z atom 1':>18}   (Ha/Bohr)")
+print(f"{'':>18}{'dE/dR_z atom 0':>18}{'dE/dR_z atom 1':>18}   (eV/Angstrom)")
 print(f"{'Hellmann-Feynman':>18}{hellmann_feynman[0, 2]:>18.6f}"
       f"{hellmann_feynman[1, 2]:>18.6f}")
 print(f"{'Pulay':>18}{pulay[0, 2]:>18.6f}{pulay[1, 2]:>18.6f}")
@@ -206,8 +205,8 @@ for symbol, force in zip(water.get_chemical_symbols(), water_forces):
     print(f"  {symbol:>2}  {force[0]:>12.3f}{force[1]:>12.3f}{force[2]:>12.3f}")
 
 hf_water, pulay_water = water.calc.get_force_breakdown()
-print(f"\n|Hellmann-Feynman|max = {np.abs(hf_water).max():.3f} Ha/Bohr, "
-      f"|Pulay|max = {np.abs(pulay_water).max():.3f} Ha/Bohr")
+print(f"\n|Hellmann-Feynman|max = {np.abs(hf_water).max():.3f} eV/Angstrom, "
+      f"|Pulay|max = {np.abs(pulay_water).max():.3f} eV/Angstrom")
 
 oxygen_force = float(np.linalg.norm(water_forces[0]))
 print(f"\nThe force on oxygen is {oxygen_force:.0f} eV/Angstrom.  That is not a "

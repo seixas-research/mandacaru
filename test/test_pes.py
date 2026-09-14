@@ -23,6 +23,7 @@ pes_utils = pytest.importorskip("pes_utils")
 from pes_utils import (GridSpec, atom_energy, atomic_reference,  # noqa: E402
                        commensurate_distances, cusp_softening,
                        molecule_positions, rhf_total_energy)
+from carcara.units import HARTREE_TO_EV
 from carcara.basis import BasisSet  # noqa: E402
 from carcara.integrals import Grid  # noqa: E402
 
@@ -67,22 +68,22 @@ def sto3g():
 class TestEnergies:
     def test_h2_rhf_energy_is_bound(self, grid, sto3g):
         pos = molecule_positions(0.74)
-        e = rhf_total_energy(["H", "H"], pos, sto3g, grid)
-        # H2 near equilibrium is well below two isolated H atoms (2 * -0.5).
-        assert -1.3 < e < -1.0
+        e = rhf_total_energy(["H", "H"], pos, sto3g, grid)          # eV
+        # H2 near equilibrium is well below two isolated H atoms (2 * -13.6 eV).
+        assert -1.3 * HARTREE_TO_EV < e < -1.0 * HARTREE_TO_EV
 
     def test_isolated_hydrogen_atom(self, grid, sto3g):
-        e = atom_energy("H", sto3g, grid, position=[0.03, 0.02, -0.37])
-        assert e == pytest.approx(-0.5, abs=0.06)
+        e = atom_energy("H", sto3g, grid, position=[0.03, 0.02, -0.37])   # eV
+        assert e == pytest.approx(-0.5 * HARTREE_TO_EV, abs=0.06 * HARTREE_TO_EV)
 
     def test_h2_binds_against_the_atomic_reference(self, grid, sto3g):
         """The contract of the dissociation examples: E(molecule) < E(atoms)."""
         pos = molecule_positions(0.74)
         e_mol = rhf_total_energy(["H", "H"], pos, sto3g, grid)
         e_atoms = atomic_reference(["H", "H"], sto3g, grid, pos)
-        binding = e_mol - e_atoms
-        # Bound by a chemically sensible amount (experimental D_e ~ -0.17 Ha).
-        assert -0.35 < binding < -0.05
+        binding = e_mol - e_atoms                                    # eV
+        # Bound by a chemically sensible amount (experimental D_e ~ -4.75 eV).
+        assert -0.35 * HARTREE_TO_EV < binding < -0.05 * HARTREE_TO_EV
 
     def test_atomic_reference_is_the_sum_of_atoms(self, grid, sto3g):
         pos = molecule_positions(1.0)

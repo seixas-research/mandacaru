@@ -67,11 +67,11 @@ A robust second-quantized algebra layer implements:
 `backend_provider` selects which quantum SDK builds — and, with `execute_circuits=True`, runs — the ansatz circuits. Each generator is an anti-Hermitian `PauliSum` whose terms commute, so `exp(θA)` factorizes **exactly** into Pauli rotations (no Trotter error). One shared gate stream (`X`, `H`, `S`, `S†`, `CNOT`, `Rz`) is translated per SDK, so all three reproduce the internal NumPy state vector **to machine precision**:
 
 ```text
-provider            E (Ha)   err vs FCI   ops  cnots  depth
-(matrix)       -6.88824276     1.34e-07     8    208    273
-qiskit         -6.88824283     6.27e-08     8    208    273
-braket         -6.88824279     1.09e-07     8    208    359
-cirq           -6.88824281     8.17e-08     8    208    358
+provider            E (eV)   err vs FCI   ops  cnots  depth
+(matrix)       -187.438634     3.65e-06     8    208    273
+qiskit         -187.438636     1.71e-06     8    208    273
+braket         -187.438635     2.97e-06     8    208    359
+cirq           -187.438636     2.22e-06     8    208    358
 ```
 
 ### 6. Real Quantum Hardware: IBM Quantum and Amazon Braket
@@ -110,6 +110,9 @@ atoms.calc = Carcara(method="vqe", basis="FAO", optimizer="COBYLA", h=0.20)
 # Asking ASE for the energy executes the entire quantum simulation pipeline!
 energy_ev = atoms.get_total_energy()
 ```
+
+### Units: everything you see is eV and Å
+Every energy Carcará **returns or prints** — `result.optimal_energy`, `reference_energy`, the energy histories, `EnergyLevels`, the subspace results, `InteractionEnergy`, `ForceResult` (eV/Å), band structures, hardware measurements (`measured_energy` / `measure_energies`), the verbose traces and the `carcara` command line — is in **eV**, and every length in **Ångström**. Result objects record their unit (`result.energy_unit`) and offer `in_units("Ha")` for the atomic-unit view. Hartree and Bohr live only inside the internal layers (the integral engine, the qubit Hamiltonian's Pauli coefficients and its cache files, the basis / pseudopotential records, the SCF and gradient mathematics). `atomic_units=True` on any driver is the single opt-in that switches its outputs to Hartree / Bohr.
 
 ### 9. Dry Run and the Command Line
 A **dry run** reports the qubit budget of a calculation — one qubit per active spin-orbital, after the frozen core or plane-wave cutoff is accounted for — without computing an integral, mapping a Hamiltonian or executing a circuit, and compares it with the capacity of the target device:
@@ -266,7 +269,8 @@ atoms.calc = Carcara(method="vqe", basis="FAO", mapping="jordan_wigner",
 energy_ev = atoms.get_total_energy()
 result = atoms.calc.result
 
-print(f"VQE Energy: {result.optimal_energy:.6f} Ha ({energy_ev:.6f} eV)")
+print(f"VQE Energy: {result.optimal_energy:.6f} eV")   # same number as energy_ev
+print(f"            {result.in_units('Ha'):.6f} Ha")     # the opposite direction
 ```
 
 ### Example 3: Running ADAPT-VQE
@@ -297,7 +301,7 @@ atoms.get_total_energy()
 result = atoms.calc.result
 
 print(f"ADAPT-VQE Converged: {result.converged}")
-print(f"Optimal Energy: {result.optimal_energy:.8f} Ha")
+print(f"Optimal Energy: {result.optimal_energy:.6f} eV")
 print(f"CNOT Count: {result.metrics.cnot_count}")
 ```
 
@@ -315,13 +319,13 @@ atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
 atoms.calc = Carcara(method="vqe", basis="FAO", h=0.20)
 atoms.get_potential_energy()                     # configures the solver
 levels = atoms.calc.energy_levels(num_states=2, restarts=4)
-print("levels (eV):", levels.in_units("eV"))
+print("levels (eV):", levels.energies)          # eV, like every result
 
 # (b) SSVQE: ground + excited states in a single optimization.
 atoms.calc = Carcara(method="subspace-vqe", basis="FAO", h=0.20,
                                num_states=2)
 atoms.get_potential_energy()
-print("levels (eV):", atoms.calc.result.in_units("eV"))
+print("levels (eV):", atoms.calc.result.energies)
 ```
 
 ### Example 6: Cache the Hamiltonian, then sweep
@@ -344,7 +348,7 @@ for pool in ("fermionic", "qubit", "qeb", "ceo"):
     result = Carcara(method="adapt-vqe", pool=pool,
                                load_hamiltonian="lih.parquet",
                                verbose=False).run()
-    print(f"{pool:<10} {result.optimal_energy:.8f} Ha  "
+    print(f"{pool:<10} {result.optimal_energy:.6f} eV  "
           f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
 ```
 

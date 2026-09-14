@@ -44,6 +44,7 @@ import time
 import numpy as np
 from ase import Atoms
 
+from carcara.units import HARTREE_TO_EV
 from carcara.algorithms import Carcara
 from carcara.core import detect_format, load_hamiltonian
 
@@ -109,16 +110,16 @@ for fmt in ("parquet", "json"):
     # irrelevant but can nudge the classical optimizer onto a marginally
     # different path, so agreement is checked well inside chemical accuracy
     # rather than bit-for-bit.
-    assert abs(reloaded.optimal_energy - built) < 1e-6
+    assert abs(reloaded.optimal_energy - built) < 1e-6 * HARTREE_TO_EV   # eV
 
     print(f"\n[{fmt}]  {os.path.basename(path)}")
     print(f"    detected format        : {detect_format(path)}")
     print(f"    Pauli terms            : {len(record.hamiltonian.terms)}")
     print(f"    file size              : {size_kb:.1f} KiB")
     print(f"    build (integrals+map)  : {build_seconds:.2f} s  "
-          f"-> E = {built:.8f} Ha")
+          f"-> E = {built:.6f} eV")
     print(f"    reload + rerun         : {load_seconds:.2f} s  "
-          f"-> E = {reloaded.optimal_energy:.8f} Ha")
+          f"-> E = {reloaded.optimal_energy:.6f} eV")
     print(f"    metadata               : {record.metadata}")
 
 # --------------------------------------------------------------------------- #

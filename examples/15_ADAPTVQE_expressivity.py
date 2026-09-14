@@ -58,6 +58,7 @@ import os
 import numpy as np
 from ase import Atoms
 
+from carcara.units import HARTREE_TO_EV, from_hartree
 from carcara.algorithms import Carcara
 from carcara.algorithms.expressivity import (active_space_dimension,
                                              calculate_kl_divergence,
@@ -98,13 +99,16 @@ num_particles = atoms.calc.num_particles
 dimension = active_space_dimension(n_qubits, num_particles)
 
 matrix = atoms.calc.hamiltonian.to_matrix()
-exact = float(np.linalg.eigvalsh(0.5 * (matrix + matrix.conj().T)).min())
+# The qubit Hamiltonian is internal (Hartree): convert its FCI energy once.
+exact = from_hartree(
+    float(np.linalg.eigvalsh(0.5 * (matrix + matrix.conj().T)).min()), "eV")
+CHEMICAL_ACCURACY = 1.6e-3 * HARTREE_TO_EV        # 0.043 eV
 
 print(f"LiH: {n_qubits // 2} spatial orbitals ({n_qubits} qubits), "
       f"num_particles={num_particles}, pool={POOL!r}")
 print(f"Haar reference dimension: d = {dimension} "
       f"(number-conserving sector, not 2^{n_qubits} = {2 ** n_qubits})")
-print(f"exact FCI ground state  : {exact:.8f} Ha\n")
+print(f"exact FCI ground state  : {exact:.6f} eV\n")
 
 # --------------------------------------------------------------------------- #
 # 2. Grow the ansatz, sampling expressibility after every operator.
@@ -128,7 +132,7 @@ def record(info):
     history.append({"step": step,
                     "num_parameters": int(info["num_operators"]),
                     "expressibility": kl,
-                    "energy": float(info["energy"]),
+                    "energy": float(info["energy"]),        # eV
                     "operator": info["operator_label"]})
     if step in SNAPSHOT_STEPS:
         snapshots[step] = fidelities
@@ -140,12 +144,12 @@ calc = Carcara(method="adapt-vqe", pool=POOL,
                          max_iterations=MAX_ITERATIONS, gradient_tolerance=1e-6)
 result = calc.run(callback=record)
 
-print(f"{'step':>5}  {'#params':>8}  {'E (Ha)':>15}  {'E - FCI':>11}  "
+print(f"{'step':>5}  {'#params':>8}  {'E (eV)':>15}  {'E - FCI':>11}  "
       f"{'expressibility':>15}  operator")
 print("-" * 82)
 for row in history:
     print(f"{row['step']:>5}  {row['num_parameters']:>8}  "
-          f"{row['energy']:>15.8f}  {row['energy'] - exact:>+11.2e}  "
+          f"{row['energy']:>15.6f}  {row['energy'] - exact:>+11.2e}  "
           f"{row['expressibility']:>15.4f}  {row['operator']}")
 
 scores = [row["expressibility"] for row in history]
@@ -190,12 +194,12 @@ ax_expr.grid(True, color="0.92", lw=0.8, zorder=0)
 ax_energy.semilogy(steps, np.maximum(np.abs(energies - exact), 1e-12),
                    marker="o", markersize=6, lw=2.0, color="#0072B2",
                    markeredgecolor="white", markeredgewidth=0.6, zorder=3)
-ax_energy.axhline(1.6e-3, color="0.35", ls="--", lw=1.2, zorder=2)
-ax_energy.text(0.99, 1.6e-3 * 1.4, "chemical accuracy",
+ax_energy.axhline(CHEMICAL_ACCURACY, color="0.35", ls="--", lw=1.2, zorder=2)
+ax_energy.text(0.99, CHEMICAL_ACCURACY * 1.4, "chemical accuracy",
                transform=ax_energy.get_yaxis_transform(), ha="right",
                va="bottom", fontsize=9, color="0.35")
 ax_energy.set_xlabel("number of ADAPT operators")
-ax_energy.set_ylabel(r"$|E - E_{FCI}|$  (Ha)")
+ax_energy.set_ylabel(r"$|E - E_{FCI}|$  (eV)")
 ax_energy.set_title("(b) ... and so does the energy")
 ax_energy.grid(True, which="both", color="0.92", lw=0.8, zorder=0)
 

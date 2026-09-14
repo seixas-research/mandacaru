@@ -18,6 +18,7 @@ end-to-end through ADAPT-VQE.
 from __future__ import annotations
 
 import numpy as np
+from carcara.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
@@ -199,7 +200,7 @@ class TestDriverAcrossProviders:
                             max_iterations=4, backend_provider=name,
                             execute_circuits=True).run()
         assert executed.optimal_energy == pytest.approx(
-            reference.optimal_energy, abs=1e-8)
+            reference.optimal_energy, abs=1e-8 * HARTREE_TO_EV)
         # The selected *set* must match; the order of symmetry-degenerate
         # operators can be decided by optimizer noise below 1e-9.
         assert set(executed.operators) == set(reference.operators)
@@ -212,7 +213,7 @@ class TestDriverAcrossProviders:
         # The circuit path is the Trotter product form, exact for H2's single
         # (double) excitation but only close for the general cluster operator.
         assert executed.optimal_energy == pytest.approx(
-            reference.optimal_energy, abs=1e-6)
+            reference.optimal_energy, abs=1e-6 * HARTREE_TO_EV)
 
     @pytest.mark.parametrize("name", PROVIDERS)
     def test_verbose_header_reports_the_provider(self, name, h2_cache, capsys):

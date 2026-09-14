@@ -30,6 +30,7 @@ import numpy as np
 from ase import Atoms
 
 from carcara.algorithms import Carcara
+from carcara.units import from_hartree
 
 
 atoms = Atoms("H2",
@@ -39,16 +40,15 @@ atoms = Atoms("H2",
 
 # Exact reference spectrum (built after the first calculation, below).
 def report(name, result, exact):
-    levels = result.in_units("eV")
-    excit = result.excitation_energies * 27.211386
+    """``result.energies`` and ``exact`` are both in eV."""
     print(f"\n{name}: {result.num_states} states in one optimization")
-    for i, (e_ha, e_ev) in enumerate(zip(result.energies, levels)):
+    for i, e_ev in enumerate(result.energies):
         tag = "ground " if i == 0 else f"excited{i}"
         bound = exact[i]
         print(f"  E[{i}] ({tag}) = {e_ev:10.4f} eV   "
-              f"(exact {bound * 27.211386:10.4f} eV, "
-              f"E_i >= lambda_i: {e_ha >= bound - 1e-6})")
-    print(f"  first excitation energy = {excit[1]:.3f} eV")
+              f"(exact {bound:10.4f} eV, "
+              f"E_i >= lambda_i: {e_ev >= bound - from_hartree(1e-6, 'eV')})")
+    print(f"  first excitation energy = {result.excitation_energies[1]:.3f} eV")
 
 
 # --- Subspace-search VQE (fixed UCCSD ansatz) --------------------------------
@@ -58,9 +58,10 @@ atoms.calc = Carcara(method="subspace-vqe", basis="FAO", h=0.20,
 atoms.get_potential_energy()
 ssvqe = atoms.calc.result
 
-# Exact eigenvalues of the qubit Hamiltonian for comparison.
+# Exact eigenvalues of the qubit Hamiltonian for comparison.  The qubit
+# Hamiltonian is internal (Hartree); every result energy is eV, so convert once.
 h = atoms.calc.hamiltonian.to_matrix()
-exact = np.sort(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).real)
+exact = from_hartree(np.sort(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).real), "eV")
 
 report("Subspace-VQE", ssvqe, exact)
 
@@ -75,7 +76,7 @@ report("Subspace-ADAPT-VQE", ss_adapt, exact)
 print(f"  ansatz grew {ss_adapt.num_operators} operator(s)")
 
 # The ground state is exact; every level is a valid variational upper bound.
-assert ssvqe.energies[0] == exact[0] or abs(ssvqe.energies[0] - exact[0]) < 1e-4
+assert abs(ssvqe.energies[0] - exact[0]) < from_hartree(1e-4, "eV")
 for i, e in enumerate(ssvqe.energies):
-    assert e >= exact[i] - 1e-6, "Hylleraas-Undheim bound violated"
+    assert e >= exact[i] - from_hartree(1e-6, "eV"), "Hylleraas-Undheim bound violated"
 print("\nground state exact; all levels satisfy the Hylleraas-Undheim bounds.")

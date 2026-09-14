@@ -88,16 +88,17 @@ HA_BOHR_TO_EV_ANGSTROM = HARTREE_TO_EV / BOHR_TO_ANGSTROM
 class ForceResult:
     """Nuclear gradient of a converged variational calculation.
 
-    All arrays are ``(n_atoms, 3)``.  :attr:`forces` is what ASE consumes
-    (**eV/Angstrom**, already negated: it is :math:`-dE/d\\mathbf R`); the
-    component breakdown is in Hartree/Bohr *gradient* convention
-    (:math:`+dE/d\\mathbf R`) so the physics can be inspected term by term.
+    All arrays are ``(n_atoms, 3)`` in **eV/Angstrom**.  :attr:`forces` is what
+    ASE consumes (already negated: it is :math:`-dE/d\\mathbf R`); the component
+    breakdown keeps the *gradient* convention (:math:`+dE/d\\mathbf R`) so the
+    physics can be inspected term by term.  (The gradient mathematics itself
+    runs in Hartree/Bohr; the conversion happens once, here.)
     """
 
-    forces: np.ndarray                                  # eV/Angstrom
-    hellmann_feynman: np.ndarray                        # dE/dR, Ha/Bohr
-    pulay: np.ndarray                                   # dE/dR, Ha/Bohr
-    gradient: np.ndarray                                # total dE/dR, Ha/Bohr
+    forces: np.ndarray                                  # -dE/dR, eV/Angstrom
+    hellmann_feynman: np.ndarray                        # dE/dR, eV/Angstrom
+    pulay: np.ndarray                                   # dE/dR, eV/Angstrom
+    gradient: np.ndarray                                # total dE/dR, eV/Angstrom
     n_electrons: float = 0.0                            # tr(gamma), a sanity check
     details: dict = field(default_factory=dict)
 
@@ -649,8 +650,11 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
                 two = _two_body_pulay(psi_grid, dpsi, phi_pairs, grid, de_dg)
                 pulay[atom, k] = one_h + one_s + two
 
+    # The single Hartree/Bohr -> eV/Angstrom boundary of the force path.
+    hf = hf * HA_BOHR_TO_EV_ANGSTROM
+    pulay = pulay * HA_BOHR_TO_EV_ANGSTROM
     gradient = hf + pulay
-    forces = -gradient * HA_BOHR_TO_EV_ANGSTROM
+    forces = -gradient
     return ForceResult(
         forces=forces, hellmann_feynman=hf, pulay=pulay, gradient=gradient,
         n_electrons=float(np.real(np.trace(gamma))),

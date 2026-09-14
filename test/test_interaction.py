@@ -9,6 +9,7 @@
 """Per-element basis mappings and interaction energies on a shared grid."""
 
 import numpy as np
+from carcara.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 from ase.build import molecule
@@ -116,7 +117,10 @@ class TestInteractionEnergy:
         result = interaction_energy(atoms, [[0, 1], [2, 3]], method="rhf",
                                     h=0.35)
         assert isinstance(result, InteractionEnergy)
-        assert abs(result.in_units("eV")) < 0.02
+        assert result.energy_unit == "eV"
+        assert abs(result.energy) < 0.02                  # eV
+        assert result.in_units("eV") == pytest.approx(result.energy)
+        assert result.in_units("Ha") == pytest.approx(result.energy / HARTREE_TO_EV)
         assert result.complex_energy == pytest.approx(
             result.energy + sum(result.fragment_energies))
         assert result.method == "rhf" and result.charges == [0, 0]
@@ -135,8 +139,10 @@ class TestInteractionEnergy:
         _H, _p, _n, _prof, ctx = build_basis_hamiltonian(frag, "FAO", None,
                                                           0.35, 0, None)
         own = (ctx["integrals"].hartree_fock(2).electronic_energy
-               + ctx["integrals"].nuclear_repulsion)
+               + ctx["integrals"].nuclear_repulsion) * HARTREE_TO_EV
         assert own != pytest.approx(shared.fragment_energies[0], abs=1e-9)
+        # Same ballpark (H2 ~ -30 eV) -- it is the grid sampling that differs.
+        assert abs(own - shared.fragment_energies[0]) < 1.0
 
     def test_charged_fragment_with_adapt_vqe(self):
         # H2 + H+ : two electrons in three orbitals, 6 qubits.

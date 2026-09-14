@@ -21,6 +21,7 @@ import sys
 import textwrap
 
 import numpy as np
+from carcara.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
@@ -360,7 +361,7 @@ class TestDriverFileFormats:
         assert detect_format(path) == fmt
         loaded = ADAPTVQE(pool="fermionic", load_hamiltonian=path,
                           verbose=False, max_iterations=4).run()
-        assert loaded.optimal_energy == pytest.approx(built, abs=1e-9)
+        assert loaded.optimal_energy == pytest.approx(built, abs=1e-9 * HARTREE_TO_EV)
 
     def test_default_format_is_parquet(self):
         assert ADAPTVQE().hamiltonian_format == DEFAULT_FORMAT == "parquet"
@@ -486,8 +487,8 @@ class TestDriverLoadsHamiltonian:
         path, built_energy = h2_cache
         loaded = ADAPTVQE(pool="fermionic", load_hamiltonian=path, verbose=False,
                           max_iterations=4)
-        assert loaded.run().optimal_energy == pytest.approx(built_energy,
-                                                            abs=1e-9)
+        assert loaded.run().optimal_energy == pytest.approx(
+            built_energy, abs=1e-9 * HARTREE_TO_EV)
 
     def test_loading_needs_no_geometry_and_configures_the_pool(self, h2_cache):
         path, _ = h2_cache
@@ -536,7 +537,8 @@ class TestDriverLoadsHamiltonian:
         assert vqe.ansatz.n_qubits == 4
         assert vqe.ansatz.num_particles == (1, 1)
         # UCCSD reaches the same ground state as the (converged) ADAPT run.
-        assert vqe.run().optimal_energy == pytest.approx(built_energy, abs=1e-6)
+        assert vqe.run().optimal_energy == pytest.approx(
+            built_energy, abs=1e-6 * HARTREE_TO_EV)
 
     def test_save_then_load_same_path_is_not_reserialized(self, tmp_path,
                                                           h2_cache):

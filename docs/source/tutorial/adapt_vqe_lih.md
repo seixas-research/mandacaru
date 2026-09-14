@@ -40,7 +40,7 @@ energy_ev = atoms.get_total_energy()
 result = atoms.calc.result
 
 print(f"ADAPT-VQE Converged: {result.converged}")
-print(f"Optimal Energy: {result.optimal_energy:.8f} Ha")
+print(f"Optimal Energy: {result.optimal_energy:.6f} eV")
 print(f"Number of Operators Growth: {result.num_operators}")
 ```
 
@@ -86,7 +86,7 @@ for name in pools:
     results[name] = atoms.calc.result
 
 # Print comparison
-print(f"{'Pool':12s} | {'Energy (Ha)':>12s} | {'CNOT Count':>10s} | {'Depth':>8s}")
+print(f"{'Pool':12s} | {'Energy (eV)':>12s} | {'CNOT Count':>10s} | {'Depth':>8s}")
 print("-" * 52)
 for name in pools:
     res = results[name]

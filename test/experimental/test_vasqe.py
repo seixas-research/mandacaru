@@ -30,6 +30,7 @@ from carcara.experimental import (
 from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 from carcara.optimizers import Optimizer
+from carcara.units import HARTREE_TO_EV
 
 
 # --------------------------------------------------------------------------- #
@@ -48,8 +49,16 @@ def h2_hamiltonian():
 
 @pytest.fixture(scope="module")
 def h2_fci(h2_hamiltonian):
+    """FCI ground state in eV (the Hamiltonian is Hartree; results are eV)."""
     m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
-    return float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
+    return float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min()) * HARTREE_TO_EV
+
+
+#: Result-side tolerances, converted from the historical Hartree values.
+TOL_1E4 = 1e-4 * HARTREE_TO_EV
+TOL_1E5 = 1e-5 * HARTREE_TO_EV
+TOL_1E6 = 1e-6 * HARTREE_TO_EV
+TOL_1E8 = 1e-8 * HARTREE_TO_EV
 
 
 def _vasqe(h2_hamiltonian, **kwargs):
@@ -133,7 +142,8 @@ class TestVASQE:
         # tau -> 0 always picks the largest-gradient operator: ADAPT-VQE / FCI.
         r = _vasqe(h2_hamiltonian, temperature=1e-4).run()
         assert isinstance(r, VASQEResult)
-        assert r.optimal_energy == pytest.approx(h2_fci, abs=1e-6)
+        assert r.energy_unit == "eV"
+        assert r.optimal_energy == pytest.approx(h2_fci, abs=TOL_1E6)
 
     def test_result_records_schedule(self, h2_hamiltonian):
         r = _vasqe(h2_hamiltonian, temperature=1.5, final_temperature=0.02,
@@ -167,7 +177,7 @@ class TestVASQE:
     def test_annealing_reaches_fci(self, h2_hamiltonian, h2_fci):
         r = _vasqe(h2_hamiltonian, temperature=2.0, final_temperature=1e-3,
                    schedule="exponential", max_iterations=10, seed=1).run()
-        assert r.optimal_energy == pytest.approx(h2_fci, abs=1e-6)
+        assert r.optimal_energy == pytest.approx(h2_fci, abs=TOL_1E6)
 
     def test_invalid_schedule_rejected(self, h2_hamiltonian):
         with pytest.raises(ValueError):
@@ -196,10 +206,11 @@ class TestVASQEExcitedStates:
     def test_energy_levels_deflation(self, h2_hamiltonian, h2_fci):
         levels = _vasqe(h2_hamiltonian, temperature=1e-3).energy_levels(2)
         m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
-        spectrum = np.sort(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).real)
-        assert levels.ground_state_energy == pytest.approx(h2_fci, abs=1e-6)
+        spectrum = (np.sort(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).real)
+                    * HARTREE_TO_EV)
+        assert levels.ground_state_energy == pytest.approx(h2_fci, abs=TOL_1E6)
         for e in levels.energies:                        # true eigenvalues
-            assert float(np.min(np.abs(spectrum - e))) < 1e-5
+            assert float(np.min(np.abs(spectrum - e))) < TOL_1E5
 
     def test_subspace_vasqe(self, h2_hamiltonian, h2_fci):
         sv = SubspaceVASQE(h2_hamiltonian, "fermionic", num_states=2,
@@ -210,7 +221,7 @@ class TestVASQEExcitedStates:
                            max_iterations=20, seed=1)
         result = sv.run()
         assert result.num_states == 2
-        assert result.energies[0] == pytest.approx(h2_fci, abs=1e-4)
+        assert result.energies[0] == pytest.approx(h2_fci, abs=TOL_1E4)
         assert result.energies[1] >= result.energies[0] - 1e-9
 
     def test_subspace_vasqe_uses_stochastic_selection(self, h2_hamiltonian):
@@ -324,7 +335,7 @@ class TestVASQEQuenching:
         # selected (and the energy) must match, not the tie-broken order.
         assert set(vasqe.operators) == set(adapt.operators)
         assert vasqe.optimal_energy == pytest.approx(adapt.optimal_energy,
-                                                     abs=1e-8)
+                                                     abs=TOL_1E8)
 
 
 class TestHamiltonianCache:

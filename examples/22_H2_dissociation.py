@@ -41,7 +41,6 @@ from ase import Atoms
 
 from carcara.algorithms import Carcara
 from carcara.basis import BasisSet
-from carcara.units import HARTREE_TO_EV
 
 from pes_utils import (GridSpec, atomic_reference, commensurate_distances,
                        molecule_positions)
@@ -78,15 +77,14 @@ def h2(distance: float) -> Atoms:
 grid = GRID_SPEC.build()
 e_atoms = atomic_reference(["H", "H"], BasisSet.build("FAO"), grid,
                            molecule_positions(float(DISTANCES[0])))
-print(f"reference: E(2 x H, UHF) = {e_atoms:+.6f} Ha "
-      f"({e_atoms * HARTREE_TO_EV:+.4f} eV)")
+print(f"reference: E(2 x H, UHF) = {e_atoms:+.4f} eV")
 
 # --------------------------------------------------------------------------- #
 # 2. Scan the bond length with each method.
 # --------------------------------------------------------------------------- #
 
 curves: dict[str, np.ndarray] = {}
-print(f"\n{'method':<12}{'d (A)':>8}{'E (Ha)':>14}{'E - E_atoms (eV)':>18}")
+print(f"\n{'method':<12}{'d (A)':>8}{'E (eV)':>14}{'E - E_atoms (eV)':>18}")
 print("-" * 52)
 for method, options in METHOD_OPTIONS.items():
     total = np.empty(len(DISTANCES))
@@ -95,16 +93,16 @@ for method, options in METHOD_OPTIONS.items():
         atoms.calc = Carcara(method=method, grid=grid,
                                        **SOLVER, **options)
         atoms.get_total_energy()
-        total[i] = atoms.calc.result.optimal_energy          # Hartree
-        print(f"{method:<12}{distance:>8.2f}{total[i]:>14.6f}"
-              f"{(total[i] - e_atoms) * HARTREE_TO_EV:>18.4f}")
+        total[i] = atoms.calc.result.optimal_energy          # eV
+        print(f"{method:<12}{distance:>8.2f}{total[i]:>14.4f}"
+              f"{total[i] - e_atoms:>18.4f}")
     curves[method] = total
 
 # --------------------------------------------------------------------------- #
 # 3. Consistency checks against the separated-atom reference.
 # --------------------------------------------------------------------------- #
 
-binding = {m: (curves[m] - e_atoms) * HARTREE_TO_EV for m in curves}
+binding = {m: curves[m] - e_atoms for m in curves}          # eV
 for method, rel in binding.items():
     i_min = int(np.argmin(rel))
     r_eq = float(DISTANCES[i_min])
@@ -121,12 +119,12 @@ for method, rel in binding.items():
 
 with open(CSV_PATH, "w", newline="") as fh:
     writer = csv.writer(fh)
-    writer.writerow(["distance_A", "e_atoms_Ha"]
-                    + [f"{m}_Ha" for m in curves]
+    writer.writerow(["distance_A", "e_atoms_eV"]
+                    + [f"{m}_eV" for m in curves]
                     + [f"{m}_binding_eV" for m in curves])
     for i, d in enumerate(DISTANCES):
-        writer.writerow([f"{d:.4f}", f"{e_atoms:.8f}"]
-                        + [f"{curves[m][i]:.8f}" for m in curves]
+        writer.writerow([f"{d:.4f}", f"{e_atoms:.6f}"]
+                        + [f"{curves[m][i]:.6f}" for m in curves]
                         + [f"{binding[m][i]:.6f}" for m in curves])
 print(f"wrote {CSV_PATH}")
 

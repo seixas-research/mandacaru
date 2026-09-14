@@ -166,7 +166,8 @@ def shot_noise_estimate(hamiltonian: PauliSum, shots: int) -> float:
     independent terms bounds the error by
     :math:`\bigl(\sum_j |c_j|\bigr)/\sqrt{\text{shots}}` -- the usual
     coefficient-1-norm estimate.  Useful for choosing ``shots`` before paying for
-    QPU time: chemical accuracy (1.6 mHa) on a 1-norm of 10 Ha needs
+    QPU time: chemical accuracy (1.6 mHa = 0.043 eV) on a 1-norm of 10 Ha
+    (272 eV) needs
     :math:`\sim 4\times10^7` shots per group in the worst case, which is why
     hardware VQE needs error mitigation and smarter estimators.
     """

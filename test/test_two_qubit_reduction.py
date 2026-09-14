@@ -15,6 +15,7 @@ generators and the reference determinant alike, so ADAPT-VQE and VQE run on
 """
 
 import numpy as np
+from carcara.units import HARTREE_TO_EV
 import pytest
 
 from carcara.algorithms import ADAPTVQE, VQE, SubspaceVQE
@@ -99,8 +100,11 @@ class TestDrivers:
         assert calc.n_qubits == 2
         assert len(calc.hamiltonian.simplify().terms) == 5
         assert calc.result.metrics.cnot_count is not None   # profiled on 2 qubits
-        assert calc.result.reference_energy == pytest.approx(hf, abs=1e-8)
-        assert calc.result.optimal_energy == pytest.approx(exact, abs=1e-7)
+        # Both sides are eV (1e-8 / 1e-7 Ha scaled by the conversion factor).
+        assert calc.result.reference_energy == pytest.approx(
+            hf, abs=1e-8 * HARTREE_TO_EV)
+        assert calc.result.optimal_energy == pytest.approx(
+            exact, abs=1e-7 * HARTREE_TO_EV)
 
     def test_vqe_reaches_the_untapered_energy(self, reference):
         exact, _hf = reference
@@ -110,7 +114,8 @@ class TestDrivers:
                          verbose=False)
         atoms.get_total_energy()
         assert atoms.calc.n_qubits == 2
-        assert atoms.calc.result.optimal_energy == pytest.approx(exact, abs=1e-6)
+        assert atoms.calc.result.optimal_energy == pytest.approx(
+            exact, abs=1e-6 * HARTREE_TO_EV)
 
     def test_requires_parity(self):
         with pytest.raises(ValueError, match="parity"):
@@ -138,6 +143,7 @@ class TestDrivers:
                               verbose=False, profile=False, max_iterations=4)
         atoms.get_total_energy()
         provider = QiskitProvider()
-        assert atoms.calc.measured_energy(provider) == pytest.approx(exact, abs=1e-8)
+        assert atoms.calc.measured_energy(provider) == pytest.approx(
+            exact, abs=1e-8 * HARTREE_TO_EV)
         qc = provider.build(*atoms.calc.ansatz_problem()[:4])
         assert qc.num_qubits == 2

@@ -51,7 +51,7 @@ from ase import Atoms
 
 from carcara.algorithms import Carcara
 from carcara.backends.providers import BACKEND_PROVIDERS, provider_available
-from carcara.units import from_hartree
+from carcara.units import HARTREE_TO_EV, from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -86,21 +86,23 @@ n_qubits = atoms.calc.n_qubits
 
 # Exact reference: lowest eigenvalue of the qubit Hamiltonian (FCI).
 h_matrix = atoms.calc.hamiltonian.to_matrix()
-exact_ha = float(np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min())
+# The qubit Hamiltonian is internal (Hartree): convert its FCI energy once.
+exact_ev = float(from_hartree(
+    np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min(), "eV"))
+CHEMICAL_ACCURACY = 1.6e-3 * HARTREE_TO_EV        # 0.043 eV
 
 print(f"LiH: {n_qubits // 2} spatial orbitals ({n_qubits} qubits), "
       f"num_particles={atoms.calc.num_particles}")
 print(f"Hamiltonian built in {build_seconds:.2f} s and cached to "
       f"{HAMILTONIAN_FILE!r}")
-print(f"FCI (exact diagonalization) = {exact_ha:.8f} Ha "
-      f"({from_hartree(exact_ha, 'eV'):.6f} eV)")
+print(f"FCI (exact diagonalization) = {exact_ev:.6f} eV")
 print()
 
 # --------------------------------------------------------------------------- #
 # 2. Run the same ADAPT-VQE on each provider, from the cached Hamiltonian.
 # --------------------------------------------------------------------------- #
 
-header = (f"{'provider':<10}{'E (Ha)':>16}{'err vs FCI':>13}{'ops':>6}"
+header = (f"{'provider':<10}{'E (eV)':>16}{'err vs FCI':>13}{'ops':>6}"
           f"{'cnots':>7}{'depth':>7}{'time':>9}")
 print(header)
 print("-" * len(header))
@@ -111,8 +113,8 @@ matrix_run = Carcara(method="adapt-vqe", pool=POOL,
                                load_hamiltonian=HAMILTONIAN_FILE,
                                max_iterations=MAX_ITERATIONS,
                                verbose=False).run()
-print(f"{'(matrix)':<10}{matrix_run.optimal_energy:>16.8f}"
-      f"{matrix_run.optimal_energy - exact_ha:>13.2e}"
+print(f"{'(matrix)':<10}{matrix_run.optimal_energy:>16.6f}"
+      f"{matrix_run.optimal_energy - exact_ev:>13.2e}"
       f"{matrix_run.num_operators:>6}{matrix_run.metrics.cnot_count:>7}"
       f"{matrix_run.metrics.depth:>7}{time.perf_counter() - t0:>8.1f}s")
 
@@ -135,8 +137,8 @@ for provider in BACKEND_PROVIDERS:
     elapsed = time.perf_counter() - t0
     results[provider] = result
 
-    print(f"{provider:<10}{result.optimal_energy:>16.8f}"
-          f"{result.optimal_energy - exact_ha:>13.2e}"
+    print(f"{provider:<10}{result.optimal_energy:>16.6f}"
+          f"{result.optimal_energy - exact_ev:>13.2e}"
           f"{result.num_operators:>6}{result.metrics.cnot_count:>7}"
           f"{result.metrics.depth:>7}{elapsed:>8.1f}s")
 
@@ -147,8 +149,8 @@ for provider in BACKEND_PROVIDERS:
 print()
 for provider, result in results.items():
     # Every backend recovers the FCI ground state of this Hamiltonian ...
-    assert abs(result.optimal_energy - exact_ha) < 1e-4, \
-        f"{provider} missed FCI by {result.optimal_energy - exact_ha:.2e} Ha"
+    assert abs(result.optimal_energy - exact_ev) < 1e-4 * HARTREE_TO_EV, \
+        f"{provider} missed FCI by {result.optimal_energy - exact_ev:.2e} eV"
     # ... grows the same ansatz as the matrix backend.  The *order* of
     # symmetry-degenerate operators can differ: their screening gradients are
     # equal to within the optimizer's own convergence noise, so an arbitrarily
@@ -159,14 +161,15 @@ for provider, result in results.items():
     assert result.num_operators == matrix_run.num_operators, \
         f"{provider} grew a different number of operators"
     # ... and agrees with it far below chemical accuracy.
-    assert abs(result.optimal_energy - matrix_run.optimal_energy) < 1e-6, \
+    assert abs(result.optimal_energy - matrix_run.optimal_energy) \
+        < 1e-6 * HARTREE_TO_EV, \
         f"{provider} disagrees with the matrix backend"
 
 if results:
     spread = (max(r.optimal_energy for r in results.values())
               - min(r.optimal_energy for r in results.values()))
-    print(f"All {len(results)} providers agree: energy spread {spread:.2e} Ha "
-          f"(chemical accuracy is 1.6e-3 Ha)")
+    print(f"All {len(results)} providers agree: energy spread {spread:.2e} eV "
+          f"(chemical accuracy is {CHEMICAL_ACCURACY:.4f} eV)")
     print("Same ansatz on every backend: "
           + " -> ".join(matrix_run.operators[:4])
           + (" -> ..." if matrix_run.num_operators > 4 else ""))

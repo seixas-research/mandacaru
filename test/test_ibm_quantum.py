@@ -28,6 +28,7 @@ from carcara.backends.hardware import (available_devices, device_provider,
                                        normalize_device, require_runnable,
                                        requires_shots)
 from carcara.backends.providers import QiskitProvider, build_provider
+from carcara.units import HARTREE_TO_EV
 
 
 def _h2():
@@ -58,6 +59,7 @@ _H2_RUN = """
     from ase import Atoms
     from carcara.algorithms import ADAPTVQE, VQE
     from carcara.backends.providers import QiskitProvider
+    from carcara.units import HARTREE_TO_EV
     def _h2():
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
         atoms.center(vacuum=3.0)
@@ -146,14 +148,15 @@ class TestEstimatorEnergies:
         exact = h2_run.result.optimal_energy
         assert provider.precision == 0.0
         assert h2_run.measured_energy(provider) == pytest.approx(exact, abs=1e-9)
-        # The Estimator route (energies) gives the same number.
+        # The Estimator route (energies) gives the same number -- in the
+        # Hamiltonian's own Hartree, which the driver converts to eV.
         assert provider.energies([h2_run.ansatz_problem()])[0] == \
-            pytest.approx(exact, abs=1e-9)
+            pytest.approx(exact / HARTREE_TO_EV, abs=1e-9)
 
     def test_sampled_estimator_converges(self, h2_run):
         provider = QiskitProvider(shots=4096)
         energy = h2_run.measured_energy(provider)
-        assert abs(energy - h2_run.result.optimal_energy) < 0.05
+        assert abs(energy - h2_run.result.optimal_energy) < 0.05 * HARTREE_TO_EV
 
     def test_fake_processor_transpiles_and_estimates(self):
         # A fake processor carries its noise model (qiskit-aer), so the
@@ -164,7 +167,7 @@ class TestEstimatorEnergies:
     isa, observable = provider.pub(*calc.ansatz_problem())
     print(provider.backend().name, isa.layout is not None,
           observable.num_qubits == provider.backend().num_qubits,
-          abs(energy - exact) < 0.4)
+          abs(energy - exact) < 0.4 * HARTREE_TO_EV)
 """)
         assert out.split() == ["fake_manila", "True", "True", "True"]
 
@@ -172,7 +175,8 @@ class TestEstimatorEnergies:
         provider = QiskitProvider(shots=4096)
         energies = measure_energies([h2_run, h2_run], provider)
         assert len(energies) == 2
-        assert all(abs(e - h2_run.result.optimal_energy) < 0.05 for e in energies)
+        assert all(abs(e - h2_run.result.optimal_energy) < 0.05 * HARTREE_TO_EV
+                   for e in energies)
         assert provider.last_job is None and len(provider.last_result) == 2
         assert float(provider.last_result[0].data.stds) >= 0.0   # exact sampler reports 0
 
@@ -199,7 +203,7 @@ class TestEstimatorEnergies:
     layout = isa.layout.initial_index_layout(filter_ancillas=True)
     print([layout[4 - 1 - k] for k in range(4)])
     energy = calc.measured_energy(provider)
-    print(abs(energy - exact) < 0.4)
+    print(abs(energy - exact) < 0.4 * HARTREE_TO_EV)
 """)
         assert out.split("\n")[0] == "[3, 4, 1, 2]"
         assert out.split()[-1] == "True"
@@ -278,7 +282,7 @@ class TestDriversEndToEnd:
         atoms.get_total_energy()
         assert isinstance(atoms.calc.circuit_provider(), QiskitProvider)
         assert abs(atoms.calc.result.optimal_energy
-                   - h2_run.result.optimal_energy) < 0.05
+                   - h2_run.result.optimal_energy) < 0.05 * HARTREE_TO_EV
 
     def test_vqe_on_a_fake_ibm_backend(self):
         out = _isolated(_H2_RUN + """
@@ -287,6 +291,6 @@ class TestDriversEndToEnd:
                      device="fake_manila", shots=4096, optimizer="COBYLA")
     atoms.get_total_energy()
     print(atoms.calc.circuit_provider().backend().name,
-          abs(atoms.calc.result.optimal_energy - exact) < 0.4)
+          abs(atoms.calc.result.optimal_energy - exact) < 0.4 * HARTREE_TO_EV)
 """)
         assert out.split() == ["fake_manila", "True"]

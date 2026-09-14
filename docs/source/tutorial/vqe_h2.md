@@ -95,7 +95,7 @@ calc = Carcara(method="vqe", hamiltonian=H_fermion, ansatz=ansatz,
                          optimizer="COBYLA")
 result = calc.run()
 
-print(f"VQE Ground-State Energy: {result.optimal_energy:.6f} Ha")
+print(f"VQE Ground-State Energy: {result.optimal_energy:.6f} eV")
 ```
 
 ---
@@ -120,7 +120,8 @@ atoms.calc = Carcara(method="vqe", basis="FAO", mapping="jordan_wigner",
 energy_ev = atoms.get_total_energy()
 result = atoms.calc.result
 
-print(f"Optimal Energy: {result.optimal_energy:.6f} Ha ({energy_ev:.6f} eV)")
+print(f"Optimal Energy: {result.optimal_energy:.6f} eV")   # == energy_ev
+print(f"                {result.in_units('Ha'):.6f} Ha")   # atomic-unit view
 ```
 
 A verbose run prints the compiled qubit Hamiltonian as Pauli strings, followed by a breakdown of wall times, thread counts, and memory consumption.

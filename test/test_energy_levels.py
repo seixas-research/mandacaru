@@ -18,6 +18,7 @@ from carcara.circuits import UCCSD
 from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 from carcara.optimizers import Optimizer
+from carcara.units import HARTREE_TO_EV
 
 
 # --------------------------------------------------------------------------- #
@@ -36,11 +37,12 @@ def h2_hamiltonian():
 
 @pytest.fixture(scope="module")
 def h2_spectrum(h2_hamiltonian):
+    """Exact spectrum in eV (the Hamiltonian is Hartree; the levels are eV)."""
     m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
-    return np.sort(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).real)
+    return np.sort(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).real) * HARTREE_TO_EV
 
 
-def _is_eigenvalue(energy, spectrum, tol=1e-5):
+def _is_eigenvalue(energy, spectrum, tol=1e-5 * HARTREE_TO_EV):
     return float(np.min(np.abs(spectrum - energy))) < tol
 
 
@@ -57,7 +59,9 @@ class TestVQEEnergyLevels:
     def test_ground_level_matches_exact(self, h2_hamiltonian, h2_spectrum):
         levels = self._vqe(h2_hamiltonian).energy_levels(1)
         assert levels.num_states == 1
-        assert levels.ground_state_energy == pytest.approx(h2_spectrum[0], abs=1e-6)
+        assert levels.energy_unit == "eV"
+        assert levels.ground_state_energy == pytest.approx(
+            h2_spectrum[0], abs=1e-6 * HARTREE_TO_EV)
 
     def test_levels_are_true_eigenvalues(self, h2_hamiltonian, h2_spectrum):
         levels = self._vqe(h2_hamiltonian).energy_levels(2, restarts=4)
@@ -66,16 +70,18 @@ class TestVQEEnergyLevels:
 
     def test_levels_ascending_and_distinct(self, h2_hamiltonian):
         levels = self._vqe(h2_hamiltonian).energy_levels(2, restarts=4)
-        assert np.all(np.diff(levels.energies) > 1e-6)
+        assert np.all(np.diff(levels.energies) > 1e-6 * HARTREE_TO_EV)
 
     def test_excitation_energies(self, h2_hamiltonian):
         levels = self._vqe(h2_hamiltonian).energy_levels(2, restarts=4)
         assert levels.excitation_energies[0] == pytest.approx(0.0, abs=1e-12)
         assert levels.excitation_energies[1] > 0.0
-        # eV view is the Hartree gap times the conversion factor.
-        ev = levels.excitation_energies_in_units("eV")
-        assert ev[1] == pytest.approx(levels.excitation_energies[1] * 27.211386,
+        # The stored gap is eV; the Hartree view divides by the conversion factor.
+        ha = levels.excitation_energies_in_units("Ha")
+        assert ha[1] == pytest.approx(levels.excitation_energies[1] / 27.211386,
                                       rel=1e-4)
+        np.testing.assert_allclose(levels.excitation_energies_in_units("eV"),
+                                   levels.excitation_energies)
 
     def test_states_stored_and_orthogonal(self, h2_hamiltonian):
         levels = self._vqe(h2_hamiltonian).energy_levels(2, restarts=4)
@@ -97,7 +103,8 @@ class TestADAPTEnergyLevels:
 
     def test_ground_level_matches_exact(self, h2_hamiltonian, h2_spectrum):
         levels = self._adapt(h2_hamiltonian).energy_levels(1)
-        assert levels.ground_state_energy == pytest.approx(h2_spectrum[0], abs=1e-6)
+        assert levels.ground_state_energy == pytest.approx(
+            h2_spectrum[0], abs=1e-6 * HARTREE_TO_EV)
 
     def test_levels_are_true_eigenvalues(self, h2_hamiltonian, h2_spectrum):
         levels = self._adapt(h2_hamiltonian).energy_levels(2)
@@ -106,7 +113,7 @@ class TestADAPTEnergyLevels:
 
     def test_excited_state_lifts_above_ground(self, h2_hamiltonian, h2_spectrum):
         levels = self._adapt(h2_hamiltonian).energy_levels(2)
-        assert levels.energies[1] > levels.energies[0] + 1e-6
+        assert levels.energies[1] > levels.energies[0] + 1e-6 * HARTREE_TO_EV
         # ADAPT records how many operators were grown for each level.
         assert levels.num_operators is not None
         assert len(levels.num_operators) == 2
@@ -142,4 +149,12 @@ class TestEnergyLevelsHelpers:
         assert lv.ground_state_energy == -1.0
         np.testing.assert_allclose(lv.excitation_energies, [0.0, 0.5, 1.25])
         np.testing.assert_allclose(lv.gaps, [0.5, 0.75])
-        np.testing.assert_allclose(lv.in_units("Ha"), [-1.0, -0.5, 0.25])
+        # Stored in eV by default: the Hartree view divides by the factor ...
+        np.testing.assert_allclose(lv.in_units("Ha"),
+                                   np.array([-1.0, -0.5, 0.25]) / HARTREE_TO_EV)
+        np.testing.assert_allclose(lv.in_units("eV"), [-1.0, -0.5, 0.25])
+        # ... and a Hartree container (atomic_units=True) converts the other way.
+        lv_ha = EnergyLevels(energies=np.array([-1.0, -0.5]), energy_unit="Ha")
+        np.testing.assert_allclose(lv_ha.in_units("eV"),
+                                   np.array([-1.0, -0.5]) * HARTREE_TO_EV)
+        np.testing.assert_allclose(lv_ha.in_units("Ha"), [-1.0, -0.5])

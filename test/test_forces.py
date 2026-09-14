@@ -105,8 +105,8 @@ class TestReducedDensityMatrices:
         rhf = integrals.hartree_fock(2)
         h_so, g_so = spin_block_integrals(rhf.h_mo, rhf.eri_mo)
         energy = (electronic_energy(gamma, gamma2, h_so, g_so)
-                  + integrals.nuclear_repulsion)
-        assert energy == pytest.approx(driver.result.optimal_energy,
+                  + integrals.nuclear_repulsion)               # Hartree
+        assert energy == pytest.approx(driver.result.in_units("Ha"),
                                        abs=1e-10)
 
 
@@ -137,8 +137,9 @@ class TestJaxEnergyLayer:
         energy = energy_from_integrals(
             S, h, eri, gamma, gamma2, n_electrons=2,
             nuclear_repulsion=integrals.nuclear_repulsion)
+        # The differentiated function works in Hartree; the result is eV.
         assert float(energy) == pytest.approx(
-            driver.result.optimal_energy, abs=1e-10)
+            driver.result.in_units("Ha"), abs=1e-10)
 
     def test_dE_dh_is_the_ao_density_matrix(self, fixed_grid):
         driver, psi = run_vqe(h2(0.74), fixed_grid)
@@ -183,6 +184,7 @@ def analytic_forces(atoms, grid):
 
 
 def driver_energy(atoms, grid) -> float:
+    """VQE ground-state energy in eV (the unit of every driver result)."""
     work = atoms.copy()
     work.calc = VQE(basis="FAO", grid=grid, verbose=False)
     work.get_potential_energy()
@@ -206,7 +208,7 @@ class TestForcesMatchFiniteDifference:
                             "H2", positions=plus), fixed_grid)
                        - driver_energy(h2(0.74).__class__(
                             "H2", positions=minus), fixed_grid)
-                       ) / (2 * delta) * HARTREE_TO_EV
+                       ) / (2 * delta)                   # eV/Angstrom
                 analytic = result.forces[atom, direction]
                 assert analytic == pytest.approx(fd, abs=5e-3), (
                     f"atom {atom} direction {direction}: "
@@ -468,7 +470,7 @@ class TestCarcara:
         atoms.calc = Carcara(method="vqe", basis="FAO",
                                        grid=fixed_grid, verbose=False)
         energy = atoms.get_potential_energy()
-        reference = driver_energy(h2(0.74), fixed_grid) * HARTREE_TO_EV
+        reference = driver_energy(h2(0.74), fixed_grid)          # eV already
         assert energy == pytest.approx(reference, abs=1e-8)
 
     def test_grid_is_frozen_across_geometries(self):

@@ -46,7 +46,7 @@ from ..core.serialization import (DEFAULT_FORMAT, load_hamiltonian,
                                   resolve_format, resolve_save_path,
                                   save_hamiltonian)
 from ..optimizers.optim import NAMED_OPTIMIZERS, OptimizeResult, resolve_optimizer
-from ..units import from_hartree
+from ..units import convert_energy, energy_unit_label, from_hartree
 from ._hamiltonian_from_atoms import monkhorst_pack_kpts, resolve_initial_state
 
 
@@ -128,6 +128,13 @@ class VariationalDriver(Calculator):
         kinetic energy.  ``None`` (default) means ``"fd"``, the operator the
         force code differentiates; use ``"spectral"`` for single-point
         energies on coarse grids.
+    atomic_units : bool
+        Output-unit convention (default ``False``): every energy the driver
+        *returns or prints* -- the result object, the energy levels, the verbose
+        trace, ``output.txt``, :meth:`measured_energy` -- is in **eV** and every
+        length in **Angstrom**.  ``True`` switches those outputs to Hartree and
+        Bohr.  The internal layers (the qubit Hamiltonian, ``energy(psi)``, the
+        optimizer cost) always work in Hartree, whatever this flag says.
     dry_run : bool
         Estimate the qubit requirements and **stop** (default ``False``).  In a
         dry run no integral is computed, no Hamiltonian is mapped and no circuit
@@ -136,12 +143,14 @@ class VariationalDriver(Calculator):
         :attr:`dry_run_result`, reports ``NaN`` as the energy, and :meth:`run`
         returns the estimate instead of a result.  See
         :mod:`carcara.algorithms.dry_run` and :meth:`estimate_qubits`.
-    pseudopotentials : bool or dict
+    pseudopotentials : bool, str or dict
         **Experimental** -- outside the stable API; see
-        ``docs/experimental/pseudopotentials.md``.  Use norm-conserving
-        pseudopotentials (default ``False``).  ``True`` loads
-        the bundled Troullier-Martins library; a dict passes
-        options (currently ``{"directory": ...}`` to point at another library).
+        ``docs/experimental/pseudopotentials.md``.  Use pseudopotentials
+        (default ``False``).  ``True`` selects the default family -- the
+        bundled norm-conserving Troullier-Martins library (``"tm"``, aliases
+        ``"ncpp"`` / ``"ncpp-tm"``); a family name string or a dict
+        ``{"family": "tm", "directory": ..., "size": ...}`` names the family
+        and passes its options.  Unknown family names raise ``ValueError``.
 
         This replaces the all-electron problem with a **valence-only** one: the
         core electrons are removed, the basis becomes the smooth pseudo-atomic
@@ -174,10 +183,17 @@ class VariationalDriver(Calculator):
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
                  kinetic: str | None = None,
-                 two_qubit_reduction: bool = False, **calc_kwargs):
+                 two_qubit_reduction: bool = False,
+                 atomic_units: bool = False, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
 
         self.verbose = bool(verbose)
+        # Output-unit convention: eV / Angstrom unless atomic units are asked
+        # for.  Internally everything stays in Hartree / Bohr; the conversion
+        # happens once, where a result object or a printout is built.
+        self.atomic_units = bool(atomic_units)
+        self.energy_units = "Ha" if self.atomic_units else "eV"
+        self.length_units = "bohr" if self.atomic_units else "angstrom"
         self.optimizer = resolve_optimizer(optimizer, allowed=self._OPTIMIZERS)
         self.mapping = mapping
         # Parity mapping's Z2 tapering: two qubits fewer, same physics.
@@ -197,8 +213,13 @@ class VariationalDriver(Calculator):
         self.spin = bool(spin)
         self.frozen_core = frozen_core
         self.frozen_orbitals = frozen_orbitals
-        # Norm-conserving pseudopotentials: replace the core + the -Z/r
-        # singularity with a smooth valence-only problem.
+        # Pseudopotentials (experimental): replace the core + the -Z/r
+        # singularity with a smooth valence-only problem.  The family name is
+        # validated here so a typo fails at construction, not after the grid.
+        if pseudopotentials:
+            from ..experimental.pseudopotentials.families import (
+                normalize_pseudopotentials)
+            normalize_pseudopotentials(pseudopotentials)
         self.pseudopotentials = pseudopotentials
         # Laplacian discretization ("fd" / "spectral"; None = path default).
         if kinetic not in (None, "fd", "spectral"):
@@ -277,6 +298,32 @@ class VariationalDriver(Calculator):
         # ASE hook then never rebuilds it.  In calculator mode it stays False and
         # the Hamiltonian is (re)built from the geometry on each ``calculate``.
         self._built_from_hamiltonian = False
+
+    # -- output units ----------------------------------------------------- #
+
+    def _to_energy_units(self, energy_ha):
+        """Convert an internal (Hartree) energy to the output units.
+
+        Scalars come back as ``float``; sequences / arrays as a float array.
+        The single conversion point between the internal layers and anything
+        the user sees.
+        """
+        out = from_hartree(np.asarray(energy_ha, dtype=float), self.energy_units)
+        return float(out) if out.ndim == 0 else out
+
+    def _from_energy_units(self, energy, units: str = "eV"):
+        """Convert an energy in the output units to ``units`` (``"eV"`` default)."""
+        out = convert_energy(np.asarray(energy, dtype=float),
+                             self.energy_units, units)
+        return float(out) if out.ndim == 0 else out
+
+    def _energy_unit_label(self) -> str:
+        """``"eV"`` or ``"Ha"`` -- the label of the output energy unit."""
+        return energy_unit_label(self.energy_units)
+
+    def _length_unit_label(self) -> str:
+        return "Bohr" if self.length_units.lower() in ("bohr", "au", "a0") \
+            else "Angstrom"
 
     # -- k-points --------------------------------------------------------- #
 
@@ -407,13 +454,15 @@ class VariationalDriver(Calculator):
                 self.hamiltonian)
 
     def measured_energy(self, provider, theta=None) -> float:
-        """``<H>`` of the optimized ansatz evaluated on ``provider`` (Hartree).
+        """``<H>`` of the optimized ansatz evaluated on ``provider``.
 
         The way to run on real hardware within a budget: optimize locally,
         then measure the final state once -- e.g. with
-        ``QiskitProvider(device="ibm_kingston", shots=4096)``.
+        ``QiskitProvider(device="ibm_kingston", shots=4096)``.  Returned in the
+        driver's output units (eV; Hartree with ``atomic_units=True``) -- the
+        provider itself measures the Hartree qubit Hamiltonian.
         """
-        return provider.energy(*self.ansatz_problem(theta))
+        return self._to_energy_units(provider.energy(*self.ansatz_problem(theta)))
 
     def ansatz_provider(self):
         """The provider an *ansatz* should prepare its state vector with.
@@ -695,7 +744,8 @@ class VariationalDriver(Calculator):
         result = self.run(**self._run_kwargs(atoms))
         self.result = result
 
-        energy_ev = float(from_hartree(result.optimal_energy, "eV"))
+        # The result already carries the output units; ASE wants eV.
+        energy_ev = self._from_energy_units(result.optimal_energy, "eV")
         self.results["energy"] = energy_ev
         self.results["free_energy"] = energy_ev
 
@@ -746,14 +796,28 @@ class VariationalDriver(Calculator):
 
 
 def measure_energies(drivers, provider) -> list[float]:
-    """Energies (Hartree) of several optimized drivers, in **one** provider job.
+    """Energies of several optimized drivers, in **one** provider job.
 
     ``drivers`` are run calculators/solvers (each has ``.ansatz``, ``.result``
     and ``.hamiltonian``); ``provider`` is typically a
     :class:`~carcara.backends.providers.QiskitProvider` on IBM hardware, so a
-    whole dissociation curve costs a single job.
+    whole dissociation curve costs a single job.  Each energy comes back in its
+    driver's output units (eV by default; Hartree for ``atomic_units=True``),
+    while the provider measures the Hartree qubit Hamiltonian.
     """
+    drivers = list(drivers)
     problems = [d.ansatz_problem() for d in drivers]
     if hasattr(provider, "energies"):
-        return provider.energies(problems)
-    return [provider.energy(*p) for p in problems]
+        energies = provider.energies(problems)
+    else:
+        energies = [provider.energy(*p) for p in problems]
+    return [_driver_units(d)(e) for d, e in zip(drivers, energies)]
+
+
+def _driver_units(driver):
+    """The Hartree -> output-unit converter of a driver or ``Carcara`` wrapper."""
+    convert = getattr(driver, "_to_energy_units", None)
+    if convert is None:                       # a Carcara wrapper: ask the solver
+        convert = getattr(getattr(driver, "solver", None), "_to_energy_units",
+                          None)
+    return convert if convert is not None else (lambda e: from_hartree(e, "eV"))

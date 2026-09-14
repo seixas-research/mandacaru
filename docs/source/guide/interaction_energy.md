@@ -31,9 +31,9 @@ result = interaction_energy(complex_, fragments=[[0, 1, 2], [3]],
                             charges=[0, 1], charge=1,
                             method="adapt-vqe", basis="FAO",
                             frozen_core=True, h=0.25)
-result.energy              # Hartree
-result.in_units("eV")
-result.fragment_energies   # one per fragment, Hartree
+result.energy              # eV (every Carcará result is eV)
+result.in_units("Ha")      # the atomic-unit view
+result.fragment_energies   # one per fragment, eV
 result.results             # the per-fragment run results
 ```
 
@@ -70,7 +70,7 @@ O₂, anything beyond LiH), and they are fixed:
   wrong conjugation pattern, which breaks the tensor's symmetries whenever
   the overlap matrix is complex (the spherical harmonics are complex, so any
   p shell off a symmetry plane does it); water's Hartree–Fock energy moved by
-  1.2 Ha;
+  33 eV;
 - the Fock build contracted the density with its indices transposed, the
   complex conjugate of the right density.
 

@@ -348,4 +348,4 @@ class TestIntegration:
         h = calc.hamiltonian.to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min())
         assert calc.n_qubits == 4
-        assert calc.result.optimal_energy == pytest.approx(exact, abs=1e-5)
+        assert calc.result.in_units("Ha") == pytest.approx(exact, abs=1e-5)

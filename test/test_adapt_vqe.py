@@ -24,6 +24,7 @@ from carcara.circuits import (
 from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 from carcara.optimizers import Optimizer
+from carcara.units import HARTREE_TO_EV
 
 POOL_NAMES = ["fermionic", "qubit", "qeb", "ceo"]
 
@@ -48,8 +49,15 @@ def h2_hamiltonian(h2_integrals):
 
 @pytest.fixture(scope="module")
 def h2_exact(h2_hamiltonian):
+    """FCI ground state in Hartree (the qubit Hamiltonian's own unit)."""
     m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
     return float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
+
+
+@pytest.fixture(scope="module")
+def h2_exact_ev(h2_exact):
+    """The same FCI energy in eV -- the unit of every driver result."""
+    return h2_exact * HARTREE_TO_EV
 
 
 def _adapt(hamiltonian, pool_name, max_iterations=50, gradient_tol=1e-6):
@@ -172,18 +180,21 @@ class TestGradientSelection:
 
 class TestConvergence:
     @pytest.mark.parametrize("name", POOL_NAMES)
-    def test_pool_reaches_fci(self, h2_hamiltonian, h2_exact, name):
+    def test_pool_reaches_fci(self, h2_hamiltonian, h2_exact, h2_exact_ev, name):
         res = _adapt(h2_hamiltonian, name, max_iterations=15).run()
         assert isinstance(res, ADAPTVQEResult)
-        assert abs(res.optimal_energy - h2_exact) < 1e-6
-        assert res.optimal_energy < res.reference_energy - 1e-4
+        # Results are in eV (1e-6 Ha = 2.7e-5 eV); in_units("Ha") converts back.
+        assert res.energy_unit == "eV"
+        assert abs(res.optimal_energy - h2_exact_ev) < 1e-6 * HARTREE_TO_EV
+        assert abs(res.in_units("Ha") - h2_exact) < 1e-6
+        assert res.optimal_energy < res.reference_energy - 1e-4 * HARTREE_TO_EV
 
     def test_result_history_is_consistent(self, h2_hamiltonian):
         res = _adapt(h2_hamiltonian, "fermionic").run()
         assert len(res.energy_history) == res.num_operators
         assert len(res.operators) == res.num_operators
         # Energy decreases monotonically as operators are added.
-        assert np.all(np.diff(res.energy_history) <= 1e-9)
+        assert np.all(np.diff(res.energy_history) <= 1e-9 * HARTREE_TO_EV)
 
 
 # --------------------------------------------------------------------------- #
@@ -225,11 +236,11 @@ class TestProfiling:
 # --------------------------------------------------------------------------- #
 
 class TestDriver:
-    def test_accepts_pool_object(self, h2_hamiltonian, h2_exact):
+    def test_accepts_pool_object(self, h2_hamiltonian, h2_exact_ev):
         pool = build_pool("ceo", 2, (1, 1))
         res = ADAPTVQE(h2_hamiltonian, pool, num_particles=(1, 1),
                        gradient_tolerance=1e-6).run()
-        assert abs(res.optimal_energy - h2_exact) < 1e-6
+        assert abs(res.optimal_energy - h2_exact_ev) < 1e-6 * HARTREE_TO_EV
 
     def test_named_pool_requires_shape(self, h2_hamiltonian):
         with pytest.raises(ValueError):

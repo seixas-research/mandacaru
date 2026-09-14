@@ -326,13 +326,15 @@ class TestADAPTVQECalculator:
         energy_ev = atoms.get_total_energy()
         result = atoms.calc.result
 
-        # ASE returns eV; it must equal the Ha result converted to eV.
-        expected_ev = result.optimal_energy * 27.211386245988
-        assert energy_ev == pytest.approx(expected_ev, rel=1e-9)
-        # And match the exact FCI of the built Hamiltonian.
+        # ASE returns eV, and so does the result object itself.
+        assert result.energy_unit == "eV"
+        assert energy_ev == pytest.approx(result.optimal_energy, rel=1e-9)
+        # And match the exact FCI of the built Hamiltonian (Hartree -> eV).
         h = atoms.calc.hamiltonian.to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min())
-        assert result.optimal_energy == pytest.approx(exact, abs=1e-4)
+        assert result.optimal_energy == pytest.approx(
+            exact * 27.211386245988, abs=1e-4 * 27.211386245988)
+        assert result.in_units("Ha") == pytest.approx(exact, abs=1e-4)
 
     def test_calculator_builds_from_default_basis(self):
         # With the default basis="FAO", no explicit builder is needed: the

@@ -73,11 +73,11 @@ converged: True
 classical_optimizer: COBYLA
 optimal_energy_eV: -29.9604463345
 reference_energy_eV: -29.5361990146
-correlation_energy_eV: -0.4242473199
+correlation_energy_eV: -0.4242473198
 num_operators: 1
 num_parameters: 1
 final_expressivity_E: 1.934351
-final_max_gradient: 8.095270e-05
+final_max_gradient: 8.095271e-05
 cost_evaluations: 23
 cnot_count: 6
 circuit_depth: 9

@@ -43,11 +43,11 @@ Output
 
    On a uniform real-space grid the Li 1s core cusp is sampled differently
    depending on where the nucleus falls relative to the grid nodes.  For LiH that
-   shifts the total energy by :math:`\sim 0.2` Ha between neighboring bond
+   shifts the total energy by :math:`\sim 5` eV between neighboring bond
    lengths, and the effect does **not** vanish as the grid is refined (checked
    from :math:`h = 0.30` down to :math:`0.10` Angstrom).  The distances used here
    were chosen because they sample the core consistently; nearby values such as
-   1.25 or 2.4 Angstrom are off by :math:`\sim 0.2` Ha.  H\ :sub:`2`, which has
+   1.25 or 2.4 Angstrom are off by :math:`\sim 5` eV.  H\ :sub:`2`, which has
    no tight core, is smooth and grid-convergent at *any* distance under the same
    code -- confirming the Li core as the cause.
 
@@ -70,7 +70,6 @@ from ase import Atoms
 from carcara.algorithms import Carcara
 from carcara.basis import BasisSet
 from carcara.integrals import Grid
-from carcara.units import HARTREE_TO_EV
 
 from pes_utils import atomic_reference
 
@@ -93,7 +92,7 @@ BASIS = {"name": "GTO", "n_gaussians": 3}
 CELL = 15.0                 # cubic cell edge (Angstrom)
 GRID_SPACING = 0.15         # grid resolution h (Angstrom)
 MAX_ITERATIONS = 14
-CHEMICAL_ACCURACY = 1.6e-3  # Ha
+CHEMICAL_ACCURACY = 0.043  # eV (1.6 mHa)
 
 
 def lih(distance):
@@ -107,7 +106,7 @@ def lih(distance):
 
 
 def solve(distance, pool, mapping):
-    """ADAPT-VQE total energy (Hartree) and operator count at one geometry."""
+    """ADAPT-VQE total energy (eV) and operator count at one geometry."""
     atoms = lih(distance)
     atoms.calc = Carcara(method="adapt-vqe", pool=pool, basis=BASIS,
                                    mapping=mapping, h=GRID_SPACING,
@@ -133,7 +132,7 @@ ref_positions = [np.array([center, center, center - first / 2.0]),
                  np.array([center, center, center + first / 2.0])]
 basis_set = BasisSet.build("GTO", n_gaussians=3)
 e_atoms = atomic_reference(["Li", "H"], basis_set, grid, ref_positions)
-print(f"reference: E(Li) + E(H) (UHF) = {e_atoms:+.6f} Ha")
+print(f"reference: E(Li) + E(H) (UHF) = {e_atoms:+.4f} eV")
 
 # --------------------------------------------------------------------------- #
 # 2. Scan.
@@ -141,7 +140,7 @@ print(f"reference: E(Li) + E(H) (UHF) = {e_atoms:+.6f} Ha")
 
 print(f"\nLiH dissociation curve: {len(DISTANCES)} distances "
       f"x ({len(POOLS)} pools + {len(MAPPINGS)} mappings), h = {GRID_SPACING} A")
-print(f"{'series':<26}{'d (A)':>8}{'E (Ha)':>16}{'E - E_atoms':>14}{'ops':>6}")
+print(f"{'series':<26}{'d (A)':>8}{'E (eV)':>16}{'E - E_atoms':>14}{'ops':>6}")
 print("-" * 70)
 
 rows = []
@@ -160,12 +159,12 @@ for distance in DISTANCES:
             jw_fermionic = (energy, n_ops)
         pool_curves[pool].append(energy)
         rows.append({"sweep": "pool", "series": pool, "mapping": "jordan_wigner",
-                     "distance_A": distance, "energy_Ha": energy,
-                     "atoms_Ha": e_atoms,
-                     "binding_eV": (energy - e_atoms) * HARTREE_TO_EV,
+                     "distance_A": distance, "energy_eV": energy,
+                     "atoms_eV": e_atoms,
+                     "binding_eV": energy - e_atoms,
                      "num_operators": n_ops})
-        print(f"{'pool ' + pool:<26}{distance:>8.3f}{energy:>16.8f}"
-              f"{energy - e_atoms:>+14.5f}{n_ops:>6}")
+        print(f"{'pool ' + pool:<26}{distance:>8.3f}{energy:>16.6f}"
+              f"{energy - e_atoms:>+14.4f}{n_ops:>6}")
 
     for mapping in MAPPINGS:
         if mapping == "jordan_wigner":
@@ -175,18 +174,18 @@ for distance in DISTANCES:
         mapping_curves[mapping].append(energy)
         rows.append({"sweep": "mapping", "series": mapping,
                      "mapping": mapping, "distance_A": distance,
-                     "energy_Ha": energy, "atoms_Ha": e_atoms,
-                     "binding_eV": (energy - e_atoms) * HARTREE_TO_EV,
+                     "energy_eV": energy, "atoms_eV": e_atoms,
+                     "binding_eV": energy - e_atoms,
                      "num_operators": n_ops})
-        print(f"{'map  ' + mapping:<26}{distance:>8.3f}{energy:>16.8f}"
-              f"{energy - e_atoms:>+14.5f}{n_ops:>6}")
+        print(f"{'map  ' + mapping:<26}{distance:>8.3f}{energy:>16.6f}"
+              f"{energy - e_atoms:>+14.4f}{n_ops:>6}")
 
 print(f"\nscan finished in {time.perf_counter() - t0:.1f} s")
 
 with open(CSV_PATH, "w", newline="") as fh:
     writer = csv.DictWriter(fh, fieldnames=["sweep", "series", "mapping",
-                                            "distance_A", "energy_Ha",
-                                            "atoms_Ha", "binding_eV",
+                                            "distance_A", "energy_eV",
+                                            "atoms_eV", "binding_eV",
                                             "num_operators"])
     writer.writeheader()
     writer.writerows(rows)
@@ -203,11 +202,11 @@ for family, curves in (("pool", pool_curves), ("mapping", mapping_curves)):
     for label, curve in curves.items():
         worst = float(np.abs(np.array(curve) - reference).max())
         assert worst < CHEMICAL_ACCURACY, \
-            f"{family} {label!r} deviates from the shared curve by {worst:.2e} Ha"
+            f"{family} {label!r} deviates from the shared curve by {worst:.2e} eV"
 print("All pools and mappings trace the same curve within chemical accuracy "
-      f"({CHEMICAL_ACCURACY:.1e} Ha).")
+      f"({CHEMICAL_ACCURACY:.3f} eV).")
 
-binding_reference = (reference - e_atoms) * HARTREE_TO_EV
+binding_reference = reference - e_atoms                    # eV
 equilibrium = DISTANCES[int(np.argmin(reference))]
 print(f"minimum of the computed curve: d = {equilibrium:.3f} A, "
       f"binding {binding_reference.min():+.3f} eV "
@@ -248,12 +247,12 @@ for ax, ax_bind, curves, colors, title in (
         ax.plot(DISTANCES, curve, marker=marker, markersize=6,
                 lw=1.6, color=colors[label], markerfacecolor="none",
                 markeredgewidth=1.5, label=label, zorder=3)
-        ax_bind.plot(DISTANCES, (curve - e_atoms) * HARTREE_TO_EV,
+        ax_bind.plot(DISTANCES, curve - e_atoms,
                      marker=marker, markersize=6, lw=1.6,
                      color=colors[label], markerfacecolor="none",
                      markeredgewidth=1.5, label=label, zorder=3)
 
-    ax.set_ylabel("total energy  (Ha)")
+    ax.set_ylabel("total energy  (eV)")
     ax.set_title(title)
     ax.grid(True, color="0.92", lw=0.8, zorder=0)
     ax.legend(frameon=False, fontsize=9)

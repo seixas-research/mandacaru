@@ -101,6 +101,7 @@ To avoid the cognitive load of switching units between physics calculations and 
 
 * **Internal Core:** The mathematical core—orbital evaluations, grid coordinates, Poisson solvers, and C-backend integrals—operates strictly in **atomic units** (lengths in Bohr, energies in Hartree).
 * **User Boundary:** All user-facing APIs (``Grid``, ``FullAtomicOrbital``, ``IntegralEngine``) default to standard chemistry units: **lengths in Ångström** and **energies in electronvolts (eV)**. Conversions happen automatically at the API boundaries (configured via ``units`` / ``energy_units``).
+* **Everything you see is eV / Å:** every result a driver returns -- ``optimal_energy``, ``reference_energy``, the energy histories, ``EnergyLevels``, the subspace results, ``InteractionEnergy``, ``ForceResult`` (eV/Å), band structures, hardware measurements (``measured_energy`` / ``measure_energies``) -- every verbose printout and the ``carcara`` command line are in **eV and Ångström**. Result objects record their unit (``energy_unit``) and offer ``in_units("Ha")`` for the atomic-unit view. Hartree and Bohr survive only inside the internal layers (the integral engine, the qubit Hamiltonian's Pauli coefficients and its cache files, the basis and pseudopotential records, the SCF and gradient mathematics). ``atomic_units=True`` on any driver is the single opt-in that switches its outputs to Hartree / Bohr.
 
 3. SDK-Agnostic Circuits
 ------------------------

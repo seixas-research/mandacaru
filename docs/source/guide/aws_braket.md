@@ -83,11 +83,11 @@ constant.
 The estimate converges as $1/\sqrt{\text{shots}}$:
 
 ```text
-   shots          E (Ha)        error   1-sigma bound
-     500     -0.93823185    -3.98e-04        6.60e-02
-    5000     -0.94026417    -2.43e-03        2.09e-02
-   50000     -0.93703754    +7.96e-04        6.60e-03
-   exact     -0.93783349
+   shots          E (eV)   error (eV)   1-sigma (eV)
+     500    -25.530589    -1.08e-02      1.80e+00
+    5000    -25.585892    -6.61e-02      5.69e-01
+   50000    -25.498090    +2.17e-02      1.80e-01
+   exact    -25.519749
 ```
 
 ---
@@ -127,7 +127,7 @@ e_curve = measure_energies(solvers, provider)             # many geometries, one
 ```
 
 **Keep the circuit small.** Hardware noise, not shot noise, limited the first
-LiH and H₂ runs (0.5 Ha off for 92 CZ gates; a few hundredths for 17). For
+LiH and H₂ runs (14 eV off for 92 CZ gates; a few tenths of an eV for 17). For
 molecules with a closed-shell reference the parity mapping's two-qubit
 reduction removes two qubits and their gates at no cost in physics:
 
@@ -198,17 +198,21 @@ task per QWC group. Plan before submitting:
 ```python
 from carcara.backends.measurement import shot_noise_estimate
 from carcara.backends.providers import build_provider
+from carcara.units import from_hartree
 
 provider = build_provider("braket", shots=8192)
 groups = provider.measurement_groups(hamiltonian)
 
 print(f"{len(groups)} tasks per energy evaluation")
-print(f"+/- {shot_noise_estimate(hamiltonian, 8192):.2e} Ha at 8192 shots")
+# The estimate is in the Hamiltonian's own unit (Hartree); report it in eV.
+print(f"+/- {from_hartree(shot_noise_estimate(hamiltonian, 8192), 'eV'):.2e} eV "
+      "at 8192 shots")
 ```
 
 The standard error is bounded by $\left(\sum_j |c_j|\right)/\sqrt{\text{shots}}$
-— the coefficient 1-norm estimate. For H₂ that 1-norm is 1.48 Ha, so chemical
-accuracy (1.6 mHa) needs $\sim\!8.5\times10^5$ shots per group in the worst case.
+— the coefficient 1-norm estimate. For H₂ that 1-norm is 40 eV (1.48 Ha), so
+chemical accuracy (0.043 eV = 1.6 mHa) needs $\sim\!8.5\times10^5$ shots per
+group in the worst case.
 That bound is *why* hardware VQE needs error mitigation and smarter estimators;
 it is not a defect of the implementation.
 

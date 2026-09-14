@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..units import from_hartree
+from ..units import convert_energy
 
 
 def deflation_penalty(psi: np.ndarray, states, beta: float) -> float:
@@ -65,16 +65,19 @@ def spectral_width_beta(pauli_sum) -> float:
 class EnergyLevels:
     """Molecular energy levels (ground + excited states) from a deflation run.
 
-    Energies are stored in **Hartree**, ascending, mirroring the internal units of
+    Energies are stored ascending in :attr:`energy_unit` -- **eV** by default,
+    Hartree when the driver was built with ``atomic_units=True`` -- mirroring
     :class:`~carcara.algorithms.vqe.VQEResult` /
-    :class:`~carcara.algorithms.adapt_vqe.ADAPTVQEResult`.
+    :class:`~carcara.algorithms.adapt_vqe.ADAPTVQEResult`; :meth:`in_units`
+    converts either way.
     """
 
-    energies: np.ndarray                       # Hartree, ascending
+    energies: np.ndarray                       # ascending, in `energy_unit`
     states: list = field(default_factory=list)  # optimal state vectors (optional)
-    reference_energy: float | None = None      # ansatz reference (HF) energy, Ha
+    reference_energy: float | None = None      # ansatz reference (HF) energy
     num_evaluations: int = 0                   # total cost-function evaluations
     num_operators: list[int] | None = None     # operators per state (ADAPT only)
+    energy_unit: str = "eV"                    # unit of every energy above
 
     @property
     def num_states(self) -> int:
@@ -86,26 +89,29 @@ class EnergyLevels:
 
     @property
     def excitation_energies(self) -> np.ndarray:
-        r"""Energies relative to the ground state, :math:`E_i - E_0` (Hartree)."""
+        r"""Energies relative to the ground state, :math:`E_i - E_0` (in :attr:`energy_unit`)."""
         return np.asarray(self.energies, dtype=float) - float(self.energies[0])
 
     @property
     def gaps(self) -> np.ndarray:
-        """Successive level spacings :math:`E_{i+1} - E_i` (Hartree)."""
+        """Successive level spacings :math:`E_{i+1} - E_i` (in :attr:`energy_unit`)."""
         return np.diff(np.asarray(self.energies, dtype=float))
 
     def in_units(self, units: str = "eV") -> np.ndarray:
         """Return the energy levels converted to ``units`` (``"eV"`` or ``"Ha"``)."""
-        return from_hartree(np.asarray(self.energies, dtype=float), units)
+        return np.asarray(convert_energy(np.asarray(self.energies, dtype=float),
+                                         self.energy_unit, units), dtype=float)
 
     def excitation_energies_in_units(self, units: str = "eV") -> np.ndarray:
         """Excitation energies :math:`E_i - E_0` converted to ``units``."""
-        return from_hartree(self.excitation_energies, units)
+        return np.asarray(convert_energy(self.excitation_energies,
+                                         self.energy_unit, units), dtype=float)
 
     def __repr__(self) -> str:
         levels = ", ".join(f"{e:.6f}" for e in np.asarray(self.energies)[:6])
         more = "" if self.num_states <= 6 else f", ... (+{self.num_states - 6})"
-        return f"EnergyLevels([{levels}{more}] Ha, num_states={self.num_states})"
+        return (f"EnergyLevels([{levels}{more}] {self.energy_unit}, "
+                f"num_states={self.num_states})")
 
 
 class DeflationMixin:
@@ -115,7 +121,7 @@ class DeflationMixin:
     :class:`EnergyLevels` assembly; the concrete driver supplies
     :meth:`_deflated_ground`, which finds the lowest state orthogonal to the ones
     already found.  Expects the host to provide ``_configured``, ``_check_kpts``,
-    ``hamiltonian`` and ``reference_energy`` (all on
+    ``hamiltonian``, ``reference_energy`` and the output-unit helpers (all on
     :class:`~carcara.algorithms.base.VariationalDriver`).
     """
 
@@ -143,8 +149,9 @@ class DeflationMixin:
         Returns
         -------
         EnergyLevels
-            Ascending energies (Hartree), the optimal state vectors, and
-            convenience views (``excitation_energies`` / ``in_units("eV")``).
+            Ascending energies in the driver's output units (eV; Hartree with
+            ``atomic_units=True``), the optimal state vectors, and convenience
+            views (``excitation_energies`` / ``in_units("Ha")``).
         """
         if not getattr(self, "_configured", False):
             raise RuntimeError(
@@ -172,12 +179,14 @@ class DeflationMixin:
 
         order = np.argsort(energies)
         has_ops = any(n is not None for n in num_ops)
+        # The single Hartree -> output-unit boundary of the deflation loop.
         return EnergyLevels(
-            energies=np.asarray(energies, dtype=float)[order],
+            energies=self._to_energy_units(np.asarray(energies, dtype=float)[order]),
             states=[states[i] for i in order],
-            reference_energy=self.reference_energy(),
+            reference_energy=self._to_energy_units(self.reference_energy()),
             num_evaluations=total_evals,
-            num_operators=([num_ops[i] for i in order] if has_ops else None))
+            num_operators=([num_ops[i] for i in order] if has_ops else None),
+            energy_unit=self._energy_unit_label())
 
     def _deflated_ground(self, states, beta, *, state_index, **kwargs):
         """Lowest state orthogonal to ``states``; ``(energy, psi, nfev, n_ops)``.

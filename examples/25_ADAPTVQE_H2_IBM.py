@@ -29,6 +29,7 @@ from ase import Atoms
 from carcara.algorithms import Carcara
 from carcara.algorithms.base import measure_energies
 from carcara.backends.providers import QiskitProvider
+from carcara.units import HARTREE_TO_EV
 
 HARDWARE = None
 SHOTS = 4096
@@ -81,7 +82,7 @@ def calculator():
 
 # 1. Optimize locally.
 solvers, energies = [], []
-print(f"{'d (A)':>8}{'E local (Ha)':>16}{'ops':>6}")
+print(f"{'d (A)':>8}{'E local (eV)':>16}{'ops':>6}")
 for distance in DISTANCES:
     atoms = h2(distance)
     atoms.calc = calculator()
@@ -89,7 +90,7 @@ for distance in DISTANCES:
     result = atoms.calc.result
     solvers.append(atoms.calc.solver)
     energies.append(result.optimal_energy)
-    print(f"{distance:>8.2f}{result.optimal_energy:>16.8f}{result.num_operators:>6}")
+    print(f"{distance:>8.2f}{result.optimal_energy:>16.6f}{result.num_operators:>6}")
 
 plt.plot(DISTANCES, energies, "o-", label="local state vector")
 
@@ -101,20 +102,21 @@ if HARDWARE:
                               physical_qubits=PHYSICAL_QUBITS)
     backend_name = provider.backend().name
     print(f"\nmeasuring on {backend_name} ({SHOTS} shots)")
-    measured = measure_energies(solvers, provider)
+    measured = measure_energies(solvers, provider)          # eV
     job_id = provider.last_job.job_id() if provider.last_job else ""
-    stds = [float(r.data.stds) for r in provider.last_result]
+    # The Estimator's standard errors are in the Hamiltonian's Hartree.
+    stds = [float(r.data.stds) * HARTREE_TO_EV for r in provider.last_result]
     print(f"job {job_id}")
-    print(f"{'d (A)':>8}{'E measured (Ha)':>18}{'std (Ha)':>12}")
+    print(f"{'d (A)':>8}{'E measured (eV)':>18}{'std (eV)':>12}")
     for distance, energy, std in zip(DISTANCES, measured, stds):
-        print(f"{distance:>8.2f}{energy:>18.8f}{std:>12.5f}")
+        print(f"{distance:>8.2f}{energy:>18.6f}{std:>12.4f}")
     plt.errorbar(DISTANCES, measured, yerr=stds, fmt="s--", label=backend_name)
 
 # 3. Raw data, one row per distance.
 with open("h2_dissociation_ibm.csv", "w", newline="") as fh:
     writer = csv.writer(fh)
-    writer.writerow(["distance_A", "energy_local_Ha", "num_operators",
-                     "energy_measured_Ha", "std_measured_Ha", "shots",
+    writer.writerow(["distance_A", "energy_local_eV", "num_operators",
+                     "energy_measured_eV", "std_measured_eV", "shots",
                      "backend", "job_id", "optimal_parameters"])
     for i, distance in enumerate(DISTANCES):
         result = solvers[i].result
@@ -125,7 +127,7 @@ with open("h2_dissociation_ibm.csv", "w", newline="") as fh:
                          " ".join(f"{t:.10f}" for t in result.optimal_parameters)])
 
 plt.xlabel("H-H distance (Angstrom)")
-plt.ylabel("energy (Ha)")
+plt.ylabel("energy (eV)")
 plt.title("H2 (FAO), ADAPT-VQE, parity mapping, 2 qubits")
 plt.legend()
 plt.savefig("h2_dissociation_ibm.png", dpi=150)

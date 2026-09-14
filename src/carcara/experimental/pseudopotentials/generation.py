@@ -311,6 +311,12 @@ class PseudoPotential:
     kb_energies: dict = field(default_factory=dict)  # l -> E_KB (Hartree)
     valence_density: np.ndarray = None
     atom: AtomicResult = None
+    #: Pseudopotential **family** this object belongs to -- the key of
+    #: :data:`carcara.experimental.pseudopotentials.families.PSEUDO_FAMILIES`
+    #: (``"tm"``: norm-conserving Troullier-Martins with one Kleinman-Bylander
+    #: projector per channel).  Written to and read from the library files; a
+    #: file without the field is the historical TM family.
+    family: str = "tm"
 
     @property
     def nonlocal_channels(self) -> list:
@@ -343,7 +349,7 @@ class PseudoPotential:
     def __repr__(self) -> str:
         channels = ", ".join(f"l={l}" for l in sorted(self.channels))
         return (f"PseudoPotential({self.symbol}, Z_ion={self.valence_charge:g}, "
-                f"[{channels}], local=l{self.local_l})")
+                f"[{channels}], local=l{self.local_l}, family={self.family!r})")
 
 
 def _valence_configuration(atomic_number: int):
@@ -444,7 +450,8 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
         symbol=symbol, atomic_number=atomic_number,
         valence_charge=valence_charge, r=r, channels=channels,
         v_local=v_local, local_l=local, projectors=projectors,
-        kb_energies=kb_energies, valence_density=valence_density, atom=atom)
+        kb_energies=kb_energies, valence_density=valence_density, atom=atom,
+        family="tm")
 
 
 # --------------------------------------------------------------------------- #

@@ -94,7 +94,7 @@ class TestGradientStrategies:
                              n_spatial_orbitals=2, profile=False, gradient=grad,
                              max_iterations=10, gradient_tolerance=1e-4)
             res = adapt.run()
-            assert abs(res.optimal_energy - exact) < 1e-4, grad
+            assert abs(res.in_units("Ha") - exact) < 1e-4, grad
 
     def test_invalid_gradient_rejected(self, h2_hamiltonian):
         with pytest.raises(ValueError):

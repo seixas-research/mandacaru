@@ -42,11 +42,11 @@ the internal NumPy state-vector backend to machine precision. That equivalence i
 asserted in the test suite and demonstrated end-to-end on LiH:
 
 ```text
-provider            E (Ha)   err vs FCI   ops  cnots  depth     time
-(matrix)       -6.88824276     1.34e-07     8    208    273     0.3s
-qiskit         -6.88824283     6.27e-08     8    208    273     4.1s
-braket         -6.88824279     1.09e-07     8    208    359    43.9s
-cirq           -6.88824281     8.17e-08     8    208    358     8.9s
+provider            E (eV)   err vs FCI   ops  cnots  depth     time
+(matrix)       -187.438634     3.65e-06     8    208    273     0.3s
+qiskit         -187.438636     1.71e-06     8    208    273     4.1s
+braket         -187.438635     2.97e-06     8    208    359    43.9s
+cirq           -187.438636     2.22e-06     8    208    358     8.9s
 ```
 
 :::{note}

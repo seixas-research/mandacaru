@@ -19,6 +19,7 @@ can never beat the fully re-optimized one).
 from __future__ import annotations
 
 import numpy as np
+from carcara.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
@@ -95,7 +96,7 @@ class TestADAPTQuenching:
         # Both lower the energy below Hartree-Fock ...
         assert quenched.optimal_energy < quenched.reference_energy
         # ... and the frozen-parameter variant cannot beat the free one.
-        assert quenched.optimal_energy >= full.optimal_energy - 1e-8
+        assert quenched.optimal_energy >= full.optimal_energy - 1e-8 * HARTREE_TO_EV
 
     def test_quenched_step_is_cheaper_per_operator(self, lih_cache):
         common = dict(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
@@ -114,8 +115,8 @@ class TestADAPTQuenching:
         full = ADAPTVQE(**common, quenching=True).run()
         quenched = ADAPTVQE(**common, quenching=False).run()
         assert quenched.operators == full.operators
-        assert quenched.optimal_energy == pytest.approx(full.optimal_energy,
-                                                        abs=1e-6)
+        assert quenched.optimal_energy == pytest.approx(
+            full.optimal_energy, abs=1e-6 * HARTREE_TO_EV)
 
 
 # --------------------------------------------------------------------------- #
@@ -135,7 +136,7 @@ class TestVQEQuenching:
                     quenching=True).run()
         swept = VQE(load_hamiltonian=lih_cache, verbose=False,
                     quenching=False).run()
-        assert swept.optimal_energy >= joint.optimal_energy - 1e-6
+        assert swept.optimal_energy >= joint.optimal_energy - 1e-6 * HARTREE_TO_EV
 
     def test_sweep_moves_every_parameter_in_order(self, lih_cache):
         """Each parameter is optimized once, alone, in index order."""

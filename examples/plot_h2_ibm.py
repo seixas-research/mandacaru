@@ -32,19 +32,19 @@ def read(path):
 fig, ax = plt.subplots(figsize=(6.4, 4.4))
 first = read(files[0])
 ax.plot([float(r["distance_A"]) for r in first],
-        [float(r["energy_local_Ha"]) for r in first], "o-", color="#0072B2",
+        [float(r["energy_local_eV"]) for r in first], "o-", color="#0072B2",
         label="local state vector (exact)")
 for path, color, marker in zip(files, ("#D55E00", "#009E73", "#CC79A7"), "s^D"):
-    rows = [r for r in read(path) if r["energy_measured_Ha"]]
+    rows = [r for r in read(path) if r["energy_measured_eV"]]
     if not rows:
         continue
     ax.errorbar([float(r["distance_A"]) for r in rows],
-                [float(r["energy_measured_Ha"]) for r in rows],
-                yerr=[float(r["std_measured_Ha"]) for r in rows],
+                [float(r["energy_measured_eV"]) for r in rows],
+                yerr=[float(r["std_measured_eV"]) for r in rows],
                 fmt=marker + "--", color=color, capsize=3,
                 label=f"{rows[0]['backend']} ({rows[0]['shots']} shots)")
 ax.set_xlabel("H-H distance (Angstrom)")
-ax.set_ylabel("energy (Ha)")
+ax.set_ylabel("energy (eV)")
 ax.set_title("H2 (FAO), ADAPT-VQE, parity mapping, 2 qubits, resilience level 2")
 ax.legend(fontsize=8)
 fig.tight_layout()

@@ -41,7 +41,7 @@ from carcara.basis import BasisSet
 from carcara.basis.nao_ae import confinement_potential
 from carcara.core import MolecularIntegrals
 from carcara.integrals import Grid
-from carcara.units import to_bohr
+from carcara.units import BOHR_TO_ANGSTROM, from_hartree, to_bohr
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
@@ -89,7 +89,10 @@ def rhf_energy(basis):
         nuclei, functions, grid,
         softening=0.5 * min(grid.dx, grid.dy, grid.dz))
     result = integrals.hartree_fock(2)
-    return result.electronic_energy + integrals.nuclear_repulsion, len(functions)
+    # The SCF runs in Hartree; convert once, on return.
+    return (float(from_hartree(result.electronic_energy
+                               + integrals.nuclear_repulsion, "eV")),
+            len(functions))
 
 
 energies = {}
@@ -99,9 +102,9 @@ for label, basis in (("FAO (analytic 1s)", BasisSet.build("FAO")),
                      ("NAO-AE tier 1", bset)):
     energy, n_fn = rhf_energy(basis)
     energies[label] = energy
-    print(f"  {label:<20s}  {n_fn:2d} functions   E_RHF = {energy:+.6f} Ha")
+    print(f"  {label:<20s}  {n_fn:2d} functions   E_RHF = {energy:+.4f} eV")
 gain = energies["NAO-AE tier 0"] - energies["NAO-AE tier 1"]
-print(f"\n  tier 1 lowers the RHF energy by {gain * 1000:.1f} mHa over tier 0")
+print(f"\n  tier 1 lowers the RHF energy by {gain:.3f} eV over tier 0")
 assert energies["NAO-AE tier 1"] < energies["NAO-AE tier 0"]
 
 # --------------------------------------------------------------------------- #
@@ -125,21 +128,22 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 fig, (ax_r, ax_v) = plt.subplots(1, 2, figsize=(10.5, 4.0))
-r = hydrogen[0].r
+r = hydrogen[0].r                                   # Bohr (radial table)
 mask = r < r0 + w + 0.5
+r_ang = r * BOHR_TO_ANGSTROM                        # plot in Angstrom
 for f in hydrogen:
-    ax_r.plot(r[mask], f.u[mask], label=f.label)
-ax_r.axvspan(r0, r0 + w, color="0.85", label="wall ramp")
-ax_r.set_xlabel(r"$r$ ($a_0$)")
+    ax_r.plot(r_ang[mask], f.u[mask], label=f.label)
+ax_r.axvspan(ONSET, ONSET + WIDTH, color="0.85", label="wall ramp")
+ax_r.set_xlabel(r"$r$ (Angstrom)")
 ax_r.set_ylabel(r"$u(r) = r\,R(r)$")
 ax_r.set_title("Hydrogen, NAO-AE tier 1 (orthonormalized)")
 ax_r.legend(fontsize=8)
 
-ax_v.plot(r[mask], confinement_potential(r[mask], r0, w))
-ax_v.set_ylim(0, 5)
-ax_v.axvline(r0, color="k", ls="--", lw=0.8)
-ax_v.set_xlabel(r"$r$ ($a_0$)")
-ax_v.set_ylabel(r"$v_\mathrm{cut}(r)$ (Ha)")
+ax_v.plot(r_ang[mask], from_hartree(confinement_potential(r[mask], r0, w), "eV"))
+ax_v.set_ylim(0, from_hartree(5.0, "eV"))
+ax_v.axvline(ONSET, color="k", ls="--", lw=0.8)
+ax_v.set_xlabel(r"$r$ (Angstrom)")
+ax_v.set_ylabel(r"$v_\mathrm{cut}(r)$ (eV)")
 ax_v.set_title(f"Exponential wall: onset {ONSET} A, width {WIDTH} A")
 fig.tight_layout()
 fig.savefig(PNG_PATH, dpi=150)

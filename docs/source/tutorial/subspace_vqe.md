@@ -47,15 +47,17 @@ atoms.calc = Carcara(method="subspace-vqe", basis="FAO", h=0.20,
 atoms.get_potential_energy()               # ASE energy = ground state (eV)
 
 result = atoms.calc.result
-print(result.in_units("eV"))               # [E0, E1, ...] all levels
-print(result.excitation_energies)          # [0, E1 - E0, ...] (Hartree)
+print(result.energies)                     # [E0, E1, ...] all levels (eV)
+print(result.excitation_energies)          # [0, E1 - E0, ...] (eV)
+print(result.in_units("Ha"))               # the same levels in Hartree
 print(result.levels)                        # an EnergyLevels view
 ```
 
 `num_states` sets how many levels to compute; `weights` are the (strictly
 decreasing, positive) SSVQE weights, defaulting to $(k, k-1, \dots, 1)$. The
-result exposes `energies` (ascending, Hartree), `optimal_energy` (the ground
-state), the orthonormal `states`, and `in_units("eV")`.
+result exposes `energies` (ascending, eV -- like every Carcará result),
+`optimal_energy` (the ground state), the orthonormal `states`, and
+`in_units("Ha")` for the atomic-unit view.
 
 ---
 
@@ -74,7 +76,7 @@ atoms.calc = Carcara(method="subspace-adapt-vqe", basis="FAO", h=0.20,
 atoms.get_potential_energy()
 
 result = atoms.calc.result
-print(result.in_units("eV"))
+print(result.energies)                     # eV
 print(result.num_operators)                # operators in the shared ansatz
 ```
 

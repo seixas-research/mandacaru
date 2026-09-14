@@ -18,7 +18,7 @@ atoms.calc = Carcara(method="vasqe", basis="FAO", pool="fermionic",
 atoms.get_total_energy()
 result = atoms.calc.result
 
-print(f"Energy: {result.optimal_energy:.8f} Ha")
+print(f"Energy: {result.optimal_energy:.6f} eV")
 print(f"Operators: {result.operators}")
 print(f"Selection temperatures: {result.temperatures}")
 ```

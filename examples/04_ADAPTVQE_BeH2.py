@@ -35,7 +35,7 @@ import numpy as np
 from ase import Atoms
 
 from carcara.algorithms import Carcara
-from carcara.units import from_hartree
+from carcara.units import HARTREE_TO_EV, from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -66,20 +66,21 @@ atoms.calc = Carcara(
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)
-result = atoms.calc.result
-energy_ha = result.optimal_energy
+result = atoms.calc.result                         # result.optimal_energy is eV
 n_orbitals = atoms.calc.n_qubits // 2
 
-# Exact reference: lowest eigenvalue of the (active-space) qubit Hamiltonian (FCI).
+# Exact reference: lowest eigenvalue of the (active-space) qubit Hamiltonian
+# (FCI).  The qubit Hamiltonian is internal (Hartree): converted once, here.
 h_matrix = atoms.calc.hamiltonian.to_matrix()
-exact_ha = float(np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min())
-exact_ev = float(from_hartree(exact_ha, "eV"))
+exact_ev = float(from_hartree(
+    np.linalg.eigvalsh(0.5 * (h_matrix + h_matrix.conj().T)).min(), "eV"))
 
-assert abs(energy_ha - exact_ha) < 1e-4, "CEO ADAPT missed active-space FCI"
+assert abs(energy_ev - exact_ev) < 1e-4 * HARTREE_TO_EV, \
+    "CEO ADAPT missed active-space FCI"
 print(f"BeH2 (linear)  {n_orbitals} active orbitals "
       f"({atoms.calc.n_qubits} qubits, Be 1s frozen), "
       f"num_particles={atoms.calc.num_particles}")
-print(f"     E = {energy_ev:.6f} eV ({energy_ha:.8f} Ha) [qualitative], "
+print(f"     E = {energy_ev:.6f} eV [qualitative], "
       f"error vs FCI {energy_ev - exact_ev:+.1e} eV")
 print(f"     {result.num_operators} operators, "
       f"{result.metrics.cnot_count} CNOTs, converged={result.converged}")

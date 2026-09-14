@@ -13,8 +13,9 @@ from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.core.mapping import PauliSum
 from carcara.integrals import Grid
 from carcara.optimizers import Optimizer
+from carcara.units import HARTREE_TO_EV
 
-CHEMICAL_ACCURACY = 1.6e-3  # Ha
+CHEMICAL_ACCURACY = 1.6e-3 * HARTREE_TO_EV  # 0.043 eV (results are in eV)
 
 
 def _n_electrons_expectation(psi: np.ndarray) -> float:
@@ -36,8 +37,9 @@ def h2_hamiltonian():
 
 @pytest.fixture(scope="module")
 def h2_exact(h2_hamiltonian):
+    """FCI ground state in eV (the Hamiltonian is in Hartree; results in eV)."""
     m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
-    return float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
+    return float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min()) * HARTREE_TO_EV
 
 
 # --- excitation generators ---
@@ -215,13 +217,15 @@ class TestVQEAsASECalculator:
         atoms.calc = VQE(basis="FAO", optimizer="COBYLA", h=0.30, verbose=False)
         energy_ev = atoms.get_total_energy()
         result = atoms.calc.result
-        # ASE returns eV; must equal the Ha result converted to eV.
-        assert energy_ev == pytest.approx(result.optimal_energy * 27.211386245988,
-                                          rel=1e-9)
-        # And match the exact FCI of the built Hamiltonian.
+        # ASE returns eV, and so does the result (its unit is recorded).
+        assert result.energy_unit == "eV"
+        assert energy_ev == pytest.approx(result.optimal_energy, rel=1e-9)
+        # And match the exact FCI of the built Hamiltonian (Hartree -> eV).
         h = atoms.calc.hamiltonian.to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min())
-        assert result.optimal_energy == pytest.approx(exact, abs=1e-3)
+        assert result.in_units("Ha") == pytest.approx(exact, abs=1e-3)
+        assert result.optimal_energy == pytest.approx(exact * HARTREE_TO_EV,
+                                                      abs=1e-3 * HARTREE_TO_EV)
         assert atoms.calc.n_qubits == 4
 
     def test_builder_hamiltonian_and_default_ansatz(self):

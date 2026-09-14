@@ -176,7 +176,7 @@ for pool in ("fermionic", "qubit", "qeb", "ceo"):
     result = Carcara(method="adapt-vqe", pool=pool,
                                load_hamiltonian="lih.parquet",
                                verbose=False).run()
-    print(f"{pool:<10} E = {result.optimal_energy:.8f} Ha  "
+    print(f"{pool:<10} E = {result.optimal_energy:.6f} eV  "
           f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
 ```
 

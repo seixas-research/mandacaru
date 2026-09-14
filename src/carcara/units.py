@@ -19,6 +19,18 @@ helpers.  The user-facing classes (``Grid``, ``FullAtomicOrbital``,
 energies in eV *by default*, converting to/from atomic units at their boundary,
 while the numerical core (the integral engine, the C backend) works throughout
 in atomic units (Bohr, Hartree).
+
+**Convention (2026-09-14).**  Everything a user *sees* -- the result objects of
+the variational drivers (``optimal_energy``, ``reference_energy``, energy
+histories, ``EnergyLevels``, the subspace results, ``InteractionEnergy``,
+``ForceResult``), the verbose printouts, the CLI, the band structures and the
+hardware measurements -- is in **eV and Angstrom**.  Hartree and Bohr survive
+only inside the internal layers: the integral engine, the second-quantized /
+qubit Hamiltonians (``Fermion`` / ``PauliSum`` coefficients, the Hamiltonian
+cache files), the basis and pseudopotential records and the SCF / gradient
+mathematics.  ``atomic_units=True`` on a driver is the single opt-in that
+switches its outputs to Hartree / Bohr.  Each conversion happens exactly once,
+where a result object or a printout is built.
 """
 
 from __future__ import annotations
@@ -48,11 +60,35 @@ def to_bohr(length, units: str = "angstrom"):
     return np.asarray(length, dtype=float) * factor
 
 
-def from_hartree(energy, units: str = "eV"):
-    """Convert an energy (scalar or array, possibly complex) from Hartree to ``units``."""
+def _energy_factor(units: str) -> float:
+    """Hartree -> ``units`` factor for an accepted energy-unit spelling."""
     try:
-        factor = _ENERGY_FROM_HARTREE[units.lower()]
-    except KeyError:
+        return _ENERGY_FROM_HARTREE[units.lower()]
+    except (KeyError, AttributeError):
         raise ValueError(
             f"unknown energy unit {units!r}; use 'eV' or 'Ha'") from None
-    return energy * factor
+
+
+def energy_unit_label(units: str) -> str:
+    """Canonical label -- ``"eV"`` or ``"Ha"`` -- of an accepted energy unit."""
+    return "Ha" if _energy_factor(units) == 1.0 else "eV"
+
+
+def from_hartree(energy, units: str = "eV"):
+    """Convert an energy (scalar or array, possibly complex) from Hartree to ``units``."""
+    return energy * _energy_factor(units)
+
+
+def to_hartree(energy, units: str = "eV"):
+    """Convert an energy (scalar or array) in ``units`` to Hartree."""
+    return energy / _energy_factor(units)
+
+
+def convert_energy(energy, from_units: str, to_units: str):
+    """Convert an energy (scalar or array) from ``from_units`` to ``to_units``.
+
+    The factor is the ratio of the two Hartree factors, so this never
+    introduces a conversion constant of its own.
+    """
+    factor = _energy_factor(to_units) / _energy_factor(from_units)
+    return energy if factor == 1.0 else energy * factor

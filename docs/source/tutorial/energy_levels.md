@@ -35,13 +35,15 @@ atoms.calc = Carcara(method="vqe", basis="FAO", h=0.20, verbose=False)
 atoms.get_potential_energy()                 # configures the solver
 
 levels = atoms.calc.energy_levels(num_states=2, restarts=4)
-print(levels.in_units("eV"))                 # ground + first excited (eV)
-print(levels.excitation_energies_in_units("eV"))   # [0, E1 - E0, ...]
+print(levels.energies)                       # ground + first excited (eV)
+print(levels.excitation_energies)            # [0, E1 - E0, ...] (eV)
+print(levels.in_units("Ha"))                 # the same levels in Hartree
 ```
 
 `energy_levels` returns an {class}`~carcara.algorithms.EnergyLevels` with ascending
-energies (Hartree), the optimal state vectors, and convenience views:
-`ground_state_energy`, `excitation_energies`, `gaps`, and `in_units("eV")`.
+energies (eV, like every Carcará result; Hartree only with `atomic_units=True`),
+the optimal state vectors, and convenience views: `ground_state_energy`,
+`excitation_energies`, `gaps`, and `in_units("Ha")`.
 
 `beta` defaults to a robust value derived from the Hamiltonian's coefficient
 1-norm; pass it explicitly to tune. `restarts` runs the optimizer several times
@@ -63,7 +65,7 @@ atoms.calc = Carcara(method="adapt-vqe", pool="fermionic",
 atoms.get_potential_energy()
 
 levels = atoms.calc.energy_levels(num_states=2)
-print(levels.in_units("eV"))
+print(levels.energies)                       # eV
 print(levels.num_operators)                  # operators grown per level
 ```
 

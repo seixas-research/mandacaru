@@ -17,6 +17,7 @@ that the variational drivers reach the sector's exact ground state.
 """
 
 import numpy as np
+from carcara.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
@@ -228,9 +229,11 @@ class TestSolvers:
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (1, 0) and calc.n_qubits == 2
-        exact = _sector_ground_state(calc.hamiltonian, (1, 0))
-        assert calc.result.optimal_energy == pytest.approx(exact, abs=1e-8)
-        assert calc.result.optimal_energy == pytest.approx(-0.5, abs=0.03)
+        exact = _sector_ground_state(calc.hamiltonian, (1, 0))       # Hartree
+        assert calc.result.in_units("Ha") == pytest.approx(exact, abs=1e-8)
+        assert calc.result.in_units("Ha") == pytest.approx(-0.5, abs=0.03)
+        assert calc.result.optimal_energy == pytest.approx(
+            -0.5 * HARTREE_TO_EV, abs=0.03 * HARTREE_TO_EV)
 
     def test_adapt_vqe_h3_doublet_reaches_sector_fci(self, h3):
         H = h3.molecular_hamiltonian(mo_basis=True, n_electrons=3)
@@ -240,7 +243,7 @@ class TestSolvers:
                           optimizer="L-BFGS-B", gradient_tolerance=1e-6,
                           max_iterations=30)
         result = driver.run()
-        assert result.optimal_energy == pytest.approx(exact, abs=1e-5)
+        assert result.in_units("Ha") == pytest.approx(exact, abs=1e-5)
         # Singles carry gradient from a non-stationary reference: allowed.
         assert result.num_operators >= 1
 
@@ -252,13 +255,14 @@ class TestSolvers:
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (2, 1) and calc.n_qubits == 6
-        exact = _sector_ground_state(calc.hamiltonian, (2, 1))
-        assert calc.result.optimal_energy >= exact - 1e-9
+        exact = _sector_ground_state(calc.hamiltonian, (2, 1))       # Hartree
+        energy_ha = calc.result.in_units("Ha")
+        assert energy_ha >= exact - 1e-9
         # UCCSD from the NO reference recovers the sector ground state.
-        assert calc.result.optimal_energy == pytest.approx(exact, abs=1e-4)
+        assert energy_ha == pytest.approx(exact, abs=1e-4)
         context = calc.solver._gradient_context
         uhf = context["integrals"].open_shell_hartree_fock(2, 1)
-        assert calc.result.optimal_energy <= (
+        assert energy_ha <= (
             uhf.electronic_energy + context["integrals"].nuclear_repulsion + 1e-6)
 
 
@@ -310,5 +314,5 @@ class TestPlaneWaves:
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (1, 0) and calc.n_qubits == 6
-        exact = _sector_ground_state(calc.hamiltonian, (1, 0))
-        assert calc.result.optimal_energy == pytest.approx(exact, abs=1e-5)
+        exact = _sector_ground_state(calc.hamiltonian, (1, 0))       # Hartree
+        assert calc.result.in_units("Ha") == pytest.approx(exact, abs=1e-5)

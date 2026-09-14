@@ -318,7 +318,10 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
             else [int(num_particles[0]), int(num_particles[1])]),
         "carcara.n_spatial_orbitals": json.dumps(
             None if n_spatial_orbitals is None else int(n_spatial_orbitals)),
-        "carcara.metadata": json.dumps(dict(metadata or {}), default=str),
+        # The Pauli coefficients are the internal Hartree ones; say so in the
+        # file so a reader never has to guess.
+        "carcara.metadata": json.dumps(
+            {"energy_unit": "Ha", **dict(metadata or {})}, default=str),
     }
 
     path = os.fspath(path)

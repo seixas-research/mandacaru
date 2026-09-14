@@ -43,11 +43,11 @@ total_gates: 88
 one_qubit_gates: 40
 pool_size: 8
 operator_pool:
-  [  0] CEO[q0,q2]{S(0->2)}  |grad|=1.054143e-10
+  [  0] CEO[q0,q2]{S(0->2)}  |grad|=5.142967e-10
         pauli: -0.5j XIYIII  +0.5j YIXIII
   [  1] CEO[q1,q2]{S(1->2)}  |grad|=0.000000e+00
         pauli: -0.5j IXYIII  +0.5j IYXIII
-  [  2] CEO[q3,q5]{S(3->5)}  |grad|=1.054143e-10
+  [  2] CEO[q3,q5]{S(3->5)}  |grad|=5.142968e-10
         pauli: -0.5j IIIXIY  +0.5j IIIYIX
   [  3] CEO[q4,q5]{S(4->5)}  |grad|=0.000000e+00
         pauli: -0.5j IIIIXY  +0.5j IIIIYX
@@ -67,7 +67,7 @@ selected_operator: CEO[q1,q2,q4,q5]{D(1,4->2,5)}
   gradient: 7.497554e-02
   pauli: -0.125j IXXIXY  +0.125j IXXIYX  -0.125j IXYIXX  -0.125j IXYIYY  +0.125j IYXIXX  +0.125j IYXIYY  -0.125j IYYIXY  +0.125j IYYIYX
 expressivity_E: 2.911516
-energy_eV: -384.4612448410
+energy_eV: -384.4612447786
 num_parameters: 2
 cnot_count: 96
 circuit_depth: 129
@@ -83,7 +83,7 @@ operator_pool:
         pauli: -0.5j IIIXIY  +0.5j IIIYIX
   [  3] CEO[q4,q5]{S(4->5)}  |grad|=0.000000e+00
         pauli: -0.5j IIIIXY  +0.5j IIIIYX
-  [  4] CEO[q0,q2,q3,q5]{D(0,3->2,5)}  |grad|=6.611699e-05
+  [  4] CEO[q0,q2,q3,q5]{D(0,3->2,5)}  |grad|=6.611691e-05
         pauli: -0.125j XIXXIY  +0.125j XIXYIX  -0.125j XIYXIX  -0.125j XIYYIY  +0.125j YIXXIX  +0.125j YIXYIY  -0.125j YIYXIY  +0.125j YIYYIX
   [  5] CEO[q0,q2,q4,q5]{D(0,4->2,5)}  |grad|=0.000000e+00
         pauli: -0.125j XIXIXY  +0.125j XIXIYX  -0.125j XIYIXX  -0.125j XIYIYY  +0.125j YIXIXX  +0.125j YIXIYY  -0.125j YIYIXY  +0.125j YIYIYX
@@ -96,10 +96,10 @@ operator_pool:
 [ITERATION 3]
 selected_operator: CEO[q0,q2]{S(0->2)}
   kind: ceo
-  gradient: 1.160907e-02
+  gradient: 1.161704e-02
   pauli: -0.5j XIYIII  +0.5j YIXIII
 expressivity_E: 0.877680
-energy_eV: -384.4623888422
+energy_eV: -384.4623888081
 num_parameters: 3
 cnot_count: 100
 circuit_depth: 136
@@ -107,31 +107,31 @@ total_gates: 179
 one_qubit_gates: 79
 pool_size: 8
 operator_pool:
-  [  0] CEO[q0,q2]{S(0->2)}  |grad|=1.160907e-02 (selected)
+  [  0] CEO[q0,q2]{S(0->2)}  |grad|=1.161704e-02 (selected)
         pauli: -0.5j XIYIII  +0.5j YIXIII
   [  1] CEO[q1,q2]{S(1->2)}  |grad|=0.000000e+00
         pauli: -0.5j IXYIII  +0.5j IYXIII
-  [  2] CEO[q3,q5]{S(3->5)}  |grad|=1.160907e-02
+  [  2] CEO[q3,q5]{S(3->5)}  |grad|=1.161704e-02
         pauli: -0.5j IIIXIY  +0.5j IIIYIX
   [  3] CEO[q4,q5]{S(4->5)}  |grad|=0.000000e+00
         pauli: -0.5j IIIIXY  +0.5j IIIIYX
-  [  4] CEO[q0,q2,q3,q5]{D(0,3->2,5)}  |grad|=2.189017e-05
+  [  4] CEO[q0,q2,q3,q5]{D(0,3->2,5)}  |grad|=1.431551e-04
         pauli: -0.125j XIXXIY  +0.125j XIXYIX  -0.125j XIYXIX  -0.125j XIYYIY  +0.125j YIXXIX  +0.125j YIXYIY  -0.125j YIYXIY  +0.125j YIYYIX
   [  5] CEO[q0,q2,q4,q5]{D(0,4->2,5)}  |grad|=0.000000e+00
         pauli: -0.125j XIXIXY  +0.125j XIXIYX  -0.125j XIYIXX  -0.125j XIYIYY  +0.125j YIXIXX  +0.125j YIXIYY  -0.125j YIYIXY  +0.125j YIYIYX
   [  6] CEO[q1,q2,q3,q5]{D(1,3->2,5)}  |grad|=0.000000e+00
         pauli: -0.125j IXXXIY  +0.125j IXXYIX  -0.125j IXYXIX  -0.125j IXYYIY  +0.125j IYXXIX  +0.125j IYXYIY  -0.125j IYYXIY  +0.125j IYYYIX
-  [  7] CEO[q1,q2,q4,q5]{D(1,4->2,5)}  |grad|=5.588090e-05
+  [  7] CEO[q1,q2,q4,q5]{D(1,4->2,5)}  |grad|=2.539682e-05
         pauli: -0.125j IXXIXY  +0.125j IXXIYX  -0.125j IXYIXX  -0.125j IXYIYY  +0.125j IYXIXX  +0.125j IYXIYY  -0.125j IYYIXY  +0.125j IYYIYX
 
 ------------------------------------------------------------------------
 [ITERATION 4]
 selected_operator: CEO[q3,q5]{S(3->5)}
   kind: ceo
-  gradient: 9.776358e-03
+  gradient: 9.773604e-03
   pauli: -0.5j IIIXIY  +0.5j IIIYIX
 expressivity_E: 0.809815
-energy_eV: -384.4632204267
+energy_eV: -384.4632206711
 num_parameters: 4
 cnot_count: 104
 circuit_depth: 137
@@ -139,35 +139,35 @@ total_gates: 189
 one_qubit_gates: 85
 pool_size: 8
 operator_pool:
-  [  0] CEO[q0,q2]{S(0->2)}  |grad|=8.901639e-06
+  [  0] CEO[q0,q2]{S(0->2)}  |grad|=1.734462e-05
         pauli: -0.5j XIYIII  +0.5j YIXIII
   [  1] CEO[q1,q2]{S(1->2)}  |grad|=0.000000e+00
         pauli: -0.5j IXYIII  +0.5j IYXIII
-  [  2] CEO[q3,q5]{S(3->5)}  |grad|=9.776358e-03 (selected)
+  [  2] CEO[q3,q5]{S(3->5)}  |grad|=9.773604e-03 (selected)
         pauli: -0.5j IIIXIY  +0.5j IIIYIX
   [  3] CEO[q4,q5]{S(4->5)}  |grad|=0.000000e+00
         pauli: -0.5j IIIIXY  +0.5j IIIIYX
-  [  4] CEO[q0,q2,q3,q5]{D(0,3->2,5)}  |grad|=1.905243e-05
+  [  4] CEO[q0,q2,q3,q5]{D(0,3->2,5)}  |grad|=7.989988e-05
         pauli: -0.125j XIXXIY  +0.125j XIXYIX  -0.125j XIYXIX  -0.125j XIYYIY  +0.125j YIXXIX  +0.125j YIXYIY  -0.125j YIYXIY  +0.125j YIYYIX
   [  5] CEO[q0,q2,q4,q5]{D(0,4->2,5)}  |grad|=0.000000e+00
         pauli: -0.125j XIXIXY  +0.125j XIXIYX  -0.125j XIYIXX  -0.125j XIYIYY  +0.125j YIXIXX  +0.125j YIXIYY  -0.125j YIYIXY  +0.125j YIYIYX
   [  6] CEO[q1,q2,q3,q5]{D(1,3->2,5)}  |grad|=0.000000e+00
         pauli: -0.125j IXXXIY  +0.125j IXXYIX  -0.125j IXYXIX  -0.125j IXYYIY  +0.125j IYXXIX  +0.125j IYXYIY  -0.125j IYYXIY  +0.125j IYYYIX
-  [  7] CEO[q1,q2,q4,q5]{D(1,4->2,5)}  |grad|=1.027471e-04
+  [  7] CEO[q1,q2,q4,q5]{D(1,4->2,5)}  |grad|=1.444966e-04
         pauli: -0.125j IXXIXY  +0.125j IXXIYX  -0.125j IXYIXX  -0.125j IXYIYY  +0.125j IYXIXX  +0.125j IYXIYY  -0.125j IYYIXY  +0.125j IYYIYX
 
 ========================================================================
 [SUMMARY]
 converged: True
 classical_optimizer: COBYLA
-optimal_energy_eV: -384.4632204267
+optimal_energy_eV: -384.4632206711
 reference_energy_eV: -384.3573152246
-correlation_energy_eV: -0.1059052021
+correlation_energy_eV: -0.1059054466
 num_operators: 4
 num_parameters: 4
 final_expressivity_E: 0.809815
-final_max_gradient: 1.462182e-04
-cost_evaluations: 151
+final_max_gradient: 8.080408e-05
+cost_evaluations: 147
 cnot_count: 104
 circuit_depth: 137
 one_qubit_gates: 85

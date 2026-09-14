@@ -381,53 +381,20 @@ def _warn_unresolved(integrals, basis_fns, h):
 
 def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, options,
                                  kinetic=None):
-    """Valence-only Hamiltonian from norm-conserving pseudopotentials.
+    """Valence-only Hamiltonian from a pseudopotential **family** (experimental).
 
-    The core electrons are gone entirely: the basis is the set of valence
-    pseudo-atomic orbitals, the external potential is the smooth local channel,
-    and the Kleinman-Bylander projectors supply the nonlocal part.  The
-    "nuclei" carry the *ionic* charges, so the constant term is the ion-ion
-    repulsion.
+    A thin dispatcher: ``options["family"]`` (canonical after
+    :func:`~carcara.experimental.pseudopotentials.families.normalize_pseudopotentials`;
+    the Troullier-Martins ``"tm"`` family by default) selects the
+    :class:`~carcara.experimental.pseudopotentials.families.FamilySpec`, whose
+    ``build`` returns the same 5-tuple as :func:`build_basis_hamiltonian`.  A
+    new family is registered with ``register_family`` and needs nothing here.
     """
-    from ..experimental.pseudopotentials.io import get_pseudopotential
-    from ..experimental.pseudopotentials.orbitals import (kb_projectors, pseudo_basis,
-                                        valence_electrons)
-    from ..core import MolecularIntegrals
+    from ..experimental.pseudopotentials.families import resolve_family
 
-    directory = options.get("directory")
-    symbols = atoms.get_chemical_symbols()
-    positions = coherent_positions(atoms)
-    potentials = {symbol: get_pseudopotential(symbol, directory)
-                  for symbol in set(symbols)}
-
-    basis_fns, atom_of_orbital = pseudo_basis(
-        symbols, positions, potentials, size=options.get("size", "SZ"),
-        split_norm=options.get("split_norm"))
-    projectors = kb_projectors(symbols, positions, potentials)
-    nuclei = [(potentials[symbol].valence_charge, position)
-              for symbol, position in zip(symbols, positions)]
-
-    n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
-    g = (grid if grid is not None
-         else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
-
-    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
-    num_particles = _num_particles(n_el, n_unpaired, "PP")
-    integrals = MolecularIntegrals(
-        nuclei, basis_fns, g, softening=0.0,
-        pseudopotentials=[potentials[s] for s in symbols],
-        kb_projectors=projectors,
-        kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"])
-    hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,
-                                                  n_electrons=n_el,
-                                                  num_particles=num_particles)
-    _warn_unresolved(integrals, basis_fns, h)
-
-    context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
-               "frozen": (), "n_electrons": n_el,
-               "pseudopotentials": potentials, "kb_projectors": projectors}
-    return (hamiltonian, num_particles, len(basis_fns),
-            integrals.integration_profile(), context)
+    options = dict(options)
+    family = resolve_family(options.pop("family", None))
+    return family.build(atoms, grid, h, charge, spin, options, kinetic)
 
 
 def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
@@ -472,7 +439,9 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
             raise ValueError(
                 "frozen_core is redundant with pseudopotentials -- the core is "
                 "already absent from the valence-only pseudo basis")
-        options = ({} if pseudopotentials is True else dict(pseudopotentials))
+        from ..experimental.pseudopotentials.families import (
+            normalize_pseudopotentials)
+        options = normalize_pseudopotentials(pseudopotentials)
         options = _merge_pseudo_basis_options(basis, options)
         return _pseudopotential_hamiltonian(atoms, grid, h, charge, spin,
                                             options, kinetic=kinetic)

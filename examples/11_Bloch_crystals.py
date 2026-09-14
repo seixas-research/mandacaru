@@ -61,5 +61,5 @@ print(f"adapt-vqe  E/cell = {e_adapt:+.4f} eV   "
 
 spread = max(e_vqe, e_adapt) - min(e_vqe, e_adapt)
 print(f"\nBoth solvers target the same per-cell ground state and agree to "
-      f"within chemical accuracy (spread {spread * 1e3:.1f} meV = "
-      f"{spread / 0.0272114:.2f} mHa).")
+      f"within chemical accuracy (spread {spread * 1e3:.1f} meV; chemical "
+      f"accuracy is 43 meV).")

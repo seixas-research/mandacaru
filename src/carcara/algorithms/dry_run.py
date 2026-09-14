@@ -229,13 +229,15 @@ def count_basis_functions(atoms, basis="FAO", pseudopotentials=False):
 
     symbols = list(atoms.get_chemical_symbols())
     if pseudopotentials:
-        from ..experimental.pseudopotentials.io import get_pseudopotential
+        from ..experimental.pseudopotentials.families import (
+            normalize_pseudopotentials, resolve_family)
         from ..experimental.pseudopotentials.orbitals import pseudo_basis
 
-        options = ({} if pseudopotentials is True else dict(pseudopotentials))
+        options = normalize_pseudopotentials(pseudopotentials)
         options = _merge_pseudo_basis_options(basis, options)
+        family = resolve_family(options["family"])
         directory = options.get("directory")
-        potentials = {s: get_pseudopotential(s, directory) for s in set(symbols)}
+        potentials = {s: family.get(s, directory) for s in set(symbols)}
         positions = coherent_positions(atoms)
         _fns, atom_of_orbital = pseudo_basis(
             symbols, positions, potentials, size=options.get("size", "SZ"),
@@ -384,17 +386,20 @@ def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
     if pseudopotentials:
         if frozen_core or frozen_orbitals:
             raise ValueError("frozen_core is redundant with pseudopotentials")
-        from ..experimental.pseudopotentials.io import get_pseudopotential
+        from ..experimental.pseudopotentials.families import (
+            normalize_pseudopotentials, resolve_family)
         from ..experimental.pseudopotentials.orbitals import valence_electrons
 
-        options = ({} if pseudopotentials is True else dict(pseudopotentials))
+        options = normalize_pseudopotentials(pseudopotentials)
+        family = resolve_family(options["family"])
         symbols = atoms.get_chemical_symbols()
-        potentials = {s: get_pseudopotential(s, options.get("directory"))
+        potentials = {s: family.get(s, options.get("directory"))
                       for s in set(symbols)}
         n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
         frozen: list[int] = []
-        notes.append("pseudopotentials: the core is absent from the valence "
-                     "problem (counts are valence electrons / orbitals)")
+        notes.append(f"pseudopotentials ({family.name} family): the core is "
+                     "absent from the valence problem (counts are valence "
+                     "electrons / orbitals)")
     else:
         n_el = (int(n_electrons) if n_electrons is not None
                 else int(sum(int(z) for z in numbers)) - int(charge))

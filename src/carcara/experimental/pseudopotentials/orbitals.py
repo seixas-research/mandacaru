@@ -100,20 +100,47 @@ class KBProjector(_RadialTabulated):
     Carries the Kleinman-Bylander energy :attr:`kb_energy` and the index of the
     atom it belongs to, which is what the nonlocal matrix and its nuclear
     derivative need.
+
+    Every projector also carries the three labels the **general separable
+    form** of :meth:`carcara.core.hamiltonian.MolecularIntegrals.kb_nonlocal`
+    keys on: :attr:`atom_index`, the :attr:`channel` ``(l, m)`` and, within
+    that channel, its radial :attr:`index`.  The nonlocal coupling matrix
+    :math:`D` is block-diagonal over ``(atom, l, m)``; a family with several
+    radial projectors per channel (ONCVPSP) numbers them with ``index`` and
+    supplies the block, whereas the Kleinman-Bylander form has a single
+    projector per channel (``index = 0``) and the :math:`1\times1` block
+    :math:`[E^{KB}_l]`.
     """
 
     def __init__(self, pseudopotential, l: int, m: int, center=None,
-                 units: str = "angstrom", atom_index: int = 0):
-        super().__init__(pseudopotential.r, pseudopotential.projectors[int(l)],
-                         l, m, center, units)
+                 units: str = "angstrom", atom_index: int = 0,
+                 index: int = 0, radial=None, kb_energy=None):
+        chi = (pseudopotential.projectors[int(l)] if radial is None
+               else np.asarray(radial, dtype=float))
+        super().__init__(pseudopotential.r, chi, l, m, center, units)
         self.symbol = pseudopotential.symbol
-        self.kb_energy = float(pseudopotential.kb_energies[int(l)])
+        self.kb_energy = float(pseudopotential.kb_energies[int(l)]
+                               if kb_energy is None else kb_energy)
         self.atom_index = int(atom_index)
-        self.r_cut = float(pseudopotential.channels[int(l)].r_cut)
+        #: Radial projector index within the ``(atom, l, m)`` channel.
+        self.index = int(index)
+        channel = pseudopotential.channels.get(int(l))
+        self.r_cut = float(channel.r_cut) if channel is not None else float("nan")
+
+    @property
+    def channel(self) -> tuple[int, int]:
+        """The ``(l, m)`` channel this projector belongs to."""
+        return (self.l, self.m)
+
+    @property
+    def block_key(self) -> tuple[int, int, int]:
+        """``(atom_index, l, m)`` -- the key of its block in the coupling matrix."""
+        return (self.atom_index, self.l, self.m)
 
     def __repr__(self) -> str:
         return (f"KBProjector({self.symbol}, l={self.l}, m={self.m}, "
-                f"E_KB={self.kb_energy:+.4f}, atom={self.atom_index})")
+                f"E_KB={self.kb_energy:+.4f}, atom={self.atom_index}, "
+                f"index={self.index})")
 
 
 # --------------------------------------------------------------------------- #
@@ -206,6 +233,27 @@ def kb_projectors(symbols, positions, potentials, units: str = "angstrom"):
                 projectors.append(KBProjector(pp, l, m, center=position,
                                               units=units, atom_index=index))
     return projectors
+
+
+def kb_coupling_blocks(projectors) -> dict:
+    r"""Nonlocal coupling blocks of a Kleinman-Bylander projector set.
+
+    The general separable nonlocal term is :math:`H^{NL} = C\,D\,C^\dagger`
+    with :math:`D` block-diagonal over ``(atom, l, m)``.  For the KB form each
+    block is the :math:`1\times1` matrix :math:`[E^{KB}_l]`; this returns
+    ``{(atom_index, l, m): [[E_KB]]}``, the layout
+    :class:`~carcara.core.hamiltonian.MolecularIntegrals` takes as
+    ``nonlocal_coupling``.
+    """
+    blocks = {}
+    for projector in projectors:
+        key = projector.block_key
+        if key in blocks:
+            raise ValueError(
+                f"two Kleinman-Bylander projectors share the channel {key}; "
+                "the KB form has exactly one projector per (atom, l, m)")
+        blocks[key] = np.array([[projector.kb_energy]], dtype=complex)
+    return blocks
 
 
 def valence_electrons(symbols, potentials) -> float:

@@ -267,9 +267,7 @@ def run_dry(calc, atoms, args) -> int:
 
 
 def run_full(calc, atoms, args) -> int:
-    """Run the variational calculation and print the energy."""
-    from .units import from_hartree
-
+    """Run the variational calculation and print the energy (eV)."""
     if atoms is None:
         result = calc.run()
     else:
@@ -277,7 +275,8 @@ def run_full(calc, atoms, args) -> int:
         atoms.get_potential_energy()
         result = calc.result
     energy = float(result.optimal_energy)
-    print(f"\nFinal energy: {energy:.8f} Ha  ({from_hartree(energy, 'eV'):.6f} eV)")
+    unit = getattr(result, "energy_unit", "eV")
+    print(f"\nFinal energy: {energy:.8f} {unit}")
     ops = getattr(result, "operators", None)
     if ops is not None:
         print(f"Operators grown: {len(ops)}")

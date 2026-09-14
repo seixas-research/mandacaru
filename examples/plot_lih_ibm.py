@@ -22,20 +22,20 @@ with open(CSV_PATH, newline="") as fh:
     rows = list(csv.DictReader(fh))
 
 d = [float(r["distance_A"]) for r in rows]
-local = [float(r["energy_local_Ha"]) for r in rows]
-hardware = [r for r in rows if r["energy_measured_Ha"]]
+local = [float(r["energy_local_eV"]) for r in rows]
+hardware = [r for r in rows if r["energy_measured_eV"]]
 
 fig, ax = plt.subplots(figsize=(6.4, 4.4))
 ax.plot(d, local, "o-", color="#0072B2", label="local state vector (exact)")
 if hardware:
     ax.errorbar([float(r["distance_A"]) for r in hardware],
-                [float(r["energy_measured_Ha"]) for r in hardware],
-                yerr=[float(r["std_measured_Ha"]) for r in hardware],
+                [float(r["energy_measured_eV"]) for r in hardware],
+                yerr=[float(r["std_measured_eV"]) for r in hardware],
                 fmt="s--", color="#D55E00", capsize=3,
                 label=f"{hardware[0]['backend']} ({hardware[0]['shots']} shots, "
                       f"job {hardware[0]['job_id']})")
 ax.set_xlabel("Li-H distance (Angstrom)")
-ax.set_ylabel("energy (Ha)")
+ax.set_ylabel("energy (eV)")
 ax.set_title("LiH, ADAPT-VQE (ceo pool, Jordan-Wigner)")
 ax.legend(fontsize=8)
 fig.tight_layout()

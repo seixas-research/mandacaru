@@ -43,6 +43,7 @@ from ase.data import atomic_numbers
 from carcara.algorithms import RHF, UHF
 from carcara.core import MolecularIntegrals
 from carcara.integrals import Grid
+from carcara.units import from_hartree
 
 
 @dataclass
@@ -88,7 +89,11 @@ def cusp_softening(grid: Grid) -> float:
 
 
 def rhf_total_energy(symbols, positions, basis_set, grid: Grid) -> float:
-    """RHF total energy (electronic + nuclear repulsion) of a molecule, in Hartree."""
+    """RHF total energy (electronic + nuclear repulsion) of a molecule, in eV.
+
+    The SCF itself runs in the integrals' Hartree; the conversion happens once,
+    here, so the helpers match the drivers' eV results.
+    """
     nuclei = [(float(atomic_numbers[s]), np.asarray(p, dtype=float))
               for s, p in zip(symbols, positions)]
     n_electrons = sum(atomic_numbers[s] for s in symbols)
@@ -98,11 +103,12 @@ def rhf_total_energy(symbols, positions, basis_set, grid: Grid) -> float:
     integrals = MolecularIntegrals(nuclei, basis, grid,
                                    softening=cusp_softening(grid))
     rhf = RHF(integrals.one_body(), integrals.two_body(), n_electrons).run()
-    return rhf.electronic_energy + integrals.nuclear_repulsion
+    return float(from_hartree(rhf.electronic_energy + integrals.nuclear_repulsion,
+                              "eV"))
 
 
 def atom_energy(symbol, basis_set, grid: Grid, position) -> float:
-    """UHF energy of an isolated atom (Hartree) placed at ``position`` on ``grid``.
+    """UHF energy of an isolated atom (eV) placed at ``position`` on ``grid``.
 
     The energy is translation-invariant physically; the placement is chosen only
     to match the atom's grid alignment in the molecular scan, so the core grid
@@ -114,11 +120,12 @@ def atom_energy(symbol, basis_set, grid: Grid, position) -> float:
                                    basis_set.atom(symbol, center=position), grid,
                                    softening=cusp_softening(grid))
     n_alpha, n_beta = ceil(Z / 2), floor(Z / 2)
-    return UHF(integrals.one_body(), integrals.two_body(), n_alpha, n_beta).run()
+    energy = UHF(integrals.one_body(), integrals.two_body(), n_alpha, n_beta).run()
+    return float(from_hartree(energy, "eV"))
 
 
 def atomic_reference(symbols, basis_set, grid: Grid, ref_positions) -> float:
-    """Sum of isolated-atom UHF energies, each atom at its molecular grid position.
+    """Sum of isolated-atom UHF energies (eV), each atom at its molecular grid position.
 
     This is the absolute energy reference of every dissociation curve: the
     energy of the fully separated, non-interacting atoms in the same basis on

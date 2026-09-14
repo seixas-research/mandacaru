@@ -49,7 +49,7 @@ import numpy as np
 from ..circuits.adapt_ansatz import AdaptAnsatz
 from ..circuits.pools import PoolBase, PoolOperator, build_pool
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
-from ..units import ANGSTROM_TO_BOHR, from_hartree
+from ..units import ANGSTROM_TO_BOHR, convert_energy
 from .base import VariationalDriver
 from .deflation import DeflationMixin, deflation_penalty
 
@@ -100,7 +100,11 @@ def _resolve_geometry(geometry):
 
 @dataclass
 class AdaptIteration:
-    """Record of one ADAPT-VQE macro-iteration."""
+    """Record of one ADAPT-VQE macro-iteration.
+
+    ``energy`` is in the driver's output units (eV; Hartree with
+    ``atomic_units=True``), like the enclosing :class:`ADAPTVQEResult`.
+    """
 
     operator_label: str
     operator_kind: str
@@ -113,7 +117,13 @@ class AdaptIteration:
 
 @dataclass
 class ADAPTVQEResult:
-    """Result of an :class:`ADAPTVQE` run."""
+    """Result of an :class:`ADAPTVQE` run.
+
+    Every energy (``optimal_energy``, ``reference_energy``, the per-iteration
+    ``energy_history``) is in :attr:`energy_unit` -- **eV** by default, Hartree
+    when the driver was built with ``atomic_units=True``; :meth:`in_units`
+    converts.
+    """
 
     optimal_energy: float
     optimal_parameters: np.ndarray
@@ -126,6 +136,7 @@ class ADAPTVQEResult:
     metrics: CircuitMetrics | None = None     # final compiled-circuit metrics
     timings: dict | None = None               # per-stage wall time / cores / memory
     integration_profile: dict | None = None   # real-space integration profile
+    energy_unit: str = "eV"                   # unit of every energy above
 
     @property
     def num_operators(self) -> int:
@@ -134,6 +145,15 @@ class ADAPTVQEResult:
     @property
     def energy_history(self) -> list[float]:
         return [it.energy for it in self.iterations]
+
+    @property
+    def correlation_energy(self) -> float:
+        """Energy lowered relative to the reference (``E - E_ref``)."""
+        return self.optimal_energy - self.reference_energy
+
+    def in_units(self, units: str = "eV") -> float:
+        """The optimal energy converted to ``units`` (``"eV"`` or ``"Ha"``)."""
+        return float(convert_energy(self.optimal_energy, self.energy_unit, units))
 
     @property
     def gradient_history(self) -> list[float]:
@@ -394,7 +414,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                          quenching=quenching, dry_run=dry_run, kinetic=kinetic,
                          two_qubit_reduction=two_qubit_reduction,
                          run_options=run_options, verbose=verbose,
-                         sparse=sparse, **calc_kwargs)
+                         sparse=sparse, atomic_units=atomic_units,
+                         **calc_kwargs)
 
         self.profile = profile
         # Validate the enumerated gradient option up front.
@@ -407,11 +428,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         self.max_iterations = int(max_iterations)
         self.gradient_tolerance = float(gradient_tolerance)
         self.output = output
-
-        # Output-unit convention (see class docstring).
-        self.atomic_units = bool(atomic_units)
-        self.energy_units = "Ha" if atomic_units else "eV"
-        self.length_units = "bohr" if atomic_units else "angstrom"
 
         self._pool_spec = pool
         # Seeded RNG for reproducible expressivity logging (output.txt).
@@ -608,18 +624,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
     # -- output.txt logging ---------------------------------------------- #
 
-    def _to_energy_units(self, energy_ha):
-        """Convert a Hartree energy to the configured output units (eV default)."""
-        return float(from_hartree(energy_ha, self.energy_units))
-
-    def _energy_unit_label(self) -> str:
-        return "Ha" if self.energy_units.lower() in ("ha", "hartree", "au") \
-            else "eV"
-
-    def _length_unit_label(self) -> str:
-        return "Bohr" if self.length_units.lower() in ("bohr", "au", "a0") \
-            else "Angstrom"
-
     def _make_logger(self, output_file, geometry, cell, ref_energy,
                      max_iterations, gradient_tol):
         """Create an :class:`AdaptOutputLogger` and write the header blocks.
@@ -793,7 +797,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                                           metrics, e_unit)
                 iterations.append(AdaptIteration(
                     operator_label=op.label, operator_kind=op.kind,
-                    max_gradient=max_grad, energy=energy,
+                    max_gradient=max_grad,
+                    energy=self._to_energy_units(energy),
                     cnot_count=metrics.cnot_count, depth=metrics.depth,
                     num_parameters=ansatz.num_parameters))
 
@@ -814,7 +819,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                         "num_operators": ansatz.num_parameters,
                         "ansatz": ansatz,
                         "parameters": params,
-                        "energy": energy,
+                        "energy": self._to_energy_units(energy),
+                        "energy_unit": e_unit,
                         "max_gradient": max_grad,
                         "operator_label": op.label,
                         "metrics": metrics,
@@ -846,10 +852,11 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # Fold the (calculator-mode) integration stage in, then set the wall time.
         self._finalize_timings(timings, run_t0)
 
+        # The single Hartree -> output-unit boundary of the run.
         result = ADAPTVQEResult(
-            optimal_energy=energy,
+            optimal_energy=self._to_energy_units(energy),
             optimal_parameters=params,
-            reference_energy=ref_energy,
+            reference_energy=self._to_energy_units(ref_energy),
             converged=converged,
             final_max_gradient=max_grad,
             operators=selected,
@@ -857,7 +864,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             num_evaluations=total_evals,
             metrics=metrics,
             timings=timings.as_dict(),
-            integration_profile=self._integration_profile)
+            integration_profile=self._integration_profile,
+            energy_unit=e_unit)
 
         if verbose:
             self._print_summary(result, e_unit, timings)
@@ -1036,7 +1044,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         print(self._iteration_rule())
         status = "converged" if result.converged else "not converged"
         print(f"ADAPT-VQE finished ({status}): "
-              f"E = {self._to_energy_units(result.optimal_energy):+.8f} {e_unit}, "
+              f"E = {result.optimal_energy:+.8f} {e_unit}, "
               f"{result.num_operators} operators, "
               f"final |grad| = {result.final_max_gradient:.6e}")
         if timings is not None:

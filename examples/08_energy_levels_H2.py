@@ -44,15 +44,16 @@ ground_ev = atoms.get_potential_energy()
 
 levels = atoms.calc.energy_levels(num_states=2, restarts=4)
 
-# Exact reference spectrum: eigenvalues of the qubit Hamiltonian.
+# Exact reference spectrum: eigenvalues of the qubit Hamiltonian.  The qubit
+# Hamiltonian is internal (Hartree); the levels, like every result, are eV.
 h = atoms.calc.hamiltonian.to_matrix()
-exact = np.sort(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).real)
+exact = from_hartree(np.sort(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).real), "eV")
 
+TOLERANCE = from_hartree(1e-5, "eV")               # 2.7e-4 eV
 print(f"H2 ground state   = {ground_ev:.6f} eV")
-print(f"energy levels (eV): {np.round(levels.in_units('eV'), 4)}")
-print(f"excitation  (eV)  : {np.round(levels.excitation_energies_in_units('eV'), 4)}")
+print(f"energy levels (eV): {np.round(levels.energies, 4)}")
+print(f"excitation  (eV)  : {np.round(levels.excitation_energies, 4)}")
 for e in levels.energies:
     match = float(np.min(np.abs(exact - e)))
-    assert match < 1e-5, "energy level is not an eigenvalue of H"
-print("all levels match exact diagonalization "
-      f"(<= {from_hartree(1e-5, 'eV'):.1e} eV).")
+    assert match < TOLERANCE, "energy level is not an eigenvalue of H"
+print(f"all levels match exact diagonalization (<= {TOLERANCE:.1e} eV).")

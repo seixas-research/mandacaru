@@ -59,7 +59,7 @@ RESOLUTION_TOLERANCE = 0.25
 
 
 class MolecularIntegrals:
-    """One- and two-body integrals over a localized basis for a molecule.
+    r"""One- and two-body integrals over a localized basis for a molecule.
 
     Parameters
     ----------
@@ -84,13 +84,30 @@ class MolecularIntegrals:
         which never underestimates a function's kinetic energy and so prevents
         the collapse of compact functions into deep potentials; see
         :meth:`carcara.integrals.IntegralEngine.one_body`.
+    kb_projectors : sequence, optional
+        Nonlocal projector functions :math:`\chi_p` (sampled like basis
+        functions), each carrying ``atom_index``, ``channel = (l, m)`` and a
+        radial ``index`` within that channel -- see
+        :class:`carcara.experimental.pseudopotentials.orbitals.KBProjector`.
+    nonlocal_coupling : dict, optional
+        The blocks of the coupling matrix :math:`D` of the general separable
+        form :math:`H^{NL} = C D C^\dagger` (see :meth:`kb_nonlocal`),
+        ``{(atom_index, l, m): (n, n) array}`` with ``n`` the number of radial
+        projectors in that channel.  ``None`` takes each projector's own
+        ``kb_energy`` on the diagonal -- the Kleinman-Bylander form.
+    nonlocal_overlap : dict, optional
+        Blocks of an overlap correction :math:`Q` in the same layout.  When
+        given, the basis overlap used for the Loewdin orthogonalization becomes
+        :math:`S + C Q C^\dagger` (PAW-type augmented overlap).  ``None`` (the
+        norm-conserving case) leaves :math:`S` alone.
     """
 
     def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
                  basis, grid: Grid, units: str = "angstrom",
                  orthogonalize: bool = True, softening: float = 1e-12,
                  pseudopotentials=None, kb_projectors=None,
-                 kinetic: str = "fd"):
+                 kinetic: str = "fd", nonlocal_coupling=None,
+                 nonlocal_overlap=None):
         if kinetic not in ("fd", "spectral"):
             raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
                              "'fd' or 'spectral'")
@@ -110,10 +127,24 @@ class MolecularIntegrals:
         self.pseudopotentials = (list(pseudopotentials)
                                  if pseudopotentials is not None else None)
         self.kb_projectors = list(kb_projectors) if kb_projectors else []
+        #: Blocks of the nonlocal coupling matrix ``D`` (``None``: KB diagonal).
+        self.nonlocal_coupling = (dict(nonlocal_coupling)
+                                  if nonlocal_coupling is not None else None)
+        #: Blocks of the overlap correction ``Q`` (``None``: norm-conserving).
+        self.nonlocal_overlap = (dict(nonlocal_overlap)
+                                 if nonlocal_overlap is not None else None)
+        if self.nonlocal_overlap is not None and not self.kb_projectors:
+            raise ValueError("nonlocal_overlap needs projectors to act on")
         self._potentials = Potentials(self.nuclei, softening=softening,
                                       units=units,
                                       pseudopotentials=self.pseudopotentials)
+        #: Additive constant (Hartree) carried into every Hamiltonian this
+        #: object assembles, next to the nuclear repulsion -- e.g. the frozen
+        #: one-center energies of a PAW dataset.  Zero for a plain basis.
+        self.constant_energy: float = 0.0
         self._S: np.ndarray | None = None
+        self._S_bare: np.ndarray | None = None
+        self._C: np.ndarray | None = None
         self._h1: np.ndarray | None = None
         self._eri: np.ndarray | None = None
 
@@ -134,13 +165,31 @@ class MolecularIntegrals:
 
     # -- overlap and orthogonalization ------------------------------------ #
 
-    def overlap(self) -> np.ndarray:
-        r"""Overlap matrix ``S_pq = <p|q>`` of the (generally non-orthogonal) basis."""
-        if self._S is None:
+    def bare_overlap(self) -> np.ndarray:
+        r"""Grid overlap ``S_pq = <p|q>`` of the (generally non-orthogonal) basis."""
+        if self._S_bare is None:
             psi = np.stack([b.evaluate(self.grid.X, self.grid.Y, self.grid.Z).ravel()
                             for b in self.basis])
             S = (np.conj(psi) @ psi.T) * self.grid.dV
-            self._S = 0.5 * (S + S.conj().T)
+            self._S_bare = 0.5 * (S + S.conj().T)
+        return self._S_bare
+
+    def overlap(self) -> np.ndarray:
+        r"""The overlap the orthonormalization uses.
+
+        The bare grid overlap :meth:`bare_overlap` for a norm-conserving basis;
+        with an overlap correction (``nonlocal_overlap``, the PAW-type
+        :math:`Q` blocks) it is the augmented :math:`S + C Q C^\dagger`, where
+        :math:`C` are the projections of :meth:`projections`.
+        """
+        if self._S is None:
+            S = self.bare_overlap()
+            Q = self.nonlocal_overlap_matrix()
+            if Q is not None:
+                C = self.projections()
+                S = S + C @ Q @ C.conj().T
+                S = 0.5 * (S + S.conj().T)
+            self._S = S
         return self._S
 
     def _lowdin_x(self) -> np.ndarray:
@@ -159,37 +208,88 @@ class MolecularIntegrals:
         return (self._potentials.pseudopotential if self.uses_pseudopotentials
                 else self._potentials.nuclear_potential)
 
+    def projections(self) -> np.ndarray:
+        r"""Projections ``C[mu, p] = <phi_mu|chi_p>`` of the basis on the projectors.
+
+        The only grid work the nonlocal term needs (``(M, P)``, via
+        :func:`carcara.integrals._backend.kb_projections`, C-accelerated);
+        cached.  Also fills :attr:`kb_resolution_ratios` -- each projector's
+        grid norm against its exact radial norm, since a projector the grid
+        cannot resolve makes the nonlocal energy of its channel meaningless.
+        """
+        if self._C is None:
+            M = len(self.basis)
+            if not self.kb_projectors:
+                self._C = np.zeros((M, 0), dtype=complex)
+                return self._C
+            from ..integrals import _backend
+
+            chi = np.stack([p.evaluate(self.grid.X, self.grid.Y,
+                                       self.grid.Z).ravel()
+                            for p in self.kb_projectors])
+            grid_norm = np.real(np.einsum("pg,pg->p", np.conj(chi), chi)) \
+                * self.grid.dV
+            radial_norm = np.array([_radial_norm(p) for p in self.kb_projectors])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                self.kb_resolution_ratios = grid_norm / radial_norm
+            self._C = _backend.kb_projections(self._engine._psi, chi,
+                                              self.grid.dV)
+        return self._C
+
+    def nonlocal_coupling_matrix(self) -> np.ndarray:
+        r"""The ``(P, P)`` block-diagonal coupling matrix ``D``.
+
+        Assembled from the ``nonlocal_coupling`` blocks keyed by
+        ``(atom_index, l, m)``; without them, the Kleinman-Bylander diagonal
+        of the projectors' ``kb_energy``.
+        """
+        return assemble_block_matrix(
+            self.kb_projectors, self.nonlocal_coupling,
+            diagonal=[p.kb_energy for p in self.kb_projectors])
+
+    def nonlocal_overlap_matrix(self):
+        """The ``(P, P)`` overlap-correction matrix ``Q``, or ``None``."""
+        if self.nonlocal_overlap is None:
+            return None
+        return assemble_block_matrix(self.kb_projectors, self.nonlocal_overlap)
+
     def kb_nonlocal(self) -> np.ndarray:
-        r"""Kleinman-Bylander nonlocal matrix in the basis.
+        r"""Nonlocal pseudopotential matrix in the basis, general separable form.
 
         .. math::
 
-            H^{NL}_{\mu\nu} = \sum_p \langle\phi_\mu|\chi_p\rangle\,
-                E^{KB}_p\, \langle\chi_p|\phi_\nu\rangle ,
+            H^{NL} = C\,D\,C^\dagger, \qquad
+            C_{\mu p} = \langle\phi_\mu|\chi_p\rangle ,
 
-        a sum of rank-one terms.  Only the ``(M, P)`` overlap matrix touches the
-        grid (via :func:`carcara.integrals._backend.kb_projections`, C-accelerated);
-        the rest is a small outer product.  Returns zeros when there are no
-        projectors.
+        with :math:`D` block-diagonal over ``(atom, l, m)``
+        (:meth:`nonlocal_coupling_matrix`).  For the Kleinman-Bylander form
+        every block is :math:`[E^{KB}_l]` and this reduces to the familiar sum
+        of rank-one terms :math:`\sum_p |\chi_p\rangle E^{KB}_p\langle\chi_p|`;
+        a family with several radial projectors per channel supplies the
+        full block instead.  Only :math:`C` touches the grid; the rest is a
+        small matrix product.  Returns zeros when there are no projectors.
         """
         M = len(self.basis)
         if not self.kb_projectors:
             return np.zeros((M, M), dtype=complex)
-        from ..integrals import _backend
+        C = self.projections()
+        D = self.nonlocal_coupling_matrix()
+        return C @ D @ C.conj().T
 
-        chi = np.stack([p.evaluate(self.grid.X, self.grid.Y,
-                                   self.grid.Z).ravel()
-                        for p in self.kb_projectors])
-        # Resolution check: the projector's norm on the grid against its
-        # exact radial norm.  A projector the grid cannot resolve makes the
-        # nonlocal energy of its channel meaningless.
-        grid_norm = np.real(np.einsum("pg,pg->p", np.conj(chi), chi)) * self.grid.dV
-        radial_norm = np.array([_radial_norm(p) for p in self.kb_projectors])
-        with np.errstate(divide="ignore", invalid="ignore"):
-            self.kb_resolution_ratios = grid_norm / radial_norm
-        overlaps = _backend.kb_projections(self._engine._psi, chi, self.grid.dV)
-        energies = np.array([p.kb_energy for p in self.kb_projectors])
-        return (overlaps * energies) @ overlaps.conj().T
+    #: Backward-compatible alias of :meth:`kb_nonlocal`.
+    nonlocal_matrix = kb_nonlocal
+
+    def two_body_augmentation(self):
+        r"""Correction added to the grid two-body tensor, or ``None``.
+
+        A hook for families whose pair densities carry more than the product
+        of two basis functions -- the PAW compensation charges
+        (:class:`carcara.experimental.pseudopotentials.paw.PAWIntegrals`)
+        return the ``(M, M, M, M)`` tensor of the extra Coulomb terms in the
+        same physicists' layout as :meth:`two_body`.  The plain basis has
+        nothing to add.
+        """
+        return None
 
     def _compute(self):
         T, V = self._engine.one_body(self.external_potential(),
@@ -198,6 +298,9 @@ class MolecularIntegrals:
         one = T + V + self.kb_nonlocal()
         h = 0.5 * (one + one.conj().T)           # symmetrize away grid noise
         eri = self._engine.two_body(method="fft", energy_units="Ha")
+        augmentation = self.two_body_augmentation()
+        if augmentation is not None:
+            eri = eri + np.asarray(augmentation)
         if self.orthogonalize:
             # Lowdin-orthonormalize the basis; the second-quantized Hamiltonian
             # requires an orthonormal orbital set.
@@ -370,8 +473,8 @@ class MolecularIntegrals:
                     "approximation freezes canonical molecular orbitals)")
             h_so, g_so = self.spin_orbital_integrals()
         H = Fermion.from_integrals(h_so, g_so)
-        const = core_energy + (self.nuclear_repulsion
-                               if include_nuclear_repulsion else 0.0)
+        const = core_energy + self.constant_energy + (
+            self.nuclear_repulsion if include_nuclear_repulsion else 0.0)
         if abs(const) > 1e-14:
             H = H + Fermion({(): complex(const)}, n_modes=h_so.shape[0])
         return H
@@ -404,12 +507,74 @@ class MolecularIntegrals:
         H = Fermion(terms, n_modes=n_so)
 
         e_reference = float(sum(eps_so[P] for P in occupied))
-        e_hf = rhf.electronic_energy + (self.nuclear_repulsion
-                                        if include_nuclear_repulsion else 0.0)
+        e_hf = rhf.electronic_energy + self.constant_energy + (
+            self.nuclear_repulsion if include_nuclear_repulsion else 0.0)
         const = complex(e_hf - e_reference)
         if abs(const) > 1e-14:
             H = H + Fermion({(): const}, n_modes=n_so)
         return H
+
+
+def projector_blocks(projectors) -> dict:
+    """Group projector positions by channel: ``{(atom, l, m): [p, ...]}``.
+
+    Positions within a block are ordered by the projector's radial ``index``
+    (0 for a single Kleinman-Bylander projector); a duplicate index inside a
+    channel is an error, since the block's rows would be ambiguous.
+    """
+    groups: dict = {}
+    for position, projector in enumerate(projectors):
+        key = (int(projector.atom_index), *(int(v) for v in projector.channel))
+        groups.setdefault(key, []).append(
+            (int(getattr(projector, "index", 0)), position))
+    ordered = {}
+    for key, entries in groups.items():
+        indices = [i for i, _p in entries]
+        if len(set(indices)) != len(indices):
+            raise ValueError(
+                f"projectors of channel (atom, l, m)={key} carry duplicate "
+                f"radial indices {sorted(indices)}")
+        ordered[key] = [p for _i, p in sorted(entries)]
+    return ordered
+
+
+def assemble_block_matrix(projectors, blocks, diagonal=None) -> np.ndarray:
+    r"""Assemble a ``(P, P)`` block-diagonal matrix over the projector channels.
+
+    ``blocks`` maps ``(atom_index, l, m)`` to an ``(n, n)`` array for the ``n``
+    radial projectors of that channel (every channel must be supplied, and no
+    key may name a channel without projectors).  With ``blocks=None`` the
+    matrix is ``diag(diagonal)`` -- the Kleinman-Bylander case of one energy
+    per projector.
+    """
+    P = len(projectors)
+    out = np.zeros((P, P), dtype=complex)
+    if blocks is None:
+        if diagonal is None:
+            raise ValueError("either blocks or a diagonal must be given")
+        diagonal = np.asarray(list(diagonal), dtype=complex)
+        if diagonal.shape != (P,):
+            raise ValueError(f"expected {P} diagonal entries, got "
+                             f"{diagonal.shape}")
+        out[np.diag_indices(P)] = diagonal
+        return out
+    groups = projector_blocks(projectors)
+    normalized = {tuple(int(v) for v in key): value
+                  for key, value in blocks.items()}
+    missing = sorted(set(groups) - set(normalized))
+    extra = sorted(set(normalized) - set(groups))
+    if missing or extra:
+        raise ValueError(
+            "nonlocal blocks do not match the projector channels: "
+            f"missing {missing}, unmatched {extra}")
+    for key, positions in groups.items():
+        block = np.asarray(normalized[key], dtype=complex)
+        n = len(positions)
+        if block.shape != (n, n):
+            raise ValueError(
+                f"block for channel {key} must be ({n}, {n}), got {block.shape}")
+        out[np.ix_(positions, positions)] = block
+    return out
 
 
 def spin_block_integrals(h: np.ndarray,

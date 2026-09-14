@@ -282,9 +282,14 @@ class TestGridPathologyIsCured:
     removed the error must shrink instead.
     """
 
-    @staticmethod
-    def _isolated_force(spacing, pseudopotentials):
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=spacing)
+    #: Half-width of the box (Angstrom).  8 A across is enough for an isolated
+    #: oxygen atom; the former 12 A box at h = 0.15 A (81^3 points) pushed the
+    #: force evaluation past the 3 GB resource budget of this suite.
+    BOX = 4.0
+
+    @classmethod
+    def _isolated_force(cls, spacing, pseudopotentials):
+        grid = Grid(center=[0, 0, 0], box_size=cls.BOX, h=spacing)
         atoms = lone_atom("O", grid)
         atoms.calc = Carcara(
             method="adapt-vqe", basis="FAO", grid=grid,

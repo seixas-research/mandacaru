@@ -63,6 +63,7 @@ from carcara.backends.hardware import (describe_devices, device_arn,
                                        requires_shots)
 from carcara.backends.measurement import (qubit_wise_commuting_groups,
                                           shot_noise_estimate)
+from carcara.units import HARTREE_TO_EV, from_hartree
 from carcara.backends.providers import build_provider, provider_available
 from carcara.circuits.adapt_ansatz import AdaptAnsatz
 from carcara.circuits.pools import build_pool
@@ -73,7 +74,8 @@ os.makedirs(DATA, exist_ok=True)
 
 #: Gates every Amazon Braket QPU accepts (after its own compilation).
 BRAKET_NATIVE_GATES = {"I", "X", "H", "S", "Si", "Rz", "CNot"}
-CHEMICAL_ACCURACY = 1.6e-3      # Ha
+CHEMICAL_ACCURACY_HA = 1.6e-3   # Hartree, the unit of the qubit Hamiltonian
+CHEMICAL_ACCURACY = CHEMICAL_ACCURACY_HA * HARTREE_TO_EV   # 0.043 eV
 
 rule = "=" * 74
 print(rule)
@@ -108,8 +110,9 @@ theta = np.array([0.31, -0.20])[:ansatz.num_parameters]
 
 occupied = ansatz.reference_qubits()
 generators = ansatz.pauli_generators
-exact = float(np.real(np.vdot(ansatz.state(theta),
-                              hamiltonian.to_matrix() @ ansatz.state(theta))))
+# The provider measures the (Hartree) qubit Hamiltonian; report in eV.
+exact = from_hartree(float(np.real(np.vdot(
+    ansatz.state(theta), hamiltonian.to_matrix() @ ansatz.state(theta)))), "eV")
 
 print(f"\nProblem: H2, {n_qubits} qubits, num_particles={num_particles}")
 print(f"         {len(hamiltonian.simplify().terms)} Pauli terms, "
@@ -164,14 +167,14 @@ n_terms = len([l for l in hamiltonian.simplify().terms if set(l) != {"I"}])
 print(f"    {n_terms} non-identity Pauli terms -> {len(groups)} "
       f"qubit-wise-commuting groups "
       f"({n_terms / max(len(groups), 1):.1f}x fewer circuits)")
-print(f"    {'shots':>8}  {'E (Ha)':>14}  {'error':>11}  {'1-sigma bound':>14}")
+print(f"    {'shots':>8}  {'E (eV)':>14}  {'error (eV)':>11}  {'1-sigma (eV)':>14}")
 print("    " + "-" * 52)
 for shots in (500, 5000, 50000):
-    measured = build_provider("braket", shots=shots).energy(
-        n_qubits, occupied, generators, theta, hamiltonian)
-    print(f"    {shots:>8}  {measured:>14.8f}  {measured - exact:>+11.2e}  "
-          f"{shot_noise_estimate(hamiltonian, shots):>14.2e}")
-print(f"    {'exact':>8}  {exact:>14.8f}")
+    measured = from_hartree(build_provider("braket", shots=shots).energy(
+        n_qubits, occupied, generators, theta, hamiltonian), "eV")
+    print(f"    {shots:>8}  {measured:>14.6f}  {measured - exact:>+11.2e}  "
+          f"{from_hartree(shot_noise_estimate(hamiltonian, shots), 'eV'):>14.2e}")
+print(f"    {'exact':>8}  {exact:>14.6f}")
 
 # --------------------------------------------------------------------------- #
 # 4. Hardware cost.
@@ -180,10 +183,11 @@ print(f"    {'exact':>8}  {exact:>14.8f}")
 print("\n[4] Cost of one energy evaluation on a QPU")
 one_norm = sum(abs(complex(c)) for l, c in hamiltonian.simplify().terms.items()
                if set(l) != {"I"})
-needed = int((one_norm / CHEMICAL_ACCURACY) ** 2)
+needed = int((one_norm / CHEMICAL_ACCURACY_HA) ** 2)     # unit-free ratio
 print(f"    quantum tasks per evaluation : {len(groups)}")
-print(f"    Hamiltonian 1-norm           : {one_norm:.4f} Ha")
-print(f"    shots/group for 1.6 mHa      : ~{needed:.3g} (worst-case bound)")
+print(f"    Hamiltonian 1-norm           : {from_hartree(one_norm, 'eV'):.3f} eV")
+print(f"    shots/group for {CHEMICAL_ACCURACY:.4f} eV   : ~{needed:.3g} "
+      "(worst-case bound)")
 print("    => hardware VQE needs error mitigation and smarter estimators;")
 print("       this bound is why, not a defect of the implementation.")
 

@@ -28,6 +28,7 @@ from carcara.circuits import UCCSD
 from carcara.core import MolecularIntegrals, minimal_fao_basis
 from carcara.integrals import Grid
 from carcara.optimizers import Optimizer
+from carcara.units import HARTREE_TO_EV
 
 
 # --------------------------------------------------------------------------- #
@@ -46,8 +47,14 @@ def h2_hamiltonian():
 
 @pytest.fixture(scope="module")
 def h2_spectrum(h2_hamiltonian):
+    """Exact spectrum in eV (the Hamiltonian is Hartree; the results are eV)."""
     m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
-    return np.sort(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).real)
+    return np.sort(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).real) * HARTREE_TO_EV
+
+
+#: Result-side tolerances, converted from the historical Hartree values.
+TOL_1E6 = 1e-6 * HARTREE_TO_EV
+TOL_1E5 = 1e-5 * HARTREE_TO_EV
 
 
 def _ssvqe(h2_hamiltonian, k, **kwargs):
@@ -104,17 +111,18 @@ class TestSubspaceVQE:
     def test_single_state_recovers_ground(self, h2_hamiltonian, h2_spectrum):
         r = _ssvqe(h2_hamiltonian, 1).run()
         assert r.num_states == 1
-        assert r.optimal_energy == pytest.approx(h2_spectrum[0], abs=1e-6)
+        assert r.energy_unit == "eV"
+        assert r.optimal_energy == pytest.approx(h2_spectrum[0], abs=TOL_1E6)
 
     def test_hylleraas_undheim_upper_bounds(self, h2_hamiltonian, h2_spectrum):
         # The sorted SSVQE energies bound the exact eigenvalues from above.
         r = _ssvqe(h2_hamiltonian, 3).run()
         for i, e in enumerate(r.energies):
-            assert e >= h2_spectrum[i] - 1e-6
+            assert e >= h2_spectrum[i] - TOL_1E6
 
     def test_ground_is_exact_from_default_start(self, h2_hamiltonian, h2_spectrum):
         r = _ssvqe(h2_hamiltonian, 2).run()          # init = zeros (near HF)
-        assert r.energies[0] == pytest.approx(h2_spectrum[0], abs=1e-5)
+        assert r.energies[0] == pytest.approx(h2_spectrum[0], abs=TOL_1E5)
 
     def test_levels_ascending(self, h2_hamiltonian):
         r = _ssvqe(h2_hamiltonian, 3).run()
@@ -132,8 +140,9 @@ class TestSubspaceVQE:
     def test_result_views(self, h2_hamiltonian):
         r = _ssvqe(h2_hamiltonian, 2).run()
         assert r.excitation_energies[0] == pytest.approx(0.0, abs=1e-12)
-        ev = r.in_units("eV")
-        assert ev[0] == pytest.approx(r.energies[0] * 27.211386, rel=1e-4)
+        ha = r.in_units("Ha")                         # stored in eV
+        assert ha[0] == pytest.approx(r.energies[0] / 27.211386, rel=1e-4)
+        np.testing.assert_allclose(r.in_units("eV"), r.energies)
         assert r.levels.num_states == 2               # EnergyLevels view
 
     def test_is_ase_calculator(self, h2_spectrum):
@@ -145,7 +154,8 @@ class TestSubspaceVQE:
         result = atoms.calc.result
         assert isinstance(result, SubspaceVQEResult)
         assert result.num_states == 2
-        # ASE energy is the ground state (eV).
+        # ASE energy is the ground state; the result is already in eV.
+        assert energy_ev == pytest.approx(result.energies[0], abs=1e-6)
         assert energy_ev == pytest.approx(result.in_units("eV")[0], abs=1e-6)
 
 
@@ -156,12 +166,12 @@ class TestSubspaceVQE:
 class TestSubspaceADAPTVQE:
     def test_single_state_recovers_ground(self, h2_hamiltonian, h2_spectrum):
         r = _ss_adapt(h2_hamiltonian, 1).run()
-        assert r.optimal_energy == pytest.approx(h2_spectrum[0], abs=1e-6)
+        assert r.optimal_energy == pytest.approx(h2_spectrum[0], abs=TOL_1E6)
 
     def test_hylleraas_undheim_upper_bounds(self, h2_hamiltonian, h2_spectrum):
         r = _ss_adapt(h2_hamiltonian, 2).run()
         for i, e in enumerate(r.energies):
-            assert e >= h2_spectrum[i] - 1e-6
+            assert e >= h2_spectrum[i] - TOL_1E6
 
     def test_grows_and_converges(self, h2_hamiltonian):
         r = _ss_adapt(h2_hamiltonian, 2).run()

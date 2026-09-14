@@ -81,22 +81,22 @@ atoms.calc = Carcara(
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)
 result = atoms.calc.result
-energy_ha = result.optimal_energy
-na, nb = atoms.calc.num_particles
+na, nb = atoms.calc.num_particles                  # every result energy is eV
 
 # The reference must be a genuine triplet (n_alpha - n_beta = 2), and ADAPT must
 # lower the energy below that spin-polarized Hartree-Fock reference.
 assert na - nb == 2, "the reference is not a triplet"
 assert result.optimal_energy < result.reference_energy, "ADAPT did not lower E"
 
-exact_ha = sector_fci(atoms.calc.hamiltonian, atoms.calc.n_qubits, na, nb)
-exact_ev = float(from_hartree(exact_ha, "eV"))
+# The qubit Hamiltonian is internal (Hartree): convert its sector FCI once.
+exact_ev = float(from_hartree(
+    sector_fci(atoms.calc.hamiltonian, atoms.calc.n_qubits, na, nb), "eV"))
 
 print(f"O2 (triplet)  {atoms.calc.n_qubits // 2} active orbitals "
       f"({atoms.calc.n_qubits} qubits), num_particles=({na}, {nb}), "
       f"2Sz = {na - nb}")
-print(f"     E = {energy_ev:.6f} eV ({energy_ha:.8f} Ha) [qualitative]")
-correlation = from_hartree(result.optimal_energy - result.reference_energy, "eV")
+print(f"     E = {energy_ev:.6f} eV [qualitative]")
+correlation = result.correlation_energy                  # eV
 print(f"     correlation energy = {correlation:.4f} eV below the triplet HF "
       f"reference")
 print(f"     triplet-sector FCI = {exact_ev:.6f} eV "

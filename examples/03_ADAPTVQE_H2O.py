@@ -97,8 +97,7 @@ atoms.calc = Carcara(
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)
-result = atoms.calc.result
-energy_ha = result.optimal_energy
+result = atoms.calc.result                         # every energy on it is eV
 na, nb = atoms.calc.num_particles
 
 # The frozen core must have shrunk the space to 12 qubits (O [1s^2] frozen, O
@@ -111,13 +110,14 @@ assert result.optimal_energy < result.reference_energy, "ADAPT did not lower E"
 # Sector FCI, for context (ADAPT with the fermionic pool converges to a
 # stationary point that recovers part of the correlation energy -- a known
 # behavior on a strongly correlated Hamiltonian like this qualitative water).
-exact_ha = sector_fci(atoms.calc.hamiltonian, atoms.calc.n_qubits, na, nb)
-recovered = from_hartree(result.reference_energy - energy_ha, "eV")
+# The qubit Hamiltonian is internal (Hartree): convert its sector FCI once.
+exact_ev = float(from_hartree(
+    sector_fci(atoms.calc.hamiltonian, atoms.calc.n_qubits, na, nb), "eV"))
+recovered = result.reference_energy - energy_ev          # eV
 print(f"H2O  {atoms.calc.n_qubits // 2} active orbitals "
       f"({atoms.calc.n_qubits} qubits, O [1s^2] frozen), "
       f"num_particles=({na}, {nb}), sparse pool={atoms.calc.solver._sparse}")
-print(f"     E = {energy_ev:.6f} eV ({energy_ha:.8f} Ha) [qualitative]")
+print(f"     E = {energy_ev:.6f} eV [qualitative]")
 print(f"     correlation recovered = {recovered:.4f} eV below the HF reference")
-print(f"     sector-FCI = {from_hartree(exact_ha, 'eV'):.6f} eV "
-      f"(gap {energy_ev - from_hartree(exact_ha, 'eV'):+.3f} eV)")
+print(f"     sector-FCI = {exact_ev:.6f} eV (gap {energy_ev - exact_ev:+.3f} eV)")
 print(f"     {result.num_operators} operators, converged={result.converged}")

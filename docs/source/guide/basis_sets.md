@@ -107,16 +107,16 @@ stay compact.
 
 ## What it buys, and the catch
 
-Hartree–Fock total energy of H₂ at 0.74 Å, on a uniform real-space grid:
+Hartree–Fock total energy of H₂ at 0.74 Å (eV), on a uniform real-space grid:
 
 | Size | Orbitals | E (h=0.20 Å) | E (h=0.12 Å) |
 |------|----------|--------------|--------------|
-| SZ  | 2  | −1.064037 | −1.078832 |
-| DZ  | 4  | −1.092314 | −1.110606 |
-| TZ  | 6  | −1.092315 | −1.110642 |
-| DZP | 10 | −1.093031 | −1.111294 |
+| SZ  | 2  | −28.953922 | −29.356514 |
+| DZ  | 4  | −29.723378 | −30.221129 |
+| TZ  | 6  | −29.723405 | −30.222108 |
+| DZP | 10 | −29.742889 | −30.239850 |
 
-Double zeta is worth ~28 mHa, polarization a little more. But the third zeta
+Double zeta is worth ~0.76 eV, polarization a little more. But the third zeta
 adds essentially nothing — and the reason is not that it is redundant.
 
 ```{warning}
@@ -125,8 +125,8 @@ basis function on a uniform real-space grid. The third hydrogen zeta extends to
 0.65 Å, which is 3.2 grid points at `h = 0.20 Å`. A function three points wide is
 not represented, it is aliased.
 
-Its contribution does grow as the grid is refined (1e-6 Ha at `h = 0.20 Å`,
-3.6e-5 Ha at `h = 0.12 Å`), so this is a resolution limit rather than a defect.
+Its contribution does grow as the grid is refined (3e-5 eV at `h = 0.20 Å`,
+1e-3 eV at `h = 0.12 Å`), so this is a resolution limit rather than a defect.
 On a uniform mesh, though, it is the binding constraint: **there is no point
 paying for TZ or QZ unless the grid can resolve them.** DZP is the practical
 sweet spot.
