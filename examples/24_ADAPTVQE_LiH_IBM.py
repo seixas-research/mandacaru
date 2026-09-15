@@ -21,6 +21,7 @@ Your IBM account must be saved once with ``QiskitRuntimeService.save_account``.
 """
 
 import csv
+import os
 
 import matplotlib.pyplot as plt
 from ase import Atoms
@@ -28,6 +29,10 @@ from ase import Atoms
 from carcara.algorithms import Carcara
 from carcara.algorithms.base import measure_energies
 from carcara.backends.providers import QiskitProvider
+
+# Outputs go to examples/data/ like every other example.
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA, exist_ok=True)
 from carcara.units import HARTREE_TO_EV
 
 HARDWARE = None
@@ -100,7 +105,7 @@ if HARDWARE:
     plt.errorbar(DISTANCES, measured, yerr=stds, fmt="s--", label=backend_name)
 
 # 3. Raw data, one row per distance.
-with open("lih_dissociation_ibm.csv", "w", newline="") as fh:
+with open(os.path.join(DATA, "lih_dissociation_ibm.csv"), "w", newline="") as fh:
     writer = csv.writer(fh)
     writer.writerow(["distance_A", "energy_local_eV", "num_operators",
                      "energy_measured_eV", "std_measured_eV", "shots",
@@ -117,4 +122,4 @@ plt.xlabel("Li-H distance (Angstrom)")
 plt.ylabel("energy (eV)")
 plt.title("LiH, ADAPT-VQE (ceo pool, Jordan-Wigner)")
 plt.legend()
-plt.savefig("lih_dissociation_ibm.png", dpi=150)
+plt.savefig(os.path.join(DATA, "lih_dissociation_ibm.png"), dpi=150)
