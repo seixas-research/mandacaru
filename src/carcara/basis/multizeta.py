@@ -192,9 +192,20 @@ class TabulatedOrbital(BasisFunction):
         return (self.n, self.l, self.m)
 
     def radial(self, r) -> np.ndarray:
-        """Interpolated radial function; zero outside the confining sphere."""
+        """Interpolated radial function; zero outside the confining sphere.
+
+        Below the first table point the function continues as
+        ``R(r_0) (r / r_0)^l``.  Without that, a table starting at ``r_0 > 0``
+        made every s function vanish within ``r_0`` of its center, and a nucleus
+        sitting exactly on a grid node lost the orbital's peak sample (LiH
+        PAW-DZP moved by 3 eV).
+        """
         r = np.asarray(r, dtype=float)
-        values = self._spline(r)
+        r0 = float(self.table.r[0])
+        values = self._spline(np.maximum(r, r0))
+        if r0 > 0.0:
+            values = np.where(r < r0, values * (np.maximum(r, 0.0) / r0) ** self.l,
+                              values)
         return np.where(np.isnan(values) | (r >= self.r_c), 0.0, values)
 
     def evaluate(self, x, y, z) -> np.ndarray:

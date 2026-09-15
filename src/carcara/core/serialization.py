@@ -246,6 +246,29 @@ class HamiltonianRecord:
                 f"num_particles={self.num_particles})")
 
 
+#: Widest register whose Hamiltonian cache Carcara writes.  The file holds
+#: O(M^4) Pauli strings of ``n_qubits`` characters each, which beyond ~50 qubits
+#: means gigabytes.  (The ADAPT-VQE ``output.txt`` log is always written; above
+#: ``utils.logging.DETAILED_LOG_MAX_QUBITS`` it omits its Pauli strings.)
+MAX_FILE_QUBITS = 50
+
+
+def file_qubits_allowed(n_qubits, what: str) -> bool:
+    """``False``, with a ``RuntimeWarning``, above :data:`MAX_FILE_QUBITS` qubits.
+
+    The drivers call it before writing an optional file, so a large simulation
+    still runs -- it only skips the file.
+    """
+    if n_qubits is None or int(n_qubits) <= MAX_FILE_QUBITS:
+        return True
+    import warnings
+    warnings.warn(f"not writing {what}: {int(n_qubits)} qubits exceed the "
+                  f"{MAX_FILE_QUBITS}-qubit limit for Hamiltonian files "
+                  "(carcara.core.serialization.MAX_FILE_QUBITS)",
+                  RuntimeWarning, stacklevel=3)
+    return False
+
+
 def resolve_save_path(spec, fmt: str = DEFAULT_FORMAT,
                       default: str | None = None) -> str | None:
     """Normalize a ``save_hamiltonian`` argument to a path (or ``None``).
@@ -302,6 +325,11 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
         format = _EXTENSION_FORMATS.get(extension, DEFAULT_FORMAT)
     format = resolve_format(format)
 
+    if hamiltonian.num_qubits > MAX_FILE_QUBITS:
+        raise ValueError(
+            f"refusing to write a {hamiltonian.num_qubits}-qubit Hamiltonian: "
+            f"Pauli-string files are limited to MAX_FILE_QUBITS = "
+            f"{MAX_FILE_QUBITS} qubits")
     simplified = hamiltonian.simplify()
     items = sorted(simplified.terms.items())
     labels = [label for label, _ in items]

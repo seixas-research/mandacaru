@@ -169,8 +169,13 @@ class NumericalAtomicOrbital(BasisFunction):
     def radial(self, r) -> np.ndarray:
         """Interpolated radial function ``R_{nl}(r)`` (0 for ``r >= r_c``)."""
         r = np.asarray(r, dtype=float)
-        R = self._spline(r)
-        # Outside [0, r_c] the spline returns NaN -> the confined orbital is 0.
+        # Below the first grid point continue as R(r_0) (r/r_0)^l, so an s
+        # orbital keeps its peak when a nucleus sits exactly on a grid node.
+        r0 = float(self._r_grid[0])
+        R = self._spline(np.maximum(r, r0))
+        if r0 > 0.0:
+            R = np.where(r < r0, R * (np.maximum(r, 0.0) / r0) ** self.l, R)
+        # Beyond r_c the spline returns NaN -> the confined orbital is 0.
         return np.where(np.isnan(R) | (r >= self.r_c), 0.0, R)
 
     def evaluate(self, x, y, z) -> np.ndarray:

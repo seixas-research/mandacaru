@@ -698,7 +698,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             if cell is not None:
                 cell = np.asarray(cell, float) * ANGSTROM_TO_BOHR
 
-        logger = AdaptOutputLogger(output_file)
+        logger = AdaptOutputLogger(output_file, n_qubits=self.n_qubits)
         logger.write_metadata(
             symbols=symbols, positions=positions, cell=cell,
             units=self._length_unit_label(),
@@ -724,7 +724,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         from .expressivity import (active_space_dimension,
                                    calculate_kl_divergence,
                                    sample_pqc_fidelities)
-        dim = active_space_dimension(self.n_qubits, self.num_particles)
+        # The sector lives on the spin-orbitals: a tapered register has two more.
+        n_modes = self.n_qubits + (2 if self.two_qubit_reduction else 0)
+        dim = active_space_dimension(n_modes, self.num_particles)
         fidelities = sample_pqc_fidelities(ansatz, num_samples=400,
                                            rng=self._expr_rng)
         return calculate_kl_divergence(fidelities, self.n_qubits, num_bins=75,

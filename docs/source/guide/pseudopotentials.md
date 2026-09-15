@@ -471,7 +471,7 @@ states).
 
 On H₂ (h = 0.25 Å) the analytic force agrees with a central difference of the
 energy to 1e-4 eV/Å. Against VASP (PBE, plane waves, PAW) the force curves
-agree qualitatively: the H₂ minimum is near 0.79 Å instead of 0.750 Å — mostly
+agree qualitatively: the H₂ minimum is near 0.81 Å instead of 0.750 Å — mostly
 from the H augmentation radius, 1.30 bohr, which two atoms 0.75 Å apart overlap
 almost entirely — while the LiH bond forces from 2.1 to 3.2 Å match within
 0.15 eV/Å. Pinned by `test/test_paw_forces.py` and `test/test_sector.py`.

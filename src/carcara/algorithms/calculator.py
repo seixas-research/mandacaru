@@ -156,6 +156,15 @@ class Carcara(Calculator):
         extended-XYZ ``Lattice``), or a ``ValueError`` is raised.
     grid : Grid, optional
         An explicit grid, used verbatim (and frozen) for every evaluation.
+    measurement_provider : CircuitProvider, optional
+        Measure the optimized state instead of reading the local state vector:
+        the ansatz is still optimized locally, then every Pauli string of the
+        Hamiltonian and of the RDM operators is measured on this provider in
+        one Estimator job per geometry (e.g. ``QiskitProvider(device=
+        "ibm_fez", shots=4096)``), and both the ASE energy and the forces come
+        from those expectation values.  Small registers only (see
+        :data:`~carcara.algorithms.rdm.MAX_PAULI_RDM_MODES`).  The last
+        measurement is on :attr:`measurement`.
     include_pulay : bool
         Include the Pulay (basis-motion) force terms (default ``True``).  Setting
         it to ``False`` gives the bare Hellmann-Feynman force; for an atom-centered
@@ -194,6 +203,7 @@ class Carcara(Calculator):
                  include_pulay: bool = True,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
                  scf_iterations: int = 40, verbose: bool = True,
+                 measurement_provider=None,
                  **solver_kwargs):
         Calculator.__init__(self)
         self.method, self._solver_class = resolve_method(method)
@@ -205,6 +215,9 @@ class Carcara(Calculator):
         self.scf_iterations = int(scf_iterations)
         self.verbose = bool(verbose)
         self.solver_kwargs = dict(solver_kwargs)
+        self.measurement_provider = measurement_provider
+        #: Energy, RDMs and expectation values of the last measured state.
+        self.measurement = None
 
         # An explicit grid is frozen from the start; otherwise the grid is only
         # frozen once forces are requested (see the module docstring).
@@ -375,8 +388,13 @@ class Carcara(Calculator):
         grid = self._frozen_grid(atoms) if want_forces else self._grid
         solver = self._make_solver(grid=grid)
         energy_ev = self._single_point(solver, atoms)
-
         self.solver = solver
+
+        measured = None
+        if self.measurement_provider is not None and not solver.dry_run:
+            measured = self._measure(solver)
+            energy_ev = measured["energy_eV"]
+
         self.results["energy"] = energy_ev
         self.results["free_energy"] = energy_ev
 
@@ -385,7 +403,12 @@ class Carcara(Calculator):
             self.results["forces"] = np.full((len(atoms), 3), np.nan)
             return
         if want_forces:
-            self.force_result = self._forces(solver)
+            if measured is None:
+                self.force_result = self._forces(solver)
+            else:
+                self.force_result = self._forces(
+                    solver, rdms=measured["rdms"],
+                    reference_energy=measured["energy_hartree"])
             self.results["forces"] = self.force_result.forces
 
     def _single_point(self, solver, atoms):
@@ -396,10 +419,67 @@ class Carcara(Calculator):
 
     # -- forces ------------------------------------------------------------ #
 
-    def _forces(self, solver):
-        """Analytic nuclear gradient of the converged state."""
+    def _measure(self, solver):
+        """Energy and RDMs of the optimized state, from ``measurement_provider``.
+
+        Every Pauli string the qubit Hamiltonian and the spin-conserving RDM
+        operators need is measured in **one** PUB (one job); the energy and the
+        RDMs are assembled from the same expectation values, so the energy the
+        forces are checked against is the measured one.
+        """
+        from ..units import HARTREE_TO_EV
+        from .rdm import rdm_qubit_operators, rdms_from_expectations
+
+        reduced = bool(getattr(solver, "two_qubit_reduction", False))
+        n_qubits = int(solver.n_qubits)
+        n_modes = n_qubits + (2 if reduced else 0)
+        ones, twos = rdm_qubit_operators(n_modes, solver.mapping,
+                                         two_qubit_reduction=reduced,
+                                         num_particles=solver.num_particles)
+        hamiltonian = solver.hamiltonian
+        identity = "I" * n_qubits
+        labels = sorted({label for op in (hamiltonian, *ones.values(),
+                                          *twos.values())
+                         for label in op.terms} - {identity})
+        provider = self.measurement_provider
+        values, stds = provider.expectation_values(*solver.ansatz_problem()[:4],
+                                                   labels)
+        values[identity], stds[identity] = 1.0, 0.0
+        energy = float(np.real(sum(complex(c) * values[label]
+                                   for label, c in hamiltonian.terms.items())))
+        job = getattr(provider, "last_job", None)
+        self.measurement = {
+            "energy_hartree": energy, "energy_eV": energy * HARTREE_TO_EV,
+            "rdms": rdms_from_expectations(n_modes, ones, twos, values),
+            "expectation_values": values, "stds": stds,
+            "job_id": job.job_id() if job is not None else None}
+        return self.measurement
+
+    def _state_rdms(self, solver):
+        """Spin-orbital RDMs of the converged state vector."""
+        from .rdm import (one_rdm, pauli_expectations, rdm_qubit_operators,
+                          rdms_from_expectations, two_rdm)
+
+        psi = self._converged_state(solver)
+        n_qubits = int(solver.n_qubits)
+        if getattr(solver, "two_qubit_reduction", False):
+            # A tapered register has no ladder operators of its own: its RDM
+            # elements are expectation values of the tapered qubit operators.
+            n_modes = n_qubits + 2
+            ones, twos = rdm_qubit_operators(n_modes, solver.mapping,
+                                             two_qubit_reduction=True,
+                                             num_particles=solver.num_particles)
+            labels = {label for op in (*ones.values(), *twos.values())
+                      for label in op.terms}
+            return rdms_from_expectations(n_modes, ones, twos,
+                                          pauli_expectations(psi, labels))
+        sector = getattr(solver, "_sector", None)
+        return (one_rdm(psi, n_qubits, solver.mapping, sector=sector),
+                two_rdm(psi, n_qubits, solver.mapping, sector=sector))
+
+    def _forces(self, solver, rdms=None, reference_energy=None):
+        """Analytic nuclear gradient of the converged (or measured) state."""
         from .forces import nuclear_gradient
-        from .rdm import one_rdm, two_rdm
 
         context = getattr(solver, "_gradient_context", None)
         if context is None:
@@ -408,11 +488,7 @@ class Carcara(Calculator):
                 "available; the plane-wave ('PW') family does not qualify. Use "
                 "an atom-centered basis such as 'FAO', 'GTO' or '6-31G(d)'.")
 
-        psi = self._converged_state(solver)
-        n_qubits = int(solver.n_qubits)
-        sector = getattr(solver, "_sector", None)
-        gamma = one_rdm(psi, n_qubits, solver.mapping, sector=sector)
-        gamma2 = two_rdm(psi, n_qubits, solver.mapping, sector=sector)
+        gamma, gamma2 = self._state_rdms(solver) if rdms is None else rdms
 
         if context.get("family") in PSEUDO_GRADIENT_FAMILIES:
             # PAW / ONCVPSP: multi-projector coupling, overlap correction,
@@ -425,8 +501,10 @@ class Carcara(Calculator):
                 atom_of_orbital=context["atom_of_orbital"],
                 orbital_delta=self.orbital_delta,
                 include_pulay=self.include_pulay)
-            if not getattr(solver, "shots", 0):
-                reported = solver.result.in_units("Ha")
+            if reference_energy is None and not getattr(solver, "shots", 0):
+                reference_energy = solver.result.in_units("Ha")
+            if reference_energy is not None:
+                reported = reference_energy
                 rebuilt = result.details["energy_hartree"]
                 if abs(reported - rebuilt) > ENERGY_CHECK_TOLERANCE:
                     raise RuntimeError(

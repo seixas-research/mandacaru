@@ -110,3 +110,30 @@ def test_lih_force_curve_follows_vasp():
         atoms.calc = calculator(h=0.25)
         force = bond_force(atoms.get_forces())
         assert force == pytest.approx(reference, rel=0.25), distance
+
+
+def test_two_qubit_register_forces_exact_and_measured(tmp_path):
+    """Parity + two-qubit reduction: forces from the tapered register equal the
+    4-qubit Jordan-Wigner ones, from the state vector and from Estimator
+    expectation values of the optimized state."""
+    from carcara.backends.providers import QiskitProvider
+
+    def run(**options):
+        atoms = dimer("H2", 1.0, 8.0)
+        atoms.calc = Carcara(method="adapt-vqe", basis="PAW", h=0.25,
+                             pool="fermionic", optimizer="L-BFGS-B",
+                             max_iterations=10, gradient_tolerance=1e-6,
+                             profile=False, verbose=False, **options)
+        return atoms.get_forces(), atoms.get_potential_energy(), atoms.calc
+
+    jw, e_jw, _ = run(mapping="jordan_wigner")
+    tapered, _, _ = run(mapping="parity", two_qubit_reduction=True,
+                        output=str(tmp_path / "output.txt"))
+    measured, e_measured, calc = run(
+        mapping="parity", two_qubit_reduction=True,
+        measurement_provider=QiskitProvider(device="statevector", shots=0))
+    assert calc.n_qubits == 2
+    assert np.allclose(tapered, jw, atol=1e-5)
+    assert np.allclose(measured, jw, atol=1e-5)
+    assert e_measured == pytest.approx(e_jw, abs=1e-5)
+    assert len(calc.measurement["expectation_values"]) <= 16

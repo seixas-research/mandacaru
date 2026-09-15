@@ -482,13 +482,11 @@ class QiskitProvider(CircuitProvider):
         """
         return hamiltonian.to_sparse_pauli_op()
 
-    def pub(self, n_qubits: int, occupied, generators, thetas, hamiltonian):
-        """One Estimator PUB ``(isa_circuit, observable)`` for this target."""
-        qc = self.build(n_qubits, occupied, generators, thetas)
-        observable = self.observable(hamiltonian)
+    def _transpiled(self, qc, n_qubits: int):
+        """``(circuit, layout)`` for this target; ``layout`` is ``None`` locally."""
         backend = self.backend()
         if backend is None:
-            return (qc, observable)
+            return qc, None
         from qiskit import transpile
         initial_layout = None
         if self.physical_qubits is not None:
@@ -502,14 +500,20 @@ class QiskitProvider(CircuitProvider):
         isa = transpile(qc, backend=backend,
                         optimization_level=self.optimization_level,
                         initial_layout=initial_layout)
-        return (isa, observable.apply_layout(isa.layout))
+        return isa, isa.layout
 
-    def energies(self, problems) -> list[float]:
-        """Expectation values of several ``(n_qubits, occupied, generators,
-        thetas, hamiltonian)`` problems, submitted as **one** Estimator job."""
+    def pub(self, n_qubits: int, occupied, generators, thetas, hamiltonian):
+        """One Estimator PUB ``(isa_circuit, observable)`` for this target."""
+        qc, layout = self._transpiled(
+            self.build(n_qubits, occupied, generators, thetas), n_qubits)
+        observable = self.observable(hamiltonian)
+        return (qc, observable if layout is None
+                else observable.apply_layout(layout))
+
+    def _run_pubs(self, pubs):
+        """Run Estimator PUBs as **one** job and return the ``PrimitiveResult``."""
         if not self.is_local and self.shots <= 0:
             raise ValueError(f"{self!r}: a processor needs shots > 0")
-        pubs = [self.pub(*problem) for problem in problems]
         estimator = self.estimator()
         if self.is_ibm_device:
             self.last_job = estimator.run(pubs, precision=self.precision)
@@ -524,8 +528,36 @@ class QiskitProvider(CircuitProvider):
             result = estimator._run([EstimatorPub.coerce(pub, self.precision)
                                      for pub in pubs])
         self.last_result = result
+        return result
+
+    def energies(self, problems) -> list[float]:
+        """Expectation values of several ``(n_qubits, occupied, generators,
+        thetas, hamiltonian)`` problems, submitted as **one** Estimator job."""
+        pubs = [self.pub(*problem) for problem in problems]
+        result = self._run_pubs(pubs)
         return [float(np.asarray(result[i].data.evs).reshape(-1)[0])
                 for i in range(len(pubs))]
+
+    def expectation_values(self, n_qubits: int, occupied, generators, thetas,
+                           labels):
+        """``<P>`` of one state for several Pauli strings, as **one** PUB.
+
+        Returns ``({label: value}, {label: standard error})``.  One circuit, an
+        array of observables, one job: what measuring the RDMs of an optimized
+        state on a processor costs.
+        """
+        from qiskit.quantum_info import SparsePauliOp
+
+        labels = list(labels)
+        qc, layout = self._transpiled(
+            self.build(n_qubits, occupied, generators, thetas), n_qubits)
+        observables = [SparsePauliOp(label) for label in labels]
+        if layout is not None:
+            observables = [o.apply_layout(layout) for o in observables]
+        result = self._run_pubs([(qc, observables)])
+        values = np.asarray(result[0].data.evs, dtype=float).reshape(-1)
+        stds = np.asarray(result[0].data.stds, dtype=float).reshape(-1)
+        return dict(zip(labels, values)), dict(zip(labels, stds))
 
     def energy(self, n_qubits: int, occupied, generators, thetas,
                hamiltonian) -> float:

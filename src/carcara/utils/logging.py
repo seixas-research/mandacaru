@@ -22,6 +22,12 @@ optimization live.  The file has three kinds of section:
   the operator selected to join the ansatz, and the parameterized circuit's
   expressivity score :math:`E` (KL divergence from the Haar distribution).
 
+Above :data:`DETAILED_LOG_MAX_QUBITS` qubits the log stays small: the operator
+pool listing, the selected operator and the summary's operator sequence are
+omitted (they are Pauli-string expansions that grow with the register and, for
+the pool, with the fourth power of the number of orbitals); the energies,
+gradients and circuit metrics are still written.
+
 The format uses ``KEY: value`` lines and fixed section banners so it can be
 parsed by simple line scanning (see :func:`parse_output` for a reference reader
 used by the tests).
@@ -35,6 +41,8 @@ import numpy as np
 
 _BANNER = "=" * 72
 _RULE = "-" * 72
+#: Widest register whose log lists the operator pool and the selected operator.
+DETAILED_LOG_MAX_QUBITS = 20
 
 
 def _format_pauli(generator, atol: float = 1e-9) -> str:
@@ -68,10 +76,17 @@ class AdaptOutputLogger:
     path : str
         Destination file (overwritten at construction; ``"output.txt"`` by
         convention).
+    n_qubits : int, optional
+        Register width.  Above :data:`DETAILED_LOG_MAX_QUBITS` the operator pool
+        and the selected operator are left out of the log.
     """
 
-    def __init__(self, path: str = "output.txt"):
+    def __init__(self, path: str = "output.txt", n_qubits: int | None = None):
         self.path = path
+        self.n_qubits = None if n_qubits is None else int(n_qubits)
+        #: Whether iteration blocks list the pool and the selected operator.
+        self.detailed = (self.n_qubits is None
+                         or self.n_qubits <= DETAILED_LOG_MAX_QUBITS)
         # Truncate any previous run and keep the handle open for live appends.
         self._fh = open(path, "w", encoding="utf-8")
 
@@ -113,6 +128,9 @@ class AdaptOutputLogger:
 
         # Initial geometry.
         self._emit(f"units: {units}")
+        if not self.detailed:
+            self._emit(f"operator_details: omitted ({self.n_qubits} qubits > "
+                       f"{DETAILED_LOG_MAX_QUBITS})")
         if symbols is not None and positions is not None:
             positions = np.asarray(positions, dtype=float)
             self._emit(f"n_atoms: {len(symbols)}", "geometry:")
@@ -202,15 +220,19 @@ class AdaptOutputLogger:
             if present).
         """
         grads = [float(g) for g in gradients]
-        selected = pool_operators[selected_index]
 
         self._emit(_RULE, f"[ITERATION {iteration}]")
 
-        # 1. Selected operator -- reported separately from the pool.
-        self._emit("selected_operator: " + selected.label,
-                   f"  kind: {selected.kind}",
-                   f"  gradient: {abs(grads[selected_index]):.6e}",
-                   f"  pauli: {_format_pauli(selected.generator)}")
+        # 1. Selected operator -- reported separately from the pool.  Above
+        #    DETAILED_LOG_MAX_QUBITS only its gradient is kept.
+        if self.detailed:
+            selected = pool_operators[selected_index]
+            self._emit("selected_operator: " + selected.label,
+                       f"  kind: {selected.kind}",
+                       f"  gradient: {abs(grads[selected_index]):.6e}",
+                       f"  pauli: {_format_pauli(selected.generator)}")
+        else:
+            self._emit(f"max_gradient: {abs(grads[selected_index]):.6e}")
 
         # 2. Post-optimization state of the ansatz.
         if expressivity is not None:
@@ -228,11 +250,13 @@ class AdaptOutputLogger:
 
         # 3. Full operator pool with per-operator gradient magnitudes and Pauli
         #    strings (a plain listing; the selected operator is reported above).
-        self._emit(f"pool_size: {len(pool_operators)}", "operator_pool:")
-        for i, op in enumerate(pool_operators):
-            marker = " (selected)" if i == selected_index else ""
-            self._emit(f"  [{i:3d}] {op.label}  |grad|={abs(grads[i]):.6e}{marker}")
-            self._emit(f"        pauli: {_format_pauli(op.generator)}")
+        self._emit(f"pool_size: {len(pool_operators)}")
+        if self.detailed:
+            self._emit("operator_pool:")
+            for i, op in enumerate(pool_operators):
+                marker = " (selected)" if i == selected_index else ""
+                self._emit(f"  [{i:3d}] {op.label}  |grad|={abs(grads[i]):.6e}{marker}")
+                self._emit(f"        pauli: {_format_pauli(op.generator)}")
         self._emit("")
 
     # -- footer / teardown ------------------------------------------------- #
@@ -281,7 +305,7 @@ class AdaptOutputLogger:
             if getattr(metrics, "total_gates", None) is not None:
                 self._emit(f"one_qubit_gates: {metrics.num_1q_gates}",
                            f"total_gates: {metrics.total_gates}")
-        if operator_sequence is not None:
+        if operator_sequence is not None and self.detailed:
             self._emit("operator_sequence: " + " -> ".join(operator_sequence))
         if extra:
             for key, value in extra.items():
@@ -364,6 +388,8 @@ def parse_output(path: str) -> dict:
                     current["_in_pool"] = True
                 elif stripped.startswith("expressivity_E:"):
                     current["expressivity_E"] = stripped.split(":", 1)[1].strip()
+                elif stripped.startswith("max_gradient:"):
+                    current["max_gradient"] = float(stripped.split(":", 1)[1])
                 elif stripped.startswith("selected_operator:"):
                     current["selected_operator"] = stripped.split(":", 1)[1].strip()
                 elif stripped.startswith("energy_"):

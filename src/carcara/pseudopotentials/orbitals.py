@@ -204,15 +204,22 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             channel = pp.channels[l]
             tables.extend(zeta_tables(pp.r, channel.pseudo_radial,
                                       int(channel.n), l, n_zeta, split_norm))
-        # Polarization: split the outermost channel up into l+1.  Solving a new
+        # Polarization: raise the outermost channel to l+1.  Solving a new
         # confined orbital is not an option here -- there is no pseudopotential
-        # channel for an unoccupied l, so the shape is taken from the channel
-        # being polarized.
+        # channel for an unoccupied l -- so the shape is r^k R_outer(r),
+        # normalized: it keeps the channel's range and vanishes as r^l at the
+        # nucleus.  (Reusing R_outer itself gave R_p(0) != 0, a function
+        # discontinuous at its own center whose derivative blew up whenever a
+        # nucleus sat on a grid node.)
         outermost = pp.channels[l_max]
+        r_table = np.asarray(pp.r, dtype=float)
         for offset in range(n_polarization):
             l = l_max + 1 + offset
-            for table in zeta_tables(pp.r, outermost.pseudo_radial,
-                                     l + 1, l, 1, split_norm):
+            shape = r_table ** (offset + 1) * np.asarray(outermost.pseudo_radial,
+                                                        dtype=float)
+            shape = shape / np.sqrt(np.trapezoid(shape * shape * r_table ** 2,
+                                                 r_table))
+            for table in zeta_tables(pp.r, shape, l + 1, l, 1, split_norm):
                 table.polarization = True
                 tables.append(table)
 

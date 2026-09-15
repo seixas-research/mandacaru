@@ -518,6 +518,10 @@ class VariationalDriver(Calculator):
         """
         if self._save_path is None:
             return None
+        from ..core.serialization import file_qubits_allowed
+        if not file_qubits_allowed(self.n_qubits,
+                                   f"the Hamiltonian file {self._save_path!r}"):
+            return None
         if (self.load_hamiltonian is not None
                 and os.path.abspath(self.load_hamiltonian)
                 == os.path.abspath(self._save_path)):

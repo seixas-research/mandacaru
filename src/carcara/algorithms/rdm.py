@@ -212,3 +212,89 @@ def electronic_energy(gamma: np.ndarray, gamma2: np.ndarray,
 def particle_number(gamma: np.ndarray) -> float:
     """Electron number ``tr(gamma)`` -- a cheap sanity check on the state."""
     return float(np.real(np.trace(gamma)))
+
+
+# --------------------------------------------------------------------------- #
+# RDMs from Pauli expectation values (tapered registers, measured states).
+# --------------------------------------------------------------------------- #
+
+#: Largest register whose RDMs are assembled from Pauli expectation values:
+#: every spin-conserving RDM element is mapped to qubits separately, O(n^4).
+MAX_PAULI_RDM_MODES = 12
+
+
+def rdm_qubit_operators(n_modes: int, mapping: str = "jordan_wigner",
+                        two_qubit_reduction: bool = False, num_particles=None):
+    r"""Qubit operators of the spin-conserving RDM elements.
+
+    Returns ``(ones, twos)``: ``{(p, q): PauliSum}`` for
+    :math:`a^\dagger_p a_q` and ``{(p, q, r, s): PauliSum}`` for
+    :math:`a^\dagger_p a^\dagger_q a_s a_r` (spin-blocked modes, alpha first),
+    mapped with ``mapping`` and, optionally, tapered by the parity two-qubit
+    reduction.  Only elements that conserve both spin populations are built:
+    the others vanish for a state of definite :math:`(n_\alpha, n_\beta)`, and
+    only those operators survive the tapering.  Their expectation values
+    determine the RDMs -- which is how a tapered register, or a state measured
+    on a processor, yields forces.
+    """
+    n_modes = int(n_modes)
+    if n_modes > MAX_PAULI_RDM_MODES:
+        raise ValueError(
+            f"RDMs from Pauli expectation values are limited to "
+            f"{MAX_PAULI_RDM_MODES} spin-orbitals (got {n_modes})")
+    half = n_modes // 2
+
+    def qubit(term):
+        return Fermion({term: 1.0}, n_modes=n_modes).map_to_qubits(
+            mapping, n_modes=n_modes, two_qubit_reduction=two_qubit_reduction,
+            num_particles=num_particles if two_qubit_reduction else None)
+
+    beta = [int(p >= half) for p in range(n_modes)]
+    ones = {(p, q): qubit(((p, True), (q, False)))
+            for p in range(n_modes) for q in range(n_modes)
+            if beta[p] == beta[q]}
+    twos = {}
+    for p in range(n_modes):
+        for q in range(n_modes):
+            if p == q:
+                continue
+            for r in range(n_modes):
+                for s in range(n_modes):
+                    if r == s or beta[p] + beta[q] != beta[r] + beta[s]:
+                        continue
+                    if {beta[p], beta[q]} != {beta[r], beta[s]}:
+                        continue
+                    twos[(p, q, r, s)] = qubit(((p, True), (q, True),
+                                                (s, False), (r, False)))
+    return ones, twos
+
+
+def rdms_from_expectations(n_modes: int, ones: dict, twos: dict,
+                           expectations: dict):
+    """``(gamma, gamma2)`` from Pauli expectation values ``{label: <P>}``."""
+    n_modes = int(n_modes)
+
+    def value(op):
+        return sum(complex(c) * expectations[label]
+                   for label, c in op.terms.items())
+
+    gamma = np.zeros((n_modes, n_modes), dtype=complex)
+    for (p, q), op in ones.items():
+        gamma[p, q] = value(op)
+    gamma2 = np.zeros((n_modes,) * 4, dtype=complex)
+    for (p, q, r, s), op in twos.items():
+        gamma2[p, q, r, s] = value(op)
+    return gamma, gamma2
+
+
+def pauli_expectations(psi, labels) -> dict:
+    """Exact ``{label: <psi|P|psi>}`` for Pauli strings on a small register."""
+    from ..core.mapping import PauliSum
+
+    psi = np.asarray(psi, dtype=complex).ravel()
+    out = {}
+    for label in labels:
+        matrix = PauliSum({label: 1.0}).to_sparse_matrix()
+        out[label] = float(np.real(np.vdot(psi, matrix @ psi)))
+    return out
+
