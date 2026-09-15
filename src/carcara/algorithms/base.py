@@ -271,6 +271,9 @@ class VariationalDriver(Calculator):
 
         self._integration_profile = None
         self._gradient_context = None
+        #: :class:`~carcara.core.sector.ParticleSector` the operators are
+        #: restricted to, or ``None`` for the full register.
+        self._sector = None
         self._configured = False
         #: Result of the most recent run (set by :meth:`run` / the ASE hook).
         self.result = None
@@ -362,12 +365,16 @@ class VariationalDriver(Calculator):
             return hamiltonian.map_to_qubits(self.mapping, n_modes=n_qubits)
         raise TypeError("hamiltonian must be a PauliSum or Fermion")
 
-    def _materialize_hamiltonian(self, qubit_h: PauliSum, n_qubits: int) -> bool:
+    def _materialize_hamiltonian(self, qubit_h: PauliSum, n_qubits: int,
+                                 sector=None) -> bool:
         """Store the (Hermitized) dense or sparse Hamiltonian matrix.
 
         Sets :attr:`hamiltonian`, :attr:`n_qubits`, :attr:`_sparse` and
         :attr:`_h_matrix`; returns the resolved sparse flag.  A sparse matrix is
         used when :meth:`_resolve_sparse` selects it (large active spaces).
+        With a ``sector`` (:class:`~carcara.core.sector.ParticleSector`) the
+        matrix is the Hamiltonian restricted to that particle-number sector --
+        every state vector of the driver then has ``sector.dim`` amplitudes.
         """
         if qubit_h.num_qubits != n_qubits:
             raise ValueError(
@@ -375,6 +382,12 @@ class VariationalDriver(Calculator):
                 f"/ pool has {n_qubits}")
         self.hamiltonian = qubit_h
         self.n_qubits = int(n_qubits)
+        self._sector = sector
+        if sector is not None:
+            self._sparse = True
+            hs = sector.restrict(qubit_h)
+            self._h_matrix = 0.5 * (hs + hs.conj().T)
+            return self._sparse
         self._sparse = self._resolve_sparse(self.sparse, n_qubits)
         if self._sparse:
             hs = qubit_h.to_sparse_matrix()

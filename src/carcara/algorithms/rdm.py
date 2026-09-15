@@ -54,6 +54,45 @@ import numpy as np
 from ..core.mapping import Fermion
 
 
+def _ladder_operators(n_modes: int, mapping: str):
+    """``a_p`` for every mode as qubit :class:`~carcara.core.mapping.PauliSum`."""
+    return [Fermion({((p, False),): 1.0}, n_modes=n_modes)
+            .map_to_qubits(mapping, n_modes=n_modes) for p in range(n_modes)]
+
+
+def _check_sector(psi, n_modes, sector):
+    if sector.two_qubit_reduction:
+        raise NotImplementedError(
+            "RDMs need ladder operators, which do not survive the parity "
+            "two-qubit reduction")
+    if sector.n_qubits != int(n_modes):
+        raise ValueError(f"sector register has {sector.n_qubits} qubits, "
+                         f"expected {n_modes}")
+    psi = np.asarray(psi, dtype=complex).ravel()
+    if psi.size != sector.dim:
+        raise ValueError(f"expected {sector.dim} sector amplitudes, got {psi.size}")
+    return psi
+
+
+def _stack_sparse(states):
+    """Stack sparse states ``[(indices, amplitudes), ...]`` over their union."""
+    if not states:
+        return np.zeros((0, 0), dtype=complex)
+    keys = np.unique(np.concatenate([idx for idx, _amp in states]))
+    out = np.zeros((len(states), keys.size), dtype=complex)
+    for row, (idx, amp) in enumerate(states):
+        out[row, np.searchsorted(keys, idx)] = amp
+    return out
+
+
+def _sector_annihilated(psi, n_modes, mapping, sector):
+    """``[a_p |psi>]`` as sparse states, for a sector state vector."""
+    from ..core.sector import apply_pauli_sum
+    psi = _check_sector(psi, n_modes, sector)
+    ops = _ladder_operators(n_modes, mapping)
+    return ops, [apply_pauli_sum(op, sector.indices, psi) for op in ops]
+
+
 def _annihilator_matrices(n_modes: int, mapping: str):
     """Sparse matrices of ``a_p`` for every mode, in the given qubit encoding."""
     ops = []
@@ -76,7 +115,7 @@ def annihilated_states(psi: np.ndarray, n_modes: int,
 
 
 def one_rdm(psi: np.ndarray, n_modes: int,
-            mapping: str = "jordan_wigner") -> np.ndarray:
+            mapping: str = "jordan_wigner", sector=None) -> np.ndarray:
     r"""One-particle RDM ``gamma_pq = <psi| a+_p a_q |psi>``.
 
     Parameters
@@ -87,6 +126,10 @@ def one_rdm(psi: np.ndarray, n_modes: int,
         Number of spin-orbitals (= qubits) the state lives on.
     mapping : str
         The fermion-to-qubit mapping the Hamiltonian was built with.
+    sector : ParticleSector, optional
+        When the driver simulated a particle-number sector, ``psi`` holds that
+        sector's amplitudes; the ladder operators are then applied to the sparse
+        state directly (no full-register vector is formed).
 
     Returns
     -------
@@ -94,6 +137,11 @@ def one_rdm(psi: np.ndarray, n_modes: int,
         The ``(M, M)`` Hermitian matrix.  Its trace is the electron number, and
         contracting it with the one-body integrals gives the one-body energy.
     """
+    if sector is not None:
+        _ops, singles = _sector_annihilated(psi, n_modes, mapping, sector)
+        a_psi = _stack_sparse(singles)
+        gamma = a_psi.conj() @ a_psi.T
+        return 0.5 * (gamma + gamma.conj().T)
     a_psi = annihilated_states(psi, n_modes, mapping)
     # gamma_pq = <a_p psi | a_q psi>
     gamma = a_psi.conj() @ a_psi.T
@@ -101,7 +149,7 @@ def one_rdm(psi: np.ndarray, n_modes: int,
 
 
 def two_rdm(psi: np.ndarray, n_modes: int,
-            mapping: str = "jordan_wigner") -> np.ndarray:
+            mapping: str = "jordan_wigner", sector=None) -> np.ndarray:
     r"""Two-particle RDM ``Gamma_pqrs = <psi| a+_p a+_q a_s a_r |psi>``.
 
     Uses ``Gamma_pqrs = <a_q a_p psi | a_s a_r psi>``, so only the
@@ -118,14 +166,19 @@ def two_rdm(psi: np.ndarray, n_modes: int,
        Memory scales as ``M**4``; for the active spaces Carcará targets
        (:math:`M \lesssim 20` spin-orbitals) that is a few MB at most.
     """
-    psi = np.asarray(psi, dtype=complex).ravel()
-    ops = _annihilator_matrices(n_modes, mapping)
-
-    # |chi_{pq}> = a_q a_p |psi>  for p < q; the p > q entries follow by
-    # antisymmetry and the diagonal vanishes (a_p a_p = 0).
     pairs = [(p, q) for p in range(n_modes) for q in range(p + 1, n_modes)]
-    chi = np.stack([ops[q] @ (ops[p] @ psi) for p, q in pairs]) \
-        if pairs else np.zeros((0, psi.size), dtype=complex)
+    if sector is not None:
+        from ..core.sector import apply_pauli_sum
+        ops, singles = _sector_annihilated(psi, n_modes, mapping, sector)
+        chi = _stack_sparse([apply_pauli_sum(ops[q], *singles[p])
+                             for p, q in pairs])
+    else:
+        psi = np.asarray(psi, dtype=complex).ravel()
+        ops = _annihilator_matrices(n_modes, mapping)
+        # |chi_{pq}> = a_q a_p |psi>  for p < q; the p > q entries follow by
+        # antisymmetry and the diagonal vanishes (a_p a_p = 0).
+        chi = np.stack([ops[q] @ (ops[p] @ psi) for p, q in pairs]) \
+            if pairs else np.zeros((0, psi.size), dtype=complex)
 
     # <chi_{pq} | chi_{rs}> for the stored (p<q, r<s) pairs.
     block = chi.conj() @ chi.T

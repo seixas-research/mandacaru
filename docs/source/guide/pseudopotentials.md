@@ -416,26 +416,65 @@ subclass with two additions:
   (`compensation_coulomb`: exactly $1/R$ for disjoint spheres, a
   Gauss–Legendre radial/angular quadrature when they overlap, as they do in
   H₂ and LiH). Hartree, exchange and correlation all see neutral atoms.
-* **Exact on-site projections.** `PAWIntegrals.projections()` keeps the grid
-  for a basis function projected on *another* atom's projectors but evaluates
-  the on-site entries by radial quadrature (same center, same $Y_{lm}$). This
-  is not cosmetic: the dual projectors are sharp (the two reference waves are
-  nearly parallel in the core, $B^{-1}$ large), and the grid value of
-  $\langle\tilde\varphi_1|\tilde p_i\rangle$ — exactly $\delta_{i1}$ — came out
-  0.7–3× that depending on where the nucleus sat between nodes; the overlap
-  correction turned that into a 0.2–0.6 Ha collapse of LiH at h = 0.25 and
-  0.35 Å while h = 0.20 and 0.30 were fine. With the on-site entries exact the
-  LiH energy drifts smoothly (−0.7467 / −0.7521 / −0.7605 / −0.7671 Ha at
-  h = 0.20 / 0.25 / 0.30 / 0.35 Å), and H₂ is −1.0510 / −1.0533 / −1.0652 Ha at
-  0.20 / 0.25 / 0.30 Å — more grid-stable than ONCV's −1.072 / −1.044 / −1.094.
+* **Atom-centered projections.** `PAWIntegrals.projections()` evaluates every
+  $C_{\mu p} = \langle\tilde\phi_\mu|\tilde p_p\rangle$ by a spherical product
+  quadrature over the projector's sphere (`atom_centered_projections`:
+  Gauss–Legendre in $r$ and $\cos\theta$, uniform in $\phi$), not on the grid.
+  The dual projectors are sharp (the two reference waves are nearly parallel in
+  the core, $B^{-1}$ large), and the grid values depended on where the nucleus
+  sat between nodes: the on-site $\langle\tilde\varphi_1|\tilde p_i\rangle$ —
+  exactly $\delta_{i1}$ — came out 0.7–3× that, and rigidly translating H₂ by
+  one grid step moved the nonlocal energy by 3.9 eV at h = 0.25 Å. The
+  quadrature depends only on the separation of function and projector, so it
+  is exactly translation invariant; the grid ripple left (kinetic, local and
+  Hartree terms) is 18 / 13 / 5 meV at h = 0.25 / 0.20 / 0.15 Å.
 
-The projector functions the grid samples can be either the dual $\tilde p_i$
+The projector functions can be either the dual $\tilde p_i$
 (`projector_basis="dual"`) or the smooth raw $\chi_k$ with the transformed
 blocks $B^{-1}DB^{-T}$, $B^{-1}qB^{-T}$ (`"raw"`, the default,
-`PAWDataset.projector_set`). The sampled $\chi_k$ are exact linear
-combinations of the sampled $\tilde p_i$, so the energies are **identical to
-all digits** (tested); only the reported resolution ratio differs (H at
-h = 0.25 Å: raw 0.90/0.78, dual 0.78/0.77).
+`PAWDataset.projector_set`). The $\chi_k$ are exact linear combinations of the
+$\tilde p_i$, so the energies are **identical to all digits** (tested); only
+the reported grid resolution ratio differs (H at h = 0.25 Å: raw 0.90/0.78,
+dual 0.78/0.77). The local potential is interpolated with a cubic spline
+(`PAWDataset.local_potential`), so its derivatives are continuous.
+
+### Forces (`algorithms/pseudo_forces.py`)
+
+`atoms.get_forces()` with `basis="PAW"` (or `"ONCVPSP"`) returns the
+Hellmann–Feynman plus Pulay force of the converged state. With the reduced
+density matrices $D$, $\Gamma$ and the molecular orbitals $V$ held fixed,
+
+$$
+E = \sum_{pq} D_{pq}\,h^{MO}_{pq} + \tfrac12\sum_{pqrs}\Gamma_{pqrs}\,g^{MO}_{pqrs}
+  + E_{ion} + E_{1c}, \qquad h^{MO} = A^\dagger h A,\ A = S^{-1/2}V,
+$$
+
+and every atomic-orbital matrix is differentiated. **Hellmann–Feynman:** the
+atom's operators move — its local potential, its projectors (in
+$C D C^\dagger$ and in $S = \tilde S + C q C^\dagger$), its compensation charge
+($W$, $U$) and the ion–ion repulsion. **Pulay:** the basis functions centered
+on the atom move — $\tilde S$, $T$, $V_{loc}$, $C$, the grid two-electron
+tensor and $W$. The projection derivatives use the same atom-centered
+quadrature ($+G$ for the basis function, $-G$ for the projector), so the two
+parts cancel exactly under a rigid translation.
+
+Holding $V$ fixed is exact for a state that is stationary under orbital
+rotations, which a converged ADAPT-VQE run over all orbitals is;
+`force_result.details["orbital_gradient"]` reports the residual. Because the
+DZP basis has complex $Y_{lm}$ functions, the molecular orbitals are first made
+**conjugation-real** (`core.hamiltonian.conjugation_real_orbitals`, same
+determinant): with the phases the SCF happens to return, the MO integrals are
+complex and the real excitation operators of every pool stall above the ground
+state (62 meV on H₂ PAW-DZP). H₂ and LiH in PAW-DZP are 20-qubit problems,
+solved exactly in their (1, 1) particle-number sector (`core.sector`, 100
+states).
+
+On H₂ (h = 0.25 Å) the analytic force agrees with a central difference of the
+energy to 1e-4 eV/Å. Against VASP (PBE, plane waves, PAW) the force curves
+agree qualitatively: the H₂ minimum is near 0.79 Å instead of 0.750 Å — mostly
+from the H augmentation radius, 1.30 bohr, which two atoms 0.75 Å apart overlap
+almost entirely — while the LiH bond forces from 2.1 to 3.2 Å match within
+0.15 eV/Å. Pinned by `test/test_paw_forces.py` and `test/test_sector.py`.
 
 ### Validation (pinned by `test/test_paw.py`, 70 tests, 11.5 s, peak RSS 0.77 GB)
 

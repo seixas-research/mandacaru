@@ -62,8 +62,13 @@ class AdaptAnsatz:
     def __init__(self, n_qubits: int, occupied: tuple[int, ...],
                  mapping: str = "jordan_wigner", sparse: bool = False,
                  provider=None, two_qubit_reduction: bool = False,
-                 num_particles=None):
+                 num_particles=None, sector=None):
         self.n_qubits = int(n_qubits)
+        #: Particle-number sector the generators act in (``None``: full register).
+        self.sector = sector
+        if sector is not None and provider is not None:
+            raise ValueError("a circuit provider prepares full-register states; "
+                             "it cannot be combined with a particle-number sector")
         self.mapping = mapping
         self.occupied = tuple(occupied)
         # With the parity two-qubit reduction the register is two qubits
@@ -71,7 +76,7 @@ class AdaptAnsatz:
         self.two_qubit_reduction = bool(two_qubit_reduction)
         self.num_particles = num_particles
         self.n_modes = self.n_qubits + (2 if self.two_qubit_reduction else 0)
-        self.sparse = bool(sparse)
+        self.sparse = bool(sparse) or sector is not None
         self.provider = provider
         self._ops: list[PoolOperator] = []
         self._eig: list[tuple[np.ndarray, np.ndarray]] = []   # dense (w, V)
@@ -88,6 +93,9 @@ class AdaptAnsatz:
         for i, bit in enumerate(bits):
             if bit:
                 index |= 1 << (self.n_qubits - 1 - i)         # qubit 0 = MSB
+        self._reference_index = index
+        if self.sector is not None:
+            return self.sector.basis_vector(index)
         vec = np.zeros(2 ** self.n_qubits, dtype=complex)
         vec[index] = 1.0
         return vec
@@ -100,7 +108,8 @@ class AdaptAnsatz:
             # (expensive) dense eigendecomposition / sparse powers entirely.
             return
         if self.sparse:
-            A = op.generator.to_sparse_matrix()
+            A = (self.sector.restrict(op.generator) if self.sector is not None
+                 else op.generator.to_sparse_matrix())
             A2 = (A @ A).tocsr()
             # Rodrigues closed form is valid iff A^3 = -A (excitation generators).
             rodrigues = _spm_norm(A @ A2 + A) < 1e-9 * max(1.0, _spm_norm(A))
@@ -127,8 +136,8 @@ class AdaptAnsatz:
 
     def reference_qubits(self) -> list[int]:
         """Qubit indices set to ``|1>`` in the reference determinant."""
-        from ..backends.providers import _occupied_qubits, basis_state_index
-        return _occupied_qubits(basis_state_index(self._hf), self.n_qubits)
+        from ..backends.providers import _occupied_qubits
+        return _occupied_qubits(self._reference_index, self.n_qubits)
 
     def reference_state(self) -> np.ndarray:
         return self._hf.copy()

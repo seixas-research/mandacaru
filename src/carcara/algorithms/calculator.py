@@ -124,6 +124,11 @@ def resolve_method(name: str):
         f"unknown method {name!r}; use one of {available_methods()}")
 
 
+#: Pseudopotential families whose forces come from
+#: :func:`~carcara.algorithms.pseudo_forces.pseudo_nuclear_gradient`.
+PSEUDO_GRADIENT_FAMILIES = ("paw", "oncvpsp")
+
+
 class Carcara(Calculator):
     """ASE calculator running the variational method named by ``method``.
 
@@ -405,8 +410,31 @@ class Carcara(Calculator):
 
         psi = self._converged_state(solver)
         n_qubits = int(solver.n_qubits)
-        gamma = one_rdm(psi, n_qubits, solver.mapping)
-        gamma2 = two_rdm(psi, n_qubits, solver.mapping)
+        sector = getattr(solver, "_sector", None)
+        gamma = one_rdm(psi, n_qubits, solver.mapping, sector=sector)
+        gamma2 = two_rdm(psi, n_qubits, solver.mapping, sector=sector)
+
+        if context.get("family") in PSEUDO_GRADIENT_FAMILIES:
+            # PAW / ONCVPSP: multi-projector coupling, overlap correction,
+            # compensation charges and complex (l > 0) orbitals -- the
+            # separable-form gradient of pseudo_forces.
+            from .pseudo_forces import (ENERGY_CHECK_TOLERANCE,
+                                        pseudo_nuclear_gradient)
+            result = pseudo_nuclear_gradient(
+                context["integrals"], gamma, gamma2,
+                atom_of_orbital=context["atom_of_orbital"],
+                orbital_delta=self.orbital_delta,
+                include_pulay=self.include_pulay)
+            if not getattr(solver, "shots", 0):
+                reported = solver.result.in_units("Ha")
+                rebuilt = result.details["energy_hartree"]
+                if abs(reported - rebuilt) > ENERGY_CHECK_TOLERANCE:
+                    raise RuntimeError(
+                        "the energy rebuilt from the RDMs and molecular orbitals "
+                        f"({rebuilt:.10f} Ha) differs from the solver's "
+                        f"({reported:.10f} Ha); the force would not be the "
+                        "gradient of the reported energy")
+            return result
 
         return nuclear_gradient(
             context["integrals"], gamma, gamma2,

@@ -102,6 +102,39 @@ class TestEstimate:
         assert est.n_qubits == 12
         assert any("pseudopotentials" in n for n in est.notes)
 
+    @pytest.mark.parametrize("basis, expected, per_atom, label", [
+        ({"name": "PAW", "size": "DZP"}, 46, [("O", 13), ("H", 5), ("H", 5)],
+         "PAW (DZP, pseudopotentials)"),
+        ({"name": "PAW", "size": "DZ"}, 24, [("O", 8), ("H", 2), ("H", 2)],
+         "PAW (DZ, pseudopotentials)"),
+        ({"name": "ONCVPSP", "size": "DZP"}, 46, [("O", 13), ("H", 5), ("H", 5)],
+         "ONCVPSP (DZP, pseudopotentials)"),
+        ({"O": {"name": "PAW", "size": "DZP"}, "H": "PAW"}, 30,
+         [("O", 13), ("H", 1), ("H", 1)],
+         'PAW (per-element sizes {"H": "SZ", "O": "DZP"}, pseudopotentials)'),
+    ])
+    def test_pseudopotential_size_hierarchy_is_counted(self, basis, expected,
+                                                        per_atom, label):
+        """The DZ/DZP size options of a pseudopotential family (PAW included)
+        enlarge the valence basis exactly as a run would build it -- a 46-qubit
+        water estimate is what makes the dry run indispensable here, since no
+        state-vector driver could materialize that register."""
+        from carcara.pseudopotentials.families import lookup_family
+        from carcara.pseudopotentials.orbitals import pseudo_basis
+        water = _boxed("H2O")
+        est = estimate_qubits(water, basis=basis)
+        assert est.n_qubits == expected and est.per_atom == per_atom
+        assert est.basis == label
+        # Cross-check against the family's own basis constructor.
+        name = basis["name"] if "name" in basis else "PAW"
+        size = (basis.get("size", "SZ") if "name" in basis
+                else {"O": "DZP", "H": "SZ"})
+        family = lookup_family(name)
+        symbols = water.get_chemical_symbols()
+        potentials = {s: family.get(s, None) for s in set(symbols)}
+        fns, _ = pseudo_basis(symbols, water.get_positions(), potentials, size=size)
+        assert est.n_qubits == 2 * len(fns)
+
     def test_plane_waves_match_the_engine(self):
         from carcara.core import PlaneWaveIntegrals
         cell = np.diag([3.0, 3.0, 3.0])

@@ -34,6 +34,17 @@ circuits.  See :doc:`guide/dry_run`.
    :undoc-members:
    :show-inheritance:
 
+Pseudopotential Forces
+~~~~~~~~~~~~~~~~~~~~~~
+
+Hellmann-Feynman and Pulay forces for the PAW and ONCVPSP families.  See
+:doc:`guide/pseudopotentials`.
+
+.. automodule:: carcara.algorithms.pseudo_forces
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Command Line
 ~~~~~~~~~~~~
 
@@ -125,6 +136,17 @@ Fermionic Operators & Mappings
 ------------------------------
 
 .. automodule:: carcara.core
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Particle-Number Sectors
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Operators and states restricted to the determinants with a fixed number of
+alpha and beta electrons.
+
+.. automodule:: carcara.core.sector
    :members:
    :undoc-members:
    :show-inheritance:

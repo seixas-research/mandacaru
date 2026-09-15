@@ -218,6 +218,11 @@ OVERLAP_MINIMUM = 0.1
 COMPENSATION_POINTS = 2001
 #: Projector basis sampled on the molecular grid (:meth:`PAWDataset.projector_set`).
 DEFAULT_PROJECTOR_BASIS = "raw"
+#: Spherical product quadrature of the atom-centered projections: Gauss-Legendre
+#: in radius and cos(theta), uniform in phi.
+PROJECTION_RADIAL_POINTS = 64
+PROJECTION_POLAR_POINTS = 24
+PROJECTION_AZIMUTHAL_POINTS = 48
 
 
 # --------------------------------------------------------------------------- #
@@ -538,6 +543,21 @@ def _xc_energies(r, rho):
 # The dataset record.
 # --------------------------------------------------------------------------- #
 
+_LOCAL_SPLINES: dict = {}
+
+
+def _local_spline(dataset):
+    """Cubic spline of ``dataset.v_local`` (cached per table)."""
+    cached = _LOCAL_SPLINES.get(id(dataset))
+    if cached is not None and cached[0] is dataset.r and cached[1] is dataset.v_local:
+        return cached[2]
+    from scipy.interpolate import CubicSpline
+    spline = CubicSpline(np.asarray(dataset.r, dtype=float),
+                         np.asarray(dataset.v_local, dtype=float))
+    _LOCAL_SPLINES[id(dataset)] = (dataset.r, dataset.v_local, spline)
+    return spline
+
+
 @dataclass
 class PAWDataset(PseudoPotential):
     r"""A PAW dataset: local potential, projectors, one-center matrices.
@@ -569,6 +589,23 @@ class PAWDataset(PseudoPotential):
     q_cut: float = DEFAULT_Q_CUT
     energy_offset: float = DEFAULT_ENERGY_OFFSET
     norm_deficit: float | None = DEFAULT_NORM_DEFICIT
+
+    def local_potential(self, radius) -> np.ndarray:
+        r"""The ionic local potential at arbitrary radii (Bohr), **C\ :sup:`2`**.
+
+        Interpolated with a cubic spline rather than linearly: the PAW force is
+        the derivative of the energy, and a piecewise-linear potential puts a
+        kink at every table point, which left the analytic and finite-difference
+        forces depending on their step at the 1e-2 eV/Angstrom level.  Beyond
+        the table the potential is the ionic tail :math:`-Z_{ion}/r`; below its
+        first point it is flat.
+        """
+        spline = _local_spline(self)
+        radius = np.asarray(radius, dtype=float)
+        inside = radius <= self.r[-1]
+        values = spline(np.clip(radius, self.r[0], self.r[-1]))
+        return np.where(inside, values,
+                        -self.valence_charge / np.maximum(radius, 1e-12))
 
     @property
     def nonlocal_channels(self) -> list:
@@ -1105,6 +1142,66 @@ def paw_overlap_blocks(projectors, symbols, datasets) -> dict:
     return _blocks(projectors, symbols, datasets, "overlap")
 
 
+def _projector_sphere(projector):
+    """Quadrature points (Bohr, a coordinate triple) and weights over the
+    sphere of radius ``projector.r_cut`` around ``projector.center``."""
+    x, wx = np.polynomial.legendre.leggauss(PROJECTION_RADIAL_POINTS)
+    t, wt = np.polynomial.legendre.leggauss(PROJECTION_POLAR_POINTS)
+    n_phi = PROJECTION_AZIMUTHAL_POINTS
+    azimuth = 2.0 * np.pi * (np.arange(n_phi) + 0.5) / n_phi
+    sin_t = np.sqrt(1.0 - t * t)
+    directions = np.stack([(sin_t[:, None] * np.cos(azimuth)[None, :]).ravel(),
+                           (sin_t[:, None] * np.sin(azimuth)[None, :]).ravel(),
+                           np.repeat(t, n_phi)])
+    angular = np.repeat(wt, n_phi) * (2.0 * np.pi / n_phi)
+    r_cut = float(projector.r_cut)
+    radii = 0.5 * r_cut * (x + 1.0)
+    weights = (0.5 * r_cut * wx * radii * radii)[:, None] * angular[None, :]
+    center = np.asarray(projector.center, dtype=float)
+    points = tuple(center[i] + radii[:, None] * directions[i][None, :]
+                   for i in range(3))
+    return points, weights
+
+
+def atom_centered_projections(basis, projectors) -> np.ndarray:
+    r"""``C[mu, p] = <phi_mu|p_p>`` by quadrature over each projector's sphere.
+
+    See :meth:`PAWIntegrals.projections`.  Returns an ``(M, P)`` array.
+    """
+    C = np.zeros((len(basis), len(projectors)), dtype=complex)
+    for p, projector in enumerate(projectors):
+        points, weights = _projector_sphere(projector)
+        values = projector.evaluate(*points) * weights
+        for mu, fn in enumerate(basis):
+            C[mu, p] = np.sum(np.conj(fn.evaluate(*points)) * values)
+    return C
+
+
+def atom_centered_projection_gradients(basis, projectors,
+                                       delta: float = 1e-3) -> np.ndarray:
+    r"""``G[mu, p, k] = <d phi_mu / d R_k | p_p>``, the basis function moving.
+
+    Same quadrature as :func:`atom_centered_projections`; the orbital
+    derivative with respect to its center is a central difference of the
+    analytic function (step ``delta``, Bohr).  Because the projection depends
+    only on the separation, moving the projector instead gives ``-G``.
+    Returns an ``(M, P, 3)`` array.
+    """
+    G = np.zeros((len(basis), len(projectors), 3), dtype=complex)
+    for p, projector in enumerate(projectors):
+        points, weights = _projector_sphere(projector)
+        values = projector.evaluate(*points) * weights
+        for mu, fn in enumerate(basis):
+            for k in range(3):
+                shift = [0.0, 0.0, 0.0]
+                shift[k] = delta
+                plus = fn.evaluate(*(points[i] - shift[i] for i in range(3)))
+                minus = fn.evaluate(*(points[i] + shift[i] for i in range(3)))
+                G[mu, p, k] = np.sum(np.conj((plus - minus) / (2.0 * delta))
+                                     * values)
+    return G
+
+
 class PAWIntegrals(MolecularIntegrals):
     r"""Molecular integrals with PAW compensation charges.
 
@@ -1136,44 +1233,40 @@ class PAWIntegrals(MolecularIntegrals):
         self._W = None
         self._U = None
 
-    def projections(self) -> np.ndarray:
-        r"""``C[mu, p] = <phi_mu|p_p>`` with the **on-site** entries exact.
+    #: The projections are exact atom-centered integrals (:meth:`projections`),
+    #: which the force code differentiates accordingly.
+    exact_projections = True
 
-        The grid quadrature of the parent class is kept for projections of
-        a basis function on the projectors of *another* atom, but a basis
-        function and a projector on the **same** center share the spherical
-        harmonic, so their projection is the one-dimensional radial integral
-        :math:`\delta_{ll'}\delta_{mm'}\int R_\mu(r)\,p(r)\,r^2 dr`, evaluated
-        here on a fine radial grid.  This matters: the dual projectors are
-        sharp (the two reference waves are nearly parallel in the core, so
-        :math:`B^{-1}` is large) and the grid value of
-        :math:`\langle\tilde\varphi_1|\tilde p_i\rangle`, exactly
-        :math:`\delta_{i1}`, came out anywhere between 0.7 and 3 times that
-        on 0.25-0.30 Angstrom grids depending on where the nucleus sat between
-        nodes -- an error the overlap correction turns into a 0.2-0.6 Ha
-        shift of LiH.  The off-site projections are small and enter only
-        through :math:`q` (never through :math:`B^{-1}`), so the grid is
-        adequate for them.  The resolution ratios still report the grid.
+    def projections(self) -> np.ndarray:
+        r"""``C[mu, p] = <phi_mu|p_p>``, integrated over each projector's sphere.
+
+        A projector vanishes beyond its cutoff, so
+        :math:`\langle\phi_\mu|p_p\rangle = \int_{|\mathbf x| < r_c}
+        \phi^*_\mu(\mathbf R_p + \mathbf x)\, p(\mathbf x)\, d^3x`, which is
+        evaluated with a spherical product quadrature centered on the projector
+        (:func:`atom_centered_projections`) instead of the real-space grid.  The
+        result depends only on the relative position of the basis function and
+        the projector, so it is **exactly translation invariant** and the
+        on-site entries :math:`\delta_{ll'}\delta_{mm'}\int R_\mu p\, r^2dr`
+        come out right by construction.
+
+        The grid quadrature this replaces is poor for these functions: the dual
+        projectors are sharp (the two reference waves are nearly parallel in
+        the core, so :math:`B^{-1}` is large), and on an H\ :sub:`2` DZP basis
+        at h = 0.25 Angstrom rigidly translating the molecule by one grid step
+        moved the nonlocal energy by 3.9 eV, the augmented overlap by 1.0 eV
+        and the compensation Coulomb term by 1.4 eV -- an egg-box that swamps
+        any force.  With the quadrature those ripples vanish; the remaining
+        grid ripple (kinetic, local potential, Hartree) is 18 / 13 / 5 meV at
+        h = 0.25 / 0.20 / 0.15 Angstrom.  The quadrature is converged to
+        4e-7 and agrees with an h = 0.10 Angstrom grid to 1e-4.  The grid
+        values are still computed once, for :attr:`kb_resolution_ratios`.
         """
         if self._C is not None:
             return self._C
-        C = np.array(super().projections(), dtype=complex)
-        for p, projector in enumerate(self.kb_projectors):
-            r = np.linspace(0.0, float(projector.r_cut), COMPENSATION_POINTS)
-            radial_p = np.asarray(projector.radial(r), dtype=float)
-            for mu, fn in enumerate(self.basis):
-                center = getattr(fn, "center", None)
-                if center is None or np.linalg.norm(
-                        np.asarray(center, dtype=float) - projector.center) > 1e-8:
-                    continue
-                if (int(getattr(fn, "l", -1)), int(getattr(fn, "m", 0))) != \
-                        (projector.l, projector.m):
-                    C[mu, p] = 0.0
-                    continue
-                radial_mu = np.asarray(fn.radial(r), dtype=float)
-                C[mu, p] = simpson(radial_mu * radial_p * r * r, x=r)
-        self._C = C
-        return C
+        super().projections()               # grid values: resolution ratios
+        self._C = atom_centered_projections(self.basis, self.kb_projectors)
+        return self._C
 
     def _atom_positions(self):
         groups = projector_blocks(self.kb_projectors)

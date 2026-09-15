@@ -415,12 +415,14 @@ class Fermion:
         U, P, R = _mapping_sets(method, n)
 
         result = PauliSum()
+        accumulated = result.terms      # in place: `result + op` copies every term
         for term, coeff in self.terms.items():
             op = PauliSum.identity(n) * complex(coeff)
             for (mode, dagger) in term:
                 op = op.compose(_ladder_pauli(n, mode, dagger,
                                               U[mode], P[mode], R[mode]))
-            result = result + op
+            for label, value in op.terms.items():
+                accumulated[label] = accumulated.get(label, 0j) + value
         result = result.simplify()
 
         if two_qubit_reduction:

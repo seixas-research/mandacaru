@@ -147,6 +147,10 @@ class MolecularIntegrals:
         self._C: np.ndarray | None = None
         self._h1: np.ndarray | None = None
         self._eri: np.ndarray | None = None
+        #: Molecular-orbital coefficients (columns, in the Loewdin-orthonormal
+        #: basis) of the last ``molecular_hamiltonian(mo_basis=True)``: the
+        #: RHF orbitals, or the UHF natural orbitals for an open shell.
+        self.mo_coefficients: np.ndarray | None = None
 
     @property
     def n_orbitals(self) -> int:
@@ -197,6 +201,36 @@ class MolecularIntegrals:
         S = self.overlap()
         w, U = np.linalg.eigh(S)
         return (U * (1.0 / np.sqrt(w))) @ U.conj().T
+
+    def conjugation_matrix(self):
+        r"""Complex conjugation of the orbital basis, :math:`\chi^* = \chi K`.
+
+        Spherical harmonics satisfy :math:`Y_{lm}^* = (-1)^m Y_{l,-m}`, so a basis
+        holding every :math:`m` of a shell is closed under conjugation and
+        :math:`K` is unitary with :math:`K K^* = 1`.  Returned in the orthonormal
+        (Löwdin) basis the integrals are expressed in, or ``None`` when the basis
+        is not orthogonalized.  Every operator here is real, so
+        :math:`A^* = K^\dagger A K` for each of them.
+        """
+        if not self.orthogonalize:
+            return None
+        self.one_body()                                   # samples the basis
+        psi = self._engine._psi
+        N = (np.conj(psi) @ np.conj(psi).T) * self.grid.dV
+        K = np.linalg.solve(self.bare_overlap(), N)       # phi* = phi K
+        X = self._lowdin_x()
+        return np.linalg.solve(X, K @ X.conj())
+
+    def real_orbitals(self, orbitals, boundaries=()):
+        """``orbitals`` made conjugation-real without changing the determinant.
+
+        See :func:`conjugation_real_orbitals`; the orbitals are rotated only
+        within the blocks separated by ``boundaries``.
+        """
+        conjugation = self.conjugation_matrix()
+        if conjugation is None:
+            return np.asarray(orbitals)
+        return conjugation_real_orbitals(orbitals, conjugation, boundaries)
 
     @property
     def uses_pseudopotentials(self) -> bool:
@@ -454,6 +488,7 @@ class MolecularIntegrals:
             if open_shell:
                 uhf = self.open_shell_hartree_fock(na, nb)
                 h_mo, eri_mo = uhf.h_mo, uhf.eri_mo
+                orbitals, blocks = uhf.natural_orbitals, (min(na, nb), max(na, nb))
             else:
                 if n_el % 2:
                     raise ValueError(
@@ -461,6 +496,18 @@ class MolecularIntegrals:
                         f"electron count; got {n_el}")
                 rhf = self.hartree_fock(n_el)
                 h_mo, eri_mo = rhf.h_mo, rhf.eri_mo
+                orbitals, blocks = rhf.mo_coefficients, (n_el // 2,)
+            # Complex (l > 0) orbitals come out of the SCF with arbitrary phases
+            # and degenerate-pair mixing, which makes the MO Hamiltonian complex
+            # while every operator pool is real: ADAPT then stalls above the
+            # ground state (62 meV on H2 PAW-DZP).  Same determinant, real H.
+            real = self.real_orbitals(orbitals, blocks)
+            if real is not orbitals:
+                from ..algorithms.hartree_fock import transform_integrals
+                h_mo, eri_mo = transform_integrals(self.one_body(),
+                                                   self.two_body(), real)
+                h_mo, eri_mo = np.real_if_close(h_mo), np.real_if_close(eri_mo)
+            self.mo_coefficients = real
             if frozen:
                 active = [p for p in range(self.n_orbitals) if p not in frozen]
                 h_mo, eri_mo, core_energy = freeze_core_integrals(
@@ -575,6 +622,59 @@ def assemble_block_matrix(projectors, blocks, diagonal=None) -> np.ndarray:
                 f"block for channel {key} must be ({n}, {n}), got {block.shape}")
         out[np.ix_(positions, positions)] = block
     return out
+
+
+#: Largest residual (unitarity, block coupling, reality) :func:`conjugation_real_orbitals` accepts.
+REALITY_TOLERANCE = 1e-8
+
+
+def conjugation_real_orbitals(orbitals, conjugation, boundaries=(),
+                              tolerance: float = REALITY_TOLERANCE):
+    r"""Rotate orthonormal orbitals so each is invariant under conjugation.
+
+    An orbital with coefficients :math:`v` (in a basis whose conjugation is
+    :math:`K`, see :meth:`MolecularIntegrals.conjugation_matrix`) is *real* when
+    :math:`K v^* = v`.  In a basis of real orbitals every integral of a real
+    operator is real, so the qubit Hamiltonian is real and its ground state has
+    real amplitudes -- reachable by the real excitation generators of the
+    operator pools.  For orthonormal orbitals :math:`V` spanning a
+    conjugation-invariant space, :math:`B = V^\dagger K V^*` is unitary and
+    symmetric, its principal square root :math:`W` satisfies :math:`W W^T = B`,
+    and :math:`V W` is real: the phase of each non-degenerate orbital is fixed
+    and degenerate partners are recombined (:math:`p_{\pm 1}` into
+    :math:`p_x, p_y`).
+
+    The rotation stays inside the blocks separated by ``boundaries`` (e.g. the
+    occupied / virtual split), so the reference determinant and the orbital
+    energies are unchanged.  Returns ``orbitals`` itself (the same object)
+    whenever the construction does not apply -- a basis not closed under
+    conjugation, or a block that is not conjugation-invariant.
+    """
+    from scipy.linalg import sqrtm
+
+    V = np.asarray(orbitals)
+    K = np.asarray(conjugation, dtype=complex)
+    n = V.shape[1]
+    if V.shape[0] != K.shape[0] or \
+            np.abs(K @ K.conj() - np.eye(K.shape[0])).max() > tolerance:
+        return orbitals
+    B = V.conj().T @ K @ V.conj()
+    if np.abs(B @ B.conj().T - np.eye(n)).max() > tolerance:
+        return orbitals
+    edges = [0] + sorted({int(b) for b in boundaries if 0 < int(b) < n}) + [n]
+    W = np.zeros((n, n), dtype=complex)
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        inside = np.zeros(n, dtype=bool)
+        inside[lo:hi] = True
+        if np.abs(B[np.ix_(inside, ~inside)]).max(initial=0.0) > tolerance:
+            return orbitals
+        block = B[lo:hi, lo:hi]
+        W[lo:hi, lo:hi] = sqrtm(0.5 * (block + block.T))
+    real = V @ W
+    if np.abs(K @ real.conj() - real).max() > tolerance or \
+            np.abs(real.conj().T @ real - V.conj().T @ V).max() > tolerance:
+        return orbitals
+    return real
 
 
 def spin_block_integrals(h: np.ndarray,

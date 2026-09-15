@@ -260,6 +260,18 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         / ``False`` force it.  In sparse mode screening always uses the analytic
         gradient (the ``gradient`` argument's estimators need the dense
         eigendecompositions and are unavailable).
+    sector : bool or str
+        Simulate only the ``(n_alpha, n_beta)`` particle-number sector
+        (default ``"auto"``).  The Hamiltonian and every pool generator are
+        restricted to the sector's basis states
+        (:class:`~carcara.core.sector.ParticleSector`) and state vectors carry
+        ``C(M, n_alpha) C(M, n_beta)`` amplitudes instead of ``2^n`` -- 100
+        instead of 1,048,576 for H2 or LiH in a DZP basis.  Exact, since the
+        operators conserve particle number.  ``"auto"`` enables it for
+        ``n_qubits >= 16`` (where a full-register sparse Hamiltonian no longer
+        fits in memory) whenever states are prepared internally; ``True`` /
+        ``False`` force it.  Incompatible with executing the ansatz as a
+        circuit (``execute_circuits``), which prepares full-register states.
     atomic_units : bool
         Units used in the ``output.txt`` log.  ``False`` (default) logs energies
         in **eV** and lengths in **Angstrom**; ``True`` logs Hartree and Bohr.
@@ -376,6 +388,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  profile: bool = True,
                  verbose: bool = True,
                  sparse: bool | str = "auto",
+                 sector: bool | str = "auto",
                  atomic_units: bool = False,
                  grid=None,
                  h: float = 0.20,
@@ -416,6 +429,11 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                          **calc_kwargs)
 
         self.profile = profile
+        if not (isinstance(sector, bool)
+                or (isinstance(sector, str) and sector.strip().lower() == "auto")):
+            raise ValueError(f"unknown sector spec {sector!r}; use True, False "
+                             "or 'auto'")
+        self.sector = sector
         # Validate the enumerated gradient option up front.
         if gradient not in self._GRADIENTS:
             raise ValueError(
@@ -472,12 +490,18 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # operators (in the growable ansatz).
         qubit_h = self._as_pauli_sum(hamiltonian, self.pool.n_qubits,
                                      self.num_particles)
-        self._materialize_hamiltonian(qubit_h, self.pool.n_qubits)
+        self._materialize_hamiltonian(
+            qubit_h, self.pool.n_qubits,
+            sector=self._resolve_sector(self.pool.n_qubits))
         self._maybe_save_hamiltonian(self.num_particles,
                                      self.pool.n_spatial_orbitals)
 
         self._pool_ops = self.pool.operators()
-        if self._sparse:
+        if self._sector is not None:
+            self._pool_matrices = [self._sector.restrict(op.generator)
+                                   for op in self._pool_ops]
+            self._pool_eig = None
+        elif self._sparse:
             self._pool_matrices = [op.generator.to_sparse_matrix()
                                    for op in self._pool_ops]
             self._pool_eig = None
@@ -592,6 +616,34 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         return int(np.argmax(np.abs(grads)))
 
+    #: Registers at least this wide use the particle-number sector by default.
+    SECTOR_AUTO_QUBITS = 16
+    #: Drivers whose states cannot live in a sector override this.
+    _supports_sector = True
+
+    def _resolve_sector(self, n_qubits: int):
+        """The :class:`~carcara.core.sector.ParticleSector` to simulate, or ``None``."""
+        spec = self.sector
+        internal = self.ansatz_provider() is None
+        if isinstance(spec, str):
+            use = (int(n_qubits) >= self.SECTOR_AUTO_QUBITS
+                   and self._supports_sector and internal)
+        else:
+            use = bool(spec)
+        if not use:
+            return None
+        if not self._supports_sector:
+            raise NotImplementedError(
+                f"{type(self).__name__} builds full-register reference states "
+                "and cannot run in a particle-number sector (sector=True)")
+        if not internal:
+            raise ValueError(
+                "sector=True needs the internal state-vector backend; executing "
+                "the ansatz as a circuit prepares full-register states")
+        from ..core.sector import ParticleSector
+        return ParticleSector(n_qubits, self.num_particles, self.mapping,
+                              two_qubit_reduction=self.two_qubit_reduction)
+
     def _new_ansatz(self) -> AdaptAnsatz:
         """A fresh growable ansatz on the configured evaluation backend.
 
@@ -603,7 +655,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                            self.mapping, sparse=getattr(self, "_sparse", False),
                            provider=self.ansatz_provider(),
                            two_qubit_reduction=self.two_qubit_reduction,
-                           num_particles=self.num_particles)
+                           num_particles=self.num_particles,
+                           sector=self._sector)
 
     def _profile(self, ansatz) -> CircuitMetrics:
         """Compiled-circuit metrics for ``ansatz`` on the configured provider."""
