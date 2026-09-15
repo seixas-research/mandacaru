@@ -4,10 +4,12 @@ Every method accepts a `quenching` flag that controls **how many
 parameters the classical optimizer varies at each step**.
 
 ```python
-Carcara(method="adapt-vqe", basis="FAO",
-                  quenching=True)    # default: re-optimize everything
-Carcara(method="adapt-vqe", basis="FAO",
-                  quenching=False)   # freeze the past, tune only the newest
+Carcara(method="adapt-vqe",
+        basis="FAO",
+        quenching=True)    # default: re-optimize everything
+Carcara(method="adapt-vqe",
+        basis="FAO",
+        quenching=False)   # freeze the past, tune only the newest
 ```
 
 | | `quenching=True` (default) | `quenching=False` |
@@ -33,8 +35,10 @@ cost of variational freedom.
 
 ```python
 seen = []
-calc = Carcara(method="adapt-vqe", pool="qeb",
-                         load_hamiltonian="lih.parquet", quenching=False)
+calc = Carcara(method="adapt-vqe",
+               pool="qeb",
+               load_hamiltonian="lih.parquet",
+               quenching=False)
 calc.run(callback=lambda info: seen.append(info["parameters"].copy()))
 
 # Every step appends exactly one parameter and leaves the earlier ones untouched.

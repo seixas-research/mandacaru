@@ -62,8 +62,12 @@ settings = dict(basis="FAO", mapping="jordan_wigner", n_cells=4, n_images=7, h=0
 
 # Correlated total energy -> adaptive method; single-particle bands -> fixed-ansatz
 # method (bands are solver-independent, so method="vqe" is the cheapest choice).
-adapt = BlochCalculator(atoms, method="adapt-vqe", **settings)
-bands = BlochCalculator(atoms, method="vqe", **settings)
+adapt = BlochCalculator(atoms,
+                        method="adapt-vqe",
+                        **settings)
+bands = BlochCalculator(atoms,
+                        method="vqe",
+                        **settings)
 print(f"Periodic H chain: {SPACING:.2f} A spacing (one-atom cell), "
       f"{VACUUM:.0f} A vacuum, {bands.dimension}-D, {bands.n_bands} band(s)")
 

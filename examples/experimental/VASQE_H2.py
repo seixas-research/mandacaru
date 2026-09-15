@@ -38,11 +38,16 @@ atoms = Atoms("H2",
 
 
 def run(label, **vasqe_kwargs):
-    atoms.calc = Carcara(method="vasqe", basis="FAO", h=0.20,
-                                   mapping="jordan_wigner",
-                                   optimizer="L-BFGS-B", verbose=False,
-                                   profile=False, max_iterations=12,
-                                   gradient_tolerance=1e-5, **vasqe_kwargs)
+    atoms.calc = Carcara(method="vasqe",
+                         basis="FAO",
+                         h=0.20,
+                         mapping="jordan_wigner",
+                         optimizer="L-BFGS-B",
+                         verbose=False,
+                         profile=False,
+                         max_iterations=12,
+                         gradient_tolerance=1e-5,
+                         **vasqe_kwargs)
     energy_ev = atoms.get_total_energy()
     res = atoms.calc.result
     taus = ", ".join(f"{t:.3g}" for t in res.temperatures)
@@ -52,9 +57,14 @@ def run(label, **vasqe_kwargs):
 
 
 # Exact FCI reference (lowest eigenvalue of the qubit Hamiltonian).
-atoms.calc = Carcara(method="vasqe", basis="FAO", h=0.20,
-                               temperature=1e-3, verbose=False, profile=False,
-                               max_iterations=1, gradient_tolerance=1e-5)
+atoms.calc = Carcara(method="vasqe",
+                     basis="FAO",
+                     h=0.20,
+                     temperature=1e-3,
+                     verbose=False,
+                     profile=False,
+                     max_iterations=1,
+                     gradient_tolerance=1e-5)
 atoms.get_total_energy()
 h = atoms.calc.hamiltonian.to_matrix()
 fci_ev = float(from_hartree(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min(), "eV"))

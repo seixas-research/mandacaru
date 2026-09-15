@@ -75,8 +75,10 @@ from carcara.algorithms import Carcara
 ansatz = UCCSD(n_spatial_orbitals=4, num_particles=(1, 1), mapping="jordan_wigner")
 
 # Execute VQE in direct mode (explicit Hamiltonian, no geometry)
-calc = Carcara(method="vqe", hamiltonian=H_mo, ansatz=ansatz,
-                         optimizer="COBYLA")
+calc = Carcara(method="vqe",
+               hamiltonian=H_mo,
+               ansatz=ansatz,
+               optimizer="COBYLA")
 result = calc.run()
 
 print(f"LiH VQE Ground-State Energy: {result.optimal_energy:.6f} eV")
@@ -97,8 +99,11 @@ atoms = Atoms("LiH", positions=[[4.0, 4.0, 3.20], [4.0, 4.0, 4.80]],
               cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
 # Attach the calculator, selecting the VQE method
-atoms.calc = Carcara(method="vqe", basis="FAO", mapping="jordan_wigner",
-                               optimizer="COBYLA", h=0.15)
+atoms.calc = Carcara(method="vqe",
+                     basis="FAO",
+                     mapping="jordan_wigner",
+                     optimizer="COBYLA",
+                     h=0.15)
 
 # Energy in eV
 energy_ev = atoms.get_total_energy()

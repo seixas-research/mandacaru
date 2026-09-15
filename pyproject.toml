@@ -67,3 +67,10 @@ path = "src/carcara/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/carcara"]
+# The ONCVPSP and PAW libraries (~300 MB) live in the carcara-oncvpsp and
+# carcara-paw repositories and are linked into library/ locally; PyPI caps a
+# release at 100 MB, so only the 11 MB NCPP library ships in the wheel.
+exclude = [
+  "src/carcara/pseudopotentials/library/oncvpsp",
+  "src/carcara/pseudopotentials/library/paw",
+]

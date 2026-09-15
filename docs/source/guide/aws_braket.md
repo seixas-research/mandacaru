@@ -35,17 +35,26 @@ atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
               cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
 
 # Local Braket simulator, shot-based (identical protocol to a QPU).
-atoms.calc = Carcara(method="vqe", basis="FAO", h=0.35,
-                               device="braket-local", shots=8192)
+atoms.calc = Carcara(method="vqe",
+                     basis="FAO",
+                     h=0.35,
+                     device="braket-local",
+                     shots=8192)
 atoms.get_total_energy()
 
 # The AWS managed simulator.
-atoms.calc = Carcara(method="vqe", basis="FAO", h=0.35,
-                               device="braket-sv1", shots=8192)
+atoms.calc = Carcara(method="vqe",
+                     basis="FAO",
+                     h=0.35,
+                     device="braket-sv1",
+                     shots=8192)
 
 # A real trapped-ion QPU.
-atoms.calc = Carcara(method="vqe", basis="FAO", h=0.35,
-                               device="braket-ionq-aria", shots=8192)
+atoms.calc = Carcara(method="vqe",
+                     basis="FAO",
+                     h=0.35,
+                     device="braket-ionq-aria",
+                     shots=8192)
 ```
 
 Naming a Braket device selects the `braket` provider automatically, so
@@ -119,7 +128,9 @@ only the optimized states on hardware:
 ```python
 from carcara.algorithms.base import measure_energies
 
-atoms.calc = Carcara(method="adapt-vqe", pool="ceo", basis="GTO")
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool="ceo",
+                     basis="GTO")
 atoms.get_total_energy()                                  # local
 provider = QiskitProvider(device="ibm_kingston", shots=4096)
 e_hw = atoms.calc.solver.measured_energy(provider)        # one job
@@ -132,8 +143,11 @@ molecules with a closed-shell reference the parity mapping's two-qubit
 reduction removes two qubits and their gates at no cost in physics:
 
 ```python
-Carcara(method="adapt-vqe", pool="fermionic", mapping="parity",
-        two_qubit_reduction=True, basis="FAO")     # H2 on 2 qubits
+Carcara(method="adapt-vqe",
+        pool="fermionic",
+        mapping="parity",
+        two_qubit_reduction=True,
+        basis="FAO")     # H2 on 2 qubits
 ```
 
 A driver with `shots > 0` and an IBM device (`Carcara(..., device="ibm_kingston",
@@ -165,16 +179,18 @@ A **raw ARN** is accepted too, so a device released after this version can still
 be named:
 
 ```python
-Carcara(method="vqe", basis="FAO",
-                  device="arn:aws:braket:eu-west-2::device/qpu/vendor/New-1",
-                  shots=4096)
+Carcara(method="vqe",
+        basis="FAO",
+        device="arn:aws:braket:eu-west-2::device/qpu/vendor/New-1",
+        shots=4096)
 ```
 
 Naming a QPU **without** `shots` is refused up front, when the solver is built,
 rather than at submission time:
 
 ```python
->>> Carcara(method="adapt-vqe", device="braket-ionq-aria").run()
+>>> Carcara(method="adapt-vqe",
+            device="braket-ionq-aria").run()
 ValueError: device 'braket-ionq-aria' is real quantum hardware, which cannot
 return a state vector: pass shots > 0 (e.g. shots=8192) so the energy is
 estimated from measurements.

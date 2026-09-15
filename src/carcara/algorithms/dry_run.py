@@ -215,45 +215,50 @@ def _basis_key(name: str) -> str:
     return str(name).upper().replace("-", "").replace(" ", "")
 
 
-def count_basis_functions(atoms, basis="FAO", pseudopotentials=False):
+def _pseudo_basis_count(atoms, family, options):
+    """Per-atom valence function counts, a label and the loaded potentials
+    for a pseudopotential family (nothing sampled on a grid)."""
+    from ..pseudopotentials.orbitals import pseudo_basis
+    from ._hamiltonian_from_atoms import coherent_positions
+
+    symbols = list(atoms.get_chemical_symbols())
+    directory = options.get("directory")
+    potentials = {s: family.get(s, directory) for s in set(symbols)}
+    positions = coherent_positions(atoms)
+    _fns, atom_of_orbital = pseudo_basis(
+        symbols, positions, potentials, size=options.get("size", "SZ"),
+        split_norm=options.get("split_norm"))
+    counts = np.bincount(np.asarray(atom_of_orbital, dtype=int),
+                         minlength=len(symbols))
+    size = options.get("size", "SZ")
+    size_label = ("per-element sizes " + json.dumps(size, sort_keys=True)
+                  if isinstance(size, dict) else str(size))
+    per_atom = [(s, int(c)) for s, c in zip(symbols, counts)]
+    return per_atom, f"{family.label} ({size_label}, pseudopotentials)", potentials
+
+
+def count_basis_functions(atoms, basis="FAO"):
     """Spatial basis functions per atom, ``[(symbol, count), ...]``, plus a label.
 
     Instantiates the basis family exactly as a run would (so every option that
     changes the function count -- ``size``, polarization, ``n_gaussians`` -- is
-    honored) but never samples anything on a grid.  The plane-wave family
-    returns one entry ``("PW", n_plane_waves)`` since it is not atom-centered.
-    Returns ``(per_atom, basis_label)``.
+    honored) but never samples anything on a grid.  A pseudopotential family
+    (``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW"``) counts its valence pseudo-atomic
+    orbitals; the plane-wave family returns one entry ``("PW", n_plane_waves)``
+    since it is not atom-centered.  Returns ``(per_atom, basis_label)``.
     """
-    from ._hamiltonian_from_atoms import (_merge_pseudo_basis_options,
-                                          coherent_positions, resolve_basis)
+    from ._hamiltonian_from_atoms import resolve_basis, resolve_pseudo_basis
 
     symbols = list(atoms.get_chemical_symbols())
-    if pseudopotentials:
-        from ..experimental.pseudopotentials.families import (
-            normalize_pseudopotentials, resolve_family)
-        from ..experimental.pseudopotentials.orbitals import pseudo_basis
-
-        options = normalize_pseudopotentials(pseudopotentials)
-        options = _merge_pseudo_basis_options(basis, options)
-        family = resolve_family(options["family"])
-        directory = options.get("directory")
-        potentials = {s: family.get(s, directory) for s in set(symbols)}
-        positions = coherent_positions(atoms)
-        _fns, atom_of_orbital = pseudo_basis(
-            symbols, positions, potentials, size=options.get("size", "SZ"),
-            split_norm=options.get("split_norm"))
-        counts = np.bincount(np.asarray(atom_of_orbital, dtype=int),
-                             minlength=len(symbols))
-        size = str(options.get("size", "SZ"))
-        return ([(s, int(c)) for s, c in zip(symbols, counts)],
-                f"PP ({size}, pseudopotentials)")
-
     name, options = resolve_basis(basis)
+    family, options = resolve_pseudo_basis(name, options, symbols)
+    if family is not None:
+        per_atom, label, _potentials = _pseudo_basis_count(atoms, family, options)
+        return per_atom, label
+
     if name == "per-element":
         from ..basis import BasisSet
-        from ._hamiltonian_from_atoms import per_element_basis
-        per_element_basis(options, symbols)      # validate for these symbols
-        bset = BasisSet.build(options)
+        bset = BasisSet.build(options)          # validated by resolve_pseudo_basis
         return [(s, len(bset.atom(s))) for s in symbols], bset.name
     if _basis_key(name) in ("PW", "PLANEWAVE"):
         from ..core.planewave import (DEFAULT_ENERGY_CUTOFF_EV,
@@ -299,7 +304,7 @@ def _device_fields(device, notes):
 def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
                     charge: int = 0, n_electrons=None, spin: bool = False,
                     frozen_core=False, frozen_orbitals=None,
-                    pseudopotentials=False, load_hamiltonian=None,
+                    load_hamiltonian=None,
                     hamiltonian=None, num_particles=None,
                     n_spatial_orbitals=None, method: str = "adapt-vqe",
                     device: str = "AER_simulator") -> QubitEstimate:
@@ -376,31 +381,33 @@ def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
     if atoms is None:
         raise ValueError("estimate_qubits needs atoms, load_hamiltonian or an "
                          "explicit hamiltonian")
-    from ._hamiltonian_from_atoms import (_num_particles, resolve_frozen_core,
-                                          resolve_num_unpaired)
+    from ._hamiltonian_from_atoms import (_num_particles, resolve_basis,
+                                          resolve_frozen_core,
+                                          resolve_num_unpaired,
+                                          resolve_pseudo_basis)
 
-    per_atom, label = count_basis_functions(atoms, basis, pseudopotentials)
-    n_basis = int(sum(n for _s, n in per_atom))
+    symbols = list(atoms.get_chemical_symbols())
     numbers = atoms.get_atomic_numbers()
+    name, options = resolve_basis(basis)
+    family, options = resolve_pseudo_basis(name, options, symbols)
 
-    if pseudopotentials:
+    if family is not None:
         if frozen_core or frozen_orbitals:
-            raise ValueError("frozen_core is redundant with pseudopotentials")
-        from ..experimental.pseudopotentials.families import (
-            normalize_pseudopotentials, resolve_family)
-        from ..experimental.pseudopotentials.orbitals import valence_electrons
+            raise ValueError(
+                f"frozen_core is redundant with the {family.label} basis -- "
+                "the core is already absent from the valence-only pseudo basis")
+        from ..pseudopotentials.orbitals import valence_electrons
 
-        options = normalize_pseudopotentials(pseudopotentials)
-        family = resolve_family(options["family"])
-        symbols = atoms.get_chemical_symbols()
-        potentials = {s: family.get(s, options.get("directory"))
-                      for s in set(symbols)}
+        per_atom, label, potentials = _pseudo_basis_count(atoms, family, options)
+        n_basis = int(sum(n for _s, n in per_atom))
         n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
         frozen: list[int] = []
-        notes.append(f"pseudopotentials ({family.name} family): the core is "
+        notes.append(f"pseudopotentials ({family.label} family): the core is "
                      "absent from the valence problem (counts are valence "
                      "electrons / orbitals)")
     else:
+        per_atom, label = count_basis_functions(atoms, basis)
+        n_basis = int(sum(n for _s, n in per_atom))
         n_el = (int(n_electrons) if n_electrons is not None
                 else int(sum(int(z) for z in numbers)) - int(charge))
         if per_atom and per_atom[0][0] == "PW":

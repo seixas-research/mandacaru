@@ -1,25 +1,29 @@
 # -*- coding: utf-8 -*-
-# file: test/experimental/conftest.py
+# file: test/conftest.py
 
 # This code is part of Carcará.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Resource monitoring for the experimental test suite.
+"""Resource monitoring for the test suite.
 
-Every test under ``test/experimental/`` is timed (setup + call + teardown) and
-the process peak RSS (``resource.getrusage(RUSAGE_SELF).ru_maxrss``) is read
-after it.  A summary table is printed at the end of the session (visible with
-``pytest -s`` and in the terminal summary) and written to
-``test/experimental/.resource_report.txt``.
+Every test under ``test/`` is timed (setup + call + teardown) and the process
+peak RSS (``resource.getrusage(RUSAGE_SELF).ru_maxrss``) is read after it.  A
+summary table -- the :data:`TERMINAL_ROWS` slowest tests -- is printed at the
+end of the session (in the terminal summary, and with ``pytest -s``), and the
+complete table is written to ``test/.resource_report.txt``.
 
-Budget the suite must stay within (report flags any breach; shrink the grid or
-the cell of the offending test rather than the limits):
+Budget every run must stay within (the report flags any breach; shrink the
+grid or the cell of the offending test rather than the limits):
 
-* every single test          < :data:`TEST_LIMIT_S` (3 minutes),
-* the whole experimental run < :data:`SESSION_LIMIT_S` (10 minutes),
-* peak RSS                   < :data:`RSS_LIMIT_GB` (3 GB).
+* every single test  < :data:`TEST_LIMIT_S` (3 minutes),
+* the whole session  < :data:`SESSION_LIMIT_S` (10 minutes),
+* peak RSS           < :data:`RSS_LIMIT_GB` (3 GB).
+
+The budget was set for the pseudopotential tests (``test_ncpp_family``,
+``test_oncvpsp``, ``test_paw``, ``test_pseudopotential_engine``, ...), which
+are the heaviest; it now covers the whole suite.
 """
 
 from __future__ import annotations
@@ -34,6 +38,8 @@ import pytest
 TEST_LIMIT_S = 180.0
 SESSION_LIMIT_S = 600.0
 RSS_LIMIT_GB = 3.0
+#: Rows of the per-test table shown in the terminal (the file has them all).
+TERMINAL_ROWS = 25
 
 REPORT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            ".resource_report.txt")
@@ -63,16 +69,23 @@ class ResourceLog:
     def peak_rss(self) -> int:
         return max((rss for _n, _s, rss in self.records), default=peak_rss_bytes())
 
-    def table(self) -> str:
+    def table(self, rows: int | None = None) -> str:
+        """The report; ``rows`` limits the per-test table to the slowest ones."""
         total = self.session_wall if self.session_wall is not None else \
             time.perf_counter() - self.session_start
         width = max((len(n) for n, _s, _r in self.records), default=20)
         width = min(max(width, 20), 96)
-        lines = ["", "Experimental test-suite resource report",
+        shown = sorted(self.records, key=lambda r: -r[1])
+        if rows is not None:
+            shown = shown[:rows]
+        title = "Test-suite resource report" + (
+            f" ({len(shown)} slowest of {len(self.records)} tests)"
+            if rows is not None and len(shown) < len(self.records) else "")
+        lines = ["", title,
                  "=" * (width + 30),
                  f"{'test':<{width}} {'wall (s)':>10} {'peak RSS (MB)':>15}",
                  "-" * (width + 30)]
-        for nodeid, seconds, rss in sorted(self.records, key=lambda r: -r[1]):
+        for nodeid, seconds, rss in shown:
             flag = "  OVER LIMIT" if seconds > TEST_LIMIT_S else ""
             name = nodeid if len(nodeid) <= width else "..." + nodeid[-(width - 3):]
             lines.append(f"{name:<{width}} {seconds:>10.2f} "
@@ -114,7 +127,7 @@ def resource_report():
     except OSError:
         pass
     # Shown with ``pytest -s``; the terminal summary below shows it always.
-    print(text)
+    print(_LOG.table(TERMINAL_ROWS))
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -130,5 +143,5 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         return
     if _LOG.session_wall is None:
         _LOG.finish()
-    for line in _LOG.table().splitlines():
+    for line in _LOG.table(TERMINAL_ROWS).splitlines():
         terminalreporter.write_line(line)

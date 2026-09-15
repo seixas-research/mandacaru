@@ -38,7 +38,7 @@ needed at all.
 Naming a real device compares the register with its capacity:
 
 ```console
-$ carcara H2O --basis NAO --basis-option size=DZP --device braket-ionq-aria --dry-run
+$ carcara H2O --cell 8 --basis NAO --basis-option size=DZP --device braket-ionq-aria --dry-run
   ...
   QUBITS REQUIRED   : 46
   device            : braket-ionq-aria  (IonQ Aria-1 trapped-ion QPU (25 qubits))
@@ -62,7 +62,9 @@ estimate = calc.dry_run(water)          # -> QubitEstimate
 print(estimate.n_qubits)                # 12
 
 # Or make every evaluation a dry run (energies come back as NaN):
-water.calc = Carcara(frozen_core=True, dry_run=True)
+water.calc = Carcara(method="adapt-vqe",
+                     frozen_core=True,
+                     dry_run=True)
 water.get_potential_energy()            # nan
 water.calc.dry_run_result.summary()
 

@@ -9,7 +9,8 @@ Dunning, Karlsruhe), which are accepted by name and generated with the
 published shell structure.
 
 ```python
-atoms.calc = Carcara(method="vqe", basis={"name": "NAO", "size": "DZP"})
+atoms.calc = Carcara(method="vqe",
+                     basis={"name": "NAO", "size": "DZP"})
 ```
 
 ## Why a single zeta is not enough
@@ -207,12 +208,14 @@ budget:
 basis = {"O": {"name": "NAO", "size": "DZP"},
          "H": {"name": "NAO", "size": "DZP"},
          "*": "FAO"}                              # every other element
-atoms.calc = Carcara(basis=basis, frozen_core=True)
+atoms.calc = Carcara(method="adapt-vqe",
+                     basis=basis,
+                     frozen_core=True)
 ```
 
 Every driver, the dry run and `BasisSet.build(mapping)` accept it; an element
 without an entry and without a `"*"` default is an error rather than a silent
 fallback, and the plane-wave family, which is not atom-centered, cannot be
-assigned to one element. On the (experimental) pseudopotential path the same
-mapping selects a per-element *size*, since the radial functions there come
-from each potential.
+assigned to one element. With a [pseudopotential family](pseudopotentials.md)
+the same mapping selects a per-element *size* — every element must use the
+same family, since the radial functions there come from each potential.

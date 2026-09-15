@@ -46,16 +46,15 @@ atoms = Atoms("LiH",
 
 energies = {}
 for mapping in ("jordan_wigner", "parity", "bravyi_kitaev"):
-    atoms.calc = Carcara(
-                  method="adapt-vqe",
-                  pool="fermionic",
-                  basis={"name": "FAO"},
-                  mapping=mapping,
-                  gradient="parameter-shift",
-                  h=0.10,
-                  max_iterations=25,
-                  gradient_tolerance=1e-3,
-                  verbose=False)                    # keep the loop output compact
+    atoms.calc = Carcara(method="adapt-vqe",
+                         pool="fermionic",
+                         basis={"name": "FAO"},
+                         mapping=mapping,
+                         gradient="parameter-shift",
+                         h=0.10,
+                         max_iterations=25,
+                         gradient_tolerance=1e-3,
+                         verbose=False)                    # keep the loop output compact
 
     energy_ev = atoms.get_total_energy()            # eV (ASE convention)
     result = atoms.calc.result                      # result.optimal_energy is eV

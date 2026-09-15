@@ -65,14 +65,28 @@ def grid_from_cell(atoms, h: float, center=None):
 
     cell = np.asarray(atoms.get_cell(), dtype=float)      # Angstrom (ASE)
     if not np.any(cell):
-        raise ValueError(
-            "cannot auto-generate a grid: the geometry has no unit cell.  Set "
-            "one (e.g. atoms.cell = [[Lx,0,0],[0,Ly,0],[0,0,Lz]] or "
-            "atoms.set_cell(...)), or pass an explicit `grid=`.  The grid is then "
-            f"built from the cell at resolution h={h:g} Angstrom.")
+        raise ValueError(missing_cell_message(h))
     if center is None:
         center = coherent_positions(atoms).mean(axis=0)   # center on the molecule
     return Grid(center=center, box_size=0.0, h=h, units="angstrom", cell=cell)
+
+
+def missing_cell_message(h=None) -> str:
+    """The error text for a geometry without a unit cell.
+
+    The real-space box is the geometry's cell -- nothing else pads it -- so
+    the cell must be defined **in the geometry**: ``atoms.center(vacuum=3.0)``
+    on the ASE side, ``atoms.cell = [Lx, Ly, Lz]``, or an extended-XYZ file
+    whose header carries a ``Lattice``.
+    """
+    spacing = f" at h = {h:g} Angstrom" if h is not None else ""
+    return (
+        "the geometry has no unit cell, and the real-space box is built from "
+        f"the cell{spacing}.  Define the cell in the geometry: "
+        "atoms.center(vacuum=3.0) pads the molecule with 3 Angstrom of empty "
+        "space on every side, atoms.cell = [Lx, Ly, Lz] sets an explicit box, "
+        "and an extended-XYZ file carries it in its Lattice=\"...\" header.  "
+        "Alternatively pass an explicit grid=.")
 
 
 #: The ``name`` :func:`resolve_basis` returns for a per-element mapping.
@@ -139,9 +153,12 @@ def resolve_basis(basis):
     :mod:`carcara.basis.multizeta`), ``{"name": "NAO-AE", "tier": 1,
     "onset": 3.0}`` (all-electron NAOs, :mod:`carcara.basis.nao_ae`),
     ``{"name": "GTO", "n_gaussians": 3}``,
-    ``{"name": "6-31G(d)"}`` or the plane-wave basis
-    ``{"name": "PW", "energy_cutoff": 300}``.  Returns the name string and a dict
-    of the remaining keyword options.
+    ``{"name": "6-31G(d)"}``, the plane-wave basis
+    ``{"name": "PW", "energy_cutoff": 300}``, or a **pseudopotential family**
+    -- ``"NCPP"`` (aliases ``"TM"``, ``"NCPP-TM"``), ``"ONCVPSP"`` (alias
+    ``"ONCV"``), ``"PAW"`` -- with the same size hierarchy as its options,
+    ``{"name": "PAW", "size": "DZP"}`` (see :func:`pseudopotential_family`).
+    Returns the name string and a dict of the remaining keyword options.
 
     A **per-element mapping** -- a dict keyed by chemical symbols (plus an
     optional ``"*"`` default), each value itself a basis spec, e.g.
@@ -149,6 +166,7 @@ def resolve_basis(basis):
     returns ``(PER_ELEMENT, mapping)``; see :func:`per_element_basis`.
     """
     if isinstance(basis, str):
+        _check_retired_basis_name(basis)
         return basis, {}
     if isinstance(basis, dict):
         if is_per_element_basis(basis):
@@ -160,6 +178,7 @@ def resolve_basis(basis):
                 "a basis dict must include a 'name' key, e.g. {'name': 'FAO'} "
                 "or {'name': 'PW', 'energy_cutoff': 300}, or be a per-element "
                 "mapping such as {'O': 'FAO', 'H': '6-31G'}")
+        _check_retired_basis_name(name)
         return name, options
     raise TypeError(
         "basis must be a name string, a dict like {'name': 'FAO', ...}, or a "
@@ -278,69 +297,109 @@ def _num_particles(n_el: int, n_unpaired: int, basis) -> tuple[int, int]:
     return ((n_el + n_unpaired) // 2, (n_el - n_unpaired) // 2)
 
 
-#: Basis families whose radial functions the pseudopotential path can honor.
-#: ``"PP"`` names the pseudo-atomic family explicitly; ``"NAO"`` is accepted
-#: because the multiple-zeta construction is shared with it.
-_PSEUDO_BASIS_NAMES = ("PP", "PSEUDO", "NAO")
+#: Basis names of the retired ``pseudopotentials`` driver argument; refused
+#: with a pointer to the family names rather than silently aliased to one.
+RETIRED_PSEUDO_BASIS_NAMES = ("PP", "PSEUDO")
 
 
-def _merge_pseudo_basis_options(basis, options):
-    """Fold the ``basis`` spec into the pseudopotential options, or refuse it.
+def _basis_key(name) -> str:
+    return str(name).upper().replace("-", "").replace(" ", "")
 
-    A pseudopotential fixes its own first zeta -- the Troullier-Martins
-    pseudo-orbitals the Kleinman-Bylander projectors were built from -- so an
-    all-electron family such as ``"FAO"`` or ``"6-31G(d)"`` cannot be combined
-    with it.  What *can* carry over is the size hierarchy (``size``,
-    ``split_norm``), which refines that pseudo-orbital rather than replacing it.
 
-    Silently ignoring the argument, as this path used to, meant
-    ``basis={"name": "NAO", "size": "DZP"}`` ran a minimal single-zeta basis with
-    no indication anything had been dropped.
-    """
-    name, basis_options = resolve_basis(basis)
-    if name == PER_ELEMENT:
-        # One size per element: every entry must itself be a pseudo-basis spec;
-        # the first zeta is always the potential's own orbital, so only the
-        # size hierarchy can differ from atom to atom.
-        sizes = {}
-        for symbol, spec in basis_options.items():
-            sub_name, sub_options = resolve_basis(spec)
-            sub_key = str(sub_name).upper().replace("-", "").replace(" ", "")
-            extra = {k: v for k, v in sub_options.items()
-                     if k not in ("size", "split_norm")}
-            if extra or sub_key not in _PSEUDO_BASIS_NAMES:
-                raise ValueError(
-                    f"per-element basis {spec!r} for {symbol!r} cannot be used "
-                    "with pseudopotentials; use {'name': 'PP', 'size': ...} "
-                    "entries (the pseudopotential supplies the radial "
-                    "functions, only the size hierarchy is selectable)")
-            sizes[symbol if symbol == DEFAULT_ELEMENT_KEY
-                  else symbol.capitalize()] = sub_options.get("size", "SZ")
-        merged = dict(options)
-        merged["size"] = sizes
-        return merged
-    key = str(name).upper().replace("-", "").replace(" ", "")
-
-    unusable = {k: v for k, v in basis_options.items()
-                if k not in ("size", "split_norm")}
-    if unusable or key not in _PSEUDO_BASIS_NAMES:
-        if key in ("FAO",) and not unusable:
-            # The historical default: nothing was actually requested, so there
-            # is nothing to honor or refuse.
-            return options
+def _check_retired_basis_name(name):
+    if isinstance(name, str) and _basis_key(name) in RETIRED_PSEUDO_BASIS_NAMES:
         raise ValueError(
-            f"basis {basis!r} cannot be used with pseudopotentials. The "
-            "pseudopotential supplies its own valence radial functions (the "
-            "pseudized orbitals its Kleinman-Bylander projectors were built "
-            "from), so an all-electron family cannot replace them. Use "
-            "basis={'name': 'PP', 'size': 'DZP'} to refine them instead, or "
-            "drop pseudopotentials=True to run all-electron.")
+            f"basis {name!r} is no longer a basis name: the pseudopotential "
+            "family is now selected through the basis itself -- "
+            "basis='NCPP' (Troullier-Martins, aliases 'TM' / 'NCPP-TM'), "
+            "basis='ONCVPSP' (alias 'ONCV') or basis='PAW', with the size "
+            "hierarchy as options: basis={'name': 'PAW', 'size': 'DZP'}")
 
-    merged = dict(options)
-    for option in ("size", "split_norm"):
-        if option in basis_options:
-            merged[option] = basis_options[option]
-    return merged
+
+def pseudopotential_family(name):
+    """The :class:`~carcara.pseudopotentials.families.FamilySpec` a basis
+    name selects, or ``None`` for an all-electron (or plane-wave) family.
+
+    The registry :data:`~carcara.pseudopotentials.families.PSEUDO_FAMILIES`
+    is the single source of truth: ``"NCPP"`` / ``"TM"`` / ``"NCPP-TM"``,
+    ``"ONCVPSP"`` / ``"ONCV"`` and ``"PAW"`` today, plus anything added with
+    :func:`~carcara.pseudopotentials.families.register_family`.  Names are
+    case-insensitive.
+    """
+    if not isinstance(name, str):
+        return None
+    _check_retired_basis_name(name)
+    from ..pseudopotentials.families import lookup_family
+    return lookup_family(name)
+
+
+def is_pseudopotential_basis(basis) -> bool:
+    """True when ``basis`` (any accepted spelling) selects a pseudopotential
+    family -- for a per-element mapping, when its entries do."""
+    name, options = resolve_basis(basis)
+    if name == PER_ELEMENT:
+        return any(pseudopotential_family(resolve_basis(spec)[0]) is not None
+                   for spec in options.values())
+    return pseudopotential_family(name) is not None
+
+
+def resolve_pseudo_basis(name, options, symbols):
+    """``(family, options)`` for a resolved basis spec, ``(None, options)``
+    when it is all-electron.
+
+    A single family name passes its options through (``size``,
+    ``split_norm``, ``directory``, ... -- validated against
+    ``family.options`` by :func:`_pseudopotential_hamiltonian`).  A
+    **per-element mapping** must name one pseudopotential family for every
+    element (the ``"*"`` default counts): the first zeta of each atom is the
+    potential's own orbital, so only the size hierarchy can differ from atom
+    to atom -- the entries become ``options["size"] = {symbol: size}``.
+    Mixing a pseudopotential family with an all-electron family across
+    elements, or two different pseudopotential families, raises.
+    """
+    if name != PER_ELEMENT:
+        return pseudopotential_family(name), dict(options)
+
+    resolved = per_element_basis(options, symbols)      # {symbol: (name, opts)}
+    families = {symbol: pseudopotential_family(sub_name)
+                for symbol, (sub_name, _o) in resolved.items()}
+    pseudo = {sym: fam for sym, fam in families.items() if fam is not None}
+    if not pseudo:
+        return None, dict(options)
+    if len(pseudo) != len(families):
+        all_electron = sorted(sym for sym, fam in families.items() if fam is None)
+        raise ValueError(
+            "a per-element basis cannot mix a pseudopotential family with an "
+            f"all-electron family: {sorted(pseudo)} use "
+            f"{sorted({f.label for f in pseudo.values()})} while "
+            f"{all_electron} use "
+            f"{sorted({resolved[s][0] for s in all_electron})}.  A "
+            "pseudopotential replaces the core and the -Z/r potential of its "
+            "atom, so every element must carry one (the size may still differ "
+            "per element).")
+    labels = {fam.label for fam in pseudo.values()}
+    if len(labels) > 1:
+        raise ValueError(
+            "a per-element basis must use one pseudopotential family for "
+            f"every element, got {sorted(labels)}: the families differ in "
+            "their projectors and overlap treatment and cannot share one "
+            "Hamiltonian")
+    family = next(iter(pseudo.values()))
+    sizes, merged = {}, {}
+    for symbol, (_sub_name, sub_options) in resolved.items():
+        extra = {k: v for k, v in sub_options.items()
+                 if k not in ("size", "split_norm")}
+        if extra:
+            raise ValueError(
+                f"per-element basis options {extra!r} for {symbol!r} cannot "
+                f"differ per element with the {family.label} family; only "
+                "'size' and 'split_norm' are per-element (give the other "
+                "options in a single {'name': ..., ...} basis dict)")
+        sizes[symbol] = sub_options.get("size", "SZ")
+        if "split_norm" in sub_options:
+            merged["split_norm"] = sub_options["split_norm"]
+    merged["size"] = sizes
+    return family, merged
 
 
 #: Default Laplacian per path.  Both keep the finite-difference stencil: it
@@ -379,34 +438,41 @@ def _warn_unresolved(integrals, basis_fns, h):
         RuntimeWarning, stacklevel=3)
 
 
-def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, options,
-                                 kinetic=None):
-    """Valence-only Hamiltonian from a pseudopotential **family** (experimental).
+def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
+                                 options, kinetic=None):
+    """Valence-only Hamiltonian from a pseudopotential **family**.
 
-    A thin dispatcher: ``options["family"]`` (canonical after
-    :func:`~carcara.experimental.pseudopotentials.families.normalize_pseudopotentials`;
-    the Troullier-Martins ``"tm"`` family by default) selects the
-    :class:`~carcara.experimental.pseudopotentials.families.FamilySpec`, whose
-    ``build`` returns the same 5-tuple as :func:`build_basis_hamiltonian`.  A
-    new family is registered with ``register_family`` and needs nothing here.
+    A thin dispatcher: ``family`` is the
+    :class:`~carcara.pseudopotentials.families.FamilySpec` the basis name
+    selected (see :func:`pseudopotential_family`), ``options`` the basis
+    dict's remaining keys -- checked against ``family.options`` so a typo
+    fails before any integral -- and ``family.build`` returns the same
+    5-tuple as :func:`build_basis_hamiltonian`.  A new family is registered
+    with ``register_family`` and needs nothing here.
     """
-    from ..experimental.pseudopotentials.families import resolve_family
-
-    options = dict(options)
-    family = resolve_family(options.pop("family", None))
-    return family.build(atoms, grid, h, charge, spin, options, kinetic)
+    unknown = sorted(set(options) - set(family.options))
+    if unknown:
+        raise ValueError(
+            f"unknown option(s) {unknown} for the {family.label} basis; it "
+            f"accepts {list(family.options)}")
+    return family.build(atoms, grid, h, charge, spin, dict(options), kinetic)
 
 
 def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                             n_electrons, spin: bool = False,
                             frozen_core=False, frozen_orbitals=None,
-                            pseudopotentials=None, kinetic=None):
+                            kinetic=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
     :func:`resolve_basis`).  The plane-wave family (``"PW"``) uses the periodic
-    :class:`~carcara.core.PlaneWaveIntegrals` engine; every other family uses a
-    localized basis on the real-space grid.
+    :class:`~carcara.core.PlaneWaveIntegrals` engine; a **pseudopotential
+    family** (``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW"``, see
+    :func:`pseudopotential_family`) builds the valence-only Hamiltonian of
+    that family -- the core electrons are removed, the basis is the smooth
+    pseudo-atomic orbitals and the ``-Z/r`` potential is replaced by the
+    family's local channel plus projectors; every other family uses an
+    all-electron localized basis on the real-space grid.
 
     Returns ``(hamiltonian, num_particles, n_spatial_orbitals,
     integration_profile, context)``, where ``context`` carries the objects a
@@ -434,19 +500,18 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     (see :meth:`~carcara.core.hamiltonian.MolecularIntegrals.unresolved`) raise a
     :class:`RuntimeWarning` naming them.
     """
-    if pseudopotentials:
+    name, options = resolve_basis(basis)
+    symbols = atoms.get_chemical_symbols()
+    family, options = resolve_pseudo_basis(name, options, symbols)
+    if family is not None:
         if frozen_core or frozen_orbitals:
             raise ValueError(
-                "frozen_core is redundant with pseudopotentials -- the core is "
-                "already absent from the valence-only pseudo basis")
-        from ..experimental.pseudopotentials.families import (
-            normalize_pseudopotentials)
-        options = normalize_pseudopotentials(pseudopotentials)
-        options = _merge_pseudo_basis_options(basis, options)
+                f"frozen_core is redundant with the {family.label} basis -- "
+                "the core is already absent from the valence-only pseudo "
+                "basis")
         return _pseudopotential_hamiltonian(atoms, grid, h, charge, spin,
-                                            options, kinetic=kinetic)
+                                            family, options, kinetic=kinetic)
 
-    name, options = resolve_basis(basis)
     numbers = atoms.get_atomic_numbers()
     n_el = (int(n_electrons) if n_electrons is not None
             else int(sum(int(z) for z in numbers)) - int(charge))
@@ -458,11 +523,9 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     from ..basis import BasisSet
     from ..core import MolecularIntegrals
 
-    symbols = atoms.get_chemical_symbols()
     positions = coherent_positions(atoms)                 # minimum-image whole
     if name == PER_ELEMENT:
-        per_element_basis(options, symbols)      # validate for these symbols
-        bset = BasisSet.build(options)
+        bset = BasisSet.build(options)          # validated by resolve_pseudo_basis
     else:
         bset = BasisSet.build(name, **options)
     basis_fns, nuclei, atom_of_orbital = [], [], []

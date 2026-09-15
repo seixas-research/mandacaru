@@ -19,7 +19,8 @@ freedom are missing, and the ``size`` argument adds them:
 
 .. code-block:: python
 
-    atoms.calc = Carcara(method="vqe", basis={"name": "NAO", "size": "DZP"})
+    atoms.calc = Carcara(method="vqe",
+                         basis={"name": "NAO", "size": "DZP"})
 
 Sizes: ``SZ``, ``DZ``, ``TZ``, ``QZ``, each optionally polarized (``DZP``,
 ``TZ2P``, ...).  Everything is generated from scratch -- no tabulated data.

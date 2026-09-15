@@ -74,11 +74,15 @@ for fmt in ("parquet", "json"):
 
     # -- build (integrals + mapping) and save ---------------------------- #
     atoms = lih()
-    atoms.calc = Carcara(method="adapt-vqe", pool=POOL,
-                                   basis={"name": "FAO"}, h=0.25,
-                                   verbose=False, profile=False,
-                                   max_iterations=MAX_ITERATIONS,
-                                   save_hamiltonian=path, hamiltonian_format=fmt)
+    atoms.calc = Carcara(method="adapt-vqe",
+                         pool=POOL,
+                         basis={"name": "FAO"},
+                         h=0.25,
+                         verbose=False,
+                         profile=False,
+                         max_iterations=MAX_ITERATIONS,
+                         save_hamiltonian=path,
+                         hamiltonian_format=fmt)
     t0 = time.perf_counter()
     atoms.get_total_energy()
     build_seconds = time.perf_counter() - t0
@@ -87,9 +91,12 @@ for fmt in ("parquet", "json"):
 
     # -- reload, with no geometry at all --------------------------------- #
     t0 = time.perf_counter()
-    calc = Carcara(method="adapt-vqe", pool=POOL,
-                             load_hamiltonian=path, verbose=False,
-                             profile=False, max_iterations=MAX_ITERATIONS)
+    calc = Carcara(method="adapt-vqe",
+                   pool=POOL,
+                   load_hamiltonian=path,
+                   verbose=False,
+                   profile=False,
+                   max_iterations=MAX_ITERATIONS)
     reloaded = calc.run()
     load_seconds = time.perf_counter() - t0
 

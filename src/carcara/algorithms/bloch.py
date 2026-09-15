@@ -33,8 +33,11 @@ things a periodic calculation needs:
   equivalence**: an ``(n1, n2, n3)`` Monkhorst-Pack mesh is a Gamma-point
   calculation on the ``(n1, n2, n3)`` supercell, and the energy per cell is
   ``E(supercell) / n_cells``.  The supercell is built with
-  :meth:`ase.Atoms.repeat` and run through the molecular calculator with the
-  selected ``method`` (the box is the supercell's own ``cell``).  This is a
+  :meth:`ase.Atoms.repeat` -- its cell is the primitive cell repeated
+  ``kmesh`` times, with **no extra padding** -- and run through the molecular
+  calculator with the selected ``method`` (the box is the supercell's own
+  ``cell``).  So the primitive cell is what you size: its extent along the
+  non-periodic directions is the empty space the supercell gets.  This is a
   finite-supercell estimate that converges to the periodic total energy as the
   mesh is refined -- exact in the infinite-mesh limit.
 
@@ -90,8 +93,11 @@ class BlochCalculator:
     atoms : ase.Atoms
         The **primitive cell** of the periodic system.  ``atoms.cell`` sets the
         lattice vectors and ``atoms.pbc`` selects the periodic directions (at
-        least one must be periodic).  Non-periodic directions must carry enough
-        vacuum.
+        least one must be periodic).  The cell is also the only source of
+        padding: along the non-periodic directions its length is the empty
+        space of the band-structure grid and of the Born-von Karman
+        supercell, so size it in the geometry (e.g. a 1-D chain in a
+        ``[a, 10, 10]`` cell).
     method : str
         Which variational eigensolver evaluates the supercell energy --
         ``"adapt-vqe"`` (default) or ``"vqe"`` (any method accepted by
@@ -112,15 +118,11 @@ class BlochCalculator:
     h : float
         Real-space grid spacing in **Angstrom** for the band-structure integrals
         (default ``0.20``).
-    vacuum : float
-        Vacuum padding in **Angstrom** added around the sampled region / supercell
-        (default ``5.0``).
     """
 
     def __init__(self, atoms, method: str = "adapt-vqe", basis="FAO",
                  mapping: str = "jordan_wigner",
-                 n_cells: int = 4, n_images: int = 7, h: float = 0.20,
-                 vacuum: float = 5.0):
+                 n_cells: int = 4, n_images: int = 7, h: float = 0.20):
         from .calculator import resolve_method
         self.method, _ = resolve_method(method)     # raises on unknown method
         self.atoms = atoms.copy()
@@ -129,12 +131,18 @@ class BlochCalculator:
         self.n_cells = int(n_cells)
         self.n_images = max(int(n_images), int(n_cells))
         self.h = float(h)
-        self.vacuum = float(vacuum)
         self.periodic = [i for i in range(3) if bool(self.atoms.pbc[i])]
         if not self.periodic:
             raise ValueError(
                 f"{type(self).__name__} needs at least one periodic direction; "
                 "set atoms.pbc (e.g. pbc=[True, False, False] for a 1-D chain).")
+        lengths = np.asarray(self.atoms.cell.lengths(), dtype=float)
+        if np.any(lengths <= 0.0):
+            raise ValueError(
+                "every lattice vector of the primitive cell must have a "
+                "non-zero length: the cell is the box along the non-periodic "
+                "directions as well (e.g. cell=[a, 10, 10] for a 1-D chain); "
+                f"got lengths {lengths.round(3).tolist()} Angstrom")
         self._blocks = None          # {n_tuple: (S_block, h_block)}
         self._nbands = None
 
@@ -194,12 +202,16 @@ class BlochCalculator:
             for Z, p in zip(numbers, prim):
                 nuclei.append((float(Z), p + shift))
 
+        # The box is the nuclei window (|n| <= n_images along every periodic
+        # axis -- the outermost orbital cells sit n_images - n_cells cells
+        # from the edge) and the primitive cell itself along the open axes:
+        # the primitive cell is the only source of empty space.
         pts = np.array([p + np.array(n) @ cell
                         for n in block_cells for p in prim])
-        lo, hi = pts.min(axis=0), pts.max(axis=0)
-        half = (hi - lo) / 2.0 + self.vacuum
-        grid = Grid(center=(lo + hi) / 2.0, box_size=list(half), h=self.h,
-                    units="angstrom")
+        window = np.array([2 * self.n_images + 1 if i in self.periodic else 1
+                           for i in range(3)], dtype=float)
+        grid = Grid(center=pts.mean(axis=0), box_size=0.0, h=self.h,
+                    units="angstrom", cell=window[:, None] * cell)
         softening = 0.5 * min(grid.dx, grid.dy, grid.dz)
         integrals = MolecularIntegrals(nuclei, basis_fns, grid, units="angstrom",
                                        orthogonalize=False, softening=softening)
@@ -272,27 +284,23 @@ class BlochCalculator:
 
     # -- total energy using all k-points (Born-von Karman supercell) ------ #
     def supercell(self, kmesh):
-        """The ``kmesh`` Born-von Karman supercell as an ASE ``Atoms`` (box + vacuum).
+        """The ``kmesh`` Born-von Karman supercell as an ASE ``Atoms``.
 
-        Built with :meth:`ase.Atoms.repeat`; the cell is reset to the atoms'
-        bounding box plus :attr:`vacuum` so the finite supercell sits in a box the
-        molecular calculator can grid.
+        Built with :meth:`ase.Atoms.repeat`: the cell is the primitive cell
+        repeated ``kmesh`` times along each axis and nothing else -- no
+        padding is added, so the primitive cell's extent along the
+        non-periodic directions is the empty space the supercell carries.  The
+        molecular calculator grids that cell, centered on the atoms.
         """
-        cell = self.atoms.repeat(tuple(int(k) for k in kmesh))
-        pos = cell.get_positions()
-        span = pos.max(axis=0) - pos.min(axis=0)
-        box = span + 2.0 * self.vacuum
-        cell.set_cell(np.diag(box))
-        cell.set_pbc(True)
-        cell.center()
-        return cell
+        return self.atoms.repeat(tuple(int(k) for k in kmesh))
 
     def total_energy(self, kmesh, **solver_kwargs):
         """Total energy **per cell** (eV) using all ``kmesh`` k-points.
 
         Runs a molecular :class:`~carcara.algorithms.calculator.Carcara`
         with the selected ``method`` on the ``kmesh`` Born-von Karman supercell
-        (box = the supercell's ``cell``) and divides by the number of cells.
+        (box = the supercell's ``cell``, i.e. the primitive cell repeated --
+        see :meth:`supercell`) and divides by the number of cells.
         Extra keyword arguments (``h``, ``pool``, ``max_iterations``,
         ``temperature``, ...) are forwarded to the solver; which arguments are
         valid depends on the selected method.
@@ -306,7 +314,8 @@ class BlochCalculator:
         options = dict(basis=self.basis, mapping=self.mapping, h=self.h,
                        verbose=False)
         options.update(solver_kwargs)
-        atoms.calc = Carcara(method=self.method, **options)
+        atoms.calc = Carcara(method=self.method,
+                             **options)
         energy = atoms.get_total_energy()                 # eV
         n_cells = int(np.prod([int(k) for k in kmesh]))
         return energy / n_cells, atoms.calc.result

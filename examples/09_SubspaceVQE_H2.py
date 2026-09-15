@@ -52,9 +52,13 @@ def report(name, result, exact):
 
 
 # --- Subspace-search VQE (fixed UCCSD ansatz) --------------------------------
-atoms.calc = Carcara(method="subspace-vqe", basis="FAO", h=0.20,
-                               mapping="jordan_wigner", num_states=2,
-                               weights=[2.0, 1.0], verbose=False)
+atoms.calc = Carcara(method="subspace-vqe",
+                     basis="FAO",
+                     h=0.20,
+                     mapping="jordan_wigner",
+                     num_states=2,
+                     weights=[2.0, 1.0],
+                     verbose=False)
 atoms.get_potential_energy()
 ssvqe = atoms.calc.result
 
@@ -66,10 +70,15 @@ exact = from_hartree(np.sort(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).real), "
 report("Subspace-VQE", ssvqe, exact)
 
 # --- Subspace-search ADAPT-VQE (one shared, adaptively grown ansatz) ---------
-atoms.calc = Carcara(method="subspace-adapt-vqe", basis="FAO", h=0.20,
-                               pool="fermionic", num_states=2, verbose=False,
-                               profile=False, gradient_tolerance=1e-4,
-                               max_iterations=20)
+atoms.calc = Carcara(method="subspace-adapt-vqe",
+                     basis="FAO",
+                     h=0.20,
+                     pool="fermionic",
+                     num_states=2,
+                     verbose=False,
+                     profile=False,
+                     gradient_tolerance=1e-4,
+                     max_iterations=20)
 atoms.get_potential_energy()
 ss_adapt = atoms.calc.result
 report("Subspace-ADAPT-VQE", ss_adapt, exact)

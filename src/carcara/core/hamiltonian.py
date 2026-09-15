@@ -88,7 +88,7 @@ class MolecularIntegrals:
         Nonlocal projector functions :math:`\chi_p` (sampled like basis
         functions), each carrying ``atom_index``, ``channel = (l, m)`` and a
         radial ``index`` within that channel -- see
-        :class:`carcara.experimental.pseudopotentials.orbitals.KBProjector`.
+        :class:`carcara.pseudopotentials.orbitals.KBProjector`.
     nonlocal_coupling : dict, optional
         The blocks of the coupling matrix :math:`D` of the general separable
         form :math:`H^{NL} = C D C^\dagger` (see :meth:`kb_nonlocal`),
@@ -105,7 +105,7 @@ class MolecularIntegrals:
     def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
                  basis, grid: Grid, units: str = "angstrom",
                  orthogonalize: bool = True, softening: float = 1e-12,
-                 pseudopotentials=None, kb_projectors=None,
+                 pseudos=None, kb_projectors=None,
                  kinetic: str = "fd", nonlocal_coupling=None,
                  nonlocal_overlap=None):
         if kinetic not in ("fd", "spectral"):
@@ -124,8 +124,8 @@ class MolecularIntegrals:
         self._engine = IntegralEngine(self.basis, grid)
         # With pseudopotentials the "nuclei" carry the *ionic* charges Z_ion, so
         # the nuclear repulsion below is already the ion-ion term.
-        self.pseudopotentials = (list(pseudopotentials)
-                                 if pseudopotentials is not None else None)
+        self.pseudopotentials = (list(pseudos)
+                                 if pseudos is not None else None)
         self.kb_projectors = list(kb_projectors) if kb_projectors else []
         #: Blocks of the nonlocal coupling matrix ``D`` (``None``: KB diagonal).
         self.nonlocal_coupling = (dict(nonlocal_coupling)
@@ -137,7 +137,7 @@ class MolecularIntegrals:
             raise ValueError("nonlocal_overlap needs projectors to act on")
         self._potentials = Potentials(self.nuclei, softening=softening,
                                       units=units,
-                                      pseudopotentials=self.pseudopotentials)
+                                      pseudos=self.pseudopotentials)
         #: Additive constant (Hartree) carried into every Hamiltonian this
         #: object assembles, next to the nuclear repulsion -- e.g. the frozen
         #: one-center energies of a PAW dataset.  Zero for a plain basis.
@@ -284,7 +284,7 @@ class MolecularIntegrals:
 
         A hook for families whose pair densities carry more than the product
         of two basis functions -- the PAW compensation charges
-        (:class:`carcara.experimental.pseudopotentials.paw.PAWIntegrals`)
+        (:class:`carcara.pseudopotentials.paw.PAWIntegrals`)
         return the ``(M, M, M, M)`` tensor of the extra Coulomb terms in the
         same physicists' layout as :meth:`two_body`.  The plain basis has
         nothing to add.

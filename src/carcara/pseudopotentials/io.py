@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: experimental/pseudopotentials/io.py
+# file: pseudopotentials/io.py
 
 # This code is part of Carcará.
 # MIT License
@@ -18,12 +18,12 @@ File format
 -----------
 One file per element, ``<symbol>.json``:
 
-.. code-block:: json
+.. code-block:: text
 
     {
       "format": "carcara-pseudopotential",
       "version": 2,
-      "family": "tm",                      // pseudopotential family (v2+)
+      "family": "ncpp",                    // pseudopotential family (v2+; "tm" in older files)
       "symbol": "O",
       "atomic_number": 8,
       "valence_charge": 6.0,
@@ -61,7 +61,7 @@ FORMAT_TAG = "carcara-pseudopotential"
 #: a version-1 file (no field) loads as the Troullier-Martins family.
 FORMAT_VERSION = 2
 #: Family assumed for files written before the field existed.
-LEGACY_FAMILY = "tm"
+LEGACY_FAMILY = "ncpp"
 #: Family whose files carry several projectors per channel (see :mod:`.oncv`).
 ONCV_FAMILY = "oncvpsp"
 #: Family whose files carry partial waves, projectors and one-center matrices
@@ -210,7 +210,8 @@ def _table(values, stride=1):
 
 def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
                          format: str | None = None, engine: str = "auto") -> str:
-    """Write ``pp`` to ``path``; return the path.
+    """Write ``pp`` to ``path`` (values rounded to :data:`DIGITS` significant
+    figures); return the path.
 
     Parameters
     ----------
@@ -221,13 +222,10 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
         Parquet engine (``"auto"`` / ``"fastparquet"`` / ``"pyarrow"``); ignored
         for JSON.  See :mod:`carcara.core.serialization` for why fastparquet
         leads.
-
     stride : int
         Keep every ``stride``-th radial point.  The default of 1 writes the
         tables as given, so save-load-save is idempotent; the bundled library is
         generated once at :data:`STRIDE`.
-
-    Values are rounded to :data:`DIGITS` significant figures.
     """
     if format is None:
         extension = os.path.splitext(os.fspath(path))[1].lower()
@@ -304,7 +302,7 @@ def _radial_columns(payload):
 
 def _write_parquet(path, payload, engine):
     """Radial tables as columns; everything scalar as key/value metadata."""
-    from ...core.serialization import native_pandas_strings, resolve_engine
+    from ..core.serialization import native_pandas_strings, resolve_engine
 
     columns = _radial_columns(payload)
     if "radial_tables" in payload:
@@ -336,7 +334,7 @@ def _write_parquet(path, payload, engine):
 
 def _read_parquet(path, engine):
     """Reassemble the JSON-shaped payload from a Parquet file."""
-    from ...core.serialization import native_pandas_strings, resolve_engine
+    from ..core.serialization import native_pandas_strings, resolve_engine
 
     if resolve_engine(engine) == "fastparquet":
         import fastparquet
@@ -401,7 +399,9 @@ def load_pseudopotential(path, format: str | None = None,
             f"{path!r} uses pseudopotential format version "
             f"{payload['version']}, newer than this build ({FORMAT_VERSION})")
 
-    family = str(payload.get("family", LEGACY_FAMILY))
+    # Files written before the rename carry "tm"; every alias canonicalizes.
+    from .families import canonical_family_name
+    family = canonical_family_name(payload.get("family", LEGACY_FAMILY))
     if "radial_tables" in payload:
         if family not in TABLE_FAMILIES:
             raise ValueError(
@@ -437,7 +437,7 @@ def load_pseudopotential(path, format: str | None = None,
                      for k, v in payload["kb_energies"].items()},
         valence_density=np.asarray(payload["valence_density"], dtype=float),
         atom=None,
-        family=str(payload.get("family", LEGACY_FAMILY)))
+        family=family)
 
 
 # --------------------------------------------------------------------------- #
@@ -498,7 +498,7 @@ def get_pseudopotential(symbol: str, directory=None) -> PseudoPotential:
             f"no pseudopotential for {symbol!r} at {path!r}. Available: "
             f"{', '.join(available_elements(directory)) or '(none)'}. "
             "Regenerate the library with "
-            "`python -m carcara.experimental.pseudopotentials.io` or call "
+            "`python -m carcara.pseudopotentials.io` or call "
             "`build_library()`.")
     pp = load_pseudopotential(path)
     _CACHE[key] = pp

@@ -33,9 +33,14 @@ def make(method, **kwargs):
     atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                   cell=[[1.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
                   pbc=[True, False, False])
-    return BlochCalculator(atoms, method=method, basis="FAO",
+    return BlochCalculator(atoms,
+                           method=method,
+                           basis="FAO",
                            mapping="jordan_wigner",
-                           n_cells=4, n_images=7, h=0.25, **kwargs)
+                           n_cells=4,
+                           n_images=7,
+                           h=0.25,
+                           **kwargs)
 
 
 # --- Band structure (single-particle; the same for every method) -------------

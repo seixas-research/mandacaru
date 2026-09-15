@@ -1,89 +1,116 @@
 # Pseudopotentials
 
-> **Experimental.** Norm-conserving pseudopotentials are still under
-> development and are not part of the stable API. This page is deliberately
-> kept outside the Sphinx manual (`docs/source/`) and is not built with it;
-> the code stays importable (`pseudopotentials=True` on any driver,
-> `carcara --pseudopotentials`), but expect the interface and the numerics to
-> change. The stable way to cut the qubit count is the frozen-core
-> approximation (`frozen_core=True`).
-
+A pseudopotential replaces an atom's core electrons and the singular $-Z/r$
+potential by a smooth, valence-only problem. In Carcará a pseudopotential
+**family is a basis name**, selected exactly like `"FAO"` or `"cc-pVTZ"`:
 
 ```python
-atoms.calc = Carcara(method="adapt-vqe", basis="FAO",
-                               pseudopotentials=True, h=0.15)
+atoms.calc = Carcara(method="adapt-vqe",
+                     basis="NCPP",        # norm-conserving Troullier-Martins
+                     h=0.15)
+atoms.calc = Carcara(method="adapt-vqe",
+                     basis="ONCVPSP",     # Hamann's optimized norm-conserving Vanderbilt
+                     h=0.25)
+atoms.calc = Carcara(method="vqe",
+                     basis={"name": "PAW", "size": "DZP"},   # Bloechl's PAW, polarized double zeta
+                     h=0.25)
 ```
 
-That switch turns an all-electron calculation into a valence-only one: the core
-electrons are removed, the basis becomes smooth pseudo-atomic orbitals, and the
-singular $-Z/r$ external potential is replaced by a bounded local channel plus
-Kleinman–Bylander projectors.
+That basis turns an all-electron calculation into a valence-only one: the core
+electrons are removed (oxygen keeps 6 of its 8), the basis becomes the family's
+smooth pseudo-atomic orbitals — with the same `size` hierarchy as the
+[NAO family](basis_sets.md) as its options — and the singular $-Z/r$ external
+potential is replaced by a bounded local channel plus the family's projectors.
+Every driver, `interaction_energy`, `BlochCalculator`, the dry run and the
+command line (`carcara H2O --cell 8 --basis PAW --basis-option size=DZP`)
+accept the names; `frozen_core` is refused with them as redundant. There is no
+separate switch: the family is the basis, and the retired `"PP"` basis name
+raises an error that names the families instead of aliasing to one.
 
 ## Families
 
-*(2026-09-14)* Pseudopotentials come in **families**, and the driver only ever
-talks to a family through its registry entry. Three are shipped: the
-norm-conserving **Troullier–Martins** family, `"tm"` — what
-`pseudopotentials=True` has always meant and still means — Hamann's
-**ONCVPSP** family, `"oncvpsp"` (alias `"oncv"`, [below](#oncvpsp-optimized-norm-conserving-vanderbilt-potentials)),
-and Blöchl's **PAW** family, `"paw"` ([below](#paw-projector-augmented-waves)),
-the first one that is *not* norm-conserving and therefore the first to use the
-overlap correction. All of these select the default:
+Three families are shipped, all generated from scratch by Carcará's own LDA
+radial atomic solver (`carcara.basis.atomic_solver`):
+
+| Basis name | Aliases | Family | Projectors | Overlap | Library |
+|---|---|---|---|---|---|
+| `"NCPP"` | `"TM"`, `"NCPP-TM"` | Troullier–Martins norm-conserving, Kleinman–Bylander separable form | one per channel | none | bundled, H–U |
+| `"ONCVPSP"` | `"ONCV"` | Hamann's optimized norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `carcara-oncvpsp`, H–U |
+| `"PAW"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `carcara-paw`, H–U |
+
+Names are case-insensitive. Each family accepts the options `size`,
+`split_norm` and `directory` (an alternative library folder); PAW also takes
+`projector_basis="raw"|"dual"`. Any other key — or an all-electron option such
+as `tier` — is refused before an integral is computed.
+
+A **per-element basis** may give each atom its own size, as long as every
+element uses the *same* family:
 
 ```python
-Carcara(method="adapt-vqe", pseudopotentials=True)
-Carcara(method="adapt-vqe", pseudopotentials="tm")           # or "ncpp", "ncpp-tm"
-Carcara(method="adapt-vqe", pseudopotentials={"family": "ncpp-tm",
-                                              "directory": "/my/library",
-                                              "size": "DZP"})
+basis={"O": {"name": "PAW", "size": "DZP"}, "H": {"name": "PAW"}}
+basis={"O": {"name": "NCPP", "size": "DZP"}, "*": "NCPP"}     # "*" = every other element
 ```
 
-Names are case-insensitive; an unknown one raises a `ValueError` that lists
-the registered families (`carcara.experimental.pseudopotentials.family_names()`).
-The family name is also **stored in every pseudopotential file** (`family`
-field, format version 2). Files written before the field existed — the whole
-bundled library — load as `"tm"`, so nothing was regenerated.
+Mixing a pseudopotential family with an all-electron family across elements
+(`{"O": "PAW", "H": "6-31G"}`), or two pseudopotential families, raises: a
+pseudopotential replaces the core *and* the potential of its atom, so the
+Hamiltonian is either valence-only or all-electron.
 
-The registry lives in `carcara.experimental.pseudopotentials.families`:
+### The registry
+
+The driver only ever talks to a family through its registry entry in
+`carcara.pseudopotentials.families`:
 
 ```python
-from carcara.experimental.pseudopotentials import (
-    PSEUDO_FAMILIES, FamilySpec, register_family, resolve_family)
+from carcara.pseudopotentials import (
+    PSEUDO_FAMILIES, FamilySpec, family_names, lookup_family,
+    register_family, resolve_family)
 
-spec = resolve_family("ncpp")          # -> PSEUDO_FAMILIES["tm"]
-spec.name, spec.aliases                # "tm", ("ncpp", "ncpp-tm")
+family_names()                         # ['ncpp', 'oncvpsp', 'paw', 'ncpp-tm', 'oncv', 'tm']
+spec = resolve_family("TM")            # -> PSEUDO_FAMILIES["ncpp"]
+spec.name, spec.aliases, spec.label    # "ncpp", ("tm", "ncpp-tm"), "NCPP"
+spec.options                           # ("size", "split_norm", "directory")
 spec.norm_conserving                   # True
 spec.generate("O")                     # generate_pseudopotential("O")
 spec.get("O")                          # the (cached) library loader
 spec.build(atoms, grid, h, charge, spin, options, kinetic)
+lookup_family("FAO")                   # None -- an all-electron basis name
 ```
 
 `build` returns exactly the 5-tuple the all-electron path returns —
 `(hamiltonian, num_particles, n_spatial_orbitals, integration_profile,
-context)` — and `_pseudopotential_hamiltonian` in the driver is now a thin
-dispatcher on it. A new family (ONCVPSP with several projectors per channel;
-PAW with an overlap correction) is added by registering a `FamilySpec`:
+context)` — and `_pseudopotential_hamiltonian` in the driver is a thin
+dispatcher on it. The family name is also **stored in every pseudopotential
+file** (`family` field, format version 2; files written before the field
+existed, and files spelled `"tm"`, load as `"ncpp"`).
+
+A new family is added by registering a `FamilySpec`:
 
 ```python
-register_family(FamilySpec(name="oncvpsp", description="...",
+register_family(FamilySpec(name="gth", description="...",
                            generate=..., get=..., build=...,
-                           norm_conserving=True, aliases=("oncv",)))
+                           norm_conserving=True, aliases=("goedecker",),
+                           options=("size", "split_norm", "directory")))
 ```
 
-and needs no change to the driver, the dry run or the calculator.
+and its name immediately works as a basis name — `basis="GTH"` — on every
+driver, in the dry run and on the command line, with no change to any of them.
 
 ## ONCVPSP: optimized norm-conserving Vanderbilt potentials
 
 *(2026-09-14, step 2 of the family plan.)* The second shipped family is
 `"oncvpsp"` (alias `"oncv"`), D. R. Hamann's construction, *Phys. Rev. B*
 **88**, 085117 (2013), written from scratch in
-`carcara.experimental.pseudopotentials.oncv` on top of the same LDA radial
+`carcara.pseudopotentials.oncv` on top of the same LDA radial
 atom as the TM family:
 
 ```python
-atoms.calc = Carcara(method="adapt-vqe", pseudopotentials="oncv", h=0.25)
-atoms.calc = Carcara(method="vqe", pseudopotentials={"family": "oncvpsp",
-                                                     "size": "DZP"})
+atoms.calc = Carcara(method="adapt-vqe",
+                     basis="ONCVPSP",                        # or "ONCV"
+                     h=0.25)
+atoms.calc = Carcara(method="vqe",
+                     basis={"name": "ONCVPSP", "size": "DZP"},
+                     h=0.25)
 ```
 
 What makes it different from TM is **two projectors per angular-momentum
@@ -158,7 +185,7 @@ would halve $\|D\|$ but degrades the log-derivative match between the
 references (O midpoint 8e-7 → 3e-4) while moving the H₂/LiH energies by only
 4e-5 Ha, so $\Delta = 1$ stays.
 
-### Validation (pinned by `test/experimental/test_oncvpsp.py`)
+### Validation (pinned by `test/test_oncvpsp.py`)
 
 Atomic, on the radial grid (freshly generated potentials; `check_oncv_channel`,
 `radial_spectrum` = 3-point Laplacian on a 0.01/0.02 Bohr resampled grid,
@@ -246,18 +273,21 @@ one-center energies **linearized around the reference atom** — a fixed
 per-species coupling matrix $D^0$, which makes the dataset behave like an
 ultrasoft pseudopotential with an exact PAW reconstruction of the atomic
 partial waves. Written from scratch in
-`carcara.experimental.pseudopotentials.paw` on the same LDA radial atom as
+`carcara.pseudopotentials.paw` on the same LDA radial atom as
 the other two families, reusing the Numerov partial waves, the Bessel
 machinery and the polynomial local potential of the ONCVPSP module:
 
 ```python
-atoms.calc = Carcara(method="adapt-vqe", pseudopotentials="paw", h=0.25)
-atoms.calc = Carcara(method="vqe", pseudopotentials={"family": "paw", "size": "DZ"},
-                     basis={"name": "PP", "size": "DZ"})
+atoms.calc = Carcara(method="adapt-vqe",
+                     basis="PAW",
+                     h=0.25)
+atoms.calc = Carcara(method="vqe",
+                     basis={"name": "PAW", "size": "DZ", "projector_basis": "raw"},
+                     h=0.25)
 ```
 
-The name has no alias; `family_names()` lists `tm`, `oncvpsp`, `paw` (and the
-unknown-family error names all three).
+The name has no alias; `family_names()` lists `ncpp`, `oncvpsp`, `paw` first
+(and the unknown-family error names all three).
 
 ### The transformation
 
@@ -407,7 +437,7 @@ combinations of the sampled $\tilde p_i$, so the energies are **identical to
 all digits** (tested); only the reported resolution ratio differs (H at
 h = 0.25 Å: raw 0.90/0.78, dual 0.78/0.77).
 
-### Validation (pinned by `test/experimental/test_paw.py`, 70 tests, 11.5 s, peak RSS 0.77 GB)
+### Validation (pinned by `test/test_paw.py`, 70 tests, 11.5 s, peak RSS 0.77 GB)
 
 Atomic, freshly generated (`check_paw_channel`: `paw_spectrum` = the
 generalized problem with the 3-point Laplacian on 0.01/0.02 Bohr grids,
@@ -584,14 +614,14 @@ optimization on this grid is not merely inaccurate — it does not converge.
 
 ## The bundled library
 
-`src/carcara/experimental/pseudopotentials/library/` holds one subdirectory
+`src/carcara/pseudopotentials/library/` holds one subdirectory
 per family. `library/ncpp/` ships norm-conserving Troullier–Martins
 pseudopotentials for **every element with Z ≤ 92** (H through U), generated
 from scratch by Carcará's own LDA radial atomic solver. They are loaded
 automatically by symbol.
 
 ```python
-from carcara.experimental.pseudopotentials.io import available_elements, get_pseudopotential
+from carcara.pseudopotentials.io import available_elements, get_pseudopotential
 
 pp = get_pseudopotential("Fe")
 pp.valence_charge     # 8.0  -- 3d^6 4s^2
@@ -602,16 +632,29 @@ The valence includes semicore $(n-1)d$ and $(n-2)f$ shells, so iron is an
 eight-electron atom with a d channel rather than a two-electron 4s² one.
 Hydrogen and lithium carry a single valence channel, which is the local one, so
 in this family H₂ and LiH have no projectors at all — their nonlocal term is
-identically zero (the ONCVPSP family gives them two s projectors each). The
-ONCVPSP potentials live in `library/oncvpsp/` and the PAW datasets in
-`library/paw/` (H, Li, C, N, O, F in each). `io.library_root()` is the common
-parent (overridden by `CARCARA_PSEUDO_PATH`); `io.default_library_path()` is
-the `ncpp/` directory, `oncv_library_path()` / `paw_library_path()` the others.
+identically zero (the ONCVPSP family gives them two s projectors each).
+
+The ONCVPSP and PAW datasets (all 92 elements, generated 2026-09-14) are too
+large for this repository — about 110 MB and 190 MB — so they live in the
+`carcara-oncvpsp` and `carcara-paw` repositories as flat directories of
+`<Symbol>.parquet` files. The loaders read them from `library/oncvpsp/` and
+`library/paw/`, which are **symbolic links** created by
+
+```bash
+python -m carcara.pseudopotentials.link_library \
+    --oncvpsp ~/Repositories/carcara-oncvpsp --paw ~/Repositories/carcara-paw
+# --files links each dataset instead of the directory; --force replaces; --status reports
+```
+
+(git ignores the links). `io.library_root()` is the common parent (overridden
+by `CARCARA_PSEUDO_PATH`); `io.default_library_path()` is the `ncpp/` directory,
+`oncv_library_path()` / `paw_library_path()` the others. Without the links the
+ONCVPSP/PAW loaders raise `FileNotFoundError` and their tests skip.
 
 To regenerate or extend the library:
 
 ```python
-from carcara.experimental.pseudopotentials.io import build_library
+from carcara.pseudopotentials.io import build_library
 
 written, failures = build_library()               # all of Z <= 92
 written, failures = build_library(["Ti", "V"])    # or a subset
@@ -640,8 +683,8 @@ load_pseudopotential("mystery.dat")  # magic bytes
 ```
 
 Every file records its `family` (format version 2). A file without the field
-is a version-1 file and loads as `"tm"`; the TM loader refuses a file that
-declares another family.
+is a version-1 file and loads as `"ncpp"`, as does one spelled with the old
+name `"tm"`; the NCPP loader refuses a file that declares another family.
 
 ```{note}
 Saving is lossless and idempotent: `load` then `save` returns the same tables.
@@ -651,32 +694,32 @@ while the smooth result does not need it. `save_pseudopotential` itself defaults
 to `stride=1`, so repeated round trips never compound.
 ```
 
-## Choosing the basis
+## The basis of a pseudopotential
 
-A pseudopotential fixes its own first zeta: the Troullier–Martins construction
-pseudizes each valence orbital inside its cutoff, and the Kleinman–Bylander
-projectors are built from those specific pseudo-orbitals. Pairing the potential
-with an unrelated all-electron radial function would be inconsistent, so an
-all-electron family is **refused** rather than silently ignored:
-
-```python
-Carcara(method="adapt-vqe", basis="6-31G(d)",
-                  pseudopotentials=True)   # ValueError
-```
-
-What you *can* vary is the size hierarchy, which refines that pseudo-orbital
-instead of replacing it — the extra zetas are split-valence refinements of the
-pseudized function, and the polarization shell is split from the outermost
-channel:
+A pseudopotential fixes its own first zeta: the construction pseudizes each
+valence orbital inside its cutoff, and the projectors are built from those
+specific pseudo-orbitals. Pairing the potential with an unrelated all-electron
+radial function would be inconsistent — which is why the family *is* the basis
+and an all-electron family cannot be combined with it (per element or
+otherwise). What you *can* vary is the size hierarchy, which refines that
+pseudo-orbital instead of replacing it — the extra zetas are split-valence
+refinements of the pseudized function, and the polarization shell is split
+from the outermost channel:
 
 ```python
-Carcara(method="adapt-vqe", basis={"name": "PP", "size": "DZP"},
-                  pseudopotentials=True)
+Carcara(method="adapt-vqe",
+        basis={"name": "NCPP", "size": "DZP"},
+        h=0.15)
 ```
 
 Sizes are the same names as for [the NAO family](basis_sets.md). The default
-here stays `"SZ"` (the minimal valence set), because the valence-only space is
-usually already at the edge of what a state-vector simulator can hold.
+is `"SZ"` (the minimal valence set), because the valence-only space is usually
+already at the edge of what a state-vector simulator can hold. The dry run
+counts the valence functions of the family and size you ask for:
+
+```console
+$ carcara H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run
+```
 
 ## Limits
 
@@ -707,19 +750,21 @@ relaxation.
 
 ## Tests and their budget
 
-The experimental suite (`test/experimental/`) is resource-monitored by its
-`conftest.py`: every test is timed, the peak RSS is read after each, and a
-summary table is printed at the end of the session (also written to
-`test/experimental/.resource_report.txt`). The budget is one test < 3 min,
-the whole run < 10 min, peak RSS < 3 GB; shrink a test's grid or cell rather
-than the limits. `test_ncpp_family.py` pins the TM energies of H₂ (0.74 Å,
-h = 0.25 Å) and LiH (1.6 Å, h = 0.30 Å) measured before the nonlocal
-generalization and exercises the general form with synthetic projectors;
-`test_oncvpsp.py` validates the ONCVPSP family atomically (H, Li, O) and on
-the same two molecules (50 tests, ~11 s, peak RSS 0.6 GB); `test_paw.py`
-does the same for the PAW family, adding the overlap, on-site-projection,
-compensation and grid-stability checks (70 tests, 11.5 s, peak RSS 0.77 GB;
-the whole experimental suite: 338 tests, 48 s, peak RSS 2.2 GB).
+The test suite is resource-monitored by `test/conftest.py`: every test is
+timed, the peak RSS is read after each, and a summary table of the slowest
+tests is printed at the end of the session (the complete table is written to
+`test/.resource_report.txt`). The budget — set for the pseudopotential tests,
+the heaviest in the suite — is one test < 3 min, the whole run < 10 min, peak
+RSS < 3 GB; shrink a test's grid or cell rather than the limits.
+`test_ncpp_family.py` pins the NCPP energies of H₂ (0.74 Å, h = 0.25 Å) and
+LiH (1.6 Å, h = 0.30 Å) measured before the nonlocal generalization and
+exercises the general form with synthetic projectors; `test_oncvpsp.py`
+validates the ONCVPSP family atomically (H, Li, O) and on the same two
+molecules (50 tests, ~11 s, peak RSS 0.6 GB); `test_paw.py` does the same for
+the PAW family, adding the overlap, on-site-projection, compensation and
+grid-stability checks (70 tests, 11.5 s, peak RSS 0.77 GB);
+`test_pseudopotential_engine.py` covers the engine, the basis-name selector
+and the per-element sizes.
 
-See `examples/19_pseudopotential_generation.py` and
-`examples/20_pseudopotential_calculations.py`.
+See `examples/26_pseudopotential_generation.py` and
+`examples/27_pseudopotential_calculations.py`.

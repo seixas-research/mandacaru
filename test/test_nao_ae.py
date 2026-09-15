@@ -313,11 +313,13 @@ class TestBasisSet:
         assert est.per_atom == [("O", 14), ("H", 5), ("H", 5)]
         assert est.n_qubits == 48
 
-    def test_refused_with_pseudopotentials(self):
+    def test_cannot_be_mixed_with_a_pseudopotential_family(self):
         from carcara.algorithms._hamiltonian_from_atoms import \
-            _merge_pseudo_basis_options
-        with pytest.raises(ValueError, match="pseudopotentials"):
-            _merge_pseudo_basis_options({"name": "NAO-AE"}, {})
+            resolve_pseudo_basis
+        with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
+            resolve_pseudo_basis("per-element",
+                                 {"O": {"name": "NAO-AE"}, "H": "NCPP"},
+                                 ["O", "H"])
 
 
 # --------------------------------------------------------------------------- #

@@ -73,11 +73,14 @@ atoms = Atoms("LiH",
               pbc=True)
 
 t0 = time.perf_counter()
-atoms.calc = Carcara(method="adapt-vqe", pool=POOL,
-                               basis={"name": "FAO"}, h=0.25,
-                               mapping="jordan_wigner",
-                               max_iterations=MAX_ITERATIONS,
-                               verbose=False, save_hamiltonian=HAMILTONIAN_FILE)
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool=POOL,
+                     basis={"name": "FAO"},
+                     h=0.25,
+                     mapping="jordan_wigner",
+                     max_iterations=MAX_ITERATIONS,
+                     verbose=False,
+                     save_hamiltonian=HAMILTONIAN_FILE)
 atoms.get_total_energy()
 build_seconds = time.perf_counter() - t0
 
@@ -109,10 +112,11 @@ print("-" * len(header))
 
 # The internal NumPy state-vector backend, for comparison.
 t0 = time.perf_counter()
-matrix_run = Carcara(method="adapt-vqe", pool=POOL,
-                               load_hamiltonian=HAMILTONIAN_FILE,
-                               max_iterations=MAX_ITERATIONS,
-                               verbose=False).run()
+matrix_run = Carcara(method="adapt-vqe",
+                     pool=POOL,
+                     load_hamiltonian=HAMILTONIAN_FILE,
+                     max_iterations=MAX_ITERATIONS,
+                     verbose=False).run()
 print(f"{'(matrix)':<10}{matrix_run.optimal_energy:>16.6f}"
       f"{matrix_run.optimal_energy - exact_ev:>13.2e}"
       f"{matrix_run.num_operators:>6}{matrix_run.metrics.cnot_count:>7}"
@@ -125,14 +129,13 @@ for provider in BACKEND_PROVIDERS:
         continue
 
     t0 = time.perf_counter()
-    driver = Carcara(
-                      method="adapt-vqe",
-                      pool=POOL,
-                      load_hamiltonian=HAMILTONIAN_FILE,   # no integrals, no map
-                      backend_provider=provider,
-                      execute_circuits=True,               # really run circuits
-                      max_iterations=MAX_ITERATIONS,
-                      verbose=False)
+    driver = Carcara(method="adapt-vqe",
+                     pool=POOL,
+                     load_hamiltonian=HAMILTONIAN_FILE,   # no integrals, no map
+                     backend_provider=provider,
+                     execute_circuits=True,   # really run circuits
+                     max_iterations=MAX_ITERATIONS,
+                     verbose=False)
     result = driver.run()
     elapsed = time.perf_counter() - t0
     results[provider] = result

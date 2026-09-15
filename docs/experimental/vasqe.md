@@ -41,9 +41,13 @@ from carcara.algorithms import Carcara
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
 
-atoms.calc = Carcara(method="vasqe", basis="FAO", pool="fermionic",
-                               temperature=1.0, h=0.20, max_iterations=12,
-                               gradient_tolerance=1e-5)
+atoms.calc = Carcara(method="vasqe",
+                     basis="FAO",
+                     pool="fermionic",
+                     temperature=1.0,
+                     h=0.20,
+                     max_iterations=12,
+                     gradient_tolerance=1e-5)
 energy_ev = atoms.get_total_energy()
 
 result = atoms.calc.result            # a VASQEResult (subclass of ADAPTVQEResult)
@@ -72,10 +76,15 @@ iterations. Four schedules are available via `schedule`:
 
 ```python
 # Anneal from a hot, exploratory tau=2.0 down to a greedy tau=0.01.
-atoms.calc = Carcara(method="vasqe", basis="FAO", temperature=2.0,
-                               final_temperature=0.01, schedule="exponential",
-                               annealing_steps=12, h=0.20,
-                               max_iterations=12, gradient_tolerance=1e-5)
+atoms.calc = Carcara(method="vasqe",
+                     basis="FAO",
+                     temperature=2.0,
+                     final_temperature=0.01,
+                     schedule="exponential",
+                     annealing_steps=12,
+                     h=0.20,
+                     max_iterations=12,
+                     gradient_tolerance=1e-5)
 atoms.get_total_energy()
 ```
 
@@ -107,9 +116,13 @@ levels = atoms.calc.energy_levels(num_states=2)
 print(levels.energies)                # eV
 
 # Subspace search: ground + excited states simultaneously.
-atoms.calc = Carcara(method="subspace-vasqe", basis="FAO",
-                               pool="fermionic", num_states=2,
-                               temperature=0.5, h=0.20, gradient_tolerance=1e-5)
+atoms.calc = Carcara(method="subspace-vasqe",
+                     basis="FAO",
+                     pool="fermionic",
+                     num_states=2,
+                     temperature=0.5,
+                     h=0.20,
+                     gradient_tolerance=1e-5)
 atoms.get_total_energy()
 print(atoms.calc.result.energies)     # eV
 ```
@@ -132,7 +145,9 @@ schedule — useful for exploring the operator space on a larger supercell befor
 settling on the greedy (ADAPT) choice:
 
 ```python
-e_cell, res = BlochCalculator(atoms, method="vasqe", h=0.20).total_energy(
+e_cell, res = BlochCalculator(atoms,
+                              method="vasqe",
+                              h=0.20).total_energy(
     (4, 1, 1), temperature=2.0, final_temperature=0.02, schedule="exponential",
     max_iterations=10, gradient_tolerance=1e-3, seed=1)
 print(res.temperatures)          # the selection temperature at each growth step

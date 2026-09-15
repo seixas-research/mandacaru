@@ -14,7 +14,8 @@ small systems only, and the features are deliberately kept out of the main
 documentation build (their notes live in ``docs/experimental/``) and off the
 website.  Nothing here is a default anywhere in Carcará.
 
-Contents:
+Contents (VASQE only -- the pseudopotentials graduated to
+:mod:`carcara.pseudopotentials` on 2026-09-15):
 
 * :mod:`carcara.experimental.vasqe` -- **VASQE**, the Variational Adaptive
   Stochastic Quantum Eigensolver (ADAPT-VQE with softmax operator selection
@@ -24,10 +25,6 @@ Contents:
   ``import carcara.experimental`` the names ``Carcara(method="vasqe")`` and
   ``Carcara(method="subspace-vasqe")`` work; without that import they are
   unknown, by design.
-* :mod:`carcara.experimental.pseudopotentials` -- norm-conserving
-  Troullier-Martins pseudopotentials with Kleinman-Bylander projectors, their
-  generation, the bundled library (``library/``) and the pseudo-atomic
-  orbitals; reached through ``pseudopotentials=True`` on any driver.
 """
 
 from ..algorithms.calculator import register_method

@@ -29,19 +29,19 @@ from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE, Carcara, VQE
 from carcara.algorithms._hamiltonian_from_atoms import (
-    _merge_pseudo_basis_options, build_basis_hamiltonian)
+    build_basis_hamiltonian, resolve_basis, resolve_pseudo_basis)
 from carcara.algorithms.dry_run import estimate_qubits
 from carcara.core.hamiltonian import projector_blocks
-from carcara.experimental.pseudopotentials import (
+from carcara.pseudopotentials import (
     PSEUDO_FAMILIES, PAWChannel, PAWDataset, PAWIntegrals, check_paw_channel,
     compensation_coulomb, compensation_potential, compensation_shape,
     family_names, generate_paw, get_oncv, get_paw, get_pseudopotential,
     load_pseudopotential, log_derivative_ae, log_derivative_paw,
-    normalize_pseudopotentials, paw_eigenstate, paw_library_path,
+    lookup_family, paw_eigenstate, paw_library_path,
     paw_spectrum, reconstruct_ae, report_paw, resolve_family,
     save_pseudopotential)
-from carcara.experimental.pseudopotentials import paw
-from carcara.experimental.pseudopotentials.io import (available_elements,
+from carcara.pseudopotentials import paw
+from carcara.pseudopotentials.io import (available_elements,
                                                        default_library_path,
                                                        detect_format)
 from carcara.units import HARTREE_TO_EV
@@ -109,13 +109,12 @@ def _fci(hamiltonian) -> float:
     return float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
 
 
-def _build(name, spec, basis="FAO", h=None):
+def _build(name, basis, h=None):
     factory, default_h = SYSTEMS[name]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         return build_basis_hamiltonian(factory(), basis, None,
-                                       default_h if h is None else h, 0, None,
-                                       pseudopotentials=spec)
+                                       default_h if h is None else h, 0, None)
 
 
 def _total(integrals, n_electrons) -> float:
@@ -360,8 +359,12 @@ class TestAtomic:
 
 class TestLibrary:
     def test_shipped_elements(self):
-        assert available_elements(paw_library_path()) == \
-            ["C", "F", "H", "Li", "N", "O"]
+        # The external paw repository (all 92 elements) linked into
+        # library/paw; at least the six generated in-repo must be there.
+        shipped = available_elements(paw_library_path())
+        if not shipped:
+            pytest.skip("external paw repository not linked on this machine")
+        assert {"C", "F", "H", "Li", "N", "O"} <= set(shipped)
         assert "paw" not in available_elements(default_library_path())
 
     @pytest.mark.parametrize("symbol", ["H", "Li", "C", "N", "O", "F"])
@@ -392,15 +395,15 @@ class TestLibrary:
             fresh.one_center_energy, rel=1e-6)
         assert shipped.r.size * 4 == pytest.approx(fresh.r.size, abs=4)
 
-    def test_loaders_refuse_the_other_families(self):
+    def test_loaders_refuse_the_other_families(self, tmp_path):
         with pytest.raises(ValueError, match="belongs to family 'paw'"):
-            PSEUDO_FAMILIES["tm"].get("H", paw_library_path())
+            PSEUDO_FAMILIES["ncpp"].get("H", paw_library_path())
         with pytest.raises(ValueError, match="not 'oncvpsp'"):
             get_oncv("H", paw_library_path())
         with pytest.raises(ValueError, match="not 'paw'"):
             get_paw("H", default_library_path())
         with pytest.raises(FileNotFoundError, match="PAW"):
-            get_paw("Xe")
+            get_paw("Xe", directory=str(tmp_path))
 
 
 # --------------------------------------------------------------------------- #
@@ -450,7 +453,7 @@ class TestIO:
 
     def test_other_families_load_unchanged(self):
         tm = get_pseudopotential("O")
-        assert type(tm).__name__ == "PseudoPotential" and tm.family == "tm"
+        assert type(tm).__name__ == "PseudoPotential" and tm.family == "ncpp"
         oncv = get_oncv("O")
         assert type(oncv).__name__ == "ONCVPseudoPotential"
         assert oncv.family == "oncvpsp" and len(oncv.projectors[0]) == 2
@@ -470,50 +473,52 @@ class TestResolution:
     @pytest.mark.parametrize("name", ["paw", "PAW", " Paw "])
     def test_names(self, name):
         assert resolve_family(name) is PSEUDO_FAMILIES["paw"]
-        assert normalize_pseudopotentials(name) == {"family": "paw"}
+        assert lookup_family(name) is PSEUDO_FAMILIES["paw"]
         assert "paw" in family_names()
 
     def test_unknown_family_lists_all_three(self):
-        with pytest.raises(ValueError, match="'tm'.*'oncvpsp'.*'paw'"):
+        with pytest.raises(ValueError, match="'ncpp'.*'oncvpsp'.*'paw'"):
             resolve_family("gth")
 
-    def test_spec_and_basis_merge(self):
+    def test_spec_and_basis_selection(self):
         spec = PSEUDO_FAMILIES["paw"]
         assert spec.norm_conserving is False and spec.aliases == ()
+        assert spec.label == "PAW"
+        assert spec.options == ("size", "split_norm", "directory",
+                                "projector_basis")
         assert spec.get("H").family == "paw"
         assert spec.generate is not None and spec.build is paw.build_paw
-        assert normalize_pseudopotentials({"family": "paw", "size": "DZ"}) == \
-            {"family": "paw", "size": "DZ"}
-        merged = _merge_pseudo_basis_options({"name": "PP", "size": "DZ"},
-                                             {"family": "paw"})
-        assert merged == {"family": "paw", "size": "DZ"}
-        with pytest.raises(ValueError, match="cannot be used with"):
-            _merge_pseudo_basis_options("6-31G(d)", {"family": "paw"})
+        name, options = resolve_basis({"name": "PAW", "size": "DZ",
+                                       "projector_basis": "raw"})
+        family, options = resolve_pseudo_basis(name, options, ["H"])
+        assert family is spec
+        assert options == {"size": "DZ", "projector_basis": "raw"}
+        with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
+            resolve_pseudo_basis("per-element", {"H": "PAW", "Li": "6-31G(d)"},
+                                 ["Li", "H"])
 
     @pytest.mark.parametrize("driver", [VQE, ADAPTVQE])
     def test_drivers_accept_the_family(self, driver):
-        assert driver(pseudopotentials="paw").pseudopotentials == "paw"
-        assert driver(pseudopotentials={"family": "paw", "size": "DZ"}) \
-            .pseudopotentials["family"] == "paw"
+        assert driver(basis="paw").basis == "paw"
+        assert driver(basis={"name": "paw", "size": "DZ"}).basis == \
+            {"name": "paw", "size": "DZ"}
+        with pytest.raises(ValueError, match="frozen_core is redundant"):
+            driver(basis="PAW", frozen_core=True)
 
     def test_dry_run(self):
-        estimate = estimate_qubits(h2(), pseudopotentials="paw")
+        estimate = estimate_qubits(h2(), basis="paw")
         assert estimate.n_qubits == 4 and estimate.num_particles == (1, 1)
-        assert any("paw family" in note for note in estimate.notes)
-        assert estimate_qubits(lih(), pseudopotentials={"family": "paw"}) \
-            .n_qubits == 4
-        dz = estimate_qubits(h2(), basis={"name": "PP", "size": "DZ"},
-                             pseudopotentials="paw")
+        assert any("PAW family" in note for note in estimate.notes)
+        assert estimate_qubits(lih(), basis={"name": "paw"}).n_qubits == 4
+        dz = estimate_qubits(h2(), basis={"name": "PAW", "size": "DZ"})
         assert dz.n_qubits == 8
         atoms = h2()
-        atoms.calc = Carcara(method="adapt-vqe", pseudopotentials="paw",
+        atoms.calc = Carcara(method="adapt-vqe", basis="paw",
                              h=H2_H, dry_run=True, verbose=False)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4
-        assert Carcara(method="vqe", pseudopotentials={"family": "paw",
-                                                       "size": "DZ"},
-                       basis={"name": "PP", "size": "DZ"}, h=LIH_H,
-                       verbose=False).dry_run(lih()).n_qubits == 8
+        assert Carcara(method="vqe", basis={"name": "PAW", "size": "DZ"},
+                       h=LIH_H, verbose=False).dry_run(lih()).n_qubits == 8
 
 
 # --------------------------------------------------------------------------- #
@@ -576,8 +581,8 @@ class TestOverlap:
         assert ints.constant_energy == pytest.approx(2 * pp.one_center_energy)
 
     def test_projector_basis_does_not_change_the_energy(self):
-        raw = _build("H2", {"family": "paw", "projector_basis": "raw"})
-        dual = _build("H2", {"family": "paw", "projector_basis": "dual"})
+        raw = _build("H2", {"name": "paw", "projector_basis": "raw"})
+        dual = _build("H2", {"name": "paw", "projector_basis": "dual"})
         e_raw = _total(raw[4]["integrals"], 2)
         e_dual = _total(dual[4]["integrals"], 2)
         assert e_raw == pytest.approx(e_dual, abs=1e-8)
@@ -631,9 +636,9 @@ class TestMolecular:
     def test_adapt_vqe(self, name):
         factory, h = SYSTEMS[name]
         atoms = factory()
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=h,
-                             pseudopotentials="paw", pool="qeb",
-                             max_iterations=4, verbose=False, profile=False)
+        atoms.calc = Carcara(method="adapt-vqe", basis="paw", h=h,
+                             pool="qeb", max_iterations=4, verbose=False,
+                             profile=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             atoms.get_potential_energy()
@@ -673,8 +678,7 @@ class TestMolecular:
 
     def test_size_hierarchy_is_variational(self):
         sz = _build("H2", "paw")[4]["integrals"]
-        dz = _build("H2", {"family": "paw", "size": "DZ"},
-                    basis={"name": "PP", "size": "DZ"})
+        dz = _build("H2", {"name": "paw", "size": "DZ"})
         ints = dz[4]["integrals"]
         assert dz[2] == 4 and len(ints.kb_projectors) == 4
         e_sz = _total(sz, 2)

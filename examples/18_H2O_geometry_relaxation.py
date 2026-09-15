@@ -153,14 +153,18 @@ print(RULE)
 start = 0.65
 fine_grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.10)
 relaxing = h2(start)
-relaxing.calc = Carcara(method="vqe", basis="FAO", grid=fine_grid,
-                                  verbose=False)
+relaxing.calc = Carcara(method="vqe",
+                        basis="FAO",
+                        grid=fine_grid,
+                        verbose=False)
 BFGS(relaxing, logfile=os.path.join(DATA, "h2_relaxation.log")).run(
     fmax=0.15, steps=40)
 
 initial = h2(start)
-initial.calc = Carcara(method="vqe", basis="FAO", grid=fine_grid,
-                                 verbose=False)
+initial.calc = Carcara(method="vqe",
+                       basis="FAO",
+                       grid=fine_grid,
+                       verbose=False)
 initial_force = float(np.max(np.linalg.norm(initial.get_forces(), axis=1)))
 
 final = float(np.linalg.norm(relaxing.positions[1] - relaxing.positions[0]))
@@ -188,10 +192,15 @@ print(RULE)
 water = molecule("H2O")
 water_grid = Grid(center=water.get_positions().mean(axis=0), box_size=6.0,
                   h=0.30)
-water.calc = Carcara(
-    method="adapt-vqe", basis="FAO", grid=water_grid, frozen_core=True,
-    pool="qeb", max_iterations=12, gradient_tolerance=1e-3, profile=False,
-    verbose=False)
+water.calc = Carcara(method="adapt-vqe",
+                     basis="FAO",
+                     grid=water_grid,
+                     frozen_core=True,
+                     pool="qeb",
+                     max_iterations=12,
+                     gradient_tolerance=1e-3,
+                     profile=False,
+                     verbose=False)
 
 energy = water.get_potential_energy()
 water_forces = water.get_forces()
@@ -222,10 +231,15 @@ energies = []
 for shift in shifts:
     probe = molecule("H2O")
     probe.set_positions(probe.get_positions() + np.array([0.0, 0.0, shift]))
-    probe.calc = Carcara(
-        method="adapt-vqe", basis="FAO", grid=water_grid, frozen_core=True,
-        pool="qeb", max_iterations=8, gradient_tolerance=1e-3, profile=False,
-        verbose=False)
+    probe.calc = Carcara(method="adapt-vqe",
+                         basis="FAO",
+                         grid=water_grid,
+                         frozen_core=True,
+                         pool="qeb",
+                         max_iterations=8,
+                         gradient_tolerance=1e-3,
+                         profile=False,
+                         verbose=False)
     energies.append(probe.get_potential_energy())
 amplitude = float(np.max(energies) - np.min(energies))
 print(f"  shift (A): {np.round(shifts, 4)}")

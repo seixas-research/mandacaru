@@ -88,10 +88,14 @@ atoms = Atoms("LiH",
               positions=[[7.5, 7.5, 7.5 - 0.7975], [7.5, 7.5, 7.5 + 0.7975]],
               cell=[[15.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 15.0]],
               pbc=True)
-atoms.calc = Carcara(method="adapt-vqe", pool=POOL,
-                               basis={"name": "FAO"}, h=0.25, verbose=False,
-                               profile=False, max_iterations=1,
-                               save_hamiltonian=HAMILTONIAN_FILE)
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool=POOL,
+                     basis={"name": "FAO"},
+                     h=0.25,
+                     verbose=False,
+                     profile=False,
+                     max_iterations=1,
+                     save_hamiltonian=HAMILTONIAN_FILE)
 atoms.get_total_energy()
 
 n_qubits = atoms.calc.n_qubits
@@ -138,10 +142,14 @@ def record(info):
         snapshots[step] = fidelities
 
 
-calc = Carcara(method="adapt-vqe", pool=POOL,
-                         load_hamiltonian=HAMILTONIAN_FILE, verbose=False,
-                         profile=False, optimizer="L-BFGS-B",
-                         max_iterations=MAX_ITERATIONS, gradient_tolerance=1e-6)
+calc = Carcara(method="adapt-vqe",
+               pool=POOL,
+               load_hamiltonian=HAMILTONIAN_FILE,
+               verbose=False,
+               profile=False,
+               optimizer="L-BFGS-B",
+               max_iterations=MAX_ITERATIONS,
+               gradient_tolerance=1e-6)
 result = calc.run(callback=record)
 
 print(f"{'step':>5}  {'#params':>8}  {'E (eV)':>15}  {'E - FCI':>11}  "

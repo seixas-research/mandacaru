@@ -23,17 +23,15 @@ atoms = Atoms("LiH", positions=[[4.0, 4.0, 3.20], [4.0, 4.0, 4.80]],
               cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
 # Attach the calculator, selecting the ADAPT-VQE method
-atoms.calc = Carcara(
-    method="adapt-vqe",
-    pool="ceo",
-    basis="FAO",
-    mapping="jordan_wigner",
-    optimizer="COBYLA",
-    gradient="parameter-shift",
-    h=0.18,
-    max_iterations=15,
-    gradient_tolerance=1e-5
-)
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool="ceo",
+                     basis="FAO",
+                     mapping="jordan_wigner",
+                     optimizer="COBYLA",
+                     gradient="parameter-shift",
+                     h=0.18,
+                     max_iterations=15,
+                     gradient_tolerance=1e-5)
 
 # Run calculation (energy returned in eV)
 energy_ev = atoms.get_total_energy()
@@ -72,16 +70,14 @@ pools = ["fermionic", "qubit", "qeb", "ceo"]
 results = {}
 
 for name in pools:
-    atoms.calc = Carcara(
-        method="adapt-vqe",
-        pool=name,
-        basis="FAO",
-        h=0.20,
-        optimizer=Optimizer("L-BFGS-B", maxiter=2000),
-        max_iterations=10,
-        gradient_tolerance=1e-5,
-        verbose=False
-    )
+    atoms.calc = Carcara(method="adapt-vqe",
+                         pool=name,
+                         basis="FAO",
+                         h=0.20,
+                         optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                         max_iterations=10,
+                         gradient_tolerance=1e-5,
+                         verbose=False)
     atoms.get_total_energy()
     results[name] = atoms.calc.result
 

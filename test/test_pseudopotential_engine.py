@@ -10,7 +10,7 @@
 
 The library itself is tested in ``test_pseudopotential.py``; this file covers the
 plumbing: the on-disk library, the Kleinman-Bylander projection kernel (C and
-NumPy), the valence-only Hamiltonian, the ``pseudopotentials=`` driver argument,
+NumPy), the valence-only Hamiltonian, the ``basis="NCPP"`` selector,
 and the force terms.
 
 The headline check is :class:`TestGridPathologyIsCured`: with all-electron
@@ -29,12 +29,12 @@ from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE, Carcara, VQE
 from carcara.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
-from carcara.experimental.pseudopotentials.io import (LIBRARY_ELEMENTS, available_elements,
+from carcara.pseudopotentials.io import (LIBRARY_ELEMENTS, available_elements,
                                      default_library_path,
                                      get_pseudopotential, library_file,
                                      load_pseudopotential,
                                      save_pseudopotential)
-from carcara.experimental.pseudopotentials.orbitals import (KBProjector, PseudoAtomicOrbital,
+from carcara.pseudopotentials.orbitals import (KBProjector, PseudoAtomicOrbital,
                                           kb_projectors, pseudo_basis,
                                           valence_electrons)
 from carcara.integrals import Grid, Potentials, _backend
@@ -102,7 +102,7 @@ class TestLibrary:
     def test_library_lives_where_documented(self):
         path = default_library_path()
         assert path.endswith(os.path.join("library", "ncpp"))
-        assert "experimental" in path and "pseudopotentials" in path
+        assert "experimental" not in path and "pseudopotentials" in path
         assert library_file("O").endswith("O.parquet")     # Parquet by default
 
 
@@ -137,7 +137,7 @@ class TestLocalPotentialAndBasis:
     def test_local_potential_is_finite_where_coulomb_diverges(self):
         pp = get_pseudopotential("O")
         potentials = Potentials([(pp.valence_charge, np.zeros(3))],
-                                pseudopotentials=[pp], units="bohr")
+                                pseudos=[pp], units="bohr")
         probe = np.array([1e-4, 0.5, 1.0])
         smooth = potentials.pseudopotential(probe, probe * 0, probe * 0)
         bare = potentials.nuclear_potential(probe, probe * 0, probe * 0)
@@ -149,7 +149,7 @@ class TestLocalPotentialAndBasis:
     def test_local_potential_matches_the_ionic_tail_far_out(self):
         pp = get_pseudopotential("O")
         potentials = Potentials([(pp.valence_charge, np.zeros(3))],
-                                pseudopotentials=[pp], units="bohr")
+                                pseudos=[pp], units="bohr")
         probe = np.array([15.0])
         smooth = potentials.pseudopotential(probe, probe * 0, probe * 0)
         # ~0.1 % residual: the unscreening subtracts the valence Hartree term,
@@ -199,8 +199,7 @@ class TestHamiltonianAndDrivers:
         grid = Grid(center=water.get_positions().mean(axis=0), box_size=8.0,
                     h=0.30)
         _h, num_particles, n_orbitals, _profile, context = \
-            build_basis_hamiltonian(water, "FAO", grid, 0.30, 0, None,
-                                    pseudopotentials=True)
+            build_basis_hamiltonian(water, "NCPP", grid, 0.30, 0, None)
         assert n_orbitals == 6                      # O(s+3p) + 2 H(s)
         assert context["n_electrons"] == 8          # 6 + 1 + 1 valence
         assert num_particles == (4, 4)
@@ -209,8 +208,8 @@ class TestHamiltonianAndDrivers:
     def test_kb_matrix_is_hermitian_and_low_rank(self):
         atoms = Atoms("O", positions=[[0, 0, 0]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
-        *_rest, context = build_basis_hamiltonian(atoms, "FAO", grid, 0.30, 0,
-                                                  None, pseudopotentials=True)
+        *_rest, context = build_basis_hamiltonian(atoms, "NCPP", grid, 0.30, 0,
+                                                  None)
         integrals = context["integrals"]
         nonlocal_matrix = integrals.kb_nonlocal()
 
@@ -223,28 +222,30 @@ class TestHamiltonianAndDrivers:
     def test_engine_flags_the_pseudopotential_path(self):
         atoms = Atoms("O", positions=[[0, 0, 0]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
-        *_rest, context = build_basis_hamiltonian(atoms, "FAO", grid, 0.30, 0,
-                                                  None, pseudopotentials=True)
+        *_rest, context = build_basis_hamiltonian(atoms, "NCPP", grid, 0.30, 0,
+                                                  None)
         assert context["integrals"].uses_pseudopotentials
 
     @pytest.mark.parametrize("driver", [VQE, ADAPTVQE])
-    def test_driver_accepts_the_argument(self, driver):
-        assert driver(pseudopotentials=True).pseudopotentials is True
-        assert driver().pseudopotentials is False
+    def test_driver_accepts_the_basis_name(self, driver):
+        assert driver(basis="NCPP").basis == "NCPP"
+        assert driver().basis == "FAO"
+        # The old argument is gone: nothing on the driver carries it.
+        assert not hasattr(driver(basis="NCPP"), "pseudopotentials")
 
     def test_frozen_core_is_rejected_as_redundant(self):
         atoms = Atoms("O", positions=[[0, 0, 0]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
-        with pytest.raises(ValueError, match="redundant with pseudopotentials"):
-            build_basis_hamiltonian(atoms, "FAO", grid, 0.30, 0, None,
-                                    frozen_core=True, pseudopotentials=True)
+        with pytest.raises(ValueError, match="redundant with the NCPP basis"):
+            build_basis_hamiltonian(atoms, "NCPP", grid, 0.30, 0, None,
+                                    frozen_core=True)
 
     def test_end_to_end_energy(self):
         """H2 with pseudopotentials: two valence electrons, four qubits."""
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = Carcara(method="vqe", basis="FAO", grid=grid,
-                                       pseudopotentials=True, verbose=False)
+        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid,
+                             verbose=False)
         energy = atoms.get_potential_energy()
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 4
@@ -258,8 +259,8 @@ class TestPseudopotentialForces:
     def test_forces_are_finite_and_balanced(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = Carcara(method="vqe", basis="FAO", grid=grid,
-                                       pseudopotentials=True, verbose=False)
+        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid,
+                             verbose=False)
         forces = atoms.get_forces()
         assert np.isfinite(forces).all()
         # Newton's third law on a two-atom molecule.
@@ -268,8 +269,8 @@ class TestPseudopotentialForces:
     def test_force_breakdown_is_available(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = Carcara(method="vqe", basis="FAO", grid=grid,
-                                       pseudopotentials=True, verbose=False)
+        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid,
+                             verbose=False)
         atoms.get_forces()
         local, pulay = atoms.calc.get_force_breakdown()
         assert local.shape == (2, 3) and pulay.shape == (2, 3)
@@ -290,21 +291,21 @@ class TestGridPathologyIsCured:
     BOX = 4.0
 
     @classmethod
-    def _isolated_force(cls, spacing, pseudopotentials):
+    def _isolated_force(cls, spacing, pseudo):
         grid = Grid(center=[0, 0, 0], box_size=cls.BOX, h=spacing)
         atoms = lone_atom("O", grid)
         atoms.calc = Carcara(
-            method="adapt-vqe", basis="FAO", grid=grid,
-            pseudopotentials=pseudopotentials,
-            frozen_core=not pseudopotentials, pool="qeb", verbose=False,
-            max_iterations=6, gradient_tolerance=1e-3, profile=False)
+            method="adapt-vqe", basis="NCPP" if pseudo else "FAO",
+            grid=grid, frozen_core=not pseudo, pool="qeb",
+            verbose=False, max_iterations=6, gradient_tolerance=1e-3,
+            profile=False)
         atoms.get_potential_energy()
         return float(np.abs(atoms.get_forces()).max())
 
     def test_converges_with_grid_refinement(self):
         """The sign of the trend is what changed: refinement now helps."""
-        coarse = self._isolated_force(0.20, pseudopotentials=True)
-        fine = self._isolated_force(0.15, pseudopotentials=True)
+        coarse = self._isolated_force(0.20, pseudo=True)
+        fine = self._isolated_force(0.15, pseudo=True)
         assert fine < coarse, f"{coarse:.1f} -> {fine:.1f}"
 
     @pytest.mark.xfail(
@@ -315,8 +316,8 @@ class TestGridPathologyIsCured:
                "comparison passed only by cancellation before the fix",
         strict=False)
     def test_far_smaller_than_all_electron(self):
-        pseudo = self._isolated_force(0.15, pseudopotentials=True)
-        all_electron = self._isolated_force(0.15, pseudopotentials=False)
+        pseudo = self._isolated_force(0.15, pseudo=True)
+        all_electron = self._isolated_force(0.15, pseudo=False)
         assert pseudo < all_electron / 20.0, (pseudo, all_electron)
 
 
@@ -333,8 +334,8 @@ class TestPseudoBasisSize:
                 np.array([[0, 0, 0], [0, 0.76, 0.59], [0, -0.76, 0.59]]))
 
     def _basis(self, size):
-        from carcara.experimental.pseudopotentials.io import get_pseudopotential
-        from carcara.experimental.pseudopotentials.orbitals import pseudo_basis
+        from carcara.pseudopotentials.io import get_pseudopotential
+        from carcara.pseudopotentials.orbitals import pseudo_basis
 
         symbols, positions = self._water()
         pots = {s: get_pseudopotential(s) for s in set(symbols)}
@@ -356,14 +357,14 @@ class TestPseudoBasisSize:
         assert owners == sorted(owners)          # grouped per atom
 
     def test_single_zeta_path_is_unchanged(self):
-        from carcara.experimental.pseudopotentials.orbitals import PseudoAtomicOrbital
+        from carcara.pseudopotentials.orbitals import PseudoAtomicOrbital
 
         functions, _ = self._basis("SZ")
         assert all(isinstance(f, PseudoAtomicOrbital) for f in functions)
 
     def test_first_zeta_comes_from_the_pseudopotential(self):
         """It must be the pseudized orbital the KB projectors were built from."""
-        from carcara.experimental.pseudopotentials.io import get_pseudopotential
+        from carcara.pseudopotentials.io import get_pseudopotential
 
         oxygen = get_pseudopotential("O")
         functions, _ = self._basis("DZP")
@@ -374,37 +375,50 @@ class TestPseudoBasisSize:
 
 
 class TestBasisArgumentIsHonored:
-    """Silently substituting a different basis is worse than refusing."""
+    """The family is the basis name; its options are the size hierarchy."""
 
     def test_size_is_forwarded(self):
         from carcara.algorithms._hamiltonian_from_atoms import (
-            _merge_pseudo_basis_options)
+            resolve_basis, resolve_pseudo_basis)
 
-        merged = _merge_pseudo_basis_options({"name": "NAO", "size": "DZP"}, {})
-        assert merged["size"] == "DZP"
+        family, options = resolve_pseudo_basis(
+            *resolve_basis({"name": "NCPP", "size": "DZP"}), ["O"])
+        assert family.label == "NCPP" and options["size"] == "DZP"
 
-    def test_the_pseudo_family_is_accepted_by_name(self):
+    @pytest.mark.parametrize("name", ["NCPP", "ncpp", "TM", "ncpp-tm"])
+    def test_the_family_is_accepted_by_every_alias(self, name):
         from carcara.algorithms._hamiltonian_from_atoms import (
-            _merge_pseudo_basis_options)
+            resolve_basis, resolve_pseudo_basis)
 
-        assert _merge_pseudo_basis_options({"name": "PP", "size": "DZ"},
-                                           {})["size"] == "DZ"
+        family, options = resolve_pseudo_basis(
+            *resolve_basis({"name": name, "size": "DZ"}), ["O"])
+        assert family.name == "ncpp" and options == {"size": "DZ"}
 
-    def test_the_default_basis_passes_through(self):
+    def test_all_electron_names_stay_all_electron(self):
         from carcara.algorithms._hamiltonian_from_atoms import (
-            _merge_pseudo_basis_options)
+            resolve_basis, resolve_pseudo_basis)
 
-        assert _merge_pseudo_basis_options("FAO", {}) == {}
+        assert resolve_pseudo_basis(*resolve_basis("FAO"), ["O"]) == (None, {})
 
-    @pytest.mark.parametrize("basis", ["6-31G(d)", "GTO",
-                                       {"name": "NAO", "energy_shift": 0.03}])
-    def test_incompatible_bases_are_refused(self, basis):
-        """An all-electron radial function cannot pair with a pseudopotential."""
+    @pytest.mark.parametrize("basis", ["PP", "PSEUDO", {"name": "pp",
+                                                        "size": "DZ"}])
+    def test_the_retired_names_are_refused(self, basis):
+        """``basis="PP"`` was the old spelling; it must not alias silently."""
+        from carcara.algorithms._hamiltonian_from_atoms import resolve_basis
+
+        with pytest.raises(ValueError, match="no longer a basis name"):
+            resolve_basis(basis)
+
+    def test_options_of_other_families_are_refused(self):
         from carcara.algorithms._hamiltonian_from_atoms import (
-            _merge_pseudo_basis_options)
+            build_basis_hamiltonian)
 
-        with pytest.raises(ValueError, match="cannot be used with pseudopot"):
-            _merge_pseudo_basis_options(basis, {})
+        atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
+        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
+        with pytest.raises(ValueError, match="unknown option.*energy_shift"):
+            build_basis_hamiltonian(atoms, {"name": "NCPP",
+                                            "energy_shift": 0.03},
+                                    grid, 0.30, 0, None)
 
 
 class TestPerElementSize:
@@ -414,18 +428,19 @@ class TestPerElementSize:
         from carcara.algorithms.dry_run import estimate_qubits
         complex_ = molecule("H2O") + Atoms("Na", positions=[[0, 0, 2.3]])
         complex_.center(vacuum=3.0)
-        uniform = estimate_qubits(complex_, pseudopotentials=True,
-                                  basis={"name": "PP", "size": "SZ"}, charge=1)
-        mixed = estimate_qubits(complex_, pseudopotentials=True, charge=1,
-                                basis={"O": {"name": "PP", "size": "DZP"},
-                                       "H": {"name": "PP", "size": "DZP"},
-                                       "Na": {"name": "PP", "size": "SZ"}})
+        uniform = estimate_qubits(complex_,
+                                  basis={"name": "NCPP", "size": "SZ"}, charge=1)
+        mixed = estimate_qubits(complex_, charge=1,
+                                basis={"O": {"name": "NCPP", "size": "DZP"},
+                                       "H": {"name": "NCPP", "size": "DZP"},
+                                       "Na": {"name": "NCPP", "size": "SZ"}})
         assert dict(uniform.per_atom)["Na"] == dict(mixed.per_atom)["Na"] == 1
         assert dict(mixed.per_atom)["O"] > dict(uniform.per_atom)["O"]
         assert dict(mixed.per_atom)["H"] > dict(uniform.per_atom)["H"]
-        with pytest.raises(ValueError, match="cannot be used with pseudopotentials"):
-            estimate_qubits(complex_, pseudopotentials=True, charge=1,
-                            basis={"O": "6-31G", "*": {"name": "PP"}})
+        assert mixed.basis.startswith("NCPP (per-element sizes")
+        with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
+            estimate_qubits(complex_, charge=1,
+                            basis={"O": "6-31G", "*": {"name": "NCPP"}})
 
 
 class TestVariationalPseudoBases:
@@ -443,8 +458,7 @@ class TestVariationalPseudoBases:
         energies = {}
         for size in ("SZ", "DZ", "DZP"):
             _H, _p, _n, _pr, ctx = build_basis_hamiltonian(
-                water, {"name": "PP", "size": size}, None, 0.25, 0, None,
-                pseudopotentials=True)
+                water, {"name": "NCPP", "size": size}, None, 0.25, 0, None)
             r = ctx["integrals"].hartree_fock(8)
             assert r.converged
             energies[size] = r.electronic_energy
@@ -461,8 +475,7 @@ class TestVariationalPseudoBases:
         energies = {}
         for kin in (None, "spectral"):
             _H, _p, _n, _pr, ctx = build_basis_hamiltonian(
-                water, "FAO", None, 0.30, 0, None, pseudopotentials=True,
-                kinetic=kin)
+                water, "NCPP", None, 0.30, 0, None, kinetic=kin)
             assert ctx["integrals"].kinetic == (kin or "fd")
             assert np.all(np.isfinite(ctx["integrals"].kb_resolution_ratios))
             energies[kin] = ctx["integrals"].hartree_fock(8).electronic_energy
@@ -479,7 +492,7 @@ class TestVariationalPseudoBases:
         ratios = {}
         for h in (0.30, 0.12):
             _H, _p, _n, _pr, ctx = build_basis_hamiltonian(
-                oxygen, "FAO", None, h, 0, None, pseudopotentials=True)
+                oxygen, "NCPP", None, h, 0, None)
             ratios[h] = ctx["integrals"].kb_resolution_ratios
             assert len(ratios[h]) == len(ctx["kb_projectors"])
         assert np.abs(ratios[0.12] - 1.0).max() < np.abs(ratios[0.30] - 1.0).max()

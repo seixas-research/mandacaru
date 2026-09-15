@@ -81,19 +81,17 @@ atoms = Atoms("OH2",
               cell=[[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
               pbc=True)
 
-atoms.calc = Carcara(
-              method="adapt-vqe",
-              pool="fermionic",
-              basis={"name": "FAO"},
-              mapping="jordan_wigner",
-              frozen_core=True,              # freeze the oxygen 1s core
-              h=0.30,
-              max_iterations=20,
-              gradient_tolerance=1e-3,
-              profile=False,                 # skip per-iteration circuit transpile
-              output=os.path.join(DATA, "output_H2O.txt"),
-              # expressibility sampling is costly at 12 qubits; skip it in the log
-              run_options={"log_expressivity": False})
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool="fermionic",
+                     basis={"name": "FAO"},
+                     mapping="jordan_wigner",
+                     frozen_core=True,   # freeze the oxygen 1s core
+                     h=0.30,
+                     max_iterations=20,
+                     gradient_tolerance=1e-3,
+                     profile=False,   # skip per-iteration circuit transpile
+                     output=os.path.join(DATA, "output_H2O.txt"),   # expressibility sampling is costly at 12 qubits; skip it in the log
+                     run_options={"log_expressivity": False})
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)

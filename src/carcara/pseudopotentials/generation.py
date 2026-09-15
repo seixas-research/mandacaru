@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: experimental/pseudopotentials/generation.py
+# file: pseudopotentials/generation.py
 
 # This code is part of Carcará.
 # MIT License
@@ -92,8 +92,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.optimize import root
 
-from ...basis._config import ground_state_config, valence_subshells
-from ...basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
+from ..basis._config import ground_state_config, valence_subshells
+from ..basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
                             solve_atom, solve_radial)
 
 #: Powers of ``r`` in the Troullier-Martins polynomial ``p(r)``.
@@ -312,11 +312,11 @@ class PseudoPotential:
     valence_density: np.ndarray = None
     atom: AtomicResult = None
     #: Pseudopotential **family** this object belongs to -- the key of
-    #: :data:`carcara.experimental.pseudopotentials.families.PSEUDO_FAMILIES`
-    #: (``"tm"``: norm-conserving Troullier-Martins with one Kleinman-Bylander
+    #: :data:`carcara.pseudopotentials.families.PSEUDO_FAMILIES`
+    #: (``"ncpp"``: norm-conserving Troullier-Martins with one Kleinman-Bylander
     #: projector per channel).  Written to and read from the library files; a
     #: file without the field is the historical TM family.
-    family: str = "tm"
+    family: str = "ncpp"
 
     @property
     def nonlocal_channels(self) -> list:
@@ -451,7 +451,7 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
         valence_charge=valence_charge, r=r, channels=channels,
         v_local=v_local, local_l=local, projectors=projectors,
         kb_energies=kb_energies, valence_density=valence_density, atom=atom,
-        family="tm")
+        family="ncpp")
 
 
 # --------------------------------------------------------------------------- #

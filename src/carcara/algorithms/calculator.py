@@ -24,9 +24,12 @@ come from a quantum variational eigensolver:
     from carcara.algorithms import Carcara
 
     water = molecule("H2O")
-    water.center(vacuum=3.0)
-    water.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.30,
-                                   frozen_core=True, verbose=False)
+    water.center(vacuum=3.0)          # the cell is the real-space box
+    water.calc = Carcara(method="adapt-vqe",
+                         basis="FAO",
+                         h=0.30,
+                         frozen_core=True,
+                         verbose=False)
     BFGS(water).run(fmax=0.05)
 
 The run result of the most recent evaluation is available uniformly on
@@ -48,12 +51,16 @@ would then disagree with the finite difference of the energies, and the
 optimizer would chase an artifact.
 
 Whenever forces are requested, :class:`Carcara` therefore builds the
-grid **once**, from the initial geometry plus ``vacuum`` padding, and reuses it
-for every subsequent geometry.  Energies along the trajectory are then all
+grid **once**, from the initial geometry's ``atoms.cell``, and reuses it for
+every subsequent geometry.  Energies along the trajectory are then all
 evaluated on one common grid, which is exactly the condition under which the
-analytic gradient is the derivative of the reported energy.  Keep the padding
-generous enough that no atom approaches the box edge during the relaxation.  An
-explicit ``grid=`` is always used verbatim (and frozen).
+analytic gradient is the derivative of the reported energy.  The cell is the
+box -- there is no padding argument on the calculator -- so size it in the
+geometry (``atoms.center(vacuum=3.0)``, an explicit ``atoms.cell``, or the
+``Lattice`` of an extended-XYZ file) generously enough that no atom
+approaches the box edge during the relaxation; a geometry without a cell
+raises ``ValueError``.  An explicit ``grid=`` is always used verbatim (and
+frozen).
 """
 
 from __future__ import annotations
@@ -132,15 +139,16 @@ class Carcara(Calculator):
     basis : str or dict
         Basis family, as for the solvers (default ``"FAO"``); accepts a
         ``{"name": ..., <options>}`` dict, including the periodic plane-wave
-        family (energy only -- plane waves carry no forces).
+        family (energy only -- plane waves carry no forces) and the
+        pseudopotential families ``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW"``
+        (``{"name": "PAW", "size": "DZP"}``), which replace the all-electron
+        problem by a valence-only one.
     h : float
         Grid spacing in Angstrom (default ``0.20``), used both for the
         per-geometry grid built from ``atoms.cell`` and for the frozen force
-        grid.
-    vacuum : float
-        Padding in Angstrom added around the initial geometry when the frozen
-        force grid is built (default ``3.0``).  That grid is fixed for the whole
-        trajectory, so this must accommodate any expansion during a relaxation.
+        grid.  The box itself is always ``atoms.cell`` -- the geometry must
+        carry one (``atoms.center(vacuum=...)``, ``atoms.cell = ...`` or an
+        extended-XYZ ``Lattice``), or a ``ValueError`` is raised.
     grid : Grid, optional
         An explicit grid, used verbatim (and frozen) for every evaluation.
     include_pulay : bool
@@ -177,7 +185,7 @@ class Carcara(Calculator):
     implemented_properties = ["energy", "free_energy", "forces"]
 
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="FAO",
-                 h: float = 0.20, vacuum: float = 3.0, grid=None,
+                 h: float = 0.20, grid=None,
                  include_pulay: bool = True,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
                  scf_iterations: int = 40, verbose: bool = True,
@@ -186,7 +194,6 @@ class Carcara(Calculator):
         self.method, self._solver_class = resolve_method(method)
         self.basis = basis
         self.h = float(h)
-        self.vacuum = float(vacuum)
         self.include_pulay = bool(include_pulay)
         self.hellmann_feynman = str(hellmann_feynman)
         self.orbital_delta = orbital_delta
@@ -307,15 +314,17 @@ class Carcara(Calculator):
     # -- the frozen force grid --------------------------------------------- #
 
     def _frozen_grid(self, atoms):
-        """Build the frozen integration grid once, from the *initial* geometry."""
+        """Build the frozen integration grid once, from the *initial* geometry.
+
+        The box is the geometry's own ``atoms.cell`` (centered on the
+        molecule), exactly the grid a single-point energy would use -- there
+        is no extra padding; a geometry without a cell raises ``ValueError``.
+        """
         if self._grid is not None:
             return self._grid
-        from ..integrals import Grid
+        from ._hamiltonian_from_atoms import grid_from_cell
 
-        positions = atoms.get_positions()
-        extent = positions.max(axis=0) - positions.min(axis=0)
-        box = float(np.max(extent) + 2.0 * self.vacuum)
-        self._grid = Grid(center=positions.mean(axis=0), box_size=box, h=self.h)
+        self._grid = grid_from_cell(atoms, self.h)
         return self._grid
 
     @staticmethod
@@ -336,7 +345,8 @@ class Carcara(Calculator):
             raise NotImplementedError(
                 "nuclear forces need an atom-centered basis whose orbitals move "
                 "with the nuclei; the plane-wave ('PW') family does not "
-                "qualify. Use 'FAO', 'NAO', 'GTO' or '6-31G(d)'.")
+                "qualify. Use 'FAO', 'NAO', 'GTO', '6-31G(d)' or a "
+                "pseudopotential family ('NCPP', 'ONCVPSP', 'PAW').")
 
     # -- ASE hook ---------------------------------------------------------- #
 
@@ -352,7 +362,7 @@ class Carcara(Calculator):
         atoms = self.atoms
 
         want_forces = "forces" in properties
-        if want_forces and not self.solver_kwargs.get("pseudopotentials"):
+        if want_forces:
             self._require_atom_centered_basis(self.basis)
 
         # Forces need one common grid along the whole trajectory; a plain

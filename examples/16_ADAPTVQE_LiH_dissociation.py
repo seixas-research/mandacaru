@@ -108,11 +108,16 @@ def lih(distance):
 def solve(distance, pool, mapping):
     """ADAPT-VQE total energy (eV) and operator count at one geometry."""
     atoms = lih(distance)
-    atoms.calc = Carcara(method="adapt-vqe", pool=pool, basis=BASIS,
-                                   mapping=mapping, h=GRID_SPACING,
-                                   optimizer="L-BFGS-B", verbose=False,
-                                   profile=False, max_iterations=MAX_ITERATIONS,
-                                   gradient_tolerance=1e-5)
+    atoms.calc = Carcara(method="adapt-vqe",
+                         pool=pool,
+                         basis=BASIS,
+                         mapping=mapping,
+                         h=GRID_SPACING,
+                         optimizer="L-BFGS-B",
+                         verbose=False,
+                         profile=False,
+                         max_iterations=MAX_ITERATIONS,
+                         gradient_tolerance=1e-5)
     atoms.get_total_energy()
     result = atoms.calc.result
     return result.optimal_energy, result.num_operators

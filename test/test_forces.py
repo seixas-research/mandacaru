@@ -475,9 +475,9 @@ class TestCarcara:
 
     def test_grid_is_frozen_across_geometries(self):
         """The grid must not follow the atoms, or forces stop matching energies."""
-        calc = Carcara(method="vqe", basis="FAO", h=SPACING,
-                                 vacuum=2.5, verbose=False)
+        calc = Carcara(method="vqe", basis="FAO", h=SPACING, verbose=False)
         atoms = h2(0.74)
+        atoms.center(vacuum=2.5)            # the cell is the frozen box
         atoms.calc = calc
         atoms.get_forces()
         first = calc._grid

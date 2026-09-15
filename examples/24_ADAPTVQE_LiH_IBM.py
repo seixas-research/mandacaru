@@ -46,29 +46,27 @@ def lih(distance):
 
 
 def calculator():
-    return Carcara(
-        method="adapt-vqe",
-        pool="ceo",
-        mapping="jordan_wigner",
-        basis={"name": "GTO", "n_gaussians": 3},
-        h=0.15,
-        charge=0,
-        spin=False,
-        frozen_core=False,
-        initial_state="hartree-fock",
-        optimizer="COBYLA",
-        gradient="finite_difference",
-        max_iterations=14,
-        gradient_tolerance=1e-3,
-        quenching=True,
-        sparse="auto",
-        device="AER_simulator",
-        shots=0,
-        backend_provider="qiskit",
-        execute_circuits=False,
-        profile=True,
-        verbose=False,
-    )
+    return Carcara(method="adapt-vqe",
+                   pool="ceo",
+                   mapping="jordan_wigner",
+                   basis={"name": "GTO", "n_gaussians": 3},
+                   h=0.15,
+                   charge=0,
+                   spin=False,
+                   frozen_core=False,
+                   initial_state="hartree-fock",
+                   optimizer="COBYLA",
+                   gradient="finite_difference",
+                   max_iterations=14,
+                   gradient_tolerance=1e-3,
+                   quenching=True,
+                   sparse="auto",
+                   device="AER_simulator",
+                   shots=0,
+                   backend_provider="qiskit",
+                   execute_circuits=False,
+                   profile=True,
+                   verbose=False)
 
 
 # 1. Optimize locally.

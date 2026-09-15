@@ -95,8 +95,9 @@ class TestEstimate:
         assert est.num_particles == (9, 7) and est.n_qubits == 20
 
     def test_pseudopotentials_count_valence_only(self):
-        est = estimate_qubits(_boxed("H2O"), pseudopotentials=True)
+        est = estimate_qubits(_boxed("H2O"), basis="NCPP")
         assert est.n_electrons == 8 and est.n_frozen_orbitals == 0
+        assert est.basis == "NCPP (SZ, pseudopotentials)"
         assert est.per_atom == [("O", 4), ("H", 1), ("H", 1)]
         assert est.n_qubits == 12
         assert any("pseudopotentials" in n for n in est.notes)
@@ -321,15 +322,17 @@ class TestEarlyStop:
 class TestCLI:
     def test_dry_run_flag(self, capsys, monkeypatch):
         _forbid_execution(monkeypatch)
-        assert main(["H2O", "--frozen-core", "--dry-run", "--quiet"]) == 0
+        assert main(["H2O", "--cell", "8", "--frozen-core", "--dry-run",
+                     "--quiet"]) == 0
         out = capsys.readouterr().out
         assert "QUBITS REQUIRED   : 12" in out
         assert "frozen core       : 1" in out
 
     def test_json_output(self, capsys, monkeypatch):
         _forbid_execution(monkeypatch)
-        assert main(["LiH", "--dry-run", "--json", "--mapping", "parity",
-                     "--device", "ibm-quantum", "--device-qubits", "127"]) == 0
+        assert main(["LiH", "--cell", "8", "--dry-run", "--json",
+                     "--mapping", "parity", "--device", "ibm-quantum",
+                     "--device-qubits", "127"]) == 0
         data = json.loads(capsys.readouterr().out)
         assert data["n_qubits"] == 6 and data["mapping"] == "parity"
         assert data["device"] == "ibm-quantum"
@@ -339,7 +342,7 @@ class TestCLI:
         _forbid_execution(monkeypatch)
         from ase.io import write
         xyz = str(tmp_path / "water.xyz")
-        write(xyz, molecule("H2O"))
+        write(xyz, _boxed("H2O"))                 # extxyz carries the Lattice
         assert main([xyz, "--basis", "NAO", "--basis-option", "size=DZ",
                      "--dry-run", "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
@@ -370,13 +373,35 @@ class TestCLI:
 
     def test_magmoms_and_spin_reach_the_estimate(self, capsys, monkeypatch):
         _forbid_execution(monkeypatch)
-        assert main(["O2", "--magmoms", "1", "1", "--dry-run", "--json"]) == 0
+        assert main(["O2", "--cell", "8", "--magmoms", "1", "1", "--dry-run",
+                     "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
         assert data["num_particles"] == [9, 7]
 
+    def test_a_bare_molecule_needs_a_cell(self, monkeypatch):
+        """The box is the cell: a g2 name without --cell is refused."""
+        _forbid_execution(monkeypatch)
+        with pytest.raises(SystemExit, match="no unit cell.*--cell"):
+            main(["H2", "--dry-run", "--json"])
+        with pytest.raises(SystemExit, match="1, 3 or 9"):
+            main(["H2", "--cell", "5", "5", "--dry-run", "--json"])
+
+    def test_cell_flag_boxes_the_molecule(self, capsys, monkeypatch):
+        from carcara.cli import load_geometry, parse_cell
+        _forbid_execution(monkeypatch)
+        assert main(["H2", "--cell", "5", "--dry-run", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["n_qubits"] == 4
+        atoms = load_geometry("H2O", cell=[6.0, 7.0, 8.0])
+        assert np.allclose(atoms.cell.lengths(), [6.0, 7.0, 8.0])
+        assert np.allclose(atoms.get_center_of_mass(), [3.0, 3.5, 4.0],
+                           atol=0.3)
+        assert parse_cell([1, 0, 0, 0, 2, 0, 0, 0, 3]).shape == (3, 3)
+        with pytest.raises(SystemExit, match="non-zero length"):
+            parse_cell([0.0])
+
     def test_full_run_through_the_cli(self, capsys):
         # A real (tiny) run: the same entry point without --dry-run.
-        assert main(["H2", "--method", "vqe", "--h", "0.4", "--vacuum", "2.0",
+        assert main(["H2", "--method", "vqe", "--h", "0.4", "--cell", "5.0",
                      "--optimizer", "L-BFGS-B", "--quiet"]) == 0
         out = capsys.readouterr().out
         assert "Final energy:" in out

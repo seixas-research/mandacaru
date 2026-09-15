@@ -49,7 +49,10 @@ The same helper is available on a configured calculator, reusing its method,
 basis and options:
 
 ```python
-calc = Carcara(method="adapt-vqe", basis="FAO", frozen_core=True, h=0.25)
+calc = Carcara(method="adapt-vqe",
+               basis="FAO",
+               frozen_core=True,
+               h=0.25)
 calc.interaction_energy(complex_, [[0, 1, 2], [3]], charges=[0, 1], charge=1)
 ```
 

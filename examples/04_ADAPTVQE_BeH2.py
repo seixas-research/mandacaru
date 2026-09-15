@@ -51,18 +51,17 @@ atoms = Atoms("BeH2",
               cell=[[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
               pbc=True)
 
-atoms.calc = Carcara(
-              method="adapt-vqe",
-              pool="ceo",
-              basis={"name": "FAO"},
-              sparse=True,
-              mapping="jordan_wigner",
-              gradient="parameter-shift",
-              frozen_core=True,              # freeze the Be 1s core
-              h=0.10,
-              max_iterations=25,
-              gradient_tolerance=1e-3,
-              output=os.path.join(DATA, "output_BeH2.txt"))
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool="ceo",
+                     basis={"name": "FAO"},
+                     sparse=True,
+                     mapping="jordan_wigner",
+                     gradient="parameter-shift",
+                     frozen_core=True,   # freeze the Be 1s core
+                     h=0.10,
+                     max_iterations=25,
+                     gradient_tolerance=1e-3,
+                     output=os.path.join(DATA, "output_BeH2.txt"))
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)

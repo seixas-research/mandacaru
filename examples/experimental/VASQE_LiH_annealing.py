@@ -76,10 +76,15 @@ atoms = Atoms("LiH",
               positions=[[7.5, 7.5, 7.5 - 0.7975], [7.5, 7.5, 7.5 + 0.7975]],
               cell=[[15.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 15.0]],
               pbc=True)
-atoms.calc = Carcara(method="vasqe", basis={"name": "FAO"}, h=0.25,
-                               pool=POOL, verbose=True, profile=False,
-                               max_iterations=1, temperature=1e-3,
-                               save_hamiltonian=HAMILTONIAN_FILE)
+atoms.calc = Carcara(method="vasqe",
+                     basis={"name": "FAO"},
+                     h=0.25,
+                     pool=POOL,
+                     verbose=True,
+                     profile=False,
+                     max_iterations=1,
+                     temperature=1e-3,
+                     save_hamiltonian=HAMILTONIAN_FILE)
 atoms.get_total_energy()
 
 hamiltonian = atoms.calc.hamiltonian.to_matrix()
@@ -94,11 +99,16 @@ print(f"exact FCI ground state = {exact:.8f} Ha\n")
 
 def run(label, **kwargs):
     """Run VASQE from the cached Hamiltonian and report its convergence."""
-    calc = Carcara(method="vasqe", pool=POOL,
-                             load_hamiltonian=HAMILTONIAN_FILE, verbose=True,
-                             profile=False, optimizer="L-BFGS-B",
-                             max_iterations=MAX_ITERATIONS,
-                             gradient_tolerance=1e-5, seed=SEED, **kwargs)
+    calc = Carcara(method="vasqe",
+                   pool=POOL,
+                   load_hamiltonian=HAMILTONIAN_FILE,
+                   verbose=True,
+                   profile=False,
+                   optimizer="L-BFGS-B",
+                   max_iterations=MAX_ITERATIONS,
+                   gradient_tolerance=1e-5,
+                   seed=SEED,
+                   **kwargs)
     result = calc.run()
     error = result.optimal_energy - exact
     status = "FCI" if abs(error) < CHEMICAL_ACCURACY else "above FCI"

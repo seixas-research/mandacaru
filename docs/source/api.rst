@@ -38,7 +38,7 @@ Command Line
 ~~~~~~~~~~~~
 
 .. automodule:: carcara.cli
-   :members: main, build_parser, load_geometry, solver_options
+   :members: main, build_parser, load_geometry, parse_cell, solver_options
    :undoc-members:
 
 ----
@@ -73,6 +73,41 @@ hydrogen-like tiers sized from the atom.  See :doc:`guide/nao_ae`.
    :members:
    :undoc-members:
    :show-inheritance:
+
+----
+
+Pseudopotentials
+----------------
+
+The valence-only families selected as basis names -- ``"NCPP"``
+(Troullier-Martins), ``"ONCVPSP"`` (Hamann) and ``"PAW"`` (Bloechl) -- their
+registry, generation, library and the pseudo-atomic orbitals.  See
+:doc:`guide/pseudopotentials`.
+
+.. automodule:: carcara.pseudopotentials
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Families and Registry
+~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: carcara.pseudopotentials.families
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Library Files
+~~~~~~~~~~~~~
+
+.. automodule:: carcara.pseudopotentials.io
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: carcara.pseudopotentials.link_library
+   :members: link_library, status
+   :undoc-members:
 
 ----
 

@@ -27,19 +27,19 @@ from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE, Carcara, VQE
 from carcara.algorithms._hamiltonian_from_atoms import (
-    _merge_pseudo_basis_options, build_basis_hamiltonian)
+    build_basis_hamiltonian, resolve_basis, resolve_pseudo_basis)
 from carcara.algorithms.dry_run import estimate_qubits
 from carcara.core.hamiltonian import projector_blocks
-from carcara.experimental.pseudopotentials import (
+from carcara.pseudopotentials import (
     PSEUDO_FAMILIES, ONCVChannel, ONCVPseudoPotential, check_oncv_channel,
     diagonalized_projectors, family_names, generate_oncv, get_oncv,
     load_pseudopotential, log_derivative_ae, log_derivative_ps,
-    normalize_pseudopotentials, oncv_library_path, radial_spectrum,
+    lookup_family, oncv_library_path, radial_spectrum,
     report_oncv, resolve_family, save_pseudopotential)
-from carcara.experimental.pseudopotentials.io import (available_elements,
+from carcara.pseudopotentials.io import (available_elements,
                                                        default_library_path,
                                                        detect_format)
-from carcara.experimental.pseudopotentials import oncv
+from carcara.pseudopotentials import oncv
 
 # --------------------------------------------------------------------------- #
 # Test systems (identical to test_ncpp_family, whose TM energies we compare to).
@@ -90,12 +90,11 @@ def _fci(hamiltonian) -> float:
     return float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
 
 
-def _build(name, spec, basis="FAO"):
+def _build(name, basis):
     factory, h = SYSTEMS[name]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        return build_basis_hamiltonian(factory(), basis, None, h, 0, None,
-                                       pseudopotentials=spec)
+        return build_basis_hamiltonian(factory(), basis, None, h, 0, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -203,8 +202,12 @@ class TestAtomic:
 
 class TestLibrary:
     def test_shipped_elements(self):
-        assert available_elements(oncv_library_path()) == \
-            ["C", "F", "H", "Li", "N", "O"]
+        # The external oncvpsp repository (all 92 elements) linked into
+        # library/oncvpsp; at least the six generated in-repo must be there.
+        shipped = available_elements(oncv_library_path())
+        if not shipped:
+            pytest.skip("external oncvpsp repository not linked on this machine")
+        assert {"C", "F", "H", "Li", "N", "O"} <= set(shipped)
         # A subdirectory: the TM library listing is untouched.
         assert "oncvpsp" not in available_elements(default_library_path())
 
@@ -231,13 +234,13 @@ class TestLibrary:
             fresh.channels[0].residual_kinetic, rel=1e-6)
         assert shipped.r.size * 4 == pytest.approx(fresh.r.size, abs=4)
 
-    def test_loaders_refuse_the_other_family(self):
+    def test_loaders_refuse_the_other_family(self, tmp_path):
         with pytest.raises(ValueError, match="belongs to family 'oncvpsp'"):
-            PSEUDO_FAMILIES["tm"].get("H", oncv_library_path())
+            PSEUDO_FAMILIES["ncpp"].get("H", oncv_library_path())
         with pytest.raises(ValueError, match="not 'oncvpsp'"):
             get_oncv("H", default_library_path())
         with pytest.raises(FileNotFoundError, match="ONCVPSP"):
-            get_oncv("Xe")
+            get_oncv("Xe", directory=str(tmp_path))
 
 
 # --------------------------------------------------------------------------- #
@@ -276,9 +279,9 @@ class TestIO:
         assert np.array_equal(again.projectors[0][0], back.projectors[0][0])
 
     def test_tm_files_still_load_as_tm(self):
-        from carcara.experimental.pseudopotentials import get_pseudopotential
+        from carcara.pseudopotentials import get_pseudopotential
         pp = get_pseudopotential("O")
-        assert type(pp).__name__ == "PseudoPotential" and pp.family == "tm"
+        assert type(pp).__name__ == "PseudoPotential" and pp.family == "ncpp"
         assert isinstance(pp.projectors[0], np.ndarray)
 
 
@@ -286,43 +289,44 @@ class TestResolution:
     @pytest.mark.parametrize("name", ["oncvpsp", "ONCVPSP", "oncv", "Oncv"])
     def test_names(self, name):
         assert resolve_family(name) is PSEUDO_FAMILIES["oncvpsp"]
-        assert normalize_pseudopotentials(name) == {"family": "oncvpsp"}
+        assert lookup_family(name) is PSEUDO_FAMILIES["oncvpsp"]
         assert "oncv" in family_names() and "oncvpsp" in family_names()
 
-    def test_spec_and_basis_merge(self):
+    def test_spec_and_basis_selection(self):
         spec = PSEUDO_FAMILIES["oncvpsp"]
         assert spec.norm_conserving and spec.aliases == ("oncv",)
+        assert spec.label == "ONCVPSP"
         assert spec.get("H").family == "oncvpsp"
         assert spec.generate is not None
-        options = normalize_pseudopotentials({"family": "oncvpsp", "size": "DZP"})
-        assert options == {"family": "oncvpsp", "size": "DZP"}
-        merged = _merge_pseudo_basis_options({"name": "PP", "size": "DZP"},
-                                             {"family": "oncvpsp"})
-        assert merged == {"family": "oncvpsp", "size": "DZP"}
-        with pytest.raises(ValueError, match="cannot be used with"):
-            _merge_pseudo_basis_options("6-31G(d)", {"family": "oncvpsp"})
+        name, options = resolve_basis({"name": "oncvpsp", "size": "DZP"})
+        family, options = resolve_pseudo_basis(name, options, ["H"])
+        assert family is spec and options == {"size": "DZP"}
+        assert resolve_pseudo_basis(*resolve_basis("6-31G(d)"), ["H"])[0] is None
+        with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
+            resolve_pseudo_basis("per-element", {"H": "oncv", "Li": "6-31G(d)"},
+                                 ["Li", "H"])
 
     @pytest.mark.parametrize("driver", [VQE, ADAPTVQE])
     def test_drivers_accept_the_family(self, driver):
-        assert driver(pseudopotentials="oncv").pseudopotentials == "oncv"
-        assert driver(pseudopotentials={"family": "oncvpsp", "size": "DZ"}) \
-            .pseudopotentials["family"] == "oncvpsp"
+        assert driver(basis="oncv").basis == "oncv"
+        assert driver(basis={"name": "oncvpsp", "size": "DZ"}).basis == \
+            {"name": "oncvpsp", "size": "DZ"}
+        with pytest.raises(ValueError, match="unknown option"):
+            driver(basis={"name": "oncv", "projector_basis": "raw"})
 
     def test_dry_run(self):
-        estimate = estimate_qubits(h2(), pseudopotentials="oncv")
+        estimate = estimate_qubits(h2(), basis="oncv")
         assert estimate.n_qubits == 4 and estimate.num_particles == (1, 1)
-        assert any("oncvpsp family" in note for note in estimate.notes)
-        assert estimate_qubits(lih(), pseudopotentials={"family": "oncv"}) \
-            .n_qubits == 4
-        dzp = estimate_qubits(h2(), basis={"name": "PP", "size": "DZP"},
-                              pseudopotentials="oncv")
+        assert any("ONCVPSP family" in note for note in estimate.notes)
+        assert estimate_qubits(lih(), basis={"name": "oncv"}).n_qubits == 4
+        dzp = estimate_qubits(h2(), basis={"name": "oncv", "size": "DZP"})
         assert dzp.n_qubits == 20                       # (2 s + 3 p) x 2 atoms
         atoms = h2()
-        atoms.calc = Carcara(method="adapt-vqe", pseudopotentials="oncv",
+        atoms.calc = Carcara(method="adapt-vqe", basis="oncv",
                              h=H2_H, dry_run=True, verbose=False)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4
-        assert Carcara(method="vqe", pseudopotentials="oncvpsp", h=H2_H,
+        assert Carcara(method="vqe", basis="oncvpsp", h=H2_H,
                        verbose=False).dry_run(lih()).n_qubits == 4
 
 
@@ -384,9 +388,9 @@ class TestMolecular:
     def test_adapt_vqe(self, name):
         factory, h = SYSTEMS[name]
         atoms = factory()
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=h,
-                             pseudopotentials="oncv", pool="qeb",
-                             max_iterations=4, verbose=False, profile=False)
+        atoms.calc = Carcara(method="adapt-vqe", basis="oncv", h=h,
+                             pool="qeb", max_iterations=4, verbose=False,
+                             profile=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             atoms.get_potential_energy()
@@ -404,8 +408,7 @@ class TestMolecular:
 
     def test_size_hierarchy_is_variational(self):
         sz = _build("H2", "oncv")[4]["integrals"]
-        dzp = _build("H2", {"family": "oncv", "size": "DZP"},
-                     basis={"name": "PP", "size": "DZP"})
+        dzp = _build("H2", {"name": "oncv", "size": "DZP"})
         ints = dzp[4]["integrals"]
         assert dzp[2] == 10 and len(ints.kb_projectors) == 4
         e_sz = sz.hartree_fock(2).electronic_energy + sz.nuclear_repulsion

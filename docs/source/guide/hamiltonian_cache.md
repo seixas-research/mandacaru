@@ -17,13 +17,17 @@ atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
               cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
 
 # 1. Build once and save.
-atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
-                               h=0.25, save_hamiltonian="lih.parquet")
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool="qeb",
+                     basis="FAO",
+                     h=0.25,
+                     save_hamiltonian="lih.parquet")
 atoms.get_total_energy()
 
 # 2. Reload -- no geometry, no integrals, no mapping.
-result = Carcara(method="adapt-vqe", pool="ceo",
-                           load_hamiltonian="lih.parquet").run()
+result = Carcara(method="adapt-vqe",
+                 pool="ceo",
+                 load_hamiltonian="lih.parquet").run()
 ```
 
 The second run needs **no `Atoms` object at all**. The file records
@@ -56,8 +60,10 @@ Two interchangeable formats are selected with `hamiltonian_format`:
 | Best for | large active spaces; analysis in pandas/Arrow/Spark | inspection, diffing, dependency-free environments |
 
 ```python
-Carcara(method="adapt-vqe", basis="FAO",
-                  save_hamiltonian="lih", hamiltonian_format="json")
+Carcara(method="adapt-vqe",
+        basis="FAO",
+        save_hamiltonian="lih",
+        hamiltonian_format="json")
 # -> writes lih.json
 ```
 
@@ -166,16 +172,20 @@ Caching turns a pool comparison into a few seconds of work:
 from carcara.algorithms import Carcara
 
 # Build once ...
-atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.25,
-                               save_hamiltonian="lih.parquet",
-                               max_iterations=1, verbose=False)
+atoms.calc = Carcara(method="adapt-vqe",
+                     basis="FAO",
+                     h=0.25,
+                     save_hamiltonian="lih.parquet",
+                     max_iterations=1,
+                     verbose=False)
 atoms.get_total_energy()
 
 # ... compare every pool against the *same* operator.
 for pool in ("fermionic", "qubit", "qeb", "ceo"):
-    result = Carcara(method="adapt-vqe", pool=pool,
-                               load_hamiltonian="lih.parquet",
-                               verbose=False).run()
+    result = Carcara(method="adapt-vqe",
+                     pool=pool,
+                     load_hamiltonian="lih.parquet",
+                     verbose=False).run()
     print(f"{pool:<10} E = {result.optimal_energy:.6f} eV  "
           f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
 ```

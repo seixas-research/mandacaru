@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-# file: experimental/pseudopotentials/__init__.py
+# file: pseudopotentials/__init__.py
 
 # This code is part of Carcará.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Pseudopotentials -- **experimental**.
+"""Pseudopotentials: valence-only Hamiltonians for the real-space engine.
 
 Organized in **families** (:mod:`.families`, registry :data:`PSEUDO_FAMILIES`).
-Three are shipped: ``"tm"`` (aliases ``"ncpp"``, ``"ncpp-tm"``), the
+Three are shipped: ``"ncpp"`` (aliases ``"tm"``, ``"ncpp-tm"``), the
 Troullier-Martins pseudization of the self-consistent LDA atom
 (:mod:`carcara.basis.atomic_solver`) with Kleinman-Bylander separable
 projectors (:mod:`.generation`); ``"oncvpsp"`` (alias ``"oncv"``),
@@ -20,15 +20,16 @@ datasets with an overlap correction and frozen one-center terms
 subdirectory per family -- ``library/ncpp/`` (Troullier-Martins, :mod:`.io`),
 ``library/oncvpsp/`` and ``library/paw/`` -- and the valence
 pseudo-atomic orbitals and projectors are sampled on the real-space grid by
-:mod:`.orbitals`.  Every driver reaches a family through
-``pseudopotentials=True | "tm" | "oncv" | {"family": ..., ...}``; see
-``docs/experimental/pseudopotentials.md``.
+:mod:`.orbitals`.  A family is selected **as a basis**: ``basis="NCPP"``,
+``basis="ONCVPSP"``, ``basis={"name": "PAW", "size": "DZP"}`` on any driver
+(the family name is a basis name, with the multiple-zeta size hierarchy as
+its options); see the *Pseudopotentials* guide of the manual.
 """
 
-from .families import (DEFAULT_FAMILY, PSEUDO_FAMILIES, FamilySpec,
-                       family_names, normalize_pseudopotentials,
-                       register_family, resolve_family,
-                       unregister_family)
+from .families import (COMMON_OPTIONS, DEFAULT_FAMILY, PSEUDO_FAMILIES,
+                       FamilySpec, canonical_family_name, family_listing,
+                       family_names, lookup_family, register_family,
+                       resolve_family, unregister_family)
 from .generation import (Channel, PseudoPotential, check_channel,
                          generate_pseudopotential, pseudize_channel, report)
 from .io import (FORMAT_VERSION, LEGACY_FAMILY, LIBRARY_ELEMENTS,
@@ -52,8 +53,9 @@ from .paw import (PAW_FAMILY, PAWChannel, PAWDataset, PAWIntegrals,
                   smooth_partial_waves)
 
 __all__ = [
-    "DEFAULT_FAMILY", "PSEUDO_FAMILIES", "FamilySpec", "family_names",
-    "normalize_pseudopotentials", "register_family", "resolve_family",
+    "COMMON_OPTIONS", "DEFAULT_FAMILY", "PSEUDO_FAMILIES", "FamilySpec",
+    "canonical_family_name", "family_listing", "family_names",
+    "lookup_family", "register_family", "resolve_family",
     "unregister_family",
     "Channel", "PseudoPotential", "check_channel", "generate_pseudopotential",
     "pseudize_channel", "report",

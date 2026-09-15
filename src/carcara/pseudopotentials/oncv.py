@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-# file: experimental/pseudopotentials/oncv.py
+# file: pseudopotentials/oncv.py
 
 # This code is part of Carcará.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Optimized norm-conserving Vanderbilt pseudopotentials (ONCVPSP) -- experimental.
+r"""Optimized norm-conserving Vanderbilt pseudopotentials (ONCVPSP).
 
 The family ``"oncvpsp"`` (alias ``"oncv"``) implements D. R. Hamann's
 construction, Phys. Rev. B **88**, 085117 (2013): **two projectors per
@@ -123,7 +123,7 @@ from scipy.integrate import simpson
 from scipy.optimize import brentq
 from scipy.special import spherical_jn
 
-from ...basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
+from ..basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
                                     solve_atom)
 from .generation import (Channel, PseudoPotential, _local_derivatives,
                          _valence_configuration)
@@ -1047,12 +1047,14 @@ def check_oncv_channel(pp: ONCVPseudoPotential, l: int,
     ``eigenvalue_error``
         Lowest eigenvalue of the pseudo atomic Hamiltonian of that ``l`` minus
         the bound reference energy (a ghost state makes it negative).
-    ``norm_matrix_error``, ``vanderbilt_asymmetry``, ``residual_kinetic``,
-    ``coupling_norm``, ``nodes``
+
+    ``norm_matrix_error``, ``vanderbilt_asymmetry``, ``residual_kinetic``, ``coupling_norm``, ``nodes``
         Stored construction diagnostics.
+
     ``tail_error``
         Largest deviation of the bound pseudo wave from the all-electron one
         beyond ``r_c``.
+
     ``log_derivative_errors``
         ``{energy: (|L_ps - L_ae|, L_ae)}`` at the two reference energies and
         (when ``midpoint``) halfway between them.
@@ -1238,10 +1240,10 @@ def build_oncv(atoms, grid, h, charge, spin, options, kinetic=None):
     :math:`2\times2` coupling block per ``(atom, l, m)``; no overlap
     correction (norm-conserving).
     """
-    from ...algorithms._hamiltonian_from_atoms import (
+    from ..algorithms._hamiltonian_from_atoms import (
         DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
         grid_from_cell, resolve_num_unpaired)
-    from ...core import MolecularIntegrals
+    from ..core import MolecularIntegrals
     from .orbitals import pseudo_basis, valence_electrons
 
     directory = options.get("directory")
@@ -1261,10 +1263,10 @@ def build_oncv(atoms, grid, h, charge, spin, options, kinetic=None):
     g = (grid if grid is not None
          else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
-    num_particles = _num_particles(n_el, n_unpaired, "PP")
+    num_particles = _num_particles(n_el, n_unpaired, FAMILY.upper())
     integrals = MolecularIntegrals(
         nuclei, basis_fns, g, softening=0.0,
-        pseudopotentials=[potentials[s] for s in symbols],
+        pseudos=[potentials[s] for s in symbols],
         kb_projectors=projectors, nonlocal_coupling=blocks,
         nonlocal_overlap=None,
         kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"])

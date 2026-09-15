@@ -117,13 +117,13 @@ def _shared_grid(atoms, h, grid):
 
 
 def _rhf_energy(atoms, charge, grid, h, basis, frozen_core, frozen_orbitals,
-                pseudopotentials, spin, kinetic=None):
+                spin, kinetic=None):
     """Hartree-Fock total energy of ``atoms`` on ``grid`` (Hartree)."""
     from ._hamiltonian_from_atoms import build_basis_hamiltonian
     _H, particles, _n, _profile, context = build_basis_hamiltonian(
         atoms, basis, grid, h, charge, None, spin=spin,
         frozen_core=frozen_core, frozen_orbitals=frozen_orbitals,
-        pseudopotentials=pseudopotentials, kinetic=kinetic)
+        kinetic=kinetic)
     if context is None:
         raise NotImplementedError(
             "interaction energies need an atom-centered basis")
@@ -148,8 +148,8 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
     Parameters
     ----------
     atoms : ase.Atoms
-        The complex.  Its cell sizes the shared grid (``atoms.center(vacuum=...)``
-        sets one); the magnetic moments carried by the atoms select the spin
+        The complex.  Its cell sizes the shared grid (define it in the
+        geometry, e.g. ``atoms.center(vacuum=4.0)``); the magnetic moments carried by the atoms select the spin
         state of the complex and of each fragment.
     fragments : sequence of sequences of int
         Atom indices of each fragment; together they must cover every atom of
@@ -164,8 +164,9 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
         ``"rhf"`` for the mean-field (Hartree-Fock) interaction energy with no
         circuit at all.
     basis, h, grid, **solver_kwargs :
-        Forwarded to every run.  ``grid`` overrides the shared grid built from
-        the complex.
+        Forwarded to every run (``basis`` may be a pseudopotential family --
+        ``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW"`` -- like anywhere else).  ``grid``
+        overrides the shared grid built from the complex.
 
     Returns
     -------
@@ -191,15 +192,19 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
                 sub, q, shared, h, basis,
                 solver_kwargs.get("frozen_core", False),
                 solver_kwargs.get("frozen_orbitals"),
-                solver_kwargs.get("pseudopotentials", False),
                 solver_kwargs.get("spin", False),
                 solver_kwargs.get("kinetic"))
             energy = float(from_hartree(energy, unit))   # RHF works in Hartree
             results.append(None)
         else:
             from .calculator import Carcara
-            calc = Carcara(method=method, basis=basis, h=h, grid=shared,
-                           charge=q, verbose=verbose, **solver_kwargs)
+            calc = Carcara(method=method,
+                           basis=basis,
+                           h=h,
+                           grid=shared,
+                           charge=q,
+                           verbose=verbose,
+                           **solver_kwargs)
             sub.calc = calc
             sub.get_potential_energy()
             energy = float(calc.result.optimal_energy)   # already in `unit`

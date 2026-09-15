@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-# file: experimental/pseudopotentials/paw.py
+# file: pseudopotentials/paw.py
 
 # This code is part of Carcará.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Projector augmented-wave datasets (PAW) -- experimental.
+r"""Projector augmented-wave datasets (PAW).
 
 The family ``"paw"`` implements P. E. Blöchl's projector augmented-wave method,
 Phys. Rev. B **50**, 17953 (1994), in its frozen-core, one-center-expansion
@@ -139,9 +139,9 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.integrate import simpson
 
-from ...basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
+from ..basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
                                     solve_atom)
-from ...core.hamiltonian import MolecularIntegrals, projector_blocks
+from ..core.hamiltonian import MolecularIntegrals, projector_blocks
 from .generation import Channel, PseudoPotential, _valence_configuration
 from .oncv import (Q_MAX, Q_STEP, PseudoWaves, _bessel_table,
                    _bessel_transform_table, _inner_grid, _log_derivative_of_u,
@@ -952,12 +952,13 @@ def log_derivative_paw(pp: PAWDataset, l: int, energy: float,
 def check_paw_channel(pp: PAWDataset, l: int, midpoint: bool = True) -> dict:
     """Validation numbers of one channel.
 
-    ``duality_error``, ``asymmetry``, ``consistency_error``, ``residual_kinetic``,
-    ``overlap_correction``
+    ``duality_error``, ``asymmetry``, ``consistency_error``, ``residual_kinetic``, ``overlap_correction``
         Stored construction diagnostics (the last is the ``q`` block).
+
     ``eigenvalue_error``, ``spectrum``
         Lowest eigenvalue of the generalized atomic problem minus the bound
         reference energy (a ghost makes it negative), and the spectrum.
+
     ``reconstruction_error``
         Largest deviation of the all-electron wave reconstructed from the
         lowest smooth eigenfunction, :func:`reconstruct_ae`, from the stored
@@ -1126,7 +1127,7 @@ class PAWIntegrals(MolecularIntegrals):
     """
 
     def __init__(self, nuclei, basis, grid, *, datasets, **kwargs):
-        super().__init__(nuclei, basis, grid, pseudopotentials=datasets,
+        super().__init__(nuclei, basis, grid, pseudos=datasets,
                          **kwargs)
         self.datasets = list(datasets)
         self.constant_energy = float(sum(d.one_center_energy
@@ -1316,7 +1317,7 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None):
     by the monopole compensation charges, and the constant the ion-ion
     repulsion plus the frozen one-center energies.
     """
-    from ...algorithms._hamiltonian_from_atoms import (
+    from ..algorithms._hamiltonian_from_atoms import (
         DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
         grid_from_cell, resolve_num_unpaired)
     from .orbitals import pseudo_basis, valence_electrons
@@ -1341,7 +1342,7 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None):
     g = (grid if grid is not None
          else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
-    num_particles = _num_particles(n_el, n_unpaired, "PP")
+    num_particles = _num_particles(n_el, n_unpaired, FAMILY.upper())
     integrals = PAWIntegrals(
         nuclei, basis_fns, g, softening=0.0,
         datasets=[datasets[s] for s in symbols],
@@ -1505,7 +1506,8 @@ def from_payload(payload: dict) -> PAWDataset:
 # --------------------------------------------------------------------------- #
 
 def _register():
-    from .families import FamilySpec, PSEUDO_FAMILIES, register_family
+    from .families import (COMMON_OPTIONS, FamilySpec, PSEUDO_FAMILIES,
+                           register_family)
     if FAMILY in PSEUDO_FAMILIES:
         return PSEUDO_FAMILIES[FAMILY]
     return register_family(FamilySpec(
@@ -1517,6 +1519,7 @@ def _register():
         build=build_paw,
         norm_conserving=False,
         aliases=(),
+        options=COMMON_OPTIONS + ("projector_basis",),
     ))
 
 

@@ -42,9 +42,12 @@ e_atoms_ev = from_hartree(e_atoms, "eV")   # the UHF atomic reference is Hartree
 
 for r in distances:
     atoms = Atoms("H2", positions=molecule_positions(float(r)))
-    atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
-                                   grid=grid, optimizer="L-BFGS-B",
-                                   verbose=False)
+    atoms.calc = Carcara(method="adapt-vqe",
+                         pool="qeb",
+                         basis="FAO",
+                         grid=grid,
+                         optimizer="L-BFGS-B",
+                         verbose=False)
     atoms.get_total_energy()
     binding_ev = atoms.calc.result.optimal_energy - e_atoms_ev   # results are eV
     print(f"R = {r:.2f} A -> E - E_atoms = {binding_ev:+.4f} eV")
@@ -85,16 +88,14 @@ for r in distances:
                   cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
     # Attach the calculator with the ADAPT-VQE method
-    atoms.calc = Carcara(
-        method="adapt-vqe",
-        pool="ceo",
-        basis="FAO",
-        optimizer="COBYLA",
-        h=h_val,
-        max_iterations=10,
-        gradient_tolerance=1e-5,
-        verbose=False
-    )
+    atoms.calc = Carcara(method="adapt-vqe",
+                         pool="ceo",
+                         basis="FAO",
+                         optimizer="COBYLA",
+                         h=h_val,
+                         max_iterations=10,
+                         gradient_tolerance=1e-5,
+                         verbose=False)
 
     energy_ev = atoms.get_total_energy()
     energies.append(energy_ev)

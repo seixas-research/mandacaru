@@ -29,8 +29,8 @@ Use the :class:`BasisSet` factory to build NAO or (STO-nG) GTO bases.  All
 families are generated from scratch -- no tabulated basis-set data.
 
 :mod:`carcara.basis.atomic_solver` is the self-consistent spherical LDA atom
-behind the NAO-AE minimal basis (and behind the experimental pseudopotentials
-in :mod:`carcara.experimental.pseudopotentials`).
+behind the NAO-AE minimal basis (and behind the pseudopotential families
+in :mod:`carcara.pseudopotentials`).
 """
 
 from .atomic_solver import AtomicResult, solve_atom, solve_radial

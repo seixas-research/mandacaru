@@ -15,7 +15,7 @@ that is *only* natural on the command line is the **dry run**:
 .. code-block:: console
 
     $ carcara water.xyz --frozen-core --dry-run
-    $ carcara H2O --basis NAO --basis-option size=DZP --device ibm-quantum --dry-run
+    $ carcara H2O --cell 8 --basis NAO --basis-option size=DZP --device ibm-quantum --dry-run
     $ carcara --load-hamiltonian lih.parquet --dry-run --json
 
 ``--dry-run`` stops before any integral, mapping or circuit and prints the
@@ -26,11 +26,16 @@ Without it the full variational run is performed:
 .. code-block:: console
 
     $ carcara water.xyz --method adapt-vqe --basis FAO --h 0.25 --frozen-core
+    $ carcara LiH --cell 10 --basis PAW --h 0.25
 
 The geometry is any file :func:`ase.io.read` understands (``.xyz``, ``.cif``,
 ``POSCAR``, ...) or the name of a molecule in ASE's ``g2`` collection
-(``H2O``, ``LiH``, ``NH3``, ...).  A geometry without a unit cell is centered in
-a box with ``--vacuum`` padding, as the real-space grid needs one.
+(``H2O``, ``LiH``, ``NH3``, ...).  The real-space box **is the geometry's unit
+cell**: a file must carry one (an extended-XYZ ``Lattice``, a CIF / POSCAR
+cell), and a bare molecule name needs an explicit ``--cell`` (``--cell 10``
+for a 10 Angstrom cube, ``--cell 12 10 10`` for an orthorhombic box, or the
+nine components of the three lattice vectors), which centers the molecule in
+that box.  There is no padding option.
 """
 
 from __future__ import annotations
@@ -86,9 +91,10 @@ def build_parser() -> argparse.ArgumentParser:
                     "and crystals (ADAPT-VQE by default).",
         epilog="Examples:\n"
                "  carcara water.xyz --frozen-core --dry-run\n"
-               "  carcara H2O --basis NAO --basis-option size=DZP --dry-run\n"
+               "  carcara H2O --cell 8 --basis NAO --basis-option size=DZP --dry-run\n"
+               "  carcara H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run\n"
                "  carcara --load-hamiltonian lih.parquet --dry-run --json\n"
-               "  carcara LiH --method adapt-vqe --pool qeb --h 0.3\n",
+               "  carcara LiH --cell 10 --method adapt-vqe --pool qeb --h 0.3\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version",
                         version=f"carcara {__version__}")
@@ -128,17 +134,25 @@ def build_parser() -> argparse.ArgumentParser:
     system.add_argument("--magmoms", type=float, nargs="+", default=None,
                         help="initial magnetic moment per atom (their sum is "
                              "the number of unpaired electrons)")
-    system.add_argument("--vacuum", type=float, default=3.0,
-                        help="padding (Angstrom) used to box a geometry that "
-                             "has no unit cell (default 3.0)")
+    system.add_argument("--cell", type=float, nargs="+", default=None,
+                        metavar="L",
+                        help="unit cell in Angstrom for a geometry that has "
+                             "none (a bare molecule name): one length for a "
+                             "cube, three for an orthorhombic box, or nine "
+                             "lattice-vector components; the molecule is "
+                             "centered in it.  A cell given here overrides "
+                             "the file's.")
 
     basis = parser.add_argument_group("basis and Hamiltonian")
     basis.add_argument("--basis", default="FAO",
                        help="basis family: FAO (default), NAO, NAO-AE, GTO, "
-                            "PW, or a named Gaussian set -- STO-nG, Pople "
+                            "PW, a named Gaussian set -- STO-nG, Pople "
                             "(6-31+G*, 6-311+G(2df,2p), ...), Dunning "
                             "(cc-pVDZ, aug-cc-pVTZ, cc-pCVDZ) or Karlsruhe "
-                            "(def2-SVP, def2-TZVP, ...)")
+                            "(def2-SVP, def2-TZVP, ...) -- or a "
+                            "pseudopotential family, NCPP (Troullier-"
+                            "Martins), ONCVPSP or PAW, for a valence-only "
+                            "run (size=DZP etc. through --basis-option)")
     basis.add_argument("--basis-option", action="append", type=_key_value,
                        default=[], metavar="KEY=VALUE",
                        help="basis option, repeatable (size=DZP, "
@@ -153,10 +167,6 @@ def build_parser() -> argparse.ArgumentParser:
                             "of lowest MOs")
     basis.add_argument("--frozen-orbitals", type=int, nargs="+", default=None,
                        help="explicit spatial-MO indices to freeze")
-    basis.add_argument("--pseudopotentials", action="store_true",
-                       help="(experimental) valence-only run with the bundled "
-                            "Troullier-Martins pseudopotentials; not part of "
-                            "the stable API")
     basis.add_argument("--mapping", default="jordan_wigner",
                        choices=("jordan_wigner", "parity", "bravyi_kitaev"),
                        help="fermion-to-qubit mapping (default jordan_wigner)")
@@ -188,8 +198,32 @@ def build_parser() -> argparse.ArgumentParser:
 # Geometry and calculator construction.
 # --------------------------------------------------------------------------- #
 
-def load_geometry(spec: str, vacuum: float = 3.0, magmoms=None):
-    """An ASE ``Atoms`` from a file path or a g2 molecule name, boxed if needed."""
+def parse_cell(values):
+    """The ``--cell`` values as a 3x3 cell (Angstrom): 1, 3 or 9 numbers."""
+    import numpy as np
+
+    values = [float(v) for v in values]
+    if len(values) == 1:
+        cell = np.diag(values * 3)
+    elif len(values) == 3:
+        cell = np.diag(values)
+    elif len(values) == 9:
+        cell = np.asarray(values).reshape(3, 3)
+    else:
+        raise SystemExit(
+            f"--cell takes 1, 3 or 9 numbers (Angstrom), got {len(values)}")
+    if np.any(np.linalg.norm(cell, axis=1) <= 0.0):
+        raise SystemExit("--cell needs three lattice vectors of non-zero length")
+    return cell
+
+
+def load_geometry(spec: str, cell=None, magmoms=None):
+    """An ASE ``Atoms`` from a file path or a g2 molecule name.
+
+    The real-space box is the geometry's unit cell, so one is required: from
+    the file, or from ``cell`` (the ``--cell`` values, see :func:`parse_cell`),
+    which centers the atoms in it.  A geometry with neither is refused.
+    """
     import numpy as np
 
     if os.path.exists(spec):
@@ -203,8 +237,15 @@ def load_geometry(spec: str, vacuum: float = 3.0, magmoms=None):
             raise SystemExit(
                 f"geometry {spec!r} is neither a readable file nor a molecule "
                 "name from ASE's g2 collection")
+    if cell is not None:
+        atoms.set_cell(parse_cell(cell))
+        atoms.center()
     if not np.any(np.asarray(atoms.get_cell(), dtype=float)):
-        atoms.center(vacuum=float(vacuum))
+        raise SystemExit(
+            f"geometry {spec!r} has no unit cell, and the real-space box is "
+            "the cell.  Give one with --cell (e.g. --cell 10 for a 10 Angstrom "
+            "cube, or --cell 12 10 10), or use a geometry file that carries "
+            "its cell (an extended-XYZ Lattice, a CIF, a POSCAR).")
     if magmoms is not None:
         if len(magmoms) != len(atoms):
             raise SystemExit(
@@ -221,11 +262,10 @@ def solver_options(args) -> dict:
     basis = args.basis if not args.basis_option else \
         {"name": args.basis, **dict(args.basis_option)}
     options = dict(method=args.method, basis=basis, h=args.h,
-                   vacuum=args.vacuum, verbose=not (args.quiet or args.json),
+                   verbose=not (args.quiet or args.json),
                    charge=args.charge, spin=args.spin,
                    frozen_core=args.frozen_core,
                    frozen_orbitals=args.frozen_orbitals,
-                   pseudopotentials=args.pseudopotentials,
                    mapping=args.mapping, optimizer=args.optimizer,
                    device=args.device, shots=args.shots,
                    load_hamiltonian=args.load_hamiltonian,
@@ -295,7 +335,7 @@ def main(argv=None) -> int:
 
     atoms = None
     if args.geometry is not None:
-        atoms = load_geometry(args.geometry, args.vacuum, args.magmoms)
+        atoms = load_geometry(args.geometry, args.cell, args.magmoms)
     calc = Carcara(**solver_options(args))
     if args.dry_run:
         return run_dry(calc, atoms, args)

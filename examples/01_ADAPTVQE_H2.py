@@ -44,18 +44,17 @@ atoms = Atoms("H2",
               cell=[[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]],
               pbc=True)
 
-atoms.calc = Carcara(
-              method="adapt-vqe",
-              pool="qubit",
-              basis={"name": "FAO"},
-              mapping="jordan_wigner",
-              optimizer="COBYLA",
-              gradient="parameter-shift",
-              device="AER_simulator",
-              h=0.10,
-              max_iterations=15,
-              gradient_tolerance=1e-4,
-              output=os.path.join(DATA, "output_H2.txt"))
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool="qubit",
+                     basis={"name": "FAO"},
+                     mapping="jordan_wigner",
+                     optimizer="COBYLA",
+                     gradient="parameter-shift",
+                     device="AER_simulator",
+                     h=0.10,
+                     max_iterations=15,
+                     gradient_tolerance=1e-4,
+                     output=os.path.join(DATA, "output_H2.txt"))
 
 energy_ev = atoms.get_total_energy()               # eV, like every result
 result = atoms.calc.result                         # result.optimal_energy is eV

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: experimental/pseudopotentials/orbitals.py
+# file: pseudopotentials/orbitals.py
 
 # This code is part of Carcará.
 # MIT License
@@ -18,7 +18,7 @@ the grid:
 * the **Kleinman-Bylander projectors** :math:`\chi_{l}(r)\,Y_{lm}`, which carry
   the nonlocal part of the potential.
 
-Both are radial tables from :mod:`carcara.experimental.pseudopotentials.generation`, splined and
+Both are radial tables from :mod:`carcara.pseudopotentials.generation`, splined and
 multiplied by a spherical harmonic -- the same construction
 :class:`~carcara.basis.nao.NumericalAtomicOrbital` uses, so they drop into the
 integral engine unchanged.
@@ -29,9 +29,9 @@ from __future__ import annotations
 import numpy as np
 from scipy.interpolate import CubicSpline
 
-from ...units import to_bohr
-from ...basis._angular import spherical_coords, spherical_harmonic
-from ...basis.base import BasisFunction
+from ..units import to_bohr
+from ..basis._angular import spherical_coords, spherical_harmonic
+from ..basis.base import BasisFunction
 
 
 class _RadialTabulated(BasisFunction):
@@ -166,7 +166,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     shell is split from the highest occupied channel, so everything stays
     matched to the potential it came from.
     """
-    from ...basis.multizeta import (DEFAULT_SPLIT_NORM, RadialTable,
+    from ..basis.multizeta import (DEFAULT_SPLIT_NORM, RadialTable,
                             orbitals_from_tables, resolve_zeta, zeta_tables)
 
     split_norm = DEFAULT_SPLIT_NORM if split_norm is None else float(split_norm)

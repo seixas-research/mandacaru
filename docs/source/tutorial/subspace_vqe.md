@@ -42,8 +42,12 @@ from carcara.algorithms import Carcara
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
 
-atoms.calc = Carcara(method="subspace-vqe", basis="FAO", h=0.20,
-                               num_states=2, weights=[2.0, 1.0], verbose=False)
+atoms.calc = Carcara(method="subspace-vqe",
+                     basis="FAO",
+                     h=0.20,
+                     num_states=2,
+                     weights=[2.0, 1.0],
+                     verbose=False)
 atoms.get_potential_energy()               # ASE energy = ground state (eV)
 
 result = atoms.calc.result
@@ -70,9 +74,14 @@ inner re-optimization minimizes the weighted energy. It records how many operato
 were grown.
 
 ```python
-atoms.calc = Carcara(method="subspace-adapt-vqe", basis="FAO", h=0.20,
-                               pool="fermionic", num_states=2, verbose=False,
-                               gradient_tolerance=1e-4, max_iterations=20)
+atoms.calc = Carcara(method="subspace-adapt-vqe",
+                     basis="FAO",
+                     h=0.20,
+                     pool="fermionic",
+                     num_states=2,
+                     verbose=False,
+                     gradient_tolerance=1e-4,
+                     max_iterations=20)
 atoms.get_potential_energy()
 
 result = atoms.calc.result

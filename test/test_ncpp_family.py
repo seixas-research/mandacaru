@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
-# file: test/experimental/test_ncpp_family.py
+# file: test/test_ncpp_family.py
 
 # This code is part of Carcará.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""The pseudopotential **family** interface (experimental).
+"""The pseudopotential **family** interface.
 
-``pseudopotentials=True`` has always meant norm-conserving Troullier-Martins
-potentials in Kleinman-Bylander form.  That family is now named (``"tm"``,
-aliases ``"ncpp"`` / ``"ncpp-tm"``), registered in ``PSEUDO_FAMILIES``, and
-the driver dispatches on the registry so ONCVPSP / PAW can plug in without
-touching it.  The nonlocal term became the general separable form
+The norm-conserving Troullier-Martins potentials in Kleinman-Bylander form
+are the family ``"ncpp"`` (aliases ``"tm"`` / ``"ncpp-tm"``), registered in
+``PSEUDO_FAMILIES`` and **selected as a basis name** (``basis="NCPP"``,
+``basis={"name": "NCPP", "size": "DZP"}``); the driver dispatches on the
+registry so ONCVPSP / PAW plug in without touching it.  The nonlocal term became the general separable form
 ``H_NL = C D C^dagger`` with a block-diagonal coupling ``D``, plus an optional
 overlap correction ``S + C Q C^dagger``.
 
@@ -34,18 +34,18 @@ from ase import Atoms
 
 from carcara.algorithms import ADAPTVQE, Carcara, VQE
 from carcara.algorithms._hamiltonian_from_atoms import (
-    _merge_pseudo_basis_options, build_basis_hamiltonian, coherent_positions,
-    grid_from_cell)
+    build_basis_hamiltonian, coherent_positions, grid_from_cell,
+    pseudopotential_family, resolve_basis, resolve_pseudo_basis)
 from carcara.algorithms.dry_run import estimate_qubits
 from carcara.core import MolecularIntegrals
 from carcara.core.hamiltonian import assemble_block_matrix, projector_blocks
-from carcara.experimental.pseudopotentials import (
+from carcara.pseudopotentials import (
     DEFAULT_FAMILY, FORMAT_VERSION, LEGACY_FAMILY, PSEUDO_FAMILIES,
     FamilySpec, KBProjector, family_names, get_pseudopotential,
-    kb_coupling_blocks, kb_projectors, load_pseudopotential,
-    normalize_pseudopotentials, pseudo_basis, register_family,
+    canonical_family_name, kb_coupling_blocks, kb_projectors,
+    load_pseudopotential, lookup_family, pseudo_basis, register_family,
     resolve_family, save_pseudopotential, unregister_family)
-from carcara.experimental.pseudopotentials.io import (FILE_EXTENSIONS,
+from carcara.pseudopotentials.io import (FILE_EXTENSIONS,
                                                        PSEUDO_FORMATS,
                                                        library_file)
 
@@ -92,64 +92,81 @@ def _fci(hamiltonian) -> float:
 
 class TestFamilyResolution:
     def test_default_is_troullier_martins(self):
-        assert DEFAULT_FAMILY == "tm"
-        assert resolve_family(None).name == "tm"
-        assert resolve_family(True).name == "tm"
+        assert DEFAULT_FAMILY == "ncpp"
+        assert resolve_family(None).name == "ncpp"
 
     @pytest.mark.parametrize("name", ["tm", "TM", "ncpp", "NCPP", "ncpp-tm",
                                       "NCPP-TM", "ncpp_tm", " Ncpp-Tm "])
     def test_aliases_are_case_insensitive(self, name):
-        assert resolve_family(name) is PSEUDO_FAMILIES["tm"]
+        assert resolve_family(name) is PSEUDO_FAMILIES["ncpp"]
+        assert lookup_family(name) is PSEUDO_FAMILIES["ncpp"]
+        assert pseudopotential_family(name) is PSEUDO_FAMILIES["ncpp"]
+        assert canonical_family_name(name) == "ncpp"
 
     def test_unknown_family_lists_the_registered_ones(self):
         with pytest.raises(ValueError, match="unknown pseudopotential family "
-                                             "'gth'.*'tm'.*'ncpp'"):
+                                             "'gth'.*'ncpp'.*'tm'"):
             resolve_family("gth")
+        assert lookup_family("gth") is None and lookup_family(3) is None
+        assert canonical_family_name("gth") == "gth"
 
     def test_non_string_is_a_type_error(self):
         with pytest.raises(TypeError):
             resolve_family(3)
 
     def test_registry_entry_is_complete(self):
-        spec = PSEUDO_FAMILIES["tm"]
+        spec = PSEUDO_FAMILIES["ncpp"]
         assert isinstance(spec, FamilySpec)
         assert spec.norm_conserving is True
-        assert set(spec.aliases) == {"ncpp", "ncpp-tm"}
+        assert set(spec.aliases) == {"tm", "ncpp-tm"}
+        assert spec.label == "NCPP"
+        assert spec.options == ("size", "split_norm", "directory")
         assert callable(spec.generate) and callable(spec.get) \
             and callable(spec.build)
         assert spec.get("H").symbol == "H"
-        assert family_names()[0] == "tm" and "ncpp-tm" in family_names()
+        assert family_names()[0] == "ncpp" and "ncpp-tm" in family_names()
 
-    @pytest.mark.parametrize("spec, expected", [
-        (True, {"family": "tm"}),
-        ("ncpp", {"family": "tm"}),
-        ({"family": "NCPP-TM", "size": "DZ"}, {"family": "tm", "size": "DZ"}),
-        ({"directory": "/x"}, {"family": "tm", "directory": "/x"}),
+    @pytest.mark.parametrize("basis, expected", [
+        ("NCPP", {}),
+        ("tm", {}),
+        ({"name": "NCPP-TM", "size": "DZ"}, {"size": "DZ"}),
+        ({"name": "ncpp", "directory": "/x"}, {"directory": "/x"}),
     ])
-    def test_normalize_driver_argument(self, spec, expected):
-        assert normalize_pseudopotentials(spec) == expected
+    def test_basis_name_selects_the_family(self, basis, expected):
+        name, options = resolve_basis(basis)
+        family, options = resolve_pseudo_basis(name, options, ["H"])
+        assert family is PSEUDO_FAMILIES["ncpp"] and options == expected
 
-    def test_normalize_rejects_garbage(self):
-        with pytest.raises(ValueError, match="unknown pseudopotential family"):
-            normalize_pseudopotentials("gth")
-        with pytest.raises(ValueError, match="unknown pseudopotential family"):
-            normalize_pseudopotentials({"family": "gth"})
-        with pytest.raises(TypeError):
-            normalize_pseudopotentials(2)
-        with pytest.raises(ValueError):
-            normalize_pseudopotentials(False)
+    @pytest.mark.parametrize("basis", ["FAO", "6-31G(d)", "cc-pVDZ",
+                                       {"name": "NAO", "size": "DZP"},
+                                       {"name": "NAO-AE", "tier": 1}])
+    def test_all_electron_names_are_not_families(self, basis):
+        name, options = resolve_basis(basis)
+        assert pseudopotential_family(name) is None
+        assert resolve_pseudo_basis(name, options, ["H"])[0] is None
 
-    def test_normalize_does_not_mutate_the_input(self):
-        options = {"family": "ncpp", "size": "DZP"}
-        normalize_pseudopotentials(options)
-        assert options == {"family": "ncpp", "size": "DZP"}
+    @pytest.mark.parametrize("basis", ["PP", "pseudo", {"name": "PP",
+                                                        "size": "DZ"}])
+    def test_retired_names_are_refused_not_aliased(self, basis):
+        with pytest.raises(ValueError, match="no longer a basis name.*'NCPP'"):
+            resolve_basis(basis)
 
-    def test_family_key_survives_the_basis_merge(self):
-        merged = _merge_pseudo_basis_options({"name": "PP", "size": "DZ"},
-                                             {"family": "tm"})
-        assert merged == {"family": "tm", "size": "DZ"}
-        assert _merge_pseudo_basis_options("FAO", {"family": "tm"}) == \
-            {"family": "tm"}
+    def test_per_element_sizes(self):
+        family, options = resolve_pseudo_basis(
+            "per-element", {"O": {"name": "NCPP", "size": "DZP"}, "*": "tm"},
+            ["O", "H", "H"])
+        assert family is PSEUDO_FAMILIES["ncpp"]
+        assert options == {"size": {"O": "DZP", "H": "SZ"}}
+        with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
+            resolve_pseudo_basis("per-element", {"O": "NCPP", "H": "FAO"},
+                                 ["O", "H"])
+        with pytest.raises(ValueError, match="one pseudopotential family"):
+            resolve_pseudo_basis("per-element", {"O": "NCPP", "H": "PAW"},
+                                 ["O", "H"])
+        with pytest.raises(ValueError, match="only 'size' and 'split_norm'"):
+            resolve_pseudo_basis("per-element",
+                                 {"O": {"name": "NCPP", "directory": "/x"},
+                                  "H": "NCPP"}, ["O", "H"])
 
     def test_taken_names_cannot_be_reregistered(self):
         dummy = FamilySpec(name="tm2", description="", generate=None,
@@ -161,12 +178,14 @@ class TestFamilyResolution:
             unregister_family("tm")
 
     @pytest.mark.parametrize("driver", [VQE, ADAPTVQE])
-    def test_drivers_validate_the_family_at_construction(self, driver):
-        assert driver(pseudopotentials="ncpp-tm").pseudopotentials == "ncpp-tm"
-        with pytest.raises(ValueError, match="unknown pseudopotential family"):
-            driver(pseudopotentials="gth")
-        with pytest.raises(ValueError, match="unknown pseudopotential family"):
-            driver(pseudopotentials={"family": "gth"})
+    def test_drivers_validate_the_basis_at_construction(self, driver):
+        assert driver(basis="ncpp-tm").basis == "ncpp-tm"
+        with pytest.raises(ValueError, match="unknown option.*'tier'.*NCPP"):
+            driver(basis={"name": "NCPP", "tier": 1})
+        with pytest.raises(ValueError, match="frozen_core is redundant"):
+            driver(basis="NCPP", frozen_core=True)
+        with pytest.raises(ValueError, match="no longer a basis name"):
+            driver(basis="PP")
 
 
 # --------------------------------------------------------------------------- #
@@ -175,24 +194,29 @@ class TestFamilyResolution:
 
 class TestFamilyField:
     def test_format_version_was_bumped(self):
-        assert FORMAT_VERSION == 2 and LEGACY_FAMILY == "tm"
+        assert FORMAT_VERSION == 2 and LEGACY_FAMILY == "ncpp"
 
-    def test_library_entries_are_the_tm_family(self):
+    def test_library_entries_are_the_ncpp_family(self):
         for symbol in ("H", "Li", "O"):
-            assert get_pseudopotential(symbol).family == "tm"
+            assert get_pseudopotential(symbol).family == "ncpp"
 
     def test_shipped_library_is_still_version_1(self):
         """The library was *not* regenerated: legacy files must keep loading."""
         pp = load_pseudopotential(library_file("H"))
-        assert pp.family == "tm" and pp.symbol == "H"
+        assert pp.family == "ncpp" and pp.symbol == "H"
 
     @pytest.mark.parametrize("fmt", PSEUDO_FORMATS)
     def test_round_trip_keeps_the_family(self, tmp_path, fmt):
         pp = copy.copy(get_pseudopotential("H"))
-        pp.family = "tm"
+        pp.family = "ncpp"
         path = save_pseudopotential(pp, tmp_path / f"H{FILE_EXTENSIONS[fmt]}",
                                     format=fmt)
-        assert load_pseudopotential(path).family == "tm"
+        assert load_pseudopotential(path).family == "ncpp"
+        # The pre-rename spelling on disk canonicalizes on load.
+        pp.family = "tm"
+        path = save_pseudopotential(pp, tmp_path / f"T{FILE_EXTENSIONS[fmt]}",
+                                    format=fmt)
+        assert load_pseudopotential(path).family == "ncpp"
         pp.family = "some-future-family"
         path = save_pseudopotential(pp, tmp_path / f"X{FILE_EXTENSIONS[fmt]}",
                                     format=fmt)
@@ -204,9 +228,9 @@ class TestFamilyField:
         with open(path) as handle:
             payload = json.load(handle)
         assert payload["version"] == FORMAT_VERSION
-        assert payload["family"] == "tm"
+        assert payload["family"] == "ncpp"
 
-    def test_legacy_file_without_the_field_loads_as_tm(self, tmp_path):
+    def test_legacy_file_without_the_field_loads_as_ncpp(self, tmp_path):
         path = save_pseudopotential(get_pseudopotential("H"),
                                     tmp_path / "H.json")
         with open(path) as handle:
@@ -215,7 +239,7 @@ class TestFamilyField:
         payload["version"] = 1
         with open(path, "w") as handle:
             json.dump(payload, handle)
-        assert load_pseudopotential(path).family == "tm"
+        assert load_pseudopotential(path).family == "ncpp"
 
     def test_tm_loader_refuses_another_family(self, tmp_path):
         """A plain TM record merely *carrying* another family's name keeps
@@ -224,7 +248,7 @@ class TestFamilyField:
         pp.family = "paw"
         save_pseudopotential(pp, tmp_path / "H.json")
         with pytest.raises(ValueError, match="belongs to family 'paw'"):
-            PSEUDO_FAMILIES["tm"].get("H", tmp_path)
+            PSEUDO_FAMILIES["ncpp"].get("H", tmp_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -233,14 +257,14 @@ class TestFamilyField:
 
 class TestPinnedEnergies:
     @pytest.mark.parametrize("name", sorted(PINNED))
-    @pytest.mark.parametrize("spec", [True, "ncpp-tm", {"family": "tm"}])
-    def test_rhf_and_fci_are_unchanged(self, name, spec):
+    @pytest.mark.parametrize("basis", ["NCPP", "ncpp-tm", {"name": "TM"}])
+    def test_rhf_and_fci_are_unchanged(self, name, basis):
         atoms = SYSTEMS[name]()
         pinned = PINNED[name]
         H, particles, n_orb, _profile, context = build_basis_hamiltonian(
-            atoms, "FAO", None, pinned["h"], 0, None, pseudopotentials=spec)
+            atoms, basis, None, pinned["h"], 0, None)
         integrals = context["integrals"]
-        assert context["family"] == "tm"
+        assert context["family"] == "ncpp"
         assert n_orb == 2 and particles == (1, 1)
         assert integrals.kb_projectors == []          # s-only valence
         assert np.abs(integrals.kb_nonlocal()).max() == 0.0
@@ -252,8 +276,8 @@ class TestPinnedEnergies:
     @pytest.mark.parametrize("name", sorted(PINNED))
     def test_adapt_vqe_is_unchanged(self, name):
         atoms = SYSTEMS[name]()
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=PINNED[name]["h"],
-                             pseudopotentials="ncpp", pool="qeb",
+        atoms.calc = Carcara(method="adapt-vqe", basis="ncpp",
+                             h=PINNED[name]["h"], pool="qeb",
                              max_iterations=4, verbose=False, profile=False)
         atoms.get_potential_energy()
         assert atoms.calc.n_qubits == 4
@@ -304,7 +328,7 @@ def h2_setup(n_radial=1, kb_energy=0.35):
 def integrals_for(projectors_kw=None, **kwargs):
     nuclei, basis_fns, projectors, grid, pps = h2_setup(**(projectors_kw or {}))
     return MolecularIntegrals(nuclei, basis_fns, grid, softening=0.0,
-                              pseudopotentials=pps, kb_projectors=projectors,
+                              pseudos=pps, kb_projectors=projectors,
                               **kwargs), projectors
 
 
@@ -386,7 +410,7 @@ class TestGeneralizedNonlocal:
     def test_no_projectors_gives_zeros(self):
         nuclei, basis_fns, _p, grid, pps = h2_setup()
         ints = MolecularIntegrals(nuclei, basis_fns, grid, softening=0.0,
-                                  pseudopotentials=pps)
+                                  pseudos=pps)
         assert np.abs(ints.kb_nonlocal()).max() == 0.0
         assert ints.projections().shape == (2, 0)
         assert ints.nonlocal_overlap_matrix() is None
@@ -439,12 +463,12 @@ class TestOverlapHook:
         nuclei, basis_fns, _p, grid, pps = h2_setup()
         with pytest.raises(ValueError, match="needs projectors"):
             MolecularIntegrals(nuclei, basis_fns, grid, softening=0.0,
-                               pseudopotentials=pps,
+                               pseudos=pps,
                                nonlocal_overlap={(0, 1, 0): [[0.1]]})
 
     def test_tm_family_passes_no_overlap_correction(self):
         _H, _p, _n, _pr, context = build_basis_hamiltonian(
-            h2(), "FAO", None, H2_H, 0, None, pseudopotentials="tm")
+            h2(), "TM", None, H2_H, 0, None)
         assert context["integrals"].nonlocal_overlap is None
         assert context["integrals"].nonlocal_coupling == {}
 
@@ -468,36 +492,39 @@ class TestDispatch:
             build=build, norm_conserving=False, aliases=("dmy",)))
         try:
             assert resolve_family("DMY").name == "dummy"
+            assert pseudopotential_family("dummy").name == "dummy"
             out = build_basis_hamiltonian(
-                h2(), {"name": "PP", "size": "DZ"}, None, H2_H, 0, None,
-                pseudopotentials={"family": "dmy", "directory": "/nowhere"},
-                kinetic="spectral")
+                h2(), {"name": "dmy", "size": "DZ", "directory": "/nowhere"},
+                None, H2_H, 0, None, kinetic="spectral")
             assert out is sentinel
             assert calls == [({"directory": "/nowhere", "size": "DZ"},
                               "spectral")]
+            with pytest.raises(ValueError, match="unknown option.*'tier'"):
+                build_basis_hamiltonian(h2(), {"name": "dmy", "tier": 1},
+                                        None, H2_H, 0, None)
         finally:
             unregister_family("dummy")
         assert "dummy" not in PSEUDO_FAMILIES and "dmy" not in family_names()
 
-    @pytest.mark.parametrize("spec", [True, "ncpp", {"family": "ncpp-tm"}])
-    def test_dry_run_estimates_through_the_family(self, spec):
-        estimate = estimate_qubits(h2(), pseudopotentials=spec)
+    @pytest.mark.parametrize("basis", ["NCPP", "ncpp", {"name": "ncpp-tm"}])
+    def test_dry_run_estimates_through_the_family(self, basis):
+        estimate = estimate_qubits(h2(), basis=basis)
         assert estimate.n_qubits == 4
         assert estimate.num_particles == (1, 1)
-        assert any("tm family" in note for note in estimate.notes)
-        estimate = estimate_qubits(lih(), pseudopotentials=spec)
+        assert estimate.basis.startswith("NCPP (SZ")
+        assert any("NCPP family" in note for note in estimate.notes)
+        estimate = estimate_qubits(lih(), basis=basis)
         assert estimate.n_qubits == 4                      # Li 2s + H 1s
 
-    def test_dry_run_rejects_an_unknown_family(self):
-        with pytest.raises(ValueError, match="unknown pseudopotential family"):
-            estimate_qubits(h2(), pseudopotentials="gth")
+    def test_dry_run_rejects_the_retired_name(self):
+        with pytest.raises(ValueError, match="no longer a basis name"):
+            estimate_qubits(h2(), basis="PP")
 
     def test_calculator_dry_run(self):
         atoms = h2()
-        calc = Carcara(method="vqe", pseudopotentials="ncpp-tm", h=H2_H,
-                       verbose=False)
+        calc = Carcara(method="vqe", basis="ncpp-tm", h=H2_H, verbose=False)
         assert calc.dry_run(atoms).n_qubits == 4
-        atoms.calc = Carcara(method="adapt-vqe", pseudopotentials={"family": "tm"},
+        atoms.calc = Carcara(method="adapt-vqe", basis={"name": "TM"},
                              h=H2_H, dry_run=True, verbose=False)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4

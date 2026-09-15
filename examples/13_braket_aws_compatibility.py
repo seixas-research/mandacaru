@@ -34,9 +34,11 @@ Only the device changes -- the calculator API does not::
 
     from carcara.algorithms import Carcara
 
-    atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
-                                   device="braket-ionq-aria",  # or the full ARN
-                                   shots=8192)
+    atoms.calc = Carcara(method="adapt-vqe",
+                         pool="qeb",
+                         basis="FAO",
+                         device="braket-ionq-aria",   # or the full ARN
+                         shots=8192)
     atoms.get_total_energy()
 
 That needs configured AWS credentials (``aws configure``) and bills your
@@ -92,10 +94,13 @@ if not provider_available("braket"):
 
 atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
               cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
-                               h=0.35, verbose=False, max_iterations=1,
-                               save_hamiltonian=os.path.join(
-                                   DATA, "h2_braket.parquet"))
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool="qeb",
+                     basis="FAO",
+                     h=0.35,
+                     verbose=False,
+                     max_iterations=1,
+                     save_hamiltonian=os.path.join( DATA, "h2_braket.parquet"))
 atoms.get_total_energy()
 
 hamiltonian = atoms.calc.hamiltonian

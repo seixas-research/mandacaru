@@ -33,8 +33,13 @@ atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
               cell=[[1.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
               pbc=[True, False, False])
 
-bloch = BlochCalculator(atoms, method="vqe", basis="FAO", mapping="jordan_wigner",
-                        n_cells=4, n_images=7, h=0.20)
+bloch = BlochCalculator(atoms,
+                        method="vqe",
+                        basis="FAO",
+                        mapping="jordan_wigner",
+                        n_cells=4,
+                        n_images=7,
+                        h=0.20)
 print(bloch.dimension, "D crystal,", bloch.n_bands, "band(s)")
 ```
 
@@ -94,11 +99,15 @@ selected molecular method (the box is the supercell's own cell), and returns
 
 ```python
 # Fixed-ansatz VQE.
-e_cell, res = BlochCalculator(atoms, method="vqe", h=0.20).total_energy(
+e_cell, res = BlochCalculator(atoms,
+                              method="vqe",
+                              h=0.20).total_energy(
     (4, 1, 1), optimizer="L-BFGS-B")
 
 # Adaptive ADAPT-VQE (extra adaptive controls).
-e_cell, res = BlochCalculator(atoms, method="adapt-vqe", h=0.20).total_energy(
+e_cell, res = BlochCalculator(atoms,
+                              method="adapt-vqe",
+                              h=0.20).total_energy(
     (4, 1, 1), max_iterations=10, gradient_tolerance=1e-3)
 print(res.num_operators, "operators grown")
 ```
@@ -122,8 +131,12 @@ k-points change. A square lattice of hydrogen:
 square = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                cell=[[2.0, 0, 0], [0, 2.0, 0], [0, 0, 10.0]],
                pbc=[True, True, False])
-bloch2d = BlochCalculator(square, method="vqe", basis="FAO",
-                          n_cells=2, n_images=3, h=0.35)
+bloch2d = BlochCalculator(square,
+                          method="vqe",
+                          basis="FAO",
+                          n_cells=2,
+                          n_images=3,
+                          h=0.35)
 
 # Bands along Gamma -> X -> M of the square Brillouin zone.
 gamma, X, M = [0, 0, 0], [0.5, 0, 0], [0.5, 0.5, 0]

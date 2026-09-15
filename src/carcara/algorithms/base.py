@@ -143,22 +143,6 @@ class VariationalDriver(Calculator):
         :attr:`dry_run_result`, reports ``NaN`` as the energy, and :meth:`run`
         returns the estimate instead of a result.  See
         :mod:`carcara.algorithms.dry_run` and :meth:`estimate_qubits`.
-    pseudopotentials : bool, str or dict
-        **Experimental** -- outside the stable API; see
-        ``docs/experimental/pseudopotentials.md``.  Use pseudopotentials
-        (default ``False``).  ``True`` selects the default family -- the
-        bundled norm-conserving Troullier-Martins library (``"tm"``, aliases
-        ``"ncpp"`` / ``"ncpp-tm"``); a family name string or a dict
-        ``{"family": "tm", "directory": ..., "size": ...}`` names the family
-        and passes its options.  Unknown family names raise ``ValueError``.
-
-        This replaces the all-electron problem with a **valence-only** one: the
-        core electrons are removed, the basis becomes the smooth pseudo-atomic
-        orbitals, and the singular :math:`-Z/r` is replaced by a bounded local
-        channel plus Kleinman-Bylander projectors.  It is the cure for the
-        heavy-atom grid artifacts documented in
-        :mod:`carcara.algorithms.forces`, and it shrinks the qubit count as a
-        side effect.  Incompatible with ``frozen_core`` (which it subsumes).
     """
 
     implemented_properties = ["energy", "free_energy"]
@@ -172,7 +156,6 @@ class VariationalDriver(Calculator):
                  h: float = 0.20, kpts=None, spin: bool = False,
                  initial_state: str | None = "hartree-fock", charge: int = 0,
                  n_electrons=None, frozen_core=False, frozen_orbitals=None,
-                 pseudopotentials=False,
                  hamiltonian_builder=None, run_options: dict | None = None,
                  verbose: bool = True, sparse=None,
                  save_hamiltonian: bool | str = False,
@@ -213,14 +196,11 @@ class VariationalDriver(Calculator):
         self.spin = bool(spin)
         self.frozen_core = frozen_core
         self.frozen_orbitals = frozen_orbitals
-        # Pseudopotentials (experimental): replace the core + the -Z/r
-        # singularity with a smooth valence-only problem.  The family name is
-        # validated here so a typo fails at construction, not after the grid.
-        if pseudopotentials:
-            from ..experimental.pseudopotentials.families import (
-                normalize_pseudopotentials)
-            normalize_pseudopotentials(pseudopotentials)
-        self.pseudopotentials = pseudopotentials
+        # A pseudopotential family is a basis name (basis="PAW", ...); its
+        # options are validated here so a typo fails at construction, not
+        # after the grid.  It replaces the core + the -Z/r singularity with a
+        # smooth valence-only problem and subsumes the frozen core.
+        self._check_pseudo_basis(basis, frozen_core, frozen_orbitals)
         # Laplacian discretization ("fd" / "spectral"; None = path default).
         if kinetic not in (None, "fd", "spectral"):
             raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
@@ -605,6 +585,29 @@ class VariationalDriver(Calculator):
                               success=success,
                               message="sequential (quenching=False) sweep")
 
+    @staticmethod
+    def _check_pseudo_basis(basis, frozen_core, frozen_orbitals):
+        """Validate a pseudopotential basis spec up front (names, options,
+        no frozen core); all-electron specs pass untouched."""
+        from ._hamiltonian_from_atoms import (PER_ELEMENT,
+                                              pseudopotential_family,
+                                              resolve_basis)
+        name, options = resolve_basis(basis)
+        if name == PER_ELEMENT:
+            return                      # validated per element at build time
+        family = pseudopotential_family(name)
+        if family is None:
+            return
+        unknown = sorted(set(options) - set(family.options))
+        if unknown:
+            raise ValueError(
+                f"unknown option(s) {unknown} for the {family.label} basis; "
+                f"it accepts {list(family.options)}")
+        if frozen_core or frozen_orbitals:
+            raise ValueError(
+                f"frozen_core is redundant with the {family.label} basis -- "
+                "the core is already absent from the valence-only pseudo basis")
+
     # -- dry run ---------------------------------------------------------- #
 
     def _method_name(self) -> str:
@@ -622,7 +625,7 @@ class VariationalDriver(Calculator):
         """Qubit requirements of this driver's problem, **without running it**.
 
         Uses the driver's own settings (``basis`` / ``charge`` / ``spin`` /
-        ``frozen_core`` / ``pseudopotentials`` / ``mapping`` / ``device`` /
+        ``frozen_core`` / ``mapping`` / ``device`` /
         ``load_hamiltonian``).  ``atoms`` is needed in calculator mode; in
         direct mode (a Hamiltonian given or loaded at construction) it is
         ignored.  Nothing is integrated, mapped or executed.
@@ -665,7 +668,7 @@ class VariationalDriver(Calculator):
             atoms, basis=self.basis, charge=self.charge,
             n_electrons=self.n_electrons, spin=self.spin,
             frozen_core=self.frozen_core, frozen_orbitals=self.frozen_orbitals,
-            pseudopotentials=self.pseudopotentials, **common)
+            **common)
 
     def _dry_run_estimate(self, atoms=None):
         """Perform the dry run: store, optionally print, and return the estimate."""
@@ -704,8 +707,7 @@ class VariationalDriver(Calculator):
          context) = build_basis_hamiltonian(
             atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons,
             spin=self.spin, frozen_core=self.frozen_core,
-            frozen_orbitals=self.frozen_orbitals,
-            pseudopotentials=self.pseudopotentials, kinetic=self.kinetic)
+            frozen_orbitals=self.frozen_orbitals, kinetic=self.kinetic)
         self._integration_profile = profile
         # Kept for the nuclear gradient: the integral engine that produced this
         # Hamiltonian, and which atom each basis function belongs to.

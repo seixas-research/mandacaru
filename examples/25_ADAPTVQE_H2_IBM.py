@@ -54,30 +54,28 @@ def h2(distance):
 
 
 def calculator():
-    return Carcara(
-        method="adapt-vqe",
-        pool="fermionic",
-        mapping="parity",
-        two_qubit_reduction=True,       # H2 on 2 qubits instead of 4
-        basis="FAO",
-        h=0.10,
-        charge=0,
-        spin=False,
-        frozen_core=False,
-        initial_state="hartree-fock",
-        optimizer="COBYLA",
-        gradient="finite_difference",
-        max_iterations=14,
-        gradient_tolerance=1e-3,
-        quenching=True,
-        sparse="auto",
-        device="AER_simulator",
-        shots=0,
-        backend_provider="qiskit",
-        execute_circuits=False,
-        profile=True,
-        verbose=False,
-    )
+    return Carcara(method="adapt-vqe",
+                   pool="fermionic",
+                   mapping="parity",
+                   two_qubit_reduction=True,   # H2 on 2 qubits instead of 4
+                   basis="FAO",
+                   h=0.10,
+                   charge=0,
+                   spin=False,
+                   frozen_core=False,
+                   initial_state="hartree-fock",
+                   optimizer="COBYLA",
+                   gradient="finite_difference",
+                   max_iterations=14,
+                   gradient_tolerance=1e-3,
+                   quenching=True,
+                   sparse="auto",
+                   device="AER_simulator",
+                   shots=0,
+                   backend_provider="qiskit",
+                   execute_circuits=False,
+                   profile=True,
+                   verbose=False)
 
 
 # 1. Optimize locally.

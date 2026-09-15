@@ -16,7 +16,7 @@ import os
 import numpy as np
 import pytest
 
-from carcara.experimental.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
+from carcara.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
                                      PARQUET_MAGIC, PSEUDO_FORMATS, STRIDE,
                                      available_elements, detect_format,
                                      generation_points, get_pseudopotential,

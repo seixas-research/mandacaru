@@ -51,8 +51,8 @@ class Potentials:
         Lower bound on ``|r - R_A|`` in Bohr, regularizing the ``r -> R_A``
         Coulomb singularity on the grid (default ``1e-12``).  Irrelevant to
         :meth:`pseudopotential`, which has no singularity to regularize.
-    pseudopotentials : sequence, optional
-        One :class:`~carcara.experimental.pseudopotentials.generation.PseudoPotential` per nucleus,
+    pseudos : sequence, optional
+        One :class:`~carcara.pseudopotentials.generation.PseudoPotential` per nucleus,
         enabling :meth:`pseudopotential`.
     units : {"angstrom", "bohr"}
         Unit of the nuclear centers (default ``"angstrom"``).
@@ -60,13 +60,13 @@ class Potentials:
 
     def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
                  softening: float = 1e-12, units: str = "angstrom",
-                 pseudopotentials=None):
+                 pseudos=None):
         self.nuclei = [(float(Z), to_bohr(center, units))
                        for Z, center in nuclei]
         self.softening = float(softening)
         #: Per-nucleus pseudopotentials, aligned with ``nuclei`` (or ``None``).
-        self.pseudopotentials = (list(pseudopotentials)
-                                 if pseudopotentials is not None else None)
+        self.pseudopotentials = (list(pseudos)
+                                 if pseudos is not None else None)
 
     def pseudopotential(self, x, y, z) -> np.ndarray:
         r"""Local channel of a set of pseudopotentials, :math:`\sum_A V^A_{loc}`.

@@ -90,8 +90,10 @@ for method, options in METHOD_OPTIONS.items():
     total = np.empty(len(DISTANCES))
     for i, distance in enumerate(DISTANCES):
         atoms = h2(float(distance))
-        atoms.calc = Carcara(method=method, grid=grid,
-                                       **SOLVER, **options)
+        atoms.calc = Carcara(method=method,
+                             grid=grid,
+                             **SOLVER,
+                             **options)
         atoms.get_total_energy()
         total[i] = atoms.calc.result.optimal_energy          # eV
         print(f"{method:<12}{distance:>8.2f}{total[i]:>14.4f}"

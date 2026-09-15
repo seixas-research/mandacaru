@@ -33,20 +33,27 @@ All basis set functions are generated from scratch mathematically rather than re
 - **Per-element basis mappings:** `basis={"O": {"name": "NAO", "size": "DZP"}, "H": "6-31G", "*": "FAO"}` puts a different family on different elements — a polarized basis where the chemistry happens and a minimal one on a spectator ion — accepted by every driver, the dry run and `BasisSet.build`.
 - **NAO-AE (All-Electron Numerical Atomic Orbital):** every occupied shell of the self-consistent LDA atom — core included — re-solved under a smooth *exponential-wall* confinement (zero up to an onset radius, divergent at `onset + width`), plus hydrogen-like **tiers**: a polarization shell at $l_\max+1$ and diffuse / contracted functions per valence channel, whose effective charges are derived from the atom's own valence radius rather than tabulated. Each $l$ channel is Gram–Schmidt orthonormalized. `basis={"name": "NAO-AE", "tier": 1}`.
 
-### 2. High-Performance C-Accelerated Integral Engine
+### 2. Pseudopotentials (NCPP, ONCVPSP, PAW)
+Three pseudopotential families — all generated from scratch by Carcará's own LDA radial atomic solver, none tabulated — replace an atom's core electrons and the singular $-Z/r$ potential by a smooth **valence-only** problem, so the basis, the ansatz and the qubit count shrink and the real-space grid no longer has to resolve a 1s cusp. A family is selected **as a basis**, exactly like `"FAO"` or `"cc-pVTZ"`, with the same multiple-zeta size hierarchy as its options:
+- **`basis="NCPP"`** (aliases `"TM"`, `"NCPP-TM"`): norm-conserving **Troullier–Martins** potentials in Kleinman–Bylander separable form, one projector per channel; the bundled library covers every element up to uranium.
+- **`basis="ONCVPSP"`** (alias `"ONCV"`): Hamann's **optimized norm-conserving Vanderbilt** potentials — two projectors per channel with a $2\times2$ coupling block and a polynomial local potential.
+- **`basis="PAW"`**: Blöchl's **projector augmented wave** datasets — two partial waves and projectors per channel, an overlap correction $S + C\,q\,C^\dagger$, monopole compensation charges and frozen one-center terms.
+- `basis={"name": "PAW", "size": "DZP"}` refines the pseudo-orbitals (split-valence zetas + polarization); a per-element mapping gives each atom its own size within one family. `frozen_core` is refused as redundant, and a new family registered with `register_family` becomes a basis name with no driver change. The ONCVPSP and PAW datasets (H–U) live in the `carcara-oncvpsp` / `carcara-paw` repositories and are linked in with `python -m carcara.pseudopotentials.link_library`.
+
+### 3. High-Performance C-Accelerated Integral Engine
 A basis-agnostic integration engine handles the heavy lifting of one-body (kinetic $T$, nuclear attraction $V$) and two-body electron-repulsion integrals (ERI, $\langle ab|cd \rangle$ in physicists' notation) in real space:
 - **Geometry-Agnostic Grids:** Supports cubic, anisotropic (orthorhombic), and non-orthogonal grids (sampling skewed crystal lattices directly).
 - **Fast ERI Solver:** Features an $O(N \log N)$ FFT-based Poisson solver alongside a direct real-space double-sum method.
 - **C Backend Acceleration:** An OpenMP-parallelized C backend (`libcarcara_integrals`) built with ctypes zero-copy pointer passing, checked and compiled on demand before any integration; the FFT two-body step runs in memory-bounded blocks over the Hermitian pair densities (`CARCARA_ERI_MEMORY_MB`).
 - **Graceful Fallback:** Automatically falls back to a vectorized NumPy reference implementation if the C shared library is not compiled.
 
-### 3. Second Quantization & Fermion-to-Qubit Mappings
+### 4. Second Quantization & Fermion-to-Qubit Mappings
 A robust second-quantized algebra layer implements:
 - **`Fermion` Operator:** Full creation/annihilation operator algebra, including helper methods to construct Hamiltonians directly from molecular integrals.
 - **`PauliSum` Output:** Clean qubit Pauli operator representation wrapping Qiskit's sparse Pauli operators.
 - **Fermion-to-Qubit Mappings:** Jordan-Wigner (default), Parity (with optional two-qubit reduction), and Bravyi-Kitaev mappings.
 
-### 4. Variational Quantum Algorithms (VQAs)
+### 5. Variational Quantum Algorithms (VQAs)
 - **VQE (Variational Quantum Eigensolver):** High-precision state-vector simulator employing parameterized quantum circuits (e.g., UCCSD) and classical optimizers (SPSA, COBYLA, Nelder-Mead, SLSQP, Adam, L-BFGS-B).
 - **ADAPT-VQE:** Adaptive grows-then-reoptimizes ansatz builder utilizing energy gradients to grow ansätze one operator at a time. It supports four distinct operator pools:
   - `fermionic` (spin-adapted fermionic excitations, Jordan-Wigner mapped).
@@ -63,7 +70,7 @@ A robust second-quantized algebra layer implements:
 - **Expressibility & Profiling Analysis:** Evaluates parameterized quantum circuit expressibility (KL-divergence vs. Haar distribution within symmetry-conserving subspaces) and tracks circuit complexity (CNOT counts and depth compilation).
 - **Dynamic Parametrization (`quenching`):** `True` (default) re-optimizes every variational parameter at each iteration — standard ADAPT-VQE. `False` freezes previously optimized angles and varies only the newest one, turning each growth step into a cheap one-dimensional line search.
 
-### 5. Multi-Backend Execution (Qiskit / Braket / Cirq)
+### 6. Multi-Backend Execution (Qiskit / Braket / Cirq)
 `backend_provider` selects which quantum SDK builds — and, with `execute_circuits=True`, runs — the ansatz circuits. Each generator is an anti-Hermitian `PauliSum` whose terms commute, so `exp(θA)` factorizes **exactly** into Pauli rotations (no Trotter error). One shared gate stream (`X`, `H`, `S`, `S†`, `CNOT`, `Rz`) is translated per SDK, so all three reproduce the internal NumPy state vector **to machine precision**:
 
 ```text
@@ -74,15 +81,17 @@ braket         -187.438635     2.97e-06     8    208    359
 cirq           -187.438636     2.22e-06     8    208    358
 ```
 
-### 6. Real Quantum Hardware: IBM Quantum and Amazon Braket
+### 7. Real Quantum Hardware: IBM Quantum and Amazon Braket
 A QPU never returns a state vector — Braket rejects the `StateVector` result type whenever `shots > 0`, and every QPU requires it. Carcará therefore implements the **shot-based** protocol hardware actually supports:
 
 - **Qubit-wise commuting (QWC) grouping** partitions `H = Σ cⱼ Pⱼ` into simultaneously measurable sets — 118 Pauli terms collapse to 29 measurement circuits for LiH — and `⟨H⟩` is assembled from the returned bit-string counts, converging as `1/√shots`.
 - **Device registry:** IBM Quantum processors through Qiskit Runtime (`device="ibm-quantum"` for the least-busy QPU of your account, or a name such as `"ibm_torino"`; `"fake_torino"` rehearses the same path locally), the Braket local simulator, the AWS managed simulators (SV1/DM1/TN1), and the IonQ / IQM / Rigetti QPUs — or any Braket ARN. Naming a QPU without `shots` is rejected up front rather than at submission.
 
 ```python
-atoms.calc = Carcara(method="vqe", basis="FAO",
-                               device="braket-ionq-aria", shots=8192)
+atoms.calc = Carcara(method="vqe",
+                     basis="FAO",
+                     device="braket-ionq-aria",
+                     shots=8192)
 atoms.get_total_energy()          # measured on a trapped-ion QPU
 ```
 
@@ -90,23 +99,28 @@ atoms.get_total_energy()          # measured on a trapped-ion QPU
 >
 > **Scope:** the *energy evaluation* is hardware-native. ADAPT-VQE's pool-gradient screening is still classical, so fixed-ansatz `method="vqe"` is the fully hardware-native method today. Run `examples/13_braket_aws_compatibility.py` for a verified compatibility report (no AWS account needed), and `examples/24_ADAPTVQE_LiH_IBM.py` for a LiH curve optimized locally and then measured on an IBM processor in a single Estimator job (set its `HARDWARE` constant).
 
-### 7. Reusable Hamiltonians (Parquet / JSON Cache)
+### 8. Reusable Hamiltonians (Parquet / JSON Cache)
 Building the qubit Hamiltonian — integrals plus the fermion-to-qubit mapping — is the most expensive stage of a run and is independent of the algorithm that follows. It can be serialized and replayed:
 
 ```python
-Carcara(method="adapt-vqe", basis="FAO",
-                  save_hamiltonian="lih.parquet")   # build once
-Carcara(method="adapt-vqe", pool="ceo",
-                  load_hamiltonian="lih.parquet")   # reload: no geometry,
+Carcara(method="adapt-vqe",
+        basis="FAO",
+        save_hamiltonian="lih.parquet")   # build once
+Carcara(method="adapt-vqe",
+        pool="ceo",
+        load_hamiltonian="lih.parquet")   # reload: no geometry,
                                                     # no integrals, no mapping
 ```
 
 Two formats, selected with `hamiltonian_format`: **Parquet** (compressed, columnar, queryable straight from pandas; ~4× smaller) and **JSON** (plain text, no native dependency). Loading **detects the format automatically** — from the extension, else from the file's leading bytes. Because the file also records `num_particles` and `n_spatial_orbitals`, a reloaded calculator runs with no `Atoms` object at all, turning a pool/optimizer/mapping sweep into seconds.
 
-### 8. ASE Calculator Integration
+### 9. ASE Calculator Integration
 `Carcara` is a standard calculator for the **Atomic Simulation Environment (ASE)**; the `method` argument selects the solver (`"adapt-vqe"` — the default — `"vqe"`, `"subspace-vqe"`, `"subspace-adapt-vqe"`):
 ```python
-atoms.calc = Carcara(method="vqe", basis="FAO", optimizer="COBYLA", h=0.20)
+atoms.calc = Carcara(method="vqe",
+                     basis="FAO",
+                     optimizer="COBYLA",
+                     h=0.20)
 # Asking ASE for the energy executes the entire quantum simulation pipeline!
 energy_ev = atoms.get_total_energy()
 ```
@@ -114,16 +128,17 @@ energy_ev = atoms.get_total_energy()
 ### Units: everything you see is eV and Å
 Every energy Carcará **returns or prints** — `result.optimal_energy`, `reference_energy`, the energy histories, `EnergyLevels`, the subspace results, `InteractionEnergy`, `ForceResult` (eV/Å), band structures, hardware measurements (`measured_energy` / `measure_energies`), the verbose traces and the `carcara` command line — is in **eV**, and every length in **Ångström**. Result objects record their unit (`result.energy_unit`) and offer `in_units("Ha")` for the atomic-unit view. Hartree and Bohr live only inside the internal layers (the integral engine, the qubit Hamiltonian's Pauli coefficients and its cache files, the basis / pseudopotential records, the SCF and gradient mathematics). `atomic_units=True` on any driver is the single opt-in that switches its outputs to Hartree / Bohr.
 
-### 9. Dry Run and the Command Line
+### 10. Dry Run and the Command Line
 A **dry run** reports the qubit budget of a calculation — one qubit per active spin-orbital, after the frozen core or plane-wave cutoff is accounted for — without computing an integral, mapping a Hamiltonian or executing a circuit, and compares it with the capacity of the target device:
 ```bash
-carcara water.xyz --frozen-core --dry-run                  # 12 qubits
-carcara H2O --basis NAO --basis-option size=DZP --device braket-ionq-aria --dry-run
+carcara water.xyz --frozen-core --dry-run                  # 12 qubits (the box is the file's cell)
+carcara H2O --cell 8 --basis NAO --basis-option size=DZP --device braket-ionq-aria --dry-run
+carcara H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run
 carcara --load-hamiltonian lih.parquet --dry-run --json
 ```
 The same `carcara` command runs the full calculation without `--dry-run`. From Python, `Carcara(...).dry_run(atoms)` returns the `QubitEstimate`, and `dry_run=True` makes every driver stop before the Hamiltonian is built.
 
-### 10. Extensible Driver Architecture
+### 11. Extensible Driver Architecture
 Underneath `Carcara`, every variational solver subclasses a single `VariationalDriver` base that owns the shared machinery — the ASE-calculator surface (basis / grid / k-points / spin / frozen core), Hamiltonian materialization (dense or sparse), the state-vector expectation `energy(psi)`, and timing/profiling. Concrete algorithms implement only their optimization loop, and cross-cutting capabilities are **composable mixins**: excited-state deflation (`energy_levels`) and subspace search plug into any driver. Adding a new method (a new operator-selection rule, ansatz, or excited-state technique) requires no changes to the setup code.
 
 ---
@@ -137,7 +152,8 @@ carcara/
 │       ├── algorithms/  # VariationalDriver base; VQE, ADAPT-VQE (default), subspace
 │       │                #   (SSVQE) + deflation excited states, Bloch crystals,
 │       │                #   HF (RHF/UHF), expressibility, the Carcara calculator, dry run
-│       ├── experimental/ # features under development -- not stable API
+│       ├── experimental/ # features under development (VASQE) -- not stable API
+│       ├── pseudopotentials/ # NCPP / ONCVPSP / PAW families, registry, library
 │       ├── backends/    # hardware.py    device registry (ideal sim, Braket, QPUs)
 │       │                # providers.py   Qiskit / Braket / Cirq circuit builders
 │       │                # measurement.py QWC grouping, shot-based <H>
@@ -170,6 +186,7 @@ carcara/
 | `15` | **Expressibility growth** during ADAPT-VQE + PQC-vs-Haar fidelity distributions |
 | `16` | LiH energy vs. bond distance across **pools × mappings** (two-column subplots) |
 | `17` | Hamiltonian cache round-trip in **Parquet and JSON** |
+| `26`, `27` | **Pseudopotentials**: generating Troullier–Martins potentials from scratch; running with `basis="NCPP"` / `"ONCVPSP"` / `"PAW"` |
 
 ---
 
@@ -262,8 +279,11 @@ atoms = Atoms("H2",
               pbc=True)
 
 # Attach the calculator with the VQE method
-atoms.calc = Carcara(method="vqe", basis="FAO", mapping="jordan_wigner",
-                               optimizer="COBYLA", h=0.20)
+atoms.calc = Carcara(method="vqe",
+                     basis="FAO",
+                     mapping="jordan_wigner",
+                     optimizer="COBYLA",
+                     h=0.20)
 
 # Run calculation (energy returned in eV)
 energy_ev = atoms.get_total_energy()
@@ -285,16 +305,14 @@ atoms = Atoms("H2",
               pbc=True)
 
 # Attach the calculator with the ADAPT-VQE method
-atoms.calc = Carcara(
-              method="adapt-vqe",
-              pool="ceo",
-              basis="FAO",
-              optimizer="COBYLA",
-              gradient="parameter-shift",
-              h=0.20,
-              max_iterations=15,
-              gradient_tolerance=1e-6
-)
+atoms.calc = Carcara(method="adapt-vqe",
+                     pool="ceo",
+                     basis="FAO",
+                     optimizer="COBYLA",
+                     gradient="parameter-shift",
+                     h=0.20,
+                     max_iterations=15,
+                     gradient_tolerance=1e-6)
 
 # Run adaptive loop
 atoms.get_total_energy()
@@ -316,14 +334,18 @@ atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
 
 # (a) Deflation: excited states one after another.
-atoms.calc = Carcara(method="vqe", basis="FAO", h=0.20)
+atoms.calc = Carcara(method="vqe",
+                     basis="FAO",
+                     h=0.20)
 atoms.get_potential_energy()                     # configures the solver
 levels = atoms.calc.energy_levels(num_states=2, restarts=4)
 print("levels (eV):", levels.energies)          # eV, like every result
 
 # (b) SSVQE: ground + excited states in a single optimization.
-atoms.calc = Carcara(method="subspace-vqe", basis="FAO", h=0.20,
-                               num_states=2)
+atoms.calc = Carcara(method="subspace-vqe",
+                     basis="FAO",
+                     h=0.20,
+                     num_states=2)
 atoms.get_potential_energy()
 print("levels (eV):", atoms.calc.result.energies)
 ```
@@ -339,15 +361,18 @@ atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
               cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
 
 # Build once (use hamiltonian_format="json" for a plain-text cache).
-atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.25,
-                               save_hamiltonian="lih.parquet")
+atoms.calc = Carcara(method="adapt-vqe",
+                     basis="FAO",
+                     h=0.25,
+                     save_hamiltonian="lih.parquet")
 atoms.get_total_energy()
 
 # Compare every pool against the *same* operator, in seconds.
 for pool in ("fermionic", "qubit", "qeb", "ceo"):
-    result = Carcara(method="adapt-vqe", pool=pool,
-                               load_hamiltonian="lih.parquet",
-                               verbose=False).run()
+    result = Carcara(method="adapt-vqe",
+                     pool=pool,
+                     load_hamiltonian="lih.parquet",
+                     verbose=False).run()
     print(f"{pool:<10} {result.optimal_energy:.6f} eV  "
           f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
 ```
@@ -358,16 +383,26 @@ The calculator API does not change; only the device does:
 from carcara.algorithms import Carcara
 
 # Build and execute the circuits with Cirq (or "braket", or "qiskit").
-Carcara(method="adapt-vqe", basis="FAO",
-                  backend_provider="cirq", execute_circuits=True)
+Carcara(method="adapt-vqe",
+        basis="FAO",
+        backend_provider="cirq",
+        execute_circuits=True)
 
 # Braket's local simulator, shot-based -- the same protocol a QPU uses.
-Carcara(method="vqe", basis="FAO", device="braket-local", shots=8192)
+Carcara(method="vqe",
+        basis="FAO",
+        device="braket-local",
+        shots=8192)
 
 # The AWS managed simulator, or a real trapped-ion QPU.
-Carcara(method="vqe", basis="FAO", device="braket-sv1", shots=8192)
-Carcara(method="vqe", basis="FAO", device="braket-ionq-aria",
-                  shots=8192)   # needs AWS credentials
+Carcara(method="vqe",
+        basis="FAO",
+        device="braket-sv1",
+        shots=8192)
+Carcara(method="vqe",
+        basis="FAO",
+        device="braket-ionq-aria",
+        shots=8192)   # needs AWS credentials
 ```
 
 ---
