@@ -138,7 +138,7 @@ def detect_format(path) -> str:
         "the content matches neither Parquet nor JSON. Pass format= explicitly.")
 
 #: Highest atomic number in the shipped library (hydrogen through actinium).
-LIBRARY_Z_MAX = 89
+LIBRARY_Z_MAX = 92
 
 
 def library_elements(z_max: int = LIBRARY_Z_MAX) -> tuple:
@@ -164,17 +164,27 @@ def generation_points(atomic_number: int, minimum: int = 6000) -> int:
     return max(int(minimum), int(150 * int(atomic_number)))
 
 
-def default_library_path() -> str:
-    """Absolute path of the bundled ``library/`` directory.
+#: Subdirectory of the library holding the Troullier-Martins (NCPP) files;
+#: the other families keep theirs in ``oncvpsp/`` and ``paw/``.
+LIBRARY_SUBDIR = "ncpp"
 
-    Resolved relative to the repository root so it works from a source checkout;
-    the ``CARCARA_PSEUDO_PATH`` environment variable overrides it.
+
+def library_root() -> str:
+    """Absolute path of the bundled ``library/`` directory (all families).
+
+    Resolved relative to the package so it works from a source checkout; the
+    ``CARCARA_PSEUDO_PATH`` environment variable overrides it.
     """
     override = os.environ.get("CARCARA_PSEUDO_PATH")
     if override:
         return os.path.abspath(override)
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(here, "library")
+
+
+def default_library_path() -> str:
+    """The Troullier-Martins (NCPP) library directory, ``library/ncpp``."""
+    return os.path.join(library_root(), LIBRARY_SUBDIR)
 
 
 #: Keep every ``STRIDE``-th radial point when writing **the bundled library**.

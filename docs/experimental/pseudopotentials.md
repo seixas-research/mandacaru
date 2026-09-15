@@ -584,9 +584,11 @@ optimization on this grid is not merely inaccurate — it does not converge.
 
 ## The bundled library
 
-`src/carcara/experimental/pseudopotentials/library/` ships norm-conserving Troullier–Martins pseudopotentials for **every
-element with Z < 90** (H through Ac), generated from scratch by Carcará's own
-LDA radial atomic solver. They are loaded automatically by symbol.
+`src/carcara/experimental/pseudopotentials/library/` holds one subdirectory
+per family. `library/ncpp/` ships norm-conserving Troullier–Martins
+pseudopotentials for **every element with Z ≤ 92** (H through U), generated
+from scratch by Carcará's own LDA radial atomic solver. They are loaded
+automatically by symbol.
 
 ```python
 from carcara.experimental.pseudopotentials.io import available_elements, get_pseudopotential
@@ -601,15 +603,17 @@ eight-electron atom with a d channel rather than a two-electron 4s² one.
 Hydrogen and lithium carry a single valence channel, which is the local one, so
 in this family H₂ and LiH have no projectors at all — their nonlocal term is
 identically zero (the ONCVPSP family gives them two s projectors each). The
-ONCVPSP potentials live in the `library/oncvpsp/` subdirectory and the PAW
-datasets in `library/paw/` (H, Li, C, N, O, F in each).
+ONCVPSP potentials live in `library/oncvpsp/` and the PAW datasets in
+`library/paw/` (H, Li, C, N, O, F in each). `io.library_root()` is the common
+parent (overridden by `CARCARA_PSEUDO_PATH`); `io.default_library_path()` is
+the `ncpp/` directory, `oncv_library_path()` / `paw_library_path()` the others.
 
 To regenerate or extend the library:
 
 ```python
 from carcara.experimental.pseudopotentials.io import build_library
 
-written, failures = build_library()               # all of Z < 90
+written, failures = build_library()               # all of Z <= 92
 written, failures = build_library(["Ti", "V"])    # or a subset
 ```
 

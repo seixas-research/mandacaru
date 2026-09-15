@@ -1247,10 +1247,10 @@ class PAWIntegrals(MolecularIntegrals):
 
 def paw_library_path(directory=None) -> str:
     """The PAW library directory (``library/paw`` by default)."""
-    from .io import default_library_path
+    from .io import library_root
     if directory is not None:
         return os.fspath(directory)
-    return os.path.join(default_library_path(), LIBRARY_SUBDIR)
+    return os.path.join(library_root(), LIBRARY_SUBDIR)
 
 
 _CACHE: dict = {}

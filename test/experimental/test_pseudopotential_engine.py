@@ -21,6 +21,8 @@ must shrink instead.  That reversal is the whole point of the exercise.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 from ase import Atoms
@@ -99,7 +101,7 @@ class TestLibrary:
 
     def test_library_lives_where_documented(self):
         path = default_library_path()
-        assert path.endswith("library")
+        assert path.endswith(os.path.join("library", "ncpp"))
         assert "experimental" in path and "pseudopotentials" in path
         assert library_file("O").endswith("O.parquet")     # Parquet by default
 

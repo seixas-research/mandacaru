@@ -159,7 +159,7 @@ DEFAULT_CUTOFFS = {
     "F": {0: 1.40, 1: 1.40},
 }
 #: Largest tolerated asymmetry of the Vanderbilt matrix ``B`` (Hartree).
-B_ASYMMETRY_TOLERANCE = 1e-6
+B_ASYMMETRY_TOLERANCE = 1e-5   # Ha; heavy atoms (U) reach ~2e-6 from quadrature alone
 #: Upper wave vector and spacing of the Fourier grid of the residual energy.
 Q_MAX, Q_STEP = 60.0, 0.1
 #: Points of the fine quadrature grid inside ``r_c``.
@@ -1170,10 +1170,10 @@ def oncv_coupling_blocks(projectors, symbols, potentials) -> dict:
 
 def oncv_library_path(directory=None) -> str:
     """The ONCVPSP library directory (``library/oncvpsp`` by default)."""
-    from .io import default_library_path
+    from .io import library_root
     if directory is not None:
         return os.fspath(directory)
-    return os.path.join(default_library_path(), LIBRARY_SUBDIR)
+    return os.path.join(library_root(), LIBRARY_SUBDIR)
 
 
 _CACHE: dict = {}

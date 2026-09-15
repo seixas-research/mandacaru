@@ -201,10 +201,10 @@ class TestArrowStringIsolation:
 class TestLibrary:
     """The bundled library under ``library/``."""
 
-    def test_covers_z_below_90(self):
+    def test_covers_z_up_to_92(self):
         elements = library_elements()
-        assert len(elements) == 89
-        assert elements[0] == "H" and elements[-1] == "Ac"
+        assert len(elements) == 92
+        assert elements[0] == "H" and elements[-1] == "U"
 
     def test_every_element_is_present(self):
         assert set(available_elements()) == set(library_elements())

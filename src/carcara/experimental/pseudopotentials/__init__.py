@@ -16,9 +16,9 @@ projectors (:mod:`.generation`); ``"oncvpsp"`` (alias ``"oncv"``),
 Hamann's optimized norm-conserving Vanderbilt potentials with two projectors
 per channel (:mod:`.oncv`); and ``"paw"``, Bloechl's projector augmented-wave
 datasets with an overlap correction and frozen one-center terms
-(:mod:`.paw`).  The on-disk library lives under ``library/``
-(:mod:`.io`; the ONCVPSP files in ``library/oncvpsp/``, the PAW files in
-``library/paw/``), and the valence
+(:mod:`.paw`).  The on-disk library lives under ``library/``, one
+subdirectory per family -- ``library/ncpp/`` (Troullier-Martins, :mod:`.io`),
+``library/oncvpsp/`` and ``library/paw/`` -- and the valence
 pseudo-atomic orbitals and projectors are sampled on the real-space grid by
 :mod:`.orbitals`.  Every driver reaches a family through
 ``pseudopotentials=True | "tm" | "oncv" | {"family": ..., ...}``; see
@@ -33,7 +33,7 @@ from .generation import (Channel, PseudoPotential, check_channel,
                          generate_pseudopotential, pseudize_channel, report)
 from .io import (FORMAT_VERSION, LEGACY_FAMILY, LIBRARY_ELEMENTS,
                  LIBRARY_Z_MAX, available_elements, build_library,
-                 default_library_path, get_pseudopotential, library_file,
+                 default_library_path, get_pseudopotential, library_root, library_file,
                  load_pseudopotential, save_pseudopotential)
 from .orbitals import (KBProjector, PseudoAtomicOrbital, kb_coupling_blocks,
                        kb_projectors, pseudo_basis, valence_electrons)
@@ -59,7 +59,7 @@ __all__ = [
     "pseudize_channel", "report",
     "FORMAT_VERSION", "LEGACY_FAMILY",
     "LIBRARY_ELEMENTS", "LIBRARY_Z_MAX", "available_elements", "build_library",
-    "default_library_path", "get_pseudopotential", "library_file",
+    "default_library_path", "get_pseudopotential", "library_root", "library_file",
     "load_pseudopotential", "save_pseudopotential",
     "KBProjector", "PseudoAtomicOrbital", "kb_coupling_blocks",
     "kb_projectors", "pseudo_basis", "valence_electrons",
