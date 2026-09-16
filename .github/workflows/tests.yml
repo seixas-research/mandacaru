@@ -41,6 +41,11 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install libomp
 
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3-dev
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -50,10 +55,27 @@ jobs:
         run: |
           python -c "
           from carcara.integrals._backend import build_backend, check_backend
-          build_backend()
+          import sys
+          try:
+              build_backend()
+          except Exception as e:
+              print(f'Build failed: {e}', file=sys.stderr)
+              sys.exit(1)
           status = check_backend()
           print(status.message)
+          if not status.available:
+              print('Backend check failed', file=sys.stderr)
           raise SystemExit(0 if status.available else 1)
+          "
+          
+      - name: Build pseudopotential libraries
+        run: |
+          python -c "
+          from carcara.pseudopotentials.paw import build_paw_library
+          from carcara.pseudopotentials.oncvpsp import build_oncvpsp_library
+          # Build libraries for elements used in tests
+          build_paw_library(['H', 'Li', 'C', 'N', 'O', 'F'])
+          build_oncvpsp_library(['H', 'Li', 'C', 'N', 'O', 'F'])
           "
 
       - name: Run the test suite
