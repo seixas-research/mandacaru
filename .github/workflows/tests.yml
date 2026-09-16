@@ -60,20 +60,23 @@ jobs:
       - name: Build the C integral backend
         run: |
           python -c "
-          from carcara.integrals._backend import build_backend, check_backend
+          from carcara.integrals._backend import build_backend, check_backend, _BUILD_DIR
           import sys
           try:
-              build_backend()
+              path = build_backend(verbose=True)
+              if path is None:
+                  print('Build returned None', file=sys.stderr)
+                  with open(_BUILD_DIR / 'build.log') as f:
+                      print(f.read())
           except Exception as e:
               print(f'Build failed: {e}', file=sys.stderr)
-              sys.exit(1)
+              import traceback
+              traceback.print_exc()
           status = check_backend()
           print(status.message)
-          if not status.available:
-              print('Backend check failed', file=sys.stderr)
           raise SystemExit(0 if status.available else 1)
           "
-          
+
       - name: Build pseudopotential libraries
         run: |
           python -c "
