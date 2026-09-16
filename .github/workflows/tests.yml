@@ -57,48 +57,34 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
+      # ensure_backend() compiles the library and reloads the module; a bare
+      # build_backend() + check_backend() would report the import-time state
+      # (no library on a fresh checkout) and fail even after a good build.
       - name: Build the C integral backend
         run: |
           python -c "
-          from carcara.integrals._backend import build_backend, check_backend, _BUILD_DIR
           import sys
-          try:
-              path = build_backend(verbose=True)
-              if path is None:
-                  print('Build returned None', file=sys.stderr)
-                  build_log = _BUILD_DIR / 'build.log'
-                  if build_log.exists():
-                      with open(build_log) as f:
-                          print(f.read())
-                  else:
-                      print('No build.log found', file=sys.stderr)
-          except Exception as e:
-              print(f'Build failed: {e}', file=sys.stderr)
-              import traceback
-              traceback.print_exc()
-              sys.exit(1)
-          status = check_backend()
+          from pathlib import Path
+          from carcara.integrals import _backend
+          status = _backend.ensure_backend(build=True, verbose=True)
+          log = Path(_backend._BUILD_DIR) / 'build.log'
+          if log.exists():
+              print('---- build.log ----'); print(log.read_text())
           print(status.message)
-          raise SystemExit(0 if status.available else 1)
+          sys.exit(0 if status.available else 1)
           "
 
-      - name: Build pseudopotential libraries
+      # The PAW and ONCVPSP libraries are git-ignored links to sibling
+      # repositories, so a checkout has none; the six elements the tests use
+      # are generated in place (~20 s).  The NCPP library ships in the tree.
+      - name: Generate the PAW and ONCVPSP test libraries
         run: |
           python -c "
-          import sys
           from carcara.pseudopotentials.paw import build_paw_library
-          from carcara.pseudopotentials.oncvpsp import build_oncvpsp_library
-          try:
-              print('Building PAW libraries...')
-              build_paw_library(['H', 'Li', 'C', 'N', 'O', 'F'])
-              print('Building ONCVPSP libraries...')
-              build_oncvpsp_library(['H', 'Li', 'C', 'N', 'O', 'F'])
-              print('Library build completed successfully')
-          except Exception as e:
-              print(f'ERROR: Library build failed: {e}', file=sys.stderr)
-              import traceback
-              traceback.print_exc()
-              sys.exit(1)
+          from carcara.pseudopotentials.oncv import build_oncv_library
+          elements = ('H', 'Li', 'C', 'N', 'O', 'F')
+          print(len(build_paw_library(elements, verbose=False)), 'PAW datasets')
+          print(len(build_oncv_library(elements, verbose=False)), 'ONCVPSP potentials')
           "
 
       - name: Run the test suite
@@ -118,6 +104,19 @@ jobs:
       - run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
+      # The PAW and ONCVPSP libraries are git-ignored links to sibling
+      # repositories, so a checkout has none; the six elements the tests use
+      # are generated in place (~20 s).  The NCPP library ships in the tree.
+      - name: Generate the PAW and ONCVPSP test libraries
+        run: |
+          python -c "
+          from carcara.pseudopotentials.paw import build_paw_library
+          from carcara.pseudopotentials.oncv import build_oncv_library
+          elements = ('H', 'Li', 'C', 'N', 'O', 'F')
+          print(len(build_paw_library(elements, verbose=False)), 'PAW datasets')
+          print(len(build_oncv_library(elements, verbose=False)), 'ONCVPSP potentials')
+          "
+
       # CARCARA_BACKEND=numpy forces the vectorized fallbacks, which mirror the
       # C kernels exactly; a divergence between them must fail here.
       - env:
@@ -136,6 +135,19 @@ jobs:
       - run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[coverage]"
+      # The PAW and ONCVPSP libraries are git-ignored links to sibling
+      # repositories, so a checkout has none; the six elements the tests use
+      # are generated in place (~20 s).  The NCPP library ships in the tree.
+      - name: Generate the PAW and ONCVPSP test libraries
+        run: |
+          python -c "
+          from carcara.pseudopotentials.paw import build_paw_library
+          from carcara.pseudopotentials.oncv import build_oncv_library
+          elements = ('H', 'Li', 'C', 'N', 'O', 'F')
+          print(len(build_paw_library(elements, verbose=False)), 'PAW datasets')
+          print(len(build_oncv_library(elements, verbose=False)), 'ONCVPSP potentials')
+          "
+
       - run: |
           python -m pytest test/ -q -p no:cacheprovider \
             --cov=carcara --cov-report=term-missing --cov-report=xml
