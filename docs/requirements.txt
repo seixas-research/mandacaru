@@ -1,4 +1,3 @@
-sphinx
-sphinx-rtd-theme
-myst-parser
-furo
+sphinx>=8,<10
+myst-parser>=4,<6
+furo>=2024.8.6

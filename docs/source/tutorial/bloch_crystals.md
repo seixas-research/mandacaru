@@ -52,10 +52,12 @@ swap `method="adapt-vqe"` (the default) for `method="vqe"`.
 
 ## Band structure
 
-The band structure is the generalized Bloch eigenproblem
+The band structure is the generalised Bloch eigenproblem
 
-$$H(\mathbf{k})\,c = \varepsilon(\mathbf{k})\,S(\mathbf{k})\,c , \qquad
-H(\mathbf{k}) = \sum_{\mathbf{R}} e^{2\pi i\,\mathbf{k}\cdot\mathbf{n}}\, h^{(\mathbf{R})} ,$$
+```{math}
+H(\mathbf{k})\,c = \varepsilon(\mathbf{k})\,S(\mathbf{k})\,c , \qquad
+H(\mathbf{k}) = \sum_{\mathbf{R}} e^{2\pi i\,\mathbf{k}\cdot\mathbf{n}}\, h^{(\mathbf{R})} ,
+```
 
 solved at each k-point from the real-space cell-to-cell overlap/one-body blocks.
 Because it is single-particle, **every method returns the same bands**. Pass
@@ -70,7 +72,7 @@ energies = bloch.bands([[0.0, 0, 0], [0.25, 0, 0], [0.5, 0, 0]])   # (3, n_bands
 bs = bloch.band_structure("GX", npoints=201)
 print(bs.energies.shape, bs.labels)        # (201, n_bands), ['G', 'X']
 
-# A Monkhorst-Pack mesh (via ASE), Gamma-centered.
+# A Monkhorst-Pack mesh (via ASE), Gamma-centred.
 mesh = bloch.monkhorst_pack((10, 1, 1))
 band_mp = bloch.bands(mesh)[:, 0]
 ```
@@ -90,7 +92,9 @@ a correlated total energy is the **Born–von Kármán equivalence**: an
 $(n_1, n_2, n_3)$ Monkhorst-Pack mesh is a $\Gamma$-point calculation on the
 $(n_1, n_2, n_3)$ supercell, so
 
-$$E_\text{cell} = \frac{E_\Gamma\big(\text{supercell}\big)}{n_\text{cells}} .$$
+```{math}
+E_\text{cell} = \frac{E_\Gamma\big(\text{supercell}\big)}{n_\text{cells}} .
+```
 
 `total_energy` builds that supercell with `atoms.repeat`, runs it through the
 selected molecular method (the box is the supercell's own cell), and returns
@@ -102,13 +106,13 @@ selected molecular method (the box is the supercell's own cell), and returns
 e_cell, res = BlochCalculator(atoms,
                               method="vqe",
                               h=0.20).total_energy(
-    (4, 1, 1), optimizer="L-BFGS-B")
+                                  (4, 1, 1), optimizer="L-BFGS-B")
 
 # Adaptive ADAPT-VQE (extra adaptive controls).
 e_cell, res = BlochCalculator(atoms,
                               method="adapt-vqe",
                               h=0.20).total_energy(
-    (4, 1, 1), max_iterations=10, gradient_tolerance=1e-3)
+                                  (4, 1, 1), max_iterations=10, gradient_tolerance=1e-3)
 print(res.num_operators, "operators grown")
 ```
 

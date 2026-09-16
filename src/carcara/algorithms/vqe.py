@@ -313,14 +313,45 @@ class VQE(DeflationMixin, VariationalDriver):
         if x0.size != n:
             raise ValueError(f"expected {n} initial parameters, got {x0.size}")
 
+        # Resume: start from the checkpointed parameters of this same ansatz.
+        resumed = self._load_resume(self.ansatz)
+        if resumed is not None:
+            if initial_parameters is not None:
+                raise ValueError("pass either initial_parameters or resume=, "
+                                 "not both")
+            self._check_resumed_generators(resumed)
+            x0 = np.asarray(resumed.parameters, dtype=float)
+
         timings, run_t0 = self._make_timings()
         ref_energy = self.reference_energy()
         if self.verbose:
             self._show_banner()
             self._print_header(ref_energy)
+            if resumed is not None:
+                print(f"resumed from {self.resume_path!r}")
+
+        # Checkpoint the best point seen every `checkpoint_every` evaluations;
+        # the optimizer's own iterate may be a trial step, the best is not.
+        best = {"x": x0.copy(), "fun": np.inf}
+
+        def track(x, value, nfev):
+            if value < best["fun"]:
+                best["x"], best["fun"] = np.array(x, dtype=float), float(value)
+            if self.checkpoint_path is not None \
+                    and nfev % self.checkpoint_every == 0:
+                self._write_checkpoint(self._checkpoint_record(
+                    self.ansatz, best["x"], best["fun"],
+                    {"complete": False, "num_evaluations": int(nfev),
+                     "reference_energy": float(ref_energy)}))
 
         with timings.time("parameter optimization"):
-            result = self._optimize_all(self.energy_at, x0)
+            result = self._optimize_all(self.energy_at, x0, callback=track)
+
+        self._write_checkpoint(self._checkpoint_record(
+            self.ansatz, result.x, float(result.fun),
+            {"complete": True, "converged": bool(result.success),
+             "num_evaluations": int(result.nfev),
+             "reference_energy": float(ref_energy)}))
 
         self._finalize_timings(timings, run_t0)
 
@@ -339,6 +370,20 @@ class VQE(DeflationMixin, VariationalDriver):
         if self.verbose:
             self._print_summary(vqe_result, timings)
         return vqe_result
+
+    def _check_resumed_generators(self, record) -> None:
+        """A VQE checkpoint resumes only into the ansatz that wrote it."""
+        mine = [g.simplify().terms for g in self.ansatz.pauli_generators]
+        theirs = [g.simplify().terms for g in record.generators]
+        same = len(mine) == len(theirs) and all(
+            a.keys() == b.keys() and all(abs(a[k] - b[k]) < 1e-10 for k in a)
+            for a, b in zip(mine, theirs))
+        if not same:
+            raise ValueError(
+                f"cannot resume from {self.resume_path!r}: its "
+                f"{len(theirs)} generators are not this ansatz's "
+                f"{len(mine)} (a fixed ansatz resumes only from its own "
+                "checkpoint; an ADAPT checkpoint is resumed by ADAPTVQE)")
 
     # -- excited states / energy levels (DeflationMixin hook) ------------- #
 

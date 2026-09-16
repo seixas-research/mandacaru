@@ -117,8 +117,14 @@ class Optimizer:
         self.seed = int(seed)
 
     def minimize(self, cost: Callable[[np.ndarray], float],
-                 x0: Sequence[float]) -> OptimizeResult:
-        """Minimize ``cost`` starting from ``x0``."""
+                 x0: Sequence[float], callback=None) -> OptimizeResult:
+        """Minimize ``cost`` starting from ``x0``.
+
+        ``callback(x, value, nfev)``, if given, is invoked after **every** cost
+        evaluation with the point, its cost and the running evaluation count --
+        the hook a driver uses to checkpoint its best-so-far parameters
+        mid-optimization, independent of which method is running.
+        """
         x0 = np.asarray(x0, dtype=float).ravel()
         history: list[float] = []
 
@@ -131,6 +137,8 @@ class Optimizer:
                     f"the cost function returned {value} at {np.asarray(x)}; "
                     "the optimization cannot continue")
             history.append(value)
+            if callback is not None:
+                callback(np.array(x, dtype=float).ravel(), value, len(history))
             return value
 
         # A zero-parameter ansatz has nothing to optimize -- evaluate once.

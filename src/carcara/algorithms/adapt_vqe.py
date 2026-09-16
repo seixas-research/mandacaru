@@ -48,9 +48,9 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..circuits.adapt_ansatz import AdaptAnsatz
-from ..circuits.pools import PoolBase, PoolOperator, build_pool
+from ..circuits.pools import PoolBase, PoolOperator, _support_of, build_pool
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
-from ..units import ANGSTROM_TO_BOHR, convert_energy
+from ..units import ANGSTROM_TO_BOHR, convert_energy, to_hartree
 from .base import VariationalDriver
 from .deflation import DeflationMixin, deflation_penalty
 
@@ -723,6 +723,65 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 return f"pool operator {getattr(op, 'label', '?')!r}"
         return None
 
+    # -- checkpoint / resume helpers ------------------------------------- #
+
+    def _iteration_payload(self, it: AdaptIteration) -> dict:
+        """One :class:`AdaptIteration` as checkpoint data (energy in Hartree)."""
+        return {"operator_label": it.operator_label,
+                "operator_kind": it.operator_kind,
+                "max_gradient": float(it.max_gradient),
+                "energy_ha": float(to_hartree(it.energy,
+                                              self._energy_unit_label())),
+                "cnot_count": it.cnot_count, "depth": it.depth,
+                "num_parameters": int(it.num_parameters)}
+
+    def _match_pool_operator(self, generator, label: str, kind: str
+                             ) -> PoolOperator:
+        """The pool operator with this generator, or a stand-alone one.
+
+        A resumed generator is normally one of the pool's own (same encoding,
+        same excitation), and using the pool's object keeps the labels and the
+        screening consistent.  A generator the pool does not contain -- a
+        checkpoint from another pool -- is still valid: it is wrapped as its own
+        operator and applied exactly as stored.
+        """
+        wanted = generator.simplify().terms
+        for op in self._pool_ops:
+            mine = op.generator.simplify().terms
+            if mine.keys() == wanted.keys() and all(
+                    abs(mine[k] - wanted[k]) < 1e-10 for k in wanted):
+                return op
+        return PoolOperator(label=label, generator=generator,
+                            support=_support_of(generator), kind=kind or "resumed")
+
+    def _restore_growth(self, ansatz: AdaptAnsatz, record) -> dict:
+        """Append a checkpoint's generators to ``ansatz``; return its history."""
+        selected: list[str] = []
+        for generator, label, kind in zip(record.generators, record.labels,
+                                          record.kinds):
+            op = self._match_pool_operator(generator, label, kind)
+            ansatz.append(op)
+            selected.append(op.label)
+        status = record.status or {}
+        unit = self._energy_unit_label()
+        iterations = [AdaptIteration(
+            operator_label=str(it["operator_label"]),
+            operator_kind=str(it.get("operator_kind", "")),
+            max_gradient=float(it["max_gradient"]),
+            energy=self._to_energy_units(float(it["energy_ha"])),
+            cnot_count=it.get("cnot_count"), depth=it.get("depth"),
+            num_parameters=int(it["num_parameters"]))
+            for it in status.get("iterations", [])]
+        params = np.asarray(record.parameters, dtype=float)
+        energy = (float(record.energy) if record.energy is not None
+                  else self.ansatz_energy(ansatz, params))
+        return {"parameters": params, "selected": selected,
+                "iterations": iterations,
+                "num_evaluations": int(status.get("num_evaluations", 0)),
+                "optimizer_failures": [(int(s), str(m)) for s, m
+                                       in status.get("optimizer_failures", [])],
+                "energy": energy, "unit": unit}
+
     def _new_ansatz(self) -> AdaptAnsatz:
         """A fresh growable ansatz on the configured evaluation backend.
 
@@ -872,6 +931,17 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                   if initial_parameters is not None else np.zeros(0))
         ref_energy = self.energy(ansatz.reference_state())
 
+        # Resume: rebuild the grown ansatz and its history from a checkpoint,
+        # then keep growing.  `max_iterations` counts operators in total.
+        resumed = self._load_resume(ansatz)
+        restored = (self._restore_growth(ansatz, resumed)
+                    if resumed is not None else None)
+        if restored is not None:
+            if initial_parameters is not None:
+                raise ValueError("pass either initial_parameters or resume=, "
+                                 "not both")
+            params = restored["parameters"]
+
         # Banner to standard output *before* any data is written to output.txt.
         if verbose:
             self._show_banner()
@@ -893,9 +963,34 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         energy = ref_energy
         metrics: CircuitMetrics | None = None
         final_expr: float | None = None
+        if restored is not None:
+            iterations = restored["iterations"]
+            selected = restored["selected"]
+            total_evals = restored["num_evaluations"]
+            optimizer_failures = restored["optimizer_failures"]
+            energy = restored["energy"]
+            if verbose:
+                print(f"resumed from {self.resume_path!r}: {len(selected)} "
+                      f"operators, E = {self._to_energy_units(energy):+.8f} "
+                      f"{e_unit}")
+
+        def checkpoint(complete: bool, converged: bool):
+            """Write the state as it stands (every run writes at the end)."""
+            self._write_checkpoint(self._checkpoint_record(
+                ansatz, params, energy, {
+                    "complete": bool(complete), "converged": bool(converged),
+                    "iteration": len(iterations),
+                    "max_gradient": float(max_grad) if np.isfinite(max_grad)
+                    else None,
+                    "num_evaluations": int(total_evals),
+                    "reference_energy": float(ref_energy),
+                    "optimizer_failures": [[int(s), str(m)]
+                                           for s, m in optimizer_failures],
+                    "iterations": [self._iteration_payload(it)
+                                   for it in iterations]}))
 
         try:
-            for _ in range(max_iterations):
+            while len(selected) < max_iterations:
                 with timings.time("gradient screening"):
                     psi = ansatz.state(params) if ansatz.num_parameters else \
                         ansatz.reference_state()
@@ -951,6 +1046,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                         energy=self._to_energy_units(energy), energy_unit=e_unit,
                         num_parameters=ansatz.num_parameters, metrics=metrics)
 
+                if self.checkpoint_path is not None \
+                        and len(iterations) % self.checkpoint_every == 0:
+                    checkpoint(complete=False, converged=False)
+
                 if callback is not None:
                     callback({
                         "iteration": len(iterations),
@@ -973,6 +1072,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                         ansatz.reference_state()
                     max_grad = _max_abs(self._gradients(psi))
                 converged = bool(max_grad < gradient_tol)
+
+            # The final state, whether or not periodic checkpoints were asked
+            # for -- this is what another algorithm (QPE) starts from.
+            checkpoint(complete=True, converged=converged)
 
             if logger is not None:
                 logger.write_summary(

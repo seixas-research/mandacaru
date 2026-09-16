@@ -1,61 +1,91 @@
-# Adaptive Ansatz Generation (ADAPT-VQE)
+# Adaptive ansatz construction: ADAPT-VQE
 
-While the Unitary Coupled-Cluster Singles and Doubles (UCCSD) ansatz is physically motivated and chemically accurate, its circuit depth and parameter count scale rapidly with system size. On NISQ devices, this fixed template often leads to deep circuits that exceed coherence times and introduce significant gate error.
+ADAPT-VQE grows an ansatz from a pool of anti-Hermitian generators
+$\{A_i\}$, with $A_i^\dagger=-A_i$. It alternates between selecting a generator
+and optimising circuit parameters. The [LiH tutorial](../tutorial/adapt_vqe_lih.md)
+shows the corresponding Python interface.
 
-**ADAPT-VQE** (Adaptive Derivative-Assembled Pseudo-Trotter VQE), introduced by Grimsley *et al.* in 2019, addresses this constraint by growing the ansatz **one operator at a time**. It dynamically constructs a compact, system-specific ansatz tailored to the electronic structure of the target system.
+## Screen candidate generators
 
----
+Suppose the current normalised state is $|\psi^{(n)}\rangle$. Appending a
+candidate unitary gives $e^{\theta A_i}|\psi^{(n)}\rangle$. Its energy derivative
+at zero parameter is
 
-## The ADAPT-VQE Algorithm
+```{math}
+\begin{aligned}
+g_i &={\left.\frac{\partial}{\partial\theta}
+\langle\psi^{(n)}|e^{-\theta A_i}\hat H e^{\theta A_i}
+|\psi^{(n)}\rangle\right|}_{\theta=0}\\
+&=\langle\psi^{(n)}|[\hat H,A_i]|\psi^{(n)}\rangle.
+\end{aligned}
+```
 
-ADAPT-VQE constructs the parameterized trial state iteratively. Let $\{A_i\}$ be a pre-defined **operator pool** consisting of anti-Hermitian generators ($A_i^\dagger = -A_i$). 
+The commutator is Hermitian, so this derivative is real. Carcará's local
+`gradient="analytic"` option evaluates it directly from the state vector.
 
-Starting from a reference state $|\psi^{(0)}\rangle = |\text{HF}\rangle$ and an empty ansatz:
+## Grow and optimise
 
-1. **Gradient Screening:** At iteration $n$, evaluate the energy gradient of the current state $|\psi^{(n)}\rangle$ with respect to appending each operator $A_i$ from the pool:
-   $$g_i = \frac{\partial}{\partial \theta_i} \langle\psi^{(n)}| e^{-\theta_i A_i} H e^{\theta_i A_i} |\psi^{(n)}\rangle \Big|_{\theta_i=0}$$
-   Using the derivative of the matrix exponential, this gradient simplifies to the expectation value of the commutator between the Hamiltonian and the pool operator:
-   $$g_i = \langle\psi^{(n)}| [H, A_i] |\psi^{(n)}\rangle$$
-2. **Convergence Check:** Compute the norm or the maximum absolute value of the gradients. If:
-   $$\max_i |g_i| < \varepsilon$$
-   where $\varepsilon$ is a user-defined threshold (e.g., $10^{-6}$ Ha), terminate the algorithm.
-3. **Ansatz Growth:** Identify the operator $A_{\text{opt}}$ that yields the largest gradient magnitude:
-   $$A_{\text{opt}} = \text{argmax}_{A_i} |g_i|$$
-   Append this operator to the ansatz:
-   $$|\psi^{(n+1)}(\boldsymbol{\theta}, \theta_{n+1})\rangle = e^{\theta_{n+1} A_{\text{opt}}} e^{\theta_n A_n} \dots e^{\theta_1 A_1} |\text{HF}\rangle$$
-   where $\boldsymbol{\theta} = (\theta_1, \dots, \theta_n)^T$.
-4. **VQE Parameter Optimization:** Re-optimize the entire parameter vector $(\boldsymbol{\theta}, \theta_{n+1})$ by minimizing the energy:
-   $$E^{(n+1)} = \min_{\boldsymbol{\theta}, \theta_{n+1}} \langle\psi^{(n+1)}(\boldsymbol{\theta}, \theta_{n+1})| H |\psi^{(n+1)}(\boldsymbol{\theta}, \theta_{n+1})\rangle$$
-   This step is **warm-started** by using the optimal parameters from the previous iteration $n$ and setting the initial value of the new parameter $\theta_{n+1}$ to zero.
-5. Set $n \leftarrow n + 1$ and repeat from Step 1.
+Choose the index with largest gradient magnitude and add that generator:
 
----
+```{math}
+i_* = \operatorname*{arg\,max}_i |g_i|,
+\qquad
+|\psi^{(n+1)}\rangle
+= e^{\theta_{n+1}A_{i_*}}
+  e^{\theta_n A_{i_n}}\cdots e^{\theta_1 A_{i_1}}|\mathrm{HF}\rangle.
+```
 
-## Importance of the Molecular-Orbital Basis
+Initially, the new parameter is zero and the old parameters keep their previous
+values. With the default `quenching=True`, all parameters are then reoptimised.
+The [quenching guide](../guide/quenching.md) describes the alternative sequential
+policy.
 
-ADAPT-VQE must start from a **stationary reference state** with respect to the pool. 
+The outer loop stops when
 
-If the Hamiltonian is represented in an arbitrary orthogonalized atomic-orbital (AO) basis, the Hartree-Fock state $|\text{HF}\rangle$ is not a stationary state of the mean-field potential. Under these conditions, the gradients of single-excitation operators are very large, causing the algorithm to select single excitations first and potentially get trapped.
+```{math}
+\max_i |g_i| < \varepsilon,
+```
 
-To prevent this, the Hamiltonian is transformed into the **restricted Hartree-Fock molecular-orbital (MO) basis**. In this basis:
-* By **Brillouin's theorem**, the electronic ground state is stationary with respect to all single-electron excitations:
-  $$\langle\text{HF}| [H, a^\dagger_a a_i] |\text{HF}\rangle = 0$$
-* The single-excitation gradients are zero at the first step, forcing the algorithm to select physical electron correlation operators (double excitations) first. This avoids artificial optimization traps and speeds up convergence.
+or when the growth budget is exhausted. `gradient_tolerance` specifies
+$\varepsilon$ in the internal Hartree convention. `max_iterations` limits the
+number of growth steps; it is distinct from the inner optimiser's `maxiter`.
 
----
+A small gradient means the state is locally stationary along the available pool
+directions. It does not prove global optimality, sufficient pool expressivity
+or convergence of the basis and grid. Inspect unsuccessful inner optimisations
+as well as the outer convergence flag.
 
-## Operator Pools
+## Why use Hartree–Fock molecular orbitals?
 
-The efficiency of ADAPT-VQE depends heavily on the chosen operator pool. Carcará implements four distinct pools:
+A converged Hartree–Fock determinant is stationary with respect to the allowed
+occupied–virtual orbital rotations. Under the usual closed-shell assumptions,
+Brillouin's theorem gives
 
-### 1. Fermionic Pool (`"fermionic"`)
-Consists of spin-adapted single and double fermionic excitation operators, mapped to qubits using Jordan-Wigner. While chemically intuitive, these operators contain long Jordan-Wigner $Z$-string chains, which compile to deep quantum circuits.
+```{math}
+\langle\Phi_i^a|\hat H|\mathrm{HF}\rangle=0,
+```
 
-### 2. Qubit Pool (`"qubit"`)
-Translates each fermionic excitation into individual Pauli string terms (after Jordan-Wigner mapping) and treats each string as an independent pool operator. This pool yields shallow quantum circuits per step but requires a larger number of optimization parameters.
+where $|\Phi_i^a\rangle$ is a singly excited determinant. The corresponding
+single-excitation screening gradients therefore vanish at the initial state,
+up to numerical error. Double excitations can then introduce correlation.
 
-### 3. Qubit Excitation Basis Pool (`"qeb"`)
-Constructed by dropping the non-local Jordan-Wigner $Z$-strings from the fermionic excitation operators. The resulting operators retain the excitation character but compile to shallow, distance-independent CNOT networks.
+Hartree–Fock is a useful reference, not a requirement that every pool gradient
+vanish before ADAPT-VQE starts. Nor is its determinant the exact electronic
+ground state. After the ansatz grows, single-excitation gradients can become
+non-zero.
 
-### 4. Coupled-Exchange Operator Pool (`"ceo"`)
-Groups QEB generators acting on the same qubit support into one generator, so several excitations share a single CNOT block. Under Jordan-Wigner each support carries exactly one excitation, so the pool reduces to `qeb` there; under parity and Bravyi-Kitaev the wider update/flip sets make the groups genuine. Realizing the published gate savings also needs the specialized circuit synthesis, which is not implemented here.
+## Pool choice and conserved quantities
+
+Carcará provides `fermionic`, `qubit`, `qeb` and `ceo` pools. Their constructions
+and implementation limits are summarised in the
+[LiH pool comparison](../tutorial/adapt_vqe_lih.md).
+
+Fermionic excitation generators preserve the specified electron counts. A
+single Pauli term extracted from an excitation need not do so; a qubit-pool
+ansatz can therefore leave the intended particle-number sector. Compare the
+final state's conserved quantities when using such a pool. A low energy in a
+different sector is not a better solution of the original molecular problem.
+
+In Carcará's Jordan–Wigner construction, `ceo` reduces to `qeb`. Other mappings
+can produce larger groups, but the published CEO gate savings also depend on
+specialised circuit synthesis that is not implemented here.

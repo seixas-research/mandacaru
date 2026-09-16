@@ -1,68 +1,44 @@
-import os
+"""Sphinx configuration shared by local and Read the Docs builds."""
+
+from pathlib import Path
+import runpy
 import sys
-from unittest.mock import MagicMock
 
-if os.environ.get('READTHEDOCS') == 'True':
-    MOCK_MODULES = ['torch', 'torch.nn', 'ase', 'ase.build', 'mace', 'numpy']
-    sys.modules.update((mod_name, MagicMock()) for mod_name in MOCK_MODULES)
-    
-sys.path.insert(0, os.path.abspath('../../src')) # root
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "_ext"))
 
-# Configuration file for the Sphinx documentation builder.
-#
-# For the full list of built-in configuration values, see the documentation:
-# https://www.sphinx-doc.org/en/master/usage/configuration.html
-
-# -- Project information -----------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
-
-project = 'Carcará'
-copyright = '2026, Leandro Seixas Rocha'
-author = 'Leandro Seixas Rocha'
-release = '26.9.18'
-
-# -- General configuration ---------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
+project = "Carcará"
+author = "Leandro Seixas Rocha"
+copyright = "2026, Leandro Seixas Rocha"
+release = runpy.run_path(str(ROOT / "src/carcara/version.py"))["__version__"]
+language = "en_GB"
 
 extensions = [
-    'sphinx.ext.autodoc',      # Gera docs a partir das docstrings
-    'sphinx.ext.napoleon',     # Suporte para estilo Google/NumPy de docstrings
-    'sphinx.ext.viewcode',     # Adiciona links para o código fonte
-    'sphinx.ext.mathjax',      # Renderiza equacoes LaTeX (docstrings .rst via ``.. math::``)
-    'myst_parser',             # Arquivos Markdown (.md)
-    'sphinx_rtd_theme'         # O tema do Read the Docs
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.viewcode",
+    "sphinx.ext.mathjax",
+    "myst_parser",
+    "british_english",
 ]
-
-# MyST (Markdown) math support.  Without ``dollarmath`` the ``$...$`` inline and
-# ``$$...$$`` block math in the ``.md`` tutorials is treated as literal text and
-# never reaches MathJax; ``amsmath`` enables LaTeX ``align``/``equation``
-# environments.  These are what make the equations in the tutorials render.
-myst_enable_extensions = [
-    'dollarmath',
-    'amsmath',
-]
-# Also let single-backslash shortcuts like ``\(`` ... ``\)`` work if used.
-myst_dmath_double_inline = True
-
-templates_path = ['_templates']
+source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
+myst_enable_extensions = ["dollarmath", "amsmath", "colon_fence"]
+templates_path = ["_templates"]
 exclude_patterns = []
+# Avoid duplicate attribute targets when autodoc also documents dataclass fields.
+napoleon_use_ivar = True
+autodoc_member_order = "bysource"
+autodoc_typehints = "none"
 
-# -- Options for HTML output -------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
-
-html_title = "Carcará"
-
-html_theme = 'furo'                 # 'sphinx_rtd_theme', 'renku', 'shibuya'
-html_static_path = ['_static']
-html_css_files = ['custom.css']   
-
-html_theme_options = {
-    "light_logo": "icon.png", # arquivo em docs/source/_static/
-    "dark_logo": "icon.png"   # arquivo em docs/source/_static/
-}
-
+html_title = project
+html_theme = "furo"
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
+# As in Poraquê, Furo selects colours for light, dark and automatic mode.
+# It sets data-theme on <body>, not on <html>.
+html_theme_options = {"light_logo": "icon.png", "dark_logo": "icon.png"}
 html_favicon = "_static/favicon.png"
-copyright = 'Leandro Seixas Rocha, 2026'
 html_show_sphinx = False
 html_show_copyright = True
 html_show_sourcelink = False

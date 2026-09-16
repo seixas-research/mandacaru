@@ -315,7 +315,7 @@ class NAOAEBasisSet(BasisSet):
         The real-space box must extend at least that far around every atom.
     scale : float
         Wall strength (Hartree * Bohr^2, default ``1.0``).
-    extra : sequence of (n, l, z), optional
+    extra : sequence of tuple, optional
         Additional hydrogen-like functions with explicit effective charges.
     linear_dependence_tol : float
         Gram-Schmidt rejection threshold on the residual norm (``1e-4``).

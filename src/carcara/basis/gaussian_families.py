@@ -114,10 +114,11 @@ class GaussianRecipe:
         an uncontracted tight primitive (the extra core ``s`` of def2-TZVP).
     valence : tuple of int
         Contraction pattern of every valence shell, e.g. ``(3, 1)``.
-    polarization : tuple of (l, count)
-        Polarization shells on heavy atoms (``Z >= polarization_min_z``).
-    polarization_h : tuple of (l, count)
-        Polarization shells on hydrogen and helium.
+    polarization : tuple of tuple of int
+        Polarisation shells as ``(l, count)`` pairs on heavy atoms
+        (``Z >= polarization_min_z``).
+    polarization_h : tuple of tuple of int
+        Polarisation shells as ``(l, count)`` pairs on hydrogen and helium.
     diffuse : tuple of int
         Angular momenta receiving one diffuse function on heavy atoms.
     diffuse_h : tuple of int
@@ -128,8 +129,8 @@ class GaussianRecipe:
         up to ``diffuse_l_max``.
     diffuse_l_max : int
         Cap for ``diffuse_present``.
-    tight : tuple of (l, count)
-        Core-correlating functions on heavy atoms (``cc-pCVXZ``).
+    tight : tuple of tuple of int
+        Core-correlating ``(l, count)`` pairs on heavy atoms (``cc-pCVXZ``).
     polarization_min_z : int
         Lowest atomic number that counts as "heavy" for polarization: ``3``
         (anything beyond helium), or ``11`` for Pople's ``3-21G*``, whose

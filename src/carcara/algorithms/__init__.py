@@ -48,10 +48,17 @@ from .forces import ForceResult, hellmann_feynman_gradient, nuclear_gradient
 from .interaction import InteractionEnergy, interaction_energy
 from .rdm import electronic_energy, one_rdm, particle_number, two_rdm
 from .vqe import VQE, VQEResult
+from .qpe import (QPEMemoryEstimate, QPEResult, QuantumPhaseEstimation,
+                  phase_estimation, qpe_memory_estimate)
 
 __all__ = [
     "VQE",
     "VQEResult",
+    "QuantumPhaseEstimation",
+    "QPEResult",
+    "QPEMemoryEstimate",
+    "phase_estimation",
+    "qpe_memory_estimate",
     "RHF",
     "RHFResult",
     "UHF",

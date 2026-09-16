@@ -376,7 +376,7 @@ class UHF:
 
     def solve(self, max_iter: int = 300, tol: float = 1e-9,
               guesses: int = 2) -> UHFResult:
-        """Run the SCF and return the lowest converged :class:`UHFResult`.
+        r"""Run the SCF and return the lowest converged :class:`UHFResult`.
 
         The initial guess breaks the alpha/beta symmetry slightly for
         :math:`n_\alpha \ne n_\beta` (they start from the same core-Hamiltonian

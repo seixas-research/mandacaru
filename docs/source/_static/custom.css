@@ -1,128 +1,65 @@
+/* Keep Furo's theme-aware link, hover and current-page colours. */
 .sidebar-logo {
     width: 120px;
     height: auto;
-    display: block;
-    margin-left: auto;
-    margin-right: auto;
+    margin-inline: auto;
 }
 
-/* Aumentar e centralizar o título na barra lateral */
 .sidebar-brand-text {
-    font-size: 3.0rem;    /* Aumenta o tamanho (o padrão é ~1rem) */
-    font-weight: bold;    /* Opcional: deixa em negrito para destacar mais */
-    text-align: center;   /* Centraliza o texto */
-    display: block;       /* Necessário para que a centralização funcione */
-    margin-top: 12px;     /* Adiciona um espaço entre o logo e o título */
-    line-height: 1.2;     /* Ajusta o espaçamento entre linhas se o título for longo */
+    font-size: 2rem;
+    font-weight: bold;
+    text-align: center;
+    margin-top: 12px;
+    line-height: 1.2;
 }
 
-/* Garante que o link que envolve o logo e o título também esteja centralizado */
 .sidebar-brand {
-    display: flex;
-    flex-direction: column;
     align-items: center;
-    justify-content: center;
-    text-decoration: none !important; /* Remove sublinhados indesejados */
 }
 
-/* Top-level links */
-html body .sidebar-tree .toctree-l1 > .reference,
-html body .sidebar-tree .toctree-l2 > .reference,
-html body .sidebar-tree .toctree-l3 > .reference {
-  color: #083563;
+/* A keyboard focus indicator that follows the active theme. */
+.sidebar-tree a:focus-visible {
+    outline: 2px solid var(--color-brand-primary);
+    outline-offset: 2px;
 }
 
-/* Hover */
-html body .sidebar-tree .toctree-l1 > .reference:hover,
-html body .sidebar-tree .toctree-l2 > .reference:hover,
-html body .sidebar-tree .toctree-l3 > .reference:hover {
-  color: #ffa602;
-  font-weight: bold;
+/* Semantic HTML keeps the workflow readable without a diagram service. */
+.workflow {
+    list-style: none;
+    padding: 0;
+    max-width: 38rem;
+    margin: 1.5rem auto;
+    text-align: center;
 }
 
-/* Item atual */
-html body .sidebar-tree .toctree-l1.current > .reference,
-html body .sidebar-tree .toctree-l2.current > .reference,
-html body .sidebar-tree .toctree-l3.current > .reference {
-  color: #083562;
-  font-weight: bold;
+.workflow li {
+    padding: 0.8rem;
+    border: 1px solid var(--color-foreground-border);
+    border-radius: 0.4rem;
+    background: var(--color-background-secondary);
+    color: var(--color-foreground-primary);
 }
 
-
-html body .sidebar {
-  --color-brand-primary: #083563;
-  --color-brand-content: #083563;
+.workflow li + li {
+    margin-top: 1.5rem;
+    position: relative;
 }
 
-html body .sidebar .sidebar-tree a {
-  color: #083563;
+.workflow li + li::before {
+    content: "\2193";
+    position: absolute;
+    top: -1.5rem;
+    left: 0;
+    right: 0;
+    line-height: 1.5rem;
 }
 
-html body .sidebar .sidebar-tree a:hover {
-  color: #ffa602;
+.workflow span {
+    display: block;
+    font-size: 0.9em;
 }
 
-html body .sidebar .sidebar-tree .current > a {
-  color: #083563;
-  font-weight: bold;
+.molecular-plot {
+    background: white;
+    border-radius: 0.4rem;
 }
-
-/* DARK-MODE */
-
-html[data-theme="dark"] body .sidebar-tree .toctree-l1 > a.reference.internal {
-  color: #ffcc00;
-}
-
-html[data-theme="dark"] body .sidebar-tree .toctree-l1 > a.reference.internal {
-  color: #ffcc00;
-}
-
-html[data-theme="dark"] body .content a.reference.internal,
-html[data-theme="dark"] body .content a.reference.external {
-  color: #ffcc00;
-}
-
-html[data-theme="dark"] body .sidebar-tree .toctree-l1 > .reference,
-html[data-theme="dark"] body .sidebar-tree .toctree-l2 > .reference,
-html[data-theme="dark"] body .sidebar-tree .toctree-l3 > .reference {
-  color: #ffcc00;
-}
-
-/* Hover */
-html[data-theme="dark"] body .sidebar-tree .toctree-l1 > .reference:hover,
-html[data-theme="dark"] body .sidebar-tree .toctree-l2 > .reference:hover,
-html[data-theme="dark"] body .sidebar-tree .toctree-l3 > .reference:hover {
-  color: #ffa602;
-  font-weight: bold;
-}
-
-/* Item atual */
-html[data-theme="dark"] body .sidebar-tree .toctree-l1.current > .reference,
-html[data-theme="dark"] body .sidebar-tree .toctree-l2.current > .reference,
-html[data-theme="dark"] body .sidebar-tree .toctree-l3.current > .reference {
-  color: #ffcc00;
-  font-weight: bold;
-}
-
-html[data-theme="dark"] body .sidebar-tree .current {
-  background-color: #1e293b;
-}
-
-html[data-theme="dark"] body .sidebar {
-  --color-brand-primary: #ffcc00;
-  --color-brand-content: #ffcc00;
-}
-
-html[data-theme="dark"] body .sidebar .sidebar-tree a {
-  color: #ffcc00;
-}
-
-html[data-theme="dark"] body .sidebar .sidebar-tree a:hover {
-  color: #ffa602;
-}
-
-html[data-theme="dark"] body .sidebar .sidebar-tree .current > a {
-  color: #ffcc00;
-  font-weight: bold;
-}
-

@@ -1,113 +1,124 @@
-# Ground-State Search of LiH using VQE
+# Your first LiH calculation: VQE
 
-This tutorial scales the simulation workflow of Carcará to a larger, heteronuclear system: lithium hydride ($LiH$). This introduces different nuclear charges ($Z_{\text{Li}} = 3.0$ and $Z_{\text{H}} = 1.0$) and a multi-orbital basis set.
+Lithium hydride (LiH) contains one lithium nucleus, one hydrogen nucleus and
+**four electrons** when neutral. In this tutorial you will estimate its total
+energy at a fixed Li–H distance using the variational quantum eigensolver
+(VQE). No quantum device credentials are required.
 
----
+Complete the [installation](../installation.md) first. Save the following
+blocks, in order, as `lih_vqe.py`, then run `python lih_vqe.py`.
 
-## Orbital Exponents and Slater's Rules
-
-For heavy or core-electrons (like the Li 1s orbital), utilizing the bare nuclear charge ($Z = 3.0$) makes the orbital extremely contracted and difficult to resolve numerically on a standard grid. 
-
-To overcome this, we use effective nuclear charges derived from **Slater's rules** via `FullAtomicOrbital.from_slater`. This assigns effective charges (e.g., $Z_{\text{eff}} = 2.70$ for Li 1s, $1.30$ for Li 2s/2p, and $1.00$ for H 1s), while the external potential retains the true nuclear charges:
-
-```python
-import numpy as np
-from carcara.basis import FullAtomicOrbital
-from carcara.integrals import Grid, IntegralEngine, Potentials
-
-R = 1.595  # LiH equilibrium bond length (Angstrom)
-li_pos = np.array([0.0, 0.0, -R / 2])
-h_pos = np.array([0.0, 0.0, +R / 2])
-
-# External potential (uses true nuclear charges)
-potentials = Potentials([(3.0, li_pos), (1.0, h_pos)])
-
-# Integrals grid
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.10)
-
-# Minimal Slater-basis: 3 orbitals on Li (1s, 2s, 2pz) and 1 orbital on H (1s)
-basis = [FullAtomicOrbital.from_slater(1, 0, 0, atomic_number=3, center=li_pos),
-         FullAtomicOrbital.from_slater(2, 0, 0, atomic_number=3, center=li_pos),
-         FullAtomicOrbital.from_slater(2, 1, 0, atomic_number=3, center=li_pos),
-         FullAtomicOrbital.from_slater(1, 0, 0, atomic_number=1, center=h_pos)]
-
-engine = IntegralEngine(basis, grid)
-```
-
----
-
-## Integrals and Molecular-Orbital Transformation
-
-Evaluating the integrals yields $4 \times 4$ one-body matrices and a $4 \times 4 \times 4 \times 4$ two-body ERI tensor. 
-
-For systems with more than two electrons, running VQE directly in the atomic-orbital (AO) basis often slows down convergence. Instead, we transform the Hamiltonian to the restricted Hartree-Fock **molecular-orbital (MO) basis**. In this basis, the Hartree-Fock state becomes a stationary reference, and single-electron excitation gradients vanish:
-
-```python
-from carcara.core import MolecularIntegrals
-
-# Compute integrals
-T, V = engine.one_body(potentials.nuclear_potential)
-h_core = T + V
-eri = engine.two_body(method="fft")
-
-# Re-package into MolecularIntegrals
-mol_integrals = MolecularIntegrals(
-    nuclei=[(3.0, li_pos), (1.0, h_pos)],
-    basis=basis,
-    grid=grid
-)
-
-# Build second-quantized Hamiltonian in the RHF molecular orbital basis (2 valence electrons)
-H_mo = mol_integrals.molecular_hamiltonian(mo_basis=True, n_electrons=2)
-```
-
----
-
-## Executing VQE on LiH
-
-We map the MO Hamiltonian to qubits and run VQE using the UCCSD ansatz. For LiH, with 4 spatial molecular orbitals (8 spin-orbitals) and 2 valence electrons, UCCSD has 22 parameters:
-
-```python
-from carcara.circuits import UCCSD
-from carcara.algorithms import Carcara
-
-# 4 spatial orbitals, 2 electrons (1 alpha, 1 beta)
-ansatz = UCCSD(n_spatial_orbitals=4, num_particles=(1, 1), mapping="jordan_wigner")
-
-# Execute VQE in direct mode (explicit Hamiltonian, no geometry)
-calc = Carcara(method="vqe",
-               hamiltonian=H_mo,
-               ansatz=ansatz,
-               optimizer="COBYLA")
-result = calc.run()
-
-print(f"LiH VQE Ground-State Energy: {result.optimal_energy:.6f} eV")
-```
-
----
-
-## Running with the ASE Interface
-
-Just like $H_2$, $LiH$ can be simulated cleanly using the ASE calculator interface:
+## 1. Define the molecule
 
 ```python
 from ase import Atoms
+
+bond_length = 1.6  # Å; a starting geometry, not an optimised bond length
+atoms = Atoms(
+    "LiH",
+    positions=[
+        [0.0, 0.0, -bond_length / 2],
+        [0.0, 0.0, bond_length / 2],
+    ],
+    pbc=False,
+)
+```
+
+The nuclei lie on the $z$ axis, equally far from the origin. The distance
+between them is `bond_length`. `pbc=False` describes an isolated molecule.
+
+## 2. Choose the numerical model
+
+A **basis set** supplies the spatial orbitals used to describe the electrons.
+A **grid** supplies the points at which Carcará evaluates the integrals.
+These are independent choices.
+
+```python
+from carcara.integrals import Grid
+
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.12)
+```
+
+`box_size` is a **half-width**: this box extends from −4.8 to +4.8 Å along
+each axis. `h` is the requested spacing in ångströms. An explicit grid means
+that this example does not need an ASE unit cell. These modest settings are
+for learning; check finer grids and larger boxes before interpreting energies
+quantitatively.
+
+We use Carcará's `STO-3G` family and freeze the lowest doubly occupied
+Hartree–Fock molecular orbital, associated mainly with lithium's 1s core.
+The resulting active problem has two electrons. The core still contributes
+to the Hamiltonian and total energy.
+
+```{important}
+Neutral LiH has four electrons. Setting `n_electrons=2` alone would describe a
+different charged system. Use `frozen_core=True` to remove the core pair from
+the variational search consistently.
+```
+
+Carcará's minimal `STO-3G` construction contains Li 1s and 2s functions and an
+H 1s function: three spatial orbitals before freezing, two afterwards. Each
+active spatial orbital has two spin orbitals, giving four qubits under the
+Jordan–Wigner mapping. This small basis omits lithium p functions. It is a
+teaching model, and its internally fitted Gaussian exponents differ from
+published basis tables; see [basis sets](../guide/basis_sets.md).
+
+## 3. Attach and run the calculator
+
+```python
 from carcara.algorithms import Carcara
+from carcara.optimizers import Optimizer
 
-# Define LiH molecule in a unit cell
-atoms = Atoms("LiH", positions=[[4.0, 4.0, 3.20], [4.0, 4.0, 4.80]],
-              cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
+atoms.calc = Carcara(
+    method="vqe",
+    basis="STO-3G",
+    frozen_core=True,
+    mapping="jordan_wigner",
+    grid=grid,
+    optimizer=Optimizer("L-BFGS-B", maxiter=500),
+    execute_circuits=False,
+    verbose=False,
+)
 
-# Attach the calculator, selecting the VQE method
-atoms.calc = Carcara(method="vqe",
-                     basis="FAO",
-                     mapping="jordan_wigner",
-                     optimizer="COBYLA",
-                     h=0.15)
-
-# Energy in eV
-energy_ev = atoms.get_total_energy()
+print(atoms.calc.dry_run(atoms))
+energy_ev = atoms.get_potential_energy()
 result = atoms.calc.result
 
-print(f"LiH Ground-State Energy: {result.optimal_energy:.6f} eV")   # == energy_ev
+print(f"Total energy: {energy_ev:.6f} eV")
+print(f"Reference energy: {result.reference_energy:.6f} eV")
+print(f"Energy change from the reference: {result.correlation_energy:.6f} eV")
+print(f"Optimiser succeeded: {result.success}")
+print(f"Variational parameters: {result.num_parameters}")
 ```
+
+The dry run estimates the qubit requirements without evaluating integrals.
+`get_potential_energy()` then builds the molecular Hamiltonian and runs VQE.
+For a fixed molecular geometry, the returned energy includes electronic
+energy and nuclear repulsion; it excludes nuclear kinetic energy.
+
+With `method="vqe"`, Carcará constructs a fixed UCCSD ansatz automatically.
+The classical optimiser varies its circuit parameters to minimise
+
+```{math}
+E(\boldsymbol{\theta}; R)
+= \langle\psi(\boldsymbol{\theta})|\hat H(R)
+  |\psi(\boldsymbol{\theta})\rangle.
+```
+
+Here $R$ is the fixed Li–H distance and $\boldsymbol{\theta}$ contains the
+circuit parameters. `execute_circuits=False` evaluates the state locally;
+this example does not submit quantum hardware jobs.
+
+## 4. Interpret the output
+
+`reference_energy` is the starting reference determinant's energy.
+`correlation_energy` is the difference between the optimised and reference
+energies for this model. Neither quantity is a molecular binding energy.
+
+An optimiser success flag reports its stopping criterion. It does not prove
+that the ansatz reaches the exact ground state or that the grid and basis are
+converged. If the optimisation fails, examine the energy history and increase
+`maxiter` before changing the physical model.
+
+Continue with [ADAPT-VQE](adapt_vqe_lih.md) to let the calculation choose its
+circuit generators, then [scan the bond length](pes_scan.md).

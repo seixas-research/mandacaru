@@ -45,6 +45,28 @@ Hellmann-Feynman and Pulay forces for the PAW and ONCVPSP families.  See
    :undoc-members:
    :show-inheritance:
 
+Quantum Phase Estimation
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+QPE from a checkpointed variational state, with the memory check that guards
+its state-vector simulation.  See :doc:`guide/checkpoints_qpe`.
+
+.. automodule:: carcara.algorithms.qpe
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Wavefunction Checkpoints
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The algorithm-agnostic on-disk form of a variational state.  See
+:doc:`guide/checkpoints_qpe`.
+
+.. automodule:: carcara.core.checkpoint
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Command Line
 ~~~~~~~~~~~~
 
@@ -163,7 +185,7 @@ Quantum Circuits & Ansätze
 
 ----
 
-Classical Optimizers
+Classical Optimisers
 --------------------
 
 .. automodule:: carcara.optimizers
@@ -173,7 +195,7 @@ Classical Optimizers
 
 ----
 
-Hamiltonian Serialization
+Hamiltonian Serialisation
 -------------------------
 
 The on-disk qubit-Hamiltonian cache (Apache Parquet or JSON) that lets a run skip

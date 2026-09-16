@@ -2,7 +2,9 @@
 
 The binding energy of a complex is a difference of three total energies,
 
-$$E_\text{int} = E(\text{AB}) - E(\text{A}) - E(\text{B}),$$
+```{math}
+E_\text{int} = E(\text{AB}) - E(\text{A}) - E(\text{B}),
+```
 
 and on a real-space grid that difference is only meaningful if all three are
 evaluated on **the same grid, with every atom at the same position relative
@@ -69,7 +71,7 @@ Chasing the Na⁺·H₂O binding energy through the grid spacing exposed two
 latent defects that affected every molecule with p or d functions (water,
 O₂, anything beyond LiH), and they are fixed:
 
-- the Löwdin orthogonalization transformed the two-electron tensor with the
+- the Löwdin orthogonalisation transformed the two-electron tensor with the
   wrong conjugation pattern, which breaks the tensor's symmetries whenever
   the overlap matrix is complex (the spherical harmonics are complex, so any
   p shell off a symmetry plane does it); water's Hartree–Fock energy moved by
@@ -78,7 +80,7 @@ O₂, anything beyond LiH), and they are fixed:
   complex conjugate of the right density.
 
 Both were invisible for the s-only systems the suite validated against exact
-diagonalization. The decisive test now in place evaluates the SCF density's
+diagonalisation. The decisive test now in place evaluates the SCF density's
 energy directly with the raw AO matrices and requires the orthonormal-basis
 energy to match it, and a random complex unitary must leave the energy
 unchanged.

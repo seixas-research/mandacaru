@@ -85,15 +85,26 @@ jobs:
       - name: Build pseudopotential libraries
         run: |
           python -c "
+          import sys
           from carcara.pseudopotentials.paw import build_paw_library
           from carcara.pseudopotentials.oncvpsp import build_oncvpsp_library
-          # Build libraries for elements used in tests
-          build_paw_library(['H', 'Li', 'C', 'N', 'O', 'F'])
-          build_oncvpsp_library(['H', 'Li', 'C', 'N', 'O', 'F'])
+          try:
+              print('Building PAW libraries...')
+              build_paw_library(['H', 'Li', 'C', 'N', 'O', 'F'])
+              print('Building ONCVPSP libraries...')
+              build_oncvpsp_library(['H', 'Li', 'C', 'N', 'O', 'F'])
+              print('Library build completed successfully')
+          except Exception as e:
+              print(f'ERROR: Library build failed: {e}', file=sys.stderr)
+              import traceback
+              traceback.print_exc()
+              sys.exit(1)
           "
 
       - name: Run the test suite
         run: python -m pytest test/ -q -p no:cacheprovider --durations=25
+
+
 
   numpy-kernels:
     name: NumPy reference kernels

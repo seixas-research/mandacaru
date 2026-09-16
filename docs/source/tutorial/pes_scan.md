@@ -1,105 +1,178 @@
-# Potential Energy Curve Scans
+# LiH potential-energy curves: basis sets and operator pools
 
-A potential-energy curve represents the ground-state energy of a molecule as a function of its nuclear coordinates. Scanning the bond length of diatomic molecules like $H_2$ and $LiH$ across varying distances allows us to observe chemical bonding wells, equilibrium distances, and dissociation limits.
+A potential-energy curve repeats a molecular energy calculation at several bond
+lengths. For each Li–H distance $R$, we optimise the electronic state while
+holding the nuclei fixed:
 
-This tutorial guides you through scanning potential-energy curves with the `Carcara`, referencing every curve to the **sum of isolated-atom energies**, and managing numerical grid effects.
-
----
-
-## The absolute reference: the separated atoms
-
-Every dissociation curve in Carcará is referenced to the sum of the isolated-atom energies,
-
-$$E_{\text{binding}}(R) = E_{\text{molecule}}(R) - \sum_i E_{\text{atom},\,i},$$
-
-so $E = 0$ is the separated-atom limit and the well depth is a binding energy. The atomic energies are computed with **unrestricted Hartree-Fock** (open-shell atoms like H and Li need it; for one-electron H it is exact within the basis and grid), *on the same grid, with the same Coulomb softening* as the molecular scan — see `examples/pes_utils.py`:
-
-```python
-from carcara.basis import BasisSet
-from pes_utils import GridSpec, atomic_reference, commensurate_distances, molecule_positions
-
-grid_spec = GridSpec(box_size=8.0, spacing=0.16)
-grid = grid_spec.build()
-distances = commensurate_distances(0.42, 3.0, grid_spec)
-
-# Two isolated H atoms, placed at their first-geometry grid alignment.
-e_atoms = atomic_reference(["H", "H"], BasisSet.build("FAO"), grid,
-                           molecule_positions(float(distances[0])))
+```{math}
+E_{b,p}(R) = \min_{\boldsymbol{\theta}}
+\langle\psi_p(\boldsymbol{\theta};R)|\hat H_b(R)
+|\psi_p(\boldsymbol{\theta};R)\rangle.
 ```
 
----
+Here $b$ labels the basis set and $p$ labels the operator pool. In practice the
+optimiser returns an approximation to this minimum. We retain its convergence
+information alongside every energy.
 
-## Scanning H2 over varying distances
+## What the comparison holds fixed
 
-For a simple system like $H_2$, the electron clouds are relatively diffuse and contain no heavy core. We scan the distance with ADAPT-VQE, passing the **same fixed grid** to every geometry so molecule and atomic reference are integrated identically:
+The supplied script calculates neutral LiH with a frozen lithium core, two
+active electrons, the Jordan–Wigner mapping and local state-vector evaluation.
+It compares Carcará's `STO-3G` and `3-21G` constructions, each with the
+`fermionic`, `qubit`, `qeb` and `ceo` pools.
 
-```python
-from ase import Atoms
-from carcara.algorithms import Carcara
-from carcara.units import from_hartree
+| Basis | Spatial orbitals before freezing | Active spatial orbitals | Qubits |
+| :--- | ---: | ---: | ---: |
+| `STO-3G` | 3 | 2 | 4 |
+| `3-21G` | 5 | 4 | 8 |
 
-e_atoms_ev = from_hartree(e_atoms, "eV")   # the UHF atomic reference is Hartree
+The second basis adds radial flexibility. These native constructions omit
+lithium p functions and use internally generated Gaussian exponents. They are
+not interchangeable with published basis tables carrying the same names.
+See [basis sets](../guide/basis_sets.md).
 
-for r in distances:
-    atoms = Atoms("H2", positions=molecule_positions(float(r)))
-    atoms.calc = Carcara(method="adapt-vqe",
-                         pool="qeb",
-                         basis="FAO",
-                         grid=grid,
-                         optimizer="L-BFGS-B",
-                         verbose=False)
-    atoms.get_total_energy()
-    binding_ev = atoms.calc.result.optimal_energy - e_atoms_ev   # results are eV
-    print(f"R = {r:.2f} A -> E - E_atoms = {binding_ev:+.4f} eV")
-```
+At each geometry, the script builds one Hamiltonian per basis, saves it to a
+temporary JSON cache and reuses it across pools. It creates a new Hamiltonian
+when either the distance or basis changes.
 
-The curve is bound near equilibrium and returns to $E = 0$ at large $R$. The complete script — including the CSV/plot output — is `examples/22_H2_dissociation.py`.
+## Keep the grid fixed
 
----
-
-## Grid alignment and the "egg-box" effect in LiH
-
-For systems with tight core orbitals, such as the lithium 1s orbital in $LiH$, integrating on a uniform real-space grid introduces a numerical artifact known as the **egg-box effect**.
-
-As nuclei shift relative to the grid nodes, the sampled potential of the $-Z_A/|\mathbf{r}-\mathbf{R}_A|$ cusp varies slightly, introducing artificial ripples in the potential-energy curve.
-
-### Mitigation strategies
-To eliminate these artificial oscillations and obtain smooth binding curves for $LiH$ in Carcará:
-1. **Grid spacing step-matching:** Step the bond length by **exact multiples of the grid spacing** (e.g., $\Delta R = 2h$, so each nucleus at $\pm R/2$ moves by whole grid nodes). This ensures that the nuclei maintain the same sub-node alignment for every point in the scan.
-2. **Alignment-matched references:** Place the isolated-atom references at the exact same sub-node grid coordinates (and with the same Coulomb softening) as the molecular scan, so the numerical integration errors cancel in the binding energy.
-
-The following script scans the $LiH$ potential energy curve using ADAPT-VQE with a Coupled-Exchange Operator (`"ceo"`) pool:
+The scan uses a single box extending from −4.8 to +4.8 Å along each axis and a
+requested spacing of 0.12 Å. With symmetric nuclear positions at $z=\pm R/2$,
+the distance step is twice the **actual** grid spacing:
 
 ```python
 import numpy as np
-from ase import Atoms
-from carcara.algorithms import Carcara
+from carcara.integrals import Grid
+from carcara.units import BOHR_TO_ANGSTROM
 
-# Set grid resolution h (Angstrom)
-h_val = 0.15
-
-# Step size is exactly 2 * h to maintain node alignment
-distances = np.array([1.0, 1.3, 1.6, 1.9, 2.2])
-energies = []
-
-for r in distances:
-    # Place Li and H along the z-axis
-    atoms = Atoms("LiH", positions=[[4.0, 4.0, 4.0 - r/2], [4.0, 4.0, 4.0 + r/2]],
-                  cell=[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]], pbc=True)
-
-    # Attach the calculator with the ADAPT-VQE method
-    atoms.calc = Carcara(method="adapt-vqe",
-                         pool="ceo",
-                         basis="FAO",
-                         optimizer="COBYLA",
-                         h=h_val,
-                         max_iterations=10,
-                         gradient_tolerance=1e-5,
-                         verbose=False)
-
-    energy_ev = atoms.get_total_energy()
-    energies.append(energy_ev)
-    print(f"R = {r:.2f} A -> Energy = {energy_ev:.4f} eV")
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.12)
+spacing = grid.dz * BOHR_TO_ANGSTROM  # Grid stores its spacing in bohr.
+distances = 1.12 + 2 * spacing * np.arange(8)
 ```
 
-Referencing these energies to the isolated Li + H atoms (computed as in the H$_2$ section, with a `GTO` basis and the matching grid) yields a bound minimum around the experimental equilibrium distance of $1.6$ Å. The full pool-and-mapping comparison over this curve — with the atomic-sum reference and its caveats about the curated distance set — is `examples/16_ADAPTVQE_LiH_dissociation.py`.
+Each nucleus therefore moves by one whole grid interval between successive
+geometries. This preserves its alignment relative to the nodes and reduces
+changes in core sampling, often called the *egg-box effect*. It does not remove
+integration error or establish convergence. Freezing the core reduces the
+variational problem, but its integrals still need adequate resolution.
+
+## Reproduce the data and PNG
+
+From a source checkout with Carcará installed, run:
+
+```bash
+python examples/30_LiH_basis_pool_scan.py
+```
+
+The script writes these files into `docs/source/_static/lih/`:
+
+- `energies.csv`: total energy, reference energy, operator count, qubit count
+  and convergence information for every basis, pool and distance, plus the
+  probability of finding one active electron of each spin.
+- `metadata.json`: package versions, grid settings, distances and solver controls.
+- `basis_pool_scan.png`: the comparison shown below.
+
+To redraw the saved CSV without rerunning any calculations:
+
+```bash
+python examples/30_LiH_basis_pool_scan.py --plot-only
+```
+
+To test another grid without overwriting the documentation figure:
+
+```bash
+python examples/30_LiH_basis_pool_scan.py --spacing 0.10 --output-dir /tmp/lih-finer-grid
+```
+
+Changing the spacing also changes the grid-aligned distances. Compare only
+matching geometries, or adapt the distance list when performing a systematic
+convergence study. Check a larger box independently of the grid spacing.
+
+```{figure} ../_static/lih/basis_pool_scan.png
+:name: lih-basis-pool-comparison
+:alt: LiH total energy against Li–H distance for two generated basis sets and four ADAPT-VQE pools, with differences from the fermionic pool below.
+:class: molecular-plot
+:width: 100%
+
+Calculated LiH energies for two basis sets and four operator pools. The upper
+panels show total energies; the lower panels show differences from the
+fermionic-pool calculation in the same basis at the same distance. Curves may
+overlap. Black crosses identify an unmet outer convergence criterion or an
+unsuccessful inner optimisation. Lines connect calculated points only.
+```
+
+Download the {download}`PNG <../_static/lih/basis_pool_scan.png>`,
+{download}`CSV <../_static/lih/energies.csv>` and
+{download}`calculation settings <../_static/lih/metadata.json>`.
+
+## Read the figure
+
+First compare pools **within one column**: the Hamiltonian is identical there.
+The lower panel makes small differences visible; its fermionic reference is a
+variational calculation, not an exact-diagonalisation benchmark. `qeb` and `ceo`
+are expected to coincide for the Jordan–Wigner construction used here.
+
+Then compare the two upper panels: a different basis changes the approximate
+Hamiltonian and the number of qubits. A lower energy alone does not establish
+better physical accuracy when the numerical integrals are not converged.
+
+These are calculated results for a small teaching model, **not a converged
+spectroscopic potential**. The figure does not establish the experimental
+bond length, dissociation energy or chemical accuracy. Check the basis, grid,
+box size, frozen-core approximation, final electron number and optimisation
+before making those claims.
+
+The plotted quantity is the total energy. If you need a binding curve, define
+consistent fragment calculations and subtract their energies:
+
+```{math}
+\Delta E_b(R) = E_{\mathrm{LiH},b}(R)
+- E_{\mathrm{Li},b} - E_{\mathrm{H},b}.
+```
+
+Use compatible basis, grid, potential and core conventions, and account for the
+open-shell isolated atoms. `reference_energy` is a molecular reference
+determinant, not the sum of isolated-atom energies. The helper
+`examples/pes_utils.py::atomic_reference` already returns **eV**; do not convert
+it from Hartree a second time.
+
+The supplied `3-21G` calculation reports grid-resolution warnings for a compact
+Gaussian function; freezing the core does not remove that numerical issue.
+The qubit-pool searches can also exhaust the 40-step growth budget. Both are
+limitations of this demonstration. The CSV's `particle_sector_weight` should
+be close to one for the intended two-electron problem; inspect it separately
+from the energy and optimiser flags.
+
+## Embed the plot in your own documentation
+
+In MyST Markdown, use a figure directive so the caption and alternative text
+remain attached to the image:
+
+````markdown
+```{figure} ../_static/lih/basis_pool_scan.png
+:alt: LiH energy against bond length for two basis sets and four operator pools.
+:width: 100%
+
+LiH basis-set and operator-pool comparison; energies in eV and distances in Å.
+```
+````
+
+The equivalent reStructuredText is:
+
+```rst
+.. figure:: ../_static/lih/basis_pool_scan.png
+   :alt: LiH energy against bond length for two basis sets and four operator pools.
+   :width: 100%
+
+   LiH basis-set and operator-pool comparison; energies in eV and distances in Å.
+```
+
+Paths are relative to the page containing the directive. The image is committed
+with the documentation; Read the Docs does not run the scientific calculation.
+
+## Complete script
+
+```{literalinclude} ../../../examples/30_LiH_basis_pool_scan.py
+:language: python
+```

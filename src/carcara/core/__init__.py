@@ -23,6 +23,8 @@ from .mapping import Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity
 from .planewave import PlaneWaveIntegrals, plane_wave_vectors
 from .serialization import (HAMILTONIAN_FORMATS, HamiltonianRecord,
                             detect_format, load_hamiltonian, save_hamiltonian)
+from .checkpoint import (WavefunctionCheckpoint, load_checkpoint,
+                         prepare_state)
 
 __all__ = [
     "MolecularIntegrals",
@@ -39,4 +41,7 @@ __all__ = [
     "save_hamiltonian",
     "load_hamiltonian",
     "detect_format",
+    "WavefunctionCheckpoint",
+    "load_checkpoint",
+    "prepare_state",
 ]

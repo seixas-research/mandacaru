@@ -7,7 +7,7 @@ composes a Pauli sum per fermionic term.
 
 None of that depends on the *algorithm* you run afterwards. So the qubit
 Hamiltonian is worth caching: build it once, then sweep operator pools,
-optimizers, ansätze, mappings or temperature schedules essentially for free.
+optimisers, ansätze, mappings or temperature schedules essentially for free.
 
 ```python
 from ase import Atoms

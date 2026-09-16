@@ -14,7 +14,9 @@ hardware**.
 
 The energy has to be *measured* instead:
 
-$$\langle H\rangle = \sum_j c_j \langle P_j\rangle,$$
+```{math}
+\langle H\rangle = \sum_j c_j \langle P_j\rangle,
+```
 
 with each $\langle P_j\rangle$ estimated from shots in that Pauli's own
 eigenbasis.
@@ -120,10 +122,10 @@ QiskitProvider(device="ibm_kingston,ibm_fez,ibm_marrakesh", shots=4096)  # least
 Credentials come from `QiskitRuntimeService.save_account(...)` run once, or
 from `QiskitProvider(instance=..., token=..., channel=...)`.
 
-**Optimize locally, measure once.** QPU time is scarce (the open plan gives
-ten minutes a month), and a variational optimization needs hundreds of energy
-evaluations. So run the optimization on the local state vector and measure
-only the optimized states on hardware:
+**Optimise locally, measure once.** QPU time is scarce (the open plan gives
+ten minutes a month), and a variational optimisation needs hundreds of energy
+evaluations. So run the optimisation on the local state vector and measure
+only the optimised states on hardware:
 
 ```python
 from carcara.algorithms.base import measure_energies
@@ -151,9 +153,9 @@ Carcara(method="adapt-vqe",
 ```
 
 A driver with `shots > 0` and an IBM device (`Carcara(..., device="ibm_kingston",
-shots=4096)`) runs the whole optimization through the Estimator instead, one
+shots=4096)`) runs the whole optimisation through the Estimator instead, one
 job per energy evaluation; do that on a fake backend, not on a budget.
-Example `24_ADAPTVQE_LiH_IBM.py` follows the optimize-locally pattern.
+Example `24_ADAPTVQE_LiH_IBM.py` follows the optimise-locally pattern.
 
 ## Registered devices
 
@@ -188,9 +190,9 @@ Carcara(method="vqe",
 Naming a QPU **without** `shots` is refused up front, when the solver is built,
 rather than at submission time:
 
-```python
+```pycon
 >>> Carcara(method="adapt-vqe",
-            device="braket-ionq-aria").run()
+...         device="braket-ionq-aria").run()
 ValueError: device 'braket-ionq-aria' is real quantum hardware, which cannot
 return a state vector: pass shots > 0 (e.g. shots=8192) so the energy is
 estimated from measurements.
@@ -245,7 +247,7 @@ adaptive loop would have to measure each pool gradient as well; that is not
 implemented yet.
 
 For a fixed ansatz, `method="vqe"` is fully hardware-native
-today — every cost evaluation in the optimization is measured on the device.
+today — every cost evaluation in the optimisation is measured on the device.
 :::
 
 ---

@@ -1,77 +1,127 @@
-# Variational Quantum Eigensolver (VQE)
+# Variational quantum eigensolver
 
-The Variational Quantum Eigensolver (VQE) is a hybrid classical-quantum algorithm designed to find the ground state and ground-state energy of a given Hamiltonian. It is particularly suited for Noisy Intermediate-Scale Quantum (NISQ) devices because it delegates the parameter optimization to a classical computer, keeping the quantum coherence time requirements relatively low.
+VQE estimates a ground-state energy by minimising the expectation value of a
+Hamiltonian in a parameterised trial state. A quantum circuit prepares the state;
+a classical optimiser updates the parameters. A local simulator can perform the
+same workflow, as in [the LiH tutorial](../tutorial/vqe_lih.md).
 
----
+## The variational principle
 
-## The Variational Principle
+For a Hermitian Hamiltonian $\hat H$ with lowest eigenvalue $E_0$, any non-zero
+trial state satisfies
 
-VQE is mathematically anchored on the Ritz variational principle from quantum mechanics. Let $H$ be a Hermitian operator representing the Hamiltonian of a system. Its ground-state energy $E_0$ is the lowest eigenvalue of $H$:
+```{math}
+E(\boldsymbol{\theta}) =
+\frac{\langle\psi(\boldsymbol{\theta})|\hat H
+|\psi(\boldsymbol{\theta})\rangle}
+{\langle\psi(\boldsymbol{\theta})|\psi(\boldsymbol{\theta})\rangle}
+\geq E_0.
+```
 
-$$H |\psi_0\rangle = E_0 |\psi_0\rangle$$
+A unitary circuit $U(\boldsymbol{\theta})$ acting on a normalised reference state
+preserves its norm. The denominator is then one:
 
-For any parameterized trial state (or ansatz) $|\psi(\boldsymbol{\theta})\rangle$, where $\boldsymbol{\theta} = (\theta_1, \theta_2, \dots, \theta_M)^T$ is a vector of classical parameters, the expectation value of the energy (Rayleigh quotient) satisfies:
+```{math}
+|\psi(\boldsymbol{\theta})\rangle
+= U(\boldsymbol{\theta})|\Phi_{\mathrm{ref}}\rangle,
+\qquad
+E(\boldsymbol{\theta})
+= \langle\Phi_{\mathrm{ref}}|U^\dagger(\boldsymbol{\theta})
+\hat H U(\boldsymbol{\theta})|\Phi_{\mathrm{ref}}\rangle.
+```
 
-$$E(\boldsymbol{\theta}) = \frac{\langle\psi(\boldsymbol{\theta})| H |\psi(\boldsymbol{\theta})\rangle}{\langle\psi(\boldsymbol{\theta})|\psi(\boldsymbol{\theta})\rangle} \ge E_0$$
+The exact minimum within the ansatz is an upper bound to the ground-state energy
+of that Hamiltonian. A practical optimiser may find a local minimum. Measurement
+noise can also obscure the bound. Neither optimisation nor a flexible ansatz
+corrects an inaccurate basis or numerical integration grid.
 
-If the ansatz state is prepared via a unitary quantum circuit acting on a reference state $|\Phi_{\text{ref}}\rangle$ (such as the Hartree-Fock state), the state is normalized ($\langle\psi(\boldsymbol{\theta})|\psi(\boldsymbol{\theta})\rangle = 1$), and the energy expectation simplifies to:
+## Electronic Hamiltonian
 
-$$E(\boldsymbol{\theta}) = \langle\psi(\boldsymbol{\theta})| H |\psi(\boldsymbol{\theta})\rangle = \langle\Phi_{\text{ref}}| U^\dagger(\boldsymbol{\theta}) H U(\boldsymbol{\theta}) |\Phi_{\text{ref}}\rangle$$
+In the Born–Oppenheimer approximation, the nuclei are fixed while we solve the
+electronic problem. With orthonormal spin orbitals $\chi_p(x)$, where $x$ includes
+position and spin, the molecular Hamiltonian in atomic units is
 
-The goal of VQE is to minimize $E(\boldsymbol{\theta})$ by classically updating the parameter vector $\boldsymbol{\theta}$ using optimization algorithms (e.g., COBYLA, Nelder-Mead, L-BFGS-B):
+```{math}
+\hat H = \sum_{pq} h_{pq} a_p^\dagger a_q
++ \frac{1}{2}\sum_{pqrs} g_{pqrs} a_p^\dagger a_q^\dagger a_s a_r
++ E_{\mathrm{nuc}}\hat I.
+```
 
-$$E_{\text{VQE}} = \min_{\boldsymbol{\theta}} \langle\psi(\boldsymbol{\theta})| H |\psi(\boldsymbol{\theta})\rangle \approx E_0$$
+The fermionic operators obey
 
----
+```{math}
+\{a_p,a_q^\dagger\}=\delta_{pq},
+\qquad \{a_p,a_q\}=\{a_p^\dagger,a_q^\dagger\}=0.
+```
 
-## Second-Quantized Electronic Hamiltonian
+Using the physicists' convention consistently with the operator order above,
 
-In quantum chemistry, the electronic Hamiltonian in the Born-Oppenheimer approximation is expressed in second quantization using a set of orthonormal spin-orbitals:
+```{math}
+\begin{aligned}
+h_{pq} &= \int \chi_p^*(x)
+\left[-\frac{1}{2}\nabla^2
+-\sum_A\frac{Z_A}{|\mathbf r-\mathbf R_A|}\right]\chi_q(x)\,\mathrm dx,\\
+g_{pqrs} &= \iint
+\frac{\chi_p^*(x_1)\chi_q^*(x_2)\chi_r(x_1)\chi_s(x_2)}
+{|\mathbf r_1-\mathbf r_2|}\,\mathrm dx_1\,\mathrm dx_2,\\
+E_{\mathrm{nuc}} &= \sum_{A<B}\frac{Z_AZ_B}{|\mathbf R_A-\mathbf R_B|}.
+\end{aligned}
+```
 
-$$H = \sum_{pq} h_{pq} a^\dagger_p a_q + \frac{1}{2} \sum_{pqrs} g_{pqrs} a^\dagger_p a^\dagger_q a_s a_r + E_{\text{nuc}}$$
+The ideal Coulomb expressions explain the model. Carcará evaluates integrals on
+a finite grid and uses numerical treatments of nuclear singularities, so a grid
+convergence study remains necessary. Its low-level integral arrays are in atomic
+units; the tutorial's result objects report eV.
 
-where:
-* $a^\dagger_p$ and $a_q$ are fermionic creation and annihilation operators satisfying the canonical anticommutation relations:
-  $$\{a_p, a^\dagger_q\} = \delta_{pq}, \quad \{a_p, a_q\} = \{a^\dagger_p, a^\dagger_q\} = 0$$
-* $h_{pq}$ represent the one-body integrals (kinetic energy of electrons and nuclear attraction):
-  $$h_{pq} = \int \phi^*_p(\mathbf{r}) \left( -\frac{1}{2} \nabla^2 - \sum_A \frac{Z_A}{|\mathbf{r} - \mathbf{R}_A|} \right) \phi_q(\mathbf{r}) \, d\mathbf{r}$$
-* $g_{pqrs}$ are the two-body electron-repulsion integrals (ERI) in physicists' convention:
-  $$g_{pqrs} = \iint \frac{\phi^*_p(\mathbf{r}_1) \phi^*_q(\mathbf{r}_2) \phi_s(\mathbf{r}_1) \phi_r(\mathbf{r}_2)}{|\mathbf{r}_1 - \mathbf{r}_2|} \, d\mathbf{r}_1 d\mathbf{r}_2$$
-* $E_{\text{nuc}}$ is the classical nuclear repulsion energy.
+For neutral LiH, the all-electron problem contains four electrons. A frozen-core
+calculation keeps the lowest doubly occupied molecular orbital fixed and builds
+an effective Hamiltonian for the remaining two electrons. Its constant and
+one-electron terms retain the core contribution; simply reducing the electron
+count is not equivalent.
 
----
+## Map fermions to qubits
 
-## Fermion-to-Qubit Mappings
+Carcará supports Jordan–Wigner, parity and Bravyi–Kitaev mappings. For zero-based
+orbital indices, the Jordan–Wigner operators can be written
 
-Since quantum computers operate on qubits (represented by spin-1/2 algebra with Pauli matrices $I, X, Y, Z$) rather than fermions, fermionic creation and annihilation operators must be mapped to spin operators. Carcará supports three mapping methods:
+```{math}
+a_j^\dagger = \left(\prod_{k<j}Z_k\right)\frac{X_j-iY_j}{2},
+\qquad
+a_j = \left(\prod_{k<j}Z_k\right)\frac{X_j+iY_j}{2}.
+```
 
-### 1. Jordan-Wigner (JW) Mapping
-The Jordan-Wigner mapping maps fermionic occupations directly to qubit states, representing the nonlocal fermionic anticommutation phases using chains of $Z$ gates:
+An omitted factor is an identity on the other qubits. The Z string enforces the
+fermionic anticommutation signs. Its weight can grow linearly with the orbital
+index; Bravyi–Kitaev distributes the parity information to obtain logarithmic
+operator weight. Parity mapping also allows an optional two-qubit reduction
+when the required spin-parity sectors are fixed.
 
-$$a^\dagger_j = I^{\otimes j-1} \otimes \left( \frac{X - iY}{2} \right) \otimes Z^{\otimes N-j}$$
-$$a_j = I^{\otimes j-1} \otimes \left( \frac{X + iY}{2} \right) \otimes Z^{\otimes N-j}$$
+A mapping changes the representation, not the underlying spectrum. The physical
+particle-number sector must still be identified when comparing eigenvalues.
 
-### 2. Parity Mapping
-The Parity mapping stores the parity of occupations of preceding spin-orbitals on each qubit. This configuration allows a **two-qubit reduction** by exploiting the conservation of total electron number and spin parity, which reduces the active qubit count by 2.
+## The UCCSD ansatz
 
-### 3. Bravyi-Kitaev (BK) Mapping
-The Bravyi-Kitaev mapping uses a binary tree structure to store partial parities, balancing the locality of update operations and parity calculations. Both JW and BK scale the operator weight logarithmically or linearly.
+Unitary coupled cluster with single and double excitations starts from a
+Hartree–Fock determinant:
 
----
+```{math}
+|\psi(\boldsymbol{\theta})\rangle
+= e^{T(\boldsymbol{\theta})-T^\dagger(\boldsymbol{\theta})}
+|\mathrm{HF}\rangle,
+\qquad T=T_1+T_2,
+```
 
-## The UCCSD Ansatz
+with occupied indices $i,j$ and unoccupied indices $a,b$:
 
-A common physically motivated trial state is the **Unitary Coupled Cluster** (UCC) ansatz. The Unitary Coupled Cluster with Singles and Doubles (UCCSD) defines the parameterized state as:
+```{math}
+T_1=\sum_{ia}\theta_i^a a_a^\dagger a_i,
+\qquad
+T_2=\sum_{i<j,\,a<b}\theta_{ij}^{ab}a_a^\dagger a_b^\dagger a_j a_i.
+```
 
-$$|\psi(\boldsymbol{\theta})\rangle = e^{T(\boldsymbol{\theta}) - T^\dagger(\boldsymbol{\theta})} |\text{HF}\rangle$$
-
-where $|\text{HF}\rangle$ is the Hartree-Fock reference state, and $T = T_1 + T_2$ represents the single and double excitation operators:
-
-$$T_1 = \sum_{i \in \text{occ}, a \in \text{virt}} \theta_i^a a^\dagger_a a_i$$
-$$T_2 = \sum_{i < j \in \text{occ}, a < b \in \text{virt}} \theta_{ij}^{ab} a^\dagger_a a^\dagger_b a_j a_i$$
-
-Because exponentiating a large sum of non-commuting operators is difficult to implement on a quantum circuit, the unitary is approximated using the first-order **Trotter-Suzuki decomposition**:
-
-$$e^{T(\boldsymbol{\theta}) - T^\dagger(\boldsymbol{\theta})} \approx \prod_k e^{\theta_k (G_k - G_k^\dagger)}$$
-
-where $G_k$ represents individual single or double excitations.
+A circuit usually implements an ordered product of individual excitation
+unitaries. This generally approximates the exponential of their sum because
+different excitations need not commute. Within an individual generator whose
+Pauli terms commute, the factorisation into Pauli rotations is exact. These are
+two distinct statements; exact compilation of each factor does not remove the
+ansatz approximation.

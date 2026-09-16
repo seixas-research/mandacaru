@@ -6,8 +6,8 @@
 units: Angstrom
 n_atoms: 2
 geometry:
-  H       5.0000000000     5.0000000000     4.5000000000
-  H       5.0000000000     5.0000000000     5.5000000000
+  H       5.0000000000     5.0000000000     4.5010578620
+  H       5.0000000000     5.0000000000     5.4989458567
 cell_present: True
 cell_vectors:
   a1 = [ 10.0000000000   0.0000000000   0.0000000000]
@@ -21,7 +21,7 @@ classical_optimizer: L-BFGS-B
 energy_unit: eV
 max_iterations: 10
 gradient_tol: 1e-05
-reference_energy_eV: -29.1995748446
+reference_energy_eV: -29.2023843502
 initial_ansatz: |HF> (0 parameters)
 mapping: parity
 num_particles: (1, 1)
@@ -31,10 +31,10 @@ pool_size: 3
 [ITERATION 1]
 selected_operator: D(0,2->1,3)
   kind: fermionic-double
-  gradient: 2.626315e-01
+  gradient: 2.624921e-01
   pauli: -0.5j XY  +0.5j YX
 expressivity_E: 1.934351
-energy_eV: -29.7909829941
+energy_eV: -29.7916502689
 num_parameters: 1
 cnot_count: 4
 circuit_depth: 9
@@ -42,24 +42,24 @@ total_gates: 12
 one_qubit_gates: 8
 pool_size: 3
 operator_pool:
-  [  0] S(0->1)  |grad|=0.000000e+00
+  [  0] S(0->1)  |grad|=6.234258e-18
         pauli: +1j YI
-  [  1] S(2->3)  |grad|=0.000000e+00
+  [  1] S(2->3)  |grad|=6.234258e-18
         pauli: -1j IY
-  [  2] D(0,2->1,3)  |grad|=2.626315e-01 (selected)
+  [  2] D(0,2->1,3)  |grad|=2.624921e-01 (selected)
         pauli: -0.5j XY  +0.5j YX
 
 ========================================================================
 [SUMMARY]
 converged: True
 classical_optimizer: L-BFGS-B
-optimal_energy_eV: -29.7909829941
-reference_energy_eV: -29.1995748446
-correlation_energy_eV: -0.5914081495
+optimal_energy_eV: -29.7916502689
+reference_energy_eV: -29.2023843502
+correlation_energy_eV: -0.5892659186
 num_operators: 1
 num_parameters: 1
 final_expressivity_E: 1.934351
-final_max_gradient: 2.737843e-07
+final_max_gradient: 2.262851e-07
 cost_evaluations: 10
 cnot_count: 4
 circuit_depth: 9

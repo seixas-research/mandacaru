@@ -1,0 +1,49 @@
+{
+  "description": "Calculated LiH total energies; numerical teaching example",
+  "carcara_version": "26.9.19",
+  "python_version": "3.14.6",
+  "numpy_version": "2.4.6",
+  "scipy_version": "1.18.0",
+  "ase_version": "3.29.0",
+  "basis_sets": [
+    "STO-3G",
+    "3-21G"
+  ],
+  "pools": [
+    "fermionic",
+    "qubit",
+    "qeb",
+    "ceo"
+  ],
+  "mapping": "jordan_wigner",
+  "frozen_core": true,
+  "charge": 0,
+  "active_electrons": 2,
+  "box_half_width_A": 4.8,
+  "requested_spacing_A": 0.12,
+  "actual_spacing_A": 0.12000000000000033,
+  "distances_A": [
+    1.12,
+    1.3600000000000008,
+    1.6000000000000014,
+    1.840000000000002,
+    2.0800000000000027,
+    2.3200000000000034,
+    2.560000000000004,
+    2.8000000000000047
+  ],
+  "gradient_tolerance_Ha": 1e-05,
+  "max_iterations": 40,
+  "optimiser": "L-BFGS-B",
+  "optimiser_maxiter": 1000,
+  "execute_circuits": false,
+  "profile": false,
+  "sparse": true,
+  "sector": "fixed particle numbers except for the qubit pool",
+  "energy_unit": "eV",
+  "limitations": [
+    "Native generated basis functions, not published exponent tables",
+    "Finite grid and box; compact 3-21G functions trigger resolution warnings",
+    "A finite growth budget may leave some pool searches unconverged"
+  ]
+}

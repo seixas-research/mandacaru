@@ -98,6 +98,24 @@ class VariationalDriver(Calculator):
         been built (default ``False``).  ``True`` writes ``"hamiltonian"`` with
         the extension of ``hamiltonian_format``; a path writes there.  See
         :mod:`carcara.core.serialization`.
+    checkpoint : str, optional
+        Path of a **wavefunction checkpoint** written during the run (see
+        :mod:`carcara.core.checkpoint`): the reference determinant, the
+        generators, the parameters, the qubit Hamiltonian and the solver's
+        progress.  ADAPT-VQE writes it after every ``checkpoint_every``
+        accepted operators, VQE after every ``checkpoint_every`` cost
+        evaluations (best point so far); both write it once more when the run
+        ends.  Written atomically, so an interruption never leaves a torn file.
+    checkpoint_every : int
+        Checkpoint cadence (default ``1``).
+    resume : str, optional
+        Path of a checkpoint to **continue from**: ADAPT-VQE rebuilds the grown
+        ansatz and its history and keeps growing (``max_iterations`` counts the
+        total number of operators, so raise it to go further); VQE starts its
+        optimization from the stored parameters.  The file must describe the
+        same register (width, mapping, tapering, reference determinant).
+        With ``checkpoint`` set to the same path, every geometry of a
+        relaxation warm-starts from the previous one.
     load_hamiltonian : str, optional
         Path of a Hamiltonian file written by ``save_hamiltonian``.  When given,
         the driver loads the qubit Hamiltonian from disk and **skips the molecular
@@ -172,7 +190,9 @@ class VariationalDriver(Calculator):
                  quenching: bool = True, dry_run: bool = False,
                  kinetic: str | None = None,
                  two_qubit_reduction: bool = False,
-                 atomic_units: bool = False, **calc_kwargs):
+                 atomic_units: bool = False,
+                 checkpoint: str | None = None, checkpoint_every: int = 1,
+                 resume: str | None = None, **calc_kwargs):
         Calculator.__init__(self, **calc_kwargs)
 
         self.verbose = bool(verbose)
@@ -289,6 +309,17 @@ class VariationalDriver(Calculator):
         #: ``(hamiltonian, num_particles, n_spatial_orbitals)`` held unmaterialized
         #: for a dry run given a Hamiltonian at construction.
         self._dry_run_problem = None
+
+        # Wavefunction checkpoints (core.checkpoint): `checkpoint` is written
+        # during the run -- every `checkpoint_every` accepted operators (ADAPT)
+        # or cost evaluations (VQE) and always at the end; `resume` is read at
+        # the start of `run()` and the optimization continues from it.
+        self.checkpoint_path = None if checkpoint is None else str(checkpoint)
+        self.checkpoint_every = max(1, int(checkpoint_every))
+        self.resume_path = None if resume is None else str(resume)
+        #: The last :class:`~carcara.core.checkpoint.WavefunctionCheckpoint`
+        #: written (or built) by this driver.
+        self.checkpoint = None
 
     # -- output units ----------------------------------------------------- #
 
@@ -591,6 +622,100 @@ class VariationalDriver(Calculator):
                       "frozen_core": self.frozen_core,
                       "n_qubits": int(self.n_qubits)})
 
+    # -- wavefunction checkpoints ---------------------------------------- #
+
+    def _checkpoint_record(self, ansatz, parameters, energy_ha, status,
+                           labels=None, kinds=None):
+        """Describe the current state as a
+        :class:`~carcara.core.checkpoint.WavefunctionCheckpoint`.
+
+        Everything a consumer needs is on the ansatz -- the register, the
+        reference determinant in register terms, the generators as Pauli sums
+        -- so the record is the same for every ansatz class.
+        """
+        from ..core.checkpoint import WavefunctionCheckpoint
+
+        generators = list(ansatz.pauli_generators)
+        operators = getattr(ansatz, "operators", None)
+        if labels is None:
+            labels = ([op.label for op in operators] if operators is not None
+                      else [f"T{k}" for k in range(len(generators))])
+        if kinds is None:
+            kinds = ([op.kind for op in operators] if operators is not None
+                     else ["uccsd"] * len(generators))
+        occupied = getattr(ansatz, "occupied", None)
+        if occupied is None:
+            occupied = getattr(ansatz, "_occupied", None)
+        atoms = getattr(self, "atoms", None)
+        metadata = {
+            "driver": type(self).__name__,
+            "carcara_version": __import__("carcara").__version__,
+            "basis": (self.basis if isinstance(self.basis, str)
+                      else {k: v for k, v in dict(self.basis).items()}),
+            "optimizer": self.optimizer.method,
+        }
+        if atoms is not None:
+            metadata["geometry"] = {
+                "symbols": list(atoms.get_chemical_symbols()),
+                "positions_angstrom": np.asarray(atoms.positions,
+                                                 dtype=float).tolist(),
+                "cell_angstrom": np.asarray(atoms.cell, dtype=float).tolist(),
+            }
+        particles = getattr(self, "num_particles", None)
+        return WavefunctionCheckpoint(
+            n_qubits=ansatz.n_qubits,
+            reference_qubits=list(ansatz.reference_qubits()),
+            generators=generators,
+            parameters=np.asarray(parameters, dtype=float),
+            labels=list(labels), kinds=list(kinds),
+            mapping=str(self.mapping),
+            two_qubit_reduction=bool(self.two_qubit_reduction),
+            num_particles=None if particles is None else tuple(particles),
+            n_spatial_orbitals=getattr(self, "n_spatial_orbitals", None),
+            occupied_orbitals=None if occupied is None else list(occupied),
+            energy=None if energy_ha is None else float(energy_ha),
+            hamiltonian=getattr(self, "hamiltonian", None),
+            method=self._method_name(),
+            status=dict(status), metadata=metadata)
+
+    def _write_checkpoint(self, record) -> str | None:
+        """Save ``record`` to :attr:`checkpoint_path` (a no-op without one)."""
+        self.checkpoint = record
+        if self.checkpoint_path is None:
+            return None
+        return record.save(self.checkpoint_path)
+
+    def _load_resume(self, ansatz):
+        """The checkpoint named by :attr:`resume_path`, checked against ``ansatz``.
+
+        A checkpoint is only resumable into the register it was written for:
+        the width, the mapping, the tapering and the reference determinant must
+        all agree, otherwise the generators would act on the wrong qubits.
+        """
+        from ..core.checkpoint import WavefunctionCheckpoint
+        from ..core.mapping import _canonical_method
+
+        if self.resume_path is None:
+            return None
+        record = WavefunctionCheckpoint.load(self.resume_path)
+        problems = []
+        if record.n_qubits != ansatz.n_qubits:
+            problems.append(f"{record.n_qubits} qubits in the file, "
+                            f"{ansatz.n_qubits} in this run")
+        if _canonical_method(record.mapping) != _canonical_method(self.mapping):
+            problems.append(f"mapping {record.mapping!r} in the file, "
+                            f"{self.mapping!r} in this run")
+        if bool(record.two_qubit_reduction) != bool(self.two_qubit_reduction):
+            problems.append("two-qubit reduction differs")
+        if sorted(record.reference_qubits) != sorted(ansatz.reference_qubits()):
+            problems.append(f"reference determinant {record.reference_qubits} "
+                            f"in the file, {ansatz.reference_qubits()} here")
+        if problems:
+            raise ValueError(
+                f"cannot resume from {self.resume_path!r}: "
+                + "; ".join(problems))
+        return record
+
     # -- optimization policy (quenching) ---------------------------------- #
 
     def _optimize_grown(self, cost, previous_parameters) -> OptimizeResult:
@@ -623,7 +748,7 @@ class VariationalDriver(Calculator):
                               history=result.history, success=result.success,
                               message=result.message)
 
-    def _optimize_all(self, cost, x0) -> OptimizeResult:
+    def _optimize_all(self, cost, x0, callback=None) -> OptimizeResult:
         """Optimize a fixed-size parameter vector, honoring :attr:`quenching`.
 
         ``quenching=True`` (default) is a single joint minimization over every
@@ -634,7 +759,7 @@ class VariationalDriver(Calculator):
         """
         x0 = np.asarray(x0, dtype=float).ravel()
         if self.quenching or x0.size <= 1:
-            return self.optimizer.minimize(cost, x0)
+            return self.optimizer.minimize(cost, x0, callback=callback)
 
         params = x0.copy()
         history: list[float] = []
@@ -647,7 +772,14 @@ class VariationalDriver(Calculator):
                 trial[_k] = float(np.asarray(t, dtype=float).ravel()[0])
                 return cost(trial)
 
-            step = self.optimizer.minimize(single, np.atleast_1d(params[k]))
+            def report(t, value, _n, _k=k, _p=params):
+                if callback is not None:
+                    trial = _p.copy()
+                    trial[_k] = float(np.asarray(t, dtype=float).ravel()[0])
+                    callback(trial, value, nfev + _n)
+
+            step = self.optimizer.minimize(single, np.atleast_1d(params[k]),
+                                           callback=report)
             params[k] = float(np.asarray(step.x, dtype=float).ravel()[0])
             history.extend(step.history)
             nfev += step.nfev

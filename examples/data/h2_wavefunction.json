@@ -1,0 +1,217 @@
+{
+ "format": "carcara-wavefunction-checkpoint",
+ "version": 1,
+ "written": "2026-09-16T18:02:01+00:00",
+ "energy_unit": "Ha",
+ "n_qubits": 4,
+ "reference_qubits": [
+  0,
+  2
+ ],
+ "mapping": "jordan_wigner",
+ "two_qubit_reduction": false,
+ "num_particles": [
+  1,
+  1
+ ],
+ "n_spatial_orbitals": null,
+ "occupied_orbitals": [
+  0,
+  2
+ ],
+ "method": "adapt-vqe",
+ "energy": -1.1186855247328116,
+ "operators": [
+  {
+   "label": "D(0,2->1,3)",
+   "kind": "fermionic-double",
+   "parameter": -0.11631339362291704,
+   "generator": {
+    "num_qubits": 4,
+    "terms": [
+     [
+      "XXXY",
+      0.0,
+      -0.125
+     ],
+     [
+      "XXYX",
+      0.0,
+      0.125
+     ],
+     [
+      "XYXX",
+      0.0,
+      -0.125
+     ],
+     [
+      "XYYY",
+      0.0,
+      -0.125
+     ],
+     [
+      "YXXX",
+      0.0,
+      0.125
+     ],
+     [
+      "YXYY",
+      0.0,
+      0.125
+     ],
+     [
+      "YYXY",
+      0.0,
+      -0.125
+     ],
+     [
+      "YYYX",
+      0.0,
+      0.125
+     ]
+    ]
+   }
+  }
+ ],
+ "hamiltonian": {
+  "num_qubits": 4,
+  "terms": [
+   [
+    "IIII",
+    -0.3219547221022008,
+    0.0
+   ],
+   [
+    "IIIZ",
+    -0.07926990558586805,
+    0.0
+   ],
+   [
+    "IIZI",
+    0.21168296792409996,
+    0.0
+   ],
+   [
+    "IIZZ",
+    0.10413590718694665,
+    0.0
+   ],
+   [
+    "IZII",
+    -0.0792699055858681,
+    0.0
+   ],
+   [
+    "IZIZ",
+    0.14578968725565403,
+    0.0
+   ],
+   [
+    "IZZI",
+    0.13860159247060144,
+    0.0
+   ],
+   [
+    "XXXX",
+    0.03446568528365478,
+    0.0
+   ],
+   [
+    "XXYY",
+    0.03446568528365478,
+    0.0
+   ],
+   [
+    "YYXX",
+    0.03446568528365478,
+    0.0
+   ],
+   [
+    "YYYY",
+    0.03446568528365478,
+    0.0
+   ],
+   [
+    "ZIII",
+    0.21168296792410002,
+    0.0
+   ],
+   [
+    "ZIIZ",
+    0.13860159247060144,
+    0.0
+   ],
+   [
+    "ZIZI",
+    0.14096824991309434,
+    0.0
+   ],
+   [
+    "ZZII",
+    0.10413590718694665,
+    0.0
+   ]
+  ]
+ },
+ "status": {
+  "complete": true,
+  "converged": true,
+  "iteration": 1,
+  "max_gradient": 6.793973983398871e-08,
+  "num_evaluations": 10,
+  "reference_energy": -1.1025775312684851,
+  "optimizer_failures": [],
+  "iterations": [
+   {
+    "operator_label": "D(0,2->1,3)",
+    "operator_kind": "fermionic-double",
+    "max_gradient": 0.27572548226923826,
+    "energy_ha": -1.1186855247328116,
+    "cnot_count": 48,
+    "depth": 65,
+    "num_parameters": 1
+   }
+  ]
+ },
+ "metadata": {
+  "driver": "ADAPTVQE",
+  "carcara_version": "26.9.18",
+  "basis": "FAO",
+  "optimizer": "L-BFGS-B",
+  "geometry": {
+   "symbols": [
+    "H",
+    "H"
+   ],
+   "positions_angstrom": [
+    [
+     3.0,
+     3.0,
+     2.63
+    ],
+    [
+     3.0,
+     3.0,
+     3.37
+    ]
+   ],
+   "cell_angstrom": [
+    [
+     6.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     6.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     6.0
+    ]
+   ]
+  }
+ }
+}

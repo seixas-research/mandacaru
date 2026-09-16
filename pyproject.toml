@@ -52,9 +52,9 @@ classifiers = [
 # Parquet writer crashes in a process that has also run Qiskit's transpiler
 # (see the warning in carcara.core.serialization).
 pyarrow = ['pyarrow']
-docs = ['sphinx', 'sphinx-rtd-theme', 'myst-parser', 'furo']
+docs = ['sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 coverage = ['pytest-cov']
-dev = ['pyarrow', 'sphinx', 'sphinx-rtd-theme', 'myst-parser', 'furo',
+dev = ['pyarrow', 'sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6',
        'pytest-cov']
 
 [tool.pytest.ini_options]

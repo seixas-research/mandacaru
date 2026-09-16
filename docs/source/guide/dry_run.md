@@ -80,10 +80,12 @@ Hamiltonian builder, the timings and the circuit providers raise.
 
 ## How the count is made
 
-$$N_\text{qubits} = 2\,(M_\text{basis} - M_\text{frozen}),$$
+```{math}
+N_\text{qubits} = 2\,(M_\text{basis} - M_\text{frozen}),
+```
 
 one qubit per active **spin-orbital**: the basis family is instantiated exactly
-as a run would (so `size`, polarization and cutoff options are honoured) and
+as a run would (so `size`, polarisation and cutoff options are honoured) and
 its functions are *counted* rather than integrated; the frozen core removes
 doubly occupied spatial orbitals; the plane-wave family counts plane waves
 below the cutoff.

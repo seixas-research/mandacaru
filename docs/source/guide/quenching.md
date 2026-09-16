@@ -1,12 +1,12 @@
-# Dynamic Parametrization (`quenching`)
+# Dynamic Parametrisation (`quenching`)
 
 Every method accepts a `quenching` flag that controls **how many
-parameters the classical optimizer varies at each step**.
+parameters the classical optimiser varies at each step**.
 
 ```python
 Carcara(method="adapt-vqe",
         basis="FAO",
-        quenching=True)    # default: re-optimize everything
+        quenching=True)    # default: re-optimise everything
 Carcara(method="adapt-vqe",
         basis="FAO",
         quenching=False)   # freeze the past, tune only the newest
@@ -14,19 +14,19 @@ Carcara(method="adapt-vqe",
 
 | | `quenching=True` (default) | `quenching=False` |
 |---|---|---|
-| Adaptive methods | re-optimize **all** parameters each growth step | optimize **only the newest**; earlier angles frozen at their previous optimum |
-| Fixed ansatz (`method="vqe"`) | one joint minimization | sweep parameters one at a time, in index order |
-| Cost per step | $k$-dimensional optimization | 1-dimensional line search |
-| Energy | variationally lowest | an upper bound to the above |
+| Adaptive methods | re-optimise **all** parameters each growth step | optimise **only the newest**; earlier angles frozen at their previous optimum |
+| Fixed ansatz (`method="vqe"`) | one joint minimisation | sweep parameters one at a time, in index order |
+| Cost per step | $k$-dimensional optimisation | 1-dimensional line search |
+| Variational freedom | all current parameters may vary | earlier parameters remain fixed |
 
 ---
 
 ## Adaptive methods
 
 `quenching=True` is textbook ADAPT-VQE: after appending $e^{\theta_k A_k}$ with
-$\theta_k = 0$, the optimizer is handed the **whole** parameter vector,
-warm-started from the previous optimum. That re-optimization is what lets
-ADAPT-VQE reach FCI, and it is why the flag defaults to `True`.
+$\theta_k = 0$, the optimiser is handed the **whole** parameter vector,
+warm-started from the previous optimum. Joint optimisation allows earlier parameters to respond to the new generator.
+It does not by itself guarantee the full configuration-interaction energy.
 
 `quenching=False` *quenches* each angle into place: parameters
 $\theta_1 \dots \theta_{k-1}$ are held fixed and only $\theta_k$ is varied. Each
@@ -55,12 +55,13 @@ is nothing to freeze.
 ## Fixed ansätze
 
 `method="vqe"` has no growth loop, so `quenching=False` takes
-the natural analogue: a **sequential sweep**. Parameter $k$ is optimized alone,
-with $0 \dots k-1$ already at their optimized values and $k+1 \dots$ at their
+the natural analogue: a **sequential sweep**. Parameter $k$ is optimised alone,
+with $0 \dots k-1$ already at their optimised values and $k+1 \dots$ at their
 starting values.
 
-This is the same trade: cheaper individual optimizations, a weaker variational
-result. The joint minimization is always at least as good.
+This is the same trade: cheaper individual optimisations, a weaker variational
+result. The exact joint minimum cannot be higher than the minimum with parameters
+fixed, but practical local optimisers need not find either exact minimum.
 
 ---
 
@@ -69,17 +70,17 @@ result. The joint minimization is always at least as good.
 Keep the default `quenching=True` for production energies — it is the standard
 algorithm and the one validated against FCI throughout the test suite.
 
-`quenching=False` is useful when the per-step optimization cost dominates: deep
+`quenching=False` is useful when the per-step optimisation cost dominates: deep
 ansätze with many parameters, expensive cost functions (shot-based hardware
 evaluation, for instance), or when you want to study how much of ADAPT-VQE's
-accuracy comes from re-optimization rather than from operator selection.
+accuracy comes from re-optimisation rather than from operator selection.
 
 ---
 
 ## Where it applies
 
 `quenching` is implemented once on
-{class}`~carcara.algorithms.base.VariationalDriver` and is honored by every
+{class}`~carcara.algorithms.base.VariationalDriver` and is honoured by every
 driver that inherits from it:
 
 - `_optimize_grown` — the growth loop of `ADAPTVQE`, the deflation

@@ -2,7 +2,9 @@
 
 Carcará's ansätze are products of exponentials of anti-Hermitian generators,
 
-$$|\psi(\vec\theta)\rangle = \prod_k e^{\theta_k A_k}\,|\mathrm{HF}\rangle .$$
+```{math}
+|\psi(\vec\theta)\rangle = \prod_k e^{\theta_k A_k}\,|\mathrm{HF}\rangle .
+```
 
 The `backend_provider` argument chooses which quantum SDK **constructs** those
 circuits — and, with `execute_circuits=True`, which SDK **runs** them.
@@ -33,10 +35,12 @@ Carcara(method="adapt-vqe",
 
 Each generator is a qubit `PauliSum` whose terms are $A = \sum_j i\,c_j P_j$ with
 **real** $c_j$ and **mutually commuting** Pauli strings $P_j$ — a property of the
-fermionic and qubit excitation generators. The exponential therefore factorizes
+fermionic and qubit excitation generators. The exponential therefore factorises
 *exactly*, with no Trotter error:
 
-$$e^{\theta A} = \prod_j e^{i\,\theta c_j P_j},$$
+```{math}
+e^{\theta A} = \prod_j e^{i\,\theta c_j P_j},
+```
 
 and each factor is the textbook Pauli-rotation circuit: a basis change to the
 $Z$ axis, a CNOT ladder accumulating the parity onto one qubit, an
@@ -90,7 +94,7 @@ the same answer, so it is a verification and hardware path, not a performance
 one.
 
 Circuit *profiling* always uses the named SDK. Counts differ between providers
-because only Qiskit re-optimizes during transpilation; the unitary does not.
+because only Qiskit re-optimises during transpilation; the unitary does not.
 
 ---
 
@@ -117,7 +121,7 @@ circuit = provider.build(4, ansatz.reference_qubits(),
 print(circuit)
 ```
 
-{class}`~carcara.circuits.UCCSD` accepts `provider=` too, but a circuit realizes
+{class}`~carcara.circuits.UCCSD` accepts `provider=` too, but a circuit realises
 the **Trotter product** form, so `trotter=True` is required:
 
 ```python
@@ -129,7 +133,7 @@ UCCSD(2, (1, 1), trotter=True, provider=build_provider("braket"))
 The VQE method does this automatically when circuit execution is on.
 
 :::{note}
-A circuit can only be *initialized* in a computational basis state, so provider
+A circuit can only be *initialised* in a computational basis state, so provider
 execution accepts Slater-determinant references only — which is what the
 Hartree-Fock reference and the SSVQE reference determinants are. A superposition
 reference raises a clear `ValueError`.

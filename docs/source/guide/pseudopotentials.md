@@ -9,10 +9,10 @@ atoms.calc = Carcara(method="adapt-vqe",
                      basis="NCPP",        # norm-conserving Troullier-Martins
                      h=0.15)
 atoms.calc = Carcara(method="adapt-vqe",
-                     basis="ONCVPSP",     # Hamann's optimized norm-conserving Vanderbilt
+                     basis="ONCVPSP",     # Hamann's optimised norm-conserving Vanderbilt
                      h=0.25)
 atoms.calc = Carcara(method="vqe",
-                     basis={"name": "PAW", "size": "DZP"},   # Bloechl's PAW, polarized double zeta
+                     basis={"name": "PAW", "size": "DZP"},   # Bloechl's PAW, polarised double zeta
                      h=0.25)
 ```
 
@@ -35,7 +35,7 @@ radial atomic solver (`carcara.basis.atomic_solver`):
 | Basis name | Aliases | Family | Projectors | Overlap | Library |
 |---|---|---|---|---|---|
 | `"NCPP"` | `"TM"`, `"NCPP-TM"` | Troullier–Martins norm-conserving, Kleinman–Bylander separable form | one per channel | none | bundled, H–U |
-| `"ONCVPSP"` | `"ONCV"` | Hamann's optimized norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `carcara-oncvpsp`, H–U |
+| `"ONCVPSP"` | `"ONCV"` | Hamann's optimised norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `carcara-oncvpsp`, H–U |
 | `"PAW"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `carcara-paw`, H–U |
 
 Names are case-insensitive. Each family accepts the options `size`,
@@ -96,7 +96,7 @@ register_family(FamilySpec(name="gth", description="...",
 and its name immediately works as a basis name — `basis="GTH"` — on every
 driver, in the dry run and on the command line, with no change to any of them.
 
-## ONCVPSP: optimized norm-conserving Vanderbilt potentials
+## ONCVPSP: optimised norm-conserving Vanderbilt potentials
 
 *(2026-09-14, step 2 of the family plan.)* The second shipped family is
 `"oncvpsp"` (alias `"oncv"`), D. R. Hamann's construction, *Phys. Rev. B*
@@ -131,7 +131,7 @@ general separable form.
    shooting (`bound_state`) so it satisfies the radial equation to fourth
    order; $\varphi_2$ is a second bound state of that $l$ if the atom has one,
    otherwise the scattering state at $\varepsilon_2 = \varepsilon_1 + \Delta$
-   with $\Delta = 1$ Ha (`energy_offset`), integrated outward and normalized
+   with $\Delta = 1$ Ha (`energy_offset`), integrated outward and normalised
    to one inside $r_c$.
 2. **Pseudo partial waves.** Inside $r_c$, $\tilde\varphi_i = \sum_{n=1}^{8}
    c_{in}\,j_l(q_n r)$ with the $q_n$ the interleaved zeros of $j_l$ and
@@ -142,13 +142,13 @@ general separable form.
    third-derivative condition becomes a combination of the value and
    second-derivative conditions. Constraints: value and first three
    derivatives at $r_c$ (Hamann's `ncon = 4`, the targets taken from the AE
-   radial equation, `matching_targets`) and the **generalized norm
+   radial equation, `matching_targets`) and the **generalised norm
    conservation** $\langle\tilde\varphi_i|\tilde\varphi_j\rangle_{r<r_c}
    = \langle\varphi_i|\varphi_j\rangle_{r<r_c}$ for all $i, j$. In the
    remaining freedom the **residual kinetic energy**
    $E^r_i(q_c) = \tfrac12\int_{q_c}^\infty q^4|\tilde\varphi_i(q)|^2\,dq$
    ($q_c = 5$ Bohr⁻¹, `q_cut`; the transform of the whole wave, AE tail
-   included) is minimized *exactly*: the linear constraints are eliminated
+   included) is minimised *exactly*: the linear constraints are eliminated
    through their null space and the one quadratic constraint (the wave's own
    norm) is a Lagrange multiplier found as a one-dimensional root on the
    Moré–Sorensen branch (`constrained_minimum`). No SLSQP; the norm matrix is
@@ -163,12 +163,12 @@ general separable form.
    the projectors are analytic, $\chi_i = \sum_n c_{in}(\varepsilon_i -
    \tfrac12 q_n^2 - V^{scr}_{loc})\,j_l(q_n r)$, zero beyond $r_c$.
    $B_{ij} = \langle\tilde\varphi_i|\chi_j\rangle$ must be symmetric by
-   generalized norm conservation — the generator asserts an asymmetry below
+   generalised norm conservation — the generator asserts an asymmetry below
    1e-6 Ha (achieved: 7e-11 H, 3e-10 Li, 1e-9 O) — and $D = B^{-1}$
-   symmetrized is the $2\times2$ block passed as `nonlocal_coupling` for
+   symmetrised is the $2\times2$ block passed as `nonlocal_coupling` for
    every `(atom, l, m)`. The raw Vanderbilt form is what is stored and used
    (its off-diagonal coupling is real and asserted nonzero);
-   `diagonalized_projectors` gives Hamann's orthogonalized pair with a
+   `diagonalized_projectors` gives Hamann's orthogonalised pair with a
    diagonal coupling — the same operator to 1e-9.
 
 Defaults (`DEFAULT_CUTOFFS`, Bohr): H 1.30; Li 2.60; C 1.50; N 1.45; O 1.45;
@@ -214,7 +214,7 @@ h = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4 iterations
 | H₂ | −1.044179 | −1.058561 | −1.061096 | −1.075333 | +0.017 Ha |
 | LiH | −0.774343 | −0.782341 | −0.729555 | −0.740839 | −0.042 Ha |
 
-Both within the 0.05 Ha agreement asked of two independent LDA pseudizations
+Both within the 0.05 Ha agreement asked of two independent LDA pseudisations
 of the same atoms on a coarse grid; the LiH gap is the larger because the TM
 lithium has $r_c = 3.59$ Bohr, wider than the Li–H bond, whereas the ONCV
 value sits on a stable plateau ($r_c$ = 2.4–2.6 give −0.7747/−0.7743). The
@@ -255,21 +255,21 @@ the family and loading a TM file is untouched. Generation takes 0.5 s (H) to
 No nonlinear core correction, no scalar-relativistic or spin-orbit terms, no
 projectors for angular momenta above the valence (those channels see the
 local potential alone — a p projector at unbound energies, which Hamann adds
-for H and O, is not built, so DZP polarization functions on H see only
+for H and O, is not built, so DZP polarisation functions on H see only
 $V_{loc}$), no GGA reference atom, and the second reference energy is a fixed
 offset rather than Hamann's per-element tuned values. Departures from the
 paper: the Bessel wave vectors are the interleaved zeros rather than Hamann's
 own choice; the scattering tail entering the residual energy is tapered
 between $3r_c$ and $5r_c$ (it does not decay); $r_{cl}$ is a fixed fraction
 of the smallest $r_c$; and the raw Vanderbilt coupling is kept instead of the
-orthogonalized projectors (equivalent operator).
+orthogonalised projectors (equivalent operator).
 
 ## PAW: projector augmented waves
 
 *(2026-09-14, step 3 of the family plan.)* The third shipped family is
 `"paw"`, P. E. Blöchl's projector augmented-wave method, *Phys. Rev. B* **50**,
-17953 (1994), in its **frozen-core, one-center-expansion** form with the
-one-center energies **linearized around the reference atom** — a fixed
+17953 (1994), in its **frozen-core, one-centre-expansion** form with the
+one-centre energies **linearised around the reference atom** — a fixed
 per-species coupling matrix $D^0$, which makes the dataset behave like an
 ultrasoft pseudopotential with an exact PAW reconstruction of the atomic
 partial waves. Written from scratch in
@@ -294,10 +294,10 @@ The name has no alias; `family_names()` lists `ncpp`, `oncvpsp`, `paw` first
 Blöchl's linear map between the smooth wave functions the grid sees and the
 all-electron ones,
 
-$$
+```{math}
 |\psi\rangle = \mathcal T|\tilde\psi\rangle, \qquad
 \mathcal T = 1 + \sum_i \big(|\varphi_i\rangle - |\tilde\varphi_i\rangle\big)\langle\tilde p_i| ,
-$$
+```
 
 needs per atom and $l$ **all-electron partial waves** $\varphi_i$, **smooth
 partial waves** $\tilde\varphi_i$ equal to them beyond the augmentation
@@ -307,12 +307,12 @@ waves are *not* norm-conserving, so the transformation carries the overlap
 operator $S = 1 + \sum_{ij}|\tilde p_i\rangle q_{ij}\langle\tilde p_j|$ with
 $q_{ij} = \langle\varphi_i|\varphi_j\rangle_{r<r_c} -
 \langle\tilde\varphi_i|\tilde\varphi_j\rangle_{r<r_c}$, and the valence
-problem is the generalized eigenproblem
+problem is the generalised eigenproblem
 
-$$
+```{math}
 \Big[T + \tilde v_{loc} + \sum_{ij}|\tilde p_i\rangle D_{ij}\langle\tilde p_j|\Big]\tilde\psi
 = \varepsilon\,S\,\tilde\psi .
-$$
+```
 
 This is exactly what the overlap hook of the general separable form was built
 for: the family passes $D$ as `nonlocal_coupling` and $q$ as
@@ -324,7 +324,7 @@ through Löwdin, RHF and UHF.
 1. **Reference atom.** The self-consistent LDA atom; the frozen core density
    $n_c$ (every subshell below the valence) and, per valence $l$, two
    all-electron partial waves: the bound state (Numerov, `bound_state`) and
-   the scattering state at $\varepsilon_1 + \Delta$ normalized to one inside
+   the scattering state at $\varepsilon_1 + \Delta$ normalised to one inside
    $r_c$ — the ONCVPSP pair. $\Delta$ is 1 Ha except for H and Li (0.5 Ha,
    `DEFAULT_ENERGY_OFFSETS`): lithium's wave at +1 Ha sits at a pole of the
    logarithmic derivative ($L = +24$ at $r_c$) and the smooth pair then grows
@@ -332,16 +332,16 @@ through Löwdin, RHF and UHF.
 2. **Smooth partial waves** (`smooth_partial_waves`). Inside $r_c$,
    $\tilde\varphi_i = \sum_{n=1}^{8} c_{in} j_l(q_n r)$ at the interleaved
    Bessel zeros, matched in value and first three derivatives, residual
-   kinetic energy beyond $q_c = 5$ Bohr⁻¹ minimized. **The norm is not
+   kinetic energy beyond $q_c = 5$ Bohr⁻¹ minimised. **The norm is not
    conserved**, but it is *controlled*: the inner-norm matrix is set to
    $(1-s)$ times the all-electron one (`optimize_pseudo_waves(...,
-   norm_factor=1-s)`, the ONCVPSP optimizer with a scaled target), so
+   norm_factor=1-s)`, the ONCVPSP optimiser with a scaled target), so
    $q = s\,\langle\varphi_i|\varphi_j\rangle_{r<r_c}$ is **positive
    definite by construction** and $S \ge 1$. The deficit $s$ is per element
    (`DEFAULT_NORM_DEFICITS`: H 0.05, Li 0.02, C 0.10, N/O/F 0.15; the
    derivative matching alone fixes most of the inner norm, so more is not
    reachable by the expansion). Free waves (`norm_deficit=None`, the residual
-   energy minimized with no norm condition at all) are available and were
+   energy minimised with no norm condition at all) are available and were
    tried first: the two reference waves are nearly proportional in the core,
    their dual projectors are large, and an *indefinite* $q$ then made
    $1 + \sum|\tilde p\rangle q\langle\tilde p|$ singular for Li and O at every
@@ -363,14 +363,14 @@ through Löwdin, RHF and UHF.
    set $\tilde p_i = \sum_k (B^{-1})_{ki}\chi_k$; the generator asserts
    $\langle\tilde p_i|\tilde\varphi_j\rangle = \delta_{ij}$ to 1e-8
    (achieved ~1e-14, `duality_error`).
-5. **One-center matrices** on the fine inner grid: $q_{ij}$; $\Delta T_{ij}
+5. **One-centre matrices** on the fine inner grid: $q_{ij}$; $\Delta T_{ij}
    = \langle\varphi_i|T|\varphi_j\rangle - \langle\tilde\varphi_i|T|\tilde\varphi_j\rangle$
    (AE side from the radial equation, smooth side analytic); $\Delta V^{scr}_{ij}$;
    and the screened coupling $D^{scr}_{ij} = B_{ij} + \varepsilon_j q_{ij}$,
    which equals $\Delta T + \Delta V^{scr}$ to 1e-15 (`consistency_error`)
-   and is symmetric by the generalized Wronskian identity $B_{ij} - B_{ji} =
+   and is symmetric by the generalised Wronskian identity $B_{ij} - B_{ji} =
    (\varepsilon_i - \varepsilon_j)q_{ij}$ (`asymmetry` ≤ 1e-9). It
-   reproduces every reference energy exactly in the generalized problem.
+   reproduces every reference energy exactly in the generalised problem.
 6. **Compensation charge and unscreening.** The smooth reference density
    misses $\hat Q = \sum_l f_l q^l_{11}$ electrons (H 0.021, Li 0.0045, O
    0.64); the **monopole compensation charge** $\hat n = \hat Q\,g(r)$, $g
@@ -382,8 +382,8 @@ through Löwdin, RHF and UHF.
    and the coupling loses the Hartree screening of the augmentation,
    $D^{ion} = D^{scr} - q\int v_H[\tilde n_v + \hat n]\,g$
    (`hartree_screening`).
-7. **Frozen one-center constant** (`one_center_energy`). With $D$
-   linearized, the double counting of the one-center Hartree and xc energies
+7. **Frozen one-centre constant** (`one_center_energy`). With $D$
+   linearised, the double counting of the one-centre Hartree and xc energies
    at the reference is a per-species constant, fixed so that the LDA reference
    atom evaluated with the molecular machinery has exactly the all-electron
    valence energy in the norm-conserving convention, $E^{ref}_{val} = \sum_v
@@ -416,7 +416,7 @@ subclass with two additions:
   (`compensation_coulomb`: exactly $1/R$ for disjoint spheres, a
   Gauss–Legendre radial/angular quadrature when they overlap, as they do in
   H₂ and LiH). Hartree, exchange and correlation all see neutral atoms.
-* **Atom-centered projections.** `PAWIntegrals.projections()` evaluates every
+* **Atom-centred projections.** `PAWIntegrals.projections()` evaluates every
   $C_{\mu p} = \langle\tilde\phi_\mu|\tilde p_p\rangle$ by a spherical product
   quadrature over the projector's sphere (`atom_centered_projections`:
   Gauss–Legendre in $r$ and $\cos\theta$, uniform in $\phi$), not on the grid.
@@ -444,17 +444,17 @@ dual 0.78/0.77). The local potential is interpolated with a cubic spline
 Hellmann–Feynman plus Pulay force of the converged state. With the reduced
 density matrices $D$, $\Gamma$ and the molecular orbitals $V$ held fixed,
 
-$$
+```{math}
 E = \sum_{pq} D_{pq}\,h^{MO}_{pq} + \tfrac12\sum_{pqrs}\Gamma_{pqrs}\,g^{MO}_{pqrs}
   + E_{ion} + E_{1c}, \qquad h^{MO} = A^\dagger h A,\ A = S^{-1/2}V,
-$$
+```
 
 and every atomic-orbital matrix is differentiated. **Hellmann–Feynman:** the
 atom's operators move — its local potential, its projectors (in
 $C D C^\dagger$ and in $S = \tilde S + C q C^\dagger$), its compensation charge
-($W$, $U$) and the ion–ion repulsion. **Pulay:** the basis functions centered
+($W$, $U$) and the ion–ion repulsion. **Pulay:** the basis functions centred
 on the atom move — $\tilde S$, $T$, $V_{loc}$, $C$, the grid two-electron
-tensor and $W$. The projection derivatives use the same atom-centered
+tensor and $W$. The projection derivatives use the same atom-centred
 quadrature ($+G$ for the basis function, $-G$ for the projector), so the two
 parts cancel exactly under a rigid translation.
 
@@ -479,7 +479,7 @@ almost entirely — while the LiH bond forces from 2.1 to 3.2 Å match within
 ### Validation (pinned by `test/test_paw.py`, 70 tests, 11.5 s, peak RSS 0.77 GB)
 
 Atomic, freshly generated (`check_paw_channel`: `paw_spectrum` = the
-generalized problem with the 3-point Laplacian on 0.01/0.02 Bohr grids,
+generalised problem with the 3-point Laplacian on 0.01/0.02 Bohr grids,
 Richardson-extrapolated; `paw_eigenstate` + `reconstruct_ae` at 0.005 Bohr for
 the first row; `log_derivative_paw` = the ONCVPSP exact nonlocal Numerov
 solve with the energy-dependent coupling $D^{scr} - Eq$):
@@ -491,7 +491,7 @@ solve with the energy-dependent coupling $D^{scr} - Eq$):
 | O s | 1.45 | 0.15 | 0.1142 | 1.3e-15 | −1.2e-7 | +0.0049 | 7.4e-6 | 8.0e-8 / 1.8e-4 / 7.5e-4 |
 | O p | 1.45 | 0.15 | 0.1026 | 1.3e-15 | +3.1e-8 | +0.0324 | 6.5e-5 | 4.1e-7 / 1.0e-5 / 3.9e-3 (L = −4.5) |
 
-The reconstruction is of the *lowest smooth eigenfunction of the generalized
+The reconstruction is of the *lowest smooth eigenfunction of the generalised
 problem*, not of the stored wave (that one reconstructs exactly by duality,
 also tested): the smooth eigenfunction differs from the all-electron orbital
 by 0.06 (H) to 0.57 (O 2s) and comes back to it to 1e-5 — the transformation
@@ -512,7 +512,7 @@ iterations; energies in eV as the user sees them, Hartree in parentheses):
 PAW lands between the two norm-conserving families on both molecules (all
 three agree within 0.05 Ha, against the 0.1 Ha asked). On H₂ the augmented
 overlap has eigenvalues 0.203 / 1.809 (bare 0.199 / 1.757), the
-Löwdin-orthonormalized overlap is the identity to 1e-16, and the augmented
+Löwdin-orthonormalised overlap is the identity to 1e-16, and the augmented
 two-body tensor keeps the pair-density symmetries to 1e-12. DZ on H₂ (8
 qubits, RHF −1.1399 Ha) is variational against SZ.
 
@@ -537,7 +537,7 @@ $q$, `kinetic_difference` $\Delta T$, `potential_difference`,
 `duality_error`, `overlap_minimum`, `asymmetry`, `consistency_error`;
 `coupling[l]` / `overlap_correction[l]` / `kinetic_difference[l]` the
 blocks; `v_local` (ionic) / `v_local_screened`, `core_density`,
-`smooth_core_density` (pseudized inside $r_g$, stored but unused — see
+`smooth_core_density` (pseudised inside $r_g$, stored but unused — see
 below), `compensation_radius`, `compensation_charge`, `hartree_screening`,
 `one_center_energy`, `energies`, `norm_deficit`, `local_shift`, `q_cut`,
 `energy_offset`). Files use the same Parquet/JSON scheme with `"family":
@@ -551,7 +551,7 @@ it as before. Round trips are lossless and idempotent (tested).
 
 ### What is frozen or omitted relative to Blöchl's full method
 
-* **Linearized one-center terms.** The one-center Hartree and xc energies are
+* **Linearised one-centre terms.** The one-centre Hartree and xc energies are
   expanded to first order in the density matrix $\rho_{ij}$ around the LDA
   reference atom: a fixed $D^0 = D^{ion}$ per species plus the constant
   $E_{1c}$. The full method recomputes $D_{ij}[\rho_{ij}]$ self-consistently
@@ -568,16 +568,16 @@ it as before. Round trips are lossless and idempotent (tested).
   only, as TM/ONCVPSP do). The smooth core density is generated and stored
   but does not enter the Hamiltonian; the omitted core–valence xc
   correction is reported in `energies["core_valence_xc_omitted"]` (Li −1.54,
-  O −4.60 Ha — the size of the core xc energy itself, which the linearized
+  O −4.60 Ha — the size of the core xc energy itself, which the linearised
   treatment keeps frozen).
 * **HF/FCI valence with LDA-generated datasets.** The molecule's exchange and
   correlation are exact within the augmented Coulomb tensor, while the
-  one-center xc corrections were linearized at the LDA level — the same
+  one-centre xc corrections were linearised at the LDA level — the same
   inconsistency the norm-conserving families carry.
 * **LDA only, no relativity, no projectors above the valence $l$, two partial
   waves per channel**, reference energies $\varepsilon_1$ and $\varepsilon_1 +
   \Delta$ rather than tuned per element, and a scaled-norm construction of the
-  smooth waves rather than Blöchl's free polynomial pseudization (the price of
+  smooth waves rather than Blöchl's free polynomial pseudisation (the price of
   a guaranteed positive definite overlap with this pair of reference waves).
 * **Not norm-conserving, but by a controlled amount** ($s$ = 2–15 %): the
   softness gain over ONCVPSP is correspondingly modest (H₂ basis ratio 0.98
@@ -587,9 +587,9 @@ it as before. Round trips are lossless and idempotent (tested).
 
 Every family's nonlocal potential enters through one formula,
 
-$$
+```{math}
 H^{NL} = C\,D\,C^\dagger, \qquad C_{\mu p} = \langle\phi_\mu|\chi_p\rangle ,
-$$
+```
 
 where $C$ (`MolecularIntegrals.projections()`, an $M\times P$ matrix) is the
 only object that touches the grid (the C-accelerated `kb_projections` kernel)
@@ -613,21 +613,21 @@ validates and assembles them. `kb_nonlocal()` keeps its name (alias
 
 Families whose projectors also change the metric (PAW) pass the blocks of a
 second matrix $Q$ in the same layout, `nonlocal_overlap={(atom, l, m): block}`.
-The overlap the Löwdin orthonormalization uses then becomes
+The overlap the Löwdin orthonormalisation uses then becomes
 
-$$
+```{math}
 S \;\to\; S + C\,Q\,C^\dagger ,
-$$
+```
 
 (`MolecularIntegrals.overlap()`; the grid overlap alone is `bare_overlap()`),
-so the orthonormalized one- and two-body integrals — and everything downstream,
+so the orthonormalised one- and two-body integrals — and everything downstream,
 RHF, the UHF natural orbitals, the qubit Hamiltonian — see the augmented
 metric automatically. Norm-conserving families pass `None`; `Q = 0` reproduces
 the plain Hamiltonian exactly. The PAW family is the first to use it (its $q$
 blocks), together with two further hooks on `MolecularIntegrals`:
 `two_body_augmentation()` (a correction added to the grid two-body tensor —
 the compensation-charge terms) and `constant_energy` (an additive constant
-next to the nuclear repulsion — the frozen one-center energies).
+next to the nuclear repulsion — the frozen one-centre energies).
 
 ## Why they are not optional here
 
@@ -649,7 +649,7 @@ The two columns behave *qualitatively* differently. Refining the grid makes the
 all-electron number **worse**: the nearest node moves into an unresolved cusp
 faster than the sampling improves. The pseudopotential column converges, because
 there is no cusp left to resolve. Without pseudopotentials, geometry
-optimization on this grid is not merely inaccurate — it does not converge.
+optimisation on this grid is not merely inaccurate — it does not converge.
 
 ## The bundled library
 
@@ -735,14 +735,14 @@ to `stride=1`, so repeated round trips never compound.
 
 ## The basis of a pseudopotential
 
-A pseudopotential fixes its own first zeta: the construction pseudizes each
+A pseudopotential fixes its own first zeta: the construction pseudises each
 valence orbital inside its cutoff, and the projectors are built from those
 specific pseudo-orbitals. Pairing the potential with an unrelated all-electron
 radial function would be inconsistent — which is why the family *is* the basis
 and an all-electron family cannot be combined with it (per element or
 otherwise). What you *can* vary is the size hierarchy, which refines that
 pseudo-orbital instead of replacing it — the extra zetas are split-valence
-refinements of the pseudized function, and the polarization shell is split
+refinements of the pseudised function, and the polarisation shell is split
 from the outermost channel:
 
 ```python
@@ -764,7 +764,7 @@ $ carcara H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run
 
 The residual force on an isolated atom is still ~30 eV/Å at `h = 0.10 Å`. That
 remainder is basis-set incompleteness — a minimal valence s+p shell per atom —
-not the core, and it *shrinks* with grid refinement. A polarized multiple-zeta
+not the core, and it *shrinks* with grid refinement. A polarised multiple-zeta
 basis addresses it directly; see [Basis sets](basis_sets.md).
 
 ```{warning}
@@ -790,7 +790,7 @@ is the *energy*, not the gradient:
 * **Egg-box.** Independently of the above, rigidly translating a molecule on a
   frozen grid changes the energy — ~160 eV/Å for H₂O, 23 meV for LiH at
   h = 0.20 Å. The net force reproduces that numerical derivative, i.e. the
-  gradient faithfully differentiates a discretized energy that is not itself
+  gradient faithfully differentiates a discretised energy that is not itself
   translation-invariant.
 
 So: trust the forces as the derivative of the reported energy, and check that
@@ -808,7 +808,7 @@ tests is printed at the end of the session (the complete table is written to
 the heaviest in the suite — is one test < 3 min, the whole run < 10 min, peak
 RSS < 3 GB; shrink a test's grid or cell rather than the limits.
 `test_ncpp_family.py` pins the NCPP energies of H₂ (0.74 Å, h = 0.25 Å) and
-LiH (1.6 Å, h = 0.30 Å) measured before the nonlocal generalization and
+LiH (1.6 Å, h = 0.30 Å) measured before the nonlocal generalisation and
 exercises the general form with synthetic projectors; `test_oncvpsp.py`
 validates the ONCVPSP family atomically (H, Li, O) and on the same two
 molecules (50 tests, ~11 s, peak RSS 0.6 GB); `test_paw.py` does the same for
