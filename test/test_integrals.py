@@ -6,6 +6,7 @@ import pytest
 
 from carcara.basis import FullAtomicOrbital
 from carcara.integrals import Grid, IntegralEngine, PoissonFFTSolver, Potentials
+from carcara.integrals.poisson import cell_self_potential
 from carcara.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
 # The physics core is validated in atomic units (Bohr, Hartree); the grids below
@@ -160,11 +161,13 @@ class TestPoissonSolverDirect:
 
         solver = PoissonFFTSolver(grid.points, grid.dx)
         phi_fft = solver.solve(rho)
+        # The same rule the solver uses: the cell's own average of 1/r.
+        self_energy = cell_self_potential(grid.dx, grid.dy, grid.dz) / grid.dV
 
         xg, yg, zg = grid.flat_coords()
         n = grid.size
         phi_ref = np.zeros(n, dtype=complex)
-        G0 = 2.3800756 / grid.dx
+        G0 = self_energy
         for i in range(n):
             d = np.sqrt((xg[i] - xg) ** 2 + (yg[i] - yg) ** 2
                         + (zg[i] - zg) ** 2)

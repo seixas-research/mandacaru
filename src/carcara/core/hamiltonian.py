@@ -35,12 +35,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import warnings
+
 import numpy as np
 
 from ..basis import FullAtomicOrbital
 from ..integrals import Grid, IntegralEngine, Potentials
 from ..units import to_bohr
 from .mapping import Fermion
+
+#: Smallest overlap eigenvalue the Loewdin transform accepts.
+OVERLAP_EIGENVALUE_FLOOR = 1e-10
+#: Below this the basis is reported as nearly linearly dependent.
+OVERLAP_EIGENVALUE_WARN = 1e-6
 
 
 def _radial_norm(fn) -> float:
@@ -197,9 +204,33 @@ class MolecularIntegrals:
         return self._S
 
     def _lowdin_x(self) -> np.ndarray:
-        """Symmetric orthogonalization matrix ``X = S^{-1/2}``."""
+        r"""Symmetric orthogonalization matrix :math:`X = S^{-1/2}`.
+
+        :math:`S^{-1/2}` divides by :math:`\sqrt{\lambda}`, so a
+        near-dependent basis (a tiny overlap eigenvalue) multiplies the grid's
+        integration noise by :math:`\lambda^{-1/2}` and quietly corrupts every
+        transformed integral.  The spectrum is therefore checked: below
+        :data:`OVERLAP_EIGENVALUE_WARN` it warns, and at or below
+        :data:`OVERLAP_EIGENVALUE_FLOOR` -- where the transform is numerical
+        noise -- it refuses.
+        """
         S = self.overlap()
         w, U = np.linalg.eigh(S)
+        smallest = float(w.min())
+        if smallest <= OVERLAP_EIGENVALUE_FLOOR:
+            raise ValueError(
+                f"the basis is linearly dependent on this grid: the smallest "
+                f"overlap eigenvalue is {smallest:.3e} (floor "
+                f"{OVERLAP_EIGENVALUE_FLOOR:.1e}), so S^(-1/2) would amplify "
+                f"integration noise by {1.0 / np.sqrt(max(smallest, 1e-300)):.1e}. "
+                f"Drop the redundant functions (a smaller basis `size`) or "
+                f"refine the grid (smaller h).")
+        if smallest < OVERLAP_EIGENVALUE_WARN:
+            warnings.warn(
+                f"nearly linearly dependent basis: smallest overlap eigenvalue "
+                f"{smallest:.3e}; integrals are amplified by "
+                f"{1.0 / np.sqrt(smallest):.1e} in the orthonormal basis",
+                RuntimeWarning, stacklevel=2)
         return (U * (1.0 / np.sqrt(w))) @ U.conj().T
 
     def conjugation_matrix(self):
@@ -326,11 +357,32 @@ class MolecularIntegrals:
         return None
 
     def _compute(self):
+        """Build both integral blocks (kept for callers that need both)."""
+        self._compute_one_body()
+        self._compute_two_body()
+
+    def _compute_one_body(self):
+        """The one-body block only -- no electron-repulsion tensor.
+
+        Single-particle work (the Bloch band Hamiltonian, an overlap or kinetic
+        inspection) must not pay for the O(M^4 G) ERI contraction.
+        """
+        if self._h1 is not None:
+            return
         T, V = self._engine.one_body(self.external_potential(),
                                      energy_units="Ha", kinetic=self.kinetic)
         self.resolution_ratios = self._engine.resolution(T, kinetic=self.kinetic)
         one = T + V + self.kb_nonlocal()
         h = 0.5 * (one + one.conj().T)           # symmetrize away grid noise
+        if self.orthogonalize:
+            X = self._lowdin_x()
+            h = X.conj().T @ h @ X
+        self._h1 = h
+
+    def _compute_two_body(self):
+        """The electron-repulsion tensor only."""
+        if self._eri is not None:
+            return
         eri = self._engine.two_body(method="fft", energy_units="Ha")
         augmentation = self.two_body_augmentation()
         if augmentation is not None:
@@ -339,7 +391,6 @@ class MolecularIntegrals:
             # Lowdin-orthonormalize the basis; the second-quantized Hamiltonian
             # requires an orthonormal orbital set.
             X = self._lowdin_x()
-            h = X.conj().T @ h @ X
             # Physicists' <pq|rs> = int p*(1) q*(2) r(1) s(2): the bra indices
             # (p, q) take X* and the ket indices (r, s) take X.  The overlap --
             # hence X -- is complex whenever the basis carries l > 0 functions
@@ -348,7 +399,7 @@ class MolecularIntegrals:
             # water's Hartree-Fock energy by 1.2 Ha.
             eri = np.einsum("ap,bq,cr,ds,abcd->pqrs",
                             X.conj(), X.conj(), X, X, eri, optimize=True)
-        self._h1, self._eri = h, eri
+        self._eri = eri
 
     def unresolved(self, tolerance: float = RESOLUTION_TOLERANCE):
         """Indices of basis functions and projectors the grid does not resolve.
@@ -359,7 +410,7 @@ class MolecularIntegrals:
         ``1 +/- tolerance``.  Runs the integrals if they have not been run.
         """
         if self.resolution_ratios is None:
-            self._compute()
+            self._compute_one_body()
         def outside(ratios):
             if ratios is None:
                 return []
@@ -376,13 +427,13 @@ class MolecularIntegrals:
         In the orthonormalized orbital basis when ``orthogonalize=True``.
         """
         if self._h1 is None:
-            self._compute()
+            self._compute_one_body()
         return self._h1
 
     def two_body(self) -> np.ndarray:
         r"""Spatial two-body tensor ``<pq|rs>`` in physicists' notation (Hartree)."""
         if self._eri is None:
-            self._compute()
+            self._compute_two_body()
         return self._eri
 
     @property

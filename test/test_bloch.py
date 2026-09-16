@@ -123,6 +123,22 @@ class TestBands:
         assert mesh.shape == (10, 3)
         assert np.isclose(np.abs(mesh[:, 0]).min(), 0.0)   # Gamma is on the mesh
 
+    def test_bands_never_build_the_electron_repulsion_tensor(self,
+                                                              monkeypatch):
+        """Bands are single-particle, so the O(M^4 G) contraction must not run.
+
+        ``one_body()`` used to go through a ``_compute()`` that built both
+        blocks, so the nominally one-body band workflow paid for every ERI.
+        """
+        from carcara.core.hamiltonian import MolecularIntegrals
+
+        monkeypatch.setattr(
+            MolecularIntegrals, "_compute_two_body",
+            lambda self: pytest.fail("the band path built the ERI tensor"))
+        driver = _chain("vqe")
+        bands = driver.bands(np.array([[0, 0, 0], [0.5, 0, 0]]))
+        assert bands.shape == (2, driver.n_bands)
+
     def test_bands_identical_across_methods(self):
         # Bands are single-particle: every method must agree exactly.
         kpts = np.array([[0, 0, 0], [0.25, 0, 0], [0.5, 0, 0]])

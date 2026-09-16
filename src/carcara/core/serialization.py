@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from dataclasses import dataclass
 
 from .mapping import PauliSum
@@ -97,7 +98,11 @@ DEFAULT_FORMAT = "parquet"
 #: Extension appended per format when a path is given without one.
 FILE_EXTENSIONS = {"parquet": ".parquet", "json": ".json"}
 #: Recognized extensions, for format detection.
-_EXTENSION_FORMATS = {".parquet": "parquet", ".pq": "parquet", ".json": "json"}
+#: File extensions that name a format, and which format each one names.  An
+#: extension from this table is a statement about the file's content: the writer
+#: refuses to contradict it and the reader warns when a file does.
+EXTENSION_FORMATS = {".parquet": "parquet", ".pq": "parquet", ".json": "json"}
+_EXTENSION_FORMATS = EXTENSION_FORMATS          # historical private spelling
 #: Filename stem used when ``save_hamiltonian=True`` is given without a path.
 DEFAULT_STEM = "hamiltonian"
 #: Filename used when ``save_hamiltonian=True`` with the default format.
@@ -127,11 +132,15 @@ def resolve_format(fmt: str = DEFAULT_FORMAT) -> str:
 def detect_format(path) -> str:
     """Detect a Hamiltonian file's format from its extension, else its content.
 
-    The extension wins when it is one this build knows (``.parquet``, ``.pq``,
-    ``.json``).  Otherwise the file's first bytes decide: Parquet begins with the
-    ``PAR1`` magic number, a JSON document with ``{`` (after any whitespace or
-    byte-order mark).  This is what lets ``load_hamiltonian`` accept either
-    format through the same call.
+    The extension decides when it is one this build knows (``.parquet``,
+    ``.pq``, ``.json``) **and the file's first bytes agree** with it; otherwise
+    the bytes decide: Parquet begins with the ``PAR1`` magic number, a JSON
+    document with ``{`` (after any whitespace or byte-order mark).  This is what
+    lets ``load_hamiltonian`` accept either format through the same call.
+
+    A file whose content contradicts its name is read as what it *is*, with a
+    :class:`RuntimeWarning` -- the alternative is an opaque
+    ``UnicodeDecodeError`` from the wrong parser, and the bytes are the truth.
 
     Raises
     ------
@@ -142,17 +151,27 @@ def detect_format(path) -> str:
     """
     path = os.fspath(path)
     extension = os.path.splitext(path)[1].lower()
-    known = _EXTENSION_FORMATS.get(extension)
-    if known is not None:
-        return known
+    named = _EXTENSION_FORMATS.get(extension)
     if not os.path.exists(path):
+        if named is not None:
+            return named            # a path being written, not read
         raise FileNotFoundError(f"no such Hamiltonian file: {path!r}")
     with open(path, "rb") as fh:
         head = fh.read(16)
+    content = None
     if head.startswith(PARQUET_MAGIC):
-        return "parquet"
-    if head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"{"):
-        return "json"
+        content = "parquet"
+    elif head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"{"):
+        content = "json"
+    if content is not None:
+        if named is not None and named != content:
+            warnings.warn(
+                f"{path!r} is named like {named!r} but its content is "
+                f"{content!r}; reading it as {content!r}",
+                RuntimeWarning, stacklevel=2)
+        return content
+    if named is not None:
+        return named
     raise ValueError(
         f"cannot determine the format of {path!r}: it has no recognized "
         f"extension ({', '.join(sorted(_EXTENSION_FORMATS))}) and starts with "
@@ -228,12 +247,19 @@ class HamiltonianRecord:
     ``num_particles`` and ``n_spatial_orbitals`` are what let a loaded run skip
     the geometry entirely: they are exactly the two quantities the ADAPT-VQE pool
     and the UCCSD ansatz are built from.
+
+    ``two_qubit_reduction`` records whether the stored operator is **already
+    tapered**.  Without it the register width and the orbital count disagree
+    (``2M - 2`` Pauli characters for ``M`` spatial orbitals) and a loaded driver
+    builds a pool two qubits too wide, so a reader must be told.  Files written
+    before this field default to ``False``, which is what they were.
     """
 
     hamiltonian: PauliSum
     mapping: str = "jordan_wigner"
     num_particles: tuple[int, int] | None = None
     n_spatial_orbitals: int | None = None
+    two_qubit_reduction: bool = False
     metadata: dict | None = None
 
     @property
@@ -298,6 +324,7 @@ def resolve_save_path(spec, fmt: str = DEFAULT_FORMAT,
 def save_hamiltonian(path, hamiltonian: PauliSum, *,
                      mapping: str = "jordan_wigner",
                      num_particles=None, n_spatial_orbitals=None,
+                     two_qubit_reduction: bool = False,
                      metadata: dict | None = None,
                      format: str | None = None,
                      compression: str = "zstd",
@@ -320,10 +347,19 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
         Parquet writer -- ``"auto"``, ``"fastparquet"`` or ``"pyarrow"`` (see the
         module docstring).  Ignored for JSON.
     """
+    extension = os.path.splitext(os.fspath(path))[1].lower()
+    named = _EXTENSION_FORMATS.get(extension)
     if format is None:
-        extension = os.path.splitext(os.fspath(path))[1].lower()
-        format = _EXTENSION_FORMATS.get(extension, DEFAULT_FORMAT)
+        format = named if named is not None else DEFAULT_FORMAT
     format = resolve_format(format)
+    if named is not None and named != format:
+        # An explicit format still wins -- the caller said what they meant --
+        # but the file's name will lie about its content, so say so once.
+        # (`load_hamiltonian` reads it by its bytes, not its name.)
+        warnings.warn(
+            f"writing {format} content to {os.fspath(path)!r}, whose extension "
+            f"{extension!r} says {named}; the file's name will not match what "
+            "is in it", RuntimeWarning, stacklevel=2)
 
     if hamiltonian.num_qubits > MAX_FILE_QUBITS:
         raise ValueError(
@@ -346,6 +382,7 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
             else [int(num_particles[0]), int(num_particles[1])]),
         "carcara.n_spatial_orbitals": json.dumps(
             None if n_spatial_orbitals is None else int(n_spatial_orbitals)),
+        "carcara.two_qubit_reduction": json.dumps(bool(two_qubit_reduction)),
         # The Pauli coefficients are the internal Hartree ones; say so in the
         # file so a reader never has to guess.
         "carcara.metadata": json.dumps(
@@ -374,6 +411,8 @@ def _write_json(path, labels, reals, imags, key_value):
         "mapping": key_value["carcara.mapping"],
         "num_particles": json.loads(key_value["carcara.num_particles"]),
         "n_spatial_orbitals": json.loads(key_value["carcara.n_spatial_orbitals"]),
+        "two_qubit_reduction": json.loads(
+            key_value["carcara.two_qubit_reduction"]),
         "metadata": json.loads(key_value["carcara.metadata"]),
         "terms": [[label, real, imag]
                   for label, real, imag in zip(labels, reals, imags)],
@@ -483,6 +522,8 @@ def load_hamiltonian(path, engine: str = "auto",
         mapping=meta.get("carcara.mapping", "jordan_wigner"),
         num_particles=num_particles,
         n_spatial_orbitals=None if n_orbitals is None else int(n_orbitals),
+        two_qubit_reduction=bool(json.loads(
+            meta.get("carcara.two_qubit_reduction", "false"))),
         metadata=json.loads(meta.get("carcara.metadata", "{}")))
 
 
@@ -501,6 +542,8 @@ def _read_json(path):
         "carcara.num_particles": json.dumps(payload.get("num_particles")),
         "carcara.n_spatial_orbitals": json.dumps(
             payload.get("n_spatial_orbitals")),
+        "carcara.two_qubit_reduction": json.dumps(
+            bool(payload.get("two_qubit_reduction", False))),
         "carcara.metadata": json.dumps(payload.get("metadata") or {}),
     }
     entries = payload.get("terms", [])

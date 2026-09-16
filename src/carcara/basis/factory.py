@@ -109,12 +109,16 @@ class BasisSet:
         # Every other named Gaussian family: Pople, Dunning, Karlsruhe.
         try:
             recipe = parse_basis_name(method)
-        except ValueError:
+        except ValueError as error:
+            if ":" in str(method):
+                # A namespaced name ('published:cc-pVTZ'); the grammar's own
+                # message explains the namespace and must not be replaced.
+                raise
             raise ValueError(
                 f"unknown basis method {method!r}; use 'FAO', 'NAO', 'NAO-AE', "
                 f"'GTO', an STO-nG name, or a named Gaussian family such as "
                 f"'6-31+G*', '6-311+G(2df,2p)', 'cc-pVTZ', 'aug-cc-pVDZ' or "
-                f"'def2-TZVP'") from None
+                f"'def2-TZVP'") from error
         return GaussianBasisSet(recipe, **kwargs)
 
     # -- interface --------------------------------------------------------- #
@@ -405,6 +409,21 @@ class GTOBasisSet(BasisSet):
     def __init__(self, n_gaussians: int = 3):
         self.n_gaussians = int(n_gaussians)
         self.name = f"STO-{self.n_gaussians}G"
+        #: ``"native:<name>-recipe"`` -- generated here, not published data.
+        self.provenance = f"native:{self.name}-recipe"
+
+    def shells(self, element) -> list:
+        """``(l, exponents, coefficients)`` contracted shells of ``element``."""
+        return [(l, exps, coeffs) for (_n, l, exps, coeffs)
+                in sto_ng_shells(_to_atomic_number(element), self.n_gaussians)]
+
+    def to_dict(self, elements) -> dict:
+        """Every generated exponent and coefficient, with its conventions."""
+        from .gaussian_families import shells_record
+        return shells_record(elements, self.shells, self.name, "sto",
+                             f"minimal STO-{self.n_gaussians}G, one "
+                             f"{self.n_gaussians}-primitive contraction per "
+                             "occupied subshell")
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
              units: str = "angstrom") -> list[BasisFunction]:
@@ -417,7 +436,8 @@ class GTOBasisSet(BasisSet):
         return orbitals
 
     def __repr__(self) -> str:
-        return f"GTOBasisSet(name={self.name!r})"
+        return (f"GTOBasisSet(name={self.name!r}, "
+                f"provenance={self.provenance!r})")
 
 
 class FAOBasisSet(BasisSet):
@@ -458,6 +478,13 @@ class GaussianBasisSet(BasisSet):
     ``BasisSet.build("def2-SVP")`` and ``BasisSet.build("6-311+G(2df,2p)")``
     all land here.
 
+    The name buys the published basis set's **shell structure**, not its
+    published numbers, and :attr:`provenance` says which -- ``cc-pVTZ`` here is
+    ``native:cc-pVTZ-recipe``.  :meth:`to_dict` writes out every exponent and
+    coefficient together with the angular convention they are meant in, which is
+    what a comparison against another package needs.  ``published:`` is a
+    reserved namespace that resolves to nothing: Carcará ships no basis tables.
+
     Parameters
     ----------
     recipe : GaussianRecipe or str
@@ -474,6 +501,8 @@ class GaussianBasisSet(BasisSet):
         self.recipe = recipe
         self.name = recipe.name
         self.family = recipe.family
+        #: ``"native:<name>-recipe"`` -- generated here, not published data.
+        self.provenance = recipe.provenance
 
     def shells(self, element) -> list:
         """``(l, exponents, coefficients)`` contracted shells of ``element``."""
@@ -492,8 +521,18 @@ class GaussianBasisSet(BasisSet):
                                                 center=center, units=units))
         return orbitals
 
+    def to_dict(self, elements) -> dict:
+        """Every generated exponent and coefficient, with its conventions.
+
+        See :func:`~carcara.basis.gaussian_families.basis_set_data`; ``elements``
+        are chemical symbols or atomic numbers.  JSON-serializable.
+        """
+        from .gaussian_families import basis_set_data
+        return basis_set_data(elements, self.recipe)
+
     def __repr__(self) -> str:
-        return f"GaussianBasisSet(name={self.name!r})"
+        return (f"GaussianBasisSet(name={self.name!r}, "
+                f"provenance={self.provenance!r})")
 
 
 class Pople631GBasisSet(BasisSet):
@@ -517,6 +556,20 @@ class Pople631GBasisSet(BasisSet):
     def __init__(self, polarization: bool = True):
         self.polarization = bool(polarization)
         self.name = "6-31G(d)" if polarization else "6-31G"
+        #: ``"native:<name>-recipe"`` -- generated here, not published data.
+        self.provenance = f"native:{self.name}-recipe"
+
+    def shells(self, element) -> list:
+        """``(l, exponents, coefficients)`` contracted shells of ``element``."""
+        return pople_631g_shells(_to_atomic_number(element), self.polarization)
+
+    def to_dict(self, elements) -> dict:
+        """Every generated exponent and coefficient, with its conventions."""
+        from .gaussian_families import shells_record
+        return shells_record(elements, self.shells, self.name, "pople",
+                             "6-primitive cores, 3+1 split valence"
+                             + (", d polarization on Z > 2"
+                                if self.polarization else ""))
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
              units: str = "angstrom") -> list[BasisFunction]:
@@ -529,4 +582,5 @@ class Pople631GBasisSet(BasisSet):
         return orbitals
 
     def __repr__(self) -> str:
-        return f"Pople631GBasisSet(name={self.name!r})"
+        return (f"Pople631GBasisSet(name={self.name!r}, "
+                f"provenance={self.provenance!r})")

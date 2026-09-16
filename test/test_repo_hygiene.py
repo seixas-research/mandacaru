@@ -8,6 +8,10 @@
 
 """Nothing generated may ever land in the repository root.
 
+Files are checked strictly: the root holds exactly ``ROOT_ALLOWED``.
+Directories may additionally be anything ``.gitignore`` excludes, since git
+cannot commit those -- that is what the rule protects against.
+
 Every example, test and script writes its outputs under ``examples/data/``
 (or a pytest ``tmp_path``); the repository root holds only the files listed
 in ``ROOT_ALLOWED``.  This test fails the suite the moment a stray file
@@ -16,6 +20,7 @@ bare relative path (which lands in whatever directory the script was run
 from -- the way the leak happened once).
 """
 
+import fnmatch
 import os
 import re
 
@@ -26,6 +31,23 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: The only files that may live in the repository root.
 ROOT_ALLOWED = {".gitignore", ".readthedocs.yaml", "CLAUDE.md", "LICENSE",
                 "README.md", "pyproject.toml"}
+def gitignore_patterns():
+    """Directory patterns ``.gitignore`` excludes (negations not supported)."""
+    path = os.path.join(REPO, ".gitignore")
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as handle:
+        lines = [line.strip() for line in handle]
+    return [line.rstrip("/").lstrip("/") for line in lines
+            if line and not line.startswith(("#", "!"))]
+
+
+def is_git_ignored(name: str) -> bool:
+    """Whether ``.gitignore`` excludes a root entry of this name."""
+    return any(fnmatch.fnmatch(name, pattern)
+               for pattern in gitignore_patterns())
+
+
 #: Directories that may live in the repository root.
 ROOT_DIRS_ALLOWED = {".git", ".claude", ".github", "docs", "examples", "plan",
                      "latex", "logo",
@@ -48,10 +70,19 @@ def test_repository_root_holds_only_the_known_files():
 
 
 def test_repository_root_holds_only_the_known_directories():
+    """Only the source tree plus build/cache directories git already ignores.
+
+    A git-ignored directory (``dist``, a tool's scratch folder) can never be
+    committed, so it cannot leak; an *unignored* one is a real stray.
+    """
     stray = sorted(name for name in os.listdir(REPO)
                    if os.path.isdir(os.path.join(REPO, name))
-                   and name not in ROOT_DIRS_ALLOWED)
-    assert not stray, f"unexpected directories in the repository root: {stray}"
+                   and name not in ROOT_DIRS_ALLOWED
+                   and not is_git_ignored(name))
+    assert not stray, (
+        f"unexpected directories in the repository root: {stray}. "
+        "Generated output belongs under examples/data/ (or a tmp_path); "
+        "add a deliberate scratch directory to .gitignore.")
 
 
 @pytest.mark.parametrize("script", sorted(

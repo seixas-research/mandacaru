@@ -72,11 +72,20 @@ def lih():
 
 
 #: Energies (Hartree) measured with the pre-generalization code, 2026-09-14.
+# Re-pinned on 2026-09-16, when the FFT Coulomb cell self-energy became the
+# closed-form cell average (`poisson.cell_self_potential`) instead of the
+# rounded cube constant 2.3800756.  Every value moved by ~1e-8 Ha, five orders
+# of magnitude below this grid's own discretization error; the previous values
+# are kept alongside so the shift stays visible.
 PINNED = {
-    "H2": {"h": H2_H, "rhf": -1.061096245397, "fci": -1.075333384728,
-           "adapt": -1.075333384673},
-    "LiH": {"h": LIH_H, "rhf": -0.729555411706, "fci": -0.740838986301,
-            "adapt": -0.740838985744},
+    "H2": {"h": H2_H, "rhf": -1.061096237049, "fci": -1.075333378284,
+           "adapt": -1.075333378229,
+           "before_exact_self_energy": {"rhf": -1.061096245397,
+                                        "fci": -1.075333384728}},
+    "LiH": {"h": LIH_H, "rhf": -0.729555400740, "fci": -0.740838978397,
+            "adapt": -0.740838977840,
+            "before_exact_self_energy": {"rhf": -0.729555411706,
+                                         "fci": -0.740838986301}},
 }
 SYSTEMS = {"H2": h2, "LiH": lih}
 

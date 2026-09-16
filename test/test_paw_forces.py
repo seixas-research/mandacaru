@@ -16,6 +16,8 @@ waves, Carcará is ADAPT-VQE in a localized basis, so the curves differ in
 detail (Carcará's H2 minimum is ~0.79 A against VASP's 0.750 A).
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from ase import Atoms
@@ -53,26 +55,33 @@ def bond_force(forces):
 
 @pytest.fixture(scope="module")
 def h2():
+    """The relaxed-geometry run, with its force breakdown captured up front.
+
+    The breakdown has to be read here: a later energy-only evaluation on the
+    same calculator clears it (an old breakdown must never be reported for a
+    newer geometry).
+    """
     atoms = dimer("H2", 0.75, 8.0)
     atoms.calc = calculator(h=0.25)
     forces = atoms.get_forces()
-    return atoms, forces
+    return SimpleNamespace(atoms=atoms, forces=forces,
+                           breakdown=atoms.calc.get_force_breakdown(),
+                           details=dict(atoms.calc.force_result.details))
 
 
 def test_adapt_reaches_the_sector_ground_state(h2):
     """Complex (l > 0) orbitals are made conjugation-real, so the real pool
     reaches the exact ground state and the state is orbital-stationary."""
-    atoms, _ = h2
-    solver = atoms.calc.solver
+    solver = h2.atoms.calc.solver
     assert solver.n_qubits == 20 and solver._sector.dim == 100
     exact = np.linalg.eigvalsh(solver._h_matrix.toarray())[0]
     assert abs(solver.result.in_units("Ha") - exact) < 1e-7
-    assert atoms.calc.force_result.details["orbital_gradient"] < 1e-4
+    assert h2.details["orbital_gradient"] < 1e-4
 
 
 def test_forces_are_the_derivative_of_the_energy(h2):
     """Central difference of the energy on the calculator's frozen grid."""
-    atoms, forces = h2
+    atoms, forces = h2.atoms, h2.forces
     step = 0.005
     energies = []
     for sign in (1, -1):
@@ -85,8 +94,7 @@ def test_forces_are_the_derivative_of_the_energy(h2):
 
 
 def test_hellmann_feynman_and_pulay(h2):
-    atoms, forces = h2
-    hf, pulay = atoms.calc.get_force_breakdown()
+    forces, (hf, pulay) = h2.forces, h2.breakdown
     assert np.allclose(forces, -(hf + pulay), atol=1e-12)
     assert np.abs(pulay).max() > 0.05             # an atom-centered basis needs it
     assert np.abs(forces.sum(axis=0)).max() < 0.15      # grid egg-box only

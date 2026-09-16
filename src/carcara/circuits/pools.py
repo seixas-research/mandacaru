@@ -26,9 +26,9 @@ Four pools are provided, in increasing hardware-friendliness:
   (Jordan-Wigner by default).  Most accurate, deepest circuits (the JW parity
   ``Z``-strings).
 * **Qubit** (:class:`QubitPool`) -- qubit-ADAPT (Tang *et al.*, 2021): every
-  individual Pauli string appearing in the JW-mapped fermionic generators, taken
+  individual Pauli string appearing in the mapped fermionic generators, taken
   as an independent generator :math:`i\,P`.  Largest pool, shallowest
-  per-operator circuits.
+  per-operator circuits; these strings break particle number by design.
 * **QEB** (:class:`QEBPool`) -- Qubit-Excitation-Based (Yordanov *et al.*, 2021):
   the fermionic excitation generators with their JW ``Z``-strings removed, i.e.
   excitations acting only on the involved qubits.  Same excitation structure as
@@ -36,7 +36,9 @@ Four pools are provided, in increasing hardware-friendliness:
 * **CEO** (:class:`CEOPool`) -- Coupled-Exchange Operators (Ramôa *et al.*, 2024):
   QEB generators sharing the same qubit support are combined into a single
   generator (one variational parameter, one shared entangling structure -- the
-  OVP-CEO variant), giving the best accuracy-per-CNOT of the four.
+  OVP-CEO variant).  With the present excitation enumeration each support
+  carries one excitation, so this pool currently equals ``qeb`` (see
+  :class:`CEOPool`).
 
 All pools are built from the spin-blocked spin-orbital ordering used throughout
 Carcará (first ``M`` :math:`\alpha`, next ``M`` :math:`\beta`) and only include
@@ -45,12 +47,11 @@ excitations that conserve the spin projection :math:`S_z`.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..core.mapping import Fermion, PauliSum
+from ..core.mapping import Fermion, PauliSum, qubit_excitation
 from .gates import double_excitation, single_excitation
 
 
@@ -112,17 +113,6 @@ def _support_of(op: PauliSum) -> tuple[int, ...]:
     return tuple(sorted(qubits))
 
 
-def _strip_outside_support(op: PauliSum, support: Iterable[int]) -> PauliSum:
-    """Force every qubit outside ``support`` to identity (drop JW ``Z``-strings)."""
-    keep = set(support)
-    out = PauliSum()
-    for label, coeff in op.terms.items():
-        chars = [ch if k in keep else "I" for k, ch in enumerate(label)]
-        new = "".join(chars)
-        out.terms[new] = out.terms.get(new, 0j) + coeff
-    return out.simplify()
-
-
 def _spin_conserving_excitations(n_spatial_orbitals: int,
                                  num_particles: tuple[int, int]):
     """Occupied/virtual partition and the ``S_z``-conserving excitation index sets.
@@ -170,8 +160,12 @@ class PoolBase:
 
     name = "base"
 
-    #: Pools built from Jordan-Wigner strings cannot be tapered.
+    #: Whether the pool's generators survive the parity two-qubit reduction
+    #: (they must commute with both tapered symmetries).
     supports_two_qubit_reduction = False
+
+    #: Whether every generator commutes with the number operators (N, Sz).
+    conserves_particle_number = True
 
     def __init__(self, n_spatial_orbitals: int, num_particles: tuple[int, int],
                  mapping: str = "jordan_wigner",
@@ -186,9 +180,10 @@ class PoolBase:
         if self.two_qubit_reduction:
             if not self.supports_two_qubit_reduction:
                 raise ValueError(
-                    f"the {self.name!r} pool is built from Jordan-Wigner "
-                    "strings and cannot be tapered; the two-qubit reduction "
-                    "needs mapping='parity' with the 'fermionic' pool")
+                    f"the {self.name!r} pool's generators do not commute with "
+                    "the tapered parity symmetries, so the two-qubit "
+                    "reduction would change them; use the 'fermionic', 'qeb' "
+                    "or 'ceo' pool with mapping='parity'")
             self.n_qubits = self.n_modes - 2
         (self._occ, self._virt, self._singles,
          self._doubles) = _spin_conserving_excitations(
@@ -235,7 +230,11 @@ class PoolBase:
 # --------------------------------------------------------------------------- #
 
 class FermionicPool(PoolBase):
-    """Spin-adapted single + double fermionic excitation generators (JW-mapped)."""
+    """Spin-adapted single + double fermionic excitation generators.
+
+    Mapped through the driver's own encoding, so the generators conserve the
+    particle numbers whichever mapping the Hamiltonian uses.
+    """
 
     name = "fermionic"
     supports_two_qubit_reduction = True
@@ -259,21 +258,27 @@ class FermionicPool(PoolBase):
 # --------------------------------------------------------------------------- #
 
 class QubitPool(PoolBase):
-    r"""Individual JW Pauli strings as independent generators :math:`i\,P`.
+    r"""Individual Pauli strings as independent generators :math:`i\,P`.
 
-    Every distinct Pauli string appearing in the Jordan-Wigner image of the
-    fermionic generators, kept if it contains at least one ``X`` or ``Y`` (a pure
-    ``Z`` string is diagonal and cannot lower the energy), becomes an
-    anti-Hermitian generator :math:`A = i\,P`.
+    Every distinct Pauli string appearing in the image of the fermionic
+    generators **under the requested encoding**, kept if it contains at least
+    one ``X`` or ``Y`` (a pure ``Z`` string is diagonal and cannot lower the
+    energy), becomes an anti-Hermitian generator :math:`A = i\,P`.
     """
 
     name = "qubit"
+
+    #: Individual Pauli strings do **not** commute with N or Sz: qubit-ADAPT
+    #: explores states outside the reference particle-number sector on purpose.
+    #: That is true in every encoding, and it is why this pool cannot be
+    #: tapered and is rejected by the particle-sector simulation.
+    conserves_particle_number = False
 
     def _build(self) -> list[PoolOperator]:
         seen: set[str] = set()
         ops: list[PoolOperator] = []
         for _label, gen, _support in self._fermionic_generators():
-            pauli = gen.map_to_qubits("jordan_wigner", n_modes=self.n_qubits)
+            pauli = gen.map_to_qubits(self.mapping, n_modes=self.n_qubits)
             for string in pauli.simplify().terms:
                 if string in seen:
                     continue
@@ -291,28 +296,49 @@ class QubitPool(PoolBase):
 # --------------------------------------------------------------------------- #
 
 class QEBPool(PoolBase):
-    r"""Qubit-excitation generators: fermionic excitations with ``Z``-strings dropped.
+    r"""Qubit-excitation generators, built in the requested encoding.
 
-    Taking the JW image of each fermionic excitation generator and forcing every
-    qubit *outside* the excitation's own support to the identity removes the
-    Jordan-Wigner parity string, leaving a *qubit excitation* that acts only on
-    the involved qubits -- e.g. the single ``(i/2)(X_i Y_a - Y_i X_a)`` and the
-    8-term double on the four involved qubits.  The generator stays anti-Hermitian
-    and particle-number conserving.
+    A qubit excitation moves occupation numbers *without* the fermionic parity
+    sign: :math:`T - T^\dagger` with
+    :math:`T = \prod q^\dagger_a \prod q_i` over the
+    :func:`~carcara.core.mapping.qubit_excitation` ladder operators.  In
+    Jordan-Wigner that is exactly "drop the ``Z`` strings outside the
+    excitation's support" -- the single ``(i/2)(X_i Y_a - Y_i X_a)`` and the
+    8-term double -- but the construction is defined in **every** encoding,
+    because the update and flip sets are.
+
+    That matters: simply reusing the JW strings under parity or Bravyi-Kitaev
+    would give an operator that no longer commutes with the mapped number
+    operator (Frobenius ``|[A, N]|`` of 4.0 and 4.24 on a 4-mode example), so
+    the ansatz would leave the physical sector.  Built this way the generator
+    is anti-Hermitian and conserves both particle numbers in any encoding, and
+    the parity two-qubit reduction therefore applies to it.
     """
 
     name = "qeb"
 
+    #: Qubit excitations commute with both tapered symmetries.
+    supports_two_qubit_reduction = True
+
     def _qeb_operators(self) -> list[PoolOperator]:
         ops: list[PoolOperator] = []
-        for label, gen, support in self._fermionic_generators():
-            jw = gen.map_to_qubits("jordan_wigner", n_modes=self.n_qubits)
-            qeb = _strip_outside_support(jw, support)
-            if not qeb.terms:
-                continue
-            kind = "qeb-single" if label[0] == "S" else "qeb-double"
-            ops.append(PoolOperator("Q" + label, qeb, tuple(support), kind))
+        for (i, a) in self._singles:
+            self._append_excitation(ops, f"QS({i}->{a})", (a,), (i,),
+                                    "qeb-single")
+        for (i, j, a, b) in self._doubles:
+            # Mirrors a+_a a+_b a_j a_i of the fermionic generator.
+            self._append_excitation(ops, f"QD({i},{j}->{a},{b})", (a, b),
+                                    (j, i), "qeb-double")
         return ops
+
+    def _append_excitation(self, ops, label, modes_out, modes_in, kind) -> None:
+        generator = qubit_excitation(
+            modes_out, modes_in, self.n_modes, self.mapping,
+            two_qubit_reduction=self.two_qubit_reduction,
+            num_particles=self.num_particles)
+        if generator.terms:
+            ops.append(PoolOperator(label, generator, _support_of(generator),
+                                    kind))
 
     def _build(self) -> list[PoolOperator]:
         return self._qeb_operators()
@@ -327,9 +353,18 @@ class CEOPool(QEBPool):
 
     All QEB generators acting on the *same* set of qubits are summed into a single
     anti-Hermitian generator (the OVP-CEO variant: one variational parameter and
-    one shared entangling structure per group).  Because several exchange terms
-    then ride a single CNOT ladder, CEO reaches a given accuracy with fewer
-    two-qubit gates than the fermionic or bare-QEB pools.
+    one shared entangling structure per group), so several exchange terms ride a
+    single CNOT ladder.
+
+    **What this construction actually yields.** In Jordan-Wigner the excitation
+    enumeration supplies exactly one spin-conserving excitation per qubit
+    support, so every group is a *singleton* and the pool is
+    generator-for-generator identical to ``qeb`` (verified in
+    ``test/test_pool_encoding.py``).  Under parity / Bravyi-Kitaev the update
+    and flip sets widen the supports, so distinct excitations can share one and
+    are genuinely summed.  Either way the gate savings reported for CEO need
+    several exchange directions per support *and* their specialized circuit
+    synthesis, which is not implemented here.
     """
 
     name = "ceo"

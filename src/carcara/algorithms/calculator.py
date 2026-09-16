@@ -65,6 +65,8 @@ frozen).
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
 
@@ -127,6 +129,8 @@ def resolve_method(name: str):
 #: Pseudopotential families whose forces come from
 #: :func:`~carcara.algorithms.pseudo_forces.pseudo_nuclear_gradient`.
 PSEUDO_GRADIENT_FAMILIES = ("paw", "oncvpsp")
+#: Largest orbital-rotation residual (Hartree) the RDM gradient accepts quietly.
+ORBITAL_RESPONSE_TOLERANCE = 1e-3
 
 
 class Carcara(Calculator):
@@ -170,6 +174,19 @@ class Carcara(Calculator):
         it to ``False`` gives the bare Hellmann-Feynman force; for an atom-centered
         basis that is **not** the gradient of the energy and will not relax to the
         right geometry -- it is exposed for analysis, not for production.
+    force_method : {"rdm", "scf-response"}
+        How the nuclear gradient is taken.  ``"rdm"`` (default) differentiates
+        the energy expression the solver actually reported, holding the reduced
+        density matrices and molecular orbitals fixed
+        (:func:`~carcara.algorithms.pseudo_forces.pseudo_nuclear_gradient`): it
+        is complex-safe, covers pseudopotential projectors, augmented overlaps
+        and compensation charges when the family has them, refills a frozen
+        core, and reports its orbital-response residual in
+        ``force_result.details["orbital_gradient"]``.  ``"scf-response"`` is the
+        legacy path through a real-arithmetic differentiated SCF
+        (:func:`~carcara.algorithms.forces.nuclear_gradient`); it assumes a
+        closed-shell real reference and does not carry the pseudopotential
+        terms, and is kept only for comparison.
     hellmann_feynman : {"analytic", "by-parts"}
         How the electron-nucleus force term is evaluated.  Keep the default
         ``"analytic"``: it is exactly the derivative of the reported energy and
@@ -200,7 +217,7 @@ class Carcara(Calculator):
 
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="FAO",
                  h: float = 0.20, grid=None,
-                 include_pulay: bool = True,
+                 include_pulay: bool = True, force_method: str = "rdm",
                  hellmann_feynman: str = "analytic", orbital_delta=None,
                  scf_iterations: int = 40, verbose: bool = True,
                  measurement_provider=None,
@@ -210,6 +227,10 @@ class Carcara(Calculator):
         self.basis = basis
         self.h = float(h)
         self.include_pulay = bool(include_pulay)
+        if str(force_method) not in ("rdm", "scf-response"):
+            raise ValueError(f"force_method must be 'rdm' or 'scf-response', "
+                             f"got {force_method!r}")
+        self.force_method = str(force_method)
         self.hellmann_feynman = str(hellmann_feynman)
         self.orbital_delta = orbital_delta
         self.scf_iterations = int(scf_iterations)
@@ -380,6 +401,8 @@ class Carcara(Calculator):
         atoms = self.atoms
 
         want_forces = "forces" in properties
+        # A previous step's breakdown must never survive a new geometry.
+        self.force_result = None
         if want_forces:
             self._require_atom_centered_basis(self.basis)
 
@@ -403,6 +426,7 @@ class Carcara(Calculator):
             self.results["forces"] = np.full((len(atoms), 3), np.nan)
             return
         if want_forces:
+            self._check_force_support(solver)
             if measured is None:
                 self.force_result = self._forces(solver)
             else:
@@ -418,6 +442,52 @@ class Carcara(Calculator):
         return float(work.get_potential_energy())
 
     # -- forces ------------------------------------------------------------ #
+
+    def _check_force_support(self, solver) -> None:
+        """Refuse force requests the derivative does not actually cover.
+
+        The gradient differentiates *this* energy expression; a configuration
+        it does not model must fail here rather than return a plausible number.
+        """
+        context = getattr(solver, "_gradient_context", None) or {}
+        integrals = context.get("integrals")
+        legacy = self.force_method == "scf-response"
+
+        kinetic = getattr(integrals, "kinetic", "fd")
+        if kinetic != "fd":
+            raise NotImplementedError(
+                f"forces differentiate the finite-difference Laplacian, but "
+                f"the integrals use kinetic={kinetic!r}; rebuild the "
+                f"calculator with kinetic='fd' (the default) for a gradient.")
+
+        if getattr(solver, "shots", 0) and self.measurement_provider is None:
+            raise NotImplementedError(
+                "with shots > 0 the energy is measured but the forces would "
+                "come from the internally simulated state, so they would not "
+                "be the gradient of the reported energy; pass "
+                "measurement_provider= to measure the density matrices too, "
+                "or use shots=0.")
+
+        if not legacy:
+            return
+        # The legacy path differentiates a real-arithmetic closed-shell replica
+        # of the SCF -- see `algorithms/_jax_energy.py`.
+        particles = getattr(solver, "num_particles", None)
+        if particles is not None and particles[0] != particles[1]:
+            raise NotImplementedError(
+                f"force_method='scf-response' assumes a closed-shell "
+                f"reference, but this run is open shell "
+                f"(num_particles={tuple(particles)}); use the default "
+                f"force_method='rdm'.")
+        basis = getattr(integrals, "basis", None) or []
+        if any(getattr(function, "l", 0) > 0 for function in basis):
+            warnings.warn(
+                "force_method='scf-response' runs a real-arithmetic replica of "
+                "the SCF, but this basis carries l > 0 functions whose "
+                "molecular orbitals are complex: the gradient is not "
+                "consistent with the reported energy.  The default "
+                "force_method='rdm' is complex-safe.",
+                RuntimeWarning, stacklevel=3)
 
     def _measure(self, solver):
         """Energy and RDMs of the optimized state, from ``measurement_provider``.
@@ -489,11 +559,20 @@ class Carcara(Calculator):
                 "an atom-centered basis such as 'FAO', 'GTO' or '6-31G(d)'.")
 
         gamma, gamma2 = self._state_rdms(solver) if rdms is None else rdms
+        frozen = context.get("frozen") or ()
+        if frozen:
+            # The gradient contracts against the *full* integrals, so the
+            # inert core has to be put back into the density matrices.
+            from .rdm import expand_frozen_core
 
-        if context.get("family") in PSEUDO_GRADIENT_FAMILIES:
-            # PAW / ONCVPSP: multi-projector coupling, overlap correction,
-            # compensation charges and complex (l > 0) orbitals -- the
-            # separable-form gradient of pseudo_forces.
+            gamma, gamma2 = expand_frozen_core(
+                gamma, gamma2, frozen, len(context["integrals"].basis))
+
+        if self.force_method == "rdm":
+            # The complex-safe RDM gradient: projector coupling, augmented
+            # overlap and compensation charges when the family has them, the
+            # bare -Z/r when it does not.  It differentiates the same energy
+            # expression the solver reported, for every atom-centered basis.
             from .pseudo_forces import (ENERGY_CHECK_TOLERANCE,
                                         pseudo_nuclear_gradient)
             result = pseudo_nuclear_gradient(
@@ -512,6 +591,16 @@ class Carcara(Calculator):
                         f"({rebuilt:.10f} Ha) differs from the solver's "
                         f"({reported:.10f} Ha); the force would not be the "
                         "gradient of the reported energy")
+            residual = float(result.details.get("orbital_gradient", 0.0) or 0.0)
+            if residual > ORBITAL_RESPONSE_TOLERANCE:
+                warnings.warn(
+                    f"the state is not stationary with respect to orbital "
+                    f"rotations (max |dE/dkappa| = {residual:.2e} Ha): the "
+                    f"gradient holds the molecular orbitals fixed, so it "
+                    f"misses an orbital-response term of that size.  Converge "
+                    f"the solver further (a larger max_iterations / smaller "
+                    f"gradient_tolerance) for trustworthy forces.",
+                    RuntimeWarning, stacklevel=3)
             return result
 
         return nuclear_gradient(
@@ -529,6 +618,13 @@ class Carcara(Calculator):
         result = getattr(solver, "result", None)
         if result is None:
             raise RuntimeError("the solver has not been run yet")
+        # A subspace run optimizes one unitary over several references and sorts
+        # the resulting levels: its ground state is a *stored* vector, not
+        # U(theta) applied to the Hartree-Fock reference (that is whichever
+        # branch the HF determinant evolved into, which need not be the lowest).
+        states = getattr(result, "states", None)
+        if states is not None and len(states):
+            return np.asarray(states[0], dtype=complex)
         parameters = np.asarray(result.optimal_parameters, dtype=float)
         ansatz = getattr(solver, "ansatz", None)
         if ansatz is not None:                                   # fixed ansatz

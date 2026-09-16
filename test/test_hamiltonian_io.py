@@ -316,7 +316,8 @@ class TestFileFormats:
 
     def test_explicit_format_overrides_detection(self, tmp_path):
         path = tmp_path / "named.parquet"          # extension lies ...
-        save_hamiltonian(path, PauliSum({"IZ": 0.5}), format="json")
+        with pytest.warns(RuntimeWarning, match="will not match"):
+            save_hamiltonian(path, PauliSum({"IZ": 0.5}), format="json")
         assert load_hamiltonian(path, format="json").num_qubits == 2
 
     def test_missing_file_raises(self, tmp_path):
@@ -381,6 +382,82 @@ class TestDriverFileFormats:
     def test_unknown_format_is_rejected(self):
         with pytest.raises(ValueError, match="unknown hamiltonian_format"):
             ADAPTVQE(hamiltonian_format="hdf5")
+
+    def test_the_path_extension_outranks_the_driver_default(self, tmp_path,
+                                                            h2_atoms):
+        """A file named '.json' must not be handed Parquet bytes."""
+        path = str(tmp_path / "named.json")
+        h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
+                                 verbose=False, max_iterations=1,
+                                 save_hamiltonian=path)   # default: parquet
+        h2_atoms.get_total_energy()
+        assert open(path, "rb").read(1) == b"{"
+        assert detect_format(path) == "json"
+
+    def test_a_name_that_contradicts_the_content_is_flagged(self, tmp_path):
+        """An explicit format still wins, but the mismatch is not silent."""
+        with pytest.warns(RuntimeWarning, match="will not match"):
+            path = save_hamiltonian(tmp_path / "wrong.json",
+                                    PauliSum({"ZZ": 1.0}), format="parquet")
+        with pytest.warns(RuntimeWarning, match="content is 'parquet'"):
+            assert load_hamiltonian(path).hamiltonian.terms["ZZ"] == 1.0
+
+    def test_a_mislabeled_file_is_read_as_what_it_is(self, tmp_path):
+        """Written by an older build; the bytes decide, with a warning."""
+        real = save_hamiltonian(tmp_path / "real.parquet",
+                                PauliSum({"ZZ": 1.0, "XX": 0.5}))
+        lying = tmp_path / "lying.json"
+        lying.write_bytes(open(real, "rb").read())
+        with pytest.warns(RuntimeWarning, match="content is 'parquet'"):
+            assert detect_format(lying) == "parquet"
+        assert load_hamiltonian(lying).hamiltonian.terms["XX"] == 0.5
+
+
+class TestTaperedRecords:
+    """A tapered Hamiltonian is 2M - 2 qubits wide; the file has to say so."""
+
+    def _tapered(self, tmp_path, fmt, atoms):
+        path = str(tmp_path / f"tapered{FILE_EXTENSIONS[fmt]}")
+        atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
+                              mapping="parity", two_qubit_reduction=True,
+                              verbose=False, profile=False, max_iterations=4,
+                              save_hamiltonian=path)
+        return path, atoms.get_total_energy()
+
+    @pytest.mark.parametrize("fmt", HAMILTONIAN_FORMATS)
+    def test_the_reduction_round_trips(self, tmp_path, h2_atoms, fmt):
+        path, energy = self._tapered(tmp_path, fmt, h2_atoms)
+        record = load_hamiltonian(path)
+        assert record.two_qubit_reduction is True
+        assert record.num_qubits == 2
+
+        # A driver told nothing but the file reproduces the run exactly.
+        loaded = ADAPTVQE(pool="fermionic", load_hamiltonian=path,
+                          verbose=False, profile=False, max_iterations=4)
+        result = loaded.run()
+        assert loaded.two_qubit_reduction is True and loaded.n_qubits == 2
+        assert result.optimal_energy == pytest.approx(energy, abs=1e-9)
+
+    def test_an_untapered_file_will_not_pretend(self, tmp_path, h2_atoms):
+        path = str(tmp_path / "plain.json")
+        h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
+                                 verbose=False, profile=False,
+                                 max_iterations=1, save_hamiltonian=path)
+        h2_atoms.get_total_energy()
+        assert load_hamiltonian(path).two_qubit_reduction is False
+        with pytest.raises(ValueError, match="untapered"):
+            ADAPTVQE(pool="fermionic", load_hamiltonian=path, mapping="parity",
+                     two_qubit_reduction=True, verbose=False)
+
+    def test_older_files_load_as_untapered(self, tmp_path):
+        """The field is new; a file without it was written before tapering."""
+        import json
+        path = save_hamiltonian(tmp_path / "old.json", PauliSum({"ZZ": 1.0}),
+                                num_particles=(1, 1), n_spatial_orbitals=2)
+        payload = json.loads(open(path).read())
+        del payload["two_qubit_reduction"]
+        open(path, "w").write(json.dumps(payload))
+        assert load_hamiltonian(path).two_qubit_reduction is False
 
 
 # --------------------------------------------------------------------------- #

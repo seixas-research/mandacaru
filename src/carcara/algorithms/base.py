@@ -42,9 +42,9 @@ from ..backends.hardware import (device_arn, device_provider, is_aws_device,
                                  requires_shots)
 from ..backends.providers import build_provider, normalize_provider
 from ..core.mapping import Fermion, PauliSum
-from ..core.serialization import (DEFAULT_FORMAT, load_hamiltonian,
-                                  resolve_format, resolve_save_path,
-                                  save_hamiltonian)
+from ..core.serialization import (DEFAULT_FORMAT, EXTENSION_FORMATS,
+                                  load_hamiltonian, resolve_format,
+                                  resolve_save_path, save_hamiltonian)
 from ..optimizers.optim import NAMED_OPTIMIZERS, OptimizeResult, resolve_optimizer
 from ..units import convert_energy, energy_unit_label, from_hartree
 from ._hamiltonian_from_atoms import monkhorst_pack_kpts, resolve_initial_state
@@ -75,6 +75,11 @@ def format_pauli_sum(pauli: PauliSum, indent: str = "    ",
     if max_terms is not None and len(items) > max_terms:
         lines.append(f"{indent}... ({len(items) - max_terms} more terms)")
     return "\n".join(lines)
+
+
+#: Largest imaginary Pauli coefficient accepted before Hermitizing (relative
+#: to the operator's coefficient scale).
+HERMITICITY_TOLERANCE = 1e-9
 
 
 class VariationalDriver(Calculator):
@@ -281,6 +286,9 @@ class VariationalDriver(Calculator):
         # ASE hook then never rebuilds it.  In calculator mode it stays False and
         # the Hamiltonian is (re)built from the geometry on each ``calculate``.
         self._built_from_hamiltonian = False
+        #: ``(hamiltonian, num_particles, n_spatial_orbitals)`` held unmaterialized
+        #: for a dry run given a Hamiltonian at construction.
+        self._dry_run_problem = None
 
     # -- output units ----------------------------------------------------- #
 
@@ -380,6 +388,17 @@ class VariationalDriver(Calculator):
             raise ValueError(
                 f"Hamiltonian acts on {qubit_h.num_qubits} qubits but the ansatz "
                 f"/ pool has {n_qubits}")
+        residual = max((abs(coeff.imag) for coeff in qubit_h.terms.values()),
+                       default=0.0)
+        scale = max((abs(coeff) for coeff in qubit_h.terms.values()), default=1.0)
+        if residual > HERMITICITY_TOLERANCE * max(scale, 1.0):
+            # Symmetrizing below would quietly discard this: a Hamiltonian
+            # with genuinely complex coefficients is not an observable.
+            raise ValueError(
+                f"the qubit Hamiltonian is not Hermitian: its largest "
+                f"imaginary coefficient is {residual:.3e} against a coefficient "
+                f"scale of {scale:.3e}.  Symmetrizing it would change the "
+                f"operator; check the integrals or the supplied hamiltonian.")
         self.hamiltonian = qubit_h
         self.n_qubits = int(n_qubits)
         self._sector = sector
@@ -434,7 +453,17 @@ class VariationalDriver(Calculator):
         """
         if not self.execute_circuits:
             return None
-        return build_provider(self.backend_provider, **self._provider_options())
+        # Cached: a provider owns a backend handle (and, for IBM, an Estimator
+        # and its transpilation target).  Rebuilding it per energy evaluation
+        # throws those away and re-resolves the device on every call.
+        options = self._provider_options()
+        key = (self.backend_provider, repr(sorted(options.items(), key=str)))
+        cached = getattr(self, "_provider_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        provider = build_provider(self.backend_provider, **options)
+        self._provider_cache = (key, provider)
+        return provider
 
     def ansatz_problem(self, theta=None):
         """``(n_qubits, occupied, generators, theta, hamiltonian)`` of the
@@ -502,9 +531,29 @@ class VariationalDriver(Calculator):
         whole point of the cache: neither the one-/two-body integrals nor the
         fermion-to-qubit mapping is touched, and the driver's ``mapping`` is
         adopted from the file so the ansatz / pool stay consistent with it.
+
+        A **tapered** record (``two_qubit_reduction``) restores that setting the
+        same way: the stored operator is ``2M - 2`` qubits wide, so a driver that
+        did not know would build a pool two qubits too wide and refuse to run.
+        A driver that asked for tapering and is handed an untapered file is a
+        real contradiction -- the file cannot be tapered after the fact without
+        the mapping it was written in -- and says so.
         """
         record = load_hamiltonian(self.load_hamiltonian)
         self.mapping = record.mapping
+        if record.two_qubit_reduction and not self.two_qubit_reduction:
+            if not self._supports_two_qubit_reduction:
+                raise NotImplementedError(
+                    f"{self.load_hamiltonian!r} holds a tapered Hamiltonian, "
+                    f"which {type(self).__name__} does not support (its "
+                    "reference determinants are not tapered)")
+            self.two_qubit_reduction = True
+        elif self.two_qubit_reduction and not record.two_qubit_reduction:
+            raise ValueError(
+                f"{self.load_hamiltonian!r} holds an untapered "
+                f"{record.num_qubits}-qubit Hamiltonian, but this driver was "
+                "built with two_qubit_reduction=True; drop the flag (the file "
+                "decides) or point at a file written with it")
         self._loaded_record = record
         return (record.hamiltonian, record.num_particles,
                 record.n_spatial_orbitals)
@@ -526,10 +575,16 @@ class VariationalDriver(Calculator):
                 and os.path.abspath(self.load_hamiltonian)
                 == os.path.abspath(self._save_path)):
             return None
+        # An explicit extension on the save path is the user's choice of format
+        # and outranks the driver default, which would otherwise write Parquet
+        # bytes into a file they named '.json'.
+        extension = os.path.splitext(self._save_path)[1].lower()
+        fmt = (None if extension in EXTENSION_FORMATS
+               else self.hamiltonian_format)
         return save_hamiltonian(
             self._save_path, self.hamiltonian, mapping=self.mapping,
             num_particles=num_particles, n_spatial_orbitals=n_spatial_orbitals,
-            format=self.hamiltonian_format,
+            two_qubit_reduction=self.two_qubit_reduction, format=fmt,
             metadata={"driver": type(self).__name__,
                       "basis": self.basis if isinstance(self.basis, str)
                       else dict(self.basis),
@@ -658,19 +713,25 @@ class VariationalDriver(Calculator):
             # mapping), whether or not the driver has already adopted it.
             return estimate_qubits(load_hamiltonian=self.load_hamiltonian,
                                    **common)
-        if self._built_from_hamiltonian and getattr(self, "hamiltonian", None) \
-                is not None:
+        operator = particles = n_orb = None
+        if self._dry_run_problem is not None:
+            # A dry run given an operator: measure it without materializing it.
+            operator, particles, n_orb = self._dry_run_problem
+        elif (self._built_from_hamiltonian
+              and getattr(self, "hamiltonian", None) is not None):
+            operator = self.hamiltonian
+        if operator is not None:
             # Direct mode: the occupation lives on the driver (ADAPT) or on
             # its fixed ansatz (VQE).
             ansatz = getattr(self, "ansatz", None)
-            particles = getattr(self, "num_particles", None)
             if particles is None:
-                particles = getattr(ansatz, "num_particles", None)
-            n_orb = getattr(self, "n_spatial_orbitals", None)
+                particles = (getattr(self, "num_particles", None)
+                             or getattr(ansatz, "num_particles", None))
             if n_orb is None:
-                n_orb = getattr(ansatz, "n_spatial_orbitals", None)
+                n_orb = (getattr(self, "n_spatial_orbitals", None)
+                         or getattr(ansatz, "n_spatial_orbitals", None))
             return estimate_qubits(
-                hamiltonian=self.hamiltonian, num_particles=particles,
+                hamiltonian=operator, num_particles=particles,
                 n_spatial_orbitals=n_orb,
                 basis=self.basis if isinstance(self.basis, str)
                 else str(self.basis), **common)
@@ -690,10 +751,13 @@ class VariationalDriver(Calculator):
     def _dry_run_estimate(self, atoms=None):
         """Perform the dry run: store, optionally print, and return the estimate."""
         estimate = self.estimate_qubits(atoms)
-        if self.two_qubit_reduction:
+        # A cached tapered Hamiltonian already reports the reduced width;
+        # applying the reduction again would subtract two qubits twice.
+        if self.two_qubit_reduction and not estimate.two_qubit_reduction:
             import dataclasses
             estimate = dataclasses.replace(
                 estimate, n_qubits=estimate.n_qubits_reduced,
+                two_qubit_reduction=True,
                 notes=list(estimate.notes) + [
                     "parity two-qubit reduction applied: two qubits fewer"])
         self.dry_run_result = estimate

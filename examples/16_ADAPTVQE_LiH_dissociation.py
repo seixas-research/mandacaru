@@ -14,12 +14,10 @@ electronic problem with ``Carcara(method="adapt-vqe", ...)`` under
 * four **operator pools** -- ``fermionic``, ``qubit``, ``qeb`` and ``ceo`` -- all
   under Jordan-Wigner, and
 * three **fermion-to-qubit mappings** -- Jordan-Wigner, parity and Bravyi-Kitaev
-  -- all with the mapping-general ``fermionic`` pool.
+  -- all with the ``fermionic`` pool.
 
-(The ``qubit`` / ``qeb`` / ``ceo`` pools are built from Jordan-Wigner-mapped
-excitations, so they are JW-specific; only the ``fermionic`` pool is
-mapping-general.  That is why the two sweeps are factored this way rather than
-run as a full 4x3 grid.)
+(Every pool is built in the encoding it is asked for, so a full 4x3 grid would
+run; the two sweeps are factored this way to keep the figure readable.)
 
 Every energy is referenced to the **sum of the isolated-atom energies**
 ``E(Li) + E(H)`` (unrestricted Hartree-Fock in the same basis, on the same grid,

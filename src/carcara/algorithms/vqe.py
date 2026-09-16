@@ -212,12 +212,24 @@ class VQE(DeflationMixin, VariationalDriver):
                     f"{self.load_hamiltonian!r} does not record num_particles / "
                     "n_spatial_orbitals, so the default UCCSD ansatz cannot be "
                     "rebuilt from it; pass an explicit `ansatz`")
-            self._configure(hamiltonian, num_particles, n_orbitals)
-            self._built_from_hamiltonian = True
+            if self.dry_run:
+                # Never materialize in a dry run: the 2^n matrix is what the
+                # estimate exists to warn about.
+                self._dry_run_problem = (hamiltonian, num_particles, n_orbitals)
+            else:
+                self._configure(hamiltonian, num_particles, n_orbitals)
+                self._built_from_hamiltonian = True
         # Direct mode: a Hamiltonian and ansatz were supplied at construction.
         elif hamiltonian is not None and ansatz is not None:
-            self._configure(hamiltonian, None, None)
-            self._built_from_hamiltonian = True
+            if self.dry_run:
+                # The ansatz is not attached (no _configure), so read the
+                # occupation off the one that was handed in.
+                self._dry_run_problem = (
+                    hamiltonian, getattr(ansatz, "num_particles", None),
+                    getattr(ansatz, "n_spatial_orbitals", None))
+            else:
+                self._configure(hamiltonian, None, None)
+                self._built_from_hamiltonian = True
 
     # -- setup ------------------------------------------------------------ #
 

@@ -42,6 +42,7 @@ deflation, growing a fresh deflated ansatz per level -- see
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -133,6 +134,9 @@ class ADAPTVQEResult:
     operators: list[str]                      # selected operator labels, in order
     iterations: list[AdaptIteration] = field(default_factory=list)
     num_evaluations: int = 0                  # total inner cost evaluations
+    #: ``(growth step, message)`` of every inner optimization that did not
+    #: report convergence -- empty when every step converged.
+    optimizer_failures: list = field(default_factory=list)
     metrics: CircuitMetrics | None = None     # final compiled-circuit metrics
     timings: dict | None = None               # per-stage wall time / cores / memory
     integration_profile: dict | None = None   # real-space integration profile
@@ -227,9 +231,15 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         ``"parity"``, ``"bravyi_kitaev"`` -- used when ``hamiltonian`` is a
         ``Fermion`` and to build a named fermionic pool.
     gradient : str
-        How the pool screening gradients are evaluated -- ``"finite_difference"``
-        (default; a finite-difference estimate from shifted parameters) or
-        ``"parameter-shift"`` (the quantum parameter-shift rule).
+        How the pool screening gradients are evaluated -- ``"analytic"``
+        (default; the exact derivative ``g_i = 2 Re<H psi|A_i psi>``),
+        ``"finite_difference"`` (a finite-difference estimate from shifted
+        parameters) or ``"parameter-shift"`` (the quantum parameter-shift rule).
+        All three converge to the same number; ``"analytic"`` is both the
+        cheapest -- one matrix-vector product per pool operator, against
+        ``2 x |pool|`` energy evaluations -- and the only one free of a step-size
+        truncation error, so the shift-based estimators are opt-in, for studying
+        the estimator itself.
     device : str
         Execution device -- ``"AER_simulator"`` (default; ideal simulator) or
         ``"ibm-quantum"`` (reserved for real hardware, not yet runnable).  See
@@ -369,7 +379,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         are constructor arguments, not ``run`` arguments.
     """
 
-    _GRADIENTS = ("finite_difference", "parameter-shift")
+    _GRADIENTS = ("analytic", "finite_difference", "parameter-shift")
     _default_sparse = "auto"
 
     def __init__(self,
@@ -380,7 +390,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  n_spatial_orbitals=None,
                  optimizer: str | Optimizer = "COBYLA",
                  mapping: str = "jordan_wigner",
-                 gradient: str = "finite_difference",
+                 gradient: str = "analytic",
                  device: str = "AER_simulator",
                  max_iterations: int = 50,
                  gradient_tolerance: float = 1e-3,
@@ -460,9 +470,14 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
         # Configure eagerly when a Hamiltonian is given (direct mode); otherwise
         # defer to the first calculator evaluation (the ASE hook in the base).
-        if hamiltonian is not None:
+        # A dry run never configures: materializing the Hamiltonian allocates
+        # the 2^n matrix whose feasibility is the very thing being asked about.
+        if hamiltonian is not None and not self.dry_run:
             self._configure(hamiltonian, num_particles, n_spatial_orbitals)
             self._built_from_hamiltonian = True
+        elif hamiltonian is not None:
+            self._dry_run_problem = (hamiltonian, num_particles,
+                                     n_spatial_orbitals)
 
     # -- setup helpers ---------------------------------------------------- #
 
@@ -490,13 +505,16 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # operators (in the growable ansatz).
         qubit_h = self._as_pauli_sum(hamiltonian, self.pool.n_qubits,
                                      self.num_particles)
+        # The pool is built first: a sector may only be used when every
+        # generator keeps the ansatz inside it (see _resolve_sector).
+        self._pool_ops = self.pool.operators()
         self._materialize_hamiltonian(
             qubit_h, self.pool.n_qubits,
-            sector=self._resolve_sector(self.pool.n_qubits))
+            sector=self._resolve_sector(self.pool.n_qubits, qubit_h,
+                                        self._pool_ops))
         self._maybe_save_hamiltonian(self.num_particles,
                                      self.pool.n_spatial_orbitals)
 
-        self._pool_ops = self.pool.operators()
         if self._sector is not None:
             self._pool_matrices = [self._sector.restrict(op.generator)
                                    for op in self._pool_ops]
@@ -506,15 +524,12 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                                    for op in self._pool_ops]
             self._pool_eig = None
         else:
-            # For A anti-Hermitian, -iA is Hermitian: -iA = V diag(w) V^dag, so
-            # exp(theta A) = V diag(exp(i theta w)) V^dag.  The unique positive
-            # eigenvalue *differences* are the frequencies of E(theta), used by the
-            # parameter-shift gradient.
+            # Dense pool.  The per-operator eigendecomposition is built lazily
+            # (``_pool_eigendecomposition``): only the shift-based estimators
+            # need it, and it is |pool| dense diagonalizations of the full
+            # register that the default analytic screening never looks at.
             self._pool_matrices = [op.matrix() for op in self._pool_ops]
-            self._pool_eig = []
-            for a in self._pool_matrices:
-                w, V = np.linalg.eigh(-1j * a)
-                self._pool_eig.append((w, V, _unique_frequencies(w)))
+            self._pool_eig = None
         self._configured = True
 
     def _run_kwargs(self, atoms) -> dict:
@@ -531,13 +546,32 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             grads[i] = 2.0 * np.real(np.vdot(h_psi, a @ psi))
         return grads
 
+    def _pool_eigendecomposition(self):
+        r"""Per-operator eigendecomposition of the dense pool, built on demand.
+
+        For ``A`` anti-Hermitian ``-iA`` is Hermitian: ``-iA = V diag(w) V^dag``,
+        so ``exp(theta A) = V diag(exp(i theta w)) V^dag`` and the energy along a
+        pool direction is had without a matrix exponential.  The unique positive
+        eigenvalue *differences* are the frequencies of ``E(theta)``, which the
+        parameter-shift reconstruction needs.
+
+        Only the shift-based estimators call this, and it diagonalizes every pool
+        operator over the full register -- so it is not part of configuring a run.
+        """
+        if self._pool_eig is None:
+            self._pool_eig = []
+            for a in self._pool_matrices:
+                w, V = np.linalg.eigh(-1j * np.asarray(a))
+                self._pool_eig.append((w, V, _unique_frequencies(w)))
+        return self._pool_eig
+
     def _pool_energy_at(self, psi: np.ndarray, i: int, theta: float) -> float:
         r"""Energy after appending ``exp(theta A_i)`` to ``psi``.
 
         ``E_i(theta) = <psi| e^{-theta A_i} H e^{theta A_i} |psi>`` evaluated from
         the cached eigendecomposition of ``A_i`` (no matrix exponential).
         """
-        w, V, _ = self._pool_eig[i]
+        w, V, _ = self._pool_eigendecomposition()[i]
         c = V.conj().T @ psi
         phi = V @ (np.exp(1j * theta * w) * c)
         return float(np.real(np.vdot(phi, self._h_matrix @ phi)))
@@ -570,7 +604,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         grads = np.empty(len(self._pool_matrices))
         for i in range(len(self._pool_matrices)):
-            _, _, freqs = self._pool_eig[i]
+            _, _, freqs = self._pool_eigendecomposition()[i]
             grads[i] = self._psr_one(psi, i, freqs)
         return grads
 
@@ -592,17 +626,20 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     def _gradients(self, psi: np.ndarray) -> np.ndarray:
         """Pool screening gradients using the configured :attr:`gradient` method.
 
-        In the sparse pool path the per-operator eigendecompositions the
-        ``"finite_difference"`` / ``"parameter-shift"`` estimators rely on are not
-        materialized, so screening uses the exact analytic gradient
-        ``g_i = 2 Re<H psi | A_i psi>`` (a sparse matrix-vector product) -- which is
-        the very quantity those estimators approximate.
+        The default ``"analytic"`` is the exact derivative the shift-based
+        estimators approximate, and screening is the same quantity on the dense,
+        sparse and sector paths.  The sparse and sector paths keep their
+        generators as sparse matrices and never form the eigendecompositions the
+        shift estimators need, so they screen analytically whatever is asked --
+        the estimator choice is a dense-path study of the estimator itself.
         """
-        if getattr(self, "_sparse", False):
+        if getattr(self, "_sparse", False) or self._sector is not None:
             return self._analytic_gradients(psi)
         if self.gradient == "parameter-shift":
             return self._parameter_shift_gradients(psi)
-        return self._finite_difference_gradients(psi)      # "finite_difference"
+        if self.gradient == "finite_difference":
+            return self._finite_difference_gradients(psi)
+        return self._analytic_gradients(psi)                      # "analytic"
 
     def _select_operator(self, grads: np.ndarray, iteration: int) -> int:
         """Index of the pool operator to append this iteration.
@@ -621,8 +658,20 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     #: Drivers whose states cannot live in a sector override this.
     _supports_sector = True
 
-    def _resolve_sector(self, n_qubits: int):
-        """The :class:`~carcara.core.sector.ParticleSector` to simulate, or ``None``."""
+    #: Largest ``sector.dim * len(terms)`` product worth checking for leakage.
+    SECTOR_GUARD_WORK = 20_000_000
+
+    def _resolve_sector(self, n_qubits: int, qubit_h=None, operators=()):
+        """The :class:`~carcara.core.sector.ParticleSector` to simulate, or ``None``.
+
+        A sector is only safe when the Hamiltonian *and* every pool generator
+        keep the ansatz inside it: :meth:`~carcara.core.sector.ParticleSector.restrict`
+        drops whatever leaves, which would quietly replace a generator by its
+        projection (``exp(PAP) != P exp(A) P``).  The qubit pool's individual
+        Pauli strings do leak by construction.  An explicit ``sector=True``
+        raises for such a pool; the automatic choice falls back to the full
+        register and says so.
+        """
         spec = self.sector
         internal = self.ansatz_provider() is None
         if isinstance(spec, str):
@@ -641,8 +690,38 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 "sector=True needs the internal state-vector backend; executing "
                 "the ansatz as a circuit prepares full-register states")
         from ..core.sector import ParticleSector
-        return ParticleSector(n_qubits, self.num_particles, self.mapping,
-                              two_qubit_reduction=self.two_qubit_reduction)
+        sector = ParticleSector(n_qubits, self.num_particles, self.mapping,
+                                two_qubit_reduction=self.two_qubit_reduction)
+
+        leaking = self._sector_leak(sector, qubit_h, operators)
+        if leaking is not None:
+            message = (f"{leaking} does not conserve the "
+                       f"{self.num_particles} particle-number sector, so "
+                       f"restricting it would change the operator "
+                       f"(exp(PAP) != P exp(A) P)")
+            if not isinstance(spec, str):
+                raise ValueError(
+                    f"sector=True was requested but {message}; use the "
+                    f"'fermionic', 'qeb' or 'ceo' pool, or sector=False")
+            warnings.warn(f"simulating the full register: {message}",
+                          RuntimeWarning, stacklevel=3)
+            return None
+        return sector
+
+    def _sector_leak(self, sector, qubit_h, operators) -> str | None:
+        """Name of the first operator that leaves ``sector``, or ``None``."""
+        def affordable(operator):
+            return (operator is not None
+                    and sector.dim * max(len(operator.terms), 1)
+                    <= self.SECTOR_GUARD_WORK)
+
+        if affordable(qubit_h) and not sector.conserves(qubit_h):
+            return "the Hamiltonian"
+        for op in operators:
+            generator = getattr(op, "generator", None)
+            if affordable(generator) and not sector.conserves(generator):
+                return f"pool operator {getattr(op, 'label', '?')!r}"
+        return None
 
     def _new_ansatz(self) -> AdaptAnsatz:
         """A fresh growable ansatz on the configured evaluation backend.
@@ -809,6 +888,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         selected: list[str] = []
         total_evals = 0
         converged = False
+        optimizer_failures: list[tuple[int, str]] = []
         max_grad = np.inf
         energy = ref_energy
         metrics: CircuitMetrics | None = None
@@ -840,6 +920,11 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 params = np.asarray(result.x, dtype=float)
                 energy = float(result.fun)
                 total_evals += result.nfev
+                if not result.success:
+                    # The inner optimizer did not certify convergence; the
+                    # growth continues from its best point, but the run says so.
+                    optimizer_failures.append(
+                        (len(iterations) + 1, str(result.message)))
 
                 with timings.time("circuit profiling"):
                     metrics = self._profile(ansatz)
@@ -878,6 +963,17 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                         "operator_label": op.label,
                         "metrics": metrics,
                     })
+            if not converged:
+                # The loop stopped on max_iterations (or ran none at all).
+                # Screen once more so the reported gradient -- and the
+                # convergence flag -- describe the *final* state rather than
+                # the one before the last operator was appended and optimized.
+                with timings.time("gradient screening"):
+                    psi = ansatz.state(params) if ansatz.num_parameters else \
+                        ansatz.reference_state()
+                    max_grad = _max_abs(self._gradients(psi))
+                converged = bool(max_grad < gradient_tol)
+
             if logger is not None:
                 logger.write_summary(
                     converged=converged,
@@ -894,13 +990,13 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             if logger is not None:
                 logger.close()
 
-        if not converged and len(iterations) == max_iterations:
-            # Loop exhausted without meeting the gradient threshold; report the
-            # final screening gradient so callers can see how close it got.
-            with timings.time("gradient screening"):
-                psi = ansatz.state(params) if ansatz.num_parameters else \
-                    ansatz.reference_state()
-                max_grad = _max_abs(self._gradients(psi))
+        if optimizer_failures:
+            steps = ", ".join(str(step) for step, _msg in optimizer_failures)
+            warnings.warn(
+                f"the inner optimizer reported no convergence in "
+                f"{len(optimizer_failures)} of {len(iterations)} growth steps "
+                f"(steps {steps}); last message: "
+                f"{optimizer_failures[-1][1]!r}", RuntimeWarning, stacklevel=2)
 
         # Fold the (calculator-mode) integration stage in, then set the wall time.
         self._finalize_timings(timings, run_t0)
@@ -915,6 +1011,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             operators=selected,
             iterations=iterations,
             num_evaluations=total_evals,
+            optimizer_failures=optimizer_failures,
             metrics=metrics,
             timings=timings.as_dict(),
             integration_profile=self._integration_profile,
@@ -1039,7 +1136,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         print(rule)
         print(f"ADAPT-VQE  |  mapping: {self.mapping}  |  {self.n_qubits} qubits "
               f"|  device: {self.device}")
-        grad_label = ("analytic (sparse pool)" if getattr(self, "_sparse", False)
+        screened_analytically = (getattr(self, "_sparse", False)
+                                 or getattr(self, "_sector", None) is not None)
+        grad_label = ("analytic (sparse pool)" if screened_analytically
                       else self.gradient)
         print(f"pool: {self.pool.__class__.__name__}  |  "
               f"optimizer: {self.optimizer.method}  |  gradient: {grad_label}")

@@ -768,23 +768,35 @@ not the core, and it *shrinks* with grid refinement. A polarized multiple-zeta
 basis addresses it directly; see [Basis sets](basis_sets.md).
 
 ```{warning}
-**Geometry optimization does not work yet.** Relaxing H₂O with BFGS diverges:
-the forces oscillate between 35 and 944 eV/Å over twelve steps and the molecule
-destroys itself (bond angle 104.5° → 164.5°, one O–H contracting to 0.80 Å).
+**Relaxation works where the energy surface binds, and H₂O does not bind.**
+LiH relaxes cleanly (`examples/28_LiH_relaxation_PAW.py`: five BFGS steps from
+2.0 Å to d = 1.6876 Å, final fmax 0.002 eV/Å) and so does H₂. Relaxing **H₂O**
+still destroys the molecule — both O–H bonds run out to ~2.4 Å — but the cause
+is the *energy*, not the gradient:
 
-Two independent problems are responsible, and both are in the *energy*, not
-only the gradient:
+* **The gradient is correct.** Against a central difference of the same energy
+  on the same frozen grid, the analytic force on a hydrogen of H₂O is
+  18.2258 vs 18.2267 eV/Å — five significant figures. (An earlier release had a
+  genuine factor-of-eight error here; it came from the differentiated-SCF path,
+  which is no longer the default. See `force_method` in
+  {class}`~carcara.algorithms.calculator.Carcara`.)
+* **The energy has no minimum to find.** Scanning both O–H bonds at h = 0.25 Å
+  gives −461.20, −468.82, −470.68, −472.37 eV at 0.97, 1.40, 2.00 and 2.40 Å:
+  monotonically downhill. BFGS is faithfully walking down a surface whose
+  dissociated limit is spuriously low, so it dissociates the molecule. A
+  minimal valence shell on oxygen sampled on a uniform grid is simply not an
+  adequate model of water; refining the grid to h = 0.15 Å (which silences the
+  projector-resolution warning) does not change the outcome.
+* **Egg-box.** Independently of the above, rigidly translating a molecule on a
+  frozen grid changes the energy — ~160 eV/Å for H₂O, 23 meV for LiH at
+  h = 0.20 Å. The net force reproduces that numerical derivative, i.e. the
+  gradient faithfully differentiates a discretized energy that is not itself
+  translation-invariant.
 
-* **Egg-box.** Rigidly translating H₂O on a frozen grid changes the energy by
-  ~160 eV/Å — the analytic net force reproduces that numerical derivative to
-  within 4 %, so the gradient is faithfully differentiating a discretized energy
-  that is itself not translation-invariant.
-* **Residual gradient error.** Component by component against finite
-  differences, the analytic forces are still too small by roughly a factor of
-  eight on the hydrogens (H *y*: ±3.3 analytic vs ±28.4 numerical).
-
-Use the forces for diagnostics and for single-point analysis, not for
-relaxation.
+So: trust the forces as the derivative of the reported energy, and check that
+the energy binds your system before relaxing it. Carcará flags the two things
+that most often say it will not — an unresolved projector, and a state that is
+not stationary with respect to orbital rotations — as `RuntimeWarning`s.
 ```
 
 ## Tests and their budget

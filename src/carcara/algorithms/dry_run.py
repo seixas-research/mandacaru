@@ -84,6 +84,10 @@ class QubitEstimate:
         The count after the parity mapping's two-qubit reduction (``n_qubits -
         2``; only reachable with ``mapping="parity"`` and a reduction step the
         drivers do not apply by default).
+    two_qubit_reduction : bool
+        Whether :attr:`n_qubits` is **already** the tapered count -- true for a
+        cached Hamiltonian written with the reduction, whose stored operator is
+        ``2M - 2`` qubits wide.  It stops the reduction being counted twice.
     n_spatial_orbitals : int
         Active spatial orbitals (basis functions minus frozen core).
     n_basis_functions : int
@@ -125,6 +129,7 @@ class QubitEstimate:
     device_qubits: int | None = None
     fits_device: bool | None = None
     source: str = "geometry"
+    two_qubit_reduction: bool = False
     notes: list[str] = field(default_factory=list)
 
     # -- derived ---------------------------------------------------------- #
@@ -277,7 +282,10 @@ def count_basis_functions(atoms, basis="FAO"):
 
     bset = BasisSet.build(name, **options)
     per_atom = [(s, len(bset.atom(s))) for s in symbols]
-    label = getattr(bset, "name", None) or str(name)
+    # A named Gaussian family is a native recipe, not the published table it is
+    # named after -- the label has to say so wherever the basis is reported.
+    label = (getattr(bset, "provenance", None) or getattr(bset, "name", None)
+             or str(name))
     if options:
         label += " " + json.dumps(options, sort_keys=True)
     return per_atom, label
@@ -370,11 +378,16 @@ def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
             raise ValueError(f"{load_hamiltonian!r} records no num_particles")
         na, nb = (int(v) for v in record.num_particles)
         meta = getattr(record, "metadata", None) or {}
-        # The file fixes the mapping the operator was written in.
+        # The file fixes the mapping the operator was written in, and says
+        # whether the stored operator is already tapered.
+        if record.two_qubit_reduction:
+            notes.append("cached Hamiltonian is already tapered: its "
+                         f"{n_qubits} qubits are the reduced count")
         return finish(n_qubits=n_qubits, n_spatial_orbitals=n_orb,
                       n_electrons=na + nb, num_particles=(na, nb),
                       n_basis_functions=n_orb, mapping=str(record.mapping),
                       basis=str(meta.get("basis", "(cached)")),
+                      two_qubit_reduction=bool(record.two_qubit_reduction),
                       source="hamiltonian-file")
 
     # -- a geometry ------------------------------------------------------ #

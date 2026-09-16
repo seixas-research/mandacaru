@@ -124,6 +124,12 @@ class Optimizer:
 
         def wrapped(x):
             value = float(cost(x))
+            if not np.isfinite(value):
+                # A NaN/inf cost makes every downstream decision meaningless:
+                # the optimizer would wander and report an arbitrary point.
+                raise ValueError(
+                    f"the cost function returned {value} at {np.asarray(x)}; "
+                    "the optimization cannot continue")
             history.append(value)
             return value
 
@@ -135,13 +141,20 @@ class Optimizer:
 
         if self.method in _CUSTOM_METHODS:
             if self.method == "SPSA":
-                x, fun = self._minimize_spsa(wrapped, x0)
+                x, fun, converged = self._minimize_spsa(wrapped, x0)
             else:                                    # "Adam"
-                x, fun = self._minimize_adam(wrapped, x0)
+                x, fun, converged = self._minimize_adam(wrapped, x0)
+            # `success` means a convergence test was met, not that the loop ran:
+            # the native methods stop on their own step criterion, which needs
+            # `tol`.  Without one there is nothing to certify.
+            message = (f"{self.method} met tol={self.tol:g}" if converged else
+                       f"{self.method} ran {self.maxiter} iterations without "
+                       f"meeting a tolerance"
+                       + ("" if self.tol else " (no tol set)"))
             return OptimizeResult(
                 x=np.asarray(x, dtype=float), fun=float(fun),
-                nfev=len(history), history=history, success=True,
-                message=f"{self.method} finished ({self.maxiter} iterations)")
+                nfev=len(history), history=history, success=bool(converged),
+                message=message)
 
         options = {"maxiter": self.maxiter, **self.options}
         res = minimize(wrapped, x0, method=self.method, tol=self.tol,
@@ -186,8 +199,8 @@ class Optimizer:
             if f < best_f:
                 best_x, best_f = x.copy(), f
             if tol and ak * np.linalg.norm(ghat) < tol:
-                break
-        return best_x, best_f
+                return best_x, best_f, True
+        return best_x, best_f, False
 
     def _minimize_adam(self, cost, x0):
         """Adam -- adaptive moment estimation on a finite-difference gradient.
@@ -221,8 +234,8 @@ class Optimizer:
             if f < best_f:
                 best_x, best_f = x.copy(), f
             if tol and np.linalg.norm(step) < tol:
-                break
-        return best_x, best_f
+                return best_x, best_f, True
+        return best_x, best_f, False
 
     @staticmethod
     def _finite_difference_gradient(cost, x, eps):

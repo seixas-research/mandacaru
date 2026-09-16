@@ -85,15 +85,19 @@ void carcara_one_body_general(const double _Complex *psi,
  *
  * Computed as: for each density pair rho_bd(2) build its Coulomb potential
  * Phi_bd(1) on the grid (the O(ngrid^2) hotspot, OpenMP-parallel), then
- * contract against every rho_ac(1).  `softening` regularizes r12 -> 0.
+ * contract against every rho_ac(1).  `softening` regularizes r12 -> 0 between
+ * *distinct* nodes; the r12 = 0 node (a node with itself) takes `g_self`, the
+ * Coulomb value averaged over the node's own voxel, which is what the FFT
+ * path uses -- so both methods integrate the same operator.
  *
- * xg, yg, zg : (ngrid) node coordinates.  dV = dx^3.
+ * xg, yg, zg : (ngrid) node coordinates.  dV = voxel volume.
+ * g_self     : Green's function at r12 = 0 (int_cell d^3r/|r| / dV).
  * out_eri    : (M^4) complex, caller-allocated.
  */
-void carcara_two_body(const double _Complex *psi,
-                      const double *xg, const double *yg, const double *zg,
-                      int M, int ngrid, double dV, double softening,
-                      double _Complex *out_eri);
+void carcara_two_body_g0(const double _Complex *psi,
+                         const double *xg, const double *yg, const double *zg,
+                         int M, int ngrid, double dV, double softening,
+                         double g_self, double _Complex *out_eri);
 
 /* Kleinman-Bylander projector overlaps.
  *

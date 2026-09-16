@@ -176,6 +176,59 @@ class TestParser:
 
 
 # --------------------------------------------------------------------------- #
+# Provenance: these are native recipes, and every label says so.
+# --------------------------------------------------------------------------- #
+
+class TestProvenance:
+    def test_the_name_carries_a_visible_qualifier(self):
+        basis = BasisSet.build("cc-pVTZ")
+        assert basis.provenance == "native:cc-pVTZ-recipe"
+        assert basis.name == "cc-pVTZ"              # still the selector
+        assert "native:cc-pVTZ-recipe" in repr(basis)
+
+    def test_the_native_namespace_is_an_explicit_spelling_of_the_default(self):
+        for name in ("native:def2-SVP", "native:def2-SVP-recipe"):
+            assert (parse_basis_name(name).summary()
+                    == parse_basis_name("def2-SVP").summary())
+
+    def test_the_published_namespace_resolves_to_nothing(self):
+        """Reserved for real tabulated data, which Carcará does not ship."""
+        with pytest.raises(ValueError, match="no published basis-set tables"):
+            BasisSet.build("published:cc-pVTZ")
+        with pytest.raises(ValueError, match="unknown basis-set namespace"):
+            BasisSet.build("elsewhere:cc-pVTZ")
+
+    def test_the_dry_run_reports_the_provenance(self):
+        from carcara.algorithms.dry_run import estimate_qubits
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
+                      cell=[6.0] * 3)
+        assert estimate_qubits(atoms, basis="cc-pVDZ").basis == \
+            "native:cc-pVDZ-recipe"
+
+    def test_the_numbers_serialize_with_their_convention(self):
+        """Exponents, coefficients and the angular convention, as plain data."""
+        import json
+        basis = BasisSet.build("6-31G*")         # canonically 6-31G(d)
+        record = basis.to_dict(["H", 8])
+        assert record["provenance"] == "native:6-31G(d)-recipe"
+        assert record["published_data"] is False
+        assert "spherical" in record["convention"]["functions_per_shell"]
+        assert "Bohr^-2" in record["convention"]["units"]
+        oxygen = record["elements"]["O"]
+        assert oxygen["atomic_number"] == 8
+        assert oxygen["n_functions"] == sum(2 * s["l"] + 1
+                                            for s in oxygen["shells"])
+        # The serialized numbers are the ones the orbitals are built from.
+        shells = basis.shells("O")
+        assert len(shells) == len(oxygen["shells"])
+        for (l, exps, coeffs), stored in zip(shells, oxygen["shells"]):
+            assert stored["l"] == l
+            assert np.allclose(stored["exponents"], exps)
+            assert np.allclose(stored["coefficients"], coeffs)
+        json.dumps(record)                      # a record a reader can keep
+
+
+# --------------------------------------------------------------------------- #
 # Structure: shell notation and counts.
 # --------------------------------------------------------------------------- #
 

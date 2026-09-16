@@ -60,9 +60,12 @@ Accuracy caveat
 ---------------
 Holding the RDMs fixed is exact when the wavefunction is variationally complete
 in its orbital space (full CI).  With a **frozen core** or a truncated ansatz an
-orbital-relaxation (coupled-perturbed) term is neglected;
-:func:`check_forces_against_finite_difference` measures the residual for a given
-system so the approximation can be quantified rather than assumed.
+orbital-relaxation (coupled-perturbed) term is neglected.  That approximation is
+measured rather than assumed: every force carries
+``ForceResult.details["orbital_gradient"]``, the norm of the orbital-rotation
+gradient that the neglected term is proportional to, and
+:class:`~carcara.algorithms.calculator.Carcara` warns when it exceeds
+:data:`~carcara.algorithms.calculator.ORBITAL_RESPONSE_TOLERANCE`.
 """
 
 from __future__ import annotations
@@ -436,8 +439,14 @@ def hellmann_feynman_gradient(density_ao, psi_grid, grid, nuclei_bohr, charges,
         core-region noise.
 
         ``"by-parts"`` moves the derivative onto the density instead (see
-        :func:`_electronic_by_parts`).  Far better conditioned and convergent,
-        at the cost of no longer being exactly ``dE/dR`` of the discrete energy.
+        :func:`_electronic_by_parts`), which softens the integrand from
+        :math:`1/r^2` to :math:`1/r` at the cost of no longer being exactly
+        ``dE/dR`` of the discrete energy.  It does **not** cure the heavy-atom
+        core noise: measured on isolated atoms, where the exact force is zero, it
+        is no better than ``"analytic"`` and often worse.  See the table in
+        :func:`_electronic_by_parts`, and prefer a pseudopotential basis, whose
+        dedicated path (:mod:`carcara.algorithms.pseudo_forces`) removes the
+        core rather than fighting it.
 
     .. note::
 
@@ -510,7 +519,7 @@ def _pair_potentials(psi_grid, grid):
     M, ngrid = psi_grid.shape
     pairs = (np.conj(psi_grid)[:, None, :]
              * psi_grid[None, :, :]).reshape(M * M, ngrid)
-    solver = PoissonFFTSolver(grid.shape, grid.dx)
+    solver = PoissonFFTSolver(grid.shape, step=grid.step)
     return solver.solve_stack(pairs).reshape(M, M, ngrid)
 
 
@@ -570,9 +579,10 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
         is *not* the physical gradient (see the module docstring).
     hellmann_feynman : {"analytic", "by-parts"}
         How the electron-nucleus term is evaluated (default ``"analytic"``).
-        ``"by-parts"`` is far better conditioned for heavy atoms but is no longer
-        exactly the derivative of the reported energy -- see
-        :func:`hellmann_feynman_gradient`.
+        ``"by-parts"`` integrates a less singular integrand but is no longer
+        exactly the derivative of the reported energy, and does not cure the
+        heavy-atom core noise -- see :func:`hellmann_feynman_gradient` and the
+        measured table in :func:`_electronic_by_parts`.
 
     Returns
     -------

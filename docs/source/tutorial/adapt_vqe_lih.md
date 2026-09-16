@@ -53,7 +53,7 @@ Carcará provides four pools that trade off parameter freedom and circuit compil
 | `"fermionic"` | Spin-adapted excitations | Deep circuits due to Jordan-Wigner $Z$-string chains |
 | `"qubit"` | Individual mapped Pauli strings | Shallow circuits per step, but higher total parameter count |
 | `"qeb"` | Qubit Excitation Basis | $Z$-strings are omitted, yielding distance-independent entangling gates |
-| `"ceo"` | Coupled-Exchange Operators | Shares entangling blocks, yielding maximum accuracy per CNOT |
+| `"ceo"` | Coupled-Exchange Operators | Groups QEB generators by qubit support; singletons under Jordan-Wigner (so it matches `qeb` there), genuine groups under parity / Bravyi-Kitaev |
 
 We can run the comparative analysis across these pools on $H_2$:
 

@@ -227,10 +227,10 @@ void carcara_kb_project(const double _Complex *psi,
     }
 }
 
-void carcara_two_body(const double _Complex *psi,
-                      const double *xg, const double *yg, const double *zg,
-                      int M, int ngrid, double dV, double softening,
-                      double _Complex *out_eri) {
+void carcara_two_body_g0(const double _Complex *psi,
+                         const double *xg, const double *yg, const double *zg,
+                         int M, int ngrid, double dV, double softening,
+                         double g_self, double _Complex *out_eri) {
     const double soft2 = softening * softening;
     double _Complex *rho2 = malloc((size_t)ngrid * sizeof(*rho2));
     double _Complex *phi  = malloc((size_t)ngrid * sizeof(*phi));
@@ -257,9 +257,13 @@ void carcara_two_body(const double _Complex *psi,
                     const double dxr = x1 - xg[g2];
                     const double dyr = y1 - yg[g2];
                     const double dzr = z1 - zg[g2];
-                    double r = sqrt(dxr * dxr + dyr * dyr + dzr * dzr + soft2);
-                    if (r < 1e-15) r = 1e-15;
-                    acc += rho2[g2] / r;
+                    const double r2 = dxr * dxr + dyr * dyr + dzr * dzr;
+                    /* r12 = 0 is the node's own voxel: the caller passes its
+                     * cell-averaged Coulomb value (g_self), instead of the
+                     * 1/1e-15 clamp this used to apply.  Every other pair is
+                     * the exact 1/r (optionally softened). */
+                    acc += rho2[g2] * (r2 > 0.0 ? 1.0 / sqrt(r2 + soft2)
+                                                : g_self);
                 }
                 phi[g1] = acc * dV;
             }

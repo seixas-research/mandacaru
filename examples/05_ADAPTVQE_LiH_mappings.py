@@ -18,10 +18,9 @@ Hamiltonian into *different* qubit Pauli operators, but all describe the same
 physics, so ADAPT-VQE must recover the **same** ground-state energy (the FCI
 eigenvalue of the mapping's qubit Hamiltonian) in every case.
 
-The ``fermionic`` pool is used here because it maps its excitation generators
-through the *same* ``mapping`` as the Hamiltonian; the qubit-tailored pools
-(``qubit`` / ``qeb`` / ``ceo``) are defined via Jordan-Wigner Pauli strings and
-are meant for the default Jordan-Wigner mapping.
+The ``fermionic`` pool is used here as the reference construction; the
+qubit-tailored pools (``qubit`` / ``qeb`` / ``ceo``) are built from the same
+encoding's update and flip sets, so they run under every mapping too.
 
 .. note::
 

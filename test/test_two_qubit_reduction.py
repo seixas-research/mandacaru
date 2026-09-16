@@ -69,10 +69,19 @@ class TestPoolsAndAnsatze:
         assert all(op.generator.num_qubits == 2 for op in pool.operators())
         assert pool.occupied_orbitals == (0, 2)
 
-    @pytest.mark.parametrize("name", ["qubit", "qeb", "ceo"])
-    def test_jordan_wigner_pools_refuse(self, name):
-        with pytest.raises(ValueError, match="fermionic"):
-            build_pool(name, 2, (1, 1), mapping="parity",
+    @pytest.mark.parametrize("name", ["qeb", "ceo"])
+    def test_qubit_excitation_pools_are_tapered(self, name):
+        """They commute with both tapered symmetries, so the taper is exact."""
+        pool = build_pool(name, 2, (1, 1), mapping="parity",
+                          two_qubit_reduction=True)
+        assert pool.n_qubits == 2 and pool.n_modes == 4
+        assert all(op.generator.num_qubits == 2 for op in pool.operators())
+        assert pool.operators()
+
+    def test_the_qubit_pool_still_refuses(self):
+        """Individual Pauli strings do not commute with the symmetries."""
+        with pytest.raises(ValueError, match="do not commute"):
+            build_pool("qubit", 2, (1, 1), mapping="parity",
                        two_qubit_reduction=True)
 
     def test_adapt_ansatz_reference_is_tapered(self):

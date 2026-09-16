@@ -308,14 +308,15 @@ class TestGridPathologyIsCured:
         fine = self._isolated_force(0.15, pseudo=True)
         assert fine < coarse, f"{coarse:.1f} -> {fine:.1f}"
 
-    @pytest.mark.xfail(
-        reason="the nuclear-gradient path runs its own real-arithmetic SCF and "
-               "is no longer consistent with the corrected complex Hamiltonian "
-               "(the Loewdin transform and Fock build now handle complex "
-               "orbitals); forces are documented as known-broken and this "
-               "comparison passed only by cancellation before the fix",
-        strict=False)
     def test_far_smaller_than_all_electron(self):
+        """Removing the core is what removes the spurious force.
+
+        This was xfail while the all-electron gradient went through the
+        real-arithmetic SCF path, which was inconsistent with the corrected
+        complex Hamiltonian.  Both paths now differentiate the same energy
+        expression (``force_method="rdm"``), and the comparison holds on its
+        own terms rather than by cancellation.
+        """
         pseudo = self._isolated_force(0.15, pseudo=True)
         all_electron = self._isolated_force(0.15, pseudo=False)
         assert pseudo < all_electron / 20.0, (pseudo, all_electron)

@@ -32,7 +32,9 @@ the kinetic energy is diagonal:
              {|\mathbf G_p-\mathbf G_r|^2}\quad (\mathbf G_p\neq\mathbf G_r).
 
 The divergent :math:`\mathbf G = 0` components (the average potential and the
-Hartree self-energy) are removed by the usual neutralizing background (jellium):
+Hartree self-energy) are removed by the usual neutralizing background (jellium),
+and the ion-ion term follows the same convention through an Ewald sum
+(:mod:`carcara.core.ewald`):
 the :math:`p=q` external term and the :math:`p=r` electron-electron term are set
 to zero.  :class:`PlaneWaveIntegrals` mirrors
 :class:`~carcara.core.hamiltonian.MolecularIntegrals` so the rest of the pipeline
@@ -162,7 +164,29 @@ class PlaneWaveIntegrals:
 
     @property
     def nuclear_repulsion(self) -> float:
-        r"""Pairwise nuclear repulsion ``sum_{I<J} Z_I Z_J / |R_I - R_J|`` (Hartree)."""
+        r"""Ion-ion energy of the **periodic** lattice (Hartree), by Ewald sum.
+
+        The electronic terms of this Hamiltonian drop their divergent
+        :math:`\mathbf G = 0` components (jellium), so the ion-ion term has to
+        use the same convention or the total energy is not the periodic one: a
+        molecular pair sum :math:`\sum_{I<J} Z_IZ_J/|R_I-R_J|` counts neither
+        the periodic images nor the neutralizing background, and the three
+        divergences no longer cancel.  :func:`~carcara.core.ewald.ewald_energy`
+        supplies the consistent value (the isolated-molecule sum is available
+        as :attr:`molecular_nuclear_repulsion` for comparison).
+        """
+        from .ewald import ewald_energy
+
+        return ewald_energy([R for _Z, R in self.nuclei],
+                            [Z for Z, _R in self.nuclei], self.cell_bohr)
+
+    @property
+    def molecular_nuclear_repulsion(self) -> float:
+        r"""The isolated-molecule pair sum ``sum_{I<J} Z_I Z_J/|R_I - R_J|``.
+
+        Kept for comparison with the molecular (:class:`~carcara.core.hamiltonian.MolecularIntegrals`)
+        path; the periodic Hamiltonian uses :attr:`nuclear_repulsion`.
+        """
         e = 0.0
         for i in range(len(self.nuclei)):
             for j in range(i + 1, len(self.nuclei)):

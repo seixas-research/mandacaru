@@ -32,6 +32,7 @@ import os
 import platform
 import shutil
 import subprocess
+import tempfile
 import time
 import warnings
 from ctypes.util import find_library
@@ -109,14 +110,18 @@ def _bind(lib):
         _C128_W,                     # out_V (M * M)
     ]
 
-    lib.carcara_two_body.restype = None
-    lib.carcara_two_body.argtypes = [
+    # Renamed from `carcara_two_body` when the self node gained an explicit
+    # Green's-function value: an older library lacks the symbol, fails to bind
+    # and is rebuilt (see `check_backend`).
+    lib.carcara_two_body_g0.restype = None
+    lib.carcara_two_body_g0.argtypes = [
         _C128,                       # psi (M * ngrid)
         _F64, _F64, _F64,            # xg, yg, zg (ngrid)
         ctypes.c_int,                # M
         ctypes.c_int,                # ngrid
         ctypes.c_double,             # dV
         ctypes.c_double,             # softening
+        ctypes.c_double,             # g_self (Coulomb value at r12 = 0)
         _C128_W,                     # out_eri (M^4)
     ]
 
@@ -209,9 +214,33 @@ def _reload() -> bool:
 
 
 def _c_compiler() -> str | None:
+    """The first C compiler on this machine that can build a shared library.
+
+    Presence on ``PATH`` is not enough: a compiler can be installed, be named
+    in ``CC``, and still fail to link -- a Homebrew LLVM whose linker cannot
+    read the current macOS SDK, for instance.  Each candidate therefore builds
+    a one-line shared library before it is accepted.  Only a build attempt
+    calls this, so the extra compile costs nothing in normal use.
+    """
+    system = platform.system()
+    shared = "-dynamiclib" if system == "Darwin" else "-shared"
+    suffix = _LIB_NAMES.get(system, "libcarcara_integrals.so").rsplit(".", 1)[-1]
     for name in (os.environ.get("CC"), "cc", "clang", "gcc"):
-        if name and shutil.which(name):
-            return shutil.which(name)
+        path = shutil.which(name) if name else None
+        if path is None:
+            continue
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                source = Path(tmp) / "probe.c"
+                source.write_text("int carcara_probe(void){return 0;}\n")
+                probe = subprocess.run(
+                    [path, "-O0", "-fPIC", shared, str(source),
+                     "-o", str(Path(tmp) / f"probe.{suffix}")],
+                    capture_output=True, text=True, timeout=120, check=False)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            return path
     return None
 
 
@@ -242,26 +271,34 @@ def _compile_attempts(system: str, build_dir: Path) -> list[list[list[str]]]:
     Homebrew's ``libomp``, and finally serial.  Returns an empty list when no
     tool chain is found.
     """
+    attempts: list[list[list[str]]] = []
+    cc = _c_compiler()
     cmake = shutil.which("cmake")
     if cmake is not None:
         configure = [cmake, "-S", str(_SRC_DIR), "-B", str(build_dir),
                      "-DCMAKE_BUILD_TYPE=Release"]
+        if cc is not None:
+            # Pin the compiler we verified: CMake's own search (and ``CC``)
+            # can name one whose linker cannot produce a library here.
+            configure.append(f"-DCMAKE_C_COMPILER={cc}")
         if system == "Darwin":
             libomp = _homebrew_libomp()
             if libomp is not None:
                 configure.append(f"-DOpenMP_ROOT={libomp}")
-        return [[configure,
-                 [cmake, "--build", str(build_dir), "--config", "Release"]]]
+        attempts.append([configure,
+                         [cmake, "--build", str(build_dir), "--config",
+                          "Release"]])
 
-    cc = _c_compiler()
+    # The bare compiler is kept as a fallback *after* CMake, so a broken CMake
+    # tool chain no longer means no library at all.
     if cc is None or system == "Windows":
-        return []
+        return attempts
     source = str(_SRC_DIR / "carcara_integrals.c")
     common = [cc, "-std=c11", "-O3", "-ffast-math", "-funroll-loops", "-fPIC",
               f"-I{_SRC_DIR}", source]
     if system == "Darwin":
         link = ["-dynamiclib", "-o", str(build_dir / _LIB_NAMES["Darwin"])]
-        attempts = [[common + ["-fopenmp"] + link]]
+        attempts.append([common + ["-fopenmp"] + link])
         libomp = _homebrew_libomp()
         if libomp is not None:
             attempts.append([common + [
@@ -271,7 +308,9 @@ def _compile_attempts(system: str, build_dir: Path) -> list[list[list[str]]]:
         attempts.append([common + link])                      # serial
         return attempts
     link = ["-shared", "-o", str(build_dir / "libcarcara_integrals.so"), "-lm"]
-    return [[common + ["-fopenmp"] + link], [common + link]]
+    attempts.append([common + ["-fopenmp"] + link])
+    attempts.append([common + link])
+    return attempts
 
 
 def _run_attempt(commands, log, timeout, verbose) -> bool:
@@ -442,6 +481,37 @@ def _as_shape(shape):
     return (nx, ny, nz)
 
 
+def _check_samples(psi_stack, ngrid: int, what: str) -> None:
+    """Reject a sample stack whose buffer does not match the grid.
+
+    The C kernels take raw pointers and a node count; a short buffer would be
+    read out of bounds.  dtype/contiguity alone do not establish the length.
+    """
+    if psi_stack.ndim != 2 or psi_stack.shape[1] != ngrid:
+        raise ValueError(
+            f"{what}: expected samples of shape (M, {ngrid}) for this grid, "
+            f"got {psi_stack.shape}")
+    if not np.isfinite(psi_stack).all():
+        raise ValueError(f"{what}: the sampled functions contain "
+                         f"non-finite values")
+
+
+def _check_filled(array, psi_stack, what: str):
+    """Catch a C kernel that returned without writing (a failed allocation).
+
+    The kernels are ``void`` and bail out on a failed ``malloc``, leaving the
+    caller's zero-initialized output untouched -- which would read as perfectly
+    valid zero integrals.  Non-zero samples cannot give an exactly zero result.
+    """
+    if np.any(psi_stack) and not np.any(array):
+        raise MemoryError(
+            f"the C integral backend returned an all-zero {what}: it most "
+            f"likely could not allocate its workspace. Re-run with "
+            f"CARCARA_BACKEND=numpy, or use a coarser grid / fewer basis "
+            f"functions.")
+    return array
+
+
 def one_body_matrices(psi_stack, Vext, grid):
     """Kinetic ``T`` and potential ``V`` matrices for ``M`` sampled functions.
 
@@ -471,15 +541,19 @@ def one_body_matrices(psi_stack, Vext, grid):
     ginv = np.ascontiguousarray(grid.metric_inverse(), dtype=np.float64)
     dV = float(grid.dV)
 
+    _check_samples(psi_stack, nx * ny * nz, "one_body_matrices")
+    if Vext.size != nx * ny * nz:
+        raise ValueError(f"one_body_matrices: the external potential has "
+                         f"{Vext.size} values for a {nx * ny * nz}-node grid")
     if HAS_C_BACKEND and grid.is_cubic:
         _LIB.carcara_one_body(psi_stack.reshape(-1), Vext, M, int(nx),
                               float(grid.dx), T.reshape(-1), V.reshape(-1))
-        return T, V
+        return _check_filled(T, psi_stack, "kinetic matrix"), V
     if HAS_C_BACKEND:
         _LIB.carcara_one_body_general(
             psi_stack.reshape(-1), Vext, M, int(nx), int(ny), int(nz),
             ginv.reshape(-1), dV, T.reshape(-1), V.reshape(-1))
-        return T, V
+        return _check_filled(T, psi_stack, "kinetic matrix"), V
     return _one_body_numpy(psi_stack, Vext, ginv, dV, (nx, ny, nz))
 
 
@@ -517,14 +591,29 @@ def kb_projections(psi_stack, chi_stack, dV):
     return (np.conj(psi_stack) @ chi_stack.T) * dV
 
 
-def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0):
+def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0,
+                    self_potential=None):
     """Electron-repulsion tensor ``<ab|cd>`` for ``M`` sampled functions.
 
     ``eri[a, b, c, d] = ∫∫ psi_a*(1) psi_c(1) (1/r12) psi_b*(2) psi_d(2) dV1 dV2``
     -- physicists' notation, electron 1 carrying the index pair ``(a, c)`` and
-    electron 2 the pair ``(b, d)``.  ``softening`` regularizes the ``r12 -> 0``
-    node.
+    electron 2 the pair ``(b, d)``.
+
+    Parameters
+    ----------
+    softening : float
+        Regularizes ``r12`` for *distinct* nodes (``1/sqrt(r12^2 + s^2)``).
+    self_potential : float, optional
+        The Coulomb value at ``r12 = 0`` -- the node's own voxel.  Pass the
+        cell average ``int_cell d^3r/|r| / dV``
+        (:func:`~carcara.integrals.poisson.voxel_self_potential`), which is what
+        the FFT path uses, so the two methods integrate the *same* operator.
+        The default assumes a cubic voxel of volume ``dV``; a bare ``1/1e-15``
+        clamp (the old behavior) would put ~1e15 on every diagonal.
     """
+    if self_potential is None:
+        from .poisson import CUBE_SELF_CONSTANT
+        self_potential = CUBE_SELF_CONSTANT / float(dV) ** (1.0 / 3.0)
     psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
     xg = np.ascontiguousarray(xg, dtype=np.float64)
     yg = np.ascontiguousarray(yg, dtype=np.float64)
@@ -533,11 +622,18 @@ def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0):
     ngrid = psi_stack.shape[1]
     eri = np.zeros((M, M, M, M), dtype=np.complex128)
 
+    _check_samples(psi_stack, ngrid, "two_body_tensor")
+    if not (xg.size == yg.size == zg.size == ngrid):
+        raise ValueError(f"two_body_tensor: coordinate arrays of sizes "
+                         f"{xg.size}, {yg.size}, {zg.size} for a "
+                         f"{ngrid}-node grid")
     if HAS_C_BACKEND:
-        _LIB.carcara_two_body(psi_stack.reshape(-1), xg, yg, zg, M, ngrid,
-                              float(dV), float(softening), eri.reshape(-1))
-        return eri
-    return _two_body_numpy(psi_stack, xg, yg, zg, dV, softening)
+        _LIB.carcara_two_body_g0(psi_stack.reshape(-1), xg, yg, zg, M, ngrid,
+                                 float(dV), float(softening),
+                                 float(self_potential), eri.reshape(-1))
+        return _check_filled(eri, psi_stack, "two-body tensor")
+    return _two_body_numpy(psi_stack, xg, yg, zg, dV, softening,
+                           self_potential)
 
 
 # --------------------------------------------------------------------------- #
@@ -598,7 +694,7 @@ def _one_body_numpy(psi_stack, Vext, ginv, dV, shape):
     return T, V
 
 
-def _two_body_numpy(psi_stack, xg, yg, zg, dV, softening):
+def _two_body_numpy(psi_stack, xg, yg, zg, dV, softening, self_potential):
     M = psi_stack.shape[0]
     ngrid = psi_stack.shape[1]
     eri = np.zeros((M, M, M, M), dtype=np.complex128)
@@ -611,10 +707,12 @@ def _two_body_numpy(psi_stack, xg, yg, zg, dV, softening):
                 dxr = xg[i] - xg
                 dyr = yg[i] - yg
                 dzr = zg[i] - zg
-                r12 = np.sqrt(dxr * dxr + dyr * dyr + dzr * dzr
-                              + softening * softening)
-                r12 = np.where(r12 < 1e-15, 1e-15, r12)
-                phi[i] = np.sum(rho2 / r12) * dV
+                r2 = dxr * dxr + dyr * dyr + dzr * dzr
+                # The r12 = 0 node carries the voxel's own Coulomb average.
+                green = np.where(r2 > 0.0,
+                                 1.0 / np.sqrt(r2 + softening * softening),
+                                 self_potential)
+                phi[i] = np.sum(rho2 * green) * dV
             for a in range(M):
                 for c in range(M):
                     rho1 = np.conj(psi_stack[a]) * psi_stack[c]

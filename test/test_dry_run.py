@@ -317,6 +317,47 @@ class TestEarlyStop:
                           dry_run=True)
         assert sub.run().n_qubits == 4
 
+    def test_nothing_is_materialized_in_a_dry_run(self, tmp_path, monkeypatch):
+        """The 2^n matrix is what the estimate exists to warn about.
+
+        Constructing a driver around a Hamiltonian used to build it eagerly --
+        so asking whether a 40-qubit problem fits would first try to allocate
+        it.
+        """
+        from carcara.core import PauliSum
+        from carcara.core.serialization import save_hamiltonian
+
+        for name in ("to_matrix", "to_sparse_matrix"):
+            monkeypatch.setattr(
+                PauliSum, name,
+                lambda self, *a, _n=name, **k: pytest.fail(
+                    f"PauliSum.{_n} was called in a dry run"))
+
+        path = save_hamiltonian(tmp_path / "cached.json",
+                                PauliSum({"IIII": -1.0, "ZIII": 0.2}),
+                                num_particles=(1, 1), n_spatial_orbitals=2)
+        driver = ADAPTVQE(pool="fermionic", load_hamiltonian=path,
+                          dry_run=True, verbose=False, profile=False)
+        assert driver.run().n_qubits == 4
+        assert VQE(load_hamiltonian=path, dry_run=True,
+                   verbose=False).run().n_qubits == 4
+
+    def test_a_cached_tapered_estimate_is_not_reduced_twice(self, tmp_path):
+        """The stored width of a tapered file is already the reduced one."""
+        from carcara.core import PauliSum
+        from carcara.core.serialization import save_hamiltonian
+
+        path = save_hamiltonian(tmp_path / "tapered.json",
+                                PauliSum({"II": -1.0, "ZI": 0.2}),
+                                mapping="parity", num_particles=(1, 1),
+                                n_spatial_orbitals=2, two_qubit_reduction=True)
+        driver = ADAPTVQE(pool="fermionic", load_hamiltonian=path,
+                          dry_run=True, verbose=False, profile=False)
+        estimate = driver.run()
+        assert driver.two_qubit_reduction is True
+        assert estimate.n_qubits == 2 and estimate.two_qubit_reduction
+        assert any("already tapered" in note for note in estimate.notes)
+
     def test_reserved_device_and_qpu_do_not_raise(self, monkeypatch):
         _forbid_execution(monkeypatch)
         atoms = _h2()

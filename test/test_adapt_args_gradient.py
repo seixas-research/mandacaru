@@ -6,8 +6,9 @@ FullAtomicOrbitals (FAO) basis.
 
 Covers the features added on top of the ADAPT-VQE driver:
 
-* selectable ``gradient`` strategies -- ``"finite_difference"`` and
-  ``"parameter-shift"`` -- both matching the exact analytic gradient;
+* selectable ``gradient`` strategies -- ``"analytic"`` (the default),
+  ``"finite_difference"`` and ``"parameter-shift"``, the latter two matching the
+  exact analytic gradient they estimate;
 * the ``ADAPTVQE`` argument surface (``pool``, ``basis``, ``mapping``,
   ``gradient``, ``device``) and its basis-driven Hamiltonian builder;
 * the ``device`` registry (AER_simulator vs the reserved ibm-quantum).
@@ -86,10 +87,33 @@ class TestGradientStrategies:
         g_ps = adapt._parameter_shift_gradients(psi)
         np.testing.assert_allclose(g_ps, g_an, atol=1e-9)
 
-    def test_both_gradients_reach_fci(self, h2_hamiltonian):
+    def test_analytic_is_the_default_and_screens_analytically(
+            self, h2_hamiltonian):
+        """The exact derivative, not an estimate of it, out of the box."""
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False)
+        assert adapt.gradient == "analytic"
+        psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
+            np.zeros(0))
+        np.testing.assert_allclose(adapt._gradients(psi),
+                                   adapt._analytic_gradients(psi), atol=0)
+
+    def test_the_eigendecomposition_is_built_only_when_asked_for(
+            self, h2_hamiltonian):
+        """|pool| dense diagonalizations are the shift estimators' cost alone."""
+        adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False)
+        psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
+            np.zeros(0))
+        adapt._gradients(psi)
+        assert adapt._pool_eig is None
+        adapt._parameter_shift_gradients(psi)
+        assert len(adapt._pool_eig) == len(adapt._pool_matrices)
+
+    def test_every_gradient_reaches_fci(self, h2_hamiltonian):
         m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
-        for grad in ("finite_difference", "parameter-shift"):
+        for grad in ("analytic", "finite_difference", "parameter-shift"):
             adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
                              n_spatial_orbitals=2, profile=False, gradient=grad,
                              max_iterations=10, gradient_tolerance=1e-4)

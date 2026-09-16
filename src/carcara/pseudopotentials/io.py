@@ -12,11 +12,21 @@ Generating a pseudopotential means running a self-consistent all-electron atom
 and solving a nonlinear fit per channel -- a second or two per element.  That is
 far too slow to repeat inside a geometry optimization, and it is also pure
 overhead: the result depends only on the element, never on the molecule.  So the
-library is generated once and shipped as plain JSON under ``library/``.
+library is generated once and shipped under ``library/``.
 
-File format
------------
-One file per element, ``<symbol>.json``:
+File formats
+------------
+One file per element, in either of two interchangeable formats
+(:data:`PSEUDO_FORMATS`).  **Parquet** (``<symbol>.parquet``) is the default and
+what the shipped library uses -- the radial tables are thousands of floats per
+element and columnar compression matters across the whole periodic table.
+**JSON** (``<symbol>.json``) is the same content as plain text, needs no Parquet
+engine, and is what to write when a dataset has to be inspected, plotted or
+diffed by hand.  :func:`load_pseudopotential` auto-detects which it was given
+(extension first, then magic bytes), so the two are drop-in equivalents.
+
+The JSON document shows the schema most directly; the Parquet file carries the
+same fields in its key/value metadata with the radial tables as columns:
 
 .. code-block:: text
 
@@ -41,9 +51,9 @@ One file per element, ``<symbol>.json``:
       "kb_energies": {"0": ...}            // Hartree
     }
 
-Text rather than a binary format on purpose: a pseudopotential is a physical
-object that people need to inspect, plot and diff, and the tables are only a few
-thousand numbers.  The files are also readable without Carcará installed.
+Both formats are self-describing and readable without Carcará: a pseudopotential
+is a physical object that people need to inspect, plot and diff, which is why the
+text format is kept as a first-class alternative rather than an export.
 """
 
 from __future__ import annotations

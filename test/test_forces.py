@@ -436,9 +436,12 @@ class TestByPartsMode:
         assert Carcara().hellmann_feynman == "analytic"
 
     def test_calculator_exposes_the_option(self, fixed_grid):
+        # `hellmann_feynman` selects a form inside the legacy SCF-response
+        # gradient; the default RDM gradient does not use it.
         atoms = h2(0.74)
         atoms.calc = Carcara(method="vqe", basis="FAO",
                                        grid=fixed_grid, verbose=False,
+                                       force_method="scf-response",
                                        hellmann_feynman="by-parts")
         forces = atoms.get_forces()
         assert atoms.calc.force_result.details["hellmann_feynman"] == "by-parts"
@@ -458,12 +461,30 @@ class TestCarcara:
         assert "forces" in calc.implemented_properties
 
     def test_get_forces_matches_the_driver(self, fixed_grid):
+        """The legacy mode is exactly the driver function it wraps."""
         atoms = h2(0.74)
-        atoms.calc = Carcara(method="vqe", basis="FAO",
-                                       grid=fixed_grid, verbose=False)
+        atoms.calc = Carcara(method="vqe", basis="FAO", grid=fixed_grid,
+                                       verbose=False,
+                                       force_method="scf-response")
         forces = atoms.get_forces()
         expected = analytic_forces(h2(0.74), fixed_grid).forces
         assert np.allclose(forces, expected, atol=1e-8)
+
+    def test_the_two_force_methods_agree_on_a_closed_shell_s_basis(self,
+                                                                   fixed_grid):
+        """Where the legacy path is valid, the RDM gradient reproduces it.
+
+        H2 in a minimal s basis is the one case the differentiated-SCF path
+        models correctly (real closed-shell orbitals, no projectors), so the
+        two independent implementations must agree.
+        """
+        def run(method):
+            atoms = h2(0.74)
+            atoms.calc = Carcara(method="vqe", basis="FAO", grid=fixed_grid,
+                                 verbose=False, force_method=method)
+            return atoms.get_forces()
+
+        assert np.allclose(run("rdm"), run("scf-response"), atol=5e-3)
 
     def test_energy_matches_the_bare_driver(self, fixed_grid):
         atoms = h2(0.74)

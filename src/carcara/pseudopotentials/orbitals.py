@@ -169,7 +169,14 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     from ..basis.multizeta import (DEFAULT_SPLIT_NORM, RadialTable,
                             orbitals_from_tables, resolve_zeta, zeta_tables)
 
-    split_norm = DEFAULT_SPLIT_NORM if split_norm is None else float(split_norm)
+    def split_norm_of(symbol):
+        """``split_norm`` may be one value or ``{symbol: value}`` (with ``*``)."""
+        spec = split_norm
+        if isinstance(spec, dict):
+            table = {(k if k == "*" else k.capitalize()): v
+                     for k, v in spec.items()}
+            spec = table.get(symbol.capitalize(), table.get("*"))
+        return DEFAULT_SPLIT_NORM if spec is None else float(spec)
 
     def size_of(symbol):
         """``size`` may be one spec for all atoms or ``{symbol: spec}`` with an
@@ -203,7 +210,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         for l in sorted(pp.channels):
             channel = pp.channels[l]
             tables.extend(zeta_tables(pp.r, channel.pseudo_radial,
-                                      int(channel.n), l, n_zeta, split_norm))
+                                      int(channel.n), l, n_zeta,
+                                      split_norm_of(symbol)))
         # Polarization: raise the outermost channel to l+1.  Solving a new
         # confined orbital is not an option here -- there is no pseudopotential
         # channel for an unoccupied l -- so the shape is r^k R_outer(r),
@@ -219,7 +227,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                                                         dtype=float)
             shape = shape / np.sqrt(np.trapezoid(shape * shape * r_table ** 2,
                                                  r_table))
-            for table in zeta_tables(pp.r, shape, l + 1, l, 1, split_norm):
+            for table in zeta_tables(pp.r, shape, l + 1, l, 1,
+                                     split_norm_of(symbol)):
                 table.polarization = True
                 tables.append(table)
 

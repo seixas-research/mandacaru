@@ -82,37 +82,76 @@ class PauliSum:
     coefficient.
     """
 
-    def __init__(self, terms: dict[str, complex] | None = None):
+    def __init__(self, terms: dict[str, complex] | None = None,
+                 num_qubits: int | None = None):
+        """``terms`` maps Pauli strings to coefficients.
+
+        ``num_qubits`` records the register width explicitly.  It matters for an
+        operator with no terms -- simplifying a zero operator would otherwise
+        lose the register it acts on -- and it is checked against the labels.
+        """
         self.terms: dict[str, complex] = {}
+        self._num_qubits = None if num_qubits is None else int(num_qubits)
         if terms:
             n = len(next(iter(terms)))
+            if self._num_qubits is not None and n != self._num_qubits:
+                raise ValueError(
+                    f"Pauli strings of length {n} on a "
+                    f"{self._num_qubits}-qubit register")
             for label, coeff in terms.items():
                 if len(label) != n:
                     raise ValueError("all Pauli strings must have equal length")
-                self.terms[label] = self.terms.get(label, 0j) + complex(coeff)
+                if label.strip("IXYZ"):
+                    raise ValueError(
+                        f"invalid Pauli string {label!r}: expected characters "
+                        f"from 'IXYZ'")
+                value = complex(coeff)
+                if not (np.isfinite(value.real) and np.isfinite(value.imag)):
+                    raise ValueError(
+                        f"non-finite coefficient {coeff!r} for term {label!r}")
+                self.terms[label] = self.terms.get(label, 0j) + value
+            self._num_qubits = n
 
     @property
     def num_qubits(self) -> int:
+        if self._num_qubits is not None:
+            return self._num_qubits
         return len(next(iter(self.terms))) if self.terms else 0
 
     @classmethod
     def identity(cls, n: int) -> "PauliSum":
-        return cls({"I" * n: 1.0})
+        return cls({"I" * n: 1.0}, num_qubits=n)
+
+    def _shared_width(self, other: "PauliSum", what: str) -> int | None:
+        """The common register width of two operands, or ``None`` if unknown."""
+        mine, theirs = self.num_qubits, other.num_qubits
+        if mine and theirs and mine != theirs:
+            raise ValueError(
+                f"cannot {what} a {mine}-qubit and a {theirs}-qubit operator")
+        return mine or theirs or None
 
     def __add__(self, other: "PauliSum") -> "PauliSum":
-        out = PauliSum(dict(self.terms))
+        width = self._shared_width(other, "add")
+        out = PauliSum(dict(self.terms), num_qubits=width)
         for label, coeff in other.terms.items():
             out.terms[label] = out.terms.get(label, 0j) + coeff
         return out
 
     def __mul__(self, scalar: complex) -> "PauliSum":
-        return PauliSum({label: coeff * scalar for label, coeff in self.terms.items()})
+        return PauliSum({label: coeff * scalar
+                         for label, coeff in self.terms.items()},
+                        num_qubits=self._num_qubits)
 
     __rmul__ = __mul__
 
     def compose(self, other: "PauliSum") -> "PauliSum":
-        """Operator product ``self * other`` (matrix multiplication order)."""
-        out = PauliSum()
+        """Operator product ``self * other`` (matrix multiplication order).
+
+        Both operands must act on the same register: zipping labels of unequal
+        length would silently truncate to the shorter one.
+        """
+        width = self._shared_width(other, "compose")
+        out = PauliSum(num_qubits=width)
         for l1, c1 in self.terms.items():
             for l2, c2 in other.terms.items():
                 phase = 1 + 0j
@@ -126,8 +165,9 @@ class PauliSum:
         return out
 
     def simplify(self, atol: float = 1e-12) -> "PauliSum":
-        """Drop terms with negligible coefficient."""
-        return PauliSum({l: c for l, c in self.terms.items() if abs(c) > atol})
+        """Drop terms with negligible coefficient, keeping the register width."""
+        return PauliSum({l: c for l, c in self.terms.items() if abs(c) > atol},
+                        num_qubits=self.num_qubits or None)
 
     def is_hermitian(self, atol: float = 1e-9) -> bool:
         return all(abs(c.imag) < atol for c in self.simplify().terms.values())
@@ -256,6 +296,93 @@ def _ladder_pauli(n: int, j: int, dagger: bool,
 
     y_coeff = -0.5j if dagger else 0.5j
     return PauliSum({"".join(x_term): 0.5, "".join(y_term): y_coeff})
+
+
+def _qubit_ladder_pauli(n: int, j: int, dagger: bool,
+                        U: set[int], F: set[int]) -> PauliSum:
+    r"""Pauli form of the **qubit** ladder operator on occupation ``j``.
+
+    The fermionic ladder operator carries the encoding's parity string
+    :math:`Z_{P(j)}`, which supplies the antisymmetry sign.  A *qubit*
+    excitation is the same occupation-number move **without** that sign:
+
+    .. math::
+
+        q_j = \tfrac12\big(X_{U(j)}X_j + i\, X_{U(j)} Y_j Z_{F(j)}\big),
+
+    with the update set :math:`U(j)` (the qubits that flip when occupation
+    ``j`` flips) and the flip set :math:`F(j)` (the qubits whose ``Z``, with
+    ``j``, reads ``(-1)^{f_j}``).  Both sets are defined in every encoding, so
+    this is the encoding-general qubit excitation -- in Jordan-Wigner, where
+    ``U`` and ``F`` are empty, it reduces to the familiar
+    :math:`(X_j \pm i Y_j)/2`.
+    """
+    x_term = ["I"] * n
+    for i in U:
+        x_term[i] = "X"
+    x_term[j] = "X"
+
+    y_term = ["I"] * n
+    for i in U:
+        y_term[i] = "X"
+    y_term[j] = "Y"
+    for i in F:
+        y_term[i] = "Z"
+
+    y_coeff = -0.5j if dagger else 0.5j
+    return PauliSum({"".join(x_term): 0.5, "".join(y_term): y_coeff},
+                    num_qubits=n)
+
+
+def qubit_excitation(modes_out, modes_in, n_modes: int,
+                     method: str = "jordan_wigner",
+                     two_qubit_reduction: bool = False,
+                     num_particles: tuple[int, int] | None = None) -> PauliSum:
+    r"""Anti-Hermitian **qubit excitation** :math:`T - T^\dagger` in any encoding.
+
+    :math:`T = \prod_{a \in \text{out}} q^\dagger_a \prod_{i \in \text{in}} q_i`
+    moves particles between occupation-number states without the fermionic
+    parity sign (:func:`_qubit_ladder_pauli`).  Unlike "take the Jordan-Wigner
+    image and delete the ``Z`` strings", this is defined in the *requested*
+    encoding, so the generator commutes with that encoding's number operators
+    -- which is what keeps the ansatz in the physical sector.
+
+    Parameters
+    ----------
+    modes_out, modes_in : sequence of int
+        Spin-orbitals that gain and lose a particle.  Order follows the
+        fermionic convention ``a+_a a+_b a_j a_i``: ``modes_out = (a, b)`` and
+        ``modes_in = (j, i)``.
+    n_modes : int
+        Spin-orbital count (the untapered register width).
+    method : str
+        Fermion-to-qubit encoding.
+    two_qubit_reduction, num_particles
+        Taper the two parity qubits afterwards (parity encoding only); a qubit
+        excitation conserves both particle numbers, so the tapering is exact.
+    """
+    method = _canonical_method(method)
+    n = int(n_modes)
+    update, parity, remainder = _mapping_sets(method, n)
+    term = PauliSum.identity(n)
+    for j in modes_out:
+        # R = P XOR F, so F = P XOR R.
+        term = term.compose(_qubit_ladder_pauli(
+            n, int(j), True, update[int(j)],
+            parity[int(j)] ^ remainder[int(j)]))
+    for j in modes_in:
+        term = term.compose(_qubit_ladder_pauli(
+            n, int(j), False, update[int(j)],
+            parity[int(j)] ^ remainder[int(j)]))
+    # A Pauli string is Hermitian, so the adjoint only conjugates coefficients.
+    adjoint = PauliSum({label: np.conj(coeff)
+                        for label, coeff in term.terms.items()}, num_qubits=n)
+    generator = (term + (-1.0) * adjoint).simplify()
+    if two_qubit_reduction:
+        if num_particles is None:
+            raise ValueError("two_qubit_reduction requires num_particles")
+        generator = two_qubit_reduce(generator, n, num_particles)
+    return generator
 
 
 # --------------------------------------------------------------------------- #

@@ -253,6 +253,30 @@ class ParticleSector:
 
     # -- states ----------------------------------------------------------- #
 
+    def conserves(self, operator: PauliSum, atol: float = 1e-12) -> bool:
+        r"""Whether ``operator`` maps the sector into itself.
+
+        :meth:`restrict` silently drops whatever leaves the sector, so a
+        leaking operator would be *replaced* by its projection: for an ansatz
+        that matters, because :math:`e^{PAP} \neq P e^{A} P` in general.  A
+        term-by-term image test would reject operators whose leaking parts
+        cancel, so the amplitudes of each image are summed first (per source
+        state) and only a surviving amplitude outside the sector counts.
+        """
+        if not operator.terms:
+            return True
+        if operator.num_qubits != self.n_qubits:
+            raise ValueError(f"operator acts on {operator.num_qubits} qubits, "
+                             f"the sector register on {self.n_qubits}")
+        for index in self.indices:
+            images, amplitudes = apply_pauli_sum(operator, [index], [1.0])
+            if images.size == 0:
+                continue
+            outside = self.positions(images) < 0
+            if np.any(np.abs(amplitudes[outside]) > atol):
+                return False
+        return True
+
     def embed(self, vector) -> np.ndarray:
         """The full-register state vector (only for small registers)."""
         if self.n_qubits > 24:

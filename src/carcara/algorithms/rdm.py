@@ -298,3 +298,86 @@ def pauli_expectations(psi, labels) -> dict:
         out[label] = float(np.real(np.vdot(psi, matrix @ psi)))
     return out
 
+def expand_frozen_core(gamma, gamma2, frozen, n_spatial_orbitals: int):
+    r"""Lift active-space RDMs to the full orbital set, refilling the core.
+
+    A frozen-core run solves for :math:`|\Psi\rangle = a^\dagger_{c_1}\cdots
+    a^\dagger_{c_k}|\Psi_{\text{act}}\rangle`: the core spin-orbitals are
+    doubly occupied and inert.  Its RDMs therefore carry only the active block,
+    while a nuclear gradient contracts against the **full** integrals and needs
+    the total density.  The core contributions are exact and closed form:
+
+    .. math::
+
+        \gamma_{pq} &= \delta_{pq}\ (p, q \in C), \qquad
+        \gamma_{pq} = \gamma^{\text{act}}_{pq}\ (p, q \in A), \\
+        \Gamma_{pqrs} &= \delta_{pr}\delta_{qs} - \delta_{ps}\delta_{qr}
+            \quad (\text{all in } C), \\
+        \Gamma_{pqrs} &= \delta_{pr}\gamma^{\text{act}}_{qs}
+            - \delta_{ps}\gamma^{\text{act}}_{qr} \quad (p, r \in C),
+
+    and their index-swapped partners; core-active cross blocks with an odd
+    number of core indices vanish.  Spin-orbitals are spin-blocked
+    (``p = spatial + spin * M``), the convention
+    :func:`~carcara.core.hamiltonian.spin_block_integrals` uses.
+
+    Parameters
+    ----------
+    gamma, gamma2 : ndarray
+        Active-space RDMs, over ``2 * len(active)`` spin-orbitals.
+    frozen : sequence of int
+        Frozen (doubly occupied) **spatial** orbital indices.
+    n_spatial_orbitals : int
+        Total number of spatial orbitals.
+
+    Returns
+    -------
+    (ndarray, ndarray)
+        The one- and two-body RDMs over all ``2 * n_spatial_orbitals``
+        spin-orbitals.
+    """
+    M = int(n_spatial_orbitals)
+    core_spatial = sorted({int(f) for f in frozen})
+    if not core_spatial:
+        return gamma, gamma2
+    active_spatial = [p for p in range(M) if p not in set(core_spatial)]
+    n_act = len(active_spatial)
+    gamma = np.asarray(gamma, dtype=complex)
+    gamma2 = np.asarray(gamma2, dtype=complex)
+    if gamma.shape != (2 * n_act, 2 * n_act):
+        raise ValueError(f"expected active RDMs over {2 * n_act} spin-orbitals, "
+                         f"got {gamma.shape}")
+
+    # Spin-blocked maps: active index -> full index, and the core set.
+    active = [active_spatial[i] + spin * M
+              for spin in (0, 1) for i in range(n_act)]
+    core = [c + spin * M for spin in (0, 1) for c in core_spatial]
+    n_modes = 2 * M
+
+    full_gamma = np.zeros((n_modes, n_modes), dtype=complex)
+    full_gamma[np.ix_(active, active)] = gamma
+    for c in core:
+        full_gamma[c, c] += 1.0
+
+    full_gamma2 = np.zeros((n_modes,) * 4, dtype=complex)
+    full_gamma2[np.ix_(active, active, active, active)] = gamma2
+    core_index = np.array(core, dtype=int)
+    act_index = np.array(active, dtype=int)
+    # Core-core: the two-electron density of a filled shell.
+    for p in core_index:
+        for q in core_index:
+            if p == q:
+                continue
+            full_gamma2[p, q, p, q] += 1.0
+            full_gamma2[p, q, q, p] -= 1.0
+    # Core-active cross terms (both orderings, direct and exchange).
+    for c in core_index:
+        full_gamma2[np.ix_([c], act_index, [c], act_index)] += gamma[
+            np.newaxis, :, np.newaxis, :]
+        full_gamma2[np.ix_(act_index, [c], act_index, [c])] += gamma[
+            :, np.newaxis, :, np.newaxis]
+        full_gamma2[np.ix_([c], act_index, act_index, [c])] -= gamma.T[
+            np.newaxis, :, :, np.newaxis]
+        full_gamma2[np.ix_(act_index, [c], [c], act_index)] -= gamma.T[
+            :, np.newaxis, np.newaxis, :]
+    return full_gamma, full_gamma2

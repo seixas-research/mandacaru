@@ -236,9 +236,11 @@ class IntegralEngine:
         ----------
         method : {"fft", "direct"}
             ``"fft"`` (default) uses the O(N log N) FFT Poisson solver with a
-            physically correct cell self-energy -- fast and accurate.
-            ``"direct"`` uses the O(N^2) real-space double sum in the C backend
-            (kept as a reference / for arbitrary non-uniform grids).
+            physically correct voxel self-energy -- fast and accurate.  It
+            follows the grid's own step vectors, so anisotropic *and* skewed
+            (non-orthogonal) grids are integrated with the right distances and
+            volume.  ``"direct"`` uses the O(N^2) real-space double sum in the C
+            backend (kept as a reference / for non-uniform sampling).
         softening : float
             Only used by ``method="direct"``: regularizes ``r12 -> 0``.
         energy_units : {"eV", "Ha"}
@@ -253,12 +255,18 @@ class IntegralEngine:
             with self.timings.time("two-body integrals (fft)"):
                 eri = self._two_body_fft(max_memory_mb)
         elif method == "direct":
+            from .poisson import voxel_self_potential
+
             xg, yg, zg = self.grid.flat_coords()
+            # The same voxel self-energy the FFT kernel uses, so the two
+            # methods integrate the same operator and can be compared.
+            self_potential = voxel_self_potential(self.grid.step) / self.grid.dV
             # The backend already returns the physicists'-ordered tensor
             # eri[a,b,c,d] = <ab|cd> (electron 1 carries indices a, c).
             with self.timings.time("two-body integrals (direct)"):
                 eri = _backend.two_body_tensor(self._psi, xg, yg, zg,
-                                               self.grid.dV, softening)
+                                               self.grid.dV, softening,
+                                               self_potential=self_potential)
         else:
             raise ValueError(f"unknown two-body method {method!r}")
         return from_hartree(eri, energy_units)
@@ -289,7 +297,7 @@ class IntegralEngine:
         ngrid = self.grid.size
         psi = self._psi                                          # (M, ngrid)
         dV = self.grid.dV
-        solver = PoissonFFTSolver(self.grid.shape, self.grid.dx)
+        solver = PoissonFFTSolver(self.grid.shape, step=self.grid.step)
 
         # Unique pairs u = (i, j) with i <= j, and the lookup for any (a, c).
         iu, ju = np.triu_indices(M)

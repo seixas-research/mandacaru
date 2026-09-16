@@ -73,9 +73,19 @@ class TestPlaneWaveIntegrals:
             assert np.array_equal(mill[p] + mill[q], mill[r] + mill[s])
             assert not np.array_equal(mill[p], mill[r])
 
-    def test_nuclear_repulsion(self, pw):
-        # Two protons 0.8 Bohr apart -> 1/0.8 = 1.25 Ha.
-        assert pw.nuclear_repulsion == pytest.approx(1.25, abs=1e-9)
+    def test_nuclear_repulsion_is_the_periodic_ion_ion_energy(self, pw):
+        """The electron terms drop G = 0, so the ions must do the same.
+
+        The isolated pair sum (1/0.8 = 1.25 Ha) stays available for comparison,
+        but the Hamiltonian uses the Ewald energy of the periodic lattice.
+        """
+        from carcara.core.ewald import ewald_energy
+
+        assert pw.molecular_nuclear_repulsion == pytest.approx(1.25, abs=1e-9)
+        expected = ewald_energy([R for _Z, R in pw.nuclei],
+                                [Z for Z, _R in pw.nuclei], pw.cell_bohr)
+        assert pw.nuclear_repulsion == pytest.approx(expected, rel=1e-12)
+        assert pw.nuclear_repulsion != pytest.approx(1.25, abs=1e-6)
 
     def test_overlap_is_identity(self, pw):
         np.testing.assert_allclose(pw.overlap(), np.eye(pw.npw))

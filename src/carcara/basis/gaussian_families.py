@@ -30,6 +30,18 @@ basis of the same name (``cc-pVTZ`` carbon is ``4s3p2d1f``, 30 functions), but
 its exponents are Carcará's own, not the published, molecule-optimized values.
 That is the same relationship the native 6-31G(d) already bears to Pople's.
 
+Provenance
+----------
+Because the numbers differ, the name alone would be misleading, so every basis
+built here carries a :attr:`GaussianRecipe.provenance` qualifier --
+``native:cc-pVTZ-recipe`` -- and reports under it (the dry run prints it as the
+basis).  Published basis-set convergence results and term-by-term comparisons
+with another package's ``cc-pVTZ`` do **not** transfer.  ``published:`` is a
+reserved namespace that deliberately resolves to nothing, so asking for
+tabulated data fails loudly instead of being served a recipe, and
+:func:`basis_set_data` writes out every exponent, coefficient and the angular
+convention they are meant in, which is what an actual comparison needs.
+
 Construction rules
 ------------------
 * A shell ``(n, l)`` with contraction *pattern* ``(k_1, k_2, ...)`` is built
@@ -122,6 +134,11 @@ class GaussianRecipe:
         Lowest atomic number that counts as "heavy" for polarization: ``3``
         (anything beyond helium), or ``11`` for Pople's ``3-21G*``, whose
         ``*`` adds ``d`` functions to second-row atoms only.
+
+    Notes
+    -----
+    A recipe is the *structure* of the named basis, not its published numbers:
+    :attr:`provenance` says so in every label it appears in.
     """
 
     name: str
@@ -142,6 +159,21 @@ class GaussianRecipe:
     def zeta(self) -> int:
         """Number of functions per valence shell."""
         return len(self.valence)
+
+    @property
+    def provenance(self) -> str:
+        """``"native:<name>-recipe"`` -- where these numbers come from.
+
+        The shell structure is the published basis set's; the exponents and
+        contraction coefficients are generated here (Slater fits, Slater's
+        rules, even-tempered heuristics).  A calculation in ``native:cc-pVTZ-
+        recipe`` is therefore **not** comparable term by term with another
+        package's published ``cc-pVTZ``, and the published basis-set
+        convergence literature does not transfer to it.  See
+        :data:`PUBLISHED_NAMESPACE` for the namespace kept free for real
+        tabulated data.
+        """
+        return f"{NATIVE_NAMESPACE}:{self.name}-recipe"
 
     def summary(self) -> str:
         parts = [f"{self.name} ({self.family})",
@@ -178,6 +210,14 @@ _KARLSRUHE_RE = re.compile(
     re.IGNORECASE)
 
 _ZETA_OF = {"D": 2, "T": 3, "Q": 4, "5": 5, "6": 6}
+
+#: Namespace of the recipes generated here -- ``"native:cc-pVTZ-recipe"``.
+NATIVE_NAMESPACE = "native"
+
+#: Namespace reserved for published, tabulated basis-set data.  Nothing
+#: resolves in it: Carcará ships no basis-set tables, and a name written with
+#: this prefix is refused rather than silently served from a recipe.
+PUBLISHED_NAMESPACE = "published"
 
 
 def _pol_spec(text: str) -> tuple[tuple[int, int], ...]:
@@ -281,6 +321,24 @@ def parse_basis_name(name: str) -> GaussianRecipe:
     :class:`ValueError` for anything else.
     """
     key = str(name).strip()
+    prefix, _, rest = key.partition(":")
+    if rest:
+        prefix, rest = prefix.strip().lower(), rest.strip()
+        if prefix == PUBLISHED_NAMESPACE:
+            raise ValueError(
+                f"{name!r}: Carcará ships no published basis-set tables. The "
+                f"{PUBLISHED_NAMESPACE!r} namespace is reserved for them; what "
+                f"the plain name {rest!r} builds is the natively generated "
+                f"recipe {NATIVE_NAMESPACE}:{rest}-recipe -- same shell "
+                "structure, Carcará's own exponents")
+        if prefix == NATIVE_NAMESPACE:
+            # Explicit spelling of what a bare name gives; "-recipe" optional.
+            key = rest[:-len("-recipe")] if rest.lower().endswith("-recipe") \
+                else rest
+        else:
+            raise ValueError(
+                f"unknown basis-set namespace {prefix!r} in {name!r}; use "
+                f"{NATIVE_NAMESPACE!r} or no prefix at all")
     match = _STO_RE.match(key)
     if match:
         n = int(match.group(1))
@@ -298,7 +356,7 @@ def parse_basis_name(name: str) -> GaussianRecipe:
     if match:
         return _parse_karlsruhe(match)
     raise ValueError(
-        f"unknown Gaussian basis set {name!r}; expected STO-nG, a Pople name "
+        f"unknown Gaussian basis set {key!r}; expected STO-nG, a Pople name "
         "such as '6-31+G*' or '6-311G(2df,2p)', a Dunning name such as "
         "'aug-cc-pVTZ' / 'cc-pCVDZ', or a Karlsruhe name such as 'def2-TZVP'")
 
@@ -431,3 +489,100 @@ def shell_notation(atomic_number: int, recipe: GaussianRecipe) -> str:
     for (l, _e, _c) in gaussian_shells(atomic_number, recipe):
         counts[l] = counts.get(l, 0) + 1
     return "[" + "".join(f"{counts[l]}{_L_LETTERS[l]}" for l in sorted(counts)) + "]"
+
+
+# --------------------------------------------------------------------------- #
+# Serializing what was actually generated.
+# --------------------------------------------------------------------------- #
+
+#: How the generated numbers are meant: what the coefficients multiply, what the
+#: angular factor is, and which units everything is in.  Serialized with every
+#: export so the numbers cannot be read under another package's conventions.
+ANGULAR_CONVENTION = {
+    "harmonics": "complex orthonormal spherical harmonics Y_l^m(theta, phi)",
+    "functions_per_shell": "2l + 1, m = -l ... +l (spherical, never Cartesian)",
+    "radial": "r^l * sum_i d_i exp(-alpha_i r^2)",
+    "primitive_normalization": (
+        "coefficients are for unit-normalized primitives; the contraction is "
+        "renormalized to <phi|phi> = 1 in 3D"),
+    "units": "exponents in Bohr^-2",
+}
+
+
+def shell_data(atomic_number: int, recipe: GaussianRecipe) -> list[dict]:
+    """The generated shells of one atom as plain data.
+
+    Each entry is ``{"l", "shell", "exponents", "coefficients"}`` -- the numbers
+    this basis actually uses, not a published table.  ``coefficients`` are as
+    passed to :class:`~carcara.basis.gaussian.GaussianOrbital`, i.e. for
+    unit-normalized primitives (see :data:`ANGULAR_CONVENTION`).
+    """
+    return [{"l": int(l), "shell": _L_LETTERS[int(l)],
+             "exponents": [float(e) for e in np.asarray(exps).ravel()],
+             "coefficients": [float(c) for c in np.asarray(coeffs).ravel()]}
+            for (l, exps, coeffs) in gaussian_shells(atomic_number, recipe)]
+
+
+def shells_record(elements, shells_of, name: str, family: str,
+                  structure: str) -> dict:
+    """Assemble a provenance record from any ``shells_of(Z)`` generator.
+
+    The shared body of :func:`basis_set_data`: every native Gaussian family
+    reports the same way, whatever generated its shells.
+    """
+    from ase.data import atomic_numbers, chemical_symbols
+
+    atoms = {}
+    for element in elements:
+        if isinstance(element, str):
+            symbol = element.capitalize()
+            if symbol not in atomic_numbers:
+                raise ValueError(f"unknown element symbol {element!r}")
+            Z = int(atomic_numbers[symbol])
+        else:
+            Z, symbol = int(element), chemical_symbols[int(element)]
+        shells = [(int(l), np.asarray(e).ravel(), np.asarray(c).ravel())
+                  for (l, e, c) in shells_of(Z)]
+        counts: dict[int, int] = {}
+        for (l, _e, _c) in shells:
+            counts[l] = counts.get(l, 0) + 1
+        atoms[symbol] = {
+            "atomic_number": Z,
+            "notation": "[" + "".join(f"{counts[l]}{_L_LETTERS[l]}"
+                                      for l in sorted(counts)) + "]",
+            "n_functions": sum(2 * l + 1 for (l, _e, _c) in shells),
+            "shells": [{"l": l, "shell": _L_LETTERS[l],
+                        "exponents": [float(x) for x in e],
+                        "coefficients": [float(x) for x in c]}
+                       for (l, e, c) in shells],
+        }
+    return {
+        "name": name,
+        "provenance": f"{NATIVE_NAMESPACE}:{name}-recipe",
+        "generated": True,
+        "published_data": False,
+        "family": family,
+        "structure": structure,
+        "convention": dict(ANGULAR_CONVENTION),
+        "elements": atoms,
+    }
+
+
+def basis_set_data(elements, recipe: GaussianRecipe) -> dict:
+    """A full, self-describing record of the basis generated for ``elements``.
+
+    Carries the provenance, the recipe that produced the structure, the angular
+    and normalization conventions, and every exponent and coefficient per
+    element -- so a calculation can be reproduced, or compared against a
+    published basis set, without reading Carcará's source.
+
+    Parameters
+    ----------
+    elements : iterable
+        Chemical symbols or atomic numbers.
+    recipe : GaussianRecipe
+        The recipe to generate from.
+    """
+    return shells_record(elements,
+                         lambda Z: gaussian_shells(Z, recipe),
+                         recipe.name, recipe.family, recipe.summary())

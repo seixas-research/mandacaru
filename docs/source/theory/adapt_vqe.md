@@ -58,4 +58,4 @@ Translates each fermionic excitation into individual Pauli string terms (after J
 Constructed by dropping the non-local Jordan-Wigner $Z$-strings from the fermionic excitation operators. The resulting operators retain the excitation character but compile to shallow, distance-independent CNOT networks.
 
 ### 4. Coupled-Exchange Operator Pool (`"ceo"`)
-Uses generators that share an entangling structure, allowing multiple excitations to be implemented on hardware using a single, unified CNOT block. This pool achieves the highest energy accuracy per CNOT gate.
+Groups QEB generators acting on the same qubit support into one generator, so several excitations share a single CNOT block. Under Jordan-Wigner each support carries exactly one excitation, so the pool reduces to `qeb` there; under parity and Bravyi-Kitaev the wider update/flip sets make the groups genuine. Realizing the published gate savings also needs the specialized circuit synthesis, which is not implemented here.

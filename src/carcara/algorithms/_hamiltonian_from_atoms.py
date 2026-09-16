@@ -385,7 +385,7 @@ def resolve_pseudo_basis(name, options, symbols):
             "their projectors and overlap treatment and cannot share one "
             "Hamiltonian")
     family = next(iter(pseudo.values()))
-    sizes, merged = {}, {}
+    sizes, splits, merged = {}, {}, {}
     for symbol, (_sub_name, sub_options) in resolved.items():
         extra = {k: v for k, v in sub_options.items()
                  if k not in ("size", "split_norm")}
@@ -397,8 +397,15 @@ def resolve_pseudo_basis(name, options, symbols):
                 "options in a single {'name': ..., ...} basis dict)")
         sizes[symbol] = sub_options.get("size", "SZ")
         if "split_norm" in sub_options:
-            merged["split_norm"] = sub_options["split_norm"]
+            splits[symbol] = sub_options["split_norm"]
     merged["size"] = sizes
+    if splits:
+        # Keep a scalar when every element agrees; otherwise the per-element
+        # mapping travels on (it used to be silently overwritten by the last
+        # element in the loop).
+        distinct = set(splits.values())
+        merged["split_norm"] = (distinct.pop() if len(distinct) == 1
+                                and len(splits) == len(resolved) else splits)
     return family, merged
 
 
@@ -509,6 +516,14 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                 f"frozen_core is redundant with the {family.label} basis -- "
                 "the core is already absent from the valence-only pseudo "
                 "basis")
+        if n_electrons is not None:
+            # The valence count follows the datasets' valence charges; an
+            # explicit count would silently disagree with the projectors and
+            # one-center terms built for those charges.
+            raise ValueError(
+                f"n_electrons is not accepted with the {family.label} basis: "
+                "the valence electron count comes from the pseudopotentials "
+                "themselves.  Use `charge` to add or remove electrons.")
         return _pseudopotential_hamiltonian(atoms, grid, h, charge, spin,
                                             family, options, kinetic=kinetic)
 

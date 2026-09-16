@@ -6,7 +6,13 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Hellmann-Feynman and Pulay forces for the PAW and ONCVPSP families.
+r"""Hellmann-Feynman and Pulay forces for every atom-centered basis.
+
+Pseudopotential families (PAW, ONCVPSP, NCPP) and all-electron bases share one
+derivative: the difference is only which terms exist.  An all-electron
+Hamiltonian has no projectors, no augmented overlap and no compensation
+charges, and its per-atom local potential is the bare (softened) ``-Z/r``;
+every one of those pieces is detected from the integrals themselves.
 
 The energy these families report is
 
@@ -225,6 +231,27 @@ def _sampled_radial(radial, center, grid) -> np.ndarray:
 # The gradient.
 # --------------------------------------------------------------------------- #
 
+def _atom_potentials(integrals):
+    """The per-atom local potential callables ``v_A(r)`` of this Hamiltonian.
+
+    A pseudopotential family supplies its own local channel; an all-electron
+    Hamiltonian's atom contributes the bare (softened) ``-Z/r`` -- exactly what
+    :meth:`~carcara.integrals.potentials.Potentials.nuclear_potential` samples,
+    so the Hellmann-Feynman term differentiates the same operator the energy
+    was built from.
+    """
+    datasets = getattr(integrals, "pseudopotentials", None)
+    if datasets:
+        return [dataset.local_potential for dataset in datasets]
+    softening = float(getattr(integrals._potentials, "softening", 1e-12))
+    potentials = []
+    for charge, _center in integrals._potentials.nuclei:
+        def coulomb(radius, Z=float(charge), floor=softening):
+            return -Z / np.maximum(np.asarray(radius, dtype=float), floor)
+        potentials.append(coulomb)
+    return potentials
+
+
 def _outer(X, Y):
     """``(X (x) Y)_pqrs = X_pr Y_qs`` -- the layout of the augmented tensor."""
     return np.einsum("pr,qs->pqrs", X, Y)
@@ -295,7 +322,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     centers = [np.asarray(c, dtype=float) for _z, c in integrals._potentials.nuclei]
     charges = [float(z) for z, _c in integrals.nuclei]
     n_atoms = len(centers)
-    datasets = integrals.pseudopotentials
+    datasets = getattr(integrals, "pseudopotentials", None) or []
+    atom_potentials = _atom_potentials(integrals)
 
     D1, G2 = spatial_rdms(gamma, gamma2, M)
     energy = AlgebraicEnergy(integrals.mo_coefficients, D1, G2)
@@ -408,7 +436,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     algebraic_step)
 
             # ---------------- Hellmann-Feynman: the operators of `atom` move --
-            w_loc = _moved_radial(datasets[atom].local_potential, centers[atom],
+            w_loc = _moved_radial(atom_potentials[atom], centers[atom],
                                   grid, k, delta)
             dh = ((psi.conj() * w_loc) @ psi.T) * dV
             dS = None
