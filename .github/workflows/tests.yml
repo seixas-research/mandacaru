@@ -66,12 +66,17 @@ jobs:
               path = build_backend(verbose=True)
               if path is None:
                   print('Build returned None', file=sys.stderr)
-                  with open(_BUILD_DIR / 'build.log') as f:
-                      print(f.read())
+                  build_log = _BUILD_DIR / 'build.log'
+                  if build_log.exists():
+                      with open(build_log) as f:
+                          print(f.read())
+                  else:
+                      print('No build.log found', file=sys.stderr)
           except Exception as e:
               print(f'Build failed: {e}', file=sys.stderr)
               import traceback
               traceback.print_exc()
+              sys.exit(1)
           status = check_backend()
           print(status.message)
           raise SystemExit(0 if status.available else 1)
