@@ -91,6 +91,80 @@ class TestCLI:
             ll.main([])
 
 
+class TestCarcaraCommand:
+    """``carcara --link-paw DIR`` -- the same thing from the main console script.
+
+    The datasets are too large to ship, so setting them up is the first thing a
+    user does after cloning; it should not require knowing that
+    ``python -m carcara.pseudopotentials.link_library`` exists.
+    """
+
+    def test_link_paw_links_and_verifies(self, fake_repo, tmp_path,
+                                         monkeypatch, capsys):
+        from carcara import cli
+
+        monkeypatch.setenv("CARCARA_PSEUDO_PATH", str(tmp_path / "library"))
+        # The fake datasets are not loadable, so the command links them and
+        # then reports that the *verification* failed -- which is the point:
+        # a link is only useful if a dataset actually loads through it.
+        assert cli.main(["--link-paw", str(fake_repo)]) == 1
+        out = capsys.readouterr().out
+        assert "2 datasets" in out
+        assert "loading a dataset failed" in out
+        assert os.path.islink(tmp_path / "library" / "paw")
+
+    def test_link_paw_needs_no_geometry(self, fake_repo, tmp_path, monkeypatch):
+        """It must not trip the 'a geometry is required' guard."""
+        from carcara import cli
+
+        monkeypatch.setenv("CARCARA_PSEUDO_PATH", str(tmp_path / "library"))
+        cli.main(["--link-paw", str(fake_repo)])      # no SystemExit
+
+    def test_a_missing_directory_is_reported_not_raised(self, tmp_path,
+                                                        monkeypatch, capsys):
+        from carcara import cli
+
+        monkeypatch.setenv("CARCARA_PSEUDO_PATH", str(tmp_path / "library"))
+        assert cli.main(["--link-paw", str(tmp_path / "nope")]) == 1
+        assert "is not a directory" in capsys.readouterr().out
+
+    def test_a_populated_directory_is_refused_and_kept(self, fake_repo,
+                                                       tmp_path, monkeypatch,
+                                                       capsys):
+        """--link-paw replaces a link, never someone's real directory."""
+        from carcara import cli
+
+        root = tmp_path / "library"
+        (root / "paw").mkdir(parents=True)
+        (root / "paw" / "mine.txt").write_text("keep me")
+        monkeypatch.setenv("CARCARA_PSEUDO_PATH", str(root))
+        assert cli.main(["--link-paw", str(fake_repo)]) == 1
+        assert "non-empty directory" in capsys.readouterr().out
+        assert (root / "paw" / "mine.txt").read_text() == "keep me"
+
+    def test_relinking_to_a_new_path_succeeds(self, fake_repo, tmp_path,
+                                              monkeypatch):
+        """Moving the data repository must not need --force from the CLI."""
+        from carcara import cli
+
+        root = tmp_path / "library"
+        monkeypatch.setenv("CARCARA_PSEUDO_PATH", str(root))
+        cli.main(["--link-paw", str(fake_repo)])
+        moved = tmp_path / "carcara-paw-moved"
+        moved.mkdir()
+        (moved / "H.parquet").write_bytes(b"x")
+        cli.main(["--link-paw", str(moved)])
+        assert os.path.realpath(root / "paw") == str(moved)
+
+    def test_status_reports_without_linking(self, tmp_path, monkeypatch, capsys):
+        from carcara import cli
+
+        monkeypatch.setenv("CARCARA_PSEUDO_PATH", str(tmp_path / "library"))
+        assert cli.main(["--pseudo-status"]) == 0
+        out = capsys.readouterr().out
+        assert out.count("MISSING") == 3      # nothing linked in a fresh root
+
+
 class TestLoadersThroughTheRealLinks:
     """The shipped library: NCPP is bundled; ONCVPSP/PAW are links when set up."""
 
@@ -104,3 +178,18 @@ class TestLoadersThroughTheRealLinks:
             pytest.skip("external ONCVPSP/PAW repositories not linked on this machine")
         assert get_oncv("H").family == "oncvpsp"
         assert get_paw("H").family == "paw"
+
+    def test_carcara_link_paw_verifies_a_real_repository(self, tmp_path,
+                                                         monkeypatch, capsys):
+        """The success path of ``carcara --link-paw``, end to end."""
+        from carcara import cli
+        from carcara.pseudopotentials.io import library_root
+
+        st = ll.status(library_root())
+        if st["paw"][2] == 0:
+            pytest.skip("the PAW repository is not linked on this machine")
+        source = st["paw"][1]
+        monkeypatch.setenv("CARCARA_PSEUDO_PATH", str(tmp_path / "library"))
+        # The dataset cache is keyed by folder, so a fresh root really reloads.
+        assert cli.main(["--link-paw", source]) == 0
+        assert "loaded H successfully" in capsys.readouterr().out

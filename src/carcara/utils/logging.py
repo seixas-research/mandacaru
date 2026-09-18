@@ -101,8 +101,10 @@ class AdaptOutputLogger:
         #: Whether iteration blocks expand the selected operator in Pauli strings.
         self.detailed = (self.n_qubits is None
                          or self.n_qubits <= DETAILED_LOG_MAX_QUBITS)
-        #: Whether iteration blocks also list the whole pool.
+        #: Whether iteration rows are followed by the whole pool listing.
         self.log_pool = bool(log_pool)
+        #: Whether the iteration table's heading has been written yet.
+        self._table_open = False
         # Truncate any previous run and keep the handle open for live appends.
         self._fh = open(path, "w", encoding="utf-8")
 
@@ -198,86 +200,116 @@ class AdaptOutputLogger:
                 self._emit(f"{key}: {value}")
         self._emit("")
 
-    # -- per-iteration block ----------------------------------------------- #
+    # -- per-iteration table ------------------------------------------------ #
+
+    #: Columns of the iteration table: ``(key, heading, width, format)``, in the
+    #: order the properties were asked for -- energy, expressivity, the selected
+    #: operator's type, the screening gradient, CNOTs, circuit depth and
+    #: single-qubit gates -- with the growth index first and the operator's
+    #: label last (it is the only variable-width field).
+    #:
+    #: This is a **file**, so nothing is dropped to fit a terminal and the
+    #: numbers keep full precision.
+    ITERATION_COLUMNS = (("iter", "iter", 4, "d"),
+                         ("energy", "energy", 18, ".10f"),
+                         ("expr", "expr", 10, ".6f"),
+                         ("type", "type", 10, "s"),
+                         ("grad", "|grad|", 13, ".6e"),
+                         ("cnot", "cnot", 7, "s"),
+                         ("depth", "depth", 7, "s"),
+                         ("1q", "1q", 7, "s"),
+                         ("npar", "npar", 5, "s"),
+                         ("operator", "operator", 0, "s"))
+
+    def _iteration_heading(self, energy_unit: str) -> str:
+        cells = []
+        for key, heading, width, _fmt in self.ITERATION_COLUMNS:
+            label = f"energy ({energy_unit})" if key == "energy" else heading
+            cells.append(label if key == "operator"
+                         else f"{label:>{max(width, len(label))}}")
+        return " ".join(cells).rstrip()
 
     def write_iteration(self, iteration: int, pool_operators: Sequence,
                         gradients: Iterable[float], selected_index: int,
                         expressivity: float | None, energy: float,
                         num_parameters: int, energy_unit: str = "eV",
                         metrics: Any = None) -> None:
-        """Append one ADAPT iteration's tracked metrics, in order.
+        """Append **one row** describing this ADAPT iteration.
 
-        Only the **selected operator** and the pool's *size* are written: a
-        realistic pool is hundreds of generators long and listing it every
-        iteration buried the run.  ``log_pool=True`` restores the full listing;
-        the driver option ``verbose_operators=True`` writes it once, as
-        structured JSON, to ``pool.json`` (see :mod:`carcara.utils.dumps`),
-        which is the better way to read it.
+        Each iteration is a single line and each tracked property is a column
+        (:data:`ITERATION_COLUMNS`); the heading is written once, before the
+        first row.  This replaced a twelve-line block per iteration whose bulk
+        was the selected operator's Pauli expansion -- the operators belong in
+        ``pool.json`` (driver option ``verbose_operators=True``), not repeated
+        through the log.  The pool's size and type are in the setup block
+        above, since neither changes between iterations.
 
         Parameters
         ----------
         iteration : int
             1-based macro-iteration index.
         pool_operators : sequence of PoolOperator
-            The full operator pool at this step.
+            The operator pool at this step (only the selected entry is read).
         gradients : iterable of float
-            Screening gradient of each pool operator (same order as
-            ``pool_operators``); their magnitudes are logged.
+            Screening gradient of each pool operator, in the same order.
         selected_index : int
-            Index (into ``pool_operators``) of the operator chosen for the
-            ansatz.
+            Index of the operator chosen for the ansatz.
         expressivity : float or None
-            Expressivity score :math:`E` of the parameterized ansatz at this
-            iteration (``None`` if not computed).
+            Expressivity score of the ansatz (``None`` if not computed).
         energy : float
             Energy after the inner re-optimization, in ``energy_unit``.
         num_parameters : int
-            Number of parameters (operators) in the ansatz after this step.
+            Parameters in the ansatz after this step.
         energy_unit : str
             Unit label for ``energy`` (default ``"eV"``).
         metrics : optional
-            Object exposing ``cnot_count`` / ``depth`` / ``total_gates`` (logged
-            if present).
+            Object exposing ``cnot_count`` / ``depth`` / ``num_1q_gates``.
         """
         grads = [float(g) for g in gradients]
+        selected = pool_operators[selected_index]
 
-        self._emit(_RULE, f"[ITERATION {iteration}]")
+        if not self._table_open:
+            heading = self._iteration_heading(energy_unit)
+            self._emit("[ITERATIONS]", heading, "-" * len(heading))
+            self._table_open = True
 
-        # 1. Selected operator -- reported separately from the pool.  Above
-        #    DETAILED_LOG_MAX_QUBITS only its gradient is kept.
-        if self.detailed:
-            selected = pool_operators[selected_index]
-            self._emit("selected_operator: " + selected.label,
-                       f"  kind: {selected.kind}",
-                       f"  gradient: {abs(grads[selected_index]):.6e}",
-                       f"  pauli: {_format_pauli(selected.generator)}")
-        else:
-            self._emit(f"max_gradient: {abs(grads[selected_index]):.6e}")
+        def count(value):
+            return "-" if value is None else str(value)
 
-        # 2. Post-optimization state of the ansatz.
-        if expressivity is not None:
-            self._emit(f"expressivity_E: {expressivity:.6f}")
-        else:
-            self._emit("expressivity_E: (not computed)")
-        self._emit(f"energy_{energy_unit}: {energy:.10f}",
-                   f"num_parameters: {num_parameters}")
-        if metrics is not None and getattr(metrics, "cnot_count", None) is not None:
-            self._emit(f"cnot_count: {metrics.cnot_count}",
-                       f"circuit_depth: {metrics.depth}")
-            if getattr(metrics, "total_gates", None) is not None:
-                self._emit(f"total_gates: {metrics.total_gates}",
-                           f"one_qubit_gates: {metrics.num_1q_gates}")
+        values = {
+            "iter": int(iteration),
+            "energy": float(energy),
+            "expr": None if expressivity is None else float(expressivity),
+            "type": str(selected.kind),
+            "grad": abs(grads[selected_index]),
+            "cnot": count(getattr(metrics, "cnot_count", None)),
+            "depth": count(getattr(metrics, "depth", None)),
+            "1q": count(getattr(metrics, "num_1q_gates", None)),
+            "npar": str(int(num_parameters)),
+            "operator": selected.label if self.detailed else "(omitted)",
+        }
+        cells = []
+        for key, heading, width, fmt in self.ITERATION_COLUMNS:
+            label = f"energy ({energy_unit})" if key == "energy" else heading
+            width = max(width, len(label))
+            value = values[key]
+            if key == "operator":
+                cells.append(str(value))
+            elif value is None:
+                cells.append(f"{'-':>{width}}")
+            elif fmt == "s":
+                cells.append(f"{value:>{width}}")
+            else:
+                cells.append(f"{value:>{width}{fmt}}")
+        self._emit(" ".join(cells).rstrip())
 
-        # 3. The pool's size.  Its contents follow only when explicitly asked
-        #    for; `verbose_operators=True` writes them to pool.json instead.
-        self._emit(f"pool_size: {len(pool_operators)}")
-        if self.log_pool and self.detailed:
-            self._emit("operator_pool:")
+        if self.log_pool:
+            # Opt-in only: the per-iteration pool listing this table replaced.
+            self._emit("  operator_pool:")
             for i, op in enumerate(pool_operators):
                 marker = " (selected)" if i == selected_index else ""
-                self._emit(f"  [{i:3d}] {op.label}  |grad|={abs(grads[i]):.6e}{marker}")
-                self._emit(f"        pauli: {_format_pauli(op.generator)}")
-        self._emit("")
+                self._emit(f"    [{i:3d}] {op.label}  "
+                           f"|grad|={abs(grads[i]):.6e}{marker}")
 
     # -- footer / teardown ------------------------------------------------- #
 
@@ -368,13 +400,20 @@ def _cell_parameters(cell: np.ndarray):
 def parse_output(path: str) -> dict:
     """Reference parser for an ADAPT ``output.txt`` (used by the tests).
 
-    Scans the file line by line and returns a dict with the metadata, the
-    optimization setup, and a list of per-iteration records -- demonstrating that
-    the protocol is machine-parseable as it is written.
+    Reads the metadata and setup blocks as ``KEY: value`` lines and the
+    ``[ITERATIONS]`` table as one record per row, keyed by its column heading
+    -- demonstrating that the protocol is machine-parseable as written.
     """
     result: dict[str, Any] = {"metadata": {}, "setup": {}, "iterations": []}
     section = None
-    current: dict[str, Any] | None = None
+    columns: list[str] = []
+    energy_unit = "eV"
+
+    def number(text):
+        try:
+            return float(text)
+        except ValueError:
+            return None
 
     with open(path, encoding="utf-8") as fh:
         for raw in fh:
@@ -385,15 +424,15 @@ def parse_output(path: str) -> dict:
             if stripped == "[OPTIMIZATION SETUP]":
                 section = "setup"
                 continue
-            if stripped.startswith("[ITERATION"):
-                section = "iteration"
-                current = {"index": int(stripped.split()[1].rstrip("]")),
-                           "pool": [], "_in_pool": False}
-                result["iterations"].append(current)
+            if stripped == "[ITERATIONS]":
+                section = "iterations"
+                columns = []
                 continue
             if stripped == "[SUMMARY]":
                 section = "summary"
                 result["summary"] = {}
+                continue
+            if not stripped or set(stripped) == {"-"} or set(stripped) == {"="}:
                 continue
 
             if section in ("metadata", "setup") and ":" in stripped \
@@ -403,22 +442,35 @@ def parse_output(path: str) -> dict:
             elif section == "summary" and ":" in stripped:
                 key, _, value = stripped.partition(":")
                 result["summary"][key.strip()] = value.strip()
-            elif section == "iteration" and current is not None:
-                if stripped == "operator_pool:":
-                    current["_in_pool"] = True
-                elif stripped.startswith("expressivity_E:"):
-                    current["expressivity_E"] = stripped.split(":", 1)[1].strip()
-                elif stripped.startswith("max_gradient:"):
-                    current["max_gradient"] = float(stripped.split(":", 1)[1])
-                elif stripped.startswith("selected_operator:"):
-                    current["selected_operator"] = stripped.split(":", 1)[1].strip()
-                elif stripped.startswith("energy_"):
-                    # energy_eV: / energy_Ha: -- unit taken from the key suffix.
-                    key, _, value = stripped.partition(":")
-                    current["energy"] = float(value)
-                    current["energy_unit"] = key.split("_", 1)[1]
-                elif current["_in_pool"] and stripped.startswith("pauli:"):
-                    current["pool"].append(stripped.split(":", 1)[1].strip())
-    for it in result["iterations"]:
-        it.pop("_in_pool", None)
+            elif section == "iterations":
+                if stripped.startswith("operator_pool:") or stripped.startswith("["):
+                    continue
+                fields = stripped.split()
+                if not columns:
+                    # The heading: "energy (eV)" is one column, two tokens.
+                    head = stripped
+                    for unit in ("eV", "Ha"):
+                        if f"energy ({unit})" in head:
+                            energy_unit = unit
+                            head = head.replace(f"energy ({unit})", "energy")
+                    columns = head.split()
+                    continue
+                if not fields[0].isdigit():
+                    continue                       # an opt-in pool listing line
+                record = dict(zip(columns, fields))
+                entry: dict[str, Any] = {
+                    "index": int(record["iter"]),
+                    "selected_operator": record.get("operator", ""),
+                    "operator_kind": record.get("type", ""),
+                    "energy": number(record.get("energy", "")),
+                    "energy_unit": energy_unit,
+                    "expressivity_E": record.get("expr", "-"),
+                    "max_gradient": number(record.get("|grad|", "")),
+                    "num_parameters": record.get("npar", "-"),
+                    "cnot_count": record.get("cnot", "-"),
+                    "circuit_depth": record.get("depth", "-"),
+                    "one_qubit_gates": record.get("1q", "-"),
+                    "columns": list(columns),
+                }
+                result["iterations"].append(entry)
     return result

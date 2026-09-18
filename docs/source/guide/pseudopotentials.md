@@ -680,6 +680,19 @@ large for this repository — about 110 MB and 190 MB — so they live in the
 `library/paw/`, which are **symbolic links** created by
 
 ```bash
+carcara --link-paw ~/Repositories/carcara-paw
+carcara --link-oncvpsp ~/Repositories/carcara-oncvpsp
+carcara --pseudo-status          # what is linked, and how many datasets each serves
+```
+
+Each command links the directory and then **loads one dataset through the
+normal loader** to prove the link is usable, exiting non-zero if it is not — a
+link to the wrong directory would otherwise only fail later, in the middle of a
+calculation. Re-running with a new path moves the link (the data repository can
+be moved freely); a real, non-empty `library/paw/` directory is refused rather
+than deleted. The underlying module takes a few more options:
+
+```bash
 python -m carcara.pseudopotentials.link_library \
     --oncvpsp ~/Repositories/carcara-oncvpsp --paw ~/Repositories/carcara-paw
 # --files links each dataset instead of the directory; --force replaces; --status reports

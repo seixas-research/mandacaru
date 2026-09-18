@@ -863,6 +863,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             gradient_tol=gradient_tol, max_iterations=max_iterations,
             extra={"mapping": self.mapping,
                    "num_particles": self.num_particles,
+                   # The pool's type and size, before the iteration table.
+                   "pool": getattr(self.pool, "name", "?"),
+                   "pool_class": self.pool.__class__.__name__,
                    "pool_size": len(self._pool_ops)})
         return logger
 

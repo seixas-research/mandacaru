@@ -34,7 +34,7 @@ pip install carcara
 
 # PAW datasets (kept in a separate repository because of their size)
 git clone https://github.com/seixas-research/carcara-paw.git
-python -m carcara.pseudopotentials.link_library --paw carcara-paw
+carcara --link-paw carcara-paw
 ```
 
 ## LiH with ASE

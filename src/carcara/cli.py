@@ -95,10 +95,24 @@ def build_parser() -> argparse.ArgumentParser:
                "  carcara H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run\n"
                "  carcara --load-hamiltonian lih.parquet --dry-run --json\n"
                "  carcara LiH --cell 10 --method adapt-vqe --pool qeb --h 0.3\n"
-               "  carcara --build-backend\n",
+               "  carcara --build-backend\n"
+               "  carcara --link-paw ~/Repositories/carcara-paw\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version",
                         version=f"carcara {__version__}")
+    parser.add_argument("--link-paw", metavar="DIR", default=None,
+                        help="link a checkout of the PAW dataset repository "
+                             "(carcara-paw) into Carcará's library, then "
+                             "exit.  The datasets are too large to ship, so "
+                             "they live in their own repository and the "
+                             "library holds a symlink to it.")
+    parser.add_argument("--link-oncvpsp", metavar="DIR", default=None,
+                        help="the same for the ONCVPSP datasets "
+                             "(carcara-oncvpsp).")
+    parser.add_argument("--pseudo-status", action="store_true",
+                        help="report which pseudopotential libraries are "
+                             "linked and how many datasets each serves, then "
+                             "exit.")
     parser.add_argument("--build-backend", action="store_true",
                         help="compile the C integral backend (or report why it "
                              "cannot be), then exit.  Carcará does this by "
@@ -386,12 +400,83 @@ def build_backend_command() -> int:
     return 1
 
 
+def link_library_command(*, paw=None, oncvpsp=None) -> int:
+    """``carcara --link-paw DIR`` / ``--link-oncvpsp DIR`` / ``--pseudo-status``.
+
+    The ONCVPSP and PAW datasets are ~100 MB and ~200 MB for Z <= 92, too large
+    to ship, so they live in their own repositories and the library holds a
+    symlink to a checkout (see
+    :mod:`carcara.pseudopotentials.link_library`).  This links them and then
+    *proves* the link works by loading one dataset through the normal loader --
+    a symlink that points at the wrong directory layout would otherwise only
+    fail later, in the middle of a calculation.
+
+    Returns 0 when every requested family is linked and loadable.
+    """
+    from .pseudopotentials.link_library import link_library, status
+
+    requested = [("paw", paw), ("oncvpsp", oncvpsp)]
+    failed = False
+    for family, source in requested:
+        if source is None:
+            continue
+        try:
+            # From the command line, naming a path *is* the request to use it,
+            # so an existing link is replaced; a real populated directory is
+            # still refused, with a message saying so.
+            link_library(family, source, force=True)
+        except (FileNotFoundError, FileExistsError, ValueError) as exc:
+            print(f"{family}: {exc}")
+            failed = True
+
+    for family, (target, source, count) in status().items():
+        if not count:
+            print(f"{family:8s} {target}: MISSING")
+            continue
+        where = f" -> {source}" if source and source != target else ""
+        print(f"{family:8s} {target}{where}: {count} datasets")
+
+    # Load one dataset per newly linked family: the real check.
+    for family, source in requested:
+        if source is None or failed:
+            continue
+        try:
+            element = _probe_element(family)
+            print(f"{family}: loaded {element} successfully")
+        except Exception as exc:                      # noqa: BLE001 - reported
+            print(f"{family}: linked, but loading a dataset failed: "
+                  f"{type(exc).__name__}: {exc}")
+            failed = True
+    return 1 if failed else 0
+
+
+def _probe_element(family: str) -> str:
+    """Load the first available dataset of ``family`` through its own loader."""
+    from .pseudopotentials.io import available_elements
+    from .pseudopotentials.link_library import FAMILY_SUBDIRS, _family
+    from .pseudopotentials.families import resolve_family
+    from .pseudopotentials.io import library_root
+    import os
+
+    key = _family(family)
+    folder = os.path.join(library_root(), FAMILY_SUBDIRS[key])
+    elements = available_elements(folder)
+    if not elements:
+        raise FileNotFoundError(f"no datasets under {folder}")
+    element = "H" if "H" in elements else elements[0]
+    resolve_family(key).get(element)
+    return element
+
+
 def main(argv=None) -> int:
     """``carcara`` entry point; returns the process exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.build_backend:
         return build_backend_command()
+    if args.link_paw or args.link_oncvpsp or args.pseudo_status:
+        return link_library_command(paw=args.link_paw,
+                                    oncvpsp=args.link_oncvpsp)
     if args.geometry is None and args.load_hamiltonian is None:
         parser.error("a geometry (file or molecule name) is required unless "
                      "--load-hamiltonian is given")
