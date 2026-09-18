@@ -187,6 +187,11 @@ def _max_abs(values) -> float:
     return float(np.max(np.abs(values))) if values.size else 0.0
 
 
+#: Largest difference (Hartree) between a checkpoint's stored energy and the
+#: energy its state evaluates to, for the *same* Hamiltonian, before the resume
+#: says so.  It is a consistency check on the file, not a convergence threshold.
+RESUME_ENERGY_TOLERANCE = 1e-8
+
 #: How a fermion-to-qubit mapping is spelled in the ``[ELECTRONS]`` log block.
 #: The names the code uses are identifiers; the log is read by people too, and
 #: these are the transformations' own names.  An unlisted mapping is written
@@ -411,6 +416,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     _GRADIENTS = ("analytic", "finite_difference", "parameter-shift")
     _default_sparse = "auto"
 
+    #: ADAPT's ``run()`` writes the ``output=`` log and honors checkpoints.
+    writes_output_log = True
+
     def __init__(self,
                  hamiltonian=None,
                  pool="fermionic",
@@ -483,6 +491,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         self.max_iterations = int(max_iterations)
         self.gradient_tolerance = float(gradient_tolerance)
         self.output = output
+        # Re-run now that `output` exists: the base check ran before it was set.
+        self._check_output_paths()
 
         self._pool_spec = pool
         # Seeded RNG for reproducible expressivity logging (output.txt).
@@ -793,7 +803,13 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                             support=_support_of(generator), kind=kind or "resumed")
 
     def _restore_growth(self, ansatz: AdaptAnsatz, record) -> dict:
-        """Append a checkpoint's generators to ``ansatz``; return its history."""
+        """Append a checkpoint's generators to ``ansatz``; return its history.
+
+        The returned ``energy`` is always evaluated here, and ``same_problem``
+        says whether the file was written for this run's Hamiltonian.
+        """
+        from ..core.checkpoint import fingerprint as _hamiltonian_fingerprint
+
         selected: list[str] = []
         for generator, label, kind in zip(record.generators, record.labels,
                                           record.kinds):
@@ -811,14 +827,49 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             num_parameters=int(it["num_parameters"]))
             for it in status.get("iterations", [])]
         params = np.asarray(record.parameters, dtype=float)
-        energy = (float(record.energy) if record.energy is not None
-                  else self.ansatz_energy(ansatz, params))
+
+        # The energy is *recomputed* from the restored state under **this**
+        # run's Hamiltonian, never read back from the file.  A checkpoint can be
+        # resumed into a different problem -- a changed geometry, charge or even
+        # a constant shift keeps the register width, the mapping and the
+        # reference determinant that `_load_resume` checks -- and with a growth
+        # budget of zero the stored number would otherwise be reported as this
+        # run's result. (Verified: resuming `ZIII` into `ZIII + 2 IIII` reported
+        # -1 Ha for a state whose energy is +1 Ha, and called it converged.)
+        energy = self.ansatz_energy(ansatz, params)
+        stored = None if record.energy is None else float(record.energy)
+        same_problem = (record.hamiltonian_fingerprint()
+                        == _hamiltonian_fingerprint(self.hamiltonian))
+        drift = None if stored is None else abs(energy - stored)
+        if not same_problem:
+            # A warm start, not a continuation: the history describes a
+            # different operator, so its energies are not comparable to this
+            # run's and are dropped rather than plotted alongside them.
+            iterations = []
+            warnings.warn(
+                f"resuming from {self.resume_path!r} into a different "
+                f"Hamiltonian: the state is reused as a warm start, its energy "
+                f"recomputed here"
+                + ("" if drift is None else
+                   f" ({self._to_energy_units(energy):+.8f} against "
+                   f"{self._to_energy_units(stored):+.8f} {unit} in the file)")
+                + ", and the stored iteration history discarded.",
+                RuntimeWarning, stacklevel=3)
+        elif drift is not None and drift > RESUME_ENERGY_TOLERANCE:
+            warnings.warn(
+                f"the checkpoint {self.resume_path!r} stores "
+                f"{self._to_energy_units(stored):+.10f} {unit} but its state "
+                f"evaluates to {self._to_energy_units(energy):+.10f} {unit} "
+                f"here (difference {drift:.2e} Ha) for the same Hamiltonian; "
+                f"the recomputed value is used.",
+                RuntimeWarning, stacklevel=3)
         return {"parameters": params, "selected": selected,
                 "iterations": iterations,
                 "num_evaluations": int(status.get("num_evaluations", 0)),
                 "optimizer_failures": [(int(s), str(m)) for s, m
                                        in status.get("optimizer_failures", [])],
-                "energy": energy, "unit": unit}
+                "energy": energy, "unit": unit,
+                "same_problem": same_problem, "stored_energy": stored}
 
     def _new_ansatz(self) -> AdaptAnsatz:
         """A fresh growable ansatz on the configured evaluation backend.
@@ -852,7 +903,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     # -- output.txt logging ---------------------------------------------- #
 
     def _make_logger(self, output_file, geometry, cell, ref_energy,
-                     max_iterations, gradient_tol):
+                     max_iterations, gradient_tol, restored=None):
         """Create an :class:`AdaptOutputLogger` and write the header blocks.
 
         Returns ``None`` when ``output_file`` is not given (logging disabled).
@@ -886,12 +937,38 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             reference_energy=self._to_energy_units(ref_energy),
             energy_unit=self._energy_unit_label(),
             gradient_tol=gradient_tol, max_iterations=max_iterations,
+            # A resumed run does not start from |HF>: it starts from the grown
+            # ansatz the checkpoint carries.
+            initial_ansatz=("|HF> (0 parameters)" if restored is None else
+                            f"resumed ({len(restored['selected'])} operators, "
+                            f"{len(restored['parameters'])} parameters)"),
             # The pool's type and size, before the iteration table; the problem
             # itself is in the [ELECTRONS] block above.
-            extra={"pool": getattr(self.pool, "name", "?"),
-                   "pool_class": self.pool.__class__.__name__,
-                   "pool_size": len(self._pool_ops)})
+            extra=self._setup_fields(restored))
         return logger
+
+    def _setup_fields(self, restored=None) -> dict:
+        """Extra ``[OPTIMIZATION SETUP]`` lines: the pool, units and lineage."""
+        fields = {"pool": getattr(self.pool, "name", "?"),
+                  "pool_class": self.pool.__class__.__name__,
+                  "pool_size": len(self._pool_ops),
+                  # The screening gradient is an expectation value of the
+                  # Hamiltonian's commutator, so it is in Hartree whatever unit
+                  # the energy columns use -- worth stating, since the tolerance
+                  # is compared against it.
+                  "gradient_units": "Hartree",
+                  "screening_gradient": str(self.gradient)}
+        if restored is not None:
+            # A resumed run starts from a grown ansatz, not from |HF>: without
+            # these lines the setup block claims 0 parameters and the iteration
+            # table starts at 1 with no sign that anything preceded it.
+            fields["resumed_from"] = str(self.resume_path)
+            fields["restored_operators"] = len(restored["selected"])
+            fields["restored_energy_" + self._energy_unit_label()] = \
+                f"{self._to_energy_units(restored['energy']):.10f}"
+            fields["resume_same_hamiltonian"] = bool(
+                restored.get("same_problem", True))
+        return fields
 
     def _electron_fields(self) -> dict:
         """The ``[ELECTRONS]`` block: how the electronic problem was posed.
@@ -1045,7 +1122,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             self._show_banner()
 
         logger = self._make_logger(output_file, geometry, cell, ref_energy,
-                                   max_iterations, gradient_tol)
+                                   max_iterations, gradient_tol,
+                                   restored=restored)
         e_unit = self._energy_unit_label()
 
         if verbose:

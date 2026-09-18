@@ -190,11 +190,20 @@ class AdaptOutputLogger:
         # file for writing (truncating a previous run's log), every later one
         # appends so a relaxation's steps accumulate.
         key = os.path.abspath(str(path))
-        self.step = _LOG_STEPS.get(key, 0) + 1
-        _LOG_STEPS[key] = self.step
+        step = _LOG_STEPS.get(key, 0) + 1
         if append is None:
-            append = self.step > 1
+            append = step > 1
+        parent = os.path.dirname(key)
+        if parent:
+            # Other writers (checkpoints, dumps) create their parents; a log
+            # named under a missing directory used to raise *after* the step
+            # counter had advanced, so a retry started at step 2.
+            os.makedirs(parent, exist_ok=True)
         self._fh = open(path, "a" if append else "w", encoding="utf-8")
+        # Only now: the counter records blocks in the file, so a failed open
+        # must not consume a step number.
+        self.step = step
+        _LOG_STEPS[key] = step
         if self._fh.tell() == 0:
             # The banner belongs to the file, not to the block: it is written
             # only when the file starts empty, so appending never repeats it
@@ -311,6 +320,7 @@ class AdaptOutputLogger:
                               reference_energy: float, energy_unit: str = "eV",
                               gradient_tol: float | None = None,
                               max_iterations: int | None = None,
+                              initial_ansatz: str = "|HF> (0 parameters)",
                               extra: dict | None = None) -> None:
         """Write the classical optimizer and the pre-loop (reference) results.
 
@@ -328,7 +338,7 @@ class AdaptOutputLogger:
             self._emit_body(f"gradient_tol: {gradient_tol:g}")
         self._emit_body(
             f"reference_energy_{energy_unit}: {reference_energy:.10f}",
-            "initial_ansatz: |HF> (0 parameters)")
+            f"initial_ansatz: {initial_ansatz}")
         if extra:
             for key, value in extra.items():
                 self._emit_body(f"{key}: {value}")
@@ -568,7 +578,7 @@ def _force_table(symbols: Sequence[str], vectors,
 
 def _force_block_lines(symbols: Sequence[str], forces, hellmann_feynman=None,
                        pulay=None, units: str = "eV/Angstrom",
-                       extra: dict | None = None,
+                       extra: dict | None = None, unprojected=None,
                        step: int | None = None) -> list[str]:
     """Lines of a ``[FORCES]`` block: the vectors, their breakdown and norms.
 
@@ -579,9 +589,18 @@ def _force_block_lines(symbols: Sequence[str], forces, hellmann_feynman=None,
     """
     forces = np.atleast_2d(np.asarray(forces, dtype=float))
     keys = [] if step is None else [f"step: {int(step)}"]
-    keys += [f"units: {units}",
-             "convention: forces = -dE/dR (ASE sign); hellmann_feynman and "
-             "pulay are +dE/dR"]
+    keys.append(f"units: {units}")
+    if unprojected is None:
+        keys.append("convention: forces = -dE/dR (ASE sign); hellmann_feynman "
+                    "and pulay are +dE/dR")
+    else:
+        # With a projection in place the reported force is *not* the negative
+        # derivative of the discretized energy, and does not equal
+        # -(hellmann_feynman + pulay): the block states the relation instead of
+        # claiming a convention it no longer obeys.
+        keys.append("convention: forces = forces_unprojected - "
+                    "mean(forces_unprojected); forces_unprojected = -dE/dR "
+                    "(ASE sign); hellmann_feynman and pulay are +dE/dR")
     if extra:
         keys += [f"{key}: {value}" for key, value in extra.items()]
 
@@ -591,6 +610,9 @@ def _force_block_lines(symbols: Sequence[str], forces, hellmann_feynman=None,
     # contents of the key that opens it, one more.
     lines = ["", "[FORCES]"] + _indent(keys)
     lines += _indent(["forces:"]) + _indent(_force_table(symbols, forces), 2)
+    if unprojected is not None:
+        lines += _indent(["forces_unprojected:"]) + _indent(
+            _force_table(symbols, unprojected), 2)
     if hellmann_feynman is not None:
         lines += _indent(["hellmann_feynman:"]) + _indent(
             _force_table(symbols, hellmann_feynman, "|dE/dR|"), 2)
@@ -671,6 +693,8 @@ def _performance_value(key: str, value) -> str:
 def append_optimization_summary(path: str, history, symbols=None,
                                 positions=None, units: str = "Angstrom",
                                 energy_unit: str = "eV", fmax: float | None = None,
+                                converged: bool | None = None,
+                                status: str | None = None,
                                 extra: dict | None = None) -> None:
     """Close the log with the relaxation's own two blocks.
 
@@ -695,6 +719,14 @@ def append_optimization_summary(path: str, history, symbols=None,
         run **converged** against it; without it the footer reports the final
         force and says only that the run finished -- the threshold is the
         optimizer's, and this is not the place to guess it.
+    converged : bool, optional
+        The optimizer's *own* verdict, which is what a run with constraints or a
+        cell filter has: a bare force-threshold comparison is not that verdict.
+        Given, it decides the footer and ``fmax`` only adds the number.
+    status : str, optional
+        The footer verbatim, for a caller that knows something this function
+        cannot -- that the run was interrupted, or that completion was never
+        signaled at all.
     extra : mapping, optional
         Further ``KEY: value`` lines for the summary block.
     """
@@ -740,20 +772,44 @@ def append_optimization_summary(path: str, history, symbols=None,
         lines += _indent(_geometry_rows(symbols, positions), 2)
     lines.append(_BANNER)
 
-    if fmax is None:
-        status = (f"finished after {steps} geometry steps "
-                  f"(final max force {last['max_force']:.6f} eV/Angstrom)")
-    elif last["max_force"] <= float(fmax):
-        status = (f"converged after {steps} geometry steps "
-                  f"(max force {last['max_force']:.6f} <= {float(fmax):.6f} "
-                  f"eV/Angstrom)")
-    else:
-        status = (f"NOT converged after {steps} geometry steps "
-                  f"(max force {last['max_force']:.6f} > {float(fmax):.6f} "
-                  f"eV/Angstrom)")
+    threshold = "" if fmax is None else f", threshold {float(fmax):.6f}"
+    if status is None:
+        if converged is not None:
+            verdict = "converged" if converged else "NOT converged"
+            status = (f"{verdict} after {steps} geometry steps (max force "
+                      f"{last['max_force']:.6f}{threshold} eV/Angstrom)")
+        elif fmax is not None:
+            verdict = ("converged" if last["max_force"] <= float(fmax)
+                       else "NOT converged")
+            status = (f"{verdict} after {steps} geometry steps (max force "
+                      f"{last['max_force']:.6f} "
+                      f"{'<=' if verdict == 'converged' else '>'} "
+                      f"{float(fmax):.6f} eV/Angstrom)")
+        else:
+            status = (f"finished after {steps} geometry steps "
+                      f"(final max force {last['max_force']:.6f} eV/Angstrom)")
     lines += ["", "[RELAXATION COMPLETE]"] + _indent([f"status: {status}"])
     lines.append(_BANNER)
 
+    with open(path, "a", encoding="utf-8") as fh:
+        for line in lines:
+            fh.write(line + "\n")
+
+
+def append_block(path: str, section: str, fields: dict,
+                 step: int | None = None) -> None:
+    """Append a simple ``[SECTION]`` block of ``KEY: value`` lines.
+
+    For a block that is a flat record -- ``[MEASUREMENT]``, say -- where the
+    caller already has the values in the order they should be read.  ``None``
+    values are skipped, so an optional field costs nothing when it is absent.
+    """
+    lines = ["", f"[{section.strip('[]')}]"]
+    if step is not None:
+        lines += _indent([f"step: {int(step)}"])
+    lines += _indent([f"{key}: {value}" for key, value in fields.items()
+                      if value is not None])
+    lines.append(_BANNER)
     with open(path, "a", encoding="utf-8") as fh:
         for line in lines:
             fh.write(line + "\n")
@@ -799,7 +855,7 @@ def append_performance(path: str, stages=None, wall_time_s=None,
 def append_forces(path: str, symbols: Sequence[str], forces,
                   hellmann_feynman=None, pulay=None,
                   units: str = "eV/Angstrom", extra: dict | None = None,
-                  step: int | None = None) -> None:
+                  unprojected=None, step: int | None = None) -> None:
     """Append a ``[FORCES]`` block to an existing ``output.txt``.
 
     The energies of a geometry step are written by the driver's own logger,
@@ -822,6 +878,10 @@ def append_forces(path: str, symbols: Sequence[str], forces,
         Unit label of every vector in the block.
     extra : dict, optional
         Additional ``KEY: value`` lines (the force method, the residuals, ...).
+    unprojected : (N, 3) array_like, optional
+        The raw gradient, when ``forces`` has had its translational component
+        projected out.  Given, it is written as a second table and the block's
+        ``convention`` line states the relation between the two.
     step : int, optional
         Geometry step the block belongs to; defaults to the number of blocks
         already written to ``path`` (:func:`log_steps`), i.e. the step whose
@@ -831,7 +891,8 @@ def append_forces(path: str, symbols: Sequence[str], forces,
         step = log_steps(path) or None
     lines = _force_block_lines(symbols, forces,
                                hellmann_feynman=hellmann_feynman, pulay=pulay,
-                               units=units, extra=extra, step=step)
+                               units=units, extra=extra,
+                               unprojected=unprojected, step=step)
     with open(path, "a", encoding="utf-8") as fh:
         for line in lines:
             fh.write(line + "\n")
@@ -878,7 +939,7 @@ _PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs")
 
 #: Section markers of the protocol, mapped to the key they fill (the step
 #: markers are handled separately: they open a new geometry step).
-_SECTIONS = {"[ELECTRONS]": "electrons",
+_SECTIONS = {"[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
              "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
              "[GEOMETRY OPTIMIZATION SUMMARY]": "optimization",
@@ -952,8 +1013,8 @@ def parse_output(path: str) -> dict:
                 elif section == "performance":
                     table = None
                     step["performance"] = {"stages_s": {}}
-                elif section == "electrons":
-                    step["electrons"] = {}
+                elif section in ("electrons", "measurement"):
+                    step[section] = {}
                 elif section in ("optimization", "completion"):
                     # The relaxation's own blocks: they close the file, not a
                     # geometry step, so they are kept at the top level.
@@ -994,10 +1055,28 @@ def parse_output(path: str) -> dict:
                         block[key] = int(numeric)
                     else:
                         block[key] = numeric
-            elif section in ("system", "setup", "electrons") and ":" in stripped \
-                    and not stripped.startswith(("a1", "a2", "a3")):
+            elif section == "system" and stripped.startswith(("a1 =", "a2 =",
+                                                              "a3 =")):
+                # "a1 = [ x y z ]": the lattice vector itself, which the cell
+                # lengths and angles cannot recover (they lose the orientation).
+                name, _, vector = stripped.partition("=")
+                step["system"].setdefault("cell_vectors", []).append(
+                    [number(v) for v in vector.strip(" []").split()])
+            elif section == "system" and indent >= len(INDENT) * 2 \
+                    and ":" not in stripped:
+                # A geometry row, one level deeper than the `geometry:` key.
+                fields = stripped.split()
+                if len(fields) >= 4:
+                    step["system"].setdefault("geometry", []).append(
+                        [fields[0]] + [number(v) for v in fields[1:4]])
+            elif section in ("system", "setup", "electrons", "measurement") \
+                    and ":" in stripped:
                 key, _, value = stripped.partition(":")
-                step[section][key.strip()] = value.strip()
+                key, value = key.strip(), value.strip()
+                # `geometry:` and `cell_vectors:` open their own tables above;
+                # keeping the empty string would overwrite the parsed rows.
+                if not (key in ("geometry", "cell_vectors") and not value):
+                    step[section][key] = value
             elif section == "summary" and ":" in stripped:
                 key, _, value = stripped.partition(":")
                 step["summary"][key.strip()] = value.strip()
@@ -1070,6 +1149,10 @@ def parse_output(path: str) -> dict:
                     continue
                 if not fields[0].isdigit():
                     continue                       # an opt-in pool listing line
+                # `operator` is the last column and may contain spaces, so the
+                # row is split into exactly as many fields as there are columns
+                # -- an unbounded split truncated a label at its first space.
+                fields = stripped.split(None, len(columns) - 1)
                 record = dict(zip(columns, fields))
                 entry: dict[str, Any] = {
                     "index": int(record["iter"]),
@@ -1079,7 +1162,10 @@ def parse_output(path: str) -> dict:
                     "energy_unit": energy_unit,
                     "expressivity_E": record.get("expr", "-"),
                     "max_gradient": number(record.get("|grad|", "")),
-                    "num_parameters": record.get("iter", "-"),
+                    # Not serialized by the writer: reported as unknown rather
+                    # than inferred from the growth index, which they coincide
+                    # with for ADAPT but not by construction.
+                    "num_parameters": record.get("npar"),
                     "cnot_count": record.get("cnot", "-"),
                     "circuit_depth": record.get("depth", "-"),
                     "one_qubit_gates": record.get("1q", "-"),

@@ -198,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     basis.add_argument("--verbose-hamiltonian", metavar="PATH", nargs="?",
                        const=True, default=False,
                        help="write the qubit Hamiltonian as readable JSON "
-                            "(default hamiltonian.json).  The run trace only "
+                            "(default hamiltonian.inspect.json).  The run trace only "
                             "reports its term count")
     basis.add_argument("--verbose-operators", metavar="PATH", nargs="?",
                        const=True, default=False,

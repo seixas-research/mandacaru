@@ -51,7 +51,11 @@ def _adapt(hamiltonian, **options):
 class TestPathResolution:
     def test_true_selects_the_documented_names(self):
         assert resolve_dump_path(True, POOL_FILE) == "pool.json"
-        assert resolve_dump_path(True, HAMILTONIAN_FILE) == "hamiltonian.json"
+        # Not "hamiltonian.json": that is what `save_hamiltonian=True,
+        # hamiltonian_format="json"` writes, and the two documents have
+        # incompatible schemas -- writing both left the cache unloadable.
+        assert resolve_dump_path(True, HAMILTONIAN_FILE) \
+            == "hamiltonian.inspect.json"
 
     def test_false_and_none_write_nothing(self):
         assert resolve_dump_path(False, POOL_FILE) is None

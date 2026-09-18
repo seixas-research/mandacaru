@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import warnings
 from dataclasses import dataclass
 
@@ -393,12 +394,32 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
 
-    if format == "json":
-        _write_json(path, labels, reals, imags, key_value)
-    elif resolve_engine(engine) == "fastparquet":
-        _write_fastparquet(path, labels, reals, imags, key_value, compression)
-    else:
-        _write_pyarrow(path, labels, reals, imags, key_value, compression)
+    # Written through a temporary file in the same directory and then moved
+    # into place: a cache is a *snapshot*, and opening the destination directly
+    # means a crash, a serialization error or a full filesystem destroys the
+    # previous one and leaves a truncated file where a loadable one was.
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(parent, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        dir=parent, prefix=os.path.basename(path) + ".", suffix=".tmp",
+        delete=False)
+    handle.close()
+    staging = handle.name
+    try:
+        if format == "json":
+            _write_json(staging, labels, reals, imags, key_value)
+        elif resolve_engine(engine) == "fastparquet":
+            _write_fastparquet(staging, labels, reals, imags, key_value,
+                               compression)
+        else:
+            _write_pyarrow(staging, labels, reals, imags, key_value, compression)
+        os.replace(staging, path)
+    except BaseException:
+        try:
+            os.unlink(staging)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -518,7 +539,10 @@ def load_hamiltonian(path, engine: str = "auto",
     n_orbitals = json.loads(meta.get("carcara.n_spatial_orbitals", "null"))
 
     return HamiltonianRecord(
-        hamiltonian=PauliSum(terms),
+        # The width comes from the metadata, not from the labels: a zero
+        # operator (or one whose terms cancelled) has no labels to infer it
+        # from and would load as a 0-qubit register.
+        hamiltonian=PauliSum(terms, num_qubits=n_qubits),
         mapping=meta.get("carcara.mapping", "jordan_wigner"),
         num_particles=num_particles,
         n_spatial_orbitals=None if n_orbitals is None else int(n_orbitals),
@@ -534,8 +558,24 @@ def _read_json(path):
     if not isinstance(payload, dict):
         raise ValueError(f"{path!r} is not a Carcará qubit-Hamiltonian JSON file")
 
+    tag = str(payload.get("format", ""))
+    if tag and tag != FORMAT_TAG:
+        # A different Carcará JSON document -- most easily the *inspection* dump
+        # of `verbose_hamiltonian`, whose term records are objects rather than
+        # triples.  Saying so beats failing later with `KeyError: 0`.
+        raise ValueError(
+            f"{path!r} is a {tag!r} document, not a Carcará qubit-Hamiltonian "
+            f"cache ({FORMAT_TAG!r}); `verbose_hamiltonian` writes a "
+            f"human-readable dump that cannot be loaded back -- use the file "
+            f"written by `save_hamiltonian`.")
+    if "terms" in payload and payload["terms"] and not isinstance(
+            payload["terms"][0], (list, tuple)):
+        raise ValueError(
+            f"{path!r} stores its terms as records, not [pauli, real, imag] "
+            f"triples: this is an inspection dump, not a loadable cache.")
+
     meta = {
-        "carcara.format": str(payload.get("format", "")),
+        "carcara.format": tag,
         "carcara.version": str(payload.get("version", 0)),
         "carcara.num_qubits": str(payload.get("num_qubits", 0)),
         "carcara.mapping": str(payload.get("mapping", "jordan_wigner")),

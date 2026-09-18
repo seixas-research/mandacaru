@@ -368,6 +368,7 @@ class Carcara(Calculator):
             raise TypeError(f"trace must be True, False or None, got {trace!r}")
         self.trace = trace
         self.solver_kwargs = dict(solver_kwargs)
+        self._check_solver_options()
         self.measurement_provider = measurement_provider
         #: Energy, RDMs and expectation values of the last measured state.
         self.measurement = None
@@ -442,6 +443,48 @@ class Carcara(Calculator):
         """Fermion-to-qubit mapping of the last evaluation."""
         return self._require_solver().mapping
 
+    #: Options whose whole purpose is to write a file, mapped to the capability
+    #: a solver has to declare for them to do anything.
+    REPORTING_OPTIONS = {"output": "writes_output_log",
+                         "checkpoint": "supports_checkpoints",
+                         "resume": "supports_checkpoints"}
+
+    def _check_solver_options(self) -> None:
+        """Refuse options the selected method would accept and ignore.
+
+        Two ways an option can go nowhere.  It may not be a parameter of the
+        solver at all -- ASE's ``Calculator`` keeps unknown keywords as
+        *parameters*, so ``Carcara(method="vqe", output=...)`` used to compute an
+        energy, write no file, and (because a path had been given) print no trace
+        either: a run that reported nothing anywhere.  Or the solver may accept
+        it and not act on it, which is the subspace methods' ``run()`` and the
+        ``output`` / ``checkpoint`` / ``resume`` options it never reaches.
+        """
+        import inspect
+
+        accepted: set[str] = set()
+        for klass in self._solver_class.__mro__:
+            init = klass.__dict__.get("__init__")
+            if init is not None:
+                accepted |= set(inspect.signature(init).parameters)
+        unknown = sorted(set(self.solver_kwargs) - accepted)
+        if unknown:
+            raise TypeError(
+                f"method {self.method!r} ({self._solver_class.__name__}) does "
+                f"not take {', '.join(repr(name) for name in unknown)}; the "
+                f"option would be kept as an inert ASE parameter.  Accepted "
+                f"options are the solver's own constructor keywords.")
+        ignored = [name for name, capability in self.REPORTING_OPTIONS.items()
+                   if self.solver_kwargs.get(name) is not None
+                   and not getattr(self._solver_class, capability, False)]
+        if ignored:
+            raise NotImplementedError(
+                f"method {self.method!r} ({self._solver_class.__name__}) does "
+                f"not write {', '.join(repr(name) for name in ignored)}: its "
+                f"run() does not go through that machinery, so the option would "
+                f"be silently ignored.  Use method='adapt-vqe' for the "
+                f"structured log and checkpoints, or drop the option.")
+
     def _show_trace(self) -> bool:
         """Whether the solver prints its full trace to standard output.
 
@@ -454,7 +497,10 @@ class Carcara(Calculator):
         """
         if self.trace is not None:
             return self.trace
-        return self.solver_kwargs.get("output") is None
+        # Routed away from the terminal only when the detail really lands in a
+        # file: a solver that does not write one must not be silenced.
+        return not (self.solver_kwargs.get("output") is not None
+                    and getattr(self._solver_class, "writes_output_log", False))
 
     def _make_solver(self, grid):
         return self._solver_class(basis=self.basis, grid=grid, h=self.h,
@@ -583,6 +629,8 @@ class Carcara(Calculator):
 
         self.results["energy"] = energy_ev
         self.results["free_energy"] = energy_ev
+        if measured is not None:
+            self._log_measurement(solver, measured)
 
         if want_forces and solver.dry_run:
             # A dry run computes nothing to differentiate.
@@ -830,11 +878,50 @@ class Carcara(Calculator):
         for key in ("orbital_gradient", "translational_residual"):
             if details.get(key) is not None:
                 extra[key] = f"{float(details[key]):.6e}"
-        if details.get("translation_projected"):
+        projected = bool(details.get("translation_projected"))
+        if projected:
+            removed = np.asarray(details["translation_removed"], dtype=float)
             extra["translation_projected"] = True
+            extra["translation_removed"] = "[" + " ".join(
+                f"{value:+.8f}" for value in removed) + "]"
         append_forces(path, atoms.get_chemical_symbols(), result.forces,
                       hellmann_feynman=result.hellmann_feynman,
-                      pulay=result.pulay, extra=extra)
+                      pulay=result.pulay, extra=extra,
+                      unprojected=result.unprojected if projected else None)
+
+    def _log_measurement(self, solver, measured) -> None:
+        """Record the measured energy -- the one ASE returns -- in the log.
+
+        Without this the file's only energy is the variational one, which the
+        measurement *replaced*: on a mocked provider the summary read
+        -27.2113862460 eV while ``get_potential_energy()`` returned the measured
+        value, with nothing in the file to say which was which.  Both numbers are
+        meaningful, so the block names them both and says which one ASE reported.
+        """
+        path = getattr(solver, "output", None)
+        if path is None:
+            return
+        from ..backends.providers import qpu_usage
+        from ..utils.logging import append_block
+
+        provider = self.measurement_provider
+        stds = measured.get("stds") or {}
+        largest = max((abs(float(v)) for v in stds.values()), default=None)
+        result = getattr(solver, "result", None)
+        fields = {
+            "reported_by": "ASE get_potential_energy()",
+            "source": "measurement_provider",
+            "energy_eV": f"{measured['energy_eV']:.10f}",
+            "energy_hartree": f"{measured['energy_hartree']:.10f}",
+            # The optimization's own value, kept under its own name: the state
+            # was optimized on the local state vector, then measured.
+            "variational_energy_eV": None if result is None else
+                f"{solver._from_energy_units(result.optimal_energy, 'eV'):.10f}",
+            "pauli_expectations": len(measured.get("expectation_values") or {}),
+            "largest_std": None if largest is None else f"{largest:.6e}",
+        }
+        fields.update(qpu_usage(provider))
+        append_block(path, "MEASUREMENT", fields)
 
     # -- the relaxation as a whole ----------------------------------------- #
 
@@ -873,9 +960,25 @@ class Carcara(Calculator):
         atexit.register(self._write_summary_at_exit)
 
     def _write_summary_at_exit(self) -> None:
-        """The ``atexit`` body: never let a log spoil an otherwise clean exit."""
+        """The ``atexit`` body: close the log **without** claiming success.
+
+        Exit handlers also run after an unhandled exception, so reaching this
+        point says only that the process ended -- not that the relaxation
+        finished, and certainly not that it converged.  (Verified: raising after
+        two recorded steps exited 1 and still produced a footer reading
+        "finished after 2 geometry steps".)  The footer therefore states that
+        completion was never signaled and points at the call that would have
+        signaled it; ``write_optimization_summary`` is the only path that can say
+        *converged*, because only its caller has the optimizer's verdict.
+        """
         try:
-            self.write_optimization_summary()
+            steps = len(self.trajectory)
+            self.write_optimization_summary(status=(
+                f"completion not signaled: the process exited after {steps} "
+                f"geometry step(s), which does not establish that the "
+                f"optimization finished or converged (call "
+                f"write_optimization_summary(optimizer=...) to record the "
+                f"verdict)"))
         except Exception:
             # Interpreter shutdown, a deleted temporary directory, a read-only
             # file: the calculation itself finished long ago and must not be
@@ -887,7 +990,8 @@ class Carcara(Calculator):
         return self.solver_kwargs.get("output")
 
     def write_optimization_summary(self, atoms=None, fmax: float | None = None,
-                                   optimizer=None, force: bool = False) -> bool:
+                                   optimizer=None, force: bool = False,
+                                   status: str | None = None) -> bool:
         """Close the log with the relaxation's summary and completion blocks.
 
         Returns whether anything was written.  Nothing is written for a single
@@ -908,6 +1012,11 @@ class Carcara(Calculator):
             over is the only way the footer can know what "converged" meant.
         force : bool
             Write even for a single geometry.
+        status : str, optional
+            The footer verbatim -- for a workflow that knows the completion
+            reason (interrupted, cancelled, budget exhausted).  The
+            interpreter-exit hook uses it to say that completion was *not*
+            signaled, since reaching exit does not establish it.
 
         Notes
         -----
@@ -915,22 +1024,36 @@ class Carcara(Calculator):
         computed.  That is a relaxation in every practical case; a force-carrying
         *scan* would be reported the same way.
         """
-        if fmax is None and optimizer is not None:
-            fmax = getattr(optimizer, "fmax", None)
+        converged = None
+        if optimizer is not None:
+            if fmax is None:
+                fmax = getattr(optimizer, "fmax", None)
+            # The optimizer's own verdict, which accounts for constraints and
+            # cell filters; a bare force-threshold comparison does not.
+            try:
+                converged = bool(optimizer.converged())
+            except Exception:
+                converged = None
         from ..utils.logging import append_optimization_summary
 
         path = self._log_path()
         if path is None or self._summary_written:
             return False
-        if len(self.trajectory) < 2 and not force:
+        # An empty trajectory has nothing to summarize -- not even under
+        # `force`, which is about a *single* geometry, not about none.
+        if not self.trajectory or (len(self.trajectory) < 2 and not force):
             return False
         last = self.trajectory[-1]
         symbols = last["symbols"] if atoms is None else \
             list(atoms.get_chemical_symbols())
         positions = last["positions"] if atoms is None else atoms.get_positions()
-        self._summary_written = True
         append_optimization_summary(path, self.trajectory, symbols=symbols,
-                                    positions=positions, fmax=fmax)
+                                    positions=positions, fmax=fmax,
+                                    converged=converged, status=status)
+        # Only after the write: marking it first meant a failed write (a full
+        # disk, a vanished directory) suppressed the summary permanently, with
+        # every retry returning False.
+        self._summary_written = True
         return True
 
     def _log_performance(self, solver, stages, wall_time_s) -> None:

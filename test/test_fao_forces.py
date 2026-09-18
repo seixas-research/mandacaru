@@ -276,9 +276,15 @@ class TestTranslationProjectionPolicy:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             forces = atoms.get_forces()
-        # The sum over a cell's atoms is not the free-molecule identity.
-        assert "translation_projected" not in atoms.calc.force_result.details
-        assert net_force(forces) > 0.0
+        # The sum over a cell's atoms is not the free-molecule identity, so
+        # nothing is projected.  What is asserted is that the reported force is
+        # the raw gradient -- *not* that its sum is nonzero: a symmetric dimer
+        # cancels to exactly zero on the NumPy kernels, which made this test
+        # fail for a reason unrelated to the policy it checks.
+        result = atoms.calc.force_result
+        assert "translation_projected" not in result.details
+        assert "forces_unprojected" not in result.details
+        assert np.allclose(forces, result.unprojected, atol=0.0)
 
     def test_explicit_true_on_a_periodic_system_says_it_is_ignored(self):
         atoms = dimer("H2", 0.74, 8.0)

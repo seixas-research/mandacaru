@@ -1,3 +1,0 @@
-/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/carcara/src/carcara/integrals/csrc/cbuild/CMakeFiles/carcara_integrals.dir
-/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/carcara/src/carcara/integrals/csrc/cbuild/CMakeFiles/edit_cache.dir
-/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/carcara/src/carcara/integrals/csrc/cbuild/CMakeFiles/rebuild_cache.dir

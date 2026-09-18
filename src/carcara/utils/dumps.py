@@ -17,7 +17,7 @@ are written only when asked for, by the driver options
 ``verbose_operators=True``
     the operator pool, to ``pool.json``;
 ``verbose_hamiltonian=True``
-    the qubit Hamiltonian, to ``hamiltonian.json``.
+    the qubit Hamiltonian, to ``hamiltonian.inspect.json``.
 
 Either option also accepts a path, so a scan can give every geometry its own
 file (and keep them out of the repository root).
@@ -36,13 +36,23 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 
 from ..core.serialization import file_qubits_allowed
 from ..version import __version__
 
 #: Default file names of the two dumps.
 POOL_FILE = "pool.json"
-HAMILTONIAN_FILE = "hamiltonian.json"
+
+#: Default path of the *inspection* dump.  Deliberately not ``hamiltonian.json``:
+#: that is what ``save_hamiltonian=True, hamiltonian_format="json"`` writes, and
+#: the two documents have incompatible schemas -- writing both left the cache
+#: unloadable (``KeyError: 0``) because the inspection dump had overwritten it.
+HAMILTONIAN_FILE = "hamiltonian.inspect.json"
+
+#: Tag written into an inspection dump so a reader can tell it from a cache
+#: file before indexing its term records.
+INSPECTION_TAG = "carcara-hamiltonian-inspection"
 
 
 def resolve_dump_path(spec, default: str) -> str | None:
@@ -78,12 +88,30 @@ def _terms(pauli) -> list[dict]:
 
 
 def _write(path: str, payload: dict) -> str:
-    """Write ``payload`` as indented JSON, creating the parent directory."""
+    """Write ``payload`` as indented JSON, atomically.
+
+    A dump is a *snapshot*: opening the destination in write mode means a crash,
+    a serialization error or a full filesystem destroys the previous one and
+    leaves a truncated file in its place.  The payload is written to a temporary
+    file in the same directory and then moved onto the destination, which is
+    atomic on every platform Carcará supports -- the same thing checkpoints do.
+    """
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
-    with open(path, "w") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.write("\n")
+    handle = tempfile.NamedTemporaryFile(
+        "w", dir=parent, prefix=os.path.basename(path) + ".", suffix=".tmp",
+        delete=False)
+    try:
+        with handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.replace(handle.name, path)
+    except BaseException:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -139,6 +167,9 @@ def dump_hamiltonian(path: str, hamiltonian, *, n_qubits: int | None = None,
         return None
     terms = _terms(simplified)
     payload = {
+        # A reader can tell this document from the round-trippable cache file
+        # before it indexes `terms`, instead of failing on a missing key.
+        "format": INSPECTION_TAG,
         "carcara_version": __version__,
         "n_qubits": int(width),
         "num_terms": len(terms),

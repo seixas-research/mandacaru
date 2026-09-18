@@ -268,6 +268,13 @@ class SubspaceMixin:
 
     # -- shared outer loop ----------------------------------------------- #
 
+    # The subspace ``run()`` below replaces the common one and does not go
+    # through `_make_logger`, `_write_checkpoint` or `_load_resume`, so those
+    # options would be accepted and silently ignored.  `Carcara` refuses them
+    # rather than letting a run report nothing at all.
+    writes_output_log = False
+    supports_checkpoints = False
+
     def run(self, initial_parameters=None, **_ignored):
         """Optimize the shared unitary and return the ``num_states`` levels."""
         if self.dry_run:
@@ -519,8 +526,14 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
 
         metrics = self._profile(ansatz)
 
-        if not converged and len(selected) == max_iterations:
+        if not converged:
+            # The loop stopped on the operator budget (or ran none at all), so
+            # the reported gradient -- and the verdict drawn from it -- must
+            # describe the *final* state, exactly as ordinary ADAPT's run does.
+            # Otherwise a stationary start with a zero growth budget reports a
+            # gradient of 0.0 against a tolerance of 1e3 and `converged=False`.
             max_grad = _max_abs(self._weighted_gradients(evolved, weights))
+            converged = bool(max_grad < gradient_tol)
 
         extra = {"converged": converged, "final_max_gradient": max_grad,
                  "operators": selected, "metrics": metrics,

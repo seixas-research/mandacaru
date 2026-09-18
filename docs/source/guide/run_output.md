@@ -396,12 +396,12 @@ calc = Carcara(method="adapt-vqe",
                basis="FAO",
                h=0.25,
                verbose_operators=True,      # -> pool.json
-               verbose_hamiltonian=True)    # -> hamiltonian.json
+               verbose_hamiltonian=True)    # -> hamiltonian.inspect.json
 ```
 
 `pool.json` carries the pool's name and size and, for every operator, its
 label, kind, support and the Pauli expansion of its anti-Hermitian generator.
-`hamiltonian.json` carries the qubit Hamiltonian's Pauli terms with their
+`hamiltonian.inspect.json` carries the qubit Hamiltonian's Pauli terms with their
 complex coefficients **in Hartree** -- the operator's own unit, whatever units
 the driver reports energies in.
 

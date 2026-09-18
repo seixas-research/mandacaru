@@ -91,6 +91,11 @@ _BANNER_SHOWN = False
 class VariationalDriver(Calculator):
     """Base ASE calculator for the variational state-vector eigensolvers.
 
+    Two class attributes declare what a driver's ``run()`` actually does with the
+    reporting options, so :class:`~carcara.algorithms.calculator.Carcara` can
+    refuse an option that would otherwise be accepted and silently ignored:
+    :attr:`writes_output_log` and :attr:`supports_checkpoints`.
+
     Not used directly -- concrete drivers subclass it and implement
     :meth:`_configure` and :meth:`run`.  The constructor accepts the problem-setup
     surface shared by every driver; algorithm-specific arguments (ansatz, pool,
@@ -187,6 +192,12 @@ class VariationalDriver(Calculator):
     """
 
     implemented_properties = ["energy", "free_energy"]
+
+    #: Whether ``run()`` writes the structured ``output=`` log.
+    writes_output_log = False
+
+    #: Whether ``run()`` honors ``checkpoint=`` / ``resume=``.
+    supports_checkpoints = True
     _OPTIMIZERS = NAMED_OPTIMIZERS
 
     #: Default ``sparse`` policy (``False`` dense; ``"auto"`` for adaptive drivers).
@@ -277,6 +288,7 @@ class VariationalDriver(Calculator):
         self._pool_dump_path = resolve_dump_path(verbose_operators, POOL_FILE)
         self._hamiltonian_dump_path = resolve_dump_path(verbose_hamiltonian,
                                                         HAMILTONIAN_FILE)
+        self._check_output_paths()      # again from a subclass owning `output`
 
         # Circuit-construction / execution SDK.  Naming an Amazon Braket device
         # implies the braket provider, so `device="braket-sv1"` alone is enough.
@@ -619,6 +631,32 @@ class VariationalDriver(Calculator):
         self._loaded_record = record
         return (record.hamiltonian, record.num_particles,
                 record.n_spatial_orbitals)
+
+    def _check_output_paths(self) -> None:
+        """Refuse two outputs that resolve to the same file.
+
+        Every one of these writes a *different* document -- a cache meant to be
+        loaded back, a human-readable dump, a checkpoint, an appended log -- so
+        two of them sharing a path means one silently destroys the other.  The
+        collision that motivated this wrote an inspection dump over a
+        Hamiltonian cache, after which loading the cache failed.  Checked here,
+        before any work, rather than discovered afterwards.
+        """
+        named = {"save_hamiltonian": self._save_path,
+                 "verbose_operators": self._pool_dump_path,
+                 "verbose_hamiltonian": self._hamiltonian_dump_path,
+                 "checkpoint": getattr(self, "checkpoint_path", None),
+                 "output": getattr(self, "output", None)}
+        seen: dict[str, str] = {}
+        for option, path in named.items():
+            if path is None:
+                continue
+            key = os.path.abspath(os.fspath(path))
+            if key in seen:
+                raise ValueError(
+                    f"{option}= and {seen[key]}= both resolve to {key!r}, but "
+                    f"they write different documents; give them separate paths.")
+            seen[key] = option
 
     def _maybe_save_hamiltonian(self, num_particles=None,
                                 n_spatial_orbitals=None) -> str | None:

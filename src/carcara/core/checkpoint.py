@@ -152,6 +152,25 @@ def _pauli_from_payload(payload) -> PauliSum | None:
     return PauliSum(terms, num_qubits=n)
 
 
+def fingerprint(hamiltonian, atol: float = 1e-10) -> str | None:
+    """Canonical digest of a :class:`~carcara.core.mapping.PauliSum`.
+
+    ``None`` for ``None``, so a checkpoint written without its Hamiltonian
+    compares equal to nothing rather than to everything.
+    """
+    if hamiltonian is None:
+        return None
+    import hashlib
+
+    terms = hamiltonian.simplify(atol).terms
+    digits = max(0, int(round(-np.log10(atol))))
+    payload = ";".join(
+        f"{label}:{complex(coeff).real:.{digits}f}:{complex(coeff).imag:.{digits}f}"
+        for label, coeff in sorted(terms.items()))
+    payload = f"{getattr(hamiltonian, 'num_qubits', 0)}|{payload}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
 @dataclass
 class WavefunctionCheckpoint:
     """A variational wavefunction and where its optimization stood.
@@ -251,6 +270,19 @@ class WavefunctionCheckpoint:
         h = self.hamiltonian if hamiltonian is None else hamiltonian
         return (self.n_qubits, list(self.reference_qubits),
                 list(self.generators), self.parameters.copy(), h)
+
+    def hamiltonian_fingerprint(self, atol: float = 1e-10) -> str | None:
+        """A canonical digest of the stored Hamiltonian, or ``None`` without one.
+
+        Two checkpoints share a fingerprint exactly when they were written for
+        the same operator: the terms are simplified, sorted and rounded, so the
+        digest is independent of the order they were built in and of arithmetic
+        noise below ``atol``.  Resuming compares it with the run's own
+        Hamiltonian -- the register width and the mapping agreeing does not make
+        two problems the same problem (a changed geometry, charge or constant
+        shift keeps both).
+        """
+        return fingerprint(self.hamiltonian, atol)
 
     def state_vector(self) -> np.ndarray:
         """The prepared state, ``prod_k exp(theta_k A_k) |ref>``."""

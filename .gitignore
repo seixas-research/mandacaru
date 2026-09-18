@@ -189,3 +189,8 @@ test/.resource_report.txt
 # (python -m carcara.pseudopotentials.link_library).
 src/carcara/pseudopotentials/library/oncvpsp
 src/carcara/pseudopotentials/library/paw
+
+# CMake build trees for the C integral backend: generated, never loaded
+# (`_backend._find_library` searches csrc/ and csrc/build, not csrc/cbuild).
+src/carcara/integrals/csrc/cbuild/
+src/carcara/integrals/csrc/build/
