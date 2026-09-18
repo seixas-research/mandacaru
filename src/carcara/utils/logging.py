@@ -17,16 +17,23 @@ optimization live.  The file has three kinds of section:
   explicit unit-cell parameters;
 * an **optimization setup** block naming the classical optimizer and the
   reference (Hartree-Fock) energy the VQE starts from;
-* one **iteration** block per accepted ADAPT operator, listing the pool
-  operators as explicit Pauli strings, the screening gradient magnitude of each,
-  the operator selected to join the ansatz, and the parameterized circuit's
-  expressivity score :math:`E` (KL divergence from the Haar distribution).
+* one **iteration** block per accepted ADAPT operator, giving the pool's
+  *size*, the operator selected to join the ansatz (with its screening
+  gradient and Pauli expansion), the energy, the circuit metrics and the
+  parameterized circuit's expressivity score :math:`E` (KL divergence from the
+  Haar distribution).
 
-Above :data:`DETAILED_LOG_MAX_QUBITS` qubits the log stays small: the operator
-pool listing, the selected operator and the summary's operator sequence are
-omitted (they are Pauli-string expansions that grow with the register and, for
-the pool, with the fourth power of the number of orbitals); the energies,
-gradients and circuit metrics are still written.
+The pool's *contents* are not listed: a realistic pool grows with the fourth
+power of the number of orbitals, and repeating it every iteration is what used
+to make this file unreadable.  ``AdaptOutputLogger(..., log_pool=True)``
+restores the listing, but the supported route is the driver option
+``verbose_operators=True``, which writes the pool once as structured JSON (see
+:mod:`carcara.utils.dumps`).
+
+Above :data:`DETAILED_LOG_MAX_QUBITS` qubits the log stays smaller still: the
+selected operator's expansion and the summary's operator sequence are omitted
+too (they are Pauli-string expansions that grow with the register); the
+energies, gradients and circuit metrics are always written.
 
 The format uses ``KEY: value`` lines and fixed section banners so it can be
 parsed by simple line scanning (see :func:`parse_output` for a reference reader
@@ -77,16 +84,25 @@ class AdaptOutputLogger:
         Destination file (overwritten at construction; ``"output.txt"`` by
         convention).
     n_qubits : int, optional
-        Register width.  Above :data:`DETAILED_LOG_MAX_QUBITS` the operator pool
-        and the selected operator are left out of the log.
+        Register width.  Above :data:`DETAILED_LOG_MAX_QUBITS` the selected
+        operator's expansion is left out of the log.
+    log_pool : bool
+        List the whole operator pool in every iteration block (default
+        ``False``).  Off, the log records only the pool's size and the
+        operator that was selected; the driver option ``verbose_operators``
+        writes the pool once to ``pool.json``, which is easier to read and does
+        not grow with the iteration count.
     """
 
-    def __init__(self, path: str = "output.txt", n_qubits: int | None = None):
+    def __init__(self, path: str = "output.txt", n_qubits: int | None = None,
+                 log_pool: bool = False):
         self.path = path
         self.n_qubits = None if n_qubits is None else int(n_qubits)
-        #: Whether iteration blocks list the pool and the selected operator.
+        #: Whether iteration blocks expand the selected operator in Pauli strings.
         self.detailed = (self.n_qubits is None
                          or self.n_qubits <= DETAILED_LOG_MAX_QUBITS)
+        #: Whether iteration blocks also list the whole pool.
+        self.log_pool = bool(log_pool)
         # Truncate any previous run and keep the handle open for live appends.
         self._fh = open(path, "w", encoding="utf-8")
 
@@ -191,8 +207,12 @@ class AdaptOutputLogger:
                         metrics: Any = None) -> None:
         """Append one ADAPT iteration's tracked metrics, in order.
 
-        The **selected operator** is reported in its own block, clearly separate
-        from the full **operator pool** listing that follows it.
+        Only the **selected operator** and the pool's *size* are written: a
+        realistic pool is hundreds of generators long and listing it every
+        iteration buried the run.  ``log_pool=True`` restores the full listing;
+        the driver option ``verbose_operators=True`` writes it once, as
+        structured JSON, to ``pool.json`` (see :mod:`carcara.utils.dumps`),
+        which is the better way to read it.
 
         Parameters
         ----------
@@ -248,10 +268,10 @@ class AdaptOutputLogger:
                 self._emit(f"total_gates: {metrics.total_gates}",
                            f"one_qubit_gates: {metrics.num_1q_gates}")
 
-        # 3. Full operator pool with per-operator gradient magnitudes and Pauli
-        #    strings (a plain listing; the selected operator is reported above).
+        # 3. The pool's size.  Its contents follow only when explicitly asked
+        #    for; `verbose_operators=True` writes them to pool.json instead.
         self._emit(f"pool_size: {len(pool_operators)}")
-        if self.detailed:
+        if self.log_pool and self.detailed:
             self._emit("operator_pool:")
             for i, op in enumerate(pool_operators):
                 marker = " (selected)" if i == selected_index else ""

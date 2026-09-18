@@ -36,11 +36,21 @@ checkout or select the documentation version for your release.
 
 ## Numerical backend
 
-Carcará prefers its compiled C integral backend. It checks for the library when
-an integral engine is created and attempts to build it if necessary. A C compiler
-is required for that build; CMake is supported, with a compiler-based fallback.
-OpenMP enables parallel execution. If compilation fails under the default
-policy, Carcará reports a warning and uses the NumPy implementation.
+Carcará's integral kernels are written in C. Nothing has to be built by hand:
+the first integral engine of a session looks for the shared library, compiles it
+when it is missing or stale, and loads it. Only if that compile fails does
+Carcará warn and fall back to the NumPy reference kernels, which give the same
+numbers more slowly.
+
+To build it ahead of time — in a container image, in CI, or to read the error
+when the automatic build did not work — run the command:
+
+```bash
+carcara --build-backend
+```
+
+It prints the library path and the OpenMP thread count on success, and on
+failure prints the build log and exits with status 1. The same call from Python:
 
 ```python
 from carcara.integrals import check_backend, ensure_backend
@@ -49,27 +59,23 @@ print(check_backend())   # Inspect the backend without compiling it.
 print(ensure_backend())  # Build if necessary, then load the library.
 ```
 
-`CARCARA_BACKEND=auto` selects the default policy. Use `CARCARA_BACKEND=c` to
-require the compiled backend, or `CARCARA_BACKEND=numpy` to select NumPy.
+The build needs a C compiler; CMake is used when it is installed, with a direct
+compiler invocation as the fallback. OpenMP gives the parallel kernels — it is
+found automatically on Linux, and on macOS comes from `brew install libomp`.
 
-For an explicit CMake build on Linux:
+`CARCARA_BACKEND=auto` selects the default policy. Use `CARCARA_BACKEND=c` to
+require the compiled backend (it raises rather than falling back), or
+`CARCARA_BACKEND=numpy` to select NumPy.
+
+The shared library is written into `src/carcara/integrals/csrc/build` and
+detected automatically; set `CARCARA_INTEGRALS_LIB` to point at one built
+elsewhere. Inspect `src/carcara/integrals/csrc/build/build.log` when a build
+fails. The equivalent manual invocation is:
 
 ```bash
 cmake -S src/carcara/integrals/csrc -B src/carcara/integrals/csrc/build -DCMAKE_BUILD_TYPE=Release
 cmake --build src/carcara/integrals/csrc/build
 ```
-
-On macOS, install Homebrew's OpenMP library before configuring:
-
-```bash
-brew install libomp
-cmake -S src/carcara/integrals/csrc -B src/carcara/integrals/csrc/build -DCMAKE_BUILD_TYPE=Release -DOpenMP_ROOT="$(brew --prefix libomp)"
-cmake --build src/carcara/integrals/csrc/build
-```
-
-The shared library is written into the build directory and detected
-automatically. Inspect `src/carcara/integrals/csrc/build/build.log` when an
-automatic build fails.
 
 The FFT integral stage processes orbital pairs in blocks. Set
 `CARCARA_ERI_MEMORY_MB` to change its working memory budget (256 MB by default).

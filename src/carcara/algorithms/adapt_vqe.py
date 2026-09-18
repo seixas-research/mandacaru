@@ -186,6 +186,16 @@ def _max_abs(values) -> float:
     return float(np.max(np.abs(values))) if values.size else 0.0
 
 
+#: Random parameter samples per expressivity estimate (two states each).
+EXPRESSIVITY_SAMPLES = 400
+
+#: Widest *dense* register whose expressivity ``log_expressivity="auto"`` will
+#: compute.  Dense state preparation allocates the whole 2^n vector, so the
+#: estimate costs 78 s per iteration at 12 qubits; the sparse and sector
+#: backends work on a compressed state and are exempt.
+EXPRESSIVITY_DENSE_MAX_QUBITS = 10
+
+
 class ADAPTVQE(DeflationMixin, VariationalDriver):
     """Adaptive VQE on an exact state-vector backend; also an ASE calculator.
 
@@ -514,6 +524,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                                         self._pool_ops))
         self._maybe_save_hamiltonian(self.num_particles,
                                      self.pool.n_spatial_orbitals)
+        self._maybe_dump_hamiltonian(self.num_particles,
+                                     self.pool.n_spatial_orbitals)
+        self._maybe_dump_pool(self.pool, self._pool_ops)
 
         if self._sector is not None:
             self._pool_matrices = [self._sector.restrict(op.generator)
@@ -852,6 +865,27 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                    "pool_size": len(self._pool_ops)})
         return logger
 
+    def _expressivity_wanted(self, log_expressivity) -> bool:
+        """Whether to spend the samples on the expressivity score this run.
+
+        ``"auto"`` (the default) asks only where a state preparation is cheap:
+        the sparse and sector backends work on a compressed state at any width,
+        while the dense backend allocates the full ``2^n`` vector
+        ``2 * EXPRESSIVITY_SAMPLES`` times per iteration -- 78 s at 12 qubits
+        against 0.07 s sparse.  Without this guard every verbose run of a
+        realistic active space would pay that per grown operator.
+        """
+        if log_expressivity is True:
+            return True
+        if not log_expressivity:                     # False / None
+            return False
+        if str(log_expressivity).lower() != "auto":
+            raise ValueError("log_expressivity must be 'auto', True or False, "
+                             f"got {log_expressivity!r}")
+        if self._sector is not None or self._sparse:
+            return True
+        return self.n_qubits <= EXPRESSIVITY_DENSE_MAX_QUBITS
+
     def _expressivity(self, ansatz) -> float:
         """Expressivity score ``E`` of the current ansatz (KL from Haar).
 
@@ -865,7 +899,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # The sector lives on the spin-orbitals: a tapered register has two more.
         n_modes = self.n_qubits + (2 if self.two_qubit_reduction else 0)
         dim = active_space_dimension(n_modes, self.num_particles)
-        fidelities = sample_pqc_fidelities(ansatz, num_samples=400,
+        fidelities = sample_pqc_fidelities(ansatz,
+                                           num_samples=EXPRESSIVITY_SAMPLES,
                                            rng=self._expr_rng)
         return calculate_kl_divergence(fidelities, self.n_qubits, num_bins=75,
                                        dim=dim)
@@ -874,7 +909,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
     def run(self, initial_parameters=None, callback=None,
             geometry=None, cell=None,
-            log_expressivity: bool = True) -> ADAPTVQEResult:
+            log_expressivity="auto") -> ADAPTVQEResult:
         """Grow and optimize the ansatz until convergence.
 
         Everything that also lives on the constructor -- the stopping controls
@@ -903,9 +938,16 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         cell : (3, 3) array_like, optional
             Explicit unit-cell tensor for the metadata block (overrides any cell
             carried by an ``Atoms`` ``geometry``).
-        log_expressivity : bool
-            Compute and log the expressivity score each iteration when the
-            instance's ``output`` path is set (default ``True``).
+        log_expressivity : {"auto", True, False}
+            Compute the expressivity score each iteration, for the ``expr``
+            column of the trace and the ``output.txt`` log.  The default
+            ``"auto"`` computes it only where it is cheap -- on the sparse or
+            sector backend at any width, and on the dense backend up to
+            :data:`EXPRESSIVITY_DENSE_MAX_QUBITS` qubits -- because it is
+            ``2 * EXPRESSIVITY_SAMPLES`` state preparations per iteration, which
+            on a *dense* 12-qubit register is 78 s against 0.07 s on the sparse
+            one.  ``True`` computes it regardless, ``False`` never does (the
+            column and the log entry then read ``-`` / ``(not computed)``).
         """
         if self.dry_run:
             return self._dry_run_estimate()
@@ -920,6 +962,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         gradient_tol = self.gradient_tolerance
         output_file = self.output
         verbose = self.verbose
+        want_expressivity = self._expressivity_wanted(log_expressivity)
 
         # In calculator mode the wall clock is seeded in calculate() so it spans
         # the integration too; in direct mode it starts here.
@@ -1024,10 +1067,19 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 with timings.time("circuit profiling"):
                     metrics = self._profile(ansatz)
 
+                # Expressivity is a column of the trace as well as a logged
+                # quantity, so it is computed whenever either will show it --
+                # and, by default, only where it is cheap (_expressivity_wanted).
+                expr = None
+                if want_expressivity and (verbose or logger is not None):
+                    with timings.time("expressivity"):
+                        expr = self._expressivity(ansatz)
+                    final_expr = expr
+
                 if verbose:
                     self._print_iteration(len(iterations) + 1, op, max_grad,
                                           energy, energy - previous_energy,
-                                          metrics, e_unit)
+                                          metrics, e_unit, expressivity=expr)
                 iterations.append(AdaptIteration(
                     operator_label=op.label, operator_kind=op.kind,
                     max_gradient=max_grad,
@@ -1036,10 +1088,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     num_parameters=ansatz.num_parameters))
 
                 if logger is not None:
-                    with timings.time("expressivity"):
-                        expr = (self._expressivity(ansatz)
-                                if log_expressivity else None)
-                    final_expr = expr
                     logger.write_iteration(
                         iteration=len(iterations), pool_operators=self._pool_ops,
                         gradients=grads, selected_index=idx, expressivity=expr,
@@ -1200,8 +1248,17 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     # -- standard-output trace ------------------------------------------- #
 
     #: Column layout of the per-iteration table: (heading, width).
+    #:
+    #: One row per grown operator, one column per property computed at that
+    #: step: the screening gradient that drove the selection, the energy and
+    #: its change, the ansatz expressivity, the circuit cost (parameters,
+    #: CNOTs, single-qubit gates, depth) and the selected operator's kind and
+    #: label.  The *pool* is not printed -- its name and size are in the
+    #: header and its contents go to ``pool.json`` with
+    #: ``verbose_operators=True``.
     _ITERATION_COLUMNS = (("iter", 5), ("max|grad|", 12), ("energy", 18),
-                          ("dE", 11), ("npar", 5), ("cnot", 6), ("depth", 6),
+                          ("dE", 11), ("expr", 9), ("npar", 5), ("cnot", 6),
+                          ("1q", 6), ("depth", 6), ("type", 16),
                           ("operator", 1))
 
     def _extra_header_lines(self) -> list[str]:
@@ -1243,7 +1300,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                                  or getattr(self, "_sector", None) is not None)
         grad_label = ("analytic (sparse pool)" if screened_analytically
                       else self.gradient)
-        print(f"pool: {self.pool.__class__.__name__}  |  "
+        print(f"pool: {getattr(self.pool, 'name', '?')} "
+              f"({self.pool.__class__.__name__})  |  "
+              f"{len(self._pool_ops)} operators  |  "
               f"optimizer: {self.optimizer.method}  |  gradient: {grad_label}")
         print(f"k-points: {self._kpts_label()}  |  spin-polarized: {self.spin}  "
               f"|  initial state: {self.initial_state}")
@@ -1265,30 +1324,40 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
     def _print_iteration(self, iteration: int, op: PoolOperator,
                          max_grad: float, energy: float, delta: float,
-                         metrics: CircuitMetrics | None, e_unit: str) -> None:
+                         metrics: CircuitMetrics | None, e_unit: str,
+                         expressivity: float | None = None) -> None:
         """Print one iteration as a single, column-aligned line.
 
-        Columns: iteration index, the largest pool gradient that drove the
-        selection, the current energy and its change, the parameter count, the
-        compiled CNOT count and depth, and the selected operator's label.  The
-        operator's Pauli-string expansion is deliberately *not* printed -- it is
-        many lines per iteration and is available on ``result.operators`` and in
-        the structured ``output.txt`` log.
+        One column per property of the step: the largest pool gradient that
+        drove the selection, the energy and its change, the ansatz's
+        expressivity (KL divergence from Haar, ``-`` when not computed), the
+        parameter count, the compiled CNOT / single-qubit-gate counts and
+        depth, and the selected operator's kind and label.  Neither the pool
+        nor the operator's Pauli-string expansion is printed -- they are on
+        ``result.operators`` and, with ``verbose_operators=True``, in
+        ``pool.json``.
         """
-        cnots = "-" if metrics is None or metrics.cnot_count is None \
-            else str(metrics.cnot_count)
-        depth = "-" if metrics is None or metrics.depth is None \
-            else str(metrics.depth)
-        npar = "-" if metrics is None else str(metrics.num_operators)
+        def cell(value):
+            return "-" if value is None else str(value)
+
+        cnots = cell(None if metrics is None else metrics.cnot_count)
+        depth = cell(None if metrics is None else metrics.depth)
+        one_q = cell(None if metrics is None else metrics.num_1q_gates)
+        npar = cell(None if metrics is None else metrics.num_operators)
+        expr = ("-" if expressivity is None or not np.isfinite(expressivity)
+                else f"{expressivity:.3f}")
         widths = dict(self._ITERATION_COLUMNS)
         print("  ".join([
             f"{iteration:>{widths['iter']}d}",
             f"{max_grad:>{widths['max|grad|']}.4e}",
             f"{self._to_energy_units(energy):>{widths['energy']}.8f}",
             f"{self._to_energy_units(delta):>{widths['dE']}.2e}",
+            f"{expr:>{widths['expr']}}",
             f"{npar:>{widths['npar']}}",
             f"{cnots:>{widths['cnot']}}",
+            f"{one_q:>{widths['1q']}}",
             f"{depth:>{widths['depth']}}",
+            f"{op.kind:>{widths['type']}}",
             f"{op.label:<{widths['operator']}}",
         ]).rstrip())
 

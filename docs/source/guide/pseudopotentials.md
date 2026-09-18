@@ -767,36 +767,43 @@ remainder is basis-set incompleteness — a minimal valence s+p shell per atom �
 not the core, and it *shrinks* with grid refinement. A polarised multiple-zeta
 basis addresses it directly; see [Basis sets](basis_sets.md).
 
-```{warning}
-**Relaxation works where the energy surface binds, and H₂O does not bind.**
+```{note}
+**Relaxation works, and oxygen needs a finer grid than lithium.**
 LiH relaxes cleanly (`examples/28_LiH_relaxation_PAW.py`: five BFGS steps from
-2.0 Å to d = 1.6876 Å, final fmax 0.002 eV/Å) and so does H₂. Relaxing **H₂O**
-still destroys the molecule — both O–H bonds run out to ~2.4 Å — but the cause
-is the *energy*, not the gradient:
+2.0 Å to d = 1.6876 Å, final fmax 0.002 eV/Å), and so do H₂, OH, CH and H₂O.
+Water from a 90°, 1.0 Å start converges in **three BFGS steps** (h = 0.16 Å,
+PAW-SZ, 123 s) to d = 0.992 Å and an angle of 117.3°, against 0.9572 Å and
+104.52° in experiment: the bond length is good, and the 13° on the angle is
+the minimal valence s+p shell, not the gradient — a polarised basis is what
+addresses it (see [Basis sets](basis_sets.md)).
 
-* **The gradient is correct.** Against a central difference of the same energy
-  on the same frozen grid, the analytic force on a hydrogen of H₂O is
-  18.2258 vs 18.2267 eV/Å — five significant figures. (An earlier release had a
-  genuine factor-of-eight error here; it came from the differentiated-SCF path,
-  which is no longer the default. See `force_method` in
-  {class}`~carcara.algorithms.calculator.Carcara`.)
-* **The energy has no minimum to find.** Scanning both O–H bonds at h = 0.25 Å
-  gives −461.20, −468.82, −470.68, −472.37 eV at 0.97, 1.40, 2.00 and 2.40 Å:
-  monotonically downhill. BFGS is faithfully walking down a surface whose
-  dissociated limit is spuriously low, so it dissociates the molecule. A
-  minimal valence shell on oxygen sampled on a uniform grid is simply not an
-  adequate model of water; refining the grid to h = 0.15 Å (which silences the
-  projector-resolution warning) does not change the outcome.
-* **Egg-box.** Independently of the above, rigidly translating a molecule on a
-  frozen grid changes the energy — ~160 eV/Å for H₂O, 23 meV for LiH at
-  h = 0.20 Å. The net force reproduces that numerical derivative, i.e. the
-  gradient faithfully differentiates a discretised energy that is not itself
-  translation-invariant.
+* **Check that the energy binds before relaxing.** A symmetric O–H scan at
+  h = 0.16 Å gives −480.80, −481.92, −482.20, **−482.29**, −482.21, −481.63 eV
+  at 0.85, 0.92, 0.96, **1.00**, 1.05 and 1.15 Å — a clean minimum. (Earlier
+  releases did *not* bind water: the compensation charge was missing its
+  electron–ion attraction, and every bond to a p-valence atom came out
+  repulsive. If you are on an older version, scan before you relax.)
+* **Egg-box.** Rigidly translating a molecule on a frozen grid changes the
+  energy, so the forces of a free molecule do not sum to zero. The net force is
+  a faithful derivative of that non-invariant discretised energy, and it is the
+  honest measure of whether a force is good enough for geometry. For water it
+  falls as `|sum F| / max|F|` = 1.85, 0.86, 0.41, 0.099, 0.025 at
+  h = 0.30, 0.25, 0.20, 0.16, 0.13 Å. **Oxygen needs h ≤ 0.16 Å for geometry**,
+  finer than the h ≤ 0.25 Å that suffices for energies.
+* **`project_translation=True`** subtracts the mean force so the molecule
+  cannot drift. A free molecule's exact forces do sum to zero, so this enforces
+  a symmetry rather than hiding an error — but it removes only the
+  *translational* part of the egg-box, so it is not a substitute for a grid
+  fine enough to trust. The unprojected residual stays on
+  `force_result.details["translational_residual"]`.
 
-So: trust the forces as the derivative of the reported energy, and check that
-the energy binds your system before relaxing it. Carcará flags the two things
-that most often say it will not — an unresolved projector, and a state that is
-not stationary with respect to orbital rotations — as `RuntimeWarning`s.
+The gradient itself is checked against a central difference of the same energy
+on the same frozen grid: 1e-4 eV/Å on H₂, 3e-3 eV/Å on water (oxygen exercises
+the L = 1 and L = 2 compensation multipoles). Carcará flags the two things that
+most often say a force will not be usable — an unresolved projector, and a
+state that is not stationary with respect to orbital rotations — as
+`RuntimeWarning`s, and warns when the net force is a significant fraction of
+the largest force.
 ```
 
 ## Tests and their budget

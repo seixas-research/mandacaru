@@ -56,7 +56,9 @@ atoms.calc = Carcara(method="adapt-vqe",                   # "vqe", "subspace-vq
                      gradient_tolerance=1e-5,              # stop when every pool gradient is smaller
                      device="AER_simulator",               # or an IBM Quantum / Amazon Braket device
                      shots=0,                              # 0 = exact expectation values
-                     verbose=True)                         # iteration table and timings
+                     verbose=True,                         # iteration table and timings
+                     verbose_operators=False,              # True -> the pool to pool.json
+                     verbose_hamiltonian=False)            # True -> the Hamiltonian to hamiltonian.json
 
 forces = atoms.get_forces()                         # eV/Å, runs the simulation
 energy = atoms.get_potential_energy()               # eV, from the same run

@@ -236,6 +236,10 @@ class TestVerbosePauliOutput:
         assert "[iter 1]" not in out
         # The operator is still reachable programmatically.
         assert "ZIII" in adapt.hamiltonian.simplify().terms
+        # Nor is the pool listed: its name and size are all the trace carries.
+        assert f"pool: ceo (CEOPool)" in out
+        assert f"{len(adapt._pool_ops)} operators" in out
+        assert "operator_pool" not in out
 
     def test_iterations_are_single_aligned_lines(self, h2_hamiltonian, capsys):
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
@@ -244,9 +248,11 @@ class TestVerbosePauliOutput:
         result = adapt.run()
         out = capsys.readouterr().out
 
-        # A column heading precedes the per-iteration rows.
-        for column in ("iter", "max|grad|", "energy", "dE", "npar", "cnot",
-                       "depth", "operator"):
+        # A column heading precedes the per-iteration rows: one column per
+        # property computed at that step.
+        columns = ("iter", "max|grad|", "energy", "dE", "expr", "npar", "cnot",
+                   "1q", "depth", "type", "operator")
+        for column in columns:
             assert column in out
 
         lines = out.splitlines()
@@ -259,9 +265,11 @@ class TestVerbosePauliOutput:
         for index, row in enumerate(rows, start=1):
             fields = row.split()
             assert int(fields[0]) == index
-            assert len(fields) == len(("iter", "max|grad|", "energy", "dE",
-                                       "npar", "cnot", "depth", "operator"))
+            assert len(fields) == len(columns)
             assert fields[-1] in result.operators          # the operator label
+            assert fields[-2] == result.iterations[index - 1].operator_kind
+            assert float(fields[4]) >= 0.0                 # expressivity
+            assert int(fields[7]) > 0                      # single-qubit gates
         # The rows are column-aligned: the operator column starts at one offset.
         starts = {row.index(row.split()[-1]) for row in rows}
         assert len(starts) == 1

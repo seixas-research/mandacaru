@@ -76,11 +76,23 @@ TM = {"H2": {"rhf": -1.061096245397, "adapt": -1.075333384673},
       "LiH": {"rhf": -0.729555411706, "adapt": -0.740838985744}}
 ONCV = {"H2": {"rhf": -1.044179, "adapt": -1.058561},
         "LiH": {"rhf": -0.774343, "adapt": -0.782341}}
-#: PAW energies measured 2026-09-14 with the shipped library (H: rc 1.30,
-#: deficit 0.05, Delta 0.5; Li: rc 2.60, deficit 0.02, Delta 0.5).
-PAW = {"H2": {"rhf": -1.053292, "adapt": -1.067402},
-       "LiH": {"rhf": -0.760451, "adapt": -0.768954}}
+#: PAW energies with the shipped library (H: rc 1.30, deficit 0.05,
+#: Delta 0.5; Li: rc 2.60, deficit 0.02, Delta 0.5).  Re-measured 2026-09-17,
+#: when the compensation charge gained the electron-ion attraction it was
+#: missing (``one_body_augmentation``): it had been paying the Hartree
+#: repulsion of the augmentation charge with no attraction to the ion, so
+#: every PAW energy was too high by an amount that scales with that charge.
+#: The values before that fix are kept for provenance in
+#: ``before_compensation_attraction``.
+PAW = {"H2": {"rhf": -1.095396, "adapt": -1.109168},
+       "LiH": {"rhf": -0.773001, "adapt": -0.780800}}
+#: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
+PAW_BEFORE_COMPENSATION_ATTRACTION = {
+    "H2": {"rhf": -1.053292, "adapt": -1.067402},
+    "LiH": {"rhf": -0.760451, "adapt": -0.768954}}
 PIN_TOL = 2e-3
+#: sqrt(4 pi): the monopole moment is a Y_00 coefficient (see TestOverlap).
+SQRT_4PI = np.sqrt(4.0 * np.pi)
 #: Agreement asked of the three families: 0.1 Ha (2.7 eV).
 FAMILY_TOL = 0.1
 
@@ -572,11 +584,17 @@ class TestOverlap:
                     if pr.atom_index == atom]
             assert np.allclose(C[atom, cols].real, B[0], atol=1e-4)
             assert np.abs(C[atom, cols].imag).max() < 1e-12
+        # Moments and their Coulomb matrix are keyed by multipole channel
+        # (atom, L, M) since the expansion went beyond the monopole, and they
+        # are coefficients of Y_LM: the monopole carries 1/sqrt(4 pi) and the
+        # Coulomb matrix the compensating 4 pi, so every product is unchanged.
         moments = ints.compensation_moments()
+        assert ints.multipole_channels() == [(0, 0, 0), (1, 0, 0)]  # H: s only
         q11 = pp.overlap_correction[0][0, 0]
         for atom in (0, 1):
-            assert moments[atom][atom, atom].real == pytest.approx(q11, abs=1e-4)
-        assert np.allclose(sum(moments.values()),
+            assert moments[(atom, 0, 0)][atom, atom].real * SQRT_4PI \
+                == pytest.approx(q11, abs=1e-4)
+        assert np.allclose(sum(moments.values()) * SQRT_4PI,
                            C @ ints.nonlocal_overlap_matrix() @ C.conj().T)
         assert ints.constant_energy == pytest.approx(2 * pp.one_center_energy)
 
@@ -602,8 +620,11 @@ class TestOverlap:
                            - ints._potentials.nuclei[1][1])
         r_g = get_paw("H").compensation_radius
         assert r_g == pytest.approx(1.3, abs=1e-3)
-        assert U[0, 1] == pytest.approx(compensation_coulomb(r_g, r_g, d))
-        assert U[0, 0] == U[1, 1] > U[0, 1] > 1.0 / (2 * r_g)
+        # 4 pi against the old monopole-only form; see the moments above.
+        monopole = 4.0 * np.pi
+        assert U[0, 1] == pytest.approx(monopole
+                                        * compensation_coulomb(r_g, r_g, d))
+        assert U[0, 0] == U[1, 1] > U[0, 1] > monopole / (2 * r_g)
 
 
 # --------------------------------------------------------------------------- #

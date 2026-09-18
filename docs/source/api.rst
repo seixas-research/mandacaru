@@ -256,3 +256,8 @@ Utilities & Profiling
    :members:
    :undoc-members:
    :show-inheritance:
+
+.. automodule:: carcara.utils.dumps
+   :members:
+   :undoc-members:
+   :show-inheritance:

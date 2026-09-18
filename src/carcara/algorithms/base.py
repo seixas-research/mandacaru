@@ -46,6 +46,8 @@ from ..core.serialization import (DEFAULT_FORMAT, EXTENSION_FORMATS,
                                   load_hamiltonian, resolve_format,
                                   resolve_save_path, save_hamiltonian)
 from ..optimizers.optim import NAMED_OPTIMIZERS, OptimizeResult, resolve_optimizer
+from ..utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
+                           dump_pool, resolve_dump_path)
 from ..units import convert_energy, energy_unit_label, from_hartree
 from ._hamiltonian_from_atoms import monkhorst_pack_kpts, resolve_initial_state
 
@@ -98,6 +100,18 @@ class VariationalDriver(Calculator):
         been built (default ``False``).  ``True`` writes ``"hamiltonian"`` with
         the extension of ``hamiltonian_format``; a path writes there.  See
         :mod:`carcara.core.serialization`.
+    verbose_operators : bool or str
+        Write the **operator pool** -- every generator's label, kind, support
+        and Pauli expansion -- to ``pool.json`` (default ``False``).  A path
+        writes there instead.  The run trace only reports the pool's name and
+        size, because a realistic pool is hundreds of operators long; this is
+        where to read it.  See :mod:`carcara.utils.dumps`.
+    verbose_hamiltonian : bool or str
+        Write the **qubit Hamiltonian** as readable JSON (Pauli strings with
+        complex coefficients, in Hartree) to ``hamiltonian.json`` (default
+        ``False``); a path writes there instead.  This is for inspection --
+        ``save_hamiltonian=`` writes the round-trippable form that
+        ``load_hamiltonian=`` reads back.
     checkpoint : str, optional
         Path of a **wavefunction checkpoint** written during the run (see
         :mod:`carcara.core.checkpoint`): the reference determinant, the
@@ -182,6 +196,8 @@ class VariationalDriver(Calculator):
                  hamiltonian_builder=None, run_options: dict | None = None,
                  verbose: bool = True, sparse=None,
                  save_hamiltonian: bool | str = False,
+                 verbose_operators: bool | str = False,
+                 verbose_hamiltonian: bool | str = False,
                  load_hamiltonian: str | None = None,
                  hamiltonian_format: str = DEFAULT_FORMAT,
                  backend_provider: str | None = None,
@@ -251,6 +267,12 @@ class VariationalDriver(Calculator):
         self.hamiltonian_format = resolve_format(hamiltonian_format)
         self._save_path = resolve_save_path(save_hamiltonian,
                                             self.hamiltonian_format)
+        # Readable dumps of the two objects the trace only summarizes.
+        self.verbose_operators = verbose_operators
+        self.verbose_hamiltonian = verbose_hamiltonian
+        self._pool_dump_path = resolve_dump_path(verbose_operators, POOL_FILE)
+        self._hamiltonian_dump_path = resolve_dump_path(verbose_hamiltonian,
+                                                        HAMILTONIAN_FILE)
 
         # Circuit-construction / execution SDK.  Naming an Amazon Braket device
         # implies the braket provider, so `device="braket-sv1"` alone is enough.
@@ -621,6 +643,27 @@ class VariationalDriver(Calculator):
                       else dict(self.basis),
                       "frozen_core": self.frozen_core,
                       "n_qubits": int(self.n_qubits)})
+
+    def _maybe_dump_hamiltonian(self, num_particles=None,
+                                n_spatial_orbitals=None) -> str | None:
+        """Write ``hamiltonian.json`` when ``verbose_hamiltonian`` is set."""
+        if self._hamiltonian_dump_path is None:
+            return None
+        return dump_hamiltonian(
+            self._hamiltonian_dump_path, self.hamiltonian,
+            n_qubits=self.n_qubits, mapping=self.mapping,
+            num_particles=num_particles,
+            n_spatial_orbitals=n_spatial_orbitals,
+            two_qubit_reduction=self.two_qubit_reduction)
+
+    def _maybe_dump_pool(self, pool, operators) -> str | None:
+        """Write ``pool.json`` when ``verbose_operators`` is set."""
+        if self._pool_dump_path is None:
+            return None
+        return dump_pool(
+            self._pool_dump_path, pool, operators, n_qubits=self.n_qubits,
+            mapping=self.mapping, num_particles=self.num_particles,
+            two_qubit_reduction=self.two_qubit_reduction)
 
     # -- wavefunction checkpoints ---------------------------------------- #
 

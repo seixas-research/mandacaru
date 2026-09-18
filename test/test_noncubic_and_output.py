@@ -236,25 +236,47 @@ class TestAdaptOutputProtocol:
             assert it["selected_operator"]                 # 3. selected operator
             assert "expressivity_E" in it                  # 4. expressivity E
             assert it["energy_unit"] == "eV"               # 1. eV default
-            assert len(it["pool"]) >= 1                     # 1. pool Pauli strings
-            for pauli in it["pool"]:                        # Pauli-string format
-                assert any(P in pauli for P in "XYZ") or pauli == "0"
+            # The pool is summarized by size; its contents go to pool.json.
+            assert it["pool"] == []
+        assert "pool_size:" in open(out, encoding="utf-8").read()
 
-    def test_selected_operator_reported_separately_from_pool(self, h2_hamiltonian,
-                                                             tmp_path):
-        # Requirement 3: the selected operator is a distinct block, and the pool
-        # is a separate listing.
+    def test_only_the_selected_operator_and_the_pool_size_are_logged(
+            self, h2_hamiltonian, tmp_path):
+        # Requirement 3, as revised 2026-09-17: the log names the operator that
+        # was selected and how large the pool is, and does not list the pool --
+        # `verbose_operators=True` writes that to pool.json instead.
         out = str(tmp_path / "output.txt")
-        _h2_adapt(h2_hamiltonian, max_iterations=4, gradient_tolerance=1e-4,
-                  output=out).run()
+        adapt = _h2_adapt(h2_hamiltonian, max_iterations=4,
+                          gradient_tolerance=1e-4, output=out)
+        adapt.run()
         text = open(out, encoding="utf-8").read()
-        assert "selected_operator:" in text
-        assert "operator_pool:" in text
-        # The selected-operator block precedes the pool listing in every block.
         block = text.split("[ITERATION 1]", 1)[1]
-        assert block.index("selected_operator:") < block.index("operator_pool:")
-        assert "(selected)" in block                       # cross-ref marker
-        assert "|grad|=" in block                          # 2. gradient magnitudes
+        assert "selected_operator:" in block
+        assert f"pool_size: {len(adapt._pool_ops)}" in block
+        assert "operator_pool:" not in text
+        assert "(selected)" not in text
+        assert "  gradient: " in block                     # 2. gradient magnitude
+
+    def test_verbose_operators_writes_the_pool_file(self, h2_hamiltonian,
+                                                    tmp_path):
+        """The pool leaves the log for a JSON file, written once."""
+        import json
+
+        pool_file = tmp_path / "pool.json"
+        adapt = _h2_adapt(h2_hamiltonian, max_iterations=2,
+                          gradient_tolerance=1e-4,
+                          verbose_operators=str(pool_file))
+        adapt.run()
+        payload = json.loads(pool_file.read_text())
+        assert payload["pool"] == adapt.pool.name
+        assert payload["pool_size"] == len(adapt._pool_ops) == \
+            len(payload["operators"])
+        assert payload["n_qubits"] == adapt.n_qubits
+        first = payload["operators"][0]
+        assert first["label"] == adapt._pool_ops[0].label
+        assert first["kind"] == adapt._pool_ops[0].kind
+        assert first["generator"] and all(
+            set(term["pauli"]) <= set("IXYZ") for term in first["generator"])
 
     def test_summary_reports_final_parameterization(self, h2_hamiltonian, tmp_path):
         # Requirement 5: richer summary (expressivity, gates, CNOTs, depth, ...).

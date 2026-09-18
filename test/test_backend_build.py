@@ -18,18 +18,23 @@ integration.
   fallback;
 * ``CARCARA_BACKEND=numpy`` forces the reference kernels without building;
 * :func:`build_backend` really compiles the library for this machine when a
-  tool chain exists (CMake, or the bare compiler when CMake is hidden).
+  tool chain exists (CMake, or the bare compiler when CMake is hidden), and a
+  build into the default directory is loaded on the spot;
+* ``carcara --build-backend`` compiles on demand from the shell and reports
+  what happened, exiting non-zero when only the NumPy kernels are left.
 """
 
 import shutil
 import subprocess
 import sys
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from carcara.basis import FullAtomicOrbital
+from carcara.cli import main
 from carcara.integrals import (BackendStatus, Grid, IntegralEngine, _backend,
                                build_backend, check_backend, ensure_backend)
 
@@ -195,3 +200,105 @@ class TestRealBuild:
         monkeypatch.delenv("CC", raising=False)
         assert build_backend(tmp_path) is None
         assert "no tool chain" in (tmp_path / "build.log").read_text()
+
+
+class TestBuildLoadsWhatItBuilt:
+    """A build into the default directory leaves the C backend *in use*.
+
+    ``build_backend()`` used to compile and return a path without loading it,
+    so ``build_backend(); check_backend()`` reported "not built" -- which read
+    as a failed build in CI scripts and in the shell.
+    """
+
+    def _staged(self, monkeypatch, target, real_path, *, default=None):
+        """A fake tool chain whose 'build' drops the real library in ``target``.
+
+        ``default`` is what the loader treats as its own build directory.
+        """
+        target.mkdir(parents=True, exist_ok=True)
+        library = target / Path(real_path).name
+        shutil.copy(real_path, library)
+        monkeypatch.setattr(_backend, "_BUILD_DIR",
+                            target if default is None else default)
+        monkeypatch.setattr(_backend, "_compile_attempts",
+                            lambda system, build_dir: [[[sys.executable, "-c", ""]]])
+        _backend._LIB = None
+        _backend.HAS_C_BACKEND = False
+        return library
+
+    def test_default_directory_build_is_loaded(self, backend_state, tmp_path,
+                                               monkeypatch):
+        real = check_backend()
+        if not real.available:
+            pytest.skip("needs a compiled library to stand in for the build")
+        library = self._staged(monkeypatch, tmp_path, real.path)
+        monkeypatch.setattr(_backend, "_find_library", lambda: real.path)
+
+        assert build_backend() == library
+        assert _backend.HAS_C_BACKEND is True
+        assert check_backend().available is True
+
+    def test_other_directory_build_leaves_the_globals_alone(self, backend_state,
+                                                            tmp_path,
+                                                            monkeypatch):
+        real = check_backend()
+        if not real.available:
+            pytest.skip("needs a compiled library to stand in for the build")
+        elsewhere = tmp_path / "elsewhere"
+        self._staged(monkeypatch, elsewhere, real.path,
+                     default=tmp_path / "default")
+        monkeypatch.setattr(_backend, "_find_library",
+                            lambda: pytest.fail("must not search"))
+
+        assert build_backend(elsewhere) is not None
+        assert _backend.HAS_C_BACKEND is False
+
+
+class TestBuildCommand:
+    """``carcara --build-backend``."""
+
+    def test_reports_the_loaded_library_and_succeeds(self, backend_state,
+                                                     capsys):
+        if not check_backend().available:
+            pytest.skip("no C backend on this machine")
+        assert main(["--build-backend"]) == 0
+        out = capsys.readouterr().out
+        assert "C integral backend" in out
+        assert "OpenMP thread" in out
+
+    def test_needs_no_geometry(self, backend_state, monkeypatch):
+        monkeypatch.setattr(_backend, "ensure_backend",
+                            lambda **k: BackendStatus(True, "/lib.so", 4, True,
+                                                      "compiled"))
+        assert main(["--build-backend"]) == 0     # would otherwise demand one
+
+    def test_failed_build_prints_the_log_and_exits_nonzero(self, backend_state,
+                                                           tmp_path,
+                                                           monkeypatch,
+                                                           capsys):
+        log = tmp_path / "build.log"
+        log.write_text("# carcara C backend build\ncc: command not found\n")
+        monkeypatch.setattr(_backend, "_BUILD_DIR", tmp_path)
+        monkeypatch.setattr(_backend, "build_backend", lambda *a, **k: None)
+        monkeypatch.setattr(_backend, "_find_library", lambda: None)
+        _backend._LIB = None
+        _backend.HAS_C_BACKEND = False
+
+        assert main(["--build-backend"]) == 1
+        out = capsys.readouterr().out
+        assert "unavailable" in out
+        assert "cc: command not found" in out
+        assert "NumPy reference kernels" in out
+
+    def test_retries_after_an_earlier_failure(self, backend_state, monkeypatch):
+        """The per-process guard must not refuse an explicit request."""
+        _backend._LIB = None
+        _backend.HAS_C_BACKEND = False
+        _backend._build_attempted = True          # a calculation already tried
+        monkeypatch.setattr(_backend, "_find_library", lambda: None)
+        calls = []
+        monkeypatch.setattr(_backend, "build_backend",
+                            lambda *a, **k: calls.append(1))
+
+        assert main(["--build-backend"]) == 1
+        assert calls == [1]

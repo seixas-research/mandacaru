@@ -255,6 +255,9 @@ class VQE(DeflationMixin, VariationalDriver):
         self._maybe_save_hamiltonian(
             getattr(ansatz, "num_particles", num_particles),
             getattr(ansatz, "n_spatial_orbitals", n_orbitals))
+        self._maybe_dump_hamiltonian(
+            getattr(ansatz, "num_particles", num_particles),
+            getattr(ansatz, "n_spatial_orbitals", n_orbitals))
         self._configured = True
 
     def _default_ansatz(self, n_spatial_orbitals, num_particles):

@@ -508,8 +508,15 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 if paw:
                     dW = {}
                     for channel in channels:
-                        cross_w = ((dpsi.conj() * v_comp[channel]) @ psi.T) * dV
-                        dW[channel] = cross_w + cross_w.conj().T
+                        # W_qs = int conj(phi_q) v_LM phi_s is Hermitian only
+                        # where the weight is real, i.e. M = 0.  The complex
+                        # Y_LM channels are not, so both halves of the product
+                        # rule are written out -- `cross + cross^H` would put
+                        # conj(v) in the second one and silently symmetrize an
+                        # operator that is not symmetric.
+                        v = v_comp[channel]
+                        dW[channel] = (((dpsi.conj() * v) @ psi.T)
+                                       + ((psi.conj() * v) @ dpsi.T)) * dV
                     dQ = moment_derivatives(dC)
                     dg = dg + augmentation_derivative(dQ, dW, None)
                     # The compensation shapes do not move with the basis, so

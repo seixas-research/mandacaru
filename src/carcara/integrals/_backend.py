@@ -343,6 +343,13 @@ def build_backend(build_dir: str | os.PathLike | None = None, *,
     ``csrc/build``, where the loader looks).  A full log is written to
     ``<build_dir>/build.log``.
 
+    A library built into the default directory is **loaded on the spot**, so
+    ``build_backend()`` leaves :func:`check_backend` reporting the C backend
+    rather than "not built" -- the trap this used to set for callers (and for
+    CI scripts) that built and then asked.  A build into some other directory
+    only returns the path; nothing is loaded, because that is not where the
+    loader looks.
+
     Returns
     -------
     Path or None
@@ -379,6 +386,8 @@ def build_backend(build_dir: str | os.PathLike | None = None, *,
                  "libcarcara_integrals.so", "libcarcara_integrals.dylib"):
         candidate = build_dir / name
         if candidate.is_file():
+            if build_dir == _BUILD_DIR and not HAS_C_BACKEND:
+                _reload()
             return candidate
     return None
 
@@ -450,9 +459,8 @@ def warn_fallback(status: BackendStatus) -> None:
     warnings.warn(
         "the real-space integrals are running on the NumPy reference kernels: "
         + status.message + ".  They are slower and use more memory than the "
-        "C backend; build it with `carcara.integrals.build_backend()` or "
-        "`cmake -S src/carcara/integrals/csrc -B src/carcara/integrals/csrc/build"
-        " && cmake --build src/carcara/integrals/csrc/build`.",
+        "C backend.  Run `carcara --build-backend` to compile it and see "
+        "exactly which tool chain is missing.",
         RuntimeWarning, stacklevel=3)
 
 

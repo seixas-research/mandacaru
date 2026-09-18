@@ -132,6 +132,12 @@ PSEUDO_GRADIENT_FAMILIES = ("paw", "oncvpsp")
 #: Largest orbital-rotation residual (Hartree) the RDM gradient accepts quietly.
 ORBITAL_RESPONSE_TOLERANCE = 1e-3
 
+#: Remove the spurious net force before reporting it (see
+#: :meth:`Carcara._project_translation`).  Off by default: it changes reported
+#: forces, and a large residual is a signal about the grid that should be seen
+#: rather than silently absorbed.
+DEFAULT_PROJECT_TRANSLATION = False
+
 #: A free-standing molecule feels no net force: translation is a symmetry of
 #: the exact energy, so ``sum_A F_A`` is zero and whatever comes out instead is
 #: pure discretization artifact (the grid "egg-box").  The check is free -- the
@@ -185,6 +191,15 @@ class Carcara(Calculator):
         it to ``False`` gives the bare Hellmann-Feynman force; for an atom-centered
         basis that is **not** the gradient of the energy and will not relax to the
         right geometry -- it is exposed for analysis, not for production.
+    project_translation : bool
+        Subtract the mean force from every atom before reporting, so the
+        forces sum to zero (default ``False``; non-periodic systems only).
+        A free molecule's exact forces *do* sum to zero, so this enforces a
+        symmetry rather than hiding an error -- but it removes only the
+        translational part of the grid's egg-box, so it stops a relaxation
+        drifting across the grid without making a coarse grid trustworthy.
+        The unprojected residual is always on
+        ``force_result.details["translational_residual"]``.
     force_method : {"rdm", "scf-response"}
         How the nuclear gradient is taken.  ``"rdm"`` (default) differentiates
         the energy expression the solver actually reported, holding the reduced
@@ -229,6 +244,7 @@ class Carcara(Calculator):
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="FAO",
                  h: float = 0.20, grid=None,
                  include_pulay: bool = True, force_method: str = "rdm",
+                 project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
                  scf_iterations: int = 40, verbose: bool = True,
                  measurement_provider=None,
@@ -238,6 +254,7 @@ class Carcara(Calculator):
         self.basis = basis
         self.h = float(h)
         self.include_pulay = bool(include_pulay)
+        self.project_translation = bool(project_translation)
         if str(force_method) not in ("rdm", "scf-response"):
             raise ValueError(f"force_method must be 'rdm' or 'scf-response', "
                              f"got {force_method!r}")
@@ -613,6 +630,8 @@ class Carcara(Calculator):
                     f"gradient_tolerance) for trustworthy forces.",
                     RuntimeWarning, stacklevel=3)
             self._check_translational_invariance(result)
+            if self.project_translation:
+                self._project_translation(result)
             return result
 
         legacy = nuclear_gradient(
@@ -624,7 +643,34 @@ class Carcara(Calculator):
             include_pulay=self.include_pulay,
             hellmann_feynman=self.hellmann_feynman)
         self._check_translational_invariance(legacy)
+        if self.project_translation:
+            self._project_translation(legacy)
         return legacy
+
+    def _project_translation(self, result):
+        """Subtract the mean force, so the molecule cannot drift.
+
+        The exact energy of a free molecule is translation invariant, so
+        ``sum_A F_A = 0`` is an identity, not an approximation.  Removing the
+        mean therefore *enforces* a symmetry the discretized energy broke; it
+        is the translational component of the grid's egg-box error and nothing
+        else.  What it does not do is fix the rest of the egg-box: the force
+        differences that bend and stretch the molecule keep whatever error the
+        spacing gives them, so this is a way to stop a relaxation walking off
+        across the grid, not a substitute for a grid fine enough to trust.
+
+        Only for a non-periodic system: under periodic boundary conditions the
+        net force on the cell contents is not a free-molecule identity.
+        """
+        forces = np.asarray(result.forces, dtype=float)
+        periodic = self.atoms is not None and bool(np.any(self.atoms.pbc))
+        if forces.shape[0] < 2 or periodic:
+            return result
+        mean = forces.mean(axis=0)
+        result.forces = forces - mean
+        result.details["translation_projected"] = True
+        result.details["translation_removed"] = mean.copy()
+        return result
 
     @staticmethod
     def _check_translational_invariance(result) -> float:

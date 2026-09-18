@@ -94,10 +94,16 @@ def build_parser() -> argparse.ArgumentParser:
                "  carcara H2O --cell 8 --basis NAO --basis-option size=DZP --dry-run\n"
                "  carcara H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run\n"
                "  carcara --load-hamiltonian lih.parquet --dry-run --json\n"
-               "  carcara LiH --cell 10 --method adapt-vqe --pool qeb --h 0.3\n",
+               "  carcara LiH --cell 10 --method adapt-vqe --pool qeb --h 0.3\n"
+               "  carcara --build-backend\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version",
                         version=f"carcara {__version__}")
+    parser.add_argument("--build-backend", action="store_true",
+                        help="compile the C integral backend (or report why it "
+                             "cannot be), then exit.  Carcará does this by "
+                             "itself on first use; run it here to pre-build, "
+                             "e.g. in a container or CI, or to see the error.")
 
     parser.add_argument("geometry", nargs="?", default=None,
                         help="geometry file readable by ASE (xyz, cif, ...) or "
@@ -175,6 +181,16 @@ def build_parser() -> argparse.ArgumentParser:
                             "no geometry needed")
     basis.add_argument("--save-hamiltonian", metavar="PATH", default=None,
                        help="write the qubit Hamiltonian after building it")
+    basis.add_argument("--verbose-hamiltonian", metavar="PATH", nargs="?",
+                       const=True, default=False,
+                       help="write the qubit Hamiltonian as readable JSON "
+                            "(default hamiltonian.json).  The run trace only "
+                            "reports its term count")
+    basis.add_argument("--verbose-operators", metavar="PATH", nargs="?",
+                       const=True, default=False,
+                       help="write the ADAPT operator pool as JSON (default "
+                            "pool.json).  The run trace only reports the "
+                            "pool's name and size")
 
     solver = parser.add_argument_group("solver")
     solver.add_argument("--pool", default="fermionic",
@@ -270,6 +286,8 @@ def solver_options(args) -> dict:
                    device=args.device, shots=args.shots,
                    load_hamiltonian=args.load_hamiltonian,
                    save_hamiltonian=args.save_hamiltonian or False,
+                   verbose_hamiltonian=args.verbose_hamiltonian,
+                   verbose_operators=args.verbose_operators,
                    dry_run=args.dry_run)
     _name, cls = resolve_method(args.method)
     adaptive = hasattr(cls, "_select_operator")
@@ -323,10 +341,57 @@ def run_full(calc, atoms, args) -> int:
     return 0
 
 
+def build_backend_command() -> int:
+    """``carcara --build-backend``: compile the C integral backend.
+
+    The same call the engine makes on its own before the first integration, run
+    explicitly and reported in full.  Returns 0 when the C backend is usable
+    afterwards and 1 when the NumPy kernels are all that is available -- so it
+    doubles as a build check in a container or CI.
+    """
+    from .integrals import _backend
+
+    # An explicit request always really tries: the one-attempt-per-process
+    # guard exists so a routine calculation does not re-run a doomed compile
+    # for every engine it creates, not to refuse the user who asked for it.
+    # The CARCARA_BACKEND policy is about which kernels a *calculation* runs
+    # on, so it is set aside here -- asking to build is asking to build, and
+    # `c` would otherwise raise instead of reporting the failure.
+    _backend._build_attempted = False
+    policy = os.environ.get("CARCARA_BACKEND", "auto").strip().lower() or "auto"
+    os.environ["CARCARA_BACKEND"] = "auto"
+    try:
+        status = _backend.ensure_backend(build=True, verbose=True)
+    finally:
+        os.environ["CARCARA_BACKEND"] = policy
+    if status.available:
+        where = status.path or "(already loaded)"
+        built = "compiled" if status.compiled else "already built"
+        threads = (f", {status.n_threads} OpenMP thread(s)"
+                   if status.n_threads else "")
+        print(f"C integral backend: {built}{threads}\n  {where}")
+        if policy == "numpy":
+            print("\nCARCARA_BACKEND=numpy is set, so calculations in this "
+                  "environment will still use the NumPy reference kernels.")
+        return 0
+
+    log = _backend._BUILD_DIR / "build.log"
+    print(f"C integral backend unavailable: {status.message}")
+    if log.is_file():
+        print(f"\n--- {log} ---")
+        print(log.read_text().strip()[-2000:])
+    print("\nCarcará will run on the NumPy reference kernels, which give the "
+          "same numbers more slowly.  A C compiler (and ideally CMake) on PATH "
+          "is all that is needed; on macOS `brew install libomp` adds OpenMP.")
+    return 1
+
+
 def main(argv=None) -> int:
     """``carcara`` entry point; returns the process exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.build_backend:
+        return build_backend_command()
     if args.geometry is None and args.load_hamiltonian is None:
         parser.error("a geometry (file or molecule name) is required unless "
                      "--load-hamiltonian is given")

@@ -37,12 +37,17 @@ def test_driver_skips_the_hamiltonian_file_and_keeps_running(tmp_path):
     assert not cache.exists()
 
 
+def _pool(n_qubits, count=3):
+    return [SimpleNamespace(label=f"op{i}", kind="double",
+                            generator=PauliSum({"X" * n_qubits: 0.5j}))
+            for i in range(count)]
+
+
 @pytest.mark.parametrize("n_qubits", [DETAILED_LOG_MAX_QUBITS,
                                       DETAILED_LOG_MAX_QUBITS + 1, 60])
-def test_output_log_omits_the_pool_above_twenty_qubits(tmp_path, n_qubits):
-    pool = [SimpleNamespace(label=f"op{i}", kind="double",
-                            generator=PauliSum({"X" * n_qubits: 0.5j}))
-            for i in range(3)]
+def test_output_log_omits_the_selected_operator_above_twenty_qubits(tmp_path,
+                                                                    n_qubits):
+    pool = _pool(n_qubits)
     path = tmp_path / "output.txt"
     with AdaptOutputLogger(str(path), n_qubits=n_qubits) as log:
         log.write_metadata()
@@ -51,11 +56,23 @@ def test_output_log_omits_the_pool_above_twenty_qubits(tmp_path, n_qubits):
     text = path.read_text()
     iteration = parse_output(str(path))["iterations"][0]
     detailed = n_qubits <= DETAILED_LOG_MAX_QUBITS
-    assert ("operator_pool:" in text) == detailed
     assert ("selected_operator:" in text) == detailed
     assert ("operator_sequence:" in text) == detailed
     assert ("X" * n_qubits in text) == detailed
+    # The pool itself is never listed, at any width: only its size.
+    assert "operator_pool:" not in text
     assert iteration["energy"] == -1.0 and "pool_size: 3" in text
     if not detailed:
         assert iteration["max_gradient"] == pytest.approx(0.3)
         assert "operator_details: omitted" in text
+
+
+def test_log_pool_restores_the_listing(tmp_path):
+    """``log_pool=True`` is the opt-in for the old per-iteration listing."""
+    path = tmp_path / "output.txt"
+    with AdaptOutputLogger(str(path), n_qubits=4, log_pool=True) as log:
+        log.write_metadata()
+        log.write_iteration(1, _pool(4), [0.1, 0.3, 0.2], 1, None, -1.0, 1)
+    text = path.read_text()
+    assert "operator_pool:" in text and "(selected)" in text
+    assert len(parse_output(str(path))["iterations"][0]["pool"]) == 3
