@@ -12,19 +12,19 @@ a closing summary:
 
 ```text
 ======================================================================
-ADAPT-VQE  |  mapping: jordan_wigner  |  6 qubits |  device: AER_simulator
-pool: qeb (QEBPool)  |  8 operators  |  optimizer: COBYLA  |  gradient: analytic
-k-points: Gamma (1x1x1 Monkhorst-Pack)  |  spin-polarized: False  |  initial state: hartree-fock
-backend provider: qiskit  |  circuit execution: False  |  quenching: True
+ADAPT-VQE | mapping: jordan_wigner | 6 qubits | device: AER_simulator
+pool: qeb (QEBPool) | 8 operators | optimizer: COBYLA | gradient: analytic
+k-points: Gamma (1x1x1 Monkhorst-Pack) | spin: False | reference: hartree-fock
+provider: qiskit | circuits: False | quenching: True
 ======================================================================
 Qubit Hamiltonian: 118 Pauli terms
 Hartree-Fock reference energy = -154.59070457 eV
 ======================================================================
- iter     max|grad|         energy (eV)           dE       expr   npar    cnot      1q   depth              type  operator
---------------------------------------------------------------------------------------------------------------------------
-    1    2.7228e-01       -154.73089943    -1.40e-01      6.210      1      48      40      65        qeb-double  QD(0,3->2,5)
-    2    8.3087e-02       -154.76524209    -3.43e-02      2.912      2      96      74     129        qeb-double  QD(1,4->2,5)
-    3    5.5361e-02       -154.77610307    -1.09e-02      2.051      3     144     108     193        qeb-double  QD(1,3->2,5)
+iter   |grad|      E (eV)       dE   expr  cnot    1q depth   type operator
+-----------------------------------------------------------------------------
+   1 2.72e-01 -154.730899 -1.4e-01   6.21    48    40    65 double QD(0,3->2,5)
+   2 8.31e-02 -154.765242 -3.4e-02   2.91    96    74   129 double QD(1,4->2,5)
+   3 5.54e-02 -154.776105 -1.1e-02   2.05   144   108   193 double QD(1,3->2,5)
 ```
 
 The **pool's type and size** and the Hamiltonian's **term count** appear in the
@@ -38,16 +38,24 @@ Each iteration is one row, one column per property computed at that step:
 | Column | Meaning |
 | :--- | :--- |
 | `iter` | Growth step (1-based). |
-| `max\|grad\|` | Largest pool gradient; the operator with this gradient is the one selected. Convergence is `max\|grad\| < gradient_tolerance`. |
-| `energy` | Energy after the inner re-optimization, in eV (Hartree with `atomic_units=True`). |
+| `\|grad\|` | Largest pool gradient; the operator with this gradient is the one selected. Convergence is when it falls below `gradient_tolerance`. |
+| `E (eV)` | Energy after the inner re-optimization (Hartree with `atomic_units=True`). |
 | `dE` | Change from the previous step. |
 | `expr` | Expressivity of the grown ansatz: KL divergence from the Haar distribution over the number-conserving sector. It falls as the ansatz specializes. Reads `-` where it is not computed: by default (`run(log_expressivity="auto")`) it is computed on the sparse and sector backends at any width and on the dense backend up to 10 qubits, because on a *dense* 12-qubit register the estimate costs 78 s per iteration against 0.07 s sparse. `True` computes it regardless, `False` never. |
-| `npar` | Variational parameters (= operators) in the ansatz. |
+| `npar` | Variational parameters in the ansatz. Equal to `iter`, so it is the first column dropped on a narrow terminal. |
 | `cnot` | CNOT gates after compiling to the native gate set. |
 | `1q` | Single-qubit gates in the same compilation. |
 | `depth` | Circuit depth in the same compilation. |
-| `type` | Kind of the selected operator (`qeb-double`, `fermionic-single`, ...). |
+| `type` | Kind of the selected operator (`double`, `single`, `ceo`, ...), with the pool's name stripped — the header already carries it. |
 | `operator` | Its label, e.g. `QD(0,3->2,5)`. |
+
+**One iteration is always one line.** The row is sized to the terminal
+(`shutil.get_terminal_size()`, falling back to 80 columns when the output is
+piped): if the full set will not fit, columns are dropped in the order `npar`,
+`dE`, `1q`, `depth`, `expr`, `cnot` — the derivable ones first — rather than
+letting rows wrap. `iter`, the gradient, the energy, the operator type and its
+label are never dropped. Set the `COLUMNS` environment variable to override the
+detected width.
 
 The circuit columns need `profile=True` (the default); with `profile=False`
 they read `-`.

@@ -30,13 +30,14 @@ atoms = Atoms("LiH",
 atoms.center()
 
 atoms.calc = Carcara(method="adapt-vqe",
-                     basis={"name": "PAW", "size": "DZP"},
+                     basis={"name": "PAW", "size": "SZ"},
                      h=0.10,
                      pool="ceo",
                      mapping="jordan_wigner",
                      optimizer="L-BFGS-B",
                      max_iterations=80,
                      gradient_tolerance=1e-5,
+                     output='output.txt',
                      verbose=False)
 
 opt = BFGS(atoms, trajectory=os.path.join(DATA, "relax.traj"))

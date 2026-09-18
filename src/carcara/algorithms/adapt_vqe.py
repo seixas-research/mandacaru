@@ -42,6 +42,7 @@ deflation, growing a fresh deflated ansatz per level -- see
 
 from __future__ import annotations
 
+import shutil
 import warnings
 from dataclasses import dataclass, field
 
@@ -1256,10 +1257,32 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     #: label.  The *pool* is not printed -- its name and size are in the
     #: header and its contents go to ``pool.json`` with
     #: ``verbose_operators=True``.
-    _ITERATION_COLUMNS = (("iter", 5), ("max|grad|", 12), ("energy", 18),
-                          ("dE", 11), ("expr", 9), ("npar", 5), ("cnot", 6),
-                          ("1q", 6), ("depth", 6), ("type", 16),
-                          ("operator", 1))
+    #:
+    #: ``(key, heading, width, format)``.  Headings are terse because the row
+    #: has to fit a terminal: at 80 columns the full table is 79 characters
+    #: wide once ``npar`` goes.
+    _ITERATION_COLUMNS = (("iter", "iter", 4, "d"),
+                          ("grad", "|grad|", 8, ".2e"),
+                          ("energy", "E", 11, ".6f"),
+                          ("dE", "dE", 8, ".1e"),
+                          ("expr", "expr", 6, ".2f"),
+                          ("npar", "npar", 4, "s"),
+                          ("cnot", "cnot", 5, "s"),
+                          ("1q", "1q", 5, "s"),
+                          ("depth", "depth", 5, "s"),
+                          ("type", "type", 6, "s"),
+                          ("operator", "operator", 0, "s"))
+
+    #: Order in which columns are sacrificed when the row will not fit, least
+    #: costly first: ``npar`` is always equal to ``iter`` and ``dE`` is the
+    #: difference of consecutive energies, so neither carries new information;
+    #: only after those does the table give up something it exists to show.
+    #: ``iter``, ``grad``, ``energy``, ``type`` and ``operator`` are never
+    #: dropped.
+    _ITERATION_DROP_ORDER = ("npar", "dE", "1q", "depth", "expr", "cnot")
+
+    #: Terminal width assumed when it cannot be detected (piped output).
+    FALLBACK_TERMINAL_WIDTH = 80
 
     def _extra_header_lines(self) -> list[str]:
         """Extra configuration lines for the verbose header (subclass hook).
@@ -1269,18 +1292,63 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         return []
 
+    def _iteration_layout(self, e_unit: str = "eV"):
+        """The columns that fit on one line, widest-first, cached per run.
+
+        A wrapped row is not a row: the whole point of the table is that one
+        iteration is one line, so when the terminal is too narrow the columns
+        that are derivable elsewhere are dropped rather than letting every
+        iteration spill onto two lines.  The operator label's width is taken
+        from the pool, so the choice is made once and every row matches the
+        heading.
+        """
+        if getattr(self, "_layout_cache", None) is not None:
+            return self._layout_cache
+        labels = [op.label for op in getattr(self, "_pool_ops", []) or []]
+        label_width = max([len(label) for label in labels] + [len("operator")])
+        available = shutil.get_terminal_size(
+            (self.FALLBACK_TERMINAL_WIDTH, 24)).columns
+
+        def width_of(columns):
+            total = label_width + len(columns) - 1          # one space between
+            for key, heading, width, _fmt in columns:
+                if key != "operator":
+                    total += max(width, len(self._heading(heading, e_unit)))
+            return total
+
+        columns = list(self._ITERATION_COLUMNS)
+        # One column at a time: dropping a whole class to save one character
+        # would throw away four of them for nothing.
+        for victim in self._ITERATION_DROP_ORDER:
+            if width_of(columns) <= available:
+                break
+            columns = [c for c in columns if c[0] != victim]
+        self._layout_cache = tuple(columns)
+        return self._layout_cache
+
+    @staticmethod
+    def _heading(heading: str, e_unit: str) -> str:
+        """The printed heading -- the energy column carries the unit."""
+        return f"E ({e_unit})" if heading == "E" else heading
+
     def _iteration_heading(self, e_unit: str) -> str:
         """The column-heading line of the per-iteration table."""
         cells = []
-        for name, width in self._ITERATION_COLUMNS:
-            label = f"energy ({e_unit})" if name == "energy" else name
-            cells.append(f"{label:<{width}}" if name == "operator"
-                         else f"{label:>{width}}")
-        return "  ".join(cells).rstrip()
+        for key, heading, width, _fmt in self._iteration_layout(e_unit):
+            label = self._heading(heading, e_unit)
+            cells.append(label if key == "operator"
+                         else f"{label:>{max(width, len(label))}}")
+        return " ".join(cells).rstrip()
 
     def _iteration_rule(self) -> str:
-        """Horizontal rule matching the width of the iteration table."""
-        return "-" * len(self._iteration_heading(self._energy_unit_label()))
+        """Horizontal rule spanning the whole row, labels included."""
+        e_unit = self._energy_unit_label()
+        labels = [op.label for op in getattr(self, "_pool_ops", []) or []]
+        width = max([len(label) for label in labels] + [len("operator")])
+        for key, heading, column, _fmt in self._iteration_layout(e_unit):
+            if key != "operator":
+                width += max(column, len(self._heading(heading, e_unit))) + 1
+        return "-" * width
 
     def _print_header(self, ref_energy: float, e_unit: str) -> None:
         """Print the run configuration banner.
@@ -1294,20 +1362,21 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         rule = "=" * 70
         print(rule)
-        print(f"ADAPT-VQE  |  mapping: {self.mapping}  |  {self.n_qubits} qubits "
-              f"|  device: {self.device}")
+        print(f"ADAPT-VQE | mapping: {self.mapping} | {self.n_qubits} qubits "
+              f"| device: {self.device}")
         screened_analytically = (getattr(self, "_sparse", False)
                                  or getattr(self, "_sector", None) is not None)
-        grad_label = ("analytic (sparse pool)" if screened_analytically
+        grad_label = ("analytic/sparse" if screened_analytically
                       else self.gradient)
-        print(f"pool: {getattr(self.pool, 'name', '?')} "
-              f"({self.pool.__class__.__name__})  |  "
-              f"{len(self._pool_ops)} operators  |  "
-              f"optimizer: {self.optimizer.method}  |  gradient: {grad_label}")
-        print(f"k-points: {self._kpts_label()}  |  spin-polarized: {self.spin}  "
-              f"|  initial state: {self.initial_state}")
-        print(f"backend provider: {self.backend_provider}  |  circuit execution: "
-              f"{self.execute_circuits}  |  quenching: {self.quenching}")
+        # The class name is dropped: it is redundant with the pool's own name
+        # and pushed this line past 80 columns on a realistic pool.
+        print(f"pool: {getattr(self.pool, 'name', '?')} | "
+              f"{len(self._pool_ops)} operators | "
+              f"optimizer: {self.optimizer.method} | gradient: {grad_label}")
+        print(f"k-points: {self._kpts_label()} | spin: {self.spin} "
+              f"| reference: {self.initial_state}")
+        print(f"backend provider: {self.backend_provider} | circuit execution: "
+              f"{self.execute_circuits} | quenching: {self.quenching}")
         for line in self._extra_header_lines():
             print(line)
         print(rule)
@@ -1322,6 +1391,17 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         print(self._iteration_heading(e_unit))
         print(self._iteration_rule())
 
+    def _operator_kind(self, op: PoolOperator) -> str:
+        """``op.kind`` without the pool-name prefix (the header already has it).
+
+        ``"fermionic-double"`` -> ``"double"``, ``"qeb-single"`` -> ``"single"``;
+        a kind that is not prefixed (``"ceo"``, ``"pauli"``) is left alone.
+        """
+        prefix = f"{getattr(self.pool, 'name', '')}-"
+        kind = str(op.kind)
+        return kind[len(prefix):] if prefix != "-" and kind.startswith(prefix) \
+            else kind
+
     def _print_iteration(self, iteration: int, op: PoolOperator,
                          max_grad: float, energy: float, delta: float,
                          metrics: CircuitMetrics | None, e_unit: str,
@@ -1330,47 +1410,54 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
         One column per property of the step: the largest pool gradient that
         drove the selection, the energy and its change, the ansatz's
-        expressivity (KL divergence from Haar, ``-`` when not computed), the
-        parameter count, the compiled CNOT / single-qubit-gate counts and
-        depth, and the selected operator's kind and label.  Neither the pool
-        nor the operator's Pauli-string expansion is printed -- they are on
-        ``result.operators`` and, with ``verbose_operators=True``, in
-        ``pool.json``.
+        expressivity (KL divergence from Haar), the parameter count, the
+        compiled CNOT / single-qubit-gate counts and depth, and the selected
+        operator's kind and label.  Which of those fit is
+        :meth:`_iteration_layout`'s decision -- the line is never wrapped.
+        Neither the pool nor the operator's Pauli-string expansion is printed;
+        they are on ``result.operators`` and, with ``verbose_operators=True``,
+        in ``pool.json``.
         """
-        def cell(value):
+        def count(value):
             return "-" if value is None else str(value)
 
-        cnots = cell(None if metrics is None else metrics.cnot_count)
-        depth = cell(None if metrics is None else metrics.depth)
-        one_q = cell(None if metrics is None else metrics.num_1q_gates)
-        npar = cell(None if metrics is None else metrics.num_operators)
-        expr = ("-" if expressivity is None or not np.isfinite(expressivity)
-                else f"{expressivity:.3f}")
-        widths = dict(self._ITERATION_COLUMNS)
-        print("  ".join([
-            f"{iteration:>{widths['iter']}d}",
-            f"{max_grad:>{widths['max|grad|']}.4e}",
-            f"{self._to_energy_units(energy):>{widths['energy']}.8f}",
-            f"{self._to_energy_units(delta):>{widths['dE']}.2e}",
-            f"{expr:>{widths['expr']}}",
-            f"{npar:>{widths['npar']}}",
-            f"{cnots:>{widths['cnot']}}",
-            f"{one_q:>{widths['1q']}}",
-            f"{depth:>{widths['depth']}}",
-            f"{op.kind:>{widths['type']}}",
-            f"{op.label:<{widths['operator']}}",
-        ]).rstrip())
+        values = {
+            "iter": iteration,
+            "grad": float(max_grad),
+            "energy": self._to_energy_units(energy),
+            "dE": self._to_energy_units(delta),
+            "expr": (None if expressivity is None
+                     or not np.isfinite(expressivity) else float(expressivity)),
+            "npar": count(None if metrics is None else metrics.num_operators),
+            "cnot": count(None if metrics is None else metrics.cnot_count),
+            "1q": count(None if metrics is None else metrics.num_1q_gates),
+            "depth": count(None if metrics is None else metrics.depth),
+            "type": self._operator_kind(op),
+            "operator": op.label,
+        }
+        cells = []
+        for key, heading, width, fmt in self._iteration_layout(e_unit):
+            value = values[key]
+            width = max(width, len(self._heading(heading, e_unit)))
+            if key == "operator":
+                cells.append(str(value))
+            elif value is None:
+                cells.append(f"{'-':>{width}}")
+            elif fmt == "s":
+                cells.append(f"{value:>{width}}")
+            else:
+                cells.append(f"{value:>{width}{fmt}}")
+        print(" ".join(cells).rstrip())
 
     def _print_summary(self, result: ADAPTVQEResult, e_unit: str,
                        timings=None) -> None:
         """Print the closing summary: result line plus timings / resources."""
         rule = "=" * 70
         print(self._iteration_rule())
-        status = "converged" if result.converged else "not converged"
-        print(f"ADAPT-VQE finished ({status}): "
-              f"E = {result.optimal_energy:+.8f} {e_unit}, "
+        status = "converged" if result.converged else "NOT converged"
+        print(f"{status}: E = {result.optimal_energy:+.8f} {e_unit}, "
               f"{result.num_operators} operators, "
-              f"final |grad| = {result.final_max_gradient:.6e}")
+              f"|grad| = {result.final_max_gradient:.2e}")
         if timings is not None:
             print(timings.format_report())
         print(rule)

@@ -186,6 +186,21 @@ class TestCalculator:
         assert pool["pool_size"] >= 1 and hamiltonian["num_terms"] >= 1
 
 
+def _column(out, name):
+    """Values of one column of the iteration table, read via its heading.
+
+    Which optional columns fit depends on the terminal width
+    (``ADAPTVQE._iteration_layout``), so a fixed field index would drift.
+    """
+    lines = out.splitlines()
+    heading = next(line for line in lines if line.split()[:1] == ["iter"])
+    columns = heading.replace("E (eV)", "energy").split()
+    index = lines.index(heading)
+    rows = [line.split() for line in lines[index + 2:]
+            if line.strip() and line.split()[0].isdigit()]
+    return [dict(zip(columns, row))[name] for row in rows]
+
+
 class TestExpressivityColumn:
     """The ``expr`` column, and the cost guard that decides whether to fill it.
 
@@ -202,9 +217,8 @@ class TestExpressivityColumn:
         assert adapt.n_qubits <= EXPRESSIVITY_DENSE_MAX_QUBITS
         assert adapt._expressivity_wanted("auto") is True
         adapt.run()
-        rows = [line for line in capsys.readouterr().out.splitlines()
-                if line.strip()[:1].isdigit()]
-        assert rows and all(float(row.split()[4]) >= 0.0 for row in rows)
+        values = _column(capsys.readouterr().out, "expr")
+        assert values and all(float(v) >= 0.0 for v in values)
 
     def test_wide_dense_register_is_skipped(self, h2_hamiltonian, monkeypatch):
         adapt = _adapt(h2_hamiltonian, sparse=False)
@@ -234,6 +248,5 @@ class TestExpressivityColumn:
     def test_a_skipped_column_reads_as_a_dash(self, h2_hamiltonian, capsys):
         adapt = _adapt(h2_hamiltonian, verbose=True)
         adapt.run(log_expressivity=False)
-        rows = [line for line in capsys.readouterr().out.splitlines()
-                if line.strip()[:1].isdigit()]
-        assert rows and all(row.split()[4] == "-" for row in rows)
+        values = _column(capsys.readouterr().out, "expr")
+        assert values and all(v == "-" for v in values)

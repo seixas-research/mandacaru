@@ -237,11 +237,13 @@ class TestVerbosePauliOutput:
         # The operator is still reachable programmatically.
         assert "ZIII" in adapt.hamiltonian.simplify().terms
         # Nor is the pool listed: its name and size are all the trace carries.
-        assert f"pool: ceo (CEOPool)" in out
+        assert "pool: ceo |" in out
         assert f"{len(adapt._pool_ops)} operators" in out
         assert "operator_pool" not in out
 
-    def test_iterations_are_single_aligned_lines(self, h2_hamiltonian, capsys):
+    def test_iterations_are_single_aligned_lines(self, h2_hamiltonian, capsys,
+                                                monkeypatch):
+        monkeypatch.setenv("COLUMNS", "100")
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=True, verbose=True,
                          max_iterations=3, gradient_tolerance=1e-6)
@@ -249,17 +251,20 @@ class TestVerbosePauliOutput:
         out = capsys.readouterr().out
 
         # A column heading precedes the per-iteration rows: one column per
-        # property computed at that step.
-        columns = ("iter", "max|grad|", "energy", "dE", "expr", "npar", "cnot",
-                   "1q", "depth", "type", "operator")
-        for column in columns:
-            assert column in out
-
+        # property computed at that step.  The headings are read off the table
+        # rather than hard-coded, because which optional columns fit depends on
+        # the terminal width (see _iteration_layout).
         lines = out.splitlines()
-        heading = next(i for i, line in enumerate(lines)
-                       if line.split()[:2] == ["iter", "max|grad|"])
+        heading = next(line for line in lines if line.split()[:1] == ["iter"])
+        # "E (eV)" is one column but two whitespace-separated tokens.
+        columns = heading.replace("E (eV)", "energy").split()
+        for column in ("iter", "|grad|", "expr", "cnot", "1q", "depth",
+                       "type", "operator"):
+            assert column in columns
+
+        index = lines.index(heading)
         # One line per grown operator, each carrying every column.
-        rows = [line for line in lines[heading + 2:]
+        rows = [line for line in lines[index + 2:]
                 if line.strip() and line.split()[0].isdigit()]
         assert len(rows) == result.num_operators
         for index, row in enumerate(rows, start=1):
@@ -267,12 +272,51 @@ class TestVerbosePauliOutput:
             assert int(fields[0]) == index
             assert len(fields) == len(columns)
             assert fields[-1] in result.operators          # the operator label
-            assert fields[-2] == result.iterations[index - 1].operator_kind
-            assert float(fields[4]) >= 0.0                 # expressivity
-            assert int(fields[7]) > 0                      # single-qubit gates
+            cell = dict(zip(columns, fields))
+            assert result.iterations[index - 1].operator_kind.endswith(
+                cell["type"])
+            assert float(cell["expr"]) >= 0.0
+            assert int(cell["1q"]) > 0
+            assert int(cell["cnot"]) > 0 and int(cell["depth"]) > 0
         # The rows are column-aligned: the operator column starts at one offset.
         starts = {row.index(row.split()[-1]) for row in rows}
         assert len(starts) == 1
+
+    def test_every_line_fits_the_terminal(self, h2_hamiltonian, capsys,
+                                          monkeypatch):
+        """One iteration is one *line*: a wrapped row is not a row.
+
+        The table was 126 characters wide in an 80-column terminal, so every
+        iteration spilled onto two visual lines -- the columns were right and
+        the output was still unreadable.  ``_iteration_layout`` now drops the
+        derivable columns (``npar``, then ``dE``) until the row fits.
+        """
+        monkeypatch.setenv("COLUMNS", "80")
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=True, verbose=True,
+                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt.run()
+        lines = capsys.readouterr().out.splitlines()
+        # From the run banner onward: the start-up banner prints the working
+        # directory, whose length is the user's path, not ours.
+        start = next(i for i, line in enumerate(lines)
+                     if line.startswith("=" * 70))
+        for line in lines[start:]:
+            assert len(line) <= 80, f"{len(line)} chars: {line!r}"
+
+    def test_a_wide_terminal_keeps_every_column(self, h2_hamiltonian, capsys,
+                                                monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
+        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=True, verbose=True,
+                         max_iterations=2, gradient_tolerance=1e-6)
+        adapt.run()
+        out = capsys.readouterr().out
+        heading = next(line for line in out.splitlines()
+                       if line.split()[:1] == ["iter"])
+        assert set(heading.replace("E (eV)", "energy").split()) == {
+            "iter", "|grad|", "energy", "dE", "expr", "npar", "cnot", "1q",
+            "depth", "type", "operator"}
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
