@@ -393,7 +393,7 @@ class TestIntegration:
         from carcara.algorithms import Carcara
         atoms = h2.copy()
         atoms.calc = Carcara(method="adapt-vqe", basis="STO-4G",
-                                       pool="qeb", h=0.35, verbose=False,
+                                       pool="qeb", h=0.35,
                                        profile=False, optimizer="L-BFGS-B",
                                        gradient_tolerance=1e-5)
         atoms.get_potential_energy()

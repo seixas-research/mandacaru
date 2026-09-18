@@ -526,11 +526,11 @@ class TestResolution:
         assert dz.n_qubits == 8
         atoms = h2()
         atoms.calc = Carcara(method="adapt-vqe", basis="paw",
-                             h=H2_H, dry_run=True, verbose=False)
+                             h=H2_H, dry_run=True)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4
         assert Carcara(method="vqe", basis={"name": "PAW", "size": "DZ"},
-                       h=LIH_H, verbose=False).dry_run(lih()).n_qubits == 8
+                       h=LIH_H).dry_run(lih()).n_qubits == 8
 
 
 # --------------------------------------------------------------------------- #
@@ -658,7 +658,7 @@ class TestMolecular:
         factory, h = SYSTEMS[name]
         atoms = factory()
         atoms.calc = Carcara(method="adapt-vqe", basis="paw", h=h,
-                             pool="qeb", max_iterations=4, verbose=False,
+                             pool="qeb", max_iterations=4,
                              profile=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)

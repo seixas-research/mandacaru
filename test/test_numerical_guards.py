@@ -186,7 +186,7 @@ class TestForceCapabilityGate:
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
         atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.5,
-                             kinetic="spectral", verbose=False, profile=False,
+                             kinetic="spectral", profile=False,
                              max_iterations=1)
         with pytest.raises(NotImplementedError, match="finite-difference"):
             atoms.get_forces()
@@ -200,8 +200,7 @@ class TestStaleResultsAreCleared:
 
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.5,
-                             verbose=False, profile=False, max_iterations=2)
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.5, profile=False, max_iterations=2)
         atoms.get_forces()
         assert atoms.calc.force_result is not None
         moved = atoms.copy()

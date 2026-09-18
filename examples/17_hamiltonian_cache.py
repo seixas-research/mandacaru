@@ -78,7 +78,6 @@ for fmt in ("parquet", "json"):
                          pool=POOL,
                          basis={"name": "FAO"},
                          h=0.25,
-                         verbose=False,
                          profile=False,
                          max_iterations=MAX_ITERATIONS,
                          save_hamiltonian=path,
@@ -94,7 +93,6 @@ for fmt in ("parquet", "json"):
     calc = Carcara(method="adapt-vqe",
                    pool=POOL,
                    load_hamiltonian=path,
-                   verbose=False,
                    profile=False,
                    max_iterations=MAX_ITERATIONS)
     reloaded = calc.run()

@@ -17,6 +17,8 @@ end-to-end through ADAPT-VQE.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 from carcara.units import HARTREE_TO_EV
 import pytest
@@ -221,5 +223,6 @@ class TestDriverAcrossProviders:
                  max_iterations=1, backend_provider=name,
                  execute_circuits=True).run()
         out = capsys.readouterr().out
-        assert f"backend provider: {name}" in out
-        assert "circuit execution: True" in out
+        # The run-configuration block is one option per line: label then value.
+        assert re.search(rf"^backend provider\s+{name}$", out, re.M)
+        assert re.search(r"^circuit execution\s+True$", out, re.M)

@@ -224,8 +224,7 @@ class TestGeometryPath:
 class TestSolvers:
     def test_adapt_vqe_hydrogen_atom(self):
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[5.0] * 3)
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.25,
-                                       verbose=False, profile=False)
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.25, profile=False)
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (1, 0) and calc.n_qubits == 2
@@ -250,8 +249,7 @@ class TestSolvers:
     def test_vqe_h3_doublet_through_the_calculator(self):
         atoms = Atoms("H3", positions=[[0, 0, -0.9], [0, 0, 0], [0, 0, 0.9]],
                       cell=[6.5] * 3)
-        atoms.calc = Carcara(method="vqe", basis="FAO", h=0.30,
-                                       verbose=False, optimizer="L-BFGS-B")
+        atoms.calc = Carcara(method="vqe", basis="FAO", h=0.30, optimizer="L-BFGS-B")
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (2, 1) and calc.n_qubits == 6
@@ -308,7 +306,7 @@ class TestPlaneWaves:
                       cell=cell, pbc=True)
         atoms.calc = Carcara(method="adapt-vqe",
                                        basis={"name": "PW", "energy_cutoff": 8},
-                                       charge=1, verbose=False, profile=False,
+                                       charge=1, profile=False,
                                        optimizer="L-BFGS-B",
                                        gradient_tolerance=1e-6)
         atoms.get_potential_energy()

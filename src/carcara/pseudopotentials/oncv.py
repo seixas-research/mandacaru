@@ -1192,9 +1192,19 @@ def get_oncv(symbol: str, directory=None) -> ONCVPseudoPotential:
         return cached
     path = library_file(symbol, folder)
     if not os.path.exists(path):
+        available = available_elements(folder)
+        if not available:
+            raise FileNotFoundError(
+                f"the ONCVPSP dataset library at {folder!r} is empty. The "
+                "datasets are too large to ship, so they live in their own "
+                "repository:\n"
+                "    git clone https://github.com/seixas-research/carcara-oncvpsp\n"
+                "    carcara --link-oncvpsp carcara-oncvpsp\n"
+                "(`carcara --pseudo-status` reports what is linked). To build "
+                "them from scratch instead: build_oncv_library([symbol]).")
         raise FileNotFoundError(
             f"no ONCVPSP pseudopotential for {symbol!r} at {path!r}. "
-            f"Available: {', '.join(available_elements(folder)) or '(none)'}. "
+            f"Available: {', '.join(available)}. "
             "Generate it with build_oncv_library([symbol]).")
     pp = load_pseudopotential(path)
     if str(getattr(pp, "family", "")).lower() != FAMILY:

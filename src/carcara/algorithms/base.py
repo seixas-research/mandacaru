@@ -84,6 +84,10 @@ def format_pauli_sum(pauli: PauliSum, indent: str = "    ",
 HERMITICITY_TOLERANCE = 1e-9
 
 
+#: Whether the start-up banner has already been written in this process.
+_BANNER_SHOWN = False
+
+
 class VariationalDriver(Calculator):
     """Base ASE calculator for the variational state-vector eigensolvers.
 
@@ -1037,10 +1041,19 @@ class VariationalDriver(Calculator):
         timings.wall_time = _perf() - run_t0
 
     def _show_banner(self) -> None:
-        """Write the start-up banner to stdout (verbose runs only)."""
-        if self.verbose:
+        """Write the start-up banner to stdout, **once per process**.
+
+        It is provenance -- versions, host, interpreter -- so it is the same
+        every time, while ``calculate()`` runs once per geometry: a twelve-step
+        relaxation used to reprint the whole logo and dependency dump twelve
+        times, burying the iteration tables it separates.  Reset
+        ``carcara.algorithms.base._BANNER_SHOWN`` to print it again.
+        """
+        global _BANNER_SHOWN
+        if self.verbose and not _BANNER_SHOWN:
             from ..utils import banner
             banner.show()
+            _BANNER_SHOWN = True
 
     # -- subclass hooks --------------------------------------------------- #
 

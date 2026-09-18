@@ -1580,9 +1580,21 @@ def get_paw(symbol: str, directory=None) -> PAWDataset:
         return cached
     path = library_file(symbol, folder)
     if not os.path.exists(path):
+        available = available_elements(folder)
+        if not available:
+            # The whole library is missing, which is the normal state of a
+            # fresh install: the datasets are ~190 MB and ship separately.
+            # Linking a checkout takes a second; generating them does not.
+            raise FileNotFoundError(
+                f"the PAW dataset library at {folder!r} is empty. The datasets "
+                "are too large to ship, so they live in their own repository:\n"
+                "    git clone https://github.com/seixas-research/carcara-paw\n"
+                "    carcara --link-paw carcara-paw\n"
+                "(`carcara --pseudo-status` reports what is linked). To build "
+                "them from scratch instead: build_paw_library([symbol]).")
         raise FileNotFoundError(
             f"no PAW dataset for {symbol!r} at {path!r}. Available: "
-            f"{', '.join(available_elements(folder)) or '(none)'}. "
+            f"{', '.join(available)}. "
             "Generate it with build_paw_library([symbol]).")
     pp = load_pseudopotential(path)
     if str(getattr(pp, "family", "")).lower() != FAMILY:

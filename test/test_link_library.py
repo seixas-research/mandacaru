@@ -193,3 +193,59 @@ class TestLoadersThroughTheRealLinks:
         # The dataset cache is keyed by folder, so a fresh root really reloads.
         assert cli.main(["--link-paw", source]) == 0
         assert "loaded H successfully" in capsys.readouterr().out
+
+
+class TestMissingLibraryMessage:
+    """A fresh install must be told how to get the datasets.
+
+    They are too large to ship, so an empty library is the *normal* first
+    state, not a corruption.  The message used to offer only
+    ``build_paw_library([symbol])`` -- generating 92 elements from scratch --
+    and never mentioned that linking a checkout takes a second.
+    """
+
+    @pytest.fixture
+    def empty_library(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CARCARA_PSEUDO_PATH", str(tmp_path / "library"))
+        # The loaders cache by folder, so a fresh root really reloads.
+        from carcara.pseudopotentials import oncv, paw
+        monkeypatch.setattr(paw, "_CACHE", {})
+        monkeypatch.setattr(oncv, "_CACHE", {})
+        return tmp_path
+
+    def test_paw_points_at_the_link_command(self, empty_library):
+        from carcara.pseudopotentials.paw import get_paw
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            get_paw("O")
+        message = str(excinfo.value)
+        assert "carcara --link-paw" in message
+        assert "carcara-paw" in message
+        assert "carcara --pseudo-status" in message
+
+    def test_oncvpsp_points_at_the_link_command(self, empty_library):
+        from carcara.pseudopotentials.oncv import get_oncv
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            get_oncv("O")
+        message = str(excinfo.value)
+        assert "carcara --link-oncvpsp" in message
+        assert "carcara-oncvpsp" in message
+
+    def test_a_populated_library_still_names_the_missing_element(self, tmp_path,
+                                                                 monkeypatch):
+        """With datasets present, the message is about the element, not setup."""
+        from carcara.pseudopotentials import paw
+
+        folder = tmp_path / "library" / "paw"
+        folder.mkdir(parents=True)
+        (folder / "H.parquet").write_bytes(b"x")
+        monkeypatch.setenv("CARCARA_PSEUDO_PATH", str(tmp_path / "library"))
+        monkeypatch.setattr(paw, "_CACHE", {})
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            paw.get_paw("O")
+        message = str(excinfo.value)
+        assert "Available: H" in message
+        assert "build_paw_library" in message
+        assert "--link-paw" not in message      # the library is not the problem

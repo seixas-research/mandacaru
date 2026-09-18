@@ -37,8 +37,7 @@ atoms.calc = Carcara(method="adapt-vqe",
                      optimizer="L-BFGS-B",
                      max_iterations=80,
                      gradient_tolerance=1e-5,
-                     output='output.txt',
-                     verbose=False)
+                     output='output.txt')
 
 opt = BFGS(atoms, trajectory=os.path.join(DATA, "relax.traj"))
 opt.attach(lambda: print(f"    Li-H distance {atoms.get_distance(0, 1):.4f} A"))

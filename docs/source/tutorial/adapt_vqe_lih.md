@@ -35,10 +35,8 @@ atoms.calc = Carcara(
     max_iterations=40,
     execute_circuits=False,
     profile=False,
-    verbose=False,
     save_hamiltonian="lih_sto3g_r1p6.json",
-    hamiltonian_format="json",
-)
+    hamiltonian_format="json")
 
 energy_ev = atoms.get_potential_energy()
 result = atoms.calc.result
@@ -99,9 +97,7 @@ for pool in ("fermionic", "qubit", "qeb", "ceo"):
         gradient_tolerance=1e-5,
         max_iterations=40,
         execute_circuits=False,
-        profile=False,
-        verbose=False,
-    )
+        profile=False)
     result = calc.run()
     print(
         f"{pool:10s}  {result.optimal_energy:.6f} eV  "

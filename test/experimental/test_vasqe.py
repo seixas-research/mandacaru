@@ -277,7 +277,7 @@ class TestExperimentalPackaging:
     def test_calculators_default_to_adapt_vqe(self):
         from ase import Atoms
         from carcara.algorithms import ADAPTVQE, BlochCalculator, Carcara
-        calc = Carcara(verbose=False)
+        calc = Carcara()
         assert calc.method == "adapt-vqe" and calc._solver_class is ADAPTVQE
         chain = Atoms("H", positions=[[0, 0, 0]], cell=[1.0, 10.0, 10.0],
                       pbc=[True, False, False])
@@ -288,7 +288,7 @@ class TestExperimentalPackaging:
         from carcara.algorithms import Carcara
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
         for method in ("vasqe", "subspace-vasqe"):
-            atoms.calc = Carcara(method=method, dry_run=True, verbose=False)
+            atoms.calc = Carcara(method=method, dry_run=True)
             assert np.isnan(atoms.get_potential_energy())
             assert atoms.calc.dry_run_result.method == method
 
@@ -358,6 +358,6 @@ class TestBloch:
         e_cell, result = driver.total_energy(
             (2, 1, 1), h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
             temperature=1.0, max_iterations=6, gradient_tolerance=1e-3,
-            verbose=False, profile=False)
+            profile=False)
         assert isinstance(result, VASQEResult) and np.isfinite(e_cell)
         assert len(result.temperatures) == result.num_operators

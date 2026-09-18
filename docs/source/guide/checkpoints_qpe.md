@@ -27,8 +27,7 @@ atoms.calc = Carcara(method="adapt-vqe",
                      basis="FAO",
                      h=0.25,
                      checkpoint="examples/data/h2_wavefunction.json",
-                     checkpoint_every=1,
-                     verbose=False)
+                     checkpoint_every=1)
 atoms.get_potential_energy()
 ```
 
@@ -50,8 +49,7 @@ atoms.calc = Carcara(method="adapt-vqe",
                      h=0.25,
                      resume="examples/data/h2_wavefunction.json",
                      checkpoint="examples/data/h2_wavefunction.json",
-                     max_iterations=40,
-                     verbose=False)
+                     max_iterations=40)
 ```
 
 ADAPT-VQE rebuilds the grown ansatz from the file — each stored generator is

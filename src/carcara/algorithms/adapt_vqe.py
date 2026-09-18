@@ -187,14 +187,25 @@ def _max_abs(values) -> float:
     return float(np.max(np.abs(values))) if values.size else 0.0
 
 
+#: Shortest the operator label is elided to before a row is allowed to wrap.
+MIN_LABEL_WIDTH = 3
+
+#: Longest an operator label is allowed to push the row before it is elided.
+#: A CEO label such as ``CEO[q0,q2,q3,q5]{D(0,3->2,5)}`` is 29 characters and
+#: would otherwise cost four of the columns the table exists to show; the
+#: elided label still identifies the excitation, and the full one is in the
+#: ``output=`` log.
+MAX_LABEL_WIDTH = 22
+
 #: Random parameter samples per expressivity estimate (two states each).
 EXPRESSIVITY_SAMPLES = 400
 
-#: Widest *dense* register whose expressivity ``log_expressivity="auto"`` will
-#: compute.  Dense state preparation allocates the whole 2^n vector, so the
-#: estimate costs 78 s per iteration at 12 qubits; the sparse and sector
-#: backends work on a compressed state and are exempt.
-EXPRESSIVITY_DENSE_MAX_QUBITS = 10
+#: Expressivity is **opt-in** (``run(log_expressivity=True)``).  The estimate
+#: is ``2 * EXPRESSIVITY_SAMPLES`` state preparations and each one applies
+#: *every* operator in the ansatz, so its cost is linear in the ansatz and
+#: quadratic over a run: measured at 6 qubits, 0.010 / 0.031 / 0.059 / 0.125 s
+#: at 1 / 4 / 8 / 16 operators.  It is a diagnostic, not a result, so nothing
+#: pays for it unless it was asked for.
 
 
 class ADAPTVQE(DeflationMixin, VariationalDriver):
@@ -528,6 +539,12 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         self._maybe_dump_hamiltonian(self.num_particles,
                                      self.pool.n_spatial_orbitals)
         self._maybe_dump_pool(self.pool, self._pool_ops)
+        # The column layout depends on this pool's labels and on the register,
+        # so it cannot outlive a reconfiguration: one driver instance reused
+        # for a second molecule (`atoms.calc = ADAPTVQE(...)`) would otherwise
+        # keep the first one's columns and print rows wider than the terminal.
+        self._layout_cache = None
+        self._label_width = None
 
         if self._sector is not None:
             self._pool_matrices = [self._sector.restrict(op.generator)
@@ -870,25 +887,24 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         return logger
 
     def _expressivity_wanted(self, log_expressivity) -> bool:
-        """Whether to spend the samples on the expressivity score this run.
+        """Validate ``log_expressivity`` and return it.
 
-        ``"auto"`` (the default) asks only where a state preparation is cheap:
-        the sparse and sector backends work on a compressed state at any width,
-        while the dense backend allocates the full ``2^n`` vector
-        ``2 * EXPRESSIVITY_SAMPLES`` times per iteration -- 78 s at 12 qubits
-        against 0.07 s sparse.  Without this guard every verbose run of a
-        realistic active space would pay that per grown operator.
+        It is a plain boolean: ``True`` computes the expressivity every
+        iteration, ``False`` (the default) never does and the ``expr`` column
+        does not appear at all.  There is no automatic middle setting -- a
+        column that is sometimes filled, and a cost that depends on the
+        backend, are worse than a decision the caller makes once.
         """
-        if log_expressivity is True:
-            return True
-        if not log_expressivity:                     # False / None
-            return False
-        if str(log_expressivity).lower() != "auto":
-            raise ValueError("log_expressivity must be 'auto', True or False, "
-                             f"got {log_expressivity!r}")
-        if self._sector is not None or self._sparse:
-            return True
-        return self.n_qubits <= EXPRESSIVITY_DENSE_MAX_QUBITS
+        if log_expressivity is True or log_expressivity is False:
+            return bool(log_expressivity)
+        raise ValueError(
+            "log_expressivity must be True or False, got "
+            f"{log_expressivity!r}")
+
+    def _layout_has(self, key: str) -> bool:
+        """Whether ``key`` is one of the columns the trace will actually print."""
+        return any(column[0] == key for column
+                   in self._iteration_layout(self._energy_unit_label()))
 
     def _expressivity(self, ansatz) -> float:
         """Expressivity score ``E`` of the current ansatz (KL from Haar).
@@ -913,7 +929,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
     def run(self, initial_parameters=None, callback=None,
             geometry=None, cell=None,
-            log_expressivity="auto") -> ADAPTVQEResult:
+            log_expressivity: bool = False) -> ADAPTVQEResult:
         """Grow and optimize the ansatz until convergence.
 
         Everything that also lives on the constructor -- the stopping controls
@@ -942,16 +958,15 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         cell : (3, 3) array_like, optional
             Explicit unit-cell tensor for the metadata block (overrides any cell
             carried by an ``Atoms`` ``geometry``).
-        log_expressivity : {"auto", True, False}
-            Compute the expressivity score each iteration, for the ``expr``
-            column of the trace and the ``output.txt`` log.  The default
-            ``"auto"`` computes it only where it is cheap -- on the sparse or
-            sector backend at any width, and on the dense backend up to
-            :data:`EXPRESSIVITY_DENSE_MAX_QUBITS` qubits -- because it is
-            ``2 * EXPRESSIVITY_SAMPLES`` state preparations per iteration, which
-            on a *dense* 12-qubit register is 78 s against 0.07 s on the sparse
-            one.  ``True`` computes it regardless, ``False`` never does (the
-            column and the log entry then read ``-`` / ``(not computed)``).
+        log_expressivity : bool
+            Compute the ansatz's expressivity every iteration (default
+            ``False``).  It is a diagnostic rather than a result and it is not
+            cheap -- ``2 * EXPRESSIVITY_SAMPLES`` state preparations per
+            iteration, each applying every operator in the ansatz, so the cost
+            over a run grows quadratically -- so nothing pays for it unless it
+            is asked for.  ``True`` adds the ``expr`` column to the run trace
+            and to the ``output.txt`` table; ``False`` leaves the column out
+            altogether rather than filling it with dashes.
         """
         if self.dry_run:
             return self._dry_run_estimate()
@@ -966,7 +981,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         gradient_tol = self.gradient_tolerance
         output_file = self.output
         verbose = self.verbose
-        want_expressivity = self._expressivity_wanted(log_expressivity)
+        # Resolved once, before the heading: whether this run computes the
+        # expressivity at all decides whether the column exists.
+        self._expressivity_on = self._expressivity_wanted(log_expressivity)
+        self._layout_cache = None
 
         # In calculator mode the wall clock is seeded in calculate() so it spans
         # the integration too; in direct mode it starts here.
@@ -998,7 +1016,14 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         e_unit = self._energy_unit_label()
 
         if verbose:
-            self._print_header(ref_energy, e_unit)
+            self._print_header(ref_energy, e_unit, max_iterations, gradient_tol)
+            if restored is not None:
+                # Before the heading: a line between the rule and the first row
+                # is a line inside the table that is not an iteration.
+                print(f"resumed from {self.resume_path!r}: "
+                      f"{len(restored['selected'])} operators, "
+                      f"E = {self._to_energy_units(restored['energy']):+.8f} "
+                      f"{e_unit}")
             self._print_iteration_heading(e_unit)
 
         iterations: list[AdaptIteration] = []
@@ -1016,10 +1041,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             total_evals = restored["num_evaluations"]
             optimizer_failures = restored["optimizer_failures"]
             energy = restored["energy"]
-            if verbose:
-                print(f"resumed from {self.resume_path!r}: {len(selected)} "
-                      f"operators, E = {self._to_energy_units(energy):+.8f} "
-                      f"{e_unit}")
 
         def checkpoint(complete: bool, converged: bool):
             """Write the state as it stands (every run writes at the end)."""
@@ -1075,10 +1096,15 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 # quantity, so it is computed whenever either will show it --
                 # and, by default, only where it is cheap (_expressivity_wanted).
                 expr = None
-                if want_expressivity and (verbose or logger is not None):
+                if self._expressivity_on:
                     with timings.time("expressivity"):
                         expr = self._expressivity(ansatz)
-                    final_expr = expr
+                # Always the *last* iteration's value, so the summary's
+                # `final_expressivity_E` is the final ansatz's or is omitted.
+                # Keeping the last computed one would report the value of a
+                # twelve-operator ansatz as the final one of an eighty-operator
+                # run, which is worse than reporting nothing.
+                final_expr = expr
 
                 if verbose:
                     self._print_iteration(len(iterations) + 1, op, max_grad,
@@ -1263,26 +1289,32 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     #:
     #: ``(key, heading, width, format)``.  Headings are terse because the row
     #: has to fit a terminal: at 80 columns the full table is 79 characters
-    #: wide once ``npar`` goes.
+    #: wide.
+    #: ``energy`` is 13 wide because a total energy runs to five digits before
+    #: the point once a molecule has more than a couple of electrons
+    #: (``-1092.918983``); at 11 the value overflowed its column and shifted
+    #: every column after it by one.  ``expr`` and the gate counts are sized
+    #: the same way, for the value rather than the heading.
     _ITERATION_COLUMNS = (("iter", "iter", 4, "d"),
                           ("grad", "|grad|", 8, ".2e"),
-                          ("energy", "E", 11, ".6f"),
+                          ("energy", "E", 13, ".6f"),
                           ("dE", "dE", 8, ".1e"),
-                          ("expr", "expr", 6, ".2f"),
-                          ("npar", "npar", 4, "s"),
-                          ("cnot", "cnot", 5, "s"),
-                          ("1q", "1q", 5, "s"),
-                          ("depth", "depth", 5, "s"),
+                          ("expr", "expr", 7, ".2f"),
+                          ("cnot", "cnot", 6, "s"),
+                          ("1q", "1q", 6, "s"),
+                          ("depth", "depth", 6, "s"),
                           ("type", "type", 6, "s"),
                           ("operator", "operator", 0, "s"))
 
     #: Order in which columns are sacrificed when the row will not fit, least
-    #: costly first: ``npar`` is always equal to ``iter`` and ``dE`` is the
-    #: difference of consecutive energies, so neither carries new information;
-    #: only after those does the table give up something it exists to show.
+    #: costly first: ``dE`` is the difference of consecutive energies, so it
+    #: carries no new information; only after it does the table give up
+    #: something it exists to show.
     #: ``iter``, ``grad``, ``energy``, ``type`` and ``operator`` are never
     #: dropped.
-    _ITERATION_DROP_ORDER = ("npar", "dE", "1q", "depth", "expr", "cnot")
+    #: ``expr`` is absent unless it was explicitly asked for, so it is never
+    #: dropped: having asked for it, you get it.
+    _ITERATION_DROP_ORDER = ("dE", "1q", "depth", "cnot")
 
     #: Terminal width assumed when it cannot be detected (piped output).
     FALLBACK_TERMINAL_WIDTH = 80
@@ -1296,14 +1328,20 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         return []
 
     def _iteration_layout(self, e_unit: str = "eV"):
-        """The columns that fit on one line, widest-first, cached per run.
+        """The columns that fit on one line, cached per configuration.
 
-        A wrapped row is not a row: the whole point of the table is that one
-        iteration is one line, so when the terminal is too narrow the columns
-        that are derivable elsewhere are dropped rather than letting every
-        iteration spill onto two lines.  The operator label's width is taken
-        from the pool, so the choice is made once and every row matches the
-        heading.
+        A wrapped row is not a row: the point of the table is that one
+        iteration is one line.  So when the terminal is too narrow, the columns
+        that are derivable elsewhere are dropped (cheapest sufficient one
+        first, see :data:`_ITERATION_DROP_ORDER`) and, if that is still not
+        enough, the operator label is elided -- down to
+        :data:`MIN_LABEL_WIDTH`.  Below roughly 38 columns even the mandatory
+        set does not fit and the row can still wrap; that is a terminal too
+        narrow to tabulate anything.
+
+        The operator label's width comes from the pool, so the choice is made
+        once and every row matches the heading.  It is reset in ``_configure``
+        because a reused driver may be given a different pool and register.
         """
         if getattr(self, "_layout_cache", None) is not None:
             return self._layout_cache
@@ -1311,6 +1349,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         label_width = max([len(label) for label in labels] + [len("operator")])
         available = shutil.get_terminal_size(
             (self.FALLBACK_TERMINAL_WIDTH, 24)).columns
+        # Cap the label first: a long one must not cost the data columns.
+        label_width = min(label_width, MAX_LABEL_WIDTH)
 
         def width_of(columns):
             total = label_width + len(columns) - 1          # one space between
@@ -1320,14 +1360,38 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             return total
 
         columns = list(self._ITERATION_COLUMNS)
-        # One column at a time: dropping a whole class to save one character
-        # would throw away four of them for nothing.
-        for victim in self._ITERATION_DROP_ORDER:
-            if width_of(columns) <= available:
-                break
-            columns = [c for c in columns if c[0] != victim]
+        if not getattr(self, "_expressivity_on", True):
+            # Not computed anywhere in this run: an all-"-" column is worse
+            # than no column, so it does not appear at all.
+            columns = [c for c in columns if c[0] != "expr"]
+        # Drop the *least valuable column that alone closes the gap*, not a
+        # prefix of the drop order: a small deficit used to cost two columns
+        # where the second one alone would have closed it.
+        while width_of(columns) > available:
+            present = [c for c in self._ITERATION_DROP_ORDER
+                       if any(col[0] == c for col in columns)]
+            if not present:
+                break                      # only the mandatory columns are left
+            victim = next(
+                (c for c in present
+                 if width_of([col for col in columns if col[0] != c]) <= available),
+                present[0])
+            columns = [col for col in columns if col[0] != victim]
+        self._label_width = label_width
+        if width_of(columns) > available:
+            # Nothing droppable is left: shorten the label rather than wrap.
+            # A wrapped row is not a row, which is the whole contract.
+            over = width_of(columns) - available
+            self._label_width = max(MIN_LABEL_WIDTH, label_width - over)
         self._layout_cache = tuple(columns)
         return self._layout_cache
+
+    def _elide(self, label: str) -> str:
+        """``label`` shortened to the layout's budget, with an ellipsis."""
+        width = getattr(self, "_label_width", None)
+        if width is None or len(label) <= width:
+            return label
+        return label[:max(1, width - 1)] + "\u2026"
 
     @staticmethod
     def _heading(heading: str, e_unit: str) -> str:
@@ -1346,47 +1410,140 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     def _iteration_rule(self) -> str:
         """Horizontal rule spanning the whole row, labels included."""
         e_unit = self._energy_unit_label()
-        labels = [op.label for op in getattr(self, "_pool_ops", []) or []]
-        width = max([len(label) for label in labels] + [len("operator")])
-        for key, heading, column, _fmt in self._iteration_layout(e_unit):
+        layout = self._iteration_layout(e_unit)
+        width = getattr(self, "_label_width", len("operator"))
+        for key, heading, column, _fmt in layout:
             if key != "operator":
                 width += max(column, len(self._heading(heading, e_unit))) + 1
         return "-" * width
 
-    def _print_header(self, ref_energy: float, e_unit: str) -> None:
-        """Print the run configuration banner.
+    #: Width of the label column in the run-configuration block.
+    HEADER_LABEL_WIDTH = 24
 
-        The qubit Hamiltonian's Pauli-string expansion is deliberately **not**
-        printed -- it runs to thousands of lines for a realistic active space and
-        drowns the run trace.  Only its size is reported; the operator itself is
-        on ``self.hamiltonian`` and can be rendered with
-        :func:`~carcara.algorithms.base.format_pauli_sum` or saved with
-        ``save_hamiltonian=``.
+    def _gradient_description(self) -> tuple[str, str]:
+        """``(how the screening gradient is evaluated, why)``.
+
+        The *requested* estimator is not always the one used: on the sparse and
+        sector backends the pool is kept as sparse matrices and the
+        eigendecompositions the shift estimators need are never formed, so
+        those paths screen analytically whatever was asked for.  The header
+        reports what actually runs, and says when it differs from the request.
+        """
+        formulas = {
+            "analytic": "exact, g = 2 Re<H psi|A psi>",
+            "finite_difference": "central difference of the energy",
+            "parameter-shift": "parameter-shift rule",
+        }
+        overridden = (getattr(self, "_sparse", False)
+                      or getattr(self, "_sector", None) is not None)
+        effective = "analytic" if overridden else self.gradient
+        note = formulas.get(effective, "")
+        if overridden and self.gradient != "analytic":
+            note += f" (overrides {self.gradient}: sparse pool)"
+        return effective, note
+
+    def _backend_description(self) -> str:
+        """How the state vector and the pool are represented."""
+        sector = getattr(self, "_sector", None)
+        if sector is not None:
+            return (f"particle-number sector, {sector.dim} states "
+                    f"of 2^{self.n_qubits}")
+        if getattr(self, "_sparse", False):
+            return f"sparse matrices, 2^{self.n_qubits} amplitudes"
+        return f"dense matrices, 2^{self.n_qubits} amplitudes"
+
+    def _basis_description(self) -> str:
+        """The single-particle basis, compactly."""
+        basis = self.basis
+        if isinstance(basis, dict):
+            name = basis.get("name")
+            if name is None:                       # a per-element mapping
+                return ", ".join(f"{k}: {v}" for k, v in basis.items())
+            rest = ", ".join(f"{k}: {v}" for k, v in basis.items()
+                             if k != "name")
+            return f"{name}" + (f" ({rest})" if rest else "")
+        return str(basis)
+
+    def _header_rows(self, ref_energy: float, e_unit: str,
+                     max_iterations=None, gradient_tol=None) -> list:
+        """``(label, value)`` pairs -- one option per line -- and ``None`` rules.
+
+        Grouped by what the option controls: the problem, the qubit register,
+        the algorithm, and where it executes.  A subclass extends it through
+        :meth:`_extra_header_lines`.
+        """
+        gradient, gradient_note = self._gradient_description()
+        frozen = self.frozen_core if self.frozen_core else "none"
+        if self.frozen_orbitals:
+            frozen = f"orbitals {list(self.frozen_orbitals)}"
+        particles = self.num_particles
+        n_terms = len(self.hamiltonian.simplify().terms)
+        shots = (f"{self.shots}" if self.shots
+                 else "0 (exact expectation values)")
+        rows = [
+            ("basis", self._basis_description()),
+            ("grid spacing", f"{self.h:g} Angstrom"),
+            ("kinetic operator", self.kinetic or "finite difference"),
+            ("k-points", self._kpts_label()),
+            ("spin-polarized", str(self.spin)),
+            ("reference state", str(self.initial_state)),
+            ("frozen core", str(frozen)),
+            None,
+            ("qubits", str(self.n_qubits)),
+            ("electrons (alpha, beta)", str(particles)),
+            ("spatial orbitals", str(getattr(self, "n_spatial_orbitals", None)
+                                     or self.pool.n_spatial_orbitals)),
+            ("mapping", str(self.mapping)),
+            ("two-qubit reduction", str(self.two_qubit_reduction)),
+            ("qubit Hamiltonian", f"{n_terms} Pauli terms"),
+            None,
+            ("operator pool", f"{getattr(self.pool, 'name', '?')} "
+                              f"({len(self._pool_ops)} operators)"),
+            ("operator selection", "largest |gradient| (greedy)"),
+            ("screening gradient", gradient),
+            ("  how", gradient_note),
+            ("state-vector backend", self._backend_description()),
+            ("re-optimize all", str(self.quenching)),
+            ("optimizer", str(self.optimizer.method)),
+            ("max operators", str(max_iterations)
+             if max_iterations is not None else None),
+            ("gradient tolerance", f"{gradient_tol:g}"
+             if gradient_tol is not None else None),
+            ("circuit profiling", str(self.profile)),
+            None,
+            ("device", str(self.device)),
+            ("backend provider", str(self.backend_provider)),
+            ("circuit execution", str(self.execute_circuits)),
+            ("shots", shots),
+            None,
+            ("Hartree-Fock reference",
+             f"{self._to_energy_units(ref_energy):+.8f} {e_unit}"),
+        ]
+        return [r for r in rows if r is None or r[1] is not None]
+
+    def _print_header(self, ref_energy: float, e_unit: str,
+                      max_iterations=None, gradient_tol=None) -> None:
+        """Print the run configuration, **one option per line**.
+
+        The qubit Hamiltonian's Pauli expansion is deliberately not printed --
+        it runs to thousands of lines for a realistic active space.  Only its
+        size is reported; the operator is on ``self.hamiltonian``, and
+        ``verbose_hamiltonian=True`` writes it to ``hamiltonian.json``.
         """
         rule = "=" * 70
+        width = self.HEADER_LABEL_WIDTH
         print(rule)
-        print(f"ADAPT-VQE | mapping: {self.mapping} | {self.n_qubits} qubits "
-              f"| device: {self.device}")
-        screened_analytically = (getattr(self, "_sparse", False)
-                                 or getattr(self, "_sector", None) is not None)
-        grad_label = ("analytic/sparse" if screened_analytically
-                      else self.gradient)
-        # The class name is dropped: it is redundant with the pool's own name
-        # and pushed this line past 80 columns on a realistic pool.
-        print(f"pool: {getattr(self.pool, 'name', '?')} | "
-              f"{len(self._pool_ops)} operators | "
-              f"optimizer: {self.optimizer.method} | gradient: {grad_label}")
-        print(f"k-points: {self._kpts_label()} | spin: {self.spin} "
-              f"| reference: {self.initial_state}")
-        print(f"backend provider: {self.backend_provider} | circuit execution: "
-              f"{self.execute_circuits} | quenching: {self.quenching}")
+        print(f"ADAPT-VQE")
+        print(rule)
+        for row in self._header_rows(ref_energy, e_unit, max_iterations,
+                                     gradient_tol):
+            if row is None:
+                print("-" * 70)
+            else:
+                label, value = row
+                print(f"{label:<{width}}{value}")
         for line in self._extra_header_lines():
             print(line)
-        print(rule)
-        n_terms = len(self.hamiltonian.simplify().terms)
-        print(f"Qubit Hamiltonian: {n_terms} Pauli terms")
-        print(f"Hartree-Fock reference energy = "
-              f"{self._to_energy_units(ref_energy):+.8f} {e_unit}")
         print(rule)
 
     def _print_iteration_heading(self, e_unit: str) -> None:
@@ -1395,15 +1552,27 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         print(self._iteration_rule())
 
     def _operator_kind(self, op: PoolOperator) -> str:
-        """``op.kind`` without the pool-name prefix (the header already has it).
+        """The ``type`` cell: what kind of excitation was selected.
 
-        ``"fermionic-double"`` -> ``"double"``, ``"qeb-single"`` -> ``"single"``;
-        a kind that is not prefixed (``"ceo"``, ``"pauli"``) is left alone.
+        ``"fermionic-double"`` -> ``"double"``, ``"qeb-single"`` -> ``"single"``
+        (the pool's name is already in the header, so repeating it per row says
+        nothing).  ``CEOPool`` tags every operator ``"ceo"``, which would make
+        the column a constant copy of the header, so the excitation is read
+        off the label instead -- ``CEO[...]{D(...)}`` is a double,
+        ``{S(...)}`` a single.
         """
-        prefix = f"{getattr(self.pool, 'name', '')}-"
+        name = str(getattr(self.pool, "name", ""))
         kind = str(op.kind)
-        return kind[len(prefix):] if prefix != "-" and kind.startswith(prefix) \
-            else kind
+        prefix = f"{name}-"
+        if name and kind.startswith(prefix):
+            return kind[len(prefix):]
+        if kind == name:                      # uninformative: read the label
+            label = str(op.label)
+            if "{D(" in label or label.startswith("D("):
+                return "double"
+            if "{S(" in label or label.startswith("S("):
+                return "single"
+        return kind
 
     def _print_iteration(self, iteration: int, op: PoolOperator,
                          max_grad: float, energy: float, delta: float,
@@ -1431,7 +1600,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             "dE": self._to_energy_units(delta),
             "expr": (None if expressivity is None
                      or not np.isfinite(expressivity) else float(expressivity)),
-            "npar": count(None if metrics is None else metrics.num_operators),
             "cnot": count(None if metrics is None else metrics.cnot_count),
             "1q": count(None if metrics is None else metrics.num_1q_gates),
             "depth": count(None if metrics is None else metrics.depth),
@@ -1443,7 +1611,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             value = values[key]
             width = max(width, len(self._heading(heading, e_unit)))
             if key == "operator":
-                cells.append(str(value))
+                cells.append(self._elide(str(value)))
             elif value is None:
                 cells.append(f"{'-':>{width}}")
             elif fmt == "s":

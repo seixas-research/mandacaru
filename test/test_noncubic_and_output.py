@@ -214,7 +214,7 @@ class TestAdaptOutputProtocol:
         out = str(tmp_path / "output.txt")
         adapt = _h2_adapt(h2_hamiltonian, max_iterations=6,
                           gradient_tolerance=1e-4, output=out)
-        result = adapt.run(geometry=geom)
+        result = adapt.run(geometry=geom, log_expressivity=True)
 
         parsed = parse_output(out)
 
@@ -230,15 +230,19 @@ class TestAdaptOutputProtocol:
         assert parsed["setup"]["energy_unit"] == "eV"
         assert "reference_energy_eV" in parsed["setup"]
 
-        # At least one iteration, each with all four tracked metrics.
+        # One row per iteration, every tracked property a column.
         assert len(parsed["iterations"]) == result.num_operators >= 1
-        for it in parsed["iterations"]:
+        for index, it in enumerate(parsed["iterations"], start=1):
+            assert it["index"] == index
             assert it["selected_operator"]                 # 3. selected operator
-            assert "expressivity_E" in it                  # 4. expressivity E
+            assert it["operator_kind"]
+            assert it["expressivity_E"] != "-"             # 4. expressivity E
             assert it["energy_unit"] == "eV"               # 1. eV default
-            # The pool is summarized by size; its contents go to pool.json.
-            assert it["pool"] == []
-        assert "pool_size:" in open(out, encoding="utf-8").read()
+            assert it["max_gradient"] is not None          # 2. gradient
+            assert it["cnot_count"] and it["circuit_depth"]
+        text = open(out, encoding="utf-8").read()
+        # The pool's size and type are stated once, before the table.
+        assert "pool_size:" in text and "[ITERATIONS]" in text
 
     def test_only_the_selected_operator_and_the_pool_size_are_logged(
             self, h2_hamiltonian, tmp_path):
@@ -248,14 +252,19 @@ class TestAdaptOutputProtocol:
         out = str(tmp_path / "output.txt")
         adapt = _h2_adapt(h2_hamiltonian, max_iterations=4,
                           gradient_tolerance=1e-4, output=out)
-        adapt.run()
+        result = adapt.run()
         text = open(out, encoding="utf-8").read()
-        block = text.split("[ITERATION 1]", 1)[1]
-        assert "selected_operator:" in block
-        assert f"pool_size: {len(adapt._pool_ops)}" in block
+        setup, table = text.split("[ITERATIONS]", 1)
+        # Pool type and size before the table, each stated once.
+        assert f"pool_size: {len(adapt._pool_ops)}" in setup
+        assert "pool: " in setup and "pool_class: " in setup
+        # The table names the selected operator per row and nothing else.
         assert "operator_pool:" not in text
         assert "(selected)" not in text
-        assert "  gradient: " in block                     # 2. gradient magnitude
+        rows = [l for l in table.splitlines() if l.strip()[:1].isdigit()]
+        assert len(rows) == len(result.operators)
+        for row, label in zip(rows, result.operators):
+            assert row.split()[-1] == label
 
     def test_verbose_operators_writes_the_pool_file(self, h2_hamiltonian,
                                                     tmp_path):
@@ -284,7 +293,7 @@ class TestAdaptOutputProtocol:
         adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=True,  # profile for gates
                          max_iterations=4, gradient_tolerance=1e-4, output=out)
-        adapt.run()
+        adapt.run(log_expressivity=True)   # the expressivity is opt-in
         summary = parse_output(out)["summary"]
         for key in ("optimal_energy_eV", "reference_energy_eV", "num_operators",
                     "num_parameters", "final_expressivity_E", "cnot_count",

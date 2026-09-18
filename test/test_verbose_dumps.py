@@ -22,7 +22,6 @@ from ase import Atoms
 
 from carcara import Carcara
 from carcara.algorithms import ADAPTVQE, VQE
-from carcara.algorithms.adapt_vqe import EXPRESSIVITY_DENSE_MAX_QUBITS
 from carcara.core.mapping import PauliSum
 from carcara.core.serialization import MAX_FILE_QUBITS
 from carcara.utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
@@ -176,7 +175,6 @@ class TestCalculator:
         atoms.calc = Carcara(method="adapt-vqe",
                              basis="FAO",
                              h=0.35,
-                             verbose=False,
                              verbose_operators=str(tmp_path / "pool.json"),
                              verbose_hamiltonian=str(tmp_path / "h.json"))
         atoms.get_potential_energy()
@@ -198,55 +196,59 @@ def _column(out, name):
     index = lines.index(heading)
     rows = [line.split() for line in lines[index + 2:]
             if line.strip() and line.split()[0].isdigit()]
+    if name not in columns:
+        return None                      # the column is not in this table
     return [dict(zip(columns, row))[name] for row in rows]
 
 
 class TestExpressivityColumn:
-    """The ``expr`` column, and the cost guard that decides whether to fill it.
+    """The ``expr`` column: opt-in, and absent rather than blank when off.
 
     The estimate is ``2 * EXPRESSIVITY_SAMPLES`` state preparations per
-    iteration.  On the sparse / sector backends a state is compressed and that
-    is free; on the dense backend it allocates the whole ``2**n`` vector, which
-    at 12 qubits measured 78 s *per iteration* against 0.07 s sparse.  So
-    ``"auto"`` asks only where it is cheap.
+    iteration, each applying every operator in the ansatz, so its cost is
+    linear in the ansatz and quadratic over a run.  It is a diagnostic, not a
+    result, so it is computed only when asked for.
     """
 
-    def test_small_dense_register_is_computed_and_printed(self, h2_hamiltonian,
-                                                          capsys):
-        adapt = _adapt(h2_hamiltonian, verbose=True, sparse=False)
-        assert adapt.n_qubits <= EXPRESSIVITY_DENSE_MAX_QUBITS
-        assert adapt._expressivity_wanted("auto") is True
+    def test_off_by_default(self, h2_hamiltonian, capsys):
+        adapt = _adapt(h2_hamiltonian, verbose=True)
         adapt.run()
+        out = capsys.readouterr().out
+        assert _column(out, "expr") is None
+        heading = next(l for l in out.splitlines()
+                       if l.split()[:1] == ["iter"])
+        assert "expr" not in heading.split()
+
+    def test_true_computes_and_prints_it(self, h2_hamiltonian, capsys):
+        adapt = _adapt(h2_hamiltonian, verbose=True)
+        adapt.run(log_expressivity=True)
         values = _column(capsys.readouterr().out, "expr")
         assert values and all(float(v) >= 0.0 for v in values)
 
-    def test_wide_dense_register_is_skipped(self, h2_hamiltonian, monkeypatch):
-        adapt = _adapt(h2_hamiltonian, sparse=False)
-        monkeypatch.setattr(adapt, "n_qubits",
-                            EXPRESSIVITY_DENSE_MAX_QUBITS + 1)
-        assert adapt._expressivity_wanted("auto") is False
-
-    def test_sparse_and_sector_backends_are_exempt(self, h2_hamiltonian,
-                                                   monkeypatch):
-        adapt = _adapt(h2_hamiltonian, sparse=True)
-        monkeypatch.setattr(adapt, "n_qubits",
-                            EXPRESSIVITY_DENSE_MAX_QUBITS + 10)
-        assert adapt._expressivity_wanted("auto") is True
-
-    def test_true_and_false_override_the_guard(self, h2_hamiltonian,
-                                               monkeypatch):
-        adapt = _adapt(h2_hamiltonian, sparse=False)
-        monkeypatch.setattr(adapt, "n_qubits",
-                            EXPRESSIVITY_DENSE_MAX_QUBITS + 1)
+    def test_it_is_a_plain_boolean(self, h2_hamiltonian):
+        adapt = _adapt(h2_hamiltonian)
         assert adapt._expressivity_wanted(True) is True
         assert adapt._expressivity_wanted(False) is False
 
-    def test_an_unknown_value_is_rejected(self, h2_hamiltonian):
+    @pytest.mark.parametrize("bad", ["auto", "sometimes", 1, 0, None])
+    def test_anything_else_is_rejected(self, h2_hamiltonian, bad):
+        """No automatic middle setting: the caller decides once."""
         with pytest.raises(ValueError, match="log_expressivity"):
-            _adapt(h2_hamiltonian)._expressivity_wanted("sometimes")
+            _adapt(h2_hamiltonian)._expressivity_wanted(bad)
 
-    def test_a_skipped_column_reads_as_a_dash(self, h2_hamiltonian, capsys):
+    def test_a_skipped_column_is_absent_not_blank(self, h2_hamiltonian,
+                                                  capsys):
+        """A column of nothing but "-" is worse than no column.
+
+        Whether the expressivity is computed is a per-run setting, so when it
+        is off the table simply does not carry the column.
+        """
         adapt = _adapt(h2_hamiltonian, verbose=True)
         adapt.run(log_expressivity=False)
-        values = _column(capsys.readouterr().out, "expr")
-        assert values and all(v == "-" for v in values)
+        out = capsys.readouterr().out
+        assert _column(out, "expr") is None
+        heading = next(l for l in out.splitlines()
+                       if l.split()[:1] == ["iter"])
+        assert "expr" not in heading.split()
+        # The rest of the table is unaffected.
+        assert _column(out, "|grad|")

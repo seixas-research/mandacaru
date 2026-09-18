@@ -36,8 +36,7 @@ atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
 atoms.calc = Carcara(method="vqe",
                      basis="FAO",
-                     h=0.20,
-                     verbose=False)
+                     h=0.20)
 atoms.get_potential_energy()                 # configures the solver
 
 levels = atoms.calc.energy_levels(num_states=2, restarts=4)
@@ -69,8 +68,7 @@ towards the next excited state:
 atoms.calc = Carcara(method="adapt-vqe",
                      pool="fermionic",
                      basis="FAO",
-                     h=0.20,
-                     verbose=False)
+                     h=0.20)
 atoms.get_potential_energy()
 
 levels = atoms.calc.energy_levels(num_states=2)

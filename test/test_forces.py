@@ -440,7 +440,7 @@ class TestByPartsMode:
         # gradient; the default RDM gradient does not use it.
         atoms = h2(0.74)
         atoms.calc = Carcara(method="vqe", basis="FAO",
-                                       grid=fixed_grid, verbose=False,
+                                       grid=fixed_grid,
                                        force_method="scf-response",
                                        hellmann_feynman="by-parts")
         forces = atoms.get_forces()
@@ -455,8 +455,7 @@ class TestByPartsMode:
 @needs_jax
 class TestCarcara:
     def test_implements_energy_and_forces(self):
-        calc = Carcara(method="vqe", basis="FAO", h=SPACING,
-                                 verbose=False)
+        calc = Carcara(method="vqe", basis="FAO", h=SPACING)
         assert "energy" in calc.implemented_properties
         assert "forces" in calc.implemented_properties
 
@@ -464,7 +463,6 @@ class TestCarcara:
         """The legacy mode is exactly the driver function it wraps."""
         atoms = h2(0.74)
         atoms.calc = Carcara(method="vqe", basis="FAO", grid=fixed_grid,
-                                       verbose=False,
                                        force_method="scf-response")
         forces = atoms.get_forces()
         expected = analytic_forces(h2(0.74), fixed_grid).forces
@@ -480,8 +478,7 @@ class TestCarcara:
         """
         def run(method):
             atoms = h2(0.74)
-            atoms.calc = Carcara(method="vqe", basis="FAO", grid=fixed_grid,
-                                 verbose=False, force_method=method)
+            atoms.calc = Carcara(method="vqe", basis="FAO", grid=fixed_grid, force_method=method)
             return atoms.get_forces()
 
         assert np.allclose(run("rdm"), run("scf-response"), atol=5e-3)
@@ -489,14 +486,14 @@ class TestCarcara:
     def test_energy_matches_the_bare_driver(self, fixed_grid):
         atoms = h2(0.74)
         atoms.calc = Carcara(method="vqe", basis="FAO",
-                                       grid=fixed_grid, verbose=False)
+                                       grid=fixed_grid)
         energy = atoms.get_potential_energy()
         reference = driver_energy(h2(0.74), fixed_grid)          # eV already
         assert energy == pytest.approx(reference, abs=1e-8)
 
     def test_grid_is_frozen_across_geometries(self):
         """The grid must not follow the atoms, or forces stop matching energies."""
-        calc = Carcara(method="vqe", basis="FAO", h=SPACING, verbose=False)
+        calc = Carcara(method="vqe", basis="FAO", h=SPACING)
         atoms = h2(0.74)
         atoms.center(vacuum=2.5)            # the cell is the frozen box
         atoms.calc = calc
@@ -511,7 +508,7 @@ class TestCarcara:
     def test_force_breakdown_is_exposed(self, fixed_grid):
         atoms = h2(0.74)
         atoms.calc = Carcara(method="vqe", basis="FAO",
-                                       grid=fixed_grid, verbose=False)
+                                       grid=fixed_grid)
         atoms.get_forces()
         hf, pulay = atoms.calc.get_force_breakdown()
         assert hf.shape == (2, 3) and pulay.shape == (2, 3)
@@ -520,8 +517,7 @@ class TestCarcara:
     def test_adapt_vqe_driver_also_works(self, fixed_grid):
         atoms = h2(0.74)
         atoms.calc = Carcara(method="adapt-vqe", basis="FAO",
-                                       grid=fixed_grid, pool="qeb",
-                                       verbose=False)
+                                       grid=fixed_grid, pool="qeb")
         forces = atoms.get_forces()
         # Same physics as the fixed-ansatz driver: H2 UCCSD and ADAPT both
         # reach FCI in this two-orbital space.
@@ -543,7 +539,7 @@ class TestCarcara:
                       cell=np.diag([edge, edge, edge]), pbc=True)
         # Rejected as soon as forces are requested, before any expensive
         # variational run (the energy path stays open for plane waves).
-        atoms.calc = Carcara(method="vqe", verbose=False,
+        atoms.calc = Carcara(method="vqe",
                                        basis={"name": "PW", "energy_cutoff": 60})
         with pytest.raises(NotImplementedError, match="atom-centered"):
             atoms.get_forces()

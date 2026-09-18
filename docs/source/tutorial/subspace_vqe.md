@@ -48,8 +48,7 @@ atoms.calc = Carcara(method="subspace-vqe",
                      basis="FAO",
                      h=0.20,
                      num_states=2,
-                     weights=[2.0, 1.0],
-                     verbose=False)
+                     weights=[2.0, 1.0])
 atoms.get_potential_energy()               # ASE energy = ground state (eV)
 
 result = atoms.calc.result
@@ -81,7 +80,6 @@ atoms.calc = Carcara(method="subspace-adapt-vqe",
                      h=0.20,
                      pool="fermionic",
                      num_states=2,
-                     verbose=False,
                      gradient_tolerance=1e-4,
                      max_iterations=20)
 atoms.get_potential_energy()

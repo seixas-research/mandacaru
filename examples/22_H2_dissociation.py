@@ -61,7 +61,7 @@ DISTANCES = commensurate_distances(0.42, 3.0, GRID_SPEC)
 METHOD_OPTIONS = {
     "adapt-vqe": {},
 }
-SOLVER = dict(pool="qeb", basis="FAO", optimizer="L-BFGS-B", verbose=False,
+SOLVER = dict(pool="qeb", basis="FAO", optimizer="L-BFGS-B",
               profile=False, max_iterations=10, gradient_tolerance=1e-5)
 
 

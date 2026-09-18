@@ -70,8 +70,7 @@ def calculator():
                    shots=0,
                    backend_provider="qiskit",
                    execute_circuits=False,
-                   profile=True,
-                   verbose=False)
+                   profile=True)
 
 
 # 1. Optimize locally.

@@ -304,7 +304,7 @@ class TestCalculator:
         path = str(tmp_path / "relax.json")
         atoms = h2(0.74)
         atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
-                             h=0.4, verbose=False, profile=False,
+                             h=0.4, profile=False,
                              max_iterations=6, checkpoint=path, resume=None)
         atoms.get_potential_energy()
         first = load_checkpoint(path)
@@ -313,7 +313,7 @@ class TestCalculator:
 
         # A second geometry resumes from the first one's state (same file).
         atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
-                             h=0.4, verbose=False, profile=False,
+                             h=0.4, profile=False,
                              max_iterations=8, checkpoint=path, resume=path)
         atoms.positions[1, 2] += 0.05
         atoms.get_potential_energy()

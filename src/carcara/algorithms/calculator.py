@@ -28,8 +28,7 @@ come from a quantum variational eigensolver:
     water.calc = Carcara(method="adapt-vqe",
                          basis="FAO",
                          h=0.30,
-                         frozen_core=True,
-                         verbose=False)
+                         frozen_core=True)
     BFGS(water).run(fmax=0.05)
 
 The run result of the most recent evaluation is available uniformly on
@@ -246,7 +245,7 @@ class Carcara(Calculator):
                  include_pulay: bool = True, force_method: str = "rdm",
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
-                 scf_iterations: int = 40, verbose: bool = True,
+                 scf_iterations: int = 40,
                  measurement_provider=None,
                  **solver_kwargs):
         Calculator.__init__(self)
@@ -262,7 +261,18 @@ class Carcara(Calculator):
         self.hellmann_feynman = str(hellmann_feynman)
         self.orbital_delta = orbital_delta
         self.scf_iterations = int(scf_iterations)
-        self.verbose = bool(verbose)
+        if "verbose" in solver_kwargs:
+            # Removed deliberately, and refused loudly rather than ignored: a
+            # `verbose=False` in a script silences the run trace *and* leaves
+            # the ADAPT iteration table unwritten to the terminal, which is a
+            # trap -- the run looks like it produced no output.  The trace is
+            # always printed now; use `output=` for the structured log file.
+            raise TypeError(
+                "Carcara() no longer takes `verbose`: the run trace is always "
+                "printed.  Remove the argument.  The structured per-iteration "
+                "log is written with `output=<path>`, and the operator pool "
+                "and Hamiltonian with `verbose_operators=` / "
+                "`verbose_hamiltonian=`.")
         self.solver_kwargs = dict(solver_kwargs)
         self.measurement_provider = measurement_provider
         #: Energy, RDMs and expectation values of the last measured state.
@@ -335,7 +345,7 @@ class Carcara(Calculator):
 
     def _make_solver(self, grid):
         return self._solver_class(basis=self.basis, grid=grid, h=self.h,
-                                  verbose=self.verbose, **self.solver_kwargs)
+                                  **self.solver_kwargs)
 
     def run(self, **run_kwargs):
         """Run the solver in **direct mode** (no geometry) and return its result.
@@ -365,7 +375,7 @@ class Carcara(Calculator):
         return interaction_energy(atoms, fragments, charges, charge=charge,
                                   method=self.method, basis=self.basis,
                                   h=self.h, grid=self._grid,
-                                  verbose=self.verbose, **options)
+                                  **options)
 
     def energy_levels(self, num_states: int = 2, **solver_kwargs):
         """Excited states by variational deflation (see :mod:`carcara.algorithms.deflation`).

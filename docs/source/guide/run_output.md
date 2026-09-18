@@ -7,8 +7,9 @@ print.
 
 ## The standard-output trace
 
-`verbose=True` (the default) prints a header, one row per ADAPT iteration, and
-a closing summary:
+A run always prints a header, one row per ADAPT iteration, and a closing
+summary. There is no flag to silence it: a `verbose=False` that hid the whole
+trace is exactly how a run comes to look as though it produced nothing.
 
 ```text
 ======================================================================
@@ -41,7 +42,7 @@ Each iteration is one row, one column per property computed at that step:
 | `\|grad\|` | Largest pool gradient; the operator with this gradient is the one selected. Convergence is when it falls below `gradient_tolerance`. |
 | `E (eV)` | Energy after the inner re-optimization (Hartree with `atomic_units=True`). |
 | `dE` | Change from the previous step. |
-| `expr` | Expressivity of the grown ansatz: KL divergence from the Haar distribution over the number-conserving sector. It falls as the ansatz specializes. Reads `-` where it is not computed: by default (`run(log_expressivity="auto")`) it is computed on the sparse and sector backends at any width and on the dense backend up to 10 qubits, because on a *dense* 12-qubit register the estimate costs 78 s per iteration against 0.07 s sparse. `True` computes it regardless, `False` never. |
+| `expr` | Expressivity of the grown ansatz: KL divergence from the Haar distribution over the number-conserving sector. It falls as the ansatz specializes. **Off by default** and the column is then absent rather than blank; `run(log_expressivity=True)` adds it. It is a diagnostic, not a result, and not cheap: `2 x 400` state preparations per iteration, each applying every operator in the ansatz, so the cost is linear in the ansatz and quadratic over a run (0.010 / 0.031 / 0.059 / 0.125 s at 1 / 4 / 8 / 16 operators, 6 qubits). |
 | `npar` | Variational parameters in the ansatz. Equal to `iter`, so it is the first column dropped on a narrow terminal. |
 | `cnot` | CNOT gates after compiling to the native gate set. |
 | `1q` | Single-qubit gates in the same compilation. |

@@ -38,8 +38,7 @@ atoms = Atoms("H2",
 atoms.calc = Carcara(method="vqe",
                      basis="FAO",
                      mapping="jordan_wigner",
-                     h=0.20,
-                     verbose=False)
+                     h=0.20)
 
 # get_potential_energy() builds the Hamiltonian + UCCSD ansatz and runs the
 # ground-state VQE, leaving the calculator configured for energy_levels().

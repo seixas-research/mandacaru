@@ -45,7 +45,7 @@ def dimer(symbols, distance, cell):
 def calculator(h):
     return Carcara(method="adapt-vqe", basis=BASIS, h=h, pool="fermionic",
                    optimizer="L-BFGS-B", max_iterations=80,
-                   gradient_tolerance=1e-5, profile=False, verbose=False)
+                   gradient_tolerance=1e-5, profile=False)
 
 
 def bond_force(forces):
@@ -144,7 +144,7 @@ def test_two_qubit_register_forces_exact_and_measured(tmp_path):
         atoms.calc = Carcara(method="adapt-vqe", basis="PAW", h=0.25,
                              pool="fermionic", optimizer="L-BFGS-B",
                              max_iterations=10, gradient_tolerance=1e-6,
-                             profile=False, verbose=False, **options)
+                             profile=False, **options)
         return atoms.get_forces(), atoms.get_potential_energy(), atoms.calc
 
     jw, e_jw, _ = run(mapping="jordan_wigner")
@@ -182,8 +182,7 @@ def water(cell=8.0):
 def water_calculator(h=0.25):
     return Carcara(method="adapt-vqe", basis={"name": "PAW", "size": "SZ"},
                    h=h, pool="fermionic", optimizer="L-BFGS-B",
-                   max_iterations=60, gradient_tolerance=1e-4, profile=False,
-                   verbose=False)
+                   max_iterations=60, gradient_tolerance=1e-4, profile=False)
 
 
 @pytest.fixture(scope="module")

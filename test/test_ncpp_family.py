@@ -287,7 +287,7 @@ class TestPinnedEnergies:
         atoms = SYSTEMS[name]()
         atoms.calc = Carcara(method="adapt-vqe", basis="ncpp",
                              h=PINNED[name]["h"], pool="qeb",
-                             max_iterations=4, verbose=False, profile=False)
+                             max_iterations=4, profile=False)
         atoms.get_potential_energy()
         assert atoms.calc.n_qubits == 4
         # The pins are Hartree; the result is eV.
@@ -531,9 +531,9 @@ class TestDispatch:
 
     def test_calculator_dry_run(self):
         atoms = h2()
-        calc = Carcara(method="vqe", basis="ncpp-tm", h=H2_H, verbose=False)
+        calc = Carcara(method="vqe", basis="ncpp-tm", h=H2_H)
         assert calc.dry_run(atoms).n_qubits == 4
         atoms.calc = Carcara(method="adapt-vqe", basis={"name": "TM"},
-                             h=H2_H, dry_run=True, verbose=False)
+                             h=H2_H, dry_run=True)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4

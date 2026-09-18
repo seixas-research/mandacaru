@@ -34,6 +34,32 @@ The `/en/latest/` manual follows the development sources. If an option in that
 manual is unavailable in an older installed release, use a matching source
 checkout or select the documentation version for your release.
 
+## Pseudopotential datasets
+
+The NCPP datasets ship with the package. The **ONCVPSP** and **PAW** ones do
+not — about 110 MB and 190 MB for all 92 elements — so they live in their own
+repositories, and the library holds a symbolic link to a checkout:
+
+```bash
+git clone https://github.com/seixas-research/carcara-paw.git
+carcara --link-paw carcara-paw
+
+git clone https://github.com/seixas-research/carcara-oncvpsp.git
+carcara --link-oncvpsp carcara-oncvpsp
+
+carcara --pseudo-status        # what is linked, and how many datasets each serves
+```
+
+Each command links the directory and then loads one dataset through the normal
+loader to prove the link works, exiting non-zero if it does not. Re-running with
+a new path moves the link, so the data repository can be relocated freely; a
+real, non-empty `library/paw/` directory is refused rather than deleted.
+
+Without this, `basis="PAW"` and `basis="ONCVPSP"` raise a `FileNotFoundError`
+that repeats these commands. `basis="NCPP"` and the all-electron bases (`FAO`,
+`NAO`, `NAO-AE`, the Gaussian families) need nothing extra. Set
+`CARCARA_PSEUDO_PATH` to serve the library from somewhere else entirely.
+
 ## Numerical backend
 
 Carcará's integral kernels are written in C. Nothing has to be built by hand:

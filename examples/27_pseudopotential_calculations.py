@@ -103,8 +103,7 @@ for label, basis in FAMILIES:
     start = time.perf_counter()
     atoms.calc = Carcara(method="vqe",
                          basis=basis,
-                         grid=grid,
-                         verbose=False)
+                         grid=grid)
     energy = atoms.get_potential_energy()
     print(f"  {label:<26} E = {energy:>12.4f} eV   "
           f"{atoms.calc.n_qubits} qubits   "
@@ -134,8 +133,7 @@ def isolated_force(spacing, use_pseudopotentials):
                          pool="qeb",
                          max_iterations=6,
                          gradient_tolerance=1e-3,
-                         profile=False,
-                         verbose=False)
+                         profile=False)
     atoms.get_potential_energy()
     return float(np.abs(atoms.get_forces()).max())
 
@@ -178,7 +176,6 @@ water.calc = Carcara(method="adapt-vqe",
                      pool="qeb",
                      max_iterations=12,
                      gradient_tolerance=1e-3,
-                     verbose=False,
                      profile=False)
 energy = water.get_potential_energy()
 print(f"  E = {energy:.4f} eV   {water.calc.n_qubits} qubits   "

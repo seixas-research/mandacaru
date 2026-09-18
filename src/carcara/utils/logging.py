@@ -105,6 +105,8 @@ class AdaptOutputLogger:
         self.log_pool = bool(log_pool)
         #: Whether the iteration table's heading has been written yet.
         self._table_open = False
+        #: Columns of this run's table, fixed when the first row is written.
+        self._columns = None
         # Truncate any previous run and keep the handle open for live appends.
         self._fh = open(path, "w", encoding="utf-8")
 
@@ -213,17 +215,22 @@ class AdaptOutputLogger:
     ITERATION_COLUMNS = (("iter", "iter", 4, "d"),
                          ("energy", "energy", 18, ".10f"),
                          ("expr", "expr", 10, ".6f"),
-                         ("type", "type", 10, "s"),
+                         # "fermionic-double" is 16 characters: the log keeps
+                         # the pool's own kind verbatim (the stdout table
+                         # strips the pool prefix, which it can because the
+                         # pool is named in its header), so the column has to
+                         # be wide enough or every later column shifts.
+                         ("type", "type", 17, "s"),
                          ("grad", "|grad|", 13, ".6e"),
                          ("cnot", "cnot", 7, "s"),
                          ("depth", "depth", 7, "s"),
                          ("1q", "1q", 7, "s"),
-                         ("npar", "npar", 5, "s"),
                          ("operator", "operator", 0, "s"))
 
     def _iteration_heading(self, energy_unit: str) -> str:
         cells = []
-        for key, heading, width, _fmt in self.ITERATION_COLUMNS:
+        for key, heading, width, _fmt in (self._columns
+                                          or self.ITERATION_COLUMNS):
             label = f"energy ({energy_unit})" if key == "energy" else heading
             cells.append(label if key == "operator"
                          else f"{label:>{max(width, len(label))}}")
@@ -269,6 +276,12 @@ class AdaptOutputLogger:
         selected = pool_operators[selected_index]
 
         if not self._table_open:
+            # Whether the expressivity is computed is a per-run setting, so the
+            # first row decides for the whole table: not computed there means
+            # not computed anywhere, and an all-"-" column is worse than none.
+            self._columns = tuple(
+                c for c in self.ITERATION_COLUMNS
+                if c[0] != "expr" or expressivity is not None)
             heading = self._iteration_heading(energy_unit)
             self._emit("[ITERATIONS]", heading, "-" * len(heading))
             self._table_open = True
@@ -285,11 +298,11 @@ class AdaptOutputLogger:
             "cnot": count(getattr(metrics, "cnot_count", None)),
             "depth": count(getattr(metrics, "depth", None)),
             "1q": count(getattr(metrics, "num_1q_gates", None)),
-            "npar": str(int(num_parameters)),
             "operator": selected.label if self.detailed else "(omitted)",
         }
         cells = []
-        for key, heading, width, fmt in self.ITERATION_COLUMNS:
+        for key, heading, width, fmt in (self._columns
+                                         or self.ITERATION_COLUMNS):
             label = f"energy ({energy_unit})" if key == "energy" else heading
             width = max(width, len(label))
             value = values[key]
@@ -466,7 +479,7 @@ def parse_output(path: str) -> dict:
                     "energy_unit": energy_unit,
                     "expressivity_E": record.get("expr", "-"),
                     "max_gradient": number(record.get("|grad|", "")),
-                    "num_parameters": record.get("npar", "-"),
+                    "num_parameters": record.get("iter", "-"),
                     "cnot_count": record.get("cnot", "-"),
                     "circuit_depth": record.get("depth", "-"),
                     "one_qubit_gates": record.get("1q", "-"),

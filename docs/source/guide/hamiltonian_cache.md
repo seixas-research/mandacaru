@@ -176,16 +176,14 @@ atoms.calc = Carcara(method="adapt-vqe",
                      basis="FAO",
                      h=0.25,
                      save_hamiltonian="lih.parquet",
-                     max_iterations=1,
-                     verbose=False)
+                     max_iterations=1)
 atoms.get_total_energy()
 
 # ... compare every pool against the *same* operator.
 for pool in ("fermionic", "qubit", "qeb", "ceo"):
     result = Carcara(method="adapt-vqe",
                      pool=pool,
-                     load_hamiltonian="lih.parquet",
-                     verbose=False).run()
+                     load_hamiltonian="lih.parquet").run()
     print(f"{pool:<10} E = {result.optimal_energy:.6f} eV  "
           f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
 ```

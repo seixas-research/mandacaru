@@ -219,7 +219,6 @@ class TestVariationalPayoff:
                                  optimizer="L-BFGS-B",
                                  max_iterations=40,
                                  gradient_tolerance=1e-7,
-                                 verbose=False,
                                  profile=False)
             energies[k] = atoms.get_potential_energy()
             assert atoms.calc.n_qubits == (4 if k == 0 else 8)

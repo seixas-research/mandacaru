@@ -268,7 +268,7 @@ class TestEarlyStop:
     def test_ase_hook_stops_before_the_hamiltonian(self, monkeypatch):
         _forbid_execution(monkeypatch)
         atoms = _h2()
-        atoms.calc = Carcara(dry_run=True, verbose=False)
+        atoms.calc = Carcara(dry_run=True)
         energy = atoms.get_potential_energy()
         assert np.isnan(energy)
         assert atoms.calc.result is None
@@ -278,7 +278,7 @@ class TestEarlyStop:
     def test_forces_are_nan_in_a_dry_run(self, monkeypatch):
         _forbid_execution(monkeypatch)
         atoms = _h2()
-        atoms.calc = Carcara(dry_run=True, verbose=False)
+        atoms.calc = Carcara(dry_run=True)
         forces = atoms.get_forces()
         assert forces.shape == (2, 3) and np.isnan(forces).all()
 
@@ -287,8 +287,7 @@ class TestEarlyStop:
     def test_every_method_honors_dry_run(self, monkeypatch, method):
         _forbid_execution(monkeypatch)
         atoms = _h2()
-        atoms.calc = Carcara(method=method, dry_run=True,
-                                       verbose=False)
+        atoms.calc = Carcara(method=method, dry_run=True)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.method == method
 
@@ -361,20 +360,19 @@ class TestEarlyStop:
     def test_reserved_device_and_qpu_do_not_raise(self, monkeypatch):
         _forbid_execution(monkeypatch)
         atoms = _h2()
-        atoms.calc = Carcara(dry_run=True, verbose=False,
+        atoms.calc = Carcara(dry_run=True,
                                        device="ibm-quantum")
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.device == "ibm-quantum"
         # A Braket QPU with shots: the shot path would build a provider.
         atoms.calc = Carcara(method="vqe", dry_run=True,
-                                       verbose=False,
                                        device="braket-ionq-aria", shots=100)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.fits_device is True
 
     def test_verbose_dry_run_prints_the_summary(self, capsys):
         atoms = _h2()
-        atoms.calc = Carcara(dry_run=True, verbose=True)
+        atoms.calc = Carcara(dry_run=True)
         atoms.get_potential_energy()
         out = capsys.readouterr().out
         assert "QUBITS REQUIRED   : 4" in out
@@ -382,7 +380,7 @@ class TestEarlyStop:
 
     def test_calculator_dry_run_method_is_one_off(self, monkeypatch):
         _forbid_execution(monkeypatch)
-        calc = Carcara(frozen_core=True, verbose=False)
+        calc = Carcara(frozen_core=True)
         est = calc.dry_run(_boxed("H2O"))
         assert est.n_qubits == 12
         assert calc.dry_run_result is est and calc.result is None

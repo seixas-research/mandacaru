@@ -292,7 +292,6 @@ def solver_options(args) -> dict:
     basis = args.basis if not args.basis_option else \
         {"name": args.basis, **dict(args.basis_option)}
     options = dict(method=args.method, basis=basis, h=args.h,
-                   verbose=not (args.quiet or args.json),
                    charge=args.charge, spin=args.spin,
                    frozen_core=args.frozen_core,
                    frozen_orbitals=args.frozen_orbitals,
@@ -339,13 +338,26 @@ def run_dry(calc, atoms, args) -> int:
 
 
 def run_full(calc, atoms, args) -> int:
-    """Run the variational calculation and print the energy (eV)."""
-    if atoms is None:
-        result = calc.run()
-    else:
-        atoms.calc = calc
-        atoms.get_potential_energy()
-        result = calc.result
+    """Run the variational calculation and print the energy (eV).
+
+    ``--quiet`` / ``--json`` suppress the solver's trace by capturing stdout
+    for the duration of the run rather than by asking the calculator to stay
+    silent: :class:`~carcara.algorithms.Carcara` has no ``verbose`` flag, on
+    purpose, because a silenced run is indistinguishable from one that printed
+    nothing at all.  The final energy below is printed either way.
+    """
+    import contextlib
+    import io
+
+    quiet = bool(args.quiet or args.json)
+    sink = io.StringIO() if quiet else None
+    with contextlib.redirect_stdout(sink) if quiet else contextlib.nullcontext():
+        if atoms is None:
+            result = calc.run()
+        else:
+            atoms.calc = calc
+            atoms.get_potential_energy()
+            result = calc.result
     energy = float(result.optimal_energy)
     unit = getattr(result, "energy_unit", "eV")
     print(f"\nFinal energy: {energy:.8f} {unit}")

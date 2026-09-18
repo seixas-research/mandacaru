@@ -28,9 +28,7 @@ atoms.calc = Carcara(
     grid=grid,
     mapping="jordan_wigner",
     optimizer=Optimizer("L-BFGS-B", maxiter=500),
-    execute_circuits=False,
-    verbose=False,
-)
+    execute_circuits=False)
 energy_ev = atoms.get_potential_energy()
 print(f"Molecular total energy: {energy_ev:.6f} eV")
 print(f"Optimiser succeeded: {atoms.calc.result.success}")

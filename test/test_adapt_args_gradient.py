@@ -229,7 +229,7 @@ class TestVerbosePauliOutput:
         out = capsys.readouterr().out
         # The Hamiltonian is summarized by size only -- its Pauli expansion runs
         # to thousands of lines for a realistic active space.
-        assert "Qubit Hamiltonian: 15 Pauli terms" in out
+        assert "qubit Hamiltonian" in out and "15 Pauli terms" in out
         assert "* ZIII" not in out
         # Nor is the selected operator's generator dumped per iteration.
         assert "ansatz operator (Pauli strings)" not in out
@@ -237,8 +237,8 @@ class TestVerbosePauliOutput:
         # The operator is still reachable programmatically.
         assert "ZIII" in adapt.hamiltonian.simplify().terms
         # Nor is the pool listed: its name and size are all the trace carries.
-        assert "pool: ceo |" in out
-        assert f"{len(adapt._pool_ops)} operators" in out
+        assert "operator pool" in out
+        assert f"ceo ({len(adapt._pool_ops)} operators)" in out
         assert "operator_pool" not in out
 
     def test_iterations_are_single_aligned_lines(self, h2_hamiltonian, capsys,
@@ -247,7 +247,7 @@ class TestVerbosePauliOutput:
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=True, verbose=True,
                          max_iterations=3, gradient_tolerance=1e-6)
-        result = adapt.run()
+        result = adapt.run(log_expressivity=True)   # the `expr` column is opt-in
         out = capsys.readouterr().out
 
         # A column heading precedes the per-iteration rows: one column per
@@ -271,10 +271,24 @@ class TestVerbosePauliOutput:
             fields = row.split()
             assert int(fields[0]) == index
             assert len(fields) == len(columns)
-            assert fields[-1] in result.operators          # the operator label
+            # A long label is elided (MAX_LABEL_WIDTH) so it cannot cost the
+            # data columns; match its stem against the grown operators.
+            stem = fields[-1].rstrip("\u2026")
+            assert any(op.startswith(stem) for op in result.operators)
             cell = dict(zip(columns, fields))
-            assert result.iterations[index - 1].operator_kind.endswith(
-                cell["type"])
+            # The `type` cell drops the pool-name prefix
+            # ("fermionic-double" -> "double").  A pool whose kind *is* the
+            # pool name (CEO tags everything "ceo") would make the column a
+            # constant copy of the header, so there it is read off the label.
+            step = result.iterations[index - 1]
+            shown = cell["type"]
+            if step.operator_kind.endswith(shown):
+                pass                                   # prefix stripped
+            else:
+                assert shown in ("single", "double")
+                double = "{D(" in step.operator_label \
+                    or step.operator_label.startswith("D(")
+                assert double == (shown == "double")
             assert float(cell["expr"]) >= 0.0
             assert int(cell["1q"]) > 0
             assert int(cell["cnot"]) > 0 and int(cell["depth"]) > 0
@@ -310,12 +324,12 @@ class TestVerbosePauliOutput:
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=True, verbose=True,
                          max_iterations=2, gradient_tolerance=1e-6)
-        adapt.run()
+        adapt.run(log_expressivity=True)            # the `expr` column is opt-in
         out = capsys.readouterr().out
         heading = next(line for line in out.splitlines()
                        if line.split()[:1] == ["iter"])
         assert set(heading.replace("E (eV)", "energy").split()) == {
-            "iter", "|grad|", "energy", "dE", "expr", "npar", "cnot", "1q",
+            "iter", "|grad|", "energy", "dE", "expr", "cnot", "1q",
             "depth", "type", "operator"}
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):

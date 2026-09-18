@@ -98,7 +98,6 @@ atoms.calc = Carcara(method="adapt-vqe",
                      pool="qeb",
                      basis="FAO",
                      h=0.35,
-                     verbose=False,
                      max_iterations=1,
                      save_hamiltonian=os.path.join( DATA, "h2_braket.parquet"))
 atoms.get_total_energy()

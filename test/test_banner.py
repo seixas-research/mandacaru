@@ -41,6 +41,15 @@ class TestBanner:
         assert "_write" in src
 
 
+@pytest.fixture(autouse=True)
+def fresh_banner():
+    """The banner prints once per process; these tests each need a fresh one."""
+    from carcara.algorithms import base
+    base._BANNER_SHOWN = False
+    yield
+    base._BANNER_SHOWN = False
+
+
 class TestBannerInRun:
     def test_verbose_run_shows_banner_before_header(self, h2_hamiltonian, capsys):
         VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=True).run()

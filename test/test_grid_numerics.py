@@ -206,11 +206,9 @@ class TestSpectralKinetic:
         from ase import Atoms
         from carcara.algorithms import Carcara
         h2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
-        h2.calc = Carcara(method="vqe", basis="FAO", h=0.35, kinetic="spectral",
-                          verbose=False, optimizer="L-BFGS-B")
+        h2.calc = Carcara(method="vqe", basis="FAO", h=0.35, kinetic="spectral", optimizer="L-BFGS-B")
         e_sp = h2.get_potential_energy()
-        h2.calc = Carcara(method="vqe", basis="FAO", h=0.35, kinetic="fd",
-                          verbose=False, optimizer="L-BFGS-B")
+        h2.calc = Carcara(method="vqe", basis="FAO", h=0.35, kinetic="fd", optimizer="L-BFGS-B")
         e_fd = h2.get_potential_energy()
         assert abs(e_sp - e_fd) < 2.0                # same physics, finite grid
         from carcara.algorithms import VQE

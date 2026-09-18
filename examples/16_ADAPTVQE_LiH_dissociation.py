@@ -112,7 +112,6 @@ def solve(distance, pool, mapping):
                          mapping=mapping,
                          h=GRID_SPACING,
                          optimizer="L-BFGS-B",
-                         verbose=False,
                          profile=False,
                          max_iterations=MAX_ITERATIONS,
                          gradient_tolerance=1e-5)

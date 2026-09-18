@@ -76,9 +76,7 @@ atoms.calc = Carcara(
     mapping="jordan_wigner",
     grid=grid,
     optimizer=Optimizer("L-BFGS-B", maxiter=500),
-    execute_circuits=False,
-    verbose=False,
-)
+    execute_circuits=False)
 
 print(atoms.calc.dry_run(atoms))
 energy_ev = atoms.get_potential_energy()

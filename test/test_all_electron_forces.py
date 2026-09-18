@@ -51,8 +51,7 @@ def fixed_state_energy(atoms, basis, grid, h, algebra, **options):
 def analytic_and_numerical(atoms, basis, grid, h, step=0.002, **options):
     """``(analytic forces, finite-difference forces)`` in eV/Angstrom."""
     atoms = atoms.copy()
-    atoms.calc = Carcara(method="adapt-vqe", basis=basis, grid=grid, h=h,
-                         verbose=False, profile=False,
+    atoms.calc = Carcara(method="adapt-vqe", basis=basis, grid=grid, h=h, profile=False,
                          gradient_tolerance=1e-6, **options)
     forces = atoms.get_forces()
     solver = atoms.calc.solver

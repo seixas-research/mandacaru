@@ -51,8 +51,7 @@ atoms.calc = Carcara(method="adapt-vqe",
                      pool="fermionic",
                      optimizer="L-BFGS-B",
                      gradient_tolerance=1e-6,
-                     checkpoint=CHECKPOINT,       # written after every operator
-                     verbose=False)
+                     checkpoint=CHECKPOINT)       # written after every operator
 energy = atoms.get_potential_energy()
 print(f"ADAPT-VQE: E = {energy:.6f} eV with "
       f"{atoms.calc.result.num_operators} operators -> {CHECKPOINT}")

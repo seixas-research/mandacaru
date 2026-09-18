@@ -79,7 +79,7 @@ class TestPerElementBasis:
 
     def test_calculator_accepts_the_mapping(self):
         h2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
-        h2.calc = Carcara(basis={"H": "STO-4G"}, dry_run=True, verbose=False)
+        h2.calc = Carcara(basis={"H": "STO-4G"}, dry_run=True)
         assert np.isnan(h2.get_potential_energy())
         assert h2.calc.dry_run_result.n_qubits == 4
 
@@ -162,7 +162,7 @@ class TestInteractionEnergy:
 
     def test_calculator_method_reuses_its_options(self):
         atoms = _two_h2(5.0)
-        calc = Carcara(method="vqe", basis="FAO", h=0.4, verbose=False,
+        calc = Carcara(method="vqe", basis="FAO", h=0.4,
                        optimizer="L-BFGS-B")
         result = calc.interaction_energy(atoms, [[0, 1], [2, 3]])
         assert result.method == "vqe" and abs(result.in_units("eV")) < 0.05

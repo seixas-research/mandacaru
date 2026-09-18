@@ -45,25 +45,38 @@ def _pool(n_qubits, count=3):
 
 @pytest.mark.parametrize("n_qubits", [DETAILED_LOG_MAX_QUBITS,
                                       DETAILED_LOG_MAX_QUBITS + 1, 60])
-def test_output_log_omits_the_selected_operator_above_twenty_qubits(tmp_path,
-                                                                    n_qubits):
+def test_output_log_omits_the_operator_label_above_twenty_qubits(tmp_path,
+                                                                 n_qubits):
+    """Above the limit the table keeps every number and withholds the label.
+
+    The log is a table now, so there is no per-iteration block to trim: the
+    numbers are one row either way and only the ``operator`` cell changes.
+    """
     pool = _pool(n_qubits)
     path = tmp_path / "output.txt"
     with AdaptOutputLogger(str(path), n_qubits=n_qubits) as log:
         log.write_metadata()
+        log.write_optimizer_setup("COBYLA", -1.0,
+                                  extra={"pool_size": len(pool)})
         log.write_iteration(1, pool, [0.1, 0.3, 0.2], 1, None, -1.0, 1)
         log.write_summary(True, -1.0, 1, operator_sequence=["op1"])
     text = path.read_text()
     iteration = parse_output(str(path))["iterations"][0]
     detailed = n_qubits <= DETAILED_LOG_MAX_QUBITS
-    assert ("selected_operator:" in text) == detailed
+
+    # The row always carries the tracked numbers.
+    assert iteration["energy"] == -1.0
+    assert iteration["max_gradient"] == pytest.approx(0.3)
+    # Only the label is withheld, and with it the summary's sequence.
+    assert ("op1" in text) == detailed
+    assert ("(omitted)" in text) == (not detailed)
     assert ("operator_sequence:" in text) == detailed
-    assert ("X" * n_qubits in text) == detailed
-    # The pool itself is never listed, at any width: only its size.
+    # Pauli expansions are never written, at any width.
+    assert "X" * n_qubits not in text
     assert "operator_pool:" not in text
-    assert iteration["energy"] == -1.0 and "pool_size: 3" in text
+    # The pool's size is stated once, in the setup block.
+    assert "pool_size: 3" in text
     if not detailed:
-        assert iteration["max_gradient"] == pytest.approx(0.3)
         assert "operator_details: omitted" in text
 
 
@@ -74,5 +87,7 @@ def test_log_pool_restores_the_listing(tmp_path):
         log.write_metadata()
         log.write_iteration(1, _pool(4), [0.1, 0.3, 0.2], 1, None, -1.0, 1)
     text = path.read_text()
+    # The opt-in listing is appended under the row it belongs to.
     assert "operator_pool:" in text and "(selected)" in text
-    assert len(parse_output(str(path))["iterations"][0]["pool"]) == 3
+    assert text.count("|grad|=") == 3
+    assert len(parse_output(str(path))["iterations"]) == 1

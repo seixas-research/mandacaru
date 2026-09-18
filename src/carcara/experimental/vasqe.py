@@ -231,8 +231,12 @@ class VASQE(ADAPTVQE):
             temp = (f"tau: {self.initial_temperature:g} -> "
                     f"{self.final_temperature:g} ({self.schedule}, "
                     f"{horizon} steps)")
+        width = self.HEADER_LABEL_WIDTH
         return [*super()._extra_header_lines(),
-                f"VASQE stochastic selection  |  {temp}  |  seed: {self.seed}"]
+                "-" * 70,
+                f"{'operator selection':<{width}}stochastic (VASQE)",
+                f"{'temperature':<{width}}{temp}",
+                f"{'seed':<{width}}{self.seed}"]
 
 
 # --------------------------------------------------------------------------- #

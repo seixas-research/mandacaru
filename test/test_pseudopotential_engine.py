@@ -244,8 +244,7 @@ class TestHamiltonianAndDrivers:
         """H2 with pseudopotentials: two valence electrons, four qubits."""
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid,
-                             verbose=False)
+        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid)
         energy = atoms.get_potential_energy()
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 4
@@ -259,8 +258,7 @@ class TestPseudopotentialForces:
     def test_forces_are_finite_and_balanced(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid,
-                             verbose=False)
+        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid)
         forces = atoms.get_forces()
         assert np.isfinite(forces).all()
         # Newton's third law on a two-atom molecule.
@@ -269,8 +267,7 @@ class TestPseudopotentialForces:
     def test_force_breakdown_is_available(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid,
-                             verbose=False)
+        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid)
         atoms.get_forces()
         local, pulay = atoms.calc.get_force_breakdown()
         assert local.shape == (2, 3) and pulay.shape == (2, 3)
@@ -296,8 +293,7 @@ class TestGridPathologyIsCured:
         atoms = lone_atom("O", grid)
         atoms.calc = Carcara(
             method="adapt-vqe", basis="NCPP" if pseudo else "FAO",
-            grid=grid, frozen_core=not pseudo, pool="qeb",
-            verbose=False, max_iterations=6, gradient_tolerance=1e-3,
+            grid=grid, frozen_core=not pseudo, pool="qeb", max_iterations=6, gradient_tolerance=1e-3,
             profile=False)
         atoms.get_potential_energy()
         return float(np.abs(atoms.get_forces()).max())

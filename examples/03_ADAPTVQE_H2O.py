@@ -91,9 +91,9 @@ atoms.calc = Carcara(method="adapt-vqe",
                      gradient_tolerance=1e-3,
                      profile=False,   # skip per-iteration circuit transpile
                      output=os.path.join(DATA, "output_H2O.txt"))
-# (expressibility sampling is cheap here -- this active space runs on the
-#  sparse backend, where a state preparation does not allocate 2**12 amplitudes
-#  -- so the default log_expressivity="auto" computes it.)
+# (expressibility sampling is off by default -- it is a diagnostic whose cost
+#  grows quadratically over a run.  Pass run_options={"log_expressivity": True}
+#  to add the `expr` column.)
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)

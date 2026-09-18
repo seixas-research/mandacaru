@@ -311,8 +311,7 @@ class BlochCalculator:
         from .calculator import Carcara
 
         atoms = self.supercell(kmesh)
-        options = dict(basis=self.basis, mapping=self.mapping, h=self.h,
-                       verbose=False)
+        options = dict(basis=self.basis, mapping=self.mapping, h=self.h)
         options.update(solver_kwargs)
         atoms.calc = Carcara(method=self.method,
                              **options)

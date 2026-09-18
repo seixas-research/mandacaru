@@ -96,7 +96,7 @@ def calculate(output: Path, spacing: float, half_width: float,
                             gradient="analytic", gradient_tolerance=1e-5,
                             max_iterations=max_iterations,
                             sparse=True, sector=(pool != "qubit"),
-                            execute_circuits=False, profile=False, verbose=False,
+                            execute_circuits=False, profile=False,
                         )
                         if pool == POOLS[0]:
                             calc = Carcara(
