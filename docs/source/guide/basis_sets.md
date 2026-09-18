@@ -200,6 +200,62 @@ carbon has 14 functions, not the 15 of a Cartesian-`d` program. And Pople's
 published, while `6-31G*` and `6-311G*` polarise every atom beyond helium.
 
 
+## Virtual levels for the FAO basis
+
+`FAO` is the cheapest basis in Carcará: one analytic hydrogenic orbital per
+**occupied** subshell, carrying the atom's bare nuclear charge (H → 1s; Li →
+1s, 2s; C → 1s, 2s, 2p). That minimality is also its limit — a correlated
+method has almost nothing to correlate *into*. H₂ in the occupied-only FAO
+basis is 2 spatial orbitals, 4 qubits, and a single double excitation.
+
+`virtual_orbitals` buys room above the occupied set:
+
+```python
+atoms.calc = Carcara(method="adapt-vqe",
+                     basis={"name": "FAO", "virtual_orbitals": 1},
+                     h=0.30)
+```
+
+It appends the *k* lowest **unoccupied** subshells of each atom, in aufbau
+order and with the same bare Z: hydrogen gains `2s`, carbon `3s`, iron `4p`. A
+partially filled subshell counts as occupied — carbon's `2p²` is already a
+basis shell, so carbon's first virtual level is `3s`, not the empty half of
+`2p`. The default is `0`, which is the historical minimal basis exactly.
+
+**A level is a whole subshell.** `virtual_orbitals` counts levels, not
+functions, so one virtual `p` level adds three functions. Half a shell would
+break the atom's spherical symmetry and make the energy depend on how the
+molecule happens to be oriented in its box, so every appended level carries all
+its `m` components. What that costs on hydrogen:
+
+| `virtual_orbitals` | levels added | functions per H | H₂ qubits |
+|---|---|---|---|
+| `0` | – | 1 | 4 |
+| `1` | 2s | 2 | 8 |
+| `2` | 2s, 2p | 5 | 20 |
+| `3` | 2s, 2p, 3s | 6 | 24 |
+
+`BasisSet.build("FAO", virtual_orbitals=k).function_count("H")` reports it for
+any element, and the [dry run](dry_run.md) reports the qubit total before
+anything is integrated.
+
+The payoff is variational: the smaller basis is a strict subset of the larger,
+so the correlated energy must fall. H₂ at 0.74 Å in an 8 Å cell (`h = 0.30`,
+ADAPT-VQE to its basis FCI):
+
+| `virtual_orbitals` | qubits | E (eV) | gain |
+|---|---|---|---|
+| `0` | 4 | −28.1619 | – |
+| `1` | 8 | −28.3009 | −0.139 |
+| `2` | 20 | −28.3384 | −0.177 |
+
+```{note}
+A virtual hydrogenic orbital is **diffuse** — H `2s` has ⟨r⟩ = 6 a₀ ≈ 3.2 Å —
+so the cell has to be large enough to contain it or the grid clips its tail,
+and the energies above move with the box like every other FAO number. The
+engine's resolution check warns when a function is not represented on the grid.
+```
+
 ## A different basis on different elements
 
 The `basis` argument also takes a **per-element mapping**: a dict keyed by

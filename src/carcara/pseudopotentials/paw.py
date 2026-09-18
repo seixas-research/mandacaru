@@ -214,6 +214,8 @@ COUPLING_ASYMMETRY_TOLERANCE = 1e-4
 #: restricted to the channel (``1 + lambda_min(q G_p)``, ``G_p`` the projector
 #: Gram matrix): below it the PAW transformation is (nearly) singular.
 OVERLAP_MINIMUM = 0.1
+#: Radial points of the compensation charge's atom-centred quadrature.
+COMPENSATION_RADIAL_POINTS = 48
 #: Points of the radial quadrature grids used for the compensation charge.
 COMPENSATION_POINTS = 2001
 #: Projector basis sampled on the molecular grid (:meth:`PAWDataset.projector_set`).
@@ -657,6 +659,49 @@ class PAWDataset(PseudoPotential):
                     B_inv @ q @ B_inv.T)
         raise ValueError(f"unknown projector basis {basis!r}; use 'dual' or "
                          "'raw'")
+
+    @property
+    def multipole_max(self) -> int:
+        """Highest ``L`` a pair of this species' partial waves can carry."""
+        return 2 * max(self.channels) if self.channels else 0
+
+    def multipole_moments(self, l1: int, l2: int, L: int,
+                          basis: str = DEFAULT_PROJECTOR_BASIS) -> np.ndarray:
+        r"""``Delta^{(L)}_{ij}`` between channels ``l1`` and ``l2``, in the
+        projectors' basis.
+
+        The radial half of the compensation multipole (see
+        :mod:`carcara.pseudopotentials.multipoles`); ``l1 == l2`` and ``L == 0``
+        gives back :attr:`PAWChannel.overlap_correction`.  ``"raw"`` applies the
+        same :math:`B^{-1}\cdot B^{-T}` transformation the coupling and overlap
+        blocks get, once per side.
+        """
+        from .multipoles import radial_moments
+
+        key = (int(l1), int(l2), int(L), str(basis))
+        cache = getattr(self, "_multipole_cache", None)
+        if cache is None:
+            cache = self._multipole_cache = {}
+        if key not in cache:
+            if int(l1) == int(l2) and int(L) == 0:
+                # The monopole is stored exactly; reconstructing it from the
+                # tabulated waves agrees only to ~1e-8, which the raw basis's
+                # large B^{-1} amplifies to ~1e-4.  Use the stored value so the
+                # L = 0 term stays bit-for-bit what the monopole-only code had.
+                delta = np.asarray(self.channels[int(l1)].overlap_correction,
+                                   dtype=float)
+            else:
+                delta = radial_moments(self, l1, l2, L)
+            if basis == "raw":
+                b1 = np.linalg.inv(np.asarray(
+                    self.channels[int(l1)].vanderbilt, dtype=float))
+                b2 = np.linalg.inv(np.asarray(
+                    self.channels[int(l2)].vanderbilt, dtype=float))
+                delta = b1 @ delta @ b2.T
+            elif basis != "dual":
+                raise ValueError(f"unknown projector basis {basis!r}")
+            cache[key] = delta
+        return cache[key]
 
     def __repr__(self) -> str:
         channels = ", ".join(f"l={l}x{len(self.projectors.get(l, []))}"
@@ -1136,6 +1181,65 @@ def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
     return _blocks(projectors, symbols, datasets, "coupling")
 
 
+def _multipole_grid_potential(radius, dx, dy, dz, r_g, L, M):
+    """``v_L(r) Y_LM`` sampled on grid offsets from one centre."""
+    from .multipoles import shape_potential
+    from ..basis._angular import spherical_harmonic
+
+    v = shape_potential(radius, r_g, L)
+    if int(L) == 0:
+        return v * spherical_harmonic(0, 0, 0.0, 0.0)
+    safe = np.maximum(radius, 1e-300)
+    theta = np.arccos(np.clip(dz / safe, -1.0, 1.0))
+    phi = np.arctan2(dy, dx)
+    return v * spherical_harmonic(int(L), int(M), theta, phi)
+
+
+def paw_multipole_blocks(projectors, datasets_by_atom) -> dict:
+    r"""``{(atom, L, M): matrix}`` -- the compensation multipole moments.
+
+    ``matrix[a, b]`` is the ``LM`` moment carried by the pair density of this
+    atom's projectors ``a`` and ``b``, i.e. the radial moment
+    :math:`\Delta^{(L)}` times the angular coupling
+    :math:`\int Y^*_{LM}Y^*_{l_am_a}Y_{l_bm_b}d\Omega`.  Rows and columns are
+    numbered within the atom, in the order the projectors appear;
+    ``datasets_by_atom[atom]`` is that atom's dataset.
+
+    ``L = 0`` reproduces ``paw_overlap_blocks`` scaled by
+    :math:`1/\sqrt{4\pi}`, which is the normalization that makes the
+    :math:`L = 0` term of the augmentation identical to the monopole-only code
+    it replaces.  Channels that carry no moment are omitted.
+    """
+    from .multipoles import gaunt, multipole_range
+
+    per_atom: dict = {}
+    for position, projector in enumerate(projectors):
+        per_atom.setdefault(projector.atom_index, []).append(
+            (position, projector))
+
+    blocks: dict = {}
+    for atom, entries in per_atom.items():
+        dataset = datasets_by_atom[atom]
+        basis = getattr(entries[0][1], "projector_basis",
+                        DEFAULT_PROJECTOR_BASIS)
+        n = len(entries)
+        levels = sorted({L for _p, a in entries for _q, b in entries
+                         for L in multipole_range(a.l, b.l)})
+        for L in levels:
+            for M in range(-L, L + 1):
+                matrix = np.zeros((n, n), dtype=complex)
+                for a, (_pa, pa) in enumerate(entries):
+                    for b, (_pb, pb) in enumerate(entries):
+                        angular = gaunt(L, M, pa.l, pa.m, pb.l, pb.m)
+                        if angular == 0:
+                            continue
+                        delta = dataset.multipole_moments(pa.l, pb.l, L, basis)
+                        matrix[a, b] = delta[pa.index, pb.index] * angular
+                if np.any(np.abs(matrix) > 1e-14):
+                    blocks[(atom, L, M)] = matrix
+    return blocks
+
+
 def paw_overlap_blocks(projectors, symbols, datasets) -> dict:
     """``{(atom, l, m): q_l}`` for ``nonlocal_overlap`` (in the
     projectors' basis)."""
@@ -1232,6 +1336,7 @@ class PAWIntegrals(MolecularIntegrals):
         self._Q = None
         self._W = None
         self._U = None
+        self._Vion = None
 
     #: The projections are exact atom-centered integrals (:meth:`projections`),
     #: which the force code differentiates accordingly.
@@ -1275,51 +1380,164 @@ class PAWIntegrals(MolecularIntegrals):
             per_atom.setdefault(atom, []).extend(positions)
         return per_atom
 
+    def multipole_channels(self) -> list:
+        """``[(atom, L, M), ...]`` carrying a compensation multipole, ordered.
+
+        An atom with only an ``s`` channel contributes ``(atom, 0, 0)`` alone;
+        one with ``p`` valence adds the ``L = 1`` dipoles and ``L = 2``
+        quadrupoles its pair densities carry.
+        """
+        return sorted(self.compensation_moments())
+
     def compensation_moments(self) -> dict:
-        r"""``{atom: Q^A}`` -- the ``(M, M)`` monopole augmentation
-        moments :math:`Q^A_{pr} = \sum_{ij\in A} C_{pi} q_{ij} C^*_{rj}`."""
+        r"""``{(atom, L, M): Q}`` -- the augmentation multipole moments
+        :math:`Q^{A,LM}_{pr} = \sum_{ij\in A} C_{pi}\,\Delta^{LM}_{ij}\,
+        C^*_{rj}` over the orbital pairs.
+
+        The ``L = 0`` entry is the old monopole exactly (the shape and the
+        moment each pick up a compensating :math:`\sqrt{4\pi}`); every higher
+        ``L`` is a term the monopole-only code dropped.
+        """
         if self._Q is None:
             C = self.projections()
-            Q = self.nonlocal_overlap_matrix()
+            blocks = paw_multipole_blocks(self.kb_projectors, self.datasets)
+            positions = self._atom_positions()
             self._Q = {}
-            if Q is not None:
-                for atom, positions in self._atom_positions().items():
-                    idx = np.asarray(positions)
-                    Ca = C[:, idx]
-                    self._Q[atom] = Ca @ Q[np.ix_(idx, idx)] @ Ca.conj().T
+            for (atom, L, M), matrix in blocks.items():
+                idx = np.asarray(positions[atom])
+                Ca = C[:, idx]
+                self._Q[(atom, L, M)] = Ca @ matrix @ Ca.conj().T
         return self._Q
 
     def compensation_potentials(self) -> dict:
-        r"""``{atom: W^A}`` -- :math:`W^A_{qs} = \int\tilde\phi_q^*
-        \tilde\phi_s\,V_{g_A}\,d^3r` on the grid."""
+        r"""``{(atom, L, M): W}`` -- :math:`W^{A,LM}_{qs} = \int
+        \tilde\phi_q^*\tilde\phi_s\,v_L(r_A)\,Y_{LM}(\hat r_A)\,d^3r`
+        on the grid."""
+        from .multipoles import shape_potential
+
         if self._W is None:
             psi = self._engine._psi
             X, Y, Z = (self.grid.X.ravel(), self.grid.Y.ravel(),
                        self.grid.Z.ravel())
             self._W = {}
-            for atom in self.compensation_moments():
+            for atom, L, M in sorted(self.compensation_moments()):
                 _z, center = self._potentials.nuclei[atom]
-                radius = np.sqrt((X - center[0]) ** 2 + (Y - center[1]) ** 2
-                                 + (Z - center[2]) ** 2)
-                v = self.datasets[atom].compensation_potential(radius)
-                self._W[atom] = (np.conj(psi) * v) @ psi.T * self.grid.dV
+                dx, dy, dz = X - center[0], Y - center[1], Z - center[2]
+                radius = np.sqrt(dx * dx + dy * dy + dz * dz)
+                v = _multipole_grid_potential(
+                    radius, dx, dy, dz,
+                    self.datasets[atom].compensation_radius, L, M)
+                self._W[(atom, L, M)] = (np.conj(psi) * v) @ psi.T * self.grid.dV
         return self._W
 
     def compensation_coulomb(self) -> np.ndarray:
-        """``U[A, B]`` -- Coulomb energy of unit compensation charges."""
+        """``U[a, b]`` over :meth:`multipole_channels` -- the Coulomb energy of
+        the unit compensation multipoles.
+
+        Unlike the monopole case this depends on the *direction* between the
+        centres, not only their separation, which is exactly the physics the
+        dipole terms carry.
+        """
+        from .multipoles import multipole_coulomb_matrix
+
         if self._U is None:
-            atoms = sorted(self.compensation_moments())
-            n = len(self.datasets)
-            U = np.zeros((n, n))
-            for a in atoms:
-                for b in atoms:
+            channels = self.multipole_channels()
+            index = {c: i for i, c in enumerate(channels)}
+            per_atom: dict = {}
+            for atom, L, M in channels:
+                per_atom.setdefault(atom, []).append((L, M))
+            U = np.zeros((len(channels), len(channels)), dtype=complex)
+            for a, levels_a in per_atom.items():
+                for b, levels_b in per_atom.items():
                     ra = self.datasets[a].compensation_radius
                     rb = self.datasets[b].compensation_radius
-                    d = np.linalg.norm(self._potentials.nuclei[a][1]
-                                       - self._potentials.nuclei[b][1])
-                    U[a, b] = compensation_coulomb(ra, rb, d)
+                    displacement = (np.asarray(self._potentials.nuclei[b][1])
+                                    - np.asarray(self._potentials.nuclei[a][1]))
+                    block = multipole_coulomb_matrix(ra, levels_a, rb,
+                                                     levels_b, displacement)
+                    for i, la in enumerate(levels_a):
+                        for j, lb in enumerate(levels_b):
+                            U[index[(a,) + la], index[(b,) + lb]] = block[i, j]
             self._U = U
         return self._U
+
+    def compensation_ionic_at(self, centres) -> dict:
+        r"""``{(atom, L, M): int ghat_{A,LM} sum_{B != A} v^ion_B}`` (Hartree)
+        for atoms at ``centres`` (Bohr).
+
+        Integrated on an **atom-centred** spherical quadrature, not the grid:
+        the shape spans only a few grid points at h = 0.20 Angstrom, so a grid
+        sum would be inaccurate and would put an egg-box straight into the
+        force.  The on-site term (``B = A``) is left out -- the isolated atom's
+        own compensation-ion interaction is already inside the dataset, which
+        is calibrated to reproduce the reference atom's energy.
+
+        Taking ``centres`` as an argument is what lets the force re-evaluate it
+        at displaced positions (:func:`~carcara.algorithms.pseudo_forces._ionic_shift`).
+        """
+        from .multipoles import shape_function
+        from ..basis._angular import spherical_harmonic
+
+        x, wx = np.polynomial.legendre.leggauss(COMPENSATION_RADIAL_POINTS)
+        t, wt = np.polynomial.legendre.leggauss(PROJECTION_POLAR_POINTS)
+        n_phi = PROJECTION_AZIMUTHAL_POINTS
+        azimuth = 2.0 * np.pi * (np.arange(n_phi) + 0.5) / n_phi
+        sin_t = np.sqrt(1.0 - t * t)
+        direction = np.stack([
+            (sin_t[:, None] * np.cos(azimuth)[None, :]).ravel(),
+            (sin_t[:, None] * np.sin(azimuth)[None, :]).ravel(),
+            np.repeat(t, n_phi)], axis=1)
+        w_ang = np.repeat(wt, n_phi) * (2.0 * np.pi / n_phi)
+        theta = np.arccos(np.clip(direction[:, 2], -1.0, 1.0))
+        phi = np.arctan2(direction[:, 1], direction[:, 0])
+
+        out = {}
+        for atom, L, M in sorted(self.compensation_moments()):
+            dataset = self.datasets[atom]
+            r_g = float(dataset.compensation_radius)
+            radius = 0.5 * r_g * (x + 1.0)
+            weight = 0.5 * r_g * wx * radius * radius
+            points = (np.asarray(centres[atom], dtype=float)[None, None, :]
+                      + radius[:, None, None] * direction[None, :, :])
+            shape = shape_function(radius, r_g, L)
+            harmonic = spherical_harmonic(int(L), int(M), theta, phi)
+            total = 0.0 + 0.0j
+            for other, neighbour in enumerate(self.datasets):
+                if other == atom:
+                    continue
+                centre = np.asarray(centres[other], dtype=float)
+                distance = np.linalg.norm(points - centre[None, None, :], axis=2)
+                v = neighbour.local_potential(distance)
+                total += complex(np.sum(weight[:, None] * w_ang[None, :]
+                                        * shape[:, None] * harmonic[None, :] * v))
+            out[(atom, L, M)] = total
+        return out
+
+    def compensation_ionic(self) -> dict:
+        """:meth:`compensation_ionic_at` at the actual nuclear positions."""
+        if self._Vion is None:
+            centres = [np.asarray(self._potentials.nuclei[a][1], dtype=float)
+                       for a in range(len(self.datasets))]
+            self._Vion = self.compensation_ionic_at(centres)
+        return self._Vion
+
+    def one_body_augmentation(self):
+        r"""``sum_{A,LM} Q^{A,LM}_{pr} \int \hat g_{A,LM} v^{ion}``.
+
+        The compensation charge is a real piece of electron density, so it is
+        attracted to the other nuclei exactly as the smooth density is.  The
+        two-body augmentation already gives it its Hartree *repulsion*; without
+        this term it has no attraction at all, which is why the augmentation
+        grew by ~8.7 eV on forming an O-H bond and the molecule would not bind.
+        """
+        moments = self.compensation_moments()
+        if not moments:
+            return None
+        potentials = self.compensation_ionic()
+        out = np.zeros((self.n_orbitals, self.n_orbitals), dtype=complex)
+        for channel, Q in moments.items():
+            out = out + Q * potentials[channel]
+        return out
 
     def two_body_augmentation(self):
         Qs = self.compensation_moments()
@@ -1327,14 +1545,15 @@ class PAWIntegrals(MolecularIntegrals):
             return None
         Ws = self.compensation_potentials()
         U = self.compensation_coulomb()
+        channels = self.multipole_channels()
         M = self.n_orbitals
         aug = np.zeros((M, M, M, M), dtype=complex)
-        for a, Qa in Qs.items():
-            Wa = Ws[a]
+        for i, ca in enumerate(channels):
+            Qa, Wa = Qs[ca], Ws[ca]
             aug += np.einsum("pr,qs->pqrs", Qa, Wa)
             aug += np.einsum("pr,qs->pqrs", Wa, Qa)
-            for b, Qb in Qs.items():
-                aug += U[a, b] * np.einsum("pr,qs->pqrs", Qa, Qb)
+            for j, cb in enumerate(channels):
+                aug += U[i, j] * np.einsum("pr,qs->pqrs", Qa, Qs[cb])
         return aug
 
 

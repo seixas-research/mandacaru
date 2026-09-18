@@ -132,6 +132,17 @@ PSEUDO_GRADIENT_FAMILIES = ("paw", "oncvpsp")
 #: Largest orbital-rotation residual (Hartree) the RDM gradient accepts quietly.
 ORBITAL_RESPONSE_TOLERANCE = 1e-3
 
+#: A free-standing molecule feels no net force: translation is a symmetry of
+#: the exact energy, so ``sum_A F_A`` is zero and whatever comes out instead is
+#: pure discretization artifact (the grid "egg-box").  The check is free -- the
+#: forces are already computed -- and rigorous, so it is the cheapest honest
+#: measure of whether a force is usable for geometry.  A warning is raised when
+#: the residual exceeds this many eV/Angstrom **and** this fraction of the
+#: largest force; a sharp all-electron core on a coarse grid can put hundreds
+#: of eV/Angstrom here while every other diagnostic stays quiet.
+TRANSLATIONAL_RESIDUAL_TOLERANCE = 0.05
+TRANSLATIONAL_RESIDUAL_FRACTION = 0.05
+
 
 class Carcara(Calculator):
     """ASE calculator running the variational method named by ``method``.
@@ -601,9 +612,10 @@ class Carcara(Calculator):
                     f"the solver further (a larger max_iterations / smaller "
                     f"gradient_tolerance) for trustworthy forces.",
                     RuntimeWarning, stacklevel=3)
+            self._check_translational_invariance(result)
             return result
 
-        return nuclear_gradient(
+        legacy = nuclear_gradient(
             context["integrals"], gamma, gamma2,
             n_electrons=context["n_electrons"],
             atom_of_orbital=context["atom_of_orbital"],
@@ -611,6 +623,46 @@ class Carcara(Calculator):
             scf_iterations=self.scf_iterations,
             include_pulay=self.include_pulay,
             hellmann_feynman=self.hellmann_feynman)
+        self._check_translational_invariance(legacy)
+        return legacy
+
+    @staticmethod
+    def _check_translational_invariance(result) -> float:
+        """Warn when the net force is not zero; return the residual (eV/Ang).
+
+        Translating a free-standing molecule does not change its exact energy,
+        so the forces must sum to zero.  On a real-space grid they do not: the
+        discretized energy is not translation invariant, and the leftover is
+        the same egg-box that a relaxation walks the molecule along.  The
+        residual is recorded on ``details["translational_residual"]`` either
+        way, so it can be checked without catching a warning.
+
+        A sharp all-electron core is where this matters: LiH in the ``FAO``
+        basis at ``h = 0.25`` reports ~480 eV/Angstrom of net force -- larger
+        than any real force in the problem -- while its energy, its RDMs and
+        its orbital-response residual all look healthy.
+        """
+        forces = np.asarray(result.forces, dtype=float)
+        if forces.shape[0] < 2:
+            # One atom: the grid re-centers on it, so the residual is zero by
+            # construction and says nothing.
+            return 0.0
+        residual = float(np.abs(forces.sum(axis=0)).max())
+        largest = float(np.abs(forces).max())
+        result.details["translational_residual"] = residual
+        if (residual > TRANSLATIONAL_RESIDUAL_TOLERANCE
+                and residual > TRANSLATIONAL_RESIDUAL_FRACTION * largest):
+            warnings.warn(
+                f"the forces do not sum to zero (net |sum F| = {residual:.3g} "
+                f"eV/Angstrom against a largest force of {largest:.3g}): a "
+                f"free molecule feels no net force, so this is grid artifact, "
+                f"not physics.  The energy is not translation invariant on "
+                f"this grid -- typically a basis function too sharp for the "
+                f"spacing (an all-electron core).  Refine h, or use a "
+                f"pseudopotential basis (PAW / ONCVPSP / NCPP), which removes "
+                f"the core rather than trying to sample it.",
+                RuntimeWarning, stacklevel=3)
+        return residual
 
     @staticmethod
     def _converged_state(solver):

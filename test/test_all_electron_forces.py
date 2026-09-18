@@ -37,6 +37,9 @@ def fixed_state_energy(atoms, basis, grid, h, algebra, **options):
     kinetic, potential = integrals._engine.one_body(external, energy_units="Ha",
                                                     kinetic="fd")
     one = kinetic + potential + integrals.kb_nonlocal()
+    one_body = integrals.one_body_augmentation()
+    if one_body is not None:
+        one = one + np.asarray(one_body)
     two = integrals._engine.two_body(method="fft", energy_units="Ha")
     augmentation = integrals.two_body_augmentation()
     if augmentation is not None:

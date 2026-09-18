@@ -118,6 +118,13 @@ def apply_pauli_sum(operator: PauliSum, indices, amplitudes):
     return unique[keep], summed[keep]
 
 
+#: Sector entries held before being folded into the running matrix by
+#: :meth:`ParticleSector.restrict`.  Each is 32 bytes (a complex value and two
+#: 64-bit indices), so the default bounds that staging buffer at ~256 MB; the
+#: result itself is far smaller than the un-summed total.
+RESTRICT_BATCH_ENTRIES = 8_000_000
+
+
 class ParticleSector:
     r"""The :math:`(n_\alpha, n_\beta)` sector of a spin-blocked register.
 
@@ -221,35 +228,61 @@ class ParticleSector:
 
     # -- operators -------------------------------------------------------- #
 
-    def restrict(self, operator: PauliSum):
+    def restrict(self, operator: PauliSum, max_entries: int | None = None):
         """``operator`` restricted to the sector, as a ``(dim, dim)`` CSR matrix.
 
         Exact for an operator that conserves ``(n_alpha, n_beta)``; the
         components of a non-conserving one that leave the sector are dropped.
+
+        Every Pauli term contributes one entry per sector state, so holding all
+        of them before de-duplicating costs ``len(terms) * dim`` entries -- for
+        OH in PAW-DZ (14,707 terms, 25,200 states) that is 3.7e8 entries, about
+        12 GB, while the summed result needs a small fraction of it.  The terms
+        are therefore folded into the running CSR in batches of at most
+        ``max_entries`` (default :data:`RESTRICT_BATCH_ENTRIES`), which bounds
+        the peak at the batch plus the result and leaves the answer unchanged
+        -- the sum is linear in the terms.
         """
         import scipy.sparse as sp
 
         if operator.num_qubits != self.n_qubits:
             raise ValueError(f"operator acts on {operator.num_qubits} qubits, "
                              f"the sector register on {self.n_qubits}")
+        budget = int(max_entries or RESTRICT_BATCH_ENTRIES)
         columns = np.arange(self.dim, dtype=np.int64)
-        rows_all, cols_all, data_all = [], [], []
+        total = None
+        rows_all, cols_all, data_all, pending = [], [], [], 0
+
+        def fold(total):
+            """Sum the batch into ``total`` and release it."""
+            if not data_all:
+                return total
+            batch = sp.coo_matrix(
+                (np.concatenate(data_all),
+                 (np.concatenate(rows_all), np.concatenate(cols_all))),
+                shape=(self.dim, self.dim)).tocsr()
+            rows_all.clear(), cols_all.clear(), data_all.clear()
+            return batch if total is None else total + batch
+
         for label, coeff in operator.terms.items():
             if coeff == 0:
                 continue
             images, values = _term_action(label, coeff, self.indices)
             rows = self.positions(images)
             inside = rows >= 0
+            kept = int(np.count_nonzero(inside))
+            if not kept:
+                continue
             rows_all.append(rows[inside])
             cols_all.append(columns[inside])
             data_all.append(values[inside])
-        if not data_all:
+            pending += kept
+            if pending >= budget:
+                total, pending = fold(total), 0
+        total = fold(total)
+        if total is None:
             return sp.csr_matrix((self.dim, self.dim), dtype=complex)
-        matrix = sp.coo_matrix(
-            (np.concatenate(data_all),
-             (np.concatenate(rows_all), np.concatenate(cols_all))),
-            shape=(self.dim, self.dim))
-        return matrix.tocsr()
+        return total.tocsr()
 
     # -- states ----------------------------------------------------------- #
 

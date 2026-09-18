@@ -43,7 +43,8 @@ from .nao import (DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital,
 from . import nao_ae
 from .pople import pople_631g_shells
 from .sto_ng import sto_ng_shells
-from ._config import ground_state_config, valence_subshells
+from ._config import (ground_state_config, unoccupied_subshells,
+                      valence_subshells)
 
 
 def _to_atomic_number(element) -> int:
@@ -441,30 +442,96 @@ class GTOBasisSet(BasisSet):
 
 
 class FAOBasisSet(BasisSet):
-    """Minimal analytic Full Atomic Orbitals basis: one orbital per occupied subshell.
+    r"""Analytic Full Atomic Orbitals: one orbital per occupied subshell.
 
     For each occupied ``(n, l)`` subshell of the atom, builds the ``2l + 1``
     :class:`~carcara.basis.FullAtomicOrbital` functions with the **actual atomic
     number** ``Z`` as the orbital's nuclear charge (the bare hydrogenic orbital of
     the element -- no Slater screening).  A cheap, fully analytic reference basis
     (e.g. H -> 1s; Li -> 1s, 2s; C -> 1s, 2s, 2p).
+
+    **Virtual levels.** ``virtual_orbitals=k`` appends the ``k`` lowest
+    *unoccupied* subshells of each atom, in aufbau order
+    (:func:`~carcara.basis._config.unoccupied_subshells`) and with the same bare
+    ``Z``: hydrogen gains ``2s``, carbon ``3s``, iron ``4p``.  The occupied set
+    is untouched, so ``virtual_orbitals=0`` (the default) is the historical
+    minimal basis exactly.
+
+    A **level is a whole subshell**, so one virtual ``p`` level adds three
+    functions, not one -- the count is of levels, matching "one orbital per
+    subshell" above.  Half a shell would break the atom's spherical symmetry and
+    make the energy depend on how the molecule is oriented in the box, so the
+    shells are always complete.  :meth:`function_count` reports what a given
+    ``k`` actually costs.
+
+    Why it matters: the minimal basis has no room above the occupied orbitals,
+    so a correlated method has almost nothing to correlate *into* -- on H2 the
+    occupied-only FAO basis gives 2 spatial orbitals (4 qubits) and a single
+    double excitation.  Each virtual level widens that active space, lowering
+    the variational energy at the cost of more qubits.
+
+    .. note::
+
+       A virtual hydrogenic orbital is diffuse -- H ``2s`` has
+       :math:`\langle r \rangle = 6\,a_0 \approx 3.2` Angstrom -- so the cell
+       must be large enough to contain it, or the grid clips its tail.  The
+       engine's resolution check warns when a function is not represented.
+
+    Parameters
+    ----------
+    virtual_orbitals : int
+        Number of unoccupied subshells to append per atom (default ``0``).
     """
 
     method = "FAO"
     name = "FAO"
 
+    def __init__(self, virtual_orbitals: int = 0):
+        if isinstance(virtual_orbitals, bool):
+            raise TypeError("virtual_orbitals counts subshells; pass an int, "
+                            f"not {virtual_orbitals!r}")
+        try:
+            count = int(virtual_orbitals)
+        except (TypeError, ValueError):
+            raise TypeError(
+                f"virtual_orbitals must be an integer, got "
+                f"{type(virtual_orbitals).__name__}") from None
+        if count != virtual_orbitals:
+            raise ValueError(
+                f"virtual_orbitals must be a whole number of subshells, got "
+                f"{virtual_orbitals!r}")
+        if count < 0:
+            raise ValueError(
+                f"virtual_orbitals must be >= 0, got {count}")
+        #: Unoccupied subshells appended to every atom.
+        self.virtual_orbitals = count
+
+    def subshells(self, element) -> list[tuple[int, int]]:
+        """The ``(n, l)`` levels of ``element``: occupied, then the virtual ones.
+
+        The occupied part keeps its historical ``(n, l)``-sorted order; the
+        virtual levels follow in aufbau order.
+        """
+        Z = _to_atomic_number(element)
+        return (sorted(ground_state_config(Z))
+                + unoccupied_subshells(Z, self.virtual_orbitals))
+
+    def function_count(self, element) -> int:
+        """Basis functions for one atom -- ``sum(2l + 1)`` over its levels."""
+        return sum(2 * l + 1 for (_n, l) in self.subshells(element))
+
     def atom(self, element, center=(0.0, 0.0, 0.0),
              units: str = "angstrom") -> list[BasisFunction]:
         Z = _to_atomic_number(element)
         orbitals: list[BasisFunction] = []
-        for (n, l) in sorted(ground_state_config(Z)):
+        for (n, l) in self.subshells(element):
             for m in range(-l, l + 1):
                 orbitals.append(FullAtomicOrbital(n, l, m, Z=float(Z),
                                                   center=center, units=units))
         return orbitals
 
     def __repr__(self) -> str:
-        return "FAOBasisSet()"
+        return f"FAOBasisSet(virtual_orbitals={self.virtual_orbitals})"
 
 
 

@@ -24,6 +24,7 @@
 - **Particle-number sectors.** 20-qubit problems such as LiH in PAW-DZP are solved exactly in their (n<sub>α</sub>, n<sub>β</sub>) sector: 100 states instead of 2<sup>20</sup>.
 - **Real molecular orbitals.** Orbitals with l > 0 are rotated to real form, so the operator pools reach the exact ground state.
 - **Wavefunction checkpoints.** `Carcara(..., checkpoint="state.json")` writes the reference, the generators, the angles and the Hamiltonian after every accepted operator; `resume="state.json"` continues an interrupted or unconverged run where it stopped.
+- **Virtual orbitals for the FAO basis.** `basis={"name": "FAO", "virtual_orbitals": 1}` appends the lowest unoccupied atomic levels (H gains 2s, C gains 3s), giving a correlated method room above the occupied orbitals; the default `0` is the minimal basis as before.
 - **Quantum phase estimation.** `QuantumPhaseEstimation(n_evaluation_qubits=10).run("state.json")` reads the exact eigenvalue off the checkpointed state, with a memory estimate checked before the 2<sup>n+t</sup> state vector is allocated.
 
 ## Installation

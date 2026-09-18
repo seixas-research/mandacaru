@@ -221,6 +221,53 @@ def _moved_radial(radial, center, grid, k: int, delta: float) -> np.ndarray:
     return (out[0] - out[1]) / (2.0 * delta)
 
 
+def _ionic_shift(integrals, centres, atom, k, step):
+    """``{channel: dV}`` -- how the compensation-ion integrals change when
+    ``atom`` moves along ``k``.
+
+    Both roles matter: the moving atom carries its own compensation shape
+    through its neighbours' potentials, and carries its ionic potential under
+    everyone else's shapes.  Differentiating the quadrature directly would mean
+    two derivative kernels, so the integral is simply re-evaluated at displaced
+    centres -- it is smooth and deterministic, so a central difference is
+    clean.
+    """
+    plus_centres = [np.array(c, dtype=float) for c in centres]
+    minus_centres = [np.array(c, dtype=float) for c in centres]
+    plus_centres[atom][k] += float(step)
+    minus_centres[atom][k] -= float(step)
+    plus = integrals.compensation_ionic_at(plus_centres)
+    minus = integrals.compensation_ionic_at(minus_centres)
+    return {c: (plus[c] - minus[c]) / (2.0 * float(step)) for c in plus}
+
+
+def _sampled_multipole(dataset, centre, grid, L, M):
+    """``v_L(|r - centre|) Y_LM`` of a compensation multipole, on the grid."""
+    from ..basis._angular import spherical_harmonic
+    from ..pseudopotentials.multipoles import shape_potential
+
+    dx = grid.X.ravel() - centre[0]
+    dy = grid.Y.ravel() - centre[1]
+    dz = grid.Z.ravel() - centre[2]
+    radius = np.sqrt(dx * dx + dy * dy + dz * dz)
+    value = shape_potential(radius, float(dataset.compensation_radius), int(L))
+    if int(L) == 0:
+        return value * spherical_harmonic(0, 0, 0.0, 0.0)
+    safe = np.maximum(radius, 1e-300)
+    theta = np.arccos(np.clip(dz / safe, -1.0, 1.0))
+    phi = np.arctan2(dy, dx)
+    return value * spherical_harmonic(int(L), int(M), theta, phi)
+
+
+def _moved_multipole(dataset, centre, grid, L, M, k, delta):
+    """Derivative of :func:`_sampled_multipole` as its centre moves along ``k``."""
+    step = np.zeros(3)
+    step[k] = float(delta)
+    return ((_sampled_multipole(dataset, centre + step, grid, L, M)
+             - _sampled_multipole(dataset, centre - step, grid, L, M))
+            / (2.0 * float(delta)))
+
+
 def _sampled_radial(radial, center, grid) -> np.ndarray:
     radius = np.sqrt((grid.X - center[0]) ** 2 + (grid.Y - center[1]) ** 2
                      + (grid.Z - center[2]) ** 2)
@@ -338,6 +385,11 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     D_nl = integrals.nonlocal_coupling_matrix() if P else None
     Q_nl = integrals.nonlocal_overlap_matrix()
     one = T + V_loc + (C @ D_nl @ C.conj().T if P else 0.0)
+    one_body_aug = integrals.one_body_augmentation()
+    if one_body_aug is not None:
+        # The compensation charges' electron-ion attraction is part of the
+        # reported energy, so the gradient has to differentiate it too.
+        one = one + np.asarray(one_body_aug)
     h0 = _hermitian(one)
     S0 = integrals.overlap()
     g0 = integrals._engine.two_body(method="fft", energy_units="Ha")
@@ -350,14 +402,22 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     # -- PAW compensation charges --
     paw = augmentation is not None and hasattr(integrals, "compensation_moments")
     if paw:
+        from ..pseudopotentials.paw import paw_multipole_blocks
+
+        # Everything is indexed by a compensation channel (atom, L, M): an
+        # s-valence atom has only (A, 0, 0), a p-valence one also carries the
+        # dipoles and quadrupoles its pair densities produce.
         Q_mom = integrals.compensation_moments()
         W_mom = integrals.compensation_potentials()
         U = integrals.compensation_coulomb()
-        comp_atoms = sorted(Q_mom)
+        V_ion = integrals.compensation_ionic()
+        channels = integrals.multipole_channels()
+        channel_index = {c: i for i, c in enumerate(channels)}
+        comp_atoms = sorted({A for A, _L, _M in channels})
         blocks = integrals._atom_positions()
-        q_blocks = {A: Q_nl[np.ix_(blocks[A], blocks[A])] for A in comp_atoms}
-        v_comp = {A: _sampled_radial(datasets[A].compensation_potential,
-                                     centers[A], grid) for A in comp_atoms}
+        moment_blocks = paw_multipole_blocks(projectors, integrals.datasets)
+        v_comp = {c: _sampled_multipole(datasets[c[0]], centers[c[0]], grid,
+                                        c[1], c[2]) for c in channels}
     exact_projections = bool(getattr(integrals, "exact_projections", False)) and P > 0
     if exact_projections:
         from ..pseudopotentials.paw import atom_centered_projection_gradients
@@ -371,21 +431,41 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
               if Q_nl is not None else None)
         return dh, dS
 
-    def augmentation_derivative(dC, dW, dU):
-        dQ = {}
-        for A in comp_atoms:
-            idx = blocks[A]
+    def moment_derivatives(dC):
+        """``{channel: dQ}`` from a change in the projections."""
+        out = {}
+        for channel, block in moment_blocks.items():
+            idx = blocks[channel[0]]
             Ca, dCa = C[:, idx], dC[:, idx]
-            dQ[A] = dCa @ q_blocks[A] @ Ca.conj().T + Ca @ q_blocks[A] @ dCa.conj().T
+            out[channel] = (dCa @ block @ Ca.conj().T
+                            + Ca @ block @ dCa.conj().T)
+        return out
+
+    def augmentation_derivative(dQ, dW, dU):
         out = np.zeros((M, M, M, M), dtype=complex)
-        for A in comp_atoms:
-            out += _outer(dQ[A], W_mom[A]) + _outer(W_mom[A], dQ[A])
-            if A in dW:
-                out += _outer(Q_mom[A], dW[A]) + _outer(dW[A], Q_mom[A])
-            for B in comp_atoms:
-                out += U[A, B] * (_outer(dQ[A], Q_mom[B]) + _outer(Q_mom[A], dQ[B]))
-                if dU is not None and dU[A, B] != 0.0:
-                    out += dU[A, B] * _outer(Q_mom[A], Q_mom[B])
+        for a, ca in enumerate(channels):
+            Qa, Wa, dQa = Q_mom[ca], W_mom[ca], dQ[ca]
+            out += _outer(dQa, Wa) + _outer(Wa, dQa)
+            if ca in dW:
+                out += _outer(Qa, dW[ca]) + _outer(dW[ca], Qa)
+            for b, cb in enumerate(channels):
+                out += U[a, b] * (_outer(dQa, Q_mom[cb]) + _outer(Qa, dQ[cb]))
+                if dU is not None and dU[a, b] != 0.0:
+                    out += dU[a, b] * _outer(Qa, Q_mom[cb])
+        return out
+
+    def ionic_derivative(dQ, dV):
+        """Derivative of the compensation charges' electron-ion attraction.
+
+        ``sum_{A,LM} Q^{A,LM} V^{A,LM}`` is a one-body operator, so both its
+        pieces -- the moments moving with the projections and the shape sliding
+        through the neighbours' ionic potentials -- land in ``dh``.
+        """
+        out = np.zeros((M, M), dtype=complex)
+        for channel in channels:
+            out = out + dQ[channel] * V_ion[channel]
+            if dV is not None and channel in dV:
+                out = out + Q_mom[channel] * dV[channel]
         return out
 
     phi = (_pair_potentials(psi, grid).reshape(M * M, ngrid)
@@ -427,10 +507,14 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 dg = R.reshape(M, M, M, M).transpose(0, 2, 1, 3)
                 if paw:
                     dW = {}
-                    for A in comp_atoms:
-                        cross_w = ((dpsi.conj() * v_comp[A]) @ psi.T) * dV
-                        dW[A] = cross_w + cross_w.conj().T
-                    dg = dg + augmentation_derivative(dC, dW, None)
+                    for channel in channels:
+                        cross_w = ((dpsi.conj() * v_comp[channel]) @ psi.T) * dV
+                        dW[channel] = cross_w + cross_w.conj().T
+                    dQ = moment_derivatives(dC)
+                    dg = dg + augmentation_derivative(dQ, dW, None)
+                    # The compensation shapes do not move with the basis, so
+                    # only the moments change here.
+                    dh = dh + ionic_derivative(dQ, None)
                 pulay[atom, k] = energy.directional(
                     S0, h0, g0, _hermitian(dS), _hermitian(dh), dg,
                     algebraic_step)
@@ -453,26 +537,53 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 dh_nl, dS = nonlocal_terms(dC)
                 dh = dh + dh_nl
                 if paw:
+                    from ..pseudopotentials.multipoles import (
+                        multipole_coulomb_matrix)
+
                     dW = {}
-                    if atom in comp_atoms:
-                        w_comp = _moved_radial(datasets[atom].compensation_potential,
-                                               centers[atom], grid, k, delta)
-                        dW[atom] = ((psi.conj() * w_comp) @ psi.T) * dV
-                    dU = np.zeros_like(U)
-                    for B in comp_atoms:
-                        if B == atom or atom not in comp_atoms:
+                    for channel in channels:
+                        if channel[0] != atom:
                             continue
-                        sep = centers[atom] - centers[B]
-                        distance = float(np.linalg.norm(sep))
-                        from ..pseudopotentials.paw import compensation_coulomb
+                        w_comp = _moved_multipole(datasets[atom], centers[atom],
+                                                  grid, channel[1], channel[2],
+                                                  k, delta)
+                        dW[channel] = ((psi.conj() * w_comp) @ psi.T) * dV
+
+                    # Multipole-multipole Coulomb depends on the *direction*
+                    # between the centres, not only the distance as the
+                    # monopole did, so the derivative is taken with respect to
+                    # the displacement vector itself.
+                    dU = np.zeros_like(U)
+                    step = COMPENSATION_DISTANCE_STEP
+                    for B in comp_atoms:
+                        if B == atom:
+                            continue
+                        levels_a = [c[1:] for c in channels if c[0] == atom]
+                        levels_b = [c[1:] for c in channels if c[0] == B]
                         ra = datasets[atom].compensation_radius
                         rb = datasets[B].compensation_radius
-                        step = COMPENSATION_DISTANCE_STEP
-                        slope = (compensation_coulomb(ra, rb, distance + step)
-                                 - compensation_coulomb(ra, rb, distance - step)) \
-                            / (2.0 * step)
-                        dU[atom, B] = dU[B, atom] = slope * sep[k] / distance
-                    dg = augmentation_derivative(dC, dW, dU)
+                        shift = np.zeros(3)
+                        shift[k] = step
+                        base = centers[B] - centers[atom]
+                        plus = multipole_coulomb_matrix(ra, levels_a, rb,
+                                                        levels_b, base - shift)
+                        minus = multipole_coulomb_matrix(ra, levels_a, rb,
+                                                         levels_b, base + shift)
+                        slope = (plus - minus) / (2.0 * step)
+                        for i, la in enumerate(levels_a):
+                            for j, lb in enumerate(levels_b):
+                                u = channel_index[(atom,) + la]
+                                v = channel_index[(B,) + lb]
+                                dU[u, v] = slope[i, j]
+                                dU[v, u] = slope[i, j]
+
+                    # The electron-ion attraction of the compensation charges
+                    # changes both because this atom's shape moves and because
+                    # its ionic potential moves under everyone else's shape.
+                    dV_ion = _ionic_shift(integrals, centers, atom, k, step)
+                    dQ = moment_derivatives(dC)
+                    dg = augmentation_derivative(dQ, dW, dU)
+                    dh = dh + ionic_derivative(dQ, dV_ion)
             hf[atom, k] = energy.directional(
                 S0, h0, g0, _hermitian(dS) if dS is not None else None,
                 _hermitian(dh), dg, algebraic_step)

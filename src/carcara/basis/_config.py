@@ -11,6 +11,11 @@
 Shared helpers used both by Slater's rules (:mod:`carcara.basis.fao`) and
 by the numerical-atomic-orbital basis generation (:mod:`carcara.basis.nao`), so
 the periodic filling order lives in exactly one place.
+
+The same filling order also names the atom's **virtual** levels: the subshells
+the aufbau filling never reached, in the order it would have reached them
+(:func:`unoccupied_subshells`, used by the ``FAO`` basis's ``virtual_orbitals``
+option).
 """
 
 from __future__ import annotations
@@ -80,3 +85,47 @@ def valence_subshells(atomic_number: int) -> list[tuple[int, int]]:
         if state in config:
             valence.add(state)
     return sorted(valence)
+
+
+def unoccupied_subshells(atomic_number: int, count: int = 1
+                         ) -> list[tuple[int, int]]:
+    """The ``count`` lowest **unoccupied** ``(n, l)`` subshells, in aufbau order.
+
+    The neutral atom's ground state fills subshells in aufbau (Madelung) order;
+    the ones the filling never reached are its virtual levels, and the order it
+    would have reached them in is the order they come back in.
+
+    A **partially filled** subshell counts as occupied: carbon's ``2p^2`` is
+    already a basis shell, so carbon's lowest virtual level is ``3s``, not the
+    empty half of ``2p``.  Hydrogen's is ``2s``; iron's (``[Ar] 3d^6 4s^2``) is
+    ``4p``.
+
+    Parameters
+    ----------
+    atomic_number : int
+        The element.
+    count : int
+        How many virtual subshells to return (``0`` gives an empty list).
+
+    Raises
+    ------
+    ValueError
+        If ``count`` is negative, or exceeds the virtual levels the filling
+        table holds for this element -- the table stops at
+        ``_AUFBAU_ORDER[-1]``, so a heavy atom has few levels above its
+        occupied set.
+    """
+    count = int(count)
+    if count < 0:
+        raise ValueError(f"count must be >= 0, got {count}")
+    if count == 0:
+        return []
+    occupied = ground_state_config(atomic_number)
+    empty = [state for state in _AUFBAU_ORDER if state not in occupied]
+    if len(empty) < count:
+        n_last, l_last = _AUFBAU_ORDER[-1]
+        raise ValueError(
+            f"element Z={int(atomic_number)} has only {len(empty)} unoccupied "
+            f"subshell(s) below the end of the aufbau filling table "
+            f"({n_last}{'spdf'[l_last]}), but {count} were requested")
+    return empty[:count]

@@ -344,6 +344,18 @@ class MolecularIntegrals:
     #: Backward-compatible alias of :meth:`kb_nonlocal`.
     nonlocal_matrix = kb_nonlocal
 
+    def one_body_augmentation(self):
+        """One-body correction added to ``T + V + C D C^dagger``, or ``None``.
+
+        The counterpart of :meth:`two_body_augmentation` for terms that are
+        linear in the density.  A plain basis has none; PAW uses it for the
+        electron-ion attraction of its compensation charges, which the grid
+        integral of the external potential cannot see (that integral weights
+        only the smooth pair density, and the compensation charge is an extra
+        density on top of it).
+        """
+        return None
+
     def two_body_augmentation(self):
         r"""Correction added to the grid two-body tensor, or ``None``.
 
@@ -373,6 +385,9 @@ class MolecularIntegrals:
                                      energy_units="Ha", kinetic=self.kinetic)
         self.resolution_ratios = self._engine.resolution(T, kinetic=self.kinetic)
         one = T + V + self.kb_nonlocal()
+        augmentation = self.one_body_augmentation()
+        if augmentation is not None:
+            one = one + np.asarray(augmentation)
         h = 0.5 * (one + one.conj().T)           # symmetrize away grid noise
         if self.orthogonalize:
             X = self._lowdin_x()
