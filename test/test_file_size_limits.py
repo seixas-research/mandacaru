@@ -59,7 +59,7 @@ def test_output_log_omits_the_operator_label_above_twenty_qubits(tmp_path,
         log.write_optimizer_setup("COBYLA", -1.0,
                                   extra={"pool_size": len(pool)})
         log.write_iteration(1, pool, [0.1, 0.3, 0.2], 1, None, -1.0, 1)
-        log.write_summary(True, -1.0, 1, operator_sequence=["op1"])
+        log.write_summary(True, -1.0, 1)
     text = path.read_text()
     iteration = parse_output(str(path))["iterations"][0]
     detailed = n_qubits <= DETAILED_LOG_MAX_QUBITS
@@ -67,10 +67,11 @@ def test_output_log_omits_the_operator_label_above_twenty_qubits(tmp_path,
     # The row always carries the tracked numbers.
     assert iteration["energy"] == -1.0
     assert iteration["max_gradient"] == pytest.approx(0.3)
-    # Only the label is withheld, and with it the summary's sequence.
+    # The operator's label is what is withheld -- it appears in the row, or
+    # "(omitted)" does.  The summary never repeats the sequence at any width.
     assert ("op1" in text) == detailed
     assert ("(omitted)" in text) == (not detailed)
-    assert ("operator_sequence:" in text) == detailed
+    assert "operator_sequence:" not in text
     # Pauli expansions are never written, at any width.
     assert "X" * n_qubits not in text
     assert "operator_pool:" not in text

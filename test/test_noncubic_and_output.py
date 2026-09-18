@@ -14,6 +14,8 @@ Covers the three features added on top of the cubic integral core:
   ``output.txt`` as the ADAPT loop runs.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from ase import Atoms
@@ -293,13 +295,18 @@ class TestAdaptOutputProtocol:
         adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=True,  # profile for gates
                          max_iterations=4, gradient_tolerance=1e-4, output=out)
-        adapt.run(log_expressivity=True)   # the expressivity is opt-in
+        result = adapt.run(log_expressivity=True)  # the expressivity is opt-in
         summary = parse_output(out)["summary"]
         for key in ("optimal_energy_eV", "reference_energy_eV", "num_operators",
                     "num_parameters", "final_expressivity_E", "cnot_count",
                     "circuit_depth", "total_gates", "one_qubit_gates",
-                    "cost_evaluations", "operator_sequence"):
+                    "cost_evaluations"):
             assert key in summary, key
+        # The operator sequence is not repeated in the summary: the iteration
+        # table above already names each selected operator, in order.
+        assert "operator_sequence" not in summary
+        assert [it["selected_operator"] for it in parse_output(out)["iterations"]] \
+            == list(result.operators)
 
     def test_atomic_units_switch(self, h2_hamiltonian, tmp_path):
         # Requirement 1: atomic units used only when explicitly requested.
@@ -413,3 +420,479 @@ class TestAdaptOutputLogger:
         parsed = parse_output(out)
         assert parsed["metadata"]["cell_present"] == "True"
         assert parsed["metadata"]["cell_lengths"].startswith("a=5")
+
+
+# --------------------------------------------------------------------------- #
+# One log per run, one block per geometry step (the relaxation protocol).
+# --------------------------------------------------------------------------- #
+
+class TestLogAppendsAcrossSteps:
+    """A geometry optimization writes one file, not one file per step.
+
+    Every step of a relaxation runs a complete ADAPT-VQE and so builds its own
+    logger; truncating the file each time left only the last step's iterations.
+    The first logger of a path in a process truncates and writes the banner,
+    every later one appends a numbered block.
+    """
+
+    @staticmethod
+    def _block(path, step):
+        """Write one minimal energy block to ``path`` and return the logger."""
+        from types import SimpleNamespace
+
+        from carcara.core.mapping import PauliSum
+        pool = [SimpleNamespace(label="op0", kind="double",
+                                generator=PauliSum({"XXXX": 0.5j}))]
+        with AdaptOutputLogger(path, n_qubits=4) as logger:
+            logger.write_metadata(symbols=["H", "H"],
+                                  positions=[[0, 0, 0], [0, 0, 0.7 + step / 100]])
+            logger.write_optimizer_setup("COBYLA", -1.0)
+            logger.write_iteration(1, pool, [0.3], 0, None, -1.0 - step, 1)
+            logger.write_summary(True, -1.0 - step, 1)
+        return logger
+
+    def test_banner_is_written_once_at_the_top(self, tmp_path):
+        from carcara.utils import banner
+
+        out = str(tmp_path / "output.txt")
+        for step in (1, 2, 3):
+            self._block(out, step)
+        text = open(out, encoding="utf-8").read()
+        # The banner is provenance of the *file*: once, before the first block.
+        assert text.count("developed by:") == 1
+        assert text.startswith(banner.lines()[0])
+        assert text.index("developed by:") < text.index("[METADATA]")
+
+    def test_each_step_appends_a_numbered_block(self, tmp_path):
+        out = str(tmp_path / "output.txt")
+        steps = [self._block(out, step).step for step in (1, 2, 3)]
+        assert steps == [1, 2, 3]
+
+        parsed = parse_output(out)
+        assert len(parsed["steps"]) == 3
+        # Nothing earlier was erased: every step's iterations are still there.
+        assert [block["iterations"][0]["energy"] for block in parsed["steps"]] \
+            == [-2.0, -3.0, -4.0]
+        # The top level describes the last step, as a single-point log always did.
+        assert parsed["metadata"]["step"] == "3"
+        assert parsed["iterations"][0]["energy"] == -4.0
+        # Only the later blocks carry the step in their title.
+        text = open(out, encoding="utf-8").read()
+        assert text.count("geometry step 2") == 1
+        assert "geometry step 1" not in text
+
+    def test_reset_log_starts_a_fresh_file(self, tmp_path):
+        from carcara.utils import log_steps, reset_log
+
+        out = str(tmp_path / "output.txt")
+        self._block(out, 1)
+        self._block(out, 2)
+        assert log_steps(out) == 2
+
+        # What a notebook cell re-run (or a driver loop wanting its own file)
+        # needs: forget the path, and the next logger truncates and re-banners.
+        reset_log(out)
+        assert log_steps(out) == 0
+        assert self._block(out, 9).step == 1
+        text = open(out, encoding="utf-8").read()
+        assert text.count("developed by:") == 1
+        assert len(parse_output(out)["steps"]) == 1
+
+    def test_append_is_overridable(self, tmp_path):
+        out = str(tmp_path / "output.txt")
+        self._block(out, 1)
+        with AdaptOutputLogger(out, append=False) as logger:
+            logger.write_metadata()
+        # An explicit append=False truncates whatever the step counter says.
+        assert len(parse_output(out)["steps"]) == 1
+
+
+class TestBlockIndentation:
+    """Section markers sit at column 0; what they contain is indented 4 spaces.
+
+    One level per level of nesting: a block's keys are indented once, and the
+    rows of a table (or the atoms under ``geometry:``) once more, so the
+    structure of the file can be read off the left margin.
+    """
+
+    @pytest.fixture(scope="class")
+    def log(self, tmp_path_factory):
+        from types import SimpleNamespace
+
+        from carcara.core.mapping import PauliSum
+        from carcara.utils import append_forces
+        from carcara.utils.logging import INDENT
+
+        out = str(tmp_path_factory.mktemp("indent") / "output.txt")
+        pool = [SimpleNamespace(label="op0", kind="double",
+                                generator=PauliSum({"XXXX": 0.5j}))]
+        with AdaptOutputLogger(out, n_qubits=4) as logger:
+            logger.write_metadata(symbols=["O", "H"],
+                                  positions=[[0, 0, 0], [0, 0.97, 0]],
+                                  cell=np.diag([10.0, 10.0, 10.0]))
+            logger.write_optimizer_setup("COBYLA", -476.6)
+            logger.write_iteration(1, pool, [0.3], 0, None, -477.0, 1)
+            logger.write_summary(True, -477.0, 1)
+        append_forces(out, ["O", "H"], [[0.0, 0.9, 0.0], [0.0, -0.85, 0.0]],
+                      hellmann_feynman=[[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]])
+        assert INDENT == "    "
+        return open(out, encoding="utf-8").read().splitlines()
+
+    def test_markers_and_rules_stay_at_column_zero(self, log):
+        for marker in ("[METADATA]", "[OPTIMIZATION SETUP]", "[ITERATIONS]",
+                       "[SUMMARY]", "[FORCES]"):
+            assert marker in log, marker
+        assert all(not line.startswith(" ")
+                   for line in log if set(line) == {"="})
+
+    @pytest.mark.parametrize("key", ["step:", "units:", "n_atoms:", "geometry:",
+                                     "cell_present:", "cell_vectors:",
+                                     "cell_lengths:", "classical_optimizer:",
+                                     "energy_unit:", "initial_ansatz:",
+                                     "converged:", "num_operators:",
+                                     "forces:", "max_force:", "net_force:"])
+    def test_a_blocks_keys_are_indented_one_level(self, log, key):
+        lines = [line for line in log if line.strip().startswith(key)]
+        assert lines, key
+        for line in lines:
+            assert line.startswith("    ") and not line.startswith("     ")
+
+    def test_nested_rows_are_indented_one_level_further(self, log):
+        # The geometry and the cell vectors are the contents of the keyed line
+        # above them, and their first field is left-aligned: exactly 8 spaces.
+        left = [line for line in log
+                if line.lstrip().startswith(("O  ", "H  ", "a1 =", "a2 =",
+                                             "a3 ="))]
+        assert len(left) == 5                        # 2 atoms + 3 cell vectors
+        for line in left:
+            assert line.startswith("        ") and not line.startswith(" " * 9)
+
+        # A force table sits at the same level, but its columns are
+        # right-aligned inside their fields, so only the structural part of the
+        # indentation can be asserted.
+        table = [line for line in log
+                 if line.lstrip().startswith(("atom", "1 O", "2 H"))]
+        assert len(table) == 6                       # 2 tables x (head + 2 rows)
+        for line in table:
+            assert line.startswith("        ")
+
+    def test_the_iteration_table_is_indented_with_its_rows(self, log):
+        table = log[log.index("[ITERATIONS]") + 1:]
+        heading, rule, row = table[0], table[1], table[2]
+        assert heading.startswith("    iter")
+        # The rule keeps the heading's width, so the columns still line up.
+        assert rule == "    " + "-" * len(heading.strip())
+        assert row.startswith("       1 ")           # 4 + the right-aligned int
+
+    def test_blank_separators_carry_no_trailing_whitespace(self, log):
+        assert all(line == "" or line.strip() for line in log)
+
+
+class TestForcesBlock:
+    """The forces of a geometry step are logged with its energies."""
+
+    FORCES = np.array([[0.0, 0.5, -1.5], [0.0, -0.4, 1.5], [0.0, -0.1, 0.02]])
+    HF = np.array([[0.0, -2.0, 3.0], [0.0, 1.0, -1.5], [0.0, 1.0, -1.5]])
+    PULAY = np.array([[0.0, 1.5, -1.5], [0.0, -0.6, 0.0], [0.0, -0.9, 1.48]])
+
+    def _write(self, path, **kwargs):
+        from carcara.utils import append_forces
+
+        append_forces(path, ["O", "H", "H"], self.FORCES,
+                      hellmann_feynman=self.HF, pulay=self.PULAY, **kwargs)
+        return parse_output(path)["forces"]
+
+    def test_vectors_and_breakdown_round_trip(self, tmp_path):
+        out = str(tmp_path / "output.txt")
+        block = self._write(out, step=1, extra={"force_method": "rdm"})
+
+        assert block["symbols"] == ["O", "H", "H"]
+        assert np.allclose(block["forces"], self.FORCES)
+        assert np.allclose(block["hellmann_feynman"], self.HF)
+        assert np.allclose(block["pulay"], self.PULAY)
+        assert block["units"] == "eV/Angstrom"
+        assert block["force_method"] == "rdm"
+        assert block["step"] == 1
+
+    def test_norms_summarize_the_step(self, tmp_path):
+        out = str(tmp_path / "output.txt")
+        block = self._write(out, step=1)
+        norms = np.linalg.norm(self.FORCES, axis=1)
+        # max_force is what an ASE optimizer converges on; net_force is the
+        # translational residual a free molecule must not have.
+        assert block["max_force"] == pytest.approx(norms.max(), abs=1e-7)
+        assert block["rms_force"] == pytest.approx(
+            np.sqrt((norms ** 2).mean()), abs=1e-7)
+        assert block["net_force"] == pytest.approx(
+            np.abs(self.FORCES.sum(axis=0)).max(), abs=1e-7)
+
+    def test_the_block_lands_under_the_step_it_belongs_to(self, tmp_path):
+        out = str(tmp_path / "output.txt")
+        TestLogAppendsAcrossSteps._block(out, 1)
+        self._write(out)                   # step read from the path's counter
+        TestLogAppendsAcrossSteps._block(out, 2)
+        self._write(out)
+
+        parsed = parse_output(out)
+        assert [block["forces"]["step"] for block in parsed["steps"]] == [1, 2]
+
+    def test_a_breakdown_is_optional(self, tmp_path):
+        from carcara.utils import append_forces
+
+        out = str(tmp_path / "output.txt")
+        append_forces(out, ["H", "H"], [[0.0, 0.0, 0.3], [0.0, 0.0, -0.3]])
+        block = parse_output(out)["forces"]
+        assert np.allclose(block["forces"], [[0, 0, 0.3], [0, 0, -0.3]])
+        assert "hellmann_feynman" not in block and "pulay" not in block
+
+
+class TestRelaxationLog:
+    """End to end: a BFGS relaxation writes one continuous, complete log."""
+
+    @pytest.fixture(scope="class")
+    def relaxation(self, tmp_path_factory):
+        from ase.optimize import BFGS
+
+        from carcara import Carcara
+
+        out = str(tmp_path_factory.mktemp("relax") / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
+                             pool="fermionic", max_iterations=4,
+                             gradient_tolerance=1e-3, output=out)
+        opt = BFGS(atoms, logfile=None)
+        opt.run(fmax=0.05, steps=2)
+        return out, atoms, opt
+
+    def test_every_step_is_in_the_file(self, relaxation):
+        out, _atoms, opt = relaxation
+        parsed = parse_output(out)
+        # One block per force evaluation, and BFGS counts one per step it took.
+        assert len(parsed["steps"]) == opt.nsteps + 1 >= 2
+        # Each block is complete: the iterations *and* the forces of that step.
+        for block in parsed["steps"]:
+            assert block["iterations"] and block["summary"]["converged"] == "True"
+            assert block["forces"]["symbols"] == ["H", "H"]
+        assert open(out, encoding="utf-8").read().count("developed by:") == 1
+
+    def test_the_logged_force_is_the_reported_force(self, relaxation):
+        out, atoms, _opt = relaxation
+        block = parse_output(out)["forces"]
+        forces = atoms.get_forces()
+        assert np.allclose(block["forces"], forces, atol=1e-8)
+        assert block["max_force"] == pytest.approx(
+            float(np.linalg.norm(forces, axis=1).max()), abs=1e-7)
+        # The breakdown the calculator exposes is the breakdown it logged.
+        result = atoms.calc.force_result
+        assert np.allclose(block["hellmann_feynman"], result.hellmann_feynman,
+                           atol=1e-8)
+        assert np.allclose(block["pulay"], result.pulay, atol=1e-8)
+
+    def test_energies_follow_the_trajectory(self, relaxation):
+        out, atoms, _opt = relaxation
+        parsed = parse_output(out)
+        # The last block's summary is the energy ASE reports for this geometry.
+        last = float(parsed["summary"]["optimal_energy_eV"])
+        assert last == pytest.approx(atoms.get_potential_energy(), abs=1e-8)
+        # A relaxation goes downhill: the blocks are ordered in time, not sorted.
+        energies = [float(block["summary"]["optimal_energy_eV"])
+                    for block in parsed["steps"]]
+        assert energies[-1] <= energies[0] + 1e-9
+
+
+# --------------------------------------------------------------------------- #
+# Performance accounting, and the split between the log and standard output.
+# --------------------------------------------------------------------------- #
+
+class TestPerformanceBlock:
+    """Every evaluation records where its time and memory went."""
+
+    @pytest.fixture(scope="class")
+    def relaxation(self, tmp_path_factory):
+        from ase.optimize import BFGS
+
+        from carcara import Carcara
+
+        out = str(tmp_path_factory.mktemp("perf") / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
+                             pool="fermionic", max_iterations=4,
+                             gradient_tolerance=1e-3, output=out)
+        BFGS(atoms, logfile=None).run(fmax=0.05, steps=1)
+        return out
+
+    def test_one_block_per_step_closing_it(self, relaxation):
+        parsed = parse_output(relaxation)
+        assert len(parsed["steps"]) >= 2
+        for block in parsed["steps"]:
+            assert "performance" in block
+        # The performance block closes the step: it comes after the forces.
+        text = open(relaxation, encoding="utf-8").read()
+        assert text.index("[FORCES]") < text.index("[PERFORMANCE]")
+
+    def test_the_gradient_is_one_of_the_stages(self, relaxation):
+        # The whole point of the calculator writing this block: on a real
+        # relaxation the nuclear gradient is the largest stage, and a block
+        # closed when the solver finished would leave it out entirely.
+        stages = parse_output(relaxation)["performance"]["stages_s"]
+        assert "nuclear gradient (forces)" in stages
+        assert any(name.startswith("integration:") for name in stages)
+        assert "parameter optimization" in stages
+        assert all(seconds >= 0.0 for seconds in stages.values())
+
+    def test_times_add_up(self, relaxation):
+        performance = parse_output(relaxation)["performance"]
+        stages = performance["stages_s"]
+        assert performance["total_s"] == pytest.approx(sum(stages.values()),
+                                                       abs=1e-3)
+        # The step's wall clock covers the stages plus what nobody timed
+        # (Hamiltonian construction, the mapping, materialization).
+        assert performance["wall_time_s"] >= performance["total_s"] - 1e-6
+        assert performance["untimed_s"] == pytest.approx(
+            performance["wall_time_s"] - performance["total_s"], abs=1e-6)
+
+    def test_resources_are_recorded(self, relaxation):
+        performance = parse_output(relaxation)["performance"]
+        assert performance["integration_backend"] in ("C (OpenMP)", "NumPy")
+        assert isinstance(performance["cpu_count"], int)
+        assert performance["peak_memory_MiB"] > 0
+        # There is no distributed parallelism, and the block says so rather
+        # than leaving it to be inferred.
+        assert "not used" in performance["mpi"]
+
+    def test_no_qpu_keys_without_a_processor(self, relaxation):
+        # Nothing ran on hardware, so nothing is claimed for it.
+        performance = parse_output(relaxation)["performance"]
+        assert not [key for key in performance if key.startswith("qpu_")]
+
+    def test_a_direct_run_writes_its_own_block(self, h2_hamiltonian, tmp_path):
+        # With no calculator to defer to, the solver writes the block itself.
+        out = str(tmp_path / "output.txt")
+        _h2_adapt(h2_hamiltonian, max_iterations=2, gradient_tolerance=1e-4,
+                  output=out).run()
+        performance = parse_output(out)["performance"]
+        assert "parameter optimization" in performance["stages_s"]
+        assert performance["wall_time_s"] > 0
+        # No forces here, so no gradient stage -- the block reports what ran.
+        assert "nuclear gradient (forces)" not in performance["stages_s"]
+
+
+class TestQPUAccounting:
+    """What a run spent on a processor, read from the provider that ran it."""
+
+    class _Job:
+        @staticmethod
+        def job_id():
+            return "abc123"
+
+        @staticmethod
+        def metrics():
+            return {"usage": {"quantum_seconds": 27.0, "seconds": 31.5}}
+
+    def test_reports_the_jobs_quantum_seconds(self):
+        from carcara.backends.providers import qpu_usage
+
+        provider = SimpleNamespace(device_spec="ibm_fez", shots=4096,
+                                   last_job=self._Job())
+        usage = qpu_usage(provider, wall_time_s=51.25)
+        assert usage["qpu_device"] == "ibm_fez"
+        assert usage["qpu_shots"] == 4096
+        assert usage["qpu_jobs"] == 1
+        assert usage["qpu_job_ids"] == "abc123"
+        assert usage["qpu_seconds"] == 27.0          # the metered QPU time
+        assert usage["qpu_billed_seconds"] == 31.5
+        assert usage["qpu_wall_time_s"] == 51.25
+
+    def test_a_local_provider_reports_only_what_it_knows(self):
+        from carcara.backends.providers import qpu_usage
+
+        provider = SimpleNamespace(device_spec="statevector", shots=0,
+                                   last_job=None)
+        usage = qpu_usage(provider, wall_time_s=1.5)
+        # No job, so no quantum seconds are invented -- just the wall clock.
+        assert usage == {"qpu_device": "statevector", "qpu_wall_time_s": 1.5}
+
+    def test_no_provider_reports_nothing(self):
+        from carcara.backends.providers import qpu_usage
+
+        assert qpu_usage(None, wall_time_s=9.0) == {}
+
+    def test_a_job_that_cannot_answer_does_not_break_the_log(self):
+        from carcara.backends.providers import qpu_usage
+
+        class Hostile:
+            def job_id(self):
+                raise RuntimeError("service unreachable")
+
+            def metrics(self):
+                raise RuntimeError("service unreachable")
+
+        provider = SimpleNamespace(device_spec="ibm_fez", shots=100,
+                                   last_job=Hostile())
+        usage = qpu_usage(provider, wall_time_s=2.0)
+        # The run already finished; a provider that cannot answer must not
+        # cost it its log.
+        assert usage["qpu_jobs"] == 1 and "qpu_seconds" not in usage
+
+
+class TestStandardOutputIsTheASETable:
+    """stdout carries the evolution of energies and forces, nothing else.
+
+    The detail has a destination -- ``output=<path>`` -- so standard output is
+    left to what an ASE optimizer prints there, the same split GPAW makes with
+    ``txt=``.  Without a log file the trace is the only report there is, so it
+    is printed.
+    """
+
+    @staticmethod
+    def _run(tmp_path, capsys, **options):
+        from carcara import Carcara
+
+        atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
+                             pool="fermionic", max_iterations=2,
+                             gradient_tolerance=1e-3, **options)
+        atoms.get_potential_energy()
+        return capsys.readouterr().out
+
+    def test_a_log_file_silences_the_trace(self, tmp_path, capsys):
+        out = self._run(tmp_path, capsys, output=str(tmp_path / "output.txt"))
+        for noise in ("ADAPT-VQE", "operator pool", "Timings", "iter"):
+            assert noise not in out, noise
+        assert out.strip() == ""
+
+    def test_without_a_log_file_the_trace_is_printed(self, tmp_path, capsys):
+        out = self._run(tmp_path, capsys)
+        # The only report there is, so it must not be silent.
+        assert "ADAPT-VQE" in out and "Timings" in out
+        assert "Hartree-Fock reference" in out
+
+    def test_trace_overrides_the_automatic_choice(self, tmp_path, capsys):
+        printed = self._run(tmp_path, capsys, trace=True,
+                            output=str(tmp_path / "with_trace.txt"))
+        assert "ADAPT-VQE" in printed
+        quiet = self._run(tmp_path, capsys, trace=False)
+        assert quiet.strip() == ""
+
+    def test_trace_must_be_a_boolean_or_none(self):
+        from carcara import Carcara
+
+        with pytest.raises(TypeError, match="trace must be"):
+            Carcara(method="adapt-vqe", trace="yes")
+
+    def test_verbose_is_refused_and_points_at_trace(self):
+        from carcara import Carcara
+
+        with pytest.raises(TypeError, match="trace="):
+            Carcara(method="adapt-vqe", verbose=False)
+
+    def test_the_log_still_has_everything(self, tmp_path, capsys):
+        """Silencing stdout must route the detail, not discard it."""
+        out = str(tmp_path / "output.txt")
+        self._run(tmp_path, capsys, output=out)
+        parsed = parse_output(out)
+        assert parsed["iterations"] and parsed["summary"]["converged"]
+        assert parsed["performance"]["wall_time_s"] > 0

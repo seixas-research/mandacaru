@@ -1165,8 +1165,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     num_parameters=int(params.size),
                     final_max_gradient=max_grad, expressivity=final_expr,
                     num_evaluations=total_evals, metrics=metrics,
-                    optimizer=self.optimizer.method,
-                    operator_sequence=selected)
+                    optimizer=self.optimizer.method)
         finally:
             if logger is not None:
                 logger.close()
@@ -1181,6 +1180,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
         # Fold the (calculator-mode) integration stage in, then set the wall time.
         self._finalize_timings(timings, run_t0)
+        # The performance block closes the step, after the summary.  In
+        # calculator mode `Carcara` writes it instead, so the nuclear gradient's
+        # time -- usually the largest stage of a relaxation step -- is in it.
+        self.write_performance(timings)
 
         # The single Hartree -> output-unit boundary of the run.
         result = ADAPTVQEResult(

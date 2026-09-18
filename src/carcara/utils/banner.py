@@ -8,11 +8,14 @@
 
 """Start-up banner: version, host and dependency information.
 
-:func:`show` writes a banner plus the runtime environment (platform, Python and
-key dependency versions) to **standard output**.  The variational drivers call it
-at the start of a run -- before anything is written to the structured
-``output.txt`` log -- so the console always opens with the provenance of the
-calculation.
+:func:`lines` renders the banner plus the runtime environment (platform, Python
+and key dependency versions) as a list of text lines, and :func:`show` writes
+them to **standard output**.  The variational drivers call ``show`` at the start
+of a run -- before anything is written to the structured ``output.txt`` log --
+so the console always opens with the provenance of the calculation, and
+:class:`~carcara.utils.logging.AdaptOutputLogger` writes the same lines once at
+the top of the log file, so a log kept from a long run carries its own
+provenance.
 
 Output goes to ``sys.stdout`` through :func:`_write` (not the built-in ``print``),
 and every dependency version is looked up defensively so a missing optional
@@ -52,38 +55,53 @@ def _username() -> str:
         return os.environ.get("USER", "?")
 
 
-def show() -> None:
-    """Write the Carcará banner and environment information to standard output."""
-    _write("       _____                                  ")
-    _write("      / ____|                                 ")
-    _write("     | |     __ _ _ __ ___ __ _ _ __ __ _     ")
-    _write("     | |    / _` | '__/ __/ _` | '__/ _` |    ")
-    _write("     | |___| (_| | | | (_| (_| | | | (_| |    ")
-    _write("      \\_____\\__,_|_|  \\___\\__,_|_|  \\__,_|    ")
-    _write("")
-    _write("-----------------------------------------------------------------")
-    _write(f"    version:       {__version__}")
-    _write("    developed by:  Leandro Seixas Rocha")
-    _write("    homepage:      https://github.com/seixas-research/carcara")
-    _write("    documentation: https://carcara.readthedocs.io/")
-    _write("-----------------------------------------------------------------")
-    _write("")
-    _write("System:")
-    _write(f"├── architecture: {platform.machine()}")
-    _write(f"├── platform:     {platform.system()}")
-    _write(f"├── user:         {_username()}")
-    _write(f"├── hostname:     {gethostname()}")
-    _write(f"├── cwd:          {os.getcwd()}")
-    _write(f"└── PID:          {os.getpid()}")
-    _write("")
-    _write("Python:")
-    _write(f"├── version:    {sys.version.splitlines()[0]}")
-    _write(f"└── executable: {sys.executable}")
-    _write("")
-    _write("Dependencies:")
+def lines() -> list[str]:
+    """The banner and environment block, as a list of lines (no line endings).
+
+    The single source of the banner's text: :func:`show` writes these lines to
+    standard output and the ``output.txt`` logger writes the same ones into the
+    log, so the console and the file cannot drift apart.
+    """
+    out = [
+        "       _____                                  ",
+        "      / ____|                                 ",
+        "     | |     __ _ _ __ ___ __ _ _ __ __ _     ",
+        "     | |    / _` | '__/ __/ _` | '__/ _` |    ",
+        "     | |___| (_| | | | (_| (_| | | | (_| |    ",
+        "      \\_____\\__,_|_|  \\___\\__,_|_|  \\__,_|    ",
+        "",
+        "-----------------------------------------------------------------",
+        f"    version:       {__version__}",
+        "    developed by:  Leandro Seixas Rocha",
+        "    homepage:      https://github.com/seixas-research/carcara",
+        "    documentation: https://carcara.readthedocs.io/",
+        "-----------------------------------------------------------------",
+        "",
+        "System:",
+        f"├── architecture: {platform.machine()}",
+        f"├── platform:     {platform.system()}",
+        f"├── user:         {_username()}",
+        f"├── hostname:     {gethostname()}",
+        f"├── cwd:          {os.getcwd()}",
+        f"└── PID:          {os.getpid()}",
+        "",
+        "Python:",
+        f"├── version:    {sys.version.splitlines()[0]}",
+        f"└── executable: {sys.executable}",
+        "",
+        "Dependencies:",
+    ]
     deps = ["ase", "numpy", "scipy", "matplotlib", "qiskit"]
     for i, name in enumerate(deps):
         version, directory = _dep(name)
         branch = "└──" if i == len(deps) - 1 else "├──"
-        _write(f"{branch} {name + ' version:':<20s} {version:<10s} [{directory}]")
-    _write("")
+        out.append(f"{branch} {name + ' version:':<20s} {version:<10s} "
+                   f"[{directory}]")
+    out.append("")
+    return out
+
+
+def show() -> None:
+    """Write the Carcará banner and environment information to standard output."""
+    for line in lines():
+        _write(line)

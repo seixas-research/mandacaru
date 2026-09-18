@@ -845,6 +845,50 @@ _PROVIDER_CLASSES = {
 _CACHE: dict[str, CircuitProvider] = {}
 
 
+def qpu_usage(provider, wall_time_s: float | None = None) -> dict:
+    """QPU accounting for ``provider``'s most recent submission, or ``{}``.
+
+    Reported for the ``[PERFORMANCE]`` log block.  ``wall_time_s`` -- measured by
+    the caller around the submission -- is always included, because it is the
+    only figure available for every backend; the *quantum* seconds and the job id
+    come from Qiskit Runtime, which reports them for a real device only.  A local
+    simulator therefore contributes the wall clock and the device name, and
+    nothing is invented.
+
+    Everything is read defensively: a provider or job object that cannot answer
+    leaves its key out rather than failing a run that has already finished.
+    """
+    if provider is None:
+        return {}
+    usage: dict = {"qpu_device": str(getattr(provider, "device_spec", provider))}
+    shots = getattr(provider, "shots", 0)
+    if shots:
+        usage["qpu_shots"] = int(shots)
+    if wall_time_s is not None:
+        usage["qpu_wall_time_s"] = round(float(wall_time_s), 4)
+
+    job = getattr(provider, "last_job", None)
+    if job is None:
+        return usage
+    usage["qpu_jobs"] = 1
+    try:
+        usage["qpu_job_ids"] = str(job.job_id())
+    except Exception:
+        pass
+    try:
+        metrics = job.metrics() or {}
+        reported = metrics.get("usage") or {}
+        for key, name in (("quantum_seconds", "qpu_seconds"),
+                          ("seconds", "qpu_billed_seconds")):
+            if reported.get(key) is not None:
+                usage[name] = round(float(reported[key]), 4)
+    except Exception:
+        # Not a Runtime job, or the service could not be reached: the wall time
+        # above stands on its own.
+        pass
+    return usage
+
+
 def build_provider(name: str = "qiskit", **options) -> CircuitProvider:
     """Return the :class:`CircuitProvider` for ``name``.
 

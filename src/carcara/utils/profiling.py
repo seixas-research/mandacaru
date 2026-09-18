@@ -24,6 +24,7 @@ cores the C backend used, then surface them in the standard-output summary.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from collections import OrderedDict
@@ -40,6 +41,37 @@ def peak_memory_mb() -> float:
     # ru_maxrss is bytes on macOS, kibibytes on Linux.
     scale = 1.0 if sys.platform == "darwin" else 1024.0
     return float(ru) * scale / (1024.0 ** 2)
+
+
+def current_memory_mb() -> float:
+    """Resident set size of this process *right now*, in MiB.
+
+    The companion of :func:`peak_memory_mb`, which is a monotonic high-water
+    mark: after a stage that allocated and freed a large tensor the peak stays
+    up while this comes back down, so a per-step report needs both.  Needs
+    ``psutil``; ``nan`` without it.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return float("nan")
+    try:
+        return float(psutil.Process().memory_info().rss) / (1024.0 ** 2)
+    except Exception:
+        return float("nan")
+
+
+def cpu_count() -> int | None:
+    """Logical CPUs visible to this process (``None`` if undetectable).
+
+    What the machine offers, against which the C backend's OpenMP thread count
+    (:func:`backend_cores`) says how much is actually used.
+    """
+    try:
+        count = len(os.sched_getaffinity(0))     # Linux: the allowed set
+    except AttributeError:
+        count = os.cpu_count()
+    return None if not count else int(count)
 
 
 def backend_cores() -> int | None:
@@ -108,6 +140,25 @@ class Timings:
             "peak_memory_mb": self.peak_memory_mb,
             "n_cores": self.n_cores,
             "backend": self.backend,
+        }
+
+    def resources(self) -> dict:
+        """The machine context for a performance report.
+
+        ``openmp_threads`` is what the C integral backend actually used and
+        ``cpu_count`` what the machine offers; ``mpi`` records that there is no
+        distributed parallelism at all (Carcará is a single process --
+        shared-memory OpenMP inside the C kernels), which is worth stating
+        rather than leaving to be inferred.
+        """
+        backend = self.backend or ("C (OpenMP)" if self.n_cores else "NumPy")
+        return {
+            "integration_backend": backend,
+            "openmp_threads": self.n_cores,
+            "cpu_count": cpu_count(),
+            "mpi": "not used (single process, shared-memory OpenMP)",
+            "peak_memory_MiB": self.peak_memory_mb,
+            "resident_memory_MiB": current_memory_mb(),
         }
 
     def format_report(self, indent: str = "  ", width: int = 30) -> str:

@@ -328,6 +328,11 @@ class VariationalDriver(Calculator):
         self._configured = False
         #: Result of the most recent run (set by :meth:`run` / the ASE hook).
         self.result = None
+        #: Set by :class:`~carcara.algorithms.calculator.Carcara` so the solver
+        #: does *not* write the ``[PERFORMANCE]`` block itself: the caller
+        #: writes it after the nuclear gradient, whose time is usually the
+        #: largest stage of a relaxation step and would otherwise be left out.
+        self.defer_performance = False
         # True when a Hamiltonian was supplied at construction (direct mode); the
         # ASE hook then never rebuilds it.  In calculator mode it stays False and
         # the Hamiltonian is (re)built from the geometry on each ``calculate``.
@@ -1039,6 +1044,40 @@ class VariationalDriver(Calculator):
             for name, secs in self._integration_profile.get("stages_s", {}).items():
                 timings.add(f"integration: {name}", secs)
         timings.wall_time = _perf() - run_t0
+
+    # -- performance accounting -------------------------------------------- #
+
+    def qpu_accounting(self, wall_time_s: float | None = None) -> dict:
+        """QPU usage of this run's provider, or ``{}`` when none was used."""
+        from ..backends.providers import qpu_usage
+
+        cached = getattr(self, "_provider_cache", None)
+        provider = None if cached is None else cached[1]
+        if provider is None or not getattr(self, "shots", 0):
+            # No provider, or an exact (shots = 0) evaluation: nothing ran on a
+            # processor, so there is nothing to account for.
+            return {}
+        return qpu_usage(provider, wall_time_s)
+
+    def write_performance(self, timings, extra: dict | None = None) -> None:
+        """Append this run's ``[PERFORMANCE]`` block to the ``output.txt`` log.
+
+        Skipped when there is no log, and when
+        :attr:`defer_performance` says the caller will write the block itself
+        (:class:`~carcara.algorithms.calculator.Carcara` does, so the nuclear
+        gradient's time lands in the same block as the solver's stages).
+        """
+        path = getattr(self, "output", None)
+        if path is None or self.defer_performance:
+            return
+        from ..utils.logging import append_performance
+
+        accounting = dict(self.qpu_accounting())
+        accounting.update(extra or {})
+        append_performance(path, stages=dict(timings.stages),
+                           wall_time_s=timings.wall_time,
+                           resources=timings.resources(),
+                           extra=accounting or None)
 
     def _show_banner(self) -> None:
         """Write the start-up banner to stdout, **once per process**.

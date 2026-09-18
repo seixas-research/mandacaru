@@ -64,7 +64,9 @@ frozen).
 
 from __future__ import annotations
 
+import sys
 import warnings
+from time import perf_counter as _perf
 
 import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
@@ -125,6 +127,36 @@ def resolve_method(name: str):
         f"unknown method {name!r}; use one of {available_methods()}")
 
 
+#: Whether standard output has already been put in line-buffered mode.
+_STDOUT_LINE_BUFFERED = False
+
+
+def _watchable_stdout() -> None:
+    """Make a **redirected** standard output show each line as it is written.
+
+    With the trace routed to a log file the terminal gets only what an ASE
+    optimizer prints -- one line of about sixty bytes per step.  Python
+    block-buffers a redirected stream and ASE's ``Optimizer.log`` does not flush
+    after writing, so ``python run.py > run.log`` would show nothing for minutes
+    at a time and a running relaxation would be indistinguishable from a hung
+    one.  Line buffering costs nothing at that rate; an interactive terminal is
+    line-buffered already, so this changes only the redirected case.
+
+    Done once per process, and defensively: a replaced ``sys.stdout`` (a test
+    harness's, a notebook's) may not support reconfiguration, and failing to
+    make output prettier must never fail a calculation.
+    """
+    global _STDOUT_LINE_BUFFERED
+    if _STDOUT_LINE_BUFFERED:
+        return
+    _STDOUT_LINE_BUFFERED = True
+    try:
+        if not sys.stdout.isatty():
+            sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+
 #: Pseudopotential families whose forces come from
 #: :func:`~carcara.algorithms.pseudo_forces.pseudo_nuclear_gradient`.
 PSEUDO_GRADIENT_FAMILIES = ("paw", "oncvpsp")
@@ -176,6 +208,16 @@ class Carcara(Calculator):
         extended-XYZ ``Lattice``), or a ``ValueError`` is raised.
     grid : Grid, optional
         An explicit grid, used verbatim (and frozen) for every evaluation.
+    trace : bool, optional
+        Whether the solver prints its full run trace (configuration header,
+        per-iteration table, timings) to **standard output**.  ``None`` (the
+        default) decides automatically: **off** when ``output=<path>`` gives the
+        detail a destination, **on** when it does not.  With it off, standard
+        output carries only the evolution of energies and forces an ASE
+        optimizer prints there (``Step Time Energy fmax``) -- the same split
+        GPAW makes with ``txt=``.  ``True`` / ``False`` force it either way; a
+        single-point run with the trace off reports nothing to the terminal (the
+        energy is the return value, and the log file has the rest).
     measurement_provider : CircuitProvider, optional
         Measure the optimized state instead of reading the local state vector:
         the ansatz is still optimized locally, then every Pauli string of the
@@ -236,6 +278,11 @@ class Carcara(Calculator):
     relaxation step costs one complete solver run.  The converged result of the
     most recent evaluation is available on :attr:`result`, the solver instance
     on :attr:`solver`, and the force breakdown on :attr:`force_result`.
+
+    With ``output=<path>`` (forwarded to the solver) every step **appends** its
+    own block to that one file -- the iteration table, then the forces of that
+    geometry -- so the whole trajectory is in one log rather than the last step
+    overwriting the rest; see :mod:`carcara.utils.logging`.
     """
 
     implemented_properties = ["energy", "free_energy", "forces"]
@@ -246,7 +293,7 @@ class Carcara(Calculator):
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
                  scf_iterations: int = 40,
-                 measurement_provider=None,
+                 measurement_provider=None, trace: bool | None = None,
                  **solver_kwargs):
         Calculator.__init__(self)
         self.method, self._solver_class = resolve_method(method)
@@ -262,17 +309,20 @@ class Carcara(Calculator):
         self.orbital_delta = orbital_delta
         self.scf_iterations = int(scf_iterations)
         if "verbose" in solver_kwargs:
-            # Removed deliberately, and refused loudly rather than ignored: a
-            # `verbose=False` in a script silences the run trace *and* leaves
-            # the ADAPT iteration table unwritten to the terminal, which is a
-            # trap -- the run looks like it produced no output.  The trace is
-            # always printed now; use `output=` for the structured log file.
+            # Refused loudly rather than ignored: `verbose` was the solver's own
+            # flag and silencing it left a run that looked as though it produced
+            # nothing.  `trace=` is the supported control, and it routes the
+            # detail rather than discarding it.
             raise TypeError(
-                "Carcara() no longer takes `verbose`: the run trace is always "
-                "printed.  Remove the argument.  The structured per-iteration "
-                "log is written with `output=<path>`, and the operator pool "
-                "and Hamiltonian with `verbose_operators=` / "
-                "`verbose_hamiltonian=`.")
+                "Carcara() does not take `verbose`: use `trace=` to control the "
+                "standard-output trace (None = automatic: off when `output=` "
+                "routes the detail to a file, on otherwise; True / False force "
+                "it).  The structured per-iteration log is written with "
+                "`output=<path>`, and the operator pool and Hamiltonian with "
+                "`verbose_operators=` / `verbose_hamiltonian=`.")
+        if trace is not None and not isinstance(trace, bool):
+            raise TypeError(f"trace must be True, False or None, got {trace!r}")
+        self.trace = trace
         self.solver_kwargs = dict(solver_kwargs)
         self.measurement_provider = measurement_provider
         #: Energy, RDMs and expectation values of the last measured state.
@@ -343,8 +393,23 @@ class Carcara(Calculator):
         """Fermion-to-qubit mapping of the last evaluation."""
         return self._require_solver().mapping
 
+    def _show_trace(self) -> bool:
+        """Whether the solver prints its full trace to standard output.
+
+        Automatic by default, on the same principle as GPAW's ``txt=``: with
+        ``output=<path>`` the detail has a destination, so standard output is
+        left to the **evolution of energies and forces** -- which is what an ASE
+        optimizer prints there, in ASE's own ``Step Time Energy fmax`` format.
+        Without ``output=`` the trace is the only report there is, so it is
+        printed.  ``trace=True`` / ``False`` overrides either way.
+        """
+        if self.trace is not None:
+            return self.trace
+        return self.solver_kwargs.get("output") is None
+
     def _make_solver(self, grid):
         return self._solver_class(basis=self.basis, grid=grid, h=self.h,
+                                  verbose=self._show_trace(),
                                   **self.solver_kwargs)
 
     def run(self, **run_kwargs):
@@ -437,6 +502,11 @@ class Carcara(Calculator):
         """
         Calculator.calculate(self, atoms, properties, system_changes)
         atoms = self.atoms
+        step_t0 = _perf()
+        if not self._show_trace():
+            # The terminal now carries only ASE's one line per step, which
+            # nothing flushes: keep a redirected stream watchable.
+            _watchable_stdout()
 
         want_forces = "forces" in properties
         # A previous step's breakdown must never survive a new geometry.
@@ -448,12 +518,18 @@ class Carcara(Calculator):
         # energy uses the solver's own per-geometry grid unless one was given.
         grid = self._frozen_grid(atoms) if want_forces else self._grid
         solver = self._make_solver(grid=grid)
+        # This step's performance block is written here, once the gradient and
+        # any measurement have been timed too (see :meth:`_log_performance`).
+        solver.defer_performance = True
         energy_ev = self._single_point(solver, atoms)
         self.solver = solver
 
+        stages: dict[str, float] = {}
         measured = None
         if self.measurement_provider is not None and not solver.dry_run:
+            t0 = _perf()
             measured = self._measure(solver)
+            stages["measurement (provider)"] = _perf() - t0
             energy_ev = measured["energy_eV"]
 
         self.results["energy"] = energy_ev
@@ -465,13 +541,24 @@ class Carcara(Calculator):
             return
         if want_forces:
             self._check_force_support(solver)
+            t0 = _perf()
             if measured is None:
                 self.force_result = self._forces(solver)
             else:
                 self.force_result = self._forces(
                     solver, rdms=measured["rdms"],
                     reference_energy=measured["energy_hartree"])
+            stages["nuclear gradient (forces)"] = _perf() - t0
             self.results["forces"] = self.force_result.forces
+            self._log_forces(solver, atoms)
+        self._log_performance(solver, stages, _perf() - step_t0)
+        # The optimizer's line for the *previous* step is written after its
+        # calculate returns, so this is what pushes it out on a stream that
+        # could not be reconfigured.
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     def _single_point(self, solver, atoms):
         """Attach the solver to a copy of ``atoms`` and get the energy in eV."""
@@ -656,6 +743,85 @@ class Carcara(Calculator):
         if self.project_translation:
             self._project_translation(legacy)
         return legacy
+
+    def _log_forces(self, solver, atoms) -> None:
+        """Append the step's forces to the run's ``output.txt``, when there is one.
+
+        The solver logs the geometry's energies and closes its own log before
+        the gradient is even computed, so the forces are appended afterwards --
+        under the iteration table of the step they belong to.  A relaxation's
+        log then reads as alternating energy and force blocks, one pair per
+        geometry, which is what makes the convergence followable in the file
+        rather than only in the terminal.
+        """
+        path = getattr(solver, "output", None)
+        if path is None or self.force_result is None:
+            return
+        from ..utils.logging import append_forces
+
+        result = self.force_result
+        details = result.details
+        extra = {"force_method": self.force_method,
+                 "include_pulay": self.include_pulay,
+                 "pulay_fraction": f"{result.pulay_fraction:.6f}",
+                 "n_electrons": f"{result.n_electrons:.6f}"}
+        # The two residuals that say whether this gradient can be trusted: the
+        # orbital response it neglects and the net force the grid invents.
+        for key in ("orbital_gradient", "translational_residual"):
+            if details.get(key) is not None:
+                extra[key] = f"{float(details[key]):.6e}"
+        if details.get("translation_projected"):
+            extra["translation_projected"] = True
+        append_forces(path, atoms.get_chemical_symbols(), result.forces,
+                      hellmann_feynman=result.hellmann_feynman,
+                      pulay=result.pulay, extra=extra)
+
+    def _log_performance(self, solver, stages, wall_time_s) -> None:
+        """Append this step's ``[PERFORMANCE]`` block to the run's ``output.txt``.
+
+        The block covers the **whole** step, which is why the calculator writes
+        it and not the solver: on a real relaxation the nuclear gradient is the
+        largest single stage -- a six-step water relaxation in PAW-SZ at
+        h = 0.10 spends 62 % of its 325 s on forces against 19 % on the
+        variational optimization -- so a block closed when the solver finished
+        would account for the smaller part of the time.  ``stages`` carries what
+        this method's caller timed -- the gradient, and the provider measurement
+        when there was one -- on top of the solver's own.
+        """
+        path = getattr(solver, "output", None)
+        if path is None:
+            return
+        from ..utils.logging import append_performance
+        from ..utils.profiling import Timings, backend_cores
+
+        reported = (getattr(solver.result, "timings", None) or {}) \
+            if solver.result is not None else {}
+        timings = Timings(n_cores=reported.get("n_cores", backend_cores()),
+                          backend=reported.get("backend"))
+        for name, seconds in (reported.get("stages_s") or {}).items():
+            timings.add(name, seconds)
+        # The solver's own wall clock covers the stages it timed plus the
+        # Hamiltonian construction it does not; recording it as a stage keeps
+        # `untimed_s` about *this* step rather than hiding the difference.
+        solver_wall = reported.get("wall_time_s")
+        for name, seconds in stages.items():
+            timings.add(name, seconds)
+        timings.wall_time = float(wall_time_s)
+
+        accounting = dict(solver.qpu_accounting(
+            stages.get("measurement (provider)")))
+        if self.measurement_provider is not None:
+            from ..backends.providers import qpu_usage
+            accounting.update(qpu_usage(self.measurement_provider,
+                                        stages.get("measurement (provider)")))
+        extra = {"solver_wall_time_s": (None if solver_wall is None
+                                        else round(float(solver_wall), 4))}
+        extra = {k: v for k, v in extra.items() if v is not None}
+        extra.update(accounting)
+        append_performance(path, stages=timings.stages,
+                           wall_time_s=timings.wall_time,
+                           resources=timings.resources(),
+                           extra=extra or None)
 
     def _project_translation(self, result):
         """Subtract the mean force, so the molecule cannot drift.
