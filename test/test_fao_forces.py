@@ -60,8 +60,11 @@ def forces_of(symbols, distance, basis, cell=9.0, h=0.25, **options):
                          **options)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        forces = atoms.get_forces()
-    return forces, atoms.calc
+        atoms.get_forces()
+    # The unprojected gradient: these tests measure the translational artifact
+    # itself, which the default projection exists to remove from what is
+    # reported (see ``ForceResult.unprojected``).
+    return atoms.calc.force_result.unprojected, atoms.calc
 
 
 def bond_force(forces):
@@ -220,3 +223,74 @@ class TestTranslationalCheck:
             residual = C._check_translational_invariance(result)
         assert residual == pytest.approx(0.01)
         assert result.details["translational_residual"] == pytest.approx(0.01)
+
+
+# --------------------------------------------------------------------------- #
+# When the translational projection applies.
+# --------------------------------------------------------------------------- #
+
+class TestTranslationProjectionPolicy:
+    """``project_translation="auto"`` projects exactly where the identity holds.
+
+    A free molecule's exact forces sum to zero, so subtracting the mean is an
+    orthogonal projection onto a subspace containing the true answer -- it cannot
+    move the estimate away from it.  Under periodic boundary conditions that
+    identity is not the one being enforced, and for a single atom the residual is
+    zero by construction (the grid re-centers on it), so neither is projected.
+    """
+
+    @staticmethod
+    def _run(**options):
+        atoms = dimer("H2", 0.74, 8.0)
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
+                             pool="fermionic", max_iterations=4,
+                             gradient_tolerance=1e-4, profile=False,
+                             **options)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forces = atoms.get_forces()
+        return forces, atoms.calc.force_result
+
+    def test_auto_is_the_default_and_projects_a_free_molecule(self):
+        forces, result = self._run()
+        assert net_force(forces) < 1e-12
+        assert result.details["translation_projected"] is True
+        # Nothing is lost: the raw gradient and the residual are both kept.
+        assert net_force(result.unprojected) == pytest.approx(
+            result.details["translational_residual"], rel=1e-9)
+
+    def test_false_reports_the_raw_gradient(self):
+        projected, _ = self._run()
+        raw, result = self._run(project_translation=False)
+        assert "translation_projected" not in result.details
+        assert result.unprojected is result.forces
+        # The two differ by exactly the mean that was removed.
+        assert np.allclose(projected, raw - raw.mean(axis=0), atol=1e-10)
+
+    def test_auto_leaves_a_periodic_system_alone(self):
+        atoms = dimer("H2", 0.74, 8.0)
+        atoms.pbc = True
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
+                             pool="fermionic", max_iterations=4,
+                             gradient_tolerance=1e-4, profile=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forces = atoms.get_forces()
+        # The sum over a cell's atoms is not the free-molecule identity.
+        assert "translation_projected" not in atoms.calc.force_result.details
+        assert net_force(forces) > 0.0
+
+    def test_explicit_true_on_a_periodic_system_says_it_is_ignored(self):
+        atoms = dimer("H2", 0.74, 8.0)
+        atoms.pbc = True
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
+                             pool="fermionic", max_iterations=4,
+                             gradient_tolerance=1e-4, profile=False,
+                             project_translation=True)
+        with pytest.warns(RuntimeWarning, match="ignored for a periodic"):
+            atoms.get_forces()
+
+    @pytest.mark.parametrize("value", ["yes", 1, None, "AUTO"])
+    def test_an_unknown_setting_is_refused(self, value):
+        with pytest.raises(ValueError, match="project_translation must be"):
+            Carcara(method="adapt-vqe", project_translation=value)

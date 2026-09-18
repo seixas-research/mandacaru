@@ -15,8 +15,12 @@ optimization live.  The file has these kinds of section:
 
 * the start-up **banner** (:func:`carcara.utils.banner.lines`), written once at
   the very top of the file so the log carries its own provenance;
-* a **metadata / initialization** block with the geometry of this step and the
-  explicit unit-cell parameters;
+* a **system** block with the geometry of this step and the explicit unit-cell
+  parameters (named ``[METADATA]`` before 2026-09-18; :func:`parse_output` still
+  reads that name);
+* an **electrons** block with how the electronic problem was posed -- basis,
+  grid, kinetic operator, k-points, spin, the fermion-to-qubit mapping and the
+  size of the register and Hamiltonian it produced;
 * an **optimization setup** block naming the classical optimizer and the
   reference (Hartree-Fock) energy the VQE starts from;
 * one **iteration** block per accepted ADAPT operator, giving the pool's
@@ -218,11 +222,11 @@ class AdaptOutputLogger:
 
     # -- metadata / initialization block ----------------------------------- #
 
-    def write_metadata(self, symbols: Sequence[str] | None = None,
-                        positions=None, cell=None,
-                        units: str = "Angstrom", title: str = "ADAPT-VQE run",
-                        extra: dict | None = None) -> None:
-        """Write the initial geometry and the explicit unit-cell parameters.
+    def write_system(self, symbols: Sequence[str] | None = None,
+                     positions=None, cell=None,
+                     units: str = "Angstrom", title: str = "ADAPT-VQE run",
+                     extra: dict | None = None) -> None:
+        """Write the ``[SYSTEM]`` block: this step's geometry and its cell.
 
         Parameters
         ----------
@@ -245,7 +249,7 @@ class AdaptOutputLogger:
         # nothing extra.
         heading = (title if self.step <= 1 else
                    f"{title} -- geometry step {self.step}")
-        self._emit(_BANNER, INDENT + heading, _BANNER, "", "[METADATA]")
+        self._emit(_BANNER, INDENT + heading, _BANNER, "", "[SYSTEM]")
         self._emit_body(f"step: {self.step}")
         if extra:
             for key, value in extra.items():
@@ -259,9 +263,7 @@ class AdaptOutputLogger:
         if symbols is not None and positions is not None:
             positions = np.asarray(positions, dtype=float)
             self._emit_body(f"n_atoms: {len(symbols)}", "geometry:")
-            for sym, (x, y, z) in zip(symbols, positions):
-                self._emit_body(f"{sym:<3s} {x:16.10f} {y:16.10f} {z:16.10f}",
-                                level=2)
+            self._emit(*_indent(_geometry_rows(symbols, positions), 2))
         else:
             self._emit_body("geometry: (not provided)")
 
@@ -279,6 +281,28 @@ class AdaptOutputLogger:
         else:
             self._emit_body("cell_present: False",
                             "cell_vectors: (non-periodic)")
+        self._emit("")
+
+    # -- electronic-structure block ---------------------------------------- #
+
+    def write_electrons(self, fields: dict) -> None:
+        """Write the ``[ELECTRONS]`` block: how the electronic problem was posed.
+
+        The basis, the real-space grid, the fermion-to-qubit encoding and the
+        size of what came out of it -- everything needed to know *which*
+        Hamiltonian the iterations below belong to.  ``fields`` is written in the
+        order given, so the caller fixes the reading order (the driver groups it
+        from the discretization to the register).
+
+        This is the configuration the standard-output trace prints in its header;
+        with the trace routed to a log file
+        (:class:`~carcara.algorithms.calculator.Carcara`'s ``trace``), the file is
+        where it has to be.
+        """
+        self._emit("[ELECTRONS]")
+        for key, value in fields.items():
+            if value is not None:
+                self._emit_body(f"{key}: {value}")
         self._emit("")
 
     # -- optimization setup block ------------------------------------------ #
@@ -447,7 +471,10 @@ class AdaptOutputLogger:
                       num_evaluations: int | None = None,
                       metrics: Any = None, optimizer: str | None = None,
                       extra: dict | None = None) -> None:
-        """Write the closing summary block: the final parameterization in full.
+        """Write this step's ``[QUANTUM VARIATIONAL SUMMARY]``: the converged state.
+
+        One per geometry -- it closes the variational run, not the relaxation
+        (:func:`append_optimization_summary` closes that).
 
         Records the converged energy, the final ansatz size (operators /
         parameters), its expressivity, and the compiled-circuit cost (CNOTs,
@@ -460,7 +487,7 @@ class AdaptOutputLogger:
         wants it as data.  On a wide register that one line was longer than the
         table it duplicated.
         """
-        self._emit(_BANNER, "[SUMMARY]")
+        self._emit(_BANNER, "[QUANTUM VARIATIONAL SUMMARY]")
         self._emit_body(f"converged: {converged}")
         if optimizer is not None:
             self._emit_body(f"classical_optimizer: {optimizer}")
@@ -504,6 +531,18 @@ class AdaptOutputLogger:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+def _geometry_rows(symbols: Sequence[str], positions) -> list[str]:
+    """One ``symbol x y z`` row per atom, unindented.
+
+    Shared by the ``[SYSTEM]`` block and the relaxed geometry of
+    :func:`append_optimization_summary`, so a geometry reads the same wherever
+    it appears in the file.
+    """
+    positions = np.atleast_2d(np.asarray(positions, dtype=float))
+    return [f"{str(sym):<3s} {x:16.10f} {y:16.10f} {z:16.10f}"
+            for sym, (x, y, z) in zip(symbols, positions)]
 
 
 def _force_table(symbols: Sequence[str], vectors,
@@ -629,6 +668,97 @@ def _performance_value(key: str, value) -> str:
     return str(value)
 
 
+def append_optimization_summary(path: str, history, symbols=None,
+                                positions=None, units: str = "Angstrom",
+                                energy_unit: str = "eV", fmax: float | None = None,
+                                extra: dict | None = None) -> None:
+    """Close the log with the relaxation's own two blocks.
+
+    ``[GEOMETRY OPTIMIZATION SUMMARY]`` is the trajectory seen as one thing --
+    how far the energy fell, how the largest force came down, the relaxed
+    geometry -- and ``[RELAXATION COMPLETE]`` is the one-line footer that says the
+    run finished, so a reader (or a script) can tell a complete log from one that
+    was cut off mid-step.
+
+    Parameters
+    ----------
+    path : str
+        The log the steps were written to.
+    history : sequence of mapping
+        One entry per geometry step, with ``energy`` (in ``energy_unit``),
+        ``max_force`` and ``net_force`` (eV/Angstrom); optional ``wall_time_s``
+        and ``com`` (centre of mass) are used when present.
+    symbols, positions : optional
+        The relaxed geometry, written as the ``[SYSTEM]`` block writes one.
+    fmax : float, optional
+        The optimizer's force threshold.  Given, the footer states whether the
+        run **converged** against it; without it the footer reports the final
+        force and says only that the run finished -- the threshold is the
+        optimizer's, and this is not the place to guess it.
+    extra : mapping, optional
+        Further ``KEY: value`` lines for the summary block.
+    """
+    history = [dict(entry) for entry in history]
+    if not history:
+        return
+    first, last = history[0], history[-1]
+    steps = len(history)
+
+    keys = {"geometry_steps": steps, "units": units,
+            f"initial_energy_{energy_unit}": f"{first['energy']:.10f}",
+            f"final_energy_{energy_unit}": f"{last['energy']:.10f}",
+            f"energy_change_{energy_unit}":
+                f"{last['energy'] - first['energy']:+.10f}",
+            "initial_max_force": f"{first['max_force']:.8f}",
+            "final_max_force": f"{last['max_force']:.8f}",
+            "final_net_force": f"{last['net_force']:.8f}"}
+    if first.get("com") is not None and last.get("com") is not None:
+        drift = float(np.linalg.norm(np.asarray(last["com"], float)
+                                     - np.asarray(first["com"], float)))
+        # A free molecule cannot translate under its own forces: whatever this
+        # is, the grid put it there (see `project_translation`).
+        keys["center_of_mass_drift"] = f"{drift:.8f}"
+    total = sum(float(entry.get("wall_time_s") or 0.0) for entry in history)
+    if total:
+        keys["total_wall_time_s"] = f"{total:.4f}"
+    for key, value in (extra or {}).items():
+        keys[key] = value
+
+    lines = ["", "[GEOMETRY OPTIMIZATION SUMMARY]"] + _indent(
+        [f"{key}: {value}" for key, value in keys.items()])
+
+    heading = (f"{'step':>5} {'energy (' + energy_unit + ')':>20} "
+               f"{'max force':>16} {'net force':>16}")
+    rows = [heading, "-" * len(heading)]
+    for index, entry in enumerate(history, start=1):
+        rows.append(f"{index:5d} {entry['energy']:20.10f} "
+                    f"{entry['max_force']:16.8f} {entry['net_force']:16.8f}")
+    lines += _indent(["convergence:"]) + _indent(rows, 2)
+
+    if symbols is not None and positions is not None:
+        lines += _indent(["relaxed_geometry:"])
+        lines += _indent(_geometry_rows(symbols, positions), 2)
+    lines.append(_BANNER)
+
+    if fmax is None:
+        status = (f"finished after {steps} geometry steps "
+                  f"(final max force {last['max_force']:.6f} eV/Angstrom)")
+    elif last["max_force"] <= float(fmax):
+        status = (f"converged after {steps} geometry steps "
+                  f"(max force {last['max_force']:.6f} <= {float(fmax):.6f} "
+                  f"eV/Angstrom)")
+    else:
+        status = (f"NOT converged after {steps} geometry steps "
+                  f"(max force {last['max_force']:.6f} > {float(fmax):.6f} "
+                  f"eV/Angstrom)")
+    lines += ["", "[RELAXATION COMPLETE]"] + _indent([f"status: {status}"])
+    lines.append(_BANNER)
+
+    with open(path, "a", encoding="utf-8") as fh:
+        for line in lines:
+            fh.write(line + "\n")
+
+
 def append_performance(path: str, stages=None, wall_time_s=None,
                        resources=None, step: int | None = None,
                        extra: dict | None = None) -> None:
@@ -729,33 +859,51 @@ def _cell_parameters(cell: np.ndarray):
             angle(b_vec, c_vec), angle(a_vec, c_vec), angle(a_vec, b_vec))
 
 
+#: Markers that open a geometry step.  ``[METADATA]`` is the name ``[SYSTEM]``
+#: had before 2026-09-18 and is still read, so a log written by an older version
+#: still parses.
+_STEP_MARKERS = ("[SYSTEM]", "[METADATA]")
+
+#: Markers of the per-step variational summary.  ``[SUMMARY]`` is what
+#: ``[QUANTUM VARIATIONAL SUMMARY]`` was called before 2026-09-18 and is still
+#: read, so an older log still parses.
+_SUMMARY_MARKERS = ("[QUANTUM VARIATIONAL SUMMARY]", "[SUMMARY]")
+
+#: ``[GEOMETRY OPTIMIZATION SUMMARY]`` keys that are counts, not measurements.
+_RELAXATION_COUNTS = ("geometry_steps",)
+
 #: ``[PERFORMANCE]`` keys that are counts rather than measurements, so they read
 #: back as ``int``.
 _PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs")
 
-#: Section markers of the protocol, mapped to the key they fill (``[METADATA]``
-#: is handled separately: it opens a new geometry step).
-_SECTIONS = {"[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
-             "[SUMMARY]": "summary", "[FORCES]": "forces",
-             "[PERFORMANCE]": "performance"}
+#: Section markers of the protocol, mapped to the key they fill (the step
+#: markers are handled separately: they open a new geometry step).
+_SECTIONS = {"[ELECTRONS]": "electrons",
+             "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
+             "[FORCES]": "forces", "[PERFORMANCE]": "performance",
+             "[GEOMETRY OPTIMIZATION SUMMARY]": "optimization",
+             "[RELAXATION COMPLETE]": "completion",
+             **{marker: "summary" for marker in _SUMMARY_MARKERS}}
 
 
 def parse_output(path: str) -> dict:
     """Reference parser for an ADAPT ``output.txt`` (used by the tests).
 
-    Reads the metadata and setup blocks as ``KEY: value`` lines, the
+    Reads the system, electrons and setup blocks as ``KEY: value`` lines, the
     ``[ITERATIONS]`` table as one record per row keyed by its column heading, and
     the ``[FORCES]`` block as per-atom vectors plus its scalar keys --
     demonstrating that the protocol is machine-parseable as written.
 
     A file written by a geometry optimization holds one block per step
     (see the module docstring).  ``result["steps"]`` is the list of those blocks,
-    in order; the top-level ``metadata`` / ``setup`` / ``iterations`` /
-    ``summary`` / ``forces`` keys describe the **last** step, so reading a
-    single-point log is unchanged.
+    in order; the top-level ``system`` / ``electrons`` / ``setup`` /
+    ``iterations`` / ``summary`` / ``forces`` / ``performance`` keys describe the
+    **last** step, so reading a single-point log is unchanged.  ``metadata`` is
+    kept as an alias of ``system``.
     """
     steps: list[dict[str, Any]] = []
     step: dict[str, Any] | None = None
+    relaxation: dict[str, Any] = {}
     section = None
     columns: list[str] = []
     energy_unit = "eV"
@@ -771,7 +919,10 @@ def parse_output(path: str) -> dict:
         """Start a block: one geometry step of the log."""
         nonlocal columns
         columns = []
-        fresh: dict[str, Any] = {"metadata": {}, "setup": {}, "iterations": []}
+        fresh: dict[str, Any] = {"system": {}, "setup": {}, "iterations": []}
+        # ``metadata`` is the key ``system`` had before 2026-09-18; the same dict
+        # answers to both so an existing reader keeps working.
+        fresh["metadata"] = fresh["system"]
         steps.append(fresh)
         return fresh
 
@@ -779,11 +930,11 @@ def parse_output(path: str) -> dict:
         for raw in fh:
             stripped = raw.strip()
             indent = len(raw) - len(raw.lstrip())
-            if stripped == "[METADATA]":
-                # A metadata block opens a geometry step; a second one starts
+            if stripped in _STEP_MARKERS:
+                # The system block opens a geometry step; a second one starts
                 # the next step of a relaxation.
                 step = new_step()
-                section = "metadata"
+                section = "system"
                 continue
             if stripped in _SECTIONS:
                 # A log need not start with metadata (a forces block appended on
@@ -801,6 +952,13 @@ def parse_output(path: str) -> dict:
                 elif section == "performance":
                     table = None
                     step["performance"] = {"stages_s": {}}
+                elif section == "electrons":
+                    step["electrons"] = {}
+                elif section in ("optimization", "completion"):
+                    # The relaxation's own blocks: they close the file, not a
+                    # geometry step, so they are kept at the top level.
+                    table = None
+                    relaxation[section] = {}
                 continue
             if step is None:
                 # The banner, above the first block: provenance, not data.
@@ -808,7 +966,35 @@ def parse_output(path: str) -> dict:
             if not stripped or set(stripped) == {"-"} or set(stripped) == {"="}:
                 continue
 
-            if section in ("metadata", "setup") and ":" in stripped \
+            if section in ("optimization", "completion"):
+                block = relaxation[section]
+                fields = stripped.split()
+                if stripped.endswith(":"):
+                    table = stripped[:-1]           # "convergence", "relaxed_geometry"
+                    block[table] = []
+                elif table is not None and indent >= len(INDENT) * 2:
+                    # A table row, told from a key by its deeper indentation.
+                    if fields[0] == "step":
+                        continue                            # the table heading
+                    if table == "convergence" and len(fields) >= 4:
+                        block[table].append(
+                            {"step": int(fields[0]), "energy": number(fields[1]),
+                             "max_force": number(fields[2]),
+                             "net_force": number(fields[3])})
+                    else:                     # a geometry row: symbol x y z
+                        block[table].append(
+                            [fields[0]] + [number(v) for v in fields[1:4]])
+                elif ":" in stripped:
+                    key, _, value = stripped.partition(":")
+                    key, value = key.strip(), value.strip()
+                    numeric = number(value)
+                    if numeric is None:
+                        block[key] = value
+                    elif key in _RELAXATION_COUNTS:
+                        block[key] = int(numeric)
+                    else:
+                        block[key] = numeric
+            elif section in ("system", "setup", "electrons") and ":" in stripped \
                     and not stripped.startswith(("a1", "a2", "a3")):
                 key, _, value = stripped.partition(":")
                 step[section][key.strip()] = value.strip()
@@ -903,8 +1089,10 @@ def parse_output(path: str) -> dict:
 
     # The top level is the last step, so a single-point log parses exactly as it
     # did before there were steps; every step is kept under "steps".
-    result: dict[str, Any] = {"metadata": {}, "setup": {}, "iterations": []}
+    result: dict[str, Any] = {"system": {}, "metadata": {}, "setup": {},
+                              "iterations": []}
     if steps:
         result.update(steps[-1])
     result["steps"] = steps
+    result.update(relaxation)
     return result

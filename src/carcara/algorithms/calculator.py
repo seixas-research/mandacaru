@@ -64,6 +64,7 @@ frozen).
 
 from __future__ import annotations
 
+import atexit
 import sys
 import warnings
 from time import perf_counter as _perf
@@ -161,13 +162,36 @@ def _watchable_stdout() -> None:
 #: :func:`~carcara.algorithms.pseudo_forces.pseudo_nuclear_gradient`.
 PSEUDO_GRADIENT_FAMILIES = ("paw", "oncvpsp")
 #: Largest orbital-rotation residual (Hartree) the RDM gradient accepts quietly.
+#:
+#: The residual is ``max |dE/dkappa|`` with the density matrices held fixed, and
+#: it vanishes at **both** ends of the correlation range: for the Hartree-Fock
+#: determinant (RHF is orbital-stationary) and for the exact ground state of the
+#: same orbital space (a full CI there is invariant under any rotation of those
+#: orbitals).  Measured on H2O / PAW-SZ at h = 0.25: 1.2e-9 Ha for the HF
+#: determinant, 1.8e-9 for the sector FCI, and 1.0e-2 for the ADAPT state that
+#: stalls 5.4e-4 Ha above it.  So a nonzero residual says the ansatz stopped
+#: short of that exact state -- to *first* order in the state error, where the
+#: energy only shows it to second.
 ORBITAL_RESPONSE_TOLERANCE = 1e-3
 
 #: Remove the spurious net force before reporting it (see
-#: :meth:`Carcara._project_translation`).  Off by default: it changes reported
-#: forces, and a large residual is a signal about the grid that should be seen
-#: rather than silently absorbed.
-DEFAULT_PROJECT_TRANSLATION = False
+#: :meth:`Carcara._project_translation`).
+#:
+#: ``"auto"`` -- the default -- projects whenever the identity it enforces
+#: actually holds: a non-periodic system of two or more atoms.  That is not a
+#: cosmetic choice.  The exact force of a free molecule sums to zero, so
+#: subtracting the mean is an **orthogonal projection onto a subspace that
+#: contains the true answer**, and such a projection can only reduce the
+#: distance to it -- the reported force is never made worse and is usually
+#: better.  What it gives up is the identity ``forces == -dE/dR`` of the
+#: *discretized* energy, which is why the unprojected array stays available in
+#: ``force_result.details["forces_unprojected"]`` and the unprojected residual
+#: in ``details["translational_residual"]``: a finite-difference check has to
+#: compare against those.
+DEFAULT_PROJECT_TRANSLATION = "auto"
+
+#: Accepted values of ``project_translation``.
+PROJECT_TRANSLATION_CHOICES = (True, False, "auto")
 
 #: A free-standing molecule feels no net force: translation is a symmetry of
 #: the exact energy, so ``sum_A F_A`` is zero and whatever comes out instead is
@@ -232,15 +256,28 @@ class Carcara(Calculator):
         it to ``False`` gives the bare Hellmann-Feynman force; for an atom-centered
         basis that is **not** the gradient of the energy and will not relax to the
         right geometry -- it is exposed for analysis, not for production.
-    project_translation : bool
-        Subtract the mean force from every atom before reporting, so the
-        forces sum to zero (default ``False``; non-periodic systems only).
-        A free molecule's exact forces *do* sum to zero, so this enforces a
-        symmetry rather than hiding an error -- but it removes only the
-        translational part of the grid's egg-box, so it stops a relaxation
-        drifting across the grid without making a coarse grid trustworthy.
-        The unprojected residual is always on
-        ``force_result.details["translational_residual"]``.
+    project_translation : {"auto", True, False}
+        Subtract the mean force from every atom before reporting, so the forces
+        sum to zero.  ``"auto"`` (the **default**) does it wherever the identity
+        it enforces holds: a non-periodic system of two or more atoms.
+
+        A free molecule's exact forces *do* sum to zero, so removing the mean is
+        an orthogonal projection onto a subspace that contains the true force --
+        it can only move the reported force closer to it, never further away.
+        What it gives up is the identity ``forces == -dE/dR`` of the
+        *discretized* energy, which is genuinely not translation invariant: so a
+        finite-difference check must compare against
+        ``force_result.unprojected``, and the residual that was removed stays on
+        ``details["translational_residual"]`` (with the mean on
+        ``details["translation_removed"]``).  Use ``False`` when you need the
+        raw gradient.
+
+        It fixes only the *translational* component of the grid's egg-box: the
+        force differences that bend and stretch the molecule keep whatever error
+        the spacing gives them, so it stops a relaxation drifting across the grid
+        without making a coarse grid trustworthy.  Under periodic boundary
+        conditions the sum over a cell's atoms is not this identity, so nothing
+        is projected there and an explicit ``True`` says so.
     force_method : {"rdm", "scf-response"}
         How the nuclear gradient is taken.  ``"rdm"`` (default) differentiates
         the energy expression the solver actually reported, holding the reduced
@@ -300,7 +337,14 @@ class Carcara(Calculator):
         self.basis = basis
         self.h = float(h)
         self.include_pulay = bool(include_pulay)
-        self.project_translation = bool(project_translation)
+        # `1 in (True, False, "auto")` is True in Python, so the check is by
+        # type: an int is a typo for a boolean, not a boolean.
+        if not (isinstance(project_translation, bool)
+                or project_translation == "auto"):
+            raise ValueError(
+                f"project_translation must be one of "
+                f"{PROJECT_TRANSLATION_CHOICES}, got {project_translation!r}")
+        self.project_translation = project_translation
         if str(force_method) not in ("rdm", "scf-response"):
             raise ValueError(f"force_method must be 'rdm' or 'scf-response', "
                              f"got {force_method!r}")
@@ -333,6 +377,11 @@ class Carcara(Calculator):
         self._grid = grid
         #: :class:`~carcara.algorithms.forces.ForceResult` of the most recent step.
         self.force_result = None
+        #: One entry per geometry at which forces were computed -- the
+        #: trajectory, as :meth:`write_optimization_summary` reports it.
+        self.trajectory: list[dict] = []
+        self._summary_written = False
+        self._exit_hook = False
         #: The solver instance of the most recent evaluation.
         self.solver = None
 
@@ -551,7 +600,10 @@ class Carcara(Calculator):
             stages["nuclear gradient (forces)"] = _perf() - t0
             self.results["forces"] = self.force_result.forces
             self._log_forces(solver, atoms)
-        self._log_performance(solver, stages, _perf() - step_t0)
+        step_seconds = _perf() - step_t0
+        self._log_performance(solver, stages, step_seconds)
+        if want_forces and not solver.dry_run:
+            self._record_step(atoms, energy_ev, step_seconds)
         # The optimizer's line for the *previous* step is written after its
         # calculate returns, so this is what pushes it out on a stream that
         # could not be reconfigured.
@@ -722,12 +774,20 @@ class Carcara(Calculator):
                     f"the state is not stationary with respect to orbital "
                     f"rotations (max |dE/dkappa| = {residual:.2e} Ha): the "
                     f"gradient holds the molecular orbitals fixed, so it "
-                    f"misses an orbital-response term of that size.  Converge "
-                    f"the solver further (a larger max_iterations / smaller "
-                    f"gradient_tolerance) for trustworthy forces.",
+                    f"misses an orbital-response term of that size.  The "
+                    f"residual is zero for the Hartree-Fock determinant and "
+                    f"zero for the exact ground state of the same orbital "
+                    f"space, so it measures how far the ansatz stopped short "
+                    f"of that state -- and it is first order in that error "
+                    f"where the energy is second, so tightening "
+                    f"gradient_tolerance moves it very little once the run "
+                    f"reports converged.  What moves it is expressivity: a "
+                    f"different `pool`, or a growth that has not stalled "
+                    f"(check result.converged against the final screening "
+                    f"gradient).",
                     RuntimeWarning, stacklevel=3)
             self._check_translational_invariance(result)
-            if self.project_translation:
+            if self.project_translation and self._projection_applies(result):
                 self._project_translation(result)
             return result
 
@@ -740,7 +800,7 @@ class Carcara(Calculator):
             include_pulay=self.include_pulay,
             hellmann_feynman=self.hellmann_feynman)
         self._check_translational_invariance(legacy)
-        if self.project_translation:
+        if self.project_translation and self._projection_applies(legacy):
             self._project_translation(legacy)
         return legacy
 
@@ -775,6 +835,103 @@ class Carcara(Calculator):
         append_forces(path, atoms.get_chemical_symbols(), result.forces,
                       hellmann_feynman=result.hellmann_feynman,
                       pulay=result.pulay, extra=extra)
+
+    # -- the relaxation as a whole ----------------------------------------- #
+
+    def _record_step(self, atoms, energy_ev: float, seconds: float) -> None:
+        """Keep this geometry in :attr:`trajectory`, for the closing summary."""
+        forces = np.asarray(self.force_result.forces, dtype=float)
+        self.trajectory.append({
+            "energy": float(energy_ev),
+            "max_force": float(np.linalg.norm(forces, axis=1).max()),
+            # The unprojected sum: the grid artifact, whether or not the
+            # reported force had it removed (see `project_translation`).
+            "net_force": float(self.force_result.details.get(
+                "translational_residual",
+                np.abs(forces.sum(axis=0)).max())),
+            "wall_time_s": float(seconds),
+            "com": np.asarray(atoms.get_center_of_mass(), dtype=float),
+            "positions": np.asarray(atoms.get_positions(), dtype=float),
+            "symbols": list(atoms.get_chemical_symbols()),
+        })
+        self._arm_exit_hook()
+
+    def _arm_exit_hook(self) -> None:
+        """Write the closing summary at interpreter exit, once.
+
+        ASE never tells a calculator that a relaxation is over -- the optimizer
+        just stops calling it -- so there is no in-band moment at which to close
+        the log.  Interpreter exit is the one signal that always arrives, and a
+        script's relaxation is over by then.  Call
+        :meth:`write_optimization_summary` explicitly to close the log earlier
+        (in a notebook, or before doing something else with the same file); this
+        hook then finds it already written and does nothing.
+        """
+        if self._exit_hook or self._log_path() is None:
+            return
+        self._exit_hook = True
+        atexit.register(self._write_summary_at_exit)
+
+    def _write_summary_at_exit(self) -> None:
+        """The ``atexit`` body: never let a log spoil an otherwise clean exit."""
+        try:
+            self.write_optimization_summary()
+        except Exception:
+            # Interpreter shutdown, a deleted temporary directory, a read-only
+            # file: the calculation itself finished long ago and must not be
+            # reported as having failed because its log could not be closed.
+            pass
+
+    def _log_path(self):
+        """The ``output=`` log the steps are being written to, or ``None``."""
+        return self.solver_kwargs.get("output")
+
+    def write_optimization_summary(self, atoms=None, fmax: float | None = None,
+                                   optimizer=None, force: bool = False) -> bool:
+        """Close the log with the relaxation's summary and completion blocks.
+
+        Returns whether anything was written.  Nothing is written for a single
+        geometry (there is no trajectory to summarize), when no ``output=`` log
+        was given, or when the summary is already there -- so calling it twice,
+        or calling it *and* letting the exit hook run, writes one summary.
+
+        Parameters
+        ----------
+        atoms : Atoms, optional
+            The relaxed geometry; defaults to the last one evaluated.
+        fmax : float, optional
+            The optimizer's force threshold, if you want the footer to state
+            convergence against it rather than just reporting the final force.
+        optimizer : ase.optimize.Optimizer, optional
+            Read ``fmax`` from an ASE optimizer that has already run.  ASE gives
+            a calculator no way to reach the optimizer driving it, so handing it
+            over is the only way the footer can know what "converged" meant.
+        force : bool
+            Write even for a single geometry.
+
+        Notes
+        -----
+        The block summarizes the sequence of geometries at which forces were
+        computed.  That is a relaxation in every practical case; a force-carrying
+        *scan* would be reported the same way.
+        """
+        if fmax is None and optimizer is not None:
+            fmax = getattr(optimizer, "fmax", None)
+        from ..utils.logging import append_optimization_summary
+
+        path = self._log_path()
+        if path is None or self._summary_written:
+            return False
+        if len(self.trajectory) < 2 and not force:
+            return False
+        last = self.trajectory[-1]
+        symbols = last["symbols"] if atoms is None else \
+            list(atoms.get_chemical_symbols())
+        positions = last["positions"] if atoms is None else atoms.get_positions()
+        self._summary_written = True
+        append_optimization_summary(path, self.trajectory, symbols=symbols,
+                                    positions=positions, fmax=fmax)
+        return True
 
     def _log_performance(self, solver, stages, wall_time_s) -> None:
         """Append this step's ``[PERFORMANCE]`` block to the run's ``output.txt``.
@@ -823,26 +980,50 @@ class Carcara(Calculator):
                            resources=timings.resources(),
                            extra=extra or None)
 
+    def _projection_applies(self, result) -> bool:
+        """Whether the free-molecule identity ``sum_A F_A = 0`` holds here.
+
+        Two atoms or more (a single atom's grid re-centers on it, so its
+        residual is zero by construction and says nothing) and no periodic
+        direction.  Under periodic boundary conditions the sum over the cell's
+        atoms is not the free-molecule identity, so there is nothing to enforce;
+        an explicit ``project_translation=True`` there is reported rather than
+        silently ignored.
+        """
+        if np.asarray(result.forces).shape[0] < 2:
+            return False
+        if self.atoms is not None and bool(np.any(self.atoms.pbc)):
+            if self.project_translation is True:
+                warnings.warn(
+                    "project_translation=True is ignored for a periodic "
+                    "system: the sum of forces over a cell's atoms is not the "
+                    "free-molecule identity this enforces.",
+                    RuntimeWarning, stacklevel=4)
+            return False
+        return True
+
     def _project_translation(self, result):
         """Subtract the mean force, so the molecule cannot drift.
 
         The exact energy of a free molecule is translation invariant, so
-        ``sum_A F_A = 0`` is an identity, not an approximation.  Removing the
-        mean therefore *enforces* a symmetry the discretized energy broke; it
-        is the translational component of the grid's egg-box error and nothing
-        else.  What it does not do is fix the rest of the egg-box: the force
-        differences that bend and stretch the molecule keep whatever error the
-        spacing gives them, so this is a way to stop a relaxation walking off
-        across the grid, not a substitute for a grid fine enough to trust.
+        ``sum_A F_A = 0`` is an identity, not an approximation.  Subtracting the
+        mean is therefore an orthogonal projection onto a subspace that
+        *contains* the exact force, and an orthogonal projection can only move a
+        vector closer to anything already in that subspace: the reported force is
+        never made worse by this and is usually made better.
 
-        Only for a non-periodic system: under periodic boundary conditions the
-        net force on the cell contents is not a free-molecule identity.
+        What it gives up is the identity ``forces == -dE/dR`` of the discretized
+        energy, which genuinely is not translation invariant -- so the
+        unprojected array is kept in ``details["forces_unprojected"]`` for a
+        finite-difference check to compare against.  And it fixes only the
+        *translational* component of the egg-box: the force differences that bend
+        and stretch the molecule keep whatever error the spacing gives them, so
+        this stops a relaxation walking across the grid without making a coarse
+        grid trustworthy.
         """
         forces = np.asarray(result.forces, dtype=float)
-        periodic = self.atoms is not None and bool(np.any(self.atoms.pbc))
-        if forces.shape[0] < 2 or periodic:
-            return result
         mean = forces.mean(axis=0)
+        result.details["forces_unprojected"] = forces.copy()
         result.forces = forces - mean
         result.details["translation_projected"] = True
         result.details["translation_removed"] = mean.copy()

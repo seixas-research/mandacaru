@@ -174,8 +174,13 @@ class AlgebraicEnergy:
     def orbital_gradient(self, S, h, g, step: float = 1e-5) -> float:
         r"""Largest :math:`|\partial E/\partial\kappa_{pq}|` over orbital rotations.
 
-        Zero for a state that is an eigenstate of the Hamiltonian in its
-        orbital space; the size of the neglected orbital-response term.
+        The size of the neglected orbital-response term.  It vanishes at both
+        ends of the correlation range -- for the Hartree-Fock determinant
+        (a converged RHF is orbital-stationary) and for the exact ground state
+        of this orbital space (a full CI there is invariant under any rotation
+        of those orbitals) -- so a nonzero value means the state is neither:
+        the ansatz stopped short of that exact state, and this measures it to
+        *first* order in the state error where the energy shows it to second.
         """
         from scipy.linalg import expm
 

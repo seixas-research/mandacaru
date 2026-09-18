@@ -43,6 +43,12 @@ opt = BFGS(atoms, trajectory=os.path.join(DATA, "relax.traj"))
 opt.attach(lambda: print(f"    Li-H distance {atoms.get_distance(0, 1):.4f} A"))
 opt.run(fmax=0.02)
 
+# Close the log with the relaxation's own summary.  Handing the optimizer over is
+# what lets the footer say *converged* rather than just reporting the final
+# force: ASE gives a calculator no way to reach the optimizer driving it.  Left
+# out, the interpreter-exit hook writes the same block without the verdict.
+atoms.calc.write_optimization_summary(optimizer=opt)
+
 write(os.path.join(DATA, "relax.xyz"), atoms)
 print(f"Final Li-H distance: {atoms.get_distance(0, 1):.4f} A")
 print(f"Final energy: {atoms.get_potential_energy():.6f} eV")

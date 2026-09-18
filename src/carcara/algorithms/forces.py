@@ -111,6 +111,19 @@ class ForceResult:
         return float(np.max(np.linalg.norm(self.forces, axis=1)))
 
     @property
+    def unprojected(self) -> np.ndarray:
+        """:attr:`forces` before the translational projection, if one was made.
+
+        The projection (:meth:`~carcara.algorithms.calculator.Carcara._project_translation`)
+        enforces the free-molecule identity ``sum_A F_A = 0``, which the
+        discretized energy does not obey -- so it is *this* array, not
+        :attr:`forces`, that is the gradient of the energy the solver reported
+        and that a finite-difference check has to be compared against.  Equal to
+        :attr:`forces` when nothing was projected.
+        """
+        return self.details.get("forces_unprojected", self.forces)
+
+    @property
     def pulay_fraction(self) -> float:
         """‖Pulay‖ / ‖total gradient‖ -- how badly Hellmann-Feynman alone fails."""
         total = float(np.linalg.norm(self.gradient))

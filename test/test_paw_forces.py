@@ -65,6 +65,7 @@ def h2():
     atoms.calc = calculator(h=0.25)
     forces = atoms.get_forces()
     return SimpleNamespace(atoms=atoms, forces=forces,
+                           raw=atoms.calc.force_result.unprojected,
                            breakdown=atoms.calc.get_force_breakdown(),
                            details=dict(atoms.calc.force_result.details))
 
@@ -90,12 +91,17 @@ def test_forces_are_the_derivative_of_the_energy(h2):
         moved.calc = atoms.calc
         energies.append(moved.get_potential_energy())
     numerical = -(energies[0] - energies[1]) / (2 * step)
-    assert forces[1, 2] == pytest.approx(numerical, abs=5e-3)
+    # The raw gradient: the finite difference is of the discretized energy,
+    # which is not translation invariant, while the reported force has had that
+    # component projected out (`project_translation="auto"`).
+    assert h2.raw[1, 2] == pytest.approx(numerical, abs=5e-3)
 
 
 def test_hellmann_feynman_and_pulay(h2):
+    # The breakdown sums to the *raw* gradient: the translational projection is
+    # a step applied on top of it, not part of either component.
     forces, (hf, pulay) = h2.forces, h2.breakdown
-    assert np.allclose(forces, -(hf + pulay), atol=1e-12)
+    assert np.allclose(h2.raw, -(hf + pulay), atol=1e-12)
     assert np.abs(pulay).max() > 0.05             # an atom-centered basis needs it
     assert np.abs(forces.sum(axis=0)).max() < 0.15      # grid egg-box only
     assert np.abs(forces[:, :2]).max() < 0.1
@@ -187,10 +193,19 @@ def water_calculator(h=0.25):
 
 @pytest.fixture(scope="module")
 def h2o():
+    """Water's forces, both as reported and as the raw gradient.
+
+    ``project_translation`` defaults to ``"auto"``, so ``forces`` has had the
+    translational component of the egg-box removed; ``raw`` is the gradient of
+    the discretized energy, which is what the finite-difference and
+    Hellmann-Feynman-plus-Pulay identities are about.
+    """
     atoms = water()
     atoms.calc = water_calculator()
     forces = atoms.get_forces()
-    return SimpleNamespace(atoms=atoms, forces=forces)
+    return SimpleNamespace(atoms=atoms, forces=forces,
+                           raw=atoms.calc.force_result.unprojected,
+                           details=dict(atoms.calc.force_result.details))
 
 
 def test_compensation_potentials_are_hermitian_only_for_m_zero():
@@ -255,27 +270,58 @@ def test_p_valence_force_is_the_derivative_of_the_energy(h2o):
         moved.calc = atoms.calc
         energies.append(moved.get_potential_energy())
     numerical = -(energies[0] - energies[1]) / (2 * step)
-    assert forces[atom, axis] == pytest.approx(numerical, abs=1e-2)
+    # Against the raw gradient: the finite difference is of the discretized
+    # energy, which is not translation invariant, so it carries the egg-box that
+    # the default projection removes from the reported force.
+    assert h2o.raw[atom, axis] == pytest.approx(numerical, abs=1e-2)
 
 
 def test_translation_projection_zeroes_the_net_force(h2o):
-    """``project_translation=True`` enforces the free-molecule identity.
+    """The default (``"auto"``) enforces the free-molecule identity.
 
-    The exact forces of a free molecule sum to zero, so removing the mean
-    takes out the translational component of the grid's egg-box and nothing
-    physical; the unprojected residual stays on ``details`` either way.
+    The exact forces of a free molecule sum to zero, so removing the mean takes
+    out the translational component of the grid's egg-box and nothing physical.
+    Everything needed to undo it is kept: the raw gradient, the residual that was
+    there, and the mean that was removed.
     """
-    atoms = water()
-    atoms.calc = water_calculator()
-    atoms.calc.project_translation = True
-    forces = atoms.get_forces()
+    forces, raw, details = h2o.forces, h2o.raw, h2o.details
     assert np.abs(forces.sum(axis=0)).max() < 1e-12
-    details = atoms.calc.force_result.details
     assert details["translation_projected"] is True
-    # The residual is still reported, and is what was taken out.
+    # The residual is the *unprojected* one, so it is still reported in full.
     assert details["translational_residual"] == pytest.approx(
-        np.abs(h2o.forces.sum(axis=0)).max(), abs=1e-6)
+        np.abs(raw.sum(axis=0)).max(), abs=1e-6)
     removed = np.asarray(details["translation_removed"])
-    assert np.allclose(forces + removed, h2o.forces, atol=1e-6)
+    assert np.allclose(forces + removed, raw, atol=1e-12)
     # Projection is a rigid shift, so it cannot break the molecule's symmetry.
     assert forces[0, 1] == pytest.approx(forces[0, 2], abs=5e-3)
+
+
+def test_project_translation_false_reports_the_raw_gradient(h2o):
+    """Opting out gives back exactly the gradient of the computed energy."""
+    atoms = water()
+    atoms.calc = water_calculator()
+    atoms.calc.project_translation = False
+    forces = atoms.get_forces()
+    assert np.allclose(forces, h2o.raw, atol=1e-10)
+    details = atoms.calc.force_result.details
+    assert "translation_projected" not in details
+    assert "forces_unprojected" not in details
+    # `unprojected` is still the right array to ask for -- it is the forces.
+    assert np.allclose(atoms.calc.force_result.unprojected, forces)
+
+
+def test_projection_cannot_increase_the_error_against_a_zero_sum_force(h2o):
+    """Why the default is to project: it is an orthogonal projection.
+
+    The exact force of a free molecule lies in the zero-sum subspace, and
+    removing the mean is the orthogonal projection onto it -- so the projected
+    array is no further from *any* zero-sum field than the raw one, whatever the
+    grid error happens to be.  Checked here against the symmetrized force, which
+    is the closest zero-sum field the symmetry allows.
+    """
+    raw, projected = h2o.raw, h2o.forces
+    reference = raw - raw.mean(axis=0)              # the zero-sum part of raw
+    assert np.linalg.norm(projected - reference) <= \
+        np.linalg.norm(raw - reference) + 1e-12
+    # And it is a strict improvement whenever the residual is nonzero at all.
+    assert np.abs(raw.sum(axis=0)).max() > 1e-6

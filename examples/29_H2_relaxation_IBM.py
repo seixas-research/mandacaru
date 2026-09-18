@@ -85,6 +85,7 @@ def report():
 opt = BFGS(atoms, trajectory=os.path.join(DATA, "h2_relax_ibm.traj"))
 opt.attach(report)
 opt.run(fmax=0.05, steps=STEPS)
+atoms.calc.write_optimization_summary(optimizer=opt)
 
 write(os.path.join(DATA, "h2_relax_ibm.xyz"), atoms)
 print(f"Final H-H distance: {atoms.get_distance(0, 1):.4f} A")

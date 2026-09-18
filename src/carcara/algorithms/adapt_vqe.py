@@ -187,6 +187,13 @@ def _max_abs(values) -> float:
     return float(np.max(np.abs(values))) if values.size else 0.0
 
 
+#: How a fermion-to-qubit mapping is spelled in the ``[ELECTRONS]`` log block.
+#: The names the code uses are identifiers; the log is read by people too, and
+#: these are the transformations' own names.  An unlisted mapping is written
+#: verbatim.
+MAPPING_LABELS = {"jordan_wigner": "Jordan-Wigner", "parity": "parity",
+                  "bravyi_kitaev": "Bravyi-Kitaev"}
+
 #: Shortest the operator label is elided to before a row is allowed to wrap.
 MIN_LABEL_WIDTH = 3
 
@@ -868,23 +875,49 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 cell = np.asarray(cell, float) * ANGSTROM_TO_BOHR
 
         logger = AdaptOutputLogger(output_file, n_qubits=self.n_qubits)
-        logger.write_metadata(
+        logger.write_system(
             symbols=symbols, positions=positions, cell=cell,
             units=self._length_unit_label(),
             title=f"ADAPT-VQE ({self.pool.__class__.__name__}, "
                   f"{self.n_qubits} qubits)")
+        logger.write_electrons(self._electron_fields())
         logger.write_optimizer_setup(
             optimizer_method=self.optimizer.method,
             reference_energy=self._to_energy_units(ref_energy),
             energy_unit=self._energy_unit_label(),
             gradient_tol=gradient_tol, max_iterations=max_iterations,
-            extra={"mapping": self.mapping,
-                   "num_particles": self.num_particles,
-                   # The pool's type and size, before the iteration table.
-                   "pool": getattr(self.pool, "name", "?"),
+            # The pool's type and size, before the iteration table; the problem
+            # itself is in the [ELECTRONS] block above.
+            extra={"pool": getattr(self.pool, "name", "?"),
                    "pool_class": self.pool.__class__.__name__,
                    "pool_size": len(self._pool_ops)})
         return logger
+
+    def _electron_fields(self) -> dict:
+        """The ``[ELECTRONS]`` block: how the electronic problem was posed.
+
+        The same values the standard-output header prints, in the same order --
+        discretization first (what the integrals were computed on), then the
+        encoding and the size of the register and Hamiltonian it produced.  The
+        trace is off whenever this file is written, so this is the only place the
+        configuration is recorded.
+        """
+        orbitals = (getattr(self, "n_spatial_orbitals", None)
+                    or self.pool.n_spatial_orbitals)
+        return {
+            "basis": self._basis_description(),
+            "grid spacing": f"{self.h:g} Angstrom",
+            "kinetic operator": self.kinetic or "finite difference",
+            "k-points": self._kpts_label(),
+            "spin-polarized": str(self.spin),
+            "mapping": MAPPING_LABELS.get(str(self.mapping), str(self.mapping)),
+            "two-qubit reduction": str(self.two_qubit_reduction),
+            "Hamiltonian": f"{len(self.hamiltonian.simplify().terms)} "
+                           f"Pauli terms",
+            "spatial orbitals": str(orbitals),
+            "electrons (alpha, beta)": str(self.num_particles),
+            "qubits": str(self.n_qubits),
+        }
 
     def _expressivity_wanted(self, log_expressivity) -> bool:
         """Validate ``log_expressivity`` and return it.

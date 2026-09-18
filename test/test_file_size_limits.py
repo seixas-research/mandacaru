@@ -55,7 +55,7 @@ def test_output_log_omits_the_operator_label_above_twenty_qubits(tmp_path,
     pool = _pool(n_qubits)
     path = tmp_path / "output.txt"
     with AdaptOutputLogger(str(path), n_qubits=n_qubits) as log:
-        log.write_metadata()
+        log.write_system()
         log.write_optimizer_setup("COBYLA", -1.0,
                                   extra={"pool_size": len(pool)})
         log.write_iteration(1, pool, [0.1, 0.3, 0.2], 1, None, -1.0, 1)
@@ -85,7 +85,7 @@ def test_log_pool_restores_the_listing(tmp_path):
     """``log_pool=True`` is the opt-in for the old per-iteration listing."""
     path = tmp_path / "output.txt"
     with AdaptOutputLogger(str(path), n_qubits=4, log_pool=True) as log:
-        log.write_metadata()
+        log.write_system()
         log.write_iteration(1, _pool(4), [0.1, 0.3, 0.2], 1, None, -1.0, 1)
     text = path.read_text()
     # The opt-in listing is appended under the row it belongs to.

@@ -221,11 +221,11 @@ class TestAdaptOutputProtocol:
         parsed = parse_output(out)
 
         # Metadata block: initial geometry + explicit unit-cell parameters.
-        assert parsed["metadata"]["n_atoms"] == "2"
-        assert parsed["metadata"]["cell_present"] == "True"
-        assert parsed["metadata"]["units"] == "Angstrom"       # req 1: default A
-        assert "cell_lengths" in parsed["metadata"]
-        assert "cell_angles" in parsed["metadata"]
+        assert parsed["system"]["n_atoms"] == "2"
+        assert parsed["system"]["cell_present"] == "True"
+        assert parsed["system"]["units"] == "Angstrom"       # req 1: default A
+        assert "cell_lengths" in parsed["system"]
+        assert "cell_angles" in parsed["system"]
 
         # Optimization setup block -- energies default to eV (requirement 1).
         assert parsed["setup"]["classical_optimizer"] == "COBYLA"
@@ -316,7 +316,7 @@ class TestAdaptOutputProtocol:
                           gradient_tolerance=1e-4, output=out)
         adapt.run(geometry=geom)
         parsed = parse_output(out)
-        assert parsed["metadata"]["units"] == "Bohr"
+        assert parsed["system"]["units"] == "Bohr"
         assert parsed["setup"]["energy_unit"] == "Ha"
         assert "reference_energy_Ha" in parsed["setup"]
 
@@ -326,8 +326,8 @@ class TestAdaptOutputProtocol:
         _h2_adapt(h2_hamiltonian, max_iterations=4, gradient_tolerance=1e-4,
                   output=out).run()
         parsed = parse_output(out)
-        assert parsed["metadata"]["cell_present"] == "False"
-        assert parsed["metadata"]["geometry"] == "(not provided)"
+        assert parsed["system"]["cell_present"] == "False"
+        assert parsed["system"]["geometry"] == "(not provided)"
 
 
 class TestCEOLabels:
@@ -414,12 +414,12 @@ class TestAdaptOutputLogger:
     def test_logger_cell_parameters(self, tmp_path):
         out = str(tmp_path / "log.txt")
         with AdaptOutputLogger(out) as logger:
-            logger.write_metadata(
+            logger.write_system(
                 symbols=["H", "H"], positions=[[0, 0, 0], [0, 0, 0.74]],
                 cell=np.diag([5.0, 6.0, 7.0]))
         parsed = parse_output(out)
-        assert parsed["metadata"]["cell_present"] == "True"
-        assert parsed["metadata"]["cell_lengths"].startswith("a=5")
+        assert parsed["system"]["cell_present"] == "True"
+        assert parsed["system"]["cell_lengths"].startswith("a=5")
 
 
 # --------------------------------------------------------------------------- #
@@ -444,7 +444,7 @@ class TestLogAppendsAcrossSteps:
         pool = [SimpleNamespace(label="op0", kind="double",
                                 generator=PauliSum({"XXXX": 0.5j}))]
         with AdaptOutputLogger(path, n_qubits=4) as logger:
-            logger.write_metadata(symbols=["H", "H"],
+            logger.write_system(symbols=["H", "H"],
                                   positions=[[0, 0, 0], [0, 0, 0.7 + step / 100]])
             logger.write_optimizer_setup("COBYLA", -1.0)
             logger.write_iteration(1, pool, [0.3], 0, None, -1.0 - step, 1)
@@ -461,7 +461,7 @@ class TestLogAppendsAcrossSteps:
         # The banner is provenance of the *file*: once, before the first block.
         assert text.count("developed by:") == 1
         assert text.startswith(banner.lines()[0])
-        assert text.index("developed by:") < text.index("[METADATA]")
+        assert text.index("developed by:") < text.index("[SYSTEM]")
 
     def test_each_step_appends_a_numbered_block(self, tmp_path):
         out = str(tmp_path / "output.txt")
@@ -474,7 +474,7 @@ class TestLogAppendsAcrossSteps:
         assert [block["iterations"][0]["energy"] for block in parsed["steps"]] \
             == [-2.0, -3.0, -4.0]
         # The top level describes the last step, as a single-point log always did.
-        assert parsed["metadata"]["step"] == "3"
+        assert parsed["system"]["step"] == "3"
         assert parsed["iterations"][0]["energy"] == -4.0
         # Only the later blocks carry the step in their title.
         text = open(out, encoding="utf-8").read()
@@ -502,7 +502,7 @@ class TestLogAppendsAcrossSteps:
         out = str(tmp_path / "output.txt")
         self._block(out, 1)
         with AdaptOutputLogger(out, append=False) as logger:
-            logger.write_metadata()
+            logger.write_system()
         # An explicit append=False truncates whatever the step counter says.
         assert len(parse_output(out)["steps"]) == 1
 
@@ -527,7 +527,7 @@ class TestBlockIndentation:
         pool = [SimpleNamespace(label="op0", kind="double",
                                 generator=PauliSum({"XXXX": 0.5j}))]
         with AdaptOutputLogger(out, n_qubits=4) as logger:
-            logger.write_metadata(symbols=["O", "H"],
+            logger.write_system(symbols=["O", "H"],
                                   positions=[[0, 0, 0], [0, 0.97, 0]],
                                   cell=np.diag([10.0, 10.0, 10.0]))
             logger.write_optimizer_setup("COBYLA", -476.6)
@@ -539,8 +539,8 @@ class TestBlockIndentation:
         return open(out, encoding="utf-8").read().splitlines()
 
     def test_markers_and_rules_stay_at_column_zero(self, log):
-        for marker in ("[METADATA]", "[OPTIMIZATION SETUP]", "[ITERATIONS]",
-                       "[SUMMARY]", "[FORCES]"):
+        for marker in ("[SYSTEM]", "[OPTIMIZATION SETUP]", "[ITERATIONS]",
+                       "[QUANTUM VARIATIONAL SUMMARY]", "[FORCES]"):
             assert marker in log, marker
         assert all(not line.startswith(" ")
                    for line in log if set(line) == {"="})
@@ -745,13 +745,16 @@ class TestPerformanceBlock:
     def test_times_add_up(self, relaxation):
         performance = parse_output(relaxation)["performance"]
         stages = performance["stages_s"]
+        # Every figure in the block is written to four decimals, so a sum
+        # rebuilt from the parsed values agrees only to that granularity.
+        rounding = 2e-4
         assert performance["total_s"] == pytest.approx(sum(stages.values()),
-                                                       abs=1e-3)
+                                                       abs=rounding)
         # The step's wall clock covers the stages plus what nobody timed
         # (Hamiltonian construction, the mapping, materialization).
-        assert performance["wall_time_s"] >= performance["total_s"] - 1e-6
+        assert performance["wall_time_s"] >= performance["total_s"] - rounding
         assert performance["untimed_s"] == pytest.approx(
-            performance["wall_time_s"] - performance["total_s"], abs=1e-6)
+            performance["wall_time_s"] - performance["total_s"], abs=rounding)
 
     def test_resources_are_recorded(self, relaxation):
         performance = parse_output(relaxation)["performance"]
@@ -896,3 +899,191 @@ class TestStandardOutputIsTheASETable:
         parsed = parse_output(out)
         assert parsed["iterations"] and parsed["summary"]["converged"]
         assert parsed["performance"]["wall_time_s"] > 0
+
+
+class TestElectronsBlock:
+    """``[ELECTRONS]`` records which Hamiltonian the iterations belong to.
+
+    With the trace routed to the log file, this block is the *only* place the
+    configuration is written down, so it has to carry everything needed to know
+    what was solved: the discretization, the encoding, and the size of the
+    register and Hamiltonian that came out.
+    """
+
+    FIELDS = ("basis", "grid spacing", "kinetic operator", "k-points",
+              "spin-polarized", "mapping", "two-qubit reduction", "Hamiltonian",
+              "spatial orbitals", "electrons (alpha, beta)", "qubits")
+
+    @pytest.fixture(scope="class")
+    def run(self, tmp_path_factory):
+        from carcara import Carcara
+
+        out = str(tmp_path_factory.mktemp("electrons") / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
+                             pool="fermionic", max_iterations=2,
+                             gradient_tolerance=1e-3, output=out)
+        atoms.get_potential_energy()
+        return out, atoms.calc
+
+    def test_every_field_is_present_and_in_order(self, run):
+        out, _calc = run
+        block = parse_output(out)["electrons"]
+        assert tuple(block) == self.FIELDS
+
+    def test_the_values_describe_this_run(self, run):
+        out, calc = run
+        block = parse_output(out)["electrons"]
+        assert block["basis"] == "FAO"
+        assert block["grid spacing"] == "0.35 Angstrom"
+        assert block["kinetic operator"] == "finite difference"
+        assert "Monkhorst-Pack" in block["k-points"]
+        assert block["spin-polarized"] == "False"
+        # The transformation's own name, not the identifier the code uses.
+        assert block["mapping"] == "Jordan-Wigner"
+        assert block["two-qubit reduction"] == "False"
+        assert block["qubits"] == str(calc.n_qubits) == "4"
+        assert block["electrons (alpha, beta)"] == str(calc.num_particles)
+        assert block["spatial orbitals"] == "2"
+        assert block["Hamiltonian"] == \
+            f"{len(calc.hamiltonian.simplify().terms)} Pauli terms"
+
+    def test_the_problem_is_not_repeated_in_the_setup_block(self, run):
+        # [ELECTRONS] owns the problem; [OPTIMIZATION SETUP] owns the optimizer
+        # and the pool.  Saying the mapping twice, in two spellings, is how the
+        # two blocks drift apart.
+        out, _calc = run
+        setup = parse_output(out)["setup"]
+        assert "mapping" not in setup and "num_particles" not in setup
+        assert {"pool", "pool_class", "pool_size"} <= set(setup)
+
+    def test_the_system_block_is_named_system(self, run):
+        out, _calc = run
+        text = open(out, encoding="utf-8").read()
+        assert "[SYSTEM]" in text and "[METADATA]" not in text
+        # The block order is the reading order: what, then how, then the run.
+        assert text.index("[SYSTEM]") < text.index("[ELECTRONS]") \
+            < text.index("[OPTIMIZATION SETUP]") < text.index("[ITERATIONS]")
+
+    def test_metadata_stays_readable_as_an_alias(self, run):
+        out, _calc = run
+        parsed = parse_output(out)
+        # A reader written against the old name keeps working.
+        assert parsed["metadata"] is parsed["system"]
+        assert parsed["system"]["n_atoms"] == "2"
+
+    def test_a_log_written_with_the_old_marker_still_parses(self, tmp_path):
+        """``[METADATA]`` is what this block was called before 2026-09-18."""
+        path = tmp_path / "old.txt"
+        path.write_text("[METADATA]\n    step: 1\n    n_atoms: 2\n"
+                        "[SUMMARY]\n    converged: True\n", encoding="utf-8")
+        parsed = parse_output(str(path))
+        assert len(parsed["steps"]) == 1
+        assert parsed["system"]["n_atoms"] == "2"
+        assert parsed["summary"]["converged"] == "True"
+
+
+class TestGeometryOptimizationSummary:
+    """A relaxation closes its log with the trajectory seen as one thing.
+
+    ASE never tells a calculator that a relaxation is over -- the optimizer just
+    stops calling it -- so the summary is written either by an explicit
+    :meth:`Carcara.write_optimization_summary` or, for a plain script, by the
+    interpreter-exit hook that call also disarms.
+    """
+
+    @pytest.fixture(scope="class")
+    def relaxed(self, tmp_path_factory):
+        from ase.optimize import BFGS
+
+        from carcara import Carcara
+
+        out = str(tmp_path_factory.mktemp("relaxsummary") / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
+                             pool="fermionic", max_iterations=4,
+                             gradient_tolerance=1e-3, output=out)
+        opt = BFGS(atoms, logfile=None)
+        opt.run(fmax=0.05, steps=2)
+        assert atoms.calc.write_optimization_summary(optimizer=opt) is True
+        return out, atoms, opt
+
+    def test_the_summary_describes_the_whole_trajectory(self, relaxed):
+        out, atoms, _opt = relaxed
+        block = parse_output(out)["optimization"]
+        steps = parse_output(out)["steps"]
+        assert block["geometry_steps"] == len(steps) == len(atoms.calc.trajectory)
+        # First and last energies are the run's, and the energy went down.
+        assert block["final_energy_eV"] == pytest.approx(
+            atoms.get_potential_energy(), abs=1e-8)
+        assert block["energy_change_eV"] < 0
+        assert block["final_max_force"] < block["initial_max_force"]
+
+    def test_the_convergence_table_is_the_step_history(self, relaxed):
+        out, _atoms, _opt = relaxed
+        parsed = parse_output(out)
+        rows = parsed["optimization"]["convergence"]
+        assert [row["step"] for row in rows] == list(range(1, len(rows) + 1))
+        # Each row is the step whose own blocks are above it in the file.
+        for row, step in zip(rows, parsed["steps"]):
+            assert row["energy"] == pytest.approx(
+                float(step["summary"]["optimal_energy_eV"]), abs=1e-8)
+            assert row["max_force"] == pytest.approx(step["forces"]["max_force"],
+                                                     abs=1e-7)
+
+    def test_the_relaxed_geometry_is_the_final_one(self, relaxed):
+        out, atoms, _opt = relaxed
+        geometry = parse_output(out)["optimization"]["relaxed_geometry"]
+        assert [row[0] for row in geometry] == atoms.get_chemical_symbols()
+        assert np.allclose([row[1:] for row in geometry], atoms.get_positions(),
+                           atol=1e-9)
+
+    def test_the_footer_states_the_verdict_against_fmax(self, relaxed):
+        out, _atoms, opt = relaxed
+        status = parse_output(out)["completion"]["status"]
+        # The optimizer was handed over, so the footer knows what converged meant.
+        assert status.startswith("converged" if opt.converged()
+                                 else "NOT converged")
+        assert f"{opt.fmax:.6f}" in status
+
+    def test_it_is_written_once(self, relaxed):
+        out, atoms, opt = relaxed
+        text = open(out, encoding="utf-8").read()
+        assert text.count("[GEOMETRY OPTIMIZATION SUMMARY]") == 1
+        assert text.count("[RELAXATION COMPLETE]") == 1
+        # A second call -- and the exit hook -- find it already written.
+        assert atoms.calc.write_optimization_summary(optimizer=opt) is False
+        atoms.calc._write_summary_at_exit()
+        assert open(out, encoding="utf-8").read() == text
+
+    def test_the_step_summaries_are_the_variational_ones(self, relaxed):
+        out, _atoms, _opt = relaxed
+        text = open(out, encoding="utf-8").read()
+        # The per-step block is the *variational* summary; the relaxation's own
+        # summary is the single block at the end.
+        assert text.count("[QUANTUM VARIATIONAL SUMMARY]") == \
+            len(parse_output(out)["steps"])
+        assert "\n[SUMMARY]" not in text
+
+    def test_a_single_point_gets_no_optimization_summary(self, tmp_path):
+        from carcara import Carcara
+
+        out = str(tmp_path / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
+                             pool="fermionic", max_iterations=2,
+                             gradient_tolerance=1e-3, output=out)
+        atoms.get_forces()
+        # One geometry is not a trajectory; there is nothing to summarize.
+        assert atoms.calc.write_optimization_summary() is False
+        assert "[GEOMETRY OPTIMIZATION SUMMARY]" not in open(out).read()
+        assert atoms.calc.write_optimization_summary(force=True) is True
+
+    def test_an_old_log_with_the_previous_marker_still_parses(self, tmp_path):
+        path = tmp_path / "old.txt"
+        path.write_text("[SYSTEM]\n    step: 1\n"
+                        "[SUMMARY]\n    converged: True\n", encoding="utf-8")
+        assert parse_output(str(path))["summary"]["converged"] == "True"

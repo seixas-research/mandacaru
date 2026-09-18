@@ -248,6 +248,84 @@ Pinned by `test/test_noncubic_and_output.py`: `TestPerformanceBlock` (one block 
 
 **Memory is the thing to watch: peak 5112 MiB against 1826 MiB resident.** A 12-qubit problem transiently needs ~5 GB, i.e. ~3.3 GB above what it holds — the h = 0.10 grid on a 10 Å cell is 1e6 points, and the force path samples the basis and pair densities over it repeatedly. h = 0.10 is finer than oxygen needs (h ≤ 0.16 suffices for geometry per the note above); h = 0.16 would cut the grid 4× and the wall time with it.
 
+## The orbital-response warning: what it means, and the pool fix (2026-09-18)
+
+The user asked why `atoms.get_forces()` on H₂O/PAW-SZ warns `the state is not stationary with respect to orbital rotations (max |dE/dkappa| = 8.5e-03 Ha)`, and **the message's advice was wrong**, so it is rewritten.
+
+**What the residual is.** `AlgebraicEnergy.orbital_gradient` is `max |dE/dκ|` over orbital rotations with the RDMs frozen. It vanishes at *both* ends of the correlation range — RHF is orbital-stationary, and a full CI in an orbital space is invariant under rotating those orbitals, so the frozen-orbital gradient is the *whole* derivative there. Measured at the relaxed water geometry (h = 0.25, 6 orbitals, sector dim 225): **HF determinant 1.2e-9 Ha, exact sector FCI 1.8e-9 Ha, ADAPT (30 `ceo` operators, 5.4e-4 Ha above FCI) 1.0e-2 Ha.** So a nonzero residual does **not** report an unconverged optimizer — it reports an ansatz that stopped short of its space's FCI.
+
+**Why tightening the tolerance does nothing.** The energy is *second* order in the state error, this residual *first* order. The user's own two runs: `gradient_tolerance` 1e-3 → 1e-4 and `max_iterations` 50 → 100 grew 30 → 41 operators and moved the screening gradient 1.8e-4 → 7.6e-5, the energy by **1e-6 eV** and the residual by **0.6 %** (8.374e-3 → 8.323e-3). Pinned as a scaling law by `test_all_electron_forces.py::TestOrbitalResponseResidual` (contaminate the exact state by ε: residual ∝ ε, energy error ∝ ε²; the two zeros are pinned there too). **The test system is a scalene H₃⁺ triangle on purpose:** H₂ in a minimal basis has two orbitals of opposite g/u parity, so its energy is *even* in the rotation angle and the residual is identically zero however bad the state is — the test would pass for the wrong reason.
+
+**The lever is the pool.** Same geometry, same h = 0.25, `gradient_tolerance=1e-4`, `max_iterations=100`:
+
+| pool | size | ops | \|grad\| | E−E_FCI (Ha) | \|dE/dκ\| (Ha) | fmax (eV/Å) | CNOTs |
+|---|---|---|---|---|---|---|---|
+| `ceo` | 92 | 37 | 9.1e-5 | 5.44e-4 | **1.00e-2** | 2.6257 | 1456 |
+| `fermionic` | 92 | 85 | 9.4e-5 | 4.06e-4 | **2.91e-5** | 2.5696 | 8138 |
+| `qubit` | 640 | 100 | 1.9e-4 | 4.05e-4 | **6.36e-5** | 2.5698 | 1226 |
+
+`fermionic` and `qubit` cut the residual **~300×** (below `ORBITAL_RESPONSE_TOLERANCE`, so no warning) while improving the energy only 25 % — exactly the first-order/second-order asymmetry. And the forces follow the residual, not the energy: the exact-FCI state gives fmax 2.5441, the two low-residual pools land within 0.026 of it and agree with each other to 0.0002, while `ceo` is 0.082 off. **`pool="qubit"` is the recommendation for this system** — smallest residual-to-cost ratio and *fewer* CNOTs than `ceo` (1226 vs 1456), at the price of 100 operators and a 640-operator screening. (`ceo` is `qeb` in this codebase, so it is not the varied pool its name suggests.)
+
+**Consequence for the user's relaxation:** the ADAPT-vs-FCI force error is **0.085 eV/Å** at that geometry, ~6× the `fmax = 0.0131` the run converged to — a second error source above the threshold, alongside the 0.022 eV/Å grid egg-box. The geometry is sound; the last two BFGS steps are not meaningful.
+
+## `project_translation="auto"` is the default (2026-09-18)
+
+The user asked when `project_translation` makes sense and whether it can decide for itself. It can, and the argument is a theorem rather than a heuristic: **the exact force of a free molecule sums to zero, so subtracting the mean is the orthogonal projection onto a subspace that *contains* the true answer, and an orthogonal projection can never increase the distance to a point already in the subspace.** The reported force is therefore never made worse by projecting and is usually made better, whatever the grid error happens to be. Pinned by `test_paw_forces.py::test_projection_cannot_increase_the_error_against_a_zero_sum_force`.
+
+**What it gives up** is the identity `forces == -dE/dR` of the *discretized* energy, which genuinely is not translation invariant. That is a property of the approximation, not of the physics — but it is the property most of the force tests exist to check, so the raw array is kept: **`ForceResult.unprojected`** (backed by `details["forces_unprojected"]`, equal to `forces` when nothing was projected), alongside the existing `details["translational_residual"]` (always the *unprojected* residual, since `_check_translational_invariance` runs first and still warns) and `details["translation_removed"]`.
+
+`DEFAULT_PROJECT_TRANSLATION = "auto"`, `PROJECT_TRANSLATION_CHOICES = (True, False, "auto")`. `Carcara._projection_applies(result)` is the gate: **≥ 2 atoms** (a single atom's grid re-centers on it, so its residual is zero by construction and says nothing) and **not periodic** (the sum over a cell's atoms is not the free-molecule identity; an explicit `project_translation=True` there now emits a `RuntimeWarning` saying it is ignored rather than doing nothing silently). Validation is by *type* — `1 in (True, False, "auto")` is `True` in Python, so an int is refused as the typo it is.
+
+**Blast radius, measured by flipping the default and running the suite:** 8 tests failed, every one of them asserting a property of the raw gradient — three finite-difference checks in `test_fao_forces.TestGradientIsExact`, two in `test_all_electron_forces.TestAllElectronGradient`, the two `TestLiHCoreArtifact` egg-box measurements, and `test_forces.TestCarcara::test_get_forces_matches_the_driver`; plus three in `test_paw_forces` (the Hellmann-Feynman + Pulay identity, the p-valence finite difference, and the projection test itself). All now read `force_result.unprojected` with a comment saying why that is the right array — the trade-off is visible at each assertion instead of hidden in a default. New policy tests in `test_fao_forces.TestTranslationProjectionPolicy` (auto projects a free molecule and keeps the residual, `False` returns the raw gradient, auto leaves a periodic system alone, explicit `True` warns there, bad values refused).
+
+**Consequence for recorded numbers:** every force quoted in this file before today is the *unprojected* one. They remain reproducible with `project_translation=False`, and the differences are the egg-box residuals already documented per system (H₂O/PAW-SZ 0.019–0.022, H₂/PAW-DZP ~0.1, LiH/FAO > 10 eV/Å — that last one is not projected anyway in practice, being a warning case the user should see).
+
+**When to turn it off:** validating a gradient against a finite difference, comparing against the driver's raw output, or measuring the egg-box itself. For relaxation and dynamics — where the artifact is systematic and integrates into a centre-of-mass drift (0.0705 Å over six steps in the water run) — leave it on. Note ASE's plain `BFGS`/`FIRE` use forces only, never the energy, so projection introduces no inconsistency into the optimizer itself; `BFGSLineSearch`/`QuasiNewton` do use the energy, and there the projected force and the unprojected energy are mildly inconsistent by exactly the residual.
+
+## `[SYSTEM]` and `[ELECTRONS]` (2026-09-18)
+
+User directive: rename `[METADATA]` to **`[SYSTEM]`** and add an **`[ELECTRONS]`** block. The second is the piece the stdout routing left missing — that configuration used to live only in the trace header, which is now off whenever a log file is written, so the file had no record of *which* Hamiltonian its iterations belonged to.
+
+`AdaptOutputLogger.write_metadata` → **`write_system`** (marker `[SYSTEM]`), and the new **`write_electrons(fields)`** emits the block in the order the caller gives, skipping `None`. `ADAPTVQE._electron_fields()` builds it from the same values `_header_rows` prints, so the trace and the log cannot drift:
+
+```
+[ELECTRONS]
+    basis: PAW (size: SZ)
+    grid spacing: 0.1 Angstrom
+    kinetic operator: finite difference
+    k-points: Gamma (1x1x1 Monkhorst-Pack)
+    spin-polarized: False
+    mapping: Jordan-Wigner
+    two-qubit reduction: False
+    Hamiltonian: 1079 Pauli terms
+    spatial orbitals: 6
+    electrons (alpha, beta): (4, 4)
+    qubits: 12
+```
+
+Three decisions inside it: the keys keep the **spaced labels** of the request rather than the file's snake_case, because the parser splits on the first colon and `basis: PAW (size: SZ)` proves a colon in the *value* is fine; `mapping` is written as the transformation's own name via **`MAPPING_LABELS`** (`jordan_wigner` → `Jordan-Wigner`), the log being read by people too; and `k-points` keeps the existing `_kpts_label()` (`Gamma (1x1x1 Monkhorst-Pack)`) rather than a second formatting of the same fact — it also says *Gamma*, which the requested spelling does not. **`mapping` and `num_particles` were removed from `[OPTIMIZATION SETUP]`**: `[ELECTRONS]` owns the problem, the setup block owns the optimizer and the pool, and saying the mapping twice in two spellings is how two blocks drift apart.
+
+`parse_output`: `_STEP_MARKERS = ("[SYSTEM]", "[METADATA]")` — **the old marker still opens a step**, so logs written before today still parse — the parsed key is `"system"` with `"metadata"` kept as an alias *of the same dict*, and `[ELECTRONS]` lands in `result["electrons"]`. Pinned by `TestElectronsBlock` (every field present and in order, the values against the calculator's own `n_qubits` / `num_particles` / Hamiltonian, the problem *not* repeated in the setup block, the block order `[SYSTEM]` → `[ELECTRONS]` → `[OPTIMIZATION SETUP]` → `[ITERATIONS]`, the alias, and an old-marker log).
+
+Also fixed here: `test_times_add_up` compared `untimed_s` against a sum rebuilt from the parsed values with `abs=1e-6`, but every figure in the block is written to four decimals — a latent flake, now `2e-4` with the reason stated.
+
+## `[GEOMETRY OPTIMIZATION SUMMARY]` and the relaxation footer (2026-09-18)
+
+User directive: a relaxation needs a final summary of the relaxed geometry, the per-step `[SUMMARY]` becomes **`[QUANTUM VARIATIONAL SUMMARY]`** (it summarizes one geometry's variational run, not the relaxation), and a small footer says the relaxation finished.
+
+**The hard part is *when*, not *what*: ASE never tells a calculator that a relaxation is over** — the optimizer just stops calling it, and there is no hook. So there are two paths, and both end up writing the same block once:
+
+- **`Carcara.write_optimization_summary(atoms=None, fmax=None, optimizer=None, force=False)`** — explicit, returns whether it wrote. Passing `optimizer=opt` reads `opt.fmax`, which is the *only* way the footer can state a verdict (`converged` / `NOT converged` against the threshold); without it the footer reports the final force and says the run `finished`, because the threshold is the optimizer's and the log does not guess it.
+- **an `atexit` hook**, armed the first time a geometry step with forces is logged (`_arm_exit_hook`), so an unmodified script like the user's water one gets the blocks with no edit. `_write_summary_at_exit` swallows every exception on purpose: the calculation finished long before, and a log that cannot be closed (interpreter shutdown, a deleted temp directory, a read-only file) must not look like a failed run. The explicit call sets `_summary_written`, so calling it *and* letting the hook fire writes one summary.
+
+Nothing is written for a **single** geometry (no trajectory to summarize) unless `force=True`. `Carcara.trajectory` accumulates one entry per force evaluation (energy, `max_force`, `net_force`, wall time, centre of mass, positions, symbols); **`net_force` is always the *unprojected* residual** (`details["translational_residual"]`), so the convergence table shows the grid artifact even though `project_translation="auto"` removed it from the reported forces.
+
+`utils.logging.append_optimization_summary(path, history, symbols=, positions=, fmax=, ...)` writes both blocks: the scalars, a `convergence:` table (`step energy max_force net_force`), the `relaxed_geometry:` table (via `_geometry_rows`, factored out of `write_system` so a geometry reads the same everywhere in the file), then `[RELAXATION COMPLETE]` with a one-line `status:`. `center_of_mass_drift` is included because a free molecule cannot translate under its own forces — whatever is there is the egg-box.
+
+**Parsing:** `_SUMMARY_MARKERS = ("[QUANTUM VARIATIONAL SUMMARY]", "[SUMMARY]")` — the old marker still reads, as `[METADATA]` does for `[SYSTEM]`. The two closing blocks land at the **top level** of `parse_output` (`result["optimization"]`, `result["completion"]`) rather than inside a step, because that is what they describe; `convergence` comes back as a list of `{step, energy, max_force, net_force}` and `relaxed_geometry` as `[symbol, x, y, z]` rows. Pinned by `TestGeometryOptimizationSummary` (8 tests: the trajectory scalars, the table matching the per-step blocks above it, the relaxed geometry against `atoms.get_positions()`, the verdict against `opt.fmax`, written-once across both paths, the renamed per-step marker, a single point getting none, and an old-marker log).
+
+Examples 28 and 29 now end with `atoms.calc.write_optimization_summary(optimizer=opt)` — note it is `atoms.calc`, as both assign the calculator inline and have no `calc` name.
+
 ## Versioning
 
 CalVer, single source of truth in `src/carcara/version.py` (`__version__`), consumed dynamically by hatchling. The scheme is `YY.M.patch` (e.g. `26.7.3` = 2026, month 7, patch 3). Releases are git-tagged `v<version>` and published to PyPI.

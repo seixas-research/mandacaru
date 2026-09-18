@@ -12,7 +12,7 @@ energies and forces**, which is what an ASE optimizer prints there.
 
 | | standard output | `output.txt` |
 | :--- | :--- | :--- |
-| with `output=<path>` | ASE's `Step Time Energy fmax` table | banner, metadata, iterations, summary, forces, performance |
+| with `output=<path>` | ASE's `Step Time Energy fmax` table | banner, system, electrons, setup, iterations, summary, forces, performance |
 | without it | the full trace (header, iteration table, timings) | — |
 
 ```text
@@ -113,19 +113,28 @@ of blocks -- energies then forces, one pair per step -- in one file:
 ========================================================================
     ADAPT-VQE (CEOPool, 12 qubits)
 ========================================================================
-[METADATA]                 step: 1, this geometry, the cell
-[OPTIMIZATION SETUP]
-[ITERATIONS]               one row per grown operator
-[SUMMARY]
-[FORCES]                   step: 1, the vectors and their breakdown
+[SYSTEM]                        step: 1, this geometry, the cell
+[ELECTRONS]                     basis, grid, mapping, register, Hamiltonian
+[OPTIMIZATION SETUP]            the optimizer and the operator pool
+[ITERATIONS]                    one row per grown operator
+[QUANTUM VARIATIONAL SUMMARY]   the converged state of *this* geometry
+[FORCES]                        step: 1, the vectors and their breakdown
+[PERFORMANCE]                   step: 1, where the time and memory went
 ========================================================================
 
 ========================================================================
     ADAPT-VQE (CEOPool, 12 qubits) -- geometry step 2
 ========================================================================
-[METADATA]                 step: 2, the geometry BFGS moved to
+[SYSTEM]                        step: 2, the geometry BFGS moved to
 ...
+========================================================================
+
+[GEOMETRY OPTIMIZATION SUMMARY] the trajectory as one thing
+[RELAXATION COMPLETE]           the footer: the run finished
 ```
+
+The per-step block is the **variational** summary -- the converged state of one
+geometry -- and the relaxation's own summary is the single block at the end.
 
 The section markers and the rules sit at column 0 and everything a block
 *contains* is indented one level of
@@ -134,7 +143,7 @@ atoms under `geometry:` one level further -- so the structure of the file can be
 read off the left margin:
 
 ```text
-[METADATA]
+[SYSTEM]
     step: 1
     units: Angstrom
     n_atoms: 3
@@ -145,6 +154,19 @@ read off the left margin:
     cell_vectors:
         a1 = [ 10.0000000000   0.0000000000   0.0000000000]
     cell_lengths: a=10.0000000000 b=10.0000000000 c=10.0000000000
+
+[ELECTRONS]
+    basis: PAW (size: SZ)
+    grid spacing: 0.1 Angstrom
+    kinetic operator: finite difference
+    k-points: Gamma (1x1x1 Monkhorst-Pack)
+    spin-polarized: False
+    mapping: Jordan-Wigner
+    two-qubit reduction: False
+    Hamiltonian: 1079 Pauli terms
+    spatial orbitals: 6
+    electrons (alpha, beta): (4, 4)
+    qubits: 12
 
 [ITERATIONS]
     iter        energy (eV)              type        |grad|      1q    cnot   depth operator
@@ -176,19 +198,87 @@ so nothing a relaxation computed is erased, and a run picking up a path from an
 earlier run in the same process (a notebook cell) can start a fresh file with
 {func}`carcara.utils.logging.reset_log`.
 
+`[SYSTEM]` says *where the atoms are* and `[ELECTRONS]` *what was solved* --
+the configuration the standard-output header used to carry, which is why it is in
+the file now that the trace is routed there. `[OPTIMIZATION SETUP]` keeps what is
+left: the classical optimizer and the operator pool.
+
 `parse_output` returns the blocks as `result["steps"]`, in order, while the
-top-level `metadata` / `setup` / `iterations` / `summary` / `forces` keys
-describe the **last** step -- so reading a single-point log is unchanged:
+top-level `system` / `electrons` / `setup` / `iterations` / `summary` / `forces` /
+`performance` keys describe the **last** step -- so reading a single-point log is
+unchanged (`metadata` is kept as an alias of `system`, and a log written with the
+old `[METADATA]` marker still parses):
 
 ```python
 from carcara.utils import parse_output
 
 log = parse_output("output.txt")
 for step in log["steps"]:
-    print(step["metadata"]["step"],
+    print(step["system"]["step"],
           step["summary"]["optimal_energy_eV"],
           step["forces"]["max_force"])
 ```
+
+### Closing a relaxation
+
+A relaxation ends with two blocks that belong to the file rather than to any one
+geometry:
+
+```text
+[GEOMETRY OPTIMIZATION SUMMARY]
+    geometry_steps: 6
+    units: Angstrom
+    initial_energy_eV: -477.4590289021
+    final_energy_eV: -477.7982429880
+    energy_change_eV: -0.3392140859
+    initial_max_force: 2.54994331
+    final_max_force: 0.01307071
+    final_net_force: 0.02219607
+    center_of_mass_drift: 0.07050000
+    total_wall_time_s: 325.1913
+    convergence:
+         step          energy (eV)        max force        net force
+        ------------------------------------------------------------
+            1      -477.4590289021       2.54994331       0.01918785
+            ...
+            6      -477.7982429880       0.01307071       0.02219607
+    relaxed_geometry:
+        O       5.0000000001     5.0076240379     5.0076249036
+        H       5.0000000000     6.0218198454     4.9708302184
+        H       5.0000000001     4.9708300569     6.0218188182
+========================================================================
+
+[RELAXATION COMPLETE]
+    status: converged after 6 geometry steps (max force 0.013071 <= 0.020000 eV/Angstrom)
+========================================================================
+```
+
+`center_of_mass_drift` is worth reading: a free molecule cannot translate under
+its own forces, so whatever appears there is the grid's egg-box pushing it (see
+`project_translation`). `net_force` in the table is always the **unprojected**
+residual, so the column shows the artifact even when the reported forces had it
+removed.
+
+**Who writes it.** ASE never tells a calculator that a relaxation is over -- the
+optimizer simply stops calling it -- so there is no in-band moment to close the
+log. A plain script therefore gets the blocks from an **interpreter-exit hook**,
+which needs no change to the script at all. Handing the optimizer over closes the
+log immediately *and* lets the footer state the verdict, since `fmax` is the
+optimizer's own:
+
+```python
+opt = BFGS(atoms, trajectory="relax.traj")
+opt.run(fmax=0.02)
+atoms.calc.write_optimization_summary(optimizer=opt)   # or fmax=0.02
+```
+
+Without it the footer reports the final force and says only that the run
+finished -- the threshold is the optimizer's, and the log does not guess it.
+Nothing is written for a single geometry (there is no trajectory to summarize),
+and calling the method *and* letting the hook run still writes one summary.
+`parse_output` returns the two blocks as `result["optimization"]` and
+`result["completion"]`, with the table as a list of
+`{step, energy, max_force, net_force}`.
 
 ### The forces block
 

@@ -460,11 +460,17 @@ class TestCarcara:
         assert "forces" in calc.implemented_properties
 
     def test_get_forces_matches_the_driver(self, fixed_grid):
-        """The legacy mode is exactly the driver function it wraps."""
+        """The legacy mode is exactly the driver function it wraps.
+
+        Compared before the translational projection: the driver returns the raw
+        gradient, and the projection the calculator applies by default is a
+        separate, deliberate step on top of it.
+        """
         atoms = h2(0.74)
         atoms.calc = Carcara(method="vqe", basis="FAO", grid=fixed_grid,
                                        force_method="scf-response")
-        forces = atoms.get_forces()
+        atoms.get_forces()
+        forces = atoms.calc.force_result.unprojected
         expected = analytic_forces(h2(0.74), fixed_grid).forces
         assert np.allclose(forces, expected, atol=1e-8)
 
