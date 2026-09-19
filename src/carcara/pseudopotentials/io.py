@@ -77,12 +77,18 @@ ONCV_FAMILY = "oncvpsp"
 #: Family whose files carry partial waves, projectors and one-center matrices
 #: (see :mod:`.paw`).
 PAW_FAMILY = "paw"
+#: The unitary variant of the same record (``norm_deficit = 0``): a distinct
+#: family with the *same* layout, hence the same codec.
+UPAW_FAMILY = "upaw"
 #: Families whose payload keeps every radial table under ``"radial_tables"``
 #: and whose record is (de)serialized by the family's own module
 #: (``to_payload`` / ``from_payload``).  A file of another family -- or a
 #: plain :class:`PseudoPotential` that merely *carries* one of these names --
-#: uses the Troullier-Martins layout.
-TABLE_FAMILIES = {ONCV_FAMILY: ".oncv", PAW_FAMILY: ".paw"}
+#: uses the Troullier-Martins layout.  Several families may share one codec
+#: (UPAW *is* a :class:`~.paw.PAWDataset`), so this maps family -> layout and
+#: is not invertible.
+TABLE_FAMILIES = {ONCV_FAMILY: ".oncv", PAW_FAMILY: ".paw",
+                  UPAW_FAMILY: ".paw"}
 
 
 def _codec(family: str):
@@ -243,14 +249,19 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
     format = resolve_format(format)
 
     family = str(getattr(pp, "family", LEGACY_FAMILY))
-    table_family = _table_record(pp)
-    if table_family is not None:
+    layout = _table_record(pp)
+    if layout is not None:
         # ONCVPSP / PAW records carry several projectors per channel, coupling
         # matrices, partial waves...; their payload is assembled by their own
-        # module and every radial table lives under ``radial_tables``.
+        # module and every radial table lives under ``radial_tables``.  A
+        # record may declare a *variant* of that layout's family (UPAW is a
+        # PAWDataset), and then it keeps its own name -- the layout only
+        # chooses the codec.
+        stored = (family if TABLE_FAMILIES.get(family) == TABLE_FAMILIES[layout]
+                  else layout)
         payload = {"format": FORMAT_TAG, "version": FORMAT_VERSION,
-                   "family": table_family,
-                   **_codec(table_family).to_payload(pp, stride)}
+                   "family": stored,
+                   **_codec(layout).to_payload(pp, stride)}
         return _write_payload(path, payload, format, engine)
 
     payload = {
@@ -417,7 +428,9 @@ def load_pseudopotential(path, format: str | None = None,
             raise ValueError(
                 f"{path!r} declares family {family!r} with a table layout "
                 "this build cannot read")
-        return _codec(family).from_payload(payload)
+        # The codec reads the family back off the payload, so hand it the
+        # canonical spelling rather than the one on disk.
+        return _codec(family).from_payload({**payload, "family": family})
 
     r = np.asarray(payload["r"], dtype=float)
     channels = {}

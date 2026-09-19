@@ -60,6 +60,11 @@ that repeats these commands. `basis="NCPP"` and the all-electron bases (`FAO`,
 `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. Set
 `CARCARA_PSEUDO_PATH` to serve the library from somewhere else entirely.
 
+`basis="UPAW"` needs nothing either: no library is shipped for it, so a missing
+dataset is generated on demand (a fraction of a second per element) and cached
+for the session. `build_upaw_library()` writes them out if you would rather not
+pay that again.
+
 ## Numerical backend
 
 Carcará's integral kernels are written in C. Nothing has to be built by hand:

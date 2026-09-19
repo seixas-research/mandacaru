@@ -134,7 +134,8 @@ projectors above the valence :math:`l`.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+import warnings
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy.integrate import simpson
@@ -156,6 +157,11 @@ from .oncv import (Q_MAX, Q_STEP, PseudoWaves, _bessel_table,
 FAMILY = "paw"
 #: Subdirectory of the pseudopotential library holding the PAW datasets.
 LIBRARY_SUBDIR = "paw"
+
+#: Registry name of the **unitary** PAW family (``basis="UPAW"``).
+UPAW_FAMILY = "upaw"
+#: Subdirectory holding UPAW datasets, when one has been built.
+UPAW_LIBRARY_SUBDIR = "upaw"
 
 #: Spherical Bessel functions per smooth partial wave.
 DEFAULT_N_BESSEL = 8
@@ -253,6 +259,28 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
     \langle\tilde p|` singular (Li, O at every cutoff tried).  The returned
     :attr:`~.oncv.PseudoWaves.achieved` inner norms differ from the
     all-electron :attr:`~.oncv.PseudoWaves.norms` by exactly :math:`q`.
+
+    ``norm_deficit=0`` is the **unitary PAW** (UPAW) of Ivanov *et al.*
+    (arXiv:2408.03159): :math:`q \equiv 0` makes :math:`T^\dagger T = I`, so the
+    pseudo states are orthonormal and the overlap operator is the identity.  It
+    is a working option -- datasets for H, Li, C and O build with
+    :math:`|q| \le 3\times10^{-14}`, an overlap minimum of exactly 1, no ghost
+    states and the same eigenvalue reproduction -- but it is **not** the default,
+    for three measured reasons.  (1) Carcará does not need it: the augmented
+    overlap is Löwdin-orthogonalized (:func:`~carcara.core.hamiltonian._lowdin_x`)
+    before the many-body Hamiltonian is built, so the second-quantized problem is
+    already in an orthonormal basis -- the non-orthogonality UPAW exists to cure
+    is a plane-wave-basis problem.  (2) It does not remove the augmentation:
+    the constraint fixes only the **norm**, i.e. the :math:`L = 0` moment, so the
+    higher compensation multipoles survive and on oxygen :math:`L = 2` *grows*
+    (water, h = 0.25: :math:`|Q^{L=0}|` 3.2e-2 -> 8e-15 but :math:`|Q^{L=2}|`
+    1.4e-3 -> 2.2e-2).  (3) The waves are harder, which costs exactly what a
+    real-space grid is most sensitive to: water's net force (the egg-box) is
+    **5x larger** at h = 0.25 and 0.20 (0.38 -> 1.92 and 0.042 -> 0.223 eV/A),
+    and the energy converges ~19 % more slowly in h -- the same ordering the
+    paper reports (PAW converged at 400 eV, UPAW at 600).  The physics agrees
+    where it should: LiH's bond length differs by 0.002 A and its binding energy
+    by 0.098 eV.
     """
     if norm_deficit is not None:
         return optimize_pseudo_waves(r, v_ae, l, waves, energies, r_cut,
@@ -1631,7 +1659,109 @@ def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
     return written
 
 
-def build_paw(atoms, grid, h, charge, spin, options, kinetic=None):
+def generate_upaw(symbol: str, **options) -> PAWDataset:
+    r"""Generate a **unitary** PAW (UPAW) dataset: the ``norm_deficit = 0`` PAW.
+
+    The smooth partial waves carry the full all-electron inner norm, so
+    :math:`q_{ij} = 0`, the transformation satisfies :math:`T^\dagger T = I` and
+    the overlap operator is the identity -- the construction of Ivanov *et al.*
+    (arXiv:2408.03159).  Everything else is :func:`generate_paw`.
+
+    ``norm_deficit`` is not accepted: it *is* what distinguishes the two
+    families, and a UPAW dataset with a nonzero deficit would be a PAW dataset
+    wearing the wrong name.
+    """
+    if "norm_deficit" in options:
+        raise TypeError(
+            "generate_upaw does not take `norm_deficit`: UPAW is defined by "
+            "norm_deficit = 0 (use generate_paw for any other value)")
+    dataset = generate_paw(symbol, norm_deficit=0.0, **options)
+    return replace(dataset, family=UPAW_FAMILY)
+
+
+def upaw_library_path(directory=None) -> str:
+    """The UPAW library directory (``library/upaw`` by default)."""
+    from .io import library_root
+    if directory is not None:
+        return os.fspath(directory)
+    return os.path.join(library_root(), UPAW_LIBRARY_SUBDIR)
+
+
+def get_upaw(symbol: str, directory=None) -> PAWDataset:
+    """Load ``symbol`` from the UPAW library, **or generate it** (cached).
+
+    Unlike the other families, UPAW has no shipped library: there is no
+    sibling data repository for it, and requiring a 92-element build before the
+    option can be tried at all would make it unusable.  Generation is a few
+    seconds per element (H 0.4 s, O 2.2 s, measured) and the result is cached
+    for the process, so a small molecule pays that once.  Build a library with
+    :func:`build_upaw_library` to skip it, and it is used whenever it exists.
+    """
+    from .io import library_file, load_pseudopotential
+
+    folder = upaw_library_path(directory)
+    key = f"{symbol}@{folder}@{UPAW_FAMILY}"
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
+    path = library_file(symbol, folder)
+    if os.path.exists(path):
+        pp = load_pseudopotential(path)
+        family = str(getattr(pp, "family", "")).lower()
+        if family != UPAW_FAMILY:
+            raise ValueError(f"{path!r} belongs to family {family!r}, not "
+                             f"{UPAW_FAMILY!r}")
+    else:
+        if directory is not None:
+            raise FileNotFoundError(
+                f"no UPAW dataset for {symbol!r} at {path!r}; build one with "
+                f"build_upaw_library([{symbol!r}], directory={directory!r})")
+        warnings.warn(
+            f"generating a UPAW dataset for {symbol} (no library at "
+            f"{folder!r}); it is cached for this process.  Build one once with "
+            f"carcara.pseudopotentials.paw.build_upaw_library([...]) to skip "
+            f"this.", RuntimeWarning, stacklevel=2)
+        pp = generate_upaw(symbol)
+    _CACHE[key] = pp
+    return pp
+
+
+def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
+                       directory=None, *, verbose: bool = True,
+                       format: str | None = None, stride: int | None = None,
+                       **generation_options):
+    """Generate and save UPAW datasets for ``elements``; returns the paths."""
+    from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
+
+    folder = upaw_library_path(directory)
+    os.makedirs(folder, exist_ok=True)
+    format = DEFAULT_FORMAT if format is None else format
+    stride = STRIDE if stride is None else int(stride)
+    written = []
+    for symbol in elements:
+        pp = generate_upaw(symbol, **generation_options)
+        path = save_pseudopotential(pp, library_file(symbol, folder, format),
+                                    format=format, stride=stride)
+        written.append(path)
+        if verbose:
+            print(f"  {symbol:>2}  Z_ion={pp.valence_charge:>4.0f}  "
+                  + "  ".join(f"l{l}: rc={c.r_cut:.2f} |q|="
+                              f"{abs(c.overlap_correction[0, 0]):.1e}"
+                              for l, c in sorted(pp.channels.items()))
+                  + f"  E1c={pp.one_center_energy:+.4f}  -> "
+                  f"{os.path.basename(path)}")
+    _CACHE.clear()
+    return written
+
+
+def build_upaw(atoms, grid, h, charge, spin, options, kinetic=None):
+    """Valence-only Hamiltonian from UPAW datasets (see :func:`build_paw`)."""
+    return build_paw(atoms, grid, h, charge, spin, options, kinetic=kinetic,
+                     loader=get_upaw)
+
+
+def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
+              loader=None):
     r"""Valence-only Hamiltonian from PAW datasets.
 
     Same 5-tuple as the other families: the basis is the bound smooth
@@ -1647,9 +1777,10 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None):
     from .orbitals import pseudo_basis, valence_electrons
 
     directory = options.get("directory")
+    load = get_paw if loader is None else loader
     symbols = atoms.get_chemical_symbols()
     positions = coherent_positions(atoms)
-    datasets = {symbol: get_paw(symbol, directory) for symbol in set(symbols)}
+    datasets = {symbol: load(symbol, directory) for symbol in set(symbols)}
 
     basis_fns, atom_of_orbital = pseudo_basis(
         symbols, positions, datasets, size=options.get("size", "SZ"),
@@ -1806,7 +1937,8 @@ def from_payload(payload: dict) -> PAWDataset:
         channels=channels, v_local=v_local, local_l=-1, projectors=projectors,
         kb_energies={},
         valence_density=np.asarray(tables["valence_density"], dtype=float),
-        atom=None, family=FAMILY, coupling=coupling,
+        # The layout is shared with UPAW, so the family is read, not assumed.
+        atom=None, family=str(payload.get("family", FAMILY)), coupling=coupling,
         coupling_screened=coupling_screened, overlap_correction=overlap,
         kinetic_difference=kinetic, v_local_screened=v_screened,
         core_density=np.asarray(tables["core_density"], dtype=float),
@@ -1847,4 +1979,33 @@ def _register():
     ))
 
 
+def _register_upaw():
+    """Register the **unitary** PAW family (``basis="UPAW"``).
+
+    Same machinery as PAW with :math:`q = 0`, so the transformation is unitary
+    and the overlap operator is the identity.  Kept as an option rather than the
+    default: Carcará orthogonalizes the augmented overlap anyway, the constraint
+    fixes only the monopole (the higher compensation multipoles survive), and the
+    harder waves cost about five times the grid egg-box on oxygen -- see
+    :func:`smooth_partial_waves` for the measurements.
+    """
+    from .families import (COMMON_OPTIONS, PSEUDO_FAMILIES, FamilySpec,
+                           register_family)
+    if UPAW_FAMILY in PSEUDO_FAMILIES:
+        return PSEUDO_FAMILIES[UPAW_FAMILY]
+    return register_family(FamilySpec(
+        name=UPAW_FAMILY,
+        description="unitary projector augmented wave (Ivanov 2024, "
+                    "arXiv:2408.03159): PAW with q = 0, so T is unitary and "
+                    "the pseudo states are orthonormal",
+        generate=lambda symbol, **options: generate_upaw(symbol, **options),
+        get=get_upaw,
+        build=build_upaw,
+        norm_conserving=False,
+        aliases=("unitary-paw",),
+        options=COMMON_OPTIONS + ("projector_basis",),
+    ))
+
+
 PAW_FAMILY = _register()
+UPAW_FAMILY_SPEC = _register_upaw()

@@ -29,7 +29,7 @@ raises an error that names the families instead of aliasing to one.
 
 ## Families
 
-Three families are shipped, all generated from scratch by Carcará's own LDA
+Four families are shipped, all generated from scratch by Carcará's own LDA
 radial atomic solver (`carcara.basis.atomic_solver`):
 
 | Basis name | Aliases | Family | Projectors | Overlap | Library |
@@ -37,11 +37,16 @@ radial atomic solver (`carcara.basis.atomic_solver`):
 | `"NCPP"` | `"TM"`, `"NCPP-TM"` | Troullier–Martins norm-conserving, Kleinman–Bylander separable form | one per channel | none | bundled, H–U |
 | `"ONCVPSP"` | `"ONCV"` | Hamann's optimised norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `carcara-oncvpsp`, H–U |
 | `"PAW"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `carcara-paw`, H–U |
+| `"UPAW"` | `"unitary-paw"` | the same, with a **unitary** transformation ($q = 0$, below) | two per channel, $2\times2$ coupling | $S$ (unaugmented) | generated on demand |
 
 Names are case-insensitive. Each family accepts the options `size`,
-`split_norm` and `directory` (an alternative library folder); PAW also takes
-`projector_basis="raw"|"dual"`. Any other key — or an all-electron option such
-as `tier` — is refused before an integral is computed.
+`split_norm` and `directory` (an alternative library folder); PAW and UPAW also
+take `projector_basis="raw"|"dual"`. Any other key — or an all-electron option
+such as `tier` — is refused before an integral is computed.
+
+`"PAW"` is the recommended pseudopotential family. `"UPAW"` is an option — the
+same construction with a unitary transformation — and the measurements that
+decided that are in its own section below.
 
 A **per-element basis** may give each atom its own size, as long as every
 element uses the *same* family:
@@ -582,6 +587,109 @@ it as before. Round trips are lossless and idempotent (tested).
 * **Not norm-conserving, but by a controlled amount** ($s$ = 2–15 %): the
   softness gain over ONCVPSP is correspondingly modest (H₂ basis ratio 0.98
   vs 0.975).
+
+## UPAW: a unitary transformation
+
+`basis="UPAW"` (alias `"unitary-paw"`) is the PAW construction with the
+orthonormality constraint of Ivanov *et al.*,
+[arXiv:2408.03159](https://arxiv.org/abs/2408.03159), imposed on the smooth
+partial waves:
+
+```{math}
+O_{ij} \;=\; \langle\phi_i|\phi_j\rangle_{r_c}
+           - \langle\tilde\phi_i|\tilde\phi_j\rangle_{r_c} \;=\; 0 ,
+```
+
+which is exactly Carcará's `norm_deficit = 0`. The transformation
+$\mathcal{T} = 1 + \sum_i (|\phi_i\rangle - |\tilde\phi_i\rangle)\langle\tilde
+p_i|$ is then **unitary**: the smooth states are orthonormal, the overlap
+operator is the identity, and the whole augmentation of the metric disappears —
+
+```{math}
+S = \tilde S + C\,q\,C^\dagger \;\longrightarrow\; \tilde S , \qquad q = 0 .
+```
+
+Everything else is the ordinary PAW dataset: the same two reference energies,
+the same residual-kinetic-energy minimisation of the smooth waves, the same
+dual projectors, the same local potential and one-centre linearisation. Only
+the norm constraint changes, so `generate_upaw(symbol, **options)` is
+`generate_paw(symbol, norm_deficit=0.0, **options)` with the record tagged
+`family="upaw"`, and it *refuses* an explicit `norm_deficit` — that number is
+the definition of the family.
+
+### Why it is attractive on a quantum computer
+
+The motivation is not accuracy but the structure of the second-quantised
+problem. With $q = 0$ the one-particle basis is orthonormal *before* the
+Löwdin step, the overlap operator never enters the Hamiltonian, and the
+generalised eigenproblem $Hc = \varepsilon S c$ becomes an ordinary one. In a
+plane-wave PAW code that removes a nontrivial metric from every algorithm built
+on top; in Carcará it removes one matrix product, because $S^{-1/2}$ is
+computed anyway for the grid basis.
+
+### What it costs (measured, `carcara` env, h as noted)
+
+| | PAW | UPAW |
+|---|---|---|
+| overlap correction $\max|q_{ij}|$, H | $2.12\times10^{-2}$ | $3.0\times10^{-14}$ |
+| overlap minimum (H) | $1.055$ | $1.000000$ |
+| $\max|S - \tilde S|$, H₂ (h = 0.3 Å) | $2.8\times10^{-2}$ | $1.0\times10^{-13}$ |
+| O, $L=0$ compensation moment | $3.2\times10^{-2}$ | $7.7\times10^{-15}$ |
+| O, $L=2$ compensation moment | $1.4\times10^{-3}$ | $2.2\times10^{-2}$ |
+| H₂O net force, h = 0.25 Å | 0.380 eV/Å | 1.918 eV/Å |
+| H₂O net force, h = 0.20 Å | 0.0415 eV/Å | 0.2227 eV/Å |
+| LiH $d_{eq}$ / binding | 1.6782 Å / 3.2389 eV | 1.6802 Å / 3.1413 eV |
+| H₂ binding at 0.85 Å | 2.640 eV | 2.386 eV |
+| Hamiltonian one-norm $\lambda$, H₂ | 27.05 | 26.61 |
+
+Three things to read out of that table.
+
+**The constraint does what it claims, and only for the monopole.** $q$ and the
+$L = 0$ augmentation vanish to machine precision. But the constraint is one
+number per pair of partial waves, and the higher multipoles are not constrained
+by it: on oxygen the $L = 2$ moment comes out **16× larger** than PAW's. The
+compensation machinery (`compensation_moments`, `compensation_potentials`,
+`compensation_coulomb`, and the force derivatives of all three) therefore
+cannot be deleted — the reason to want UPAW is not realised in this code.
+
+**The smooth waves get harder.** Forcing the inner norm to match the
+all-electron one removes the freedom that the scaled-norm construction spends
+on smoothness, so the pseudo waves carry more short-wavelength content. On a
+uniform real-space grid that shows up immediately as a larger egg-box: the
+translational residual on water is **≈ 5× worse at both spacings tested**, and
+the residual is what limits how far a relaxation can be converged.
+
+**Binding is slightly worse, and $\lambda$ barely moves.** UPAW under-binds
+H₂ by 0.25 eV and LiH by 0.10 eV relative to PAW at the same grid and size,
+while the LCU one-norm — the figure of merit for a qubitised phase estimation,
+where the Toffoli count scales as $\lambda/\epsilon$ — improves by 1.6 %. The
+quantum-resource argument for the unitary form is real but small here.
+
+So UPAW is available, tested, and not the default. It is worth revisiting if
+the compensation charge ever grows its full multipole expansion (then $q = 0$
+buys a genuinely simpler metric), or on a smooth basis where the egg-box
+penalty does not apply — a plane-wave or Gaussian representation rather than a
+uniform grid.
+
+### Datasets
+
+No UPAW library is shipped. `get_upaw(symbol)` looks in `library/upaw/` and,
+finding nothing there, **generates the dataset on the fly**, caches it in
+memory and warns once — generation is 0.4–2.2 s per element, so an interactive
+run pays a fraction of a second and a scan pays nothing after the first
+geometry. Naming a `directory` explicitly is a statement that the library is
+there, and a missing element then raises with the `build_upaw_library` recipe:
+
+```python
+from carcara.pseudopotentials.paw import build_upaw_library
+
+build_upaw_library(("H", "C", "N", "O"))          # into library/upaw/
+build_upaw_library(("H", "O"), directory="/data/upaw")
+```
+
+The files use the PAW layout (`TABLE_FAMILIES` maps both families to the same
+codec) and record `family: "upaw"`, so a PAW dataset is refused as UPAW and
+vice versa.
 
 ## The nonlocal term: general separable form
 

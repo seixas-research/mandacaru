@@ -51,6 +51,8 @@ from .paw import (PAW_FAMILY, PAWChannel, PAWDataset, PAWIntegrals,
                   paw_eigenstate, paw_library_path, paw_overlap_blocks,
                   paw_projectors, paw_spectrum, reconstruct_ae, report_paw,
                   smooth_partial_waves)
+from .paw import (UPAW_FAMILY, build_upaw_library, generate_upaw, get_upaw,
+                  upaw_library_path)
 
 __all__ = [
     "COMMON_OPTIONS", "DEFAULT_FAMILY", "PSEUDO_FAMILIES", "FamilySpec",
@@ -76,4 +78,6 @@ __all__ = [
     "log_derivative_paw", "paw_coupling_blocks", "paw_eigenstate",
     "paw_library_path", "paw_overlap_blocks", "paw_projectors", "paw_spectrum",
     "reconstruct_ae", "report_paw", "smooth_partial_waves",
+    "UPAW_FAMILY", "build_upaw_library", "generate_upaw", "get_upaw",
+    "upaw_library_path",
 ]
