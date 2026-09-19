@@ -5,12 +5,12 @@
 
 Covers the three features added on top of the cubic integral core:
 
-* :class:`~carcara.integrals.Grid` accepting an anisotropic ``box_size`` or a
+* :class:`~mandacaru.integrals.Grid` accepting an anisotropic ``box_size`` or a
   full ``cell`` tensor, with the integral engine still recovering the reference
   physics (H 1s on-site repulsion = 5/8 Ha) on a non-cubic box;
 * the real-space grid generated directly from an ASE ``Atoms`` unit cell
-  (:func:`carcara.algorithms._hamiltonian_from_atoms.grid_from_cell`);
-* :class:`~carcara.algorithms.ADAPTVQE` writing a structured, live-parseable
+  (:func:`mandacaru.algorithms._hamiltonian_from_atoms.grid_from_cell`);
+* :class:`~mandacaru.algorithms.ADAPTVQE` writing a structured, live-parseable
   ``output.txt`` as the ADAPT loop runs.
 """
 
@@ -20,12 +20,12 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
-from carcara.algorithms._hamiltonian_from_atoms import grid_from_cell
-from carcara.basis import FullAtomicOrbital
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid, IntegralEngine
-from carcara.utils import AdaptOutputLogger, parse_output
+from mandacaru.algorithms import ADAPTVQE
+from mandacaru.algorithms._hamiltonian_from_atoms import grid_from_cell
+from mandacaru.basis import FullAtomicOrbital
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.integrals import Grid, IntegralEngine
+from mandacaru.utils import AdaptOutputLogger, parse_output
 
 
 # --------------------------------------------------------------------------- #
@@ -144,7 +144,7 @@ class TestVaryingResolution:
     def test_c_and_numpy_kernels_agree(self):
         # The C general kernel and the NumPy fallback must stay in lockstep on
         # anisotropic and skewed grids.
-        import carcara.integrals._backend as backend
+        import mandacaru.integrals._backend as backend
         if not backend.HAS_C_BACKEND:
             pytest.skip("C backend not built")
         orb = FullAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0.2], units="bohr")
@@ -332,7 +332,7 @@ class TestAdaptOutputProtocol:
 
 class TestCEOLabels:
     def test_ceo_labels_unique_and_descriptive(self):
-        from carcara.circuits import build_pool
+        from mandacaru.circuits import build_pool
         labels = [op.label for op in build_pool("ceo", 3, (2, 2)).operators()]
         # Requirement 4: no collisions, and each label names its support.
         assert len(labels) == len(set(labels))
@@ -342,7 +342,7 @@ class TestCEOLabels:
 class TestADAPTVQECalculator:
     def test_class_named_all_caps(self):
         # The driver class is ADAPTVQE (all caps); the old AdaptVQE alias is gone.
-        import carcara.algorithms as algs
+        import mandacaru.algorithms as algs
         assert not hasattr(algs, "AdaptVQE")
         assert not hasattr(algs, "AdaptVQEResult")
 
@@ -440,7 +440,7 @@ class TestLogAppendsAcrossSteps:
         """Write one minimal energy block to ``path`` and return the logger."""
         from types import SimpleNamespace
 
-        from carcara.core.mapping import PauliSum
+        from mandacaru.core.mapping import PauliSum
         pool = [SimpleNamespace(label="op0", kind="double",
                                 generator=PauliSum({"XXXX": 0.5j}))]
         with AdaptOutputLogger(path, n_qubits=4) as logger:
@@ -452,7 +452,7 @@ class TestLogAppendsAcrossSteps:
         return logger
 
     def test_banner_is_written_once_at_the_top(self, tmp_path):
-        from carcara.utils import banner
+        from mandacaru.utils import banner
 
         out = str(tmp_path / "output.txt")
         for step in (1, 2, 3):
@@ -482,7 +482,7 @@ class TestLogAppendsAcrossSteps:
         assert "geometry step 1" not in text
 
     def test_reset_log_starts_a_fresh_file(self, tmp_path):
-        from carcara.utils import log_steps, reset_log
+        from mandacaru.utils import log_steps, reset_log
 
         out = str(tmp_path / "output.txt")
         self._block(out, 1)
@@ -519,9 +519,9 @@ class TestBlockIndentation:
     def log(self, tmp_path_factory):
         from types import SimpleNamespace
 
-        from carcara.core.mapping import PauliSum
-        from carcara.utils import append_forces
-        from carcara.utils.logging import INDENT
+        from mandacaru.core.mapping import PauliSum
+        from mandacaru.utils import append_forces
+        from mandacaru.utils.logging import INDENT
 
         out = str(tmp_path_factory.mktemp("indent") / "output.txt")
         pool = [SimpleNamespace(label="op0", kind="double",
@@ -596,7 +596,7 @@ class TestForcesBlock:
     PULAY = np.array([[0.0, 1.5, -1.5], [0.0, -0.6, 0.0], [0.0, -0.9, 1.48]])
 
     def _write(self, path, **kwargs):
-        from carcara.utils import append_forces
+        from mandacaru.utils import append_forces
 
         append_forces(path, ["O", "H", "H"], self.FORCES,
                       hellmann_feynman=self.HF, pulay=self.PULAY, **kwargs)
@@ -637,7 +637,7 @@ class TestForcesBlock:
         assert [block["forces"]["step"] for block in parsed["steps"]] == [1, 2]
 
     def test_a_breakdown_is_optional(self, tmp_path):
-        from carcara.utils import append_forces
+        from mandacaru.utils import append_forces
 
         out = str(tmp_path / "output.txt")
         append_forces(out, ["H", "H"], [[0.0, 0.0, 0.3], [0.0, 0.0, -0.3]])
@@ -653,14 +653,14 @@ class TestRelaxationLog:
     def relaxation(self, tmp_path_factory):
         from ase.optimize import BFGS
 
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         out = str(tmp_path_factory.mktemp("relax") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
-                             pool="fermionic", max_iterations=4,
-                             gradient_tolerance=1e-3, output=out)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=4,
+                               gradient_tolerance=1e-3, output=out)
         opt = BFGS(atoms, logfile=None)
         opt.run(fmax=0.05, steps=2)
         return out, atoms, opt
@@ -712,14 +712,14 @@ class TestPerformanceBlock:
     def relaxation(self, tmp_path_factory):
         from ase.optimize import BFGS
 
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         out = str(tmp_path_factory.mktemp("perf") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
-                             pool="fermionic", max_iterations=4,
-                             gradient_tolerance=1e-3, output=out)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=4,
+                               gradient_tolerance=1e-3, output=out)
         BFGS(atoms, logfile=None).run(fmax=0.05, steps=1)
         return out
 
@@ -795,7 +795,7 @@ class TestQPUAccounting:
             return {"usage": {"quantum_seconds": 27.0, "seconds": 31.5}}
 
     def test_reports_the_jobs_quantum_seconds(self):
-        from carcara.backends.providers import qpu_usage
+        from mandacaru.backends.providers import qpu_usage
 
         provider = SimpleNamespace(device_spec="ibm_fez", shots=4096,
                                    last_job=self._Job())
@@ -809,7 +809,7 @@ class TestQPUAccounting:
         assert usage["qpu_wall_time_s"] == 51.25
 
     def test_a_local_provider_reports_only_what_it_knows(self):
-        from carcara.backends.providers import qpu_usage
+        from mandacaru.backends.providers import qpu_usage
 
         provider = SimpleNamespace(device_spec="statevector", shots=0,
                                    last_job=None)
@@ -818,12 +818,12 @@ class TestQPUAccounting:
         assert usage == {"qpu_device": "statevector", "qpu_wall_time_s": 1.5}
 
     def test_no_provider_reports_nothing(self):
-        from carcara.backends.providers import qpu_usage
+        from mandacaru.backends.providers import qpu_usage
 
         assert qpu_usage(None, wall_time_s=9.0) == {}
 
     def test_a_job_that_cannot_answer_does_not_break_the_log(self):
-        from carcara.backends.providers import qpu_usage
+        from mandacaru.backends.providers import qpu_usage
 
         class Hostile:
             def job_id(self):
@@ -851,13 +851,13 @@ class TestStandardOutputIsTheASETable:
 
     @staticmethod
     def _run(tmp_path, capsys, **options):
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
-                             pool="fermionic", max_iterations=2,
-                             gradient_tolerance=1e-3, **options)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=2,
+                               gradient_tolerance=1e-3, **options)
         atoms.get_potential_energy()
         return capsys.readouterr().out
 
@@ -881,16 +881,16 @@ class TestStandardOutputIsTheASETable:
         assert quiet.strip() == ""
 
     def test_trace_must_be_a_boolean_or_none(self):
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         with pytest.raises(TypeError, match="trace must be"):
-            Carcara(method="adapt-vqe", trace="yes")
+            Mandacaru(method="adapt-vqe", trace="yes")
 
     def test_verbose_is_refused_and_points_at_trace(self):
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         with pytest.raises(TypeError, match="trace="):
-            Carcara(method="adapt-vqe", verbose=False)
+            Mandacaru(method="adapt-vqe", verbose=False)
 
     def test_the_log_still_has_everything(self, tmp_path, capsys):
         """Silencing stdout must route the detail, not discard it."""
@@ -916,14 +916,14 @@ class TestElectronsBlock:
 
     @pytest.fixture(scope="class")
     def run(self, tmp_path_factory):
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         out = str(tmp_path_factory.mktemp("electrons") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
-                             pool="fermionic", max_iterations=2,
-                             gradient_tolerance=1e-3, output=out)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=2,
+                               gradient_tolerance=1e-3, output=out)
         atoms.get_potential_energy()
         return out, atoms.calc
 
@@ -989,7 +989,7 @@ class TestGeometryOptimizationSummary:
 
     ASE never tells a calculator that a relaxation is over -- the optimizer just
     stops calling it -- so the summary is written either by an explicit
-    :meth:`Carcara.write_optimization_summary` or, for a plain script, by the
+    :meth:`Mandacaru.write_optimization_summary` or, for a plain script, by the
     interpreter-exit hook that call also disarms.
     """
 
@@ -997,14 +997,14 @@ class TestGeometryOptimizationSummary:
     def relaxed(self, tmp_path_factory):
         from ase.optimize import BFGS
 
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         out = str(tmp_path_factory.mktemp("relaxsummary") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
-                             pool="fermionic", max_iterations=4,
-                             gradient_tolerance=1e-3, output=out)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=4,
+                               gradient_tolerance=1e-3, output=out)
         opt = BFGS(atoms, logfile=None)
         opt.run(fmax=0.05, steps=2)
         assert atoms.calc.write_optimization_summary(optimizer=opt) is True
@@ -1068,14 +1068,14 @@ class TestGeometryOptimizationSummary:
         assert "\n[SUMMARY]" not in text
 
     def test_a_single_point_gets_no_optimization_summary(self, tmp_path):
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         out = str(tmp_path / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
-                             pool="fermionic", max_iterations=2,
-                             gradient_tolerance=1e-3, output=out)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=2,
+                               gradient_tolerance=1e-3, output=out)
         atoms.get_forces()
         # One geometry is not a trajectory; there is nothing to summarize.
         assert atoms.calc.write_optimization_summary() is False

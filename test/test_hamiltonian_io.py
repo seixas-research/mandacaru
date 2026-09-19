@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 # file: test/test_hamiltonian_io.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
 """Hamiltonian disk cache: ``save_hamiltonian`` / ``load_hamiltonian``.
 
-Covers the Apache Parquet round-trip (:mod:`carcara.core.serialization`) and the
+Covers the Apache Parquet round-trip (:mod:`mandacaru.core.serialization`) and the
 driver-level contract: loading a cached Hamiltonian must reproduce the built-run
 energy *and* bypass the molecular integrals and the fermion-to-qubit mapping.
 """
@@ -21,19 +21,19 @@ import sys
 import textwrap
 
 import numpy as np
-from carcara.units import HARTREE_TO_EV
+from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, VQE
-from carcara.core import PauliSum
-from carcara.core.serialization import (DEFAULT_FILENAME, DEFAULT_FORMAT,
-                                        FILE_EXTENSION, FILE_EXTENSIONS,
-                                        FORMAT_TAG, HAMILTONIAN_FORMATS,
-                                        PARQUET_ENGINES, available_engines,
-                                        detect_format, load_hamiltonian,
-                                        resolve_engine, resolve_format,
-                                        resolve_save_path, save_hamiltonian)
+from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.core import PauliSum
+from mandacaru.core.serialization import (DEFAULT_FILENAME, DEFAULT_FORMAT,
+                                          FILE_EXTENSION, FILE_EXTENSIONS,
+                                          FORMAT_TAG, HAMILTONIAN_FORMATS,
+                                          PARQUET_ENGINES, available_engines,
+                                          detect_format, load_hamiltonian,
+                                          resolve_engine, resolve_format,
+                                          resolve_save_path, save_hamiltonian)
 
 # Engines exercised **in this process**.
 #
@@ -41,7 +41,7 @@ from carcara.core.serialization import (DEFAULT_FILENAME, DEFAULT_FORMAT,
 # 25, pyarrow's Parquet writer hard-crashes (SIGSEGV) once Qiskit's transpiler
 # has run in the same interpreter -- both ship their own native runtimes -- and a
 # segfault takes the whole test session down, not just one test.  That is exactly
-# why Carcará defaults to `fastparquet` (see carcara.core.serialization).
+# why Mandacaru defaults to `fastparquet` (see mandacaru.core.serialization).
 #
 # pyarrow is still covered, in `TestPyarrowEngineIsolated` below, by running a
 # round-trip in a *clean subprocess* where the crash cannot occur or spread.
@@ -86,7 +86,7 @@ def h2_cache(tmp_path, h2_atoms):
 # --------------------------------------------------------------------------- #
 
 def _write_raw_parquet(path, columns, key_value):
-    """Write a hand-made Parquet table (bypassing Carcará) for negative tests."""
+    """Write a hand-made Parquet table (bypassing Mandacaru) for negative tests."""
     import fastparquet
     import pandas as pd
     fastparquet.write(str(path), pd.DataFrame(columns),
@@ -189,14 +189,14 @@ class TestSerializationRoundTrip:
 
         alien = tmp_path / "alien.parquet"
         _write_raw_parquet(alien, columns, {"who": "someone else"})
-        with pytest.raises(ValueError, match="not a Carcará"):
+        with pytest.raises(ValueError, match="not a Mandacaru"):
             load_hamiltonian(alien)
 
         future = tmp_path / "future.parquet"
         _write_raw_parquet(future, columns,
-                           {"carcara.format": FORMAT_TAG,
-                            "carcara.version": "99",
-                            "carcara.num_qubits": "2"})
+                           {"mandacaru.format": FORMAT_TAG,
+                            "mandacaru.version": "99",
+                            "mandacaru.num_qubits": "2"})
         with pytest.raises(ValueError, match="version"):
             load_hamiltonian(future)
 
@@ -204,9 +204,9 @@ class TestSerializationRoundTrip:
         pytest.importorskip("fastparquet")
         bad = tmp_path / "bad.parquet"
         _write_raw_parquet(bad, {"pauli": ["IZ"], "real": [1.0], "imag": [0.0]},
-                           {"carcara.format": FORMAT_TAG,
-                            "carcara.version": "1",
-                            "carcara.num_qubits": "4"})
+                           {"mandacaru.format": FORMAT_TAG,
+                            "mandacaru.version": "1",
+                            "mandacaru.num_qubits": "4"})
         with pytest.raises(ValueError, match="expected 4"):
             load_hamiltonian(bad)
 
@@ -214,9 +214,9 @@ class TestSerializationRoundTrip:
         pytest.importorskip("fastparquet")
         bad = tmp_path / "nocol.parquet"
         _write_raw_parquet(bad, {"pauli": ["IZ"], "real": [1.0]},
-                           {"carcara.format": FORMAT_TAG,
-                            "carcara.version": "1",
-                            "carcara.num_qubits": "2"})
+                           {"mandacaru.format": FORMAT_TAG,
+                            "mandacaru.version": "1",
+                            "mandacaru.num_qubits": "2"})
         with pytest.raises(ValueError, match="missing the 'imag' column"):
             load_hamiltonian(bad)
 
@@ -243,13 +243,13 @@ class TestFileFormats:
         """The JSON path must not import a Parquet engine at all.
 
         This is the point of the format: it sidesteps the Qiskit/pyarrow
-        interaction described in carcara.core.serialization.
+        interaction described in mandacaru.core.serialization.
         """
         path = tmp_path / "h.json"
         done = _run_isolated(f"""
             import sys
-            from carcara.core import PauliSum
-            from carcara.core.serialization import (save_hamiltonian,
+            from mandacaru.core import PauliSum
+            from mandacaru.core.serialization import (save_hamiltonian,
                                                     load_hamiltonian)
             pauli = PauliSum({{"IZ": 0.5, "ZI": -0.25}})
             save_hamiltonian({str(path)!r}, pauli, format="json",
@@ -471,8 +471,8 @@ class TestPyarrowEngineIsolated:
         """pyarrow must round-trip a Hamiltonian exactly, like fastparquet."""
         path = tmp_path / "pa.parquet"
         done = _run_isolated(f"""
-            from carcara.core import PauliSum
-            from carcara.core.serialization import (save_hamiltonian,
+            from mandacaru.core import PauliSum
+            from mandacaru.core.serialization import (save_hamiltonian,
                                                     load_hamiltonian)
             pauli = PauliSum({{"IIII": -0.81, "ZIII": 0.17, "XXYY": 0.045j}})
             save_hamiltonian({str(path)!r}, pauli, mapping="parity",
@@ -503,8 +503,8 @@ class TestPyarrowEngineIsolated:
         # pyarrow reads the fastparquet file, then writes its own.
         done = _run_isolated(f"""
             import numpy as np
-            from carcara.core import PauliSum
-            from carcara.core.serialization import (save_hamiltonian,
+            from mandacaru.core import PauliSum
+            from mandacaru.core.serialization import (save_hamiltonian,
                                                     load_hamiltonian)
             record = load_hamiltonian({str(fp_path)!r}, engine="pyarrow")
             assert record.num_particles == (1, 1)
@@ -579,8 +579,8 @@ class TestDriverLoadsHamiltonian:
     def test_loading_bypasses_the_integral_engine(self, h2_cache, monkeypatch):
         """No one- or two-body integral may be computed on the load path."""
         path, _ = h2_cache
-        import carcara.algorithms._hamiltonian_from_atoms as builder
-        from carcara.integrals.engine import IntegralEngine
+        import mandacaru.algorithms._hamiltonian_from_atoms as builder
+        from mandacaru.integrals.engine import IntegralEngine
 
         def fail(*args, **kwargs):                      # pragma: no cover
             raise AssertionError("the integral engine was invoked")

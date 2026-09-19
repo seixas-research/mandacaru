@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_braket_aws.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -29,21 +29,21 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from carcara.algorithms import ADAPTVQE, VQE
-from carcara.backends.hardware import (available_devices, device_arn,
-                                       device_provider, get_device,
-                                       is_aws_device, is_simulator,
-                                       normalize_device, require_runnable,
-                                       requires_shots)
-from carcara.backends.measurement import (energy_from_group_counts,
-                                          is_qubit_wise_commuting, merge_basis,
-                                          pauli_expectation_from_counts,
-                                          qubit_wise_commuting_groups,
-                                          shot_noise_estimate)
-from carcara.backends.providers import build_provider, provider_available
-from carcara.circuits.adapt_ansatz import AdaptAnsatz
-from carcara.circuits.pools import build_pool
-from carcara.core import PauliSum
+from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.backends.hardware import (available_devices, device_arn,
+                                         device_provider, get_device,
+                                         is_aws_device, is_simulator,
+                                         normalize_device, require_runnable,
+                                         requires_shots)
+from mandacaru.backends.measurement import (energy_from_group_counts,
+                                            is_qubit_wise_commuting, merge_basis,
+                                            pauli_expectation_from_counts,
+                                            qubit_wise_commuting_groups,
+                                            shot_noise_estimate)
+from mandacaru.backends.providers import build_provider, provider_available
+from mandacaru.circuits.adapt_ansatz import AdaptAnsatz
+from mandacaru.circuits.pools import build_pool
+from mandacaru.core import PauliSum
 
 braket_only = pytest.mark.skipif(not provider_available("braket"),
                                  reason="amazon-braket-sdk not installed")
@@ -308,7 +308,7 @@ class TestDriverOnBraket:
 
     def test_vqe_energy_at_uses_the_shot_path(self, h2_problem):
         """The whole driver -- not just the provider -- runs on measurements."""
-        from carcara.circuits import UCCSD
+        from mandacaru.circuits import UCCSD
         hamiltonian, n, _occupied, _generators, _ansatz = h2_problem
         num_particles = (n // 4 or 1, n // 4 or 1)
 

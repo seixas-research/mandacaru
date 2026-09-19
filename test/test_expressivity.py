@@ -6,15 +6,15 @@
 import numpy as np
 import pytest
 
-from carcara.algorithms import (ADAPTExpressivityTracker, ADAPTVQE,
-                                ExpressibilityResult, active_space_dimension,
-                                calculate_haar_distribution,
-                                calculate_kl_divergence, compute_expressibility,
-                                estimate_effective_dimension,
-                                sample_pqc_fidelities, track_adapt_expressivity)
-from carcara.circuits import UCCSD
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid
+from mandacaru.algorithms import (ADAPTExpressivityTracker, ADAPTVQE,
+                                  ExpressibilityResult, active_space_dimension,
+                                  calculate_haar_distribution,
+                                  calculate_kl_divergence, compute_expressibility,
+                                  estimate_effective_dimension,
+                                  sample_pqc_fidelities, track_adapt_expressivity)
+from mandacaru.circuits import UCCSD
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.integrals import Grid
 
 
 @pytest.fixture(scope="module")
@@ -116,7 +116,7 @@ class TestSamplingAndDriver:
 
     def test_zero_parameter_ansatz_is_constant(self):
         # An ADAPT ansatz with no operators yields the fixed reference: F == 1.
-        from carcara.circuits import AdaptAnsatz
+        from mandacaru.circuits import AdaptAnsatz
         ansatz = AdaptAnsatz(4, occupied=(0, 2))
         F = sample_pqc_fidelities(ansatz, num_samples=50,
                                   rng=np.random.default_rng(4))

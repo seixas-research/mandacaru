@@ -1,0 +1,135 @@
+/* file: mandacaru_integrals.h
+ *
+ * This code is part of Mandacaru.
+ * MIT License
+ * Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
+ *
+ * High-performance, basis-agnostic real-space integral backend.
+ *
+ * The kernels operate on *sampled function values* on a uniform cubic grid,
+ * never on analytic orbital forms.  This is what makes them agnostic to the
+ * basis: hydrogen-like orbitals, Wannier functions or any localized function
+ * are all just complex arrays here.  Two consumption paths are supported:
+ *
+ *   1. Pre-sampled arrays  (psi[i * ngrid + g])  -- the default, zero-copy from
+ *      NumPy complex128 == C99 double _Complex.
+ *   2. On-the-fly evaluation through a function pointer (mandacaru_basis_fn),
+ *      for grids too large to store M full fields in memory.
+ *
+ * Parallelism: OpenMP over matrix-element / grid indices (shared read-only
+ * grids, no communication).  See the .c file for the schedule rationale.
+ */
+#ifndef MANDACARU_INTEGRALS_H
+#define MANDACARU_INTEGRALS_H
+
+#include <complex.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Number of OpenMP threads the kernels run with (1 when built without OpenMP).
+ * Lets the Python layer report the core count used by the integral backend. */
+int mandacaru_num_threads(void);
+
+/* Signature for on-the-fly basis evaluation: fills `out` (length ngrid) with
+ * the value of basis function `i` at the supplied grid coordinates.  `ctx` is
+ * an opaque user pointer (e.g. a struct of quantum numbers / Wannier tables). */
+typedef void (*mandacaru_basis_fn)(int i,
+                                 const double *x, const double *y,
+                                 const double *z, int ngrid,
+                                 double _Complex *out, void *ctx);
+
+/* One-body matrices for M sampled functions on a cubic grid of npts^3 nodes.
+ *
+ *   T[a*M + b] = <psi_a| -1/2 nabla^2 |psi_b>   (7-point FD Laplacian)
+ *   V[a*M + b] = <psi_a|      Vext     |psi_b>
+ *
+ * psi    : (M * ngrid) complex, row-major (function-major).
+ * Vext   : (ngrid)     real, external potential sampled on the grid.
+ * dx     : grid spacing (dV = dx^3).
+ * out_T, out_V : (M * M) complex, caller-allocated.
+ */
+void mandacaru_one_body(const double _Complex *psi,
+                      const double *Vext,
+                      int M, int npts, double dx,
+                      double _Complex *out_T,
+                      double _Complex *out_V);
+
+/* One-body matrices on a *general* grid: per-axis node counts (nx, ny, nz) and
+ * an arbitrary (anisotropic and/or non-orthogonal) geometry.  The grid geometry
+ * enters only through
+ *
+ *   ginv : (9) row-major 3x3 inverse metric (step^T step)^{-1}, which carries
+ *          the 1/length^2 units of the Laplacian (diag(1/dx^2, 1/dy^2, 1/dz^2)
+ *          for an orthorhombic grid, with non-zero off-diagonals when skewed);
+ *   dV   : voxel volume |det(step)|.
+ *
+ * This is the general counterpart of mandacaru_one_body (which is the fast path
+ * for a cubic grid) and supports varying resolution along each axis and
+ * non-orthogonal unit cells.  out_T, out_V : (M * M) complex, caller-allocated.
+ */
+void mandacaru_one_body_general(const double _Complex *psi,
+                              const double *Vext,
+                              int M, int nx, int ny, int nz,
+                              const double *ginv, double dV,
+                              double _Complex *out_T,
+                              double _Complex *out_V);
+
+/* Two-body electron-repulsion tensor (physicists' notation <ab|cd>):
+ *
+ *   eri[((a*M + b)*M + c)*M + d] =
+ *       \int\int conj(psi_a(1)) psi_c(1) (1/r12) conj(psi_b(2)) psi_d(2) dV1 dV2
+ *
+ * i.e. electron 1 carries the index pair (a, c) and electron 2 the pair (b, d).
+ *
+ * Computed as: for each density pair rho_bd(2) build its Coulomb potential
+ * Phi_bd(1) on the grid (the O(ngrid^2) hotspot, OpenMP-parallel), then
+ * contract against every rho_ac(1).  `softening` regularizes r12 -> 0 between
+ * *distinct* nodes; the r12 = 0 node (a node with itself) takes `g_self`, the
+ * Coulomb value averaged over the node's own voxel, which is what the FFT
+ * path uses -- so both methods integrate the same operator.
+ *
+ * xg, yg, zg : (ngrid) node coordinates.  dV = voxel volume.
+ * g_self     : Green's function at r12 = 0 (int_cell d^3r/|r| / dV).
+ * out_eri    : (M^4) complex, caller-allocated.
+ */
+void mandacaru_two_body_g0(const double _Complex *psi,
+                         const double *xg, const double *yg, const double *zg,
+                         int M, int ngrid, double dV, double softening,
+                         double g_self, double _Complex *out_eri);
+
+/* Kleinman-Bylander projector overlaps.
+ *
+ * The nonlocal part of a norm-conserving pseudopotential is a sum of rank-one
+ * terms,  V_NL = sum_p |chi_p> E_p <chi_p|,  so the only grid work it needs is
+ * the overlap of every basis function with every projector:
+ *
+ *     out_P[a * P + p] = dV * sum_g conj(psi_a[g]) * chi_p[g].
+ *
+ * The nonlocal matrix is then the small outer product P diag(E) P^dagger,
+ * assembled by the caller.  This is O(M * P * ngrid) rather than the
+ * O(M^2 * ngrid) a semilocal form would cost -- the whole point of the
+ * Kleinman-Bylander transformation.
+ *
+ * psi   : (M * ngrid) complex basis samples.
+ * chi   : (P * ngrid) complex projector samples.
+ * out_P : (M * P) complex, caller-allocated.
+ */
+void mandacaru_kb_project(const double _Complex *psi,
+                        const double _Complex *chi,
+                        int M, int P, long ngrid, double dV,
+                        double _Complex *out_P);
+
+/* Optional helper: sample all M functions via a callback into `psi`
+ * (M * ngrid).  Lets callers stream a basis (e.g. Wannier) into the same
+ * kernels without materializing it in Python. */
+void mandacaru_sample_basis(mandacaru_basis_fn fn, int M,
+                          const double *xg, const double *yg, const double *zg,
+                          int ngrid, double _Complex *psi, void *ctx);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MANDACARU_INTEGRALS_H */

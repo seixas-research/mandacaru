@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/17_hamiltonian_cache.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -9,7 +9,7 @@
 """Saving and reloading the qubit Hamiltonian: Parquet and JSON.
 
 Building a molecular Hamiltonian -- the real-space one- and two-body integrals
-plus the fermion-to-qubit mapping -- is the most expensive stage of a Carcará
+plus the fermion-to-qubit mapping -- is the most expensive stage of a Mandacaru
 run, and it does not depend on the *algorithm* being run afterwards.  So it is
 worth caching: build once, then sweep pools, optimizers, ansätze or temperature
 schedules for free.
@@ -19,7 +19,7 @@ This example builds LiH once in each format, reloads it, and checks that
 * the reloaded Hamiltonian is bit-for-bit the operator that was saved;
 * a calculator reconstructed from the file reproduces the original energy
   **without a geometry** -- no integrals, no mapping;
-* the two formats are interchangeable, and :func:`~carcara.core.detect_format`
+* the two formats are interchangeable, and :func:`~mandacaru.core.detect_format`
   identifies either one automatically (from the extension, or failing that from
   the file's own leading bytes).
 
@@ -33,7 +33,7 @@ Which format?
     Plain text: readable, diffable and dependency-free.  Use it when you want to
     inspect the operator by eye, or to avoid a Parquet engine entirely -- on some
     platforms ``pyarrow``'s writer is unstable in a process that has also run
-    Qiskit's transpiler (see :mod:`carcara.core.serialization`).
+    Qiskit's transpiler (see :mod:`mandacaru.core.serialization`).
 """
 
 from __future__ import annotations
@@ -44,9 +44,9 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.units import HARTREE_TO_EV
-from carcara.algorithms import Carcara
-from carcara.core import detect_format, load_hamiltonian
+from mandacaru.units import HARTREE_TO_EV
+from mandacaru.algorithms import Mandacaru
+from mandacaru.core import detect_format, load_hamiltonian
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -74,14 +74,14 @@ for fmt in ("parquet", "json"):
 
     # -- build (integrals + mapping) and save ---------------------------- #
     atoms = lih()
-    atoms.calc = Carcara(method="adapt-vqe",
-                         pool=POOL,
-                         basis={"name": "FAO"},
-                         h=0.25,
-                         profile=False,
-                         max_iterations=MAX_ITERATIONS,
-                         save_hamiltonian=path,
-                         hamiltonian_format=fmt)
+    atoms.calc = Mandacaru(method="adapt-vqe",
+                           pool=POOL,
+                           basis={"name": "FAO"},
+                           h=0.25,
+                           profile=False,
+                           max_iterations=MAX_ITERATIONS,
+                           save_hamiltonian=path,
+                           hamiltonian_format=fmt)
     t0 = time.perf_counter()
     atoms.get_total_energy()
     build_seconds = time.perf_counter() - t0
@@ -90,11 +90,11 @@ for fmt in ("parquet", "json"):
 
     # -- reload, with no geometry at all --------------------------------- #
     t0 = time.perf_counter()
-    calc = Carcara(method="adapt-vqe",
-                   pool=POOL,
-                   load_hamiltonian=path,
-                   profile=False,
-                   max_iterations=MAX_ITERATIONS)
+    calc = Mandacaru(method="adapt-vqe",
+                     pool=POOL,
+                     load_hamiltonian=path,
+                     profile=False,
+                     max_iterations=MAX_ITERATIONS)
     reloaded = calc.run()
     load_seconds = time.perf_counter() - t0
 
@@ -140,7 +140,7 @@ print(f"\nParquet vs JSON: identical term set, max coefficient difference "
 
 # Detection also works when the extension says nothing at all.
 opaque = os.path.join(DATA, "lih_cache.bin")
-from carcara.core import save_hamiltonian                            # noqa: E402
+from mandacaru.core import save_hamiltonian                            # noqa: E402
 
 save_hamiltonian(opaque, parquet.hamiltonian, mapping=parquet.mapping,
                  num_particles=parquet.num_particles,

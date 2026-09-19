@@ -8,10 +8,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "_ext"))
 
-project = "Carcará"
+project = "Mandacaru"
 author = "Leandro Seixas Rocha"
 copyright = "2026, Leandro Seixas Rocha"
-release = runpy.run_path(str(ROOT / "src/carcara/version.py"))["__version__"]
+release = runpy.run_path(str(ROOT / "src/mandacaru/version.py"))["__version__"]
 language = "en_GB"
 
 extensions = [

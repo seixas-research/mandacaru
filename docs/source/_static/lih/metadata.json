@@ -1,6 +1,6 @@
 {
   "description": "Calculated LiH total energies; numerical teaching example",
-  "carcara_version": "26.9.19",
+  "mandacaru_version": "26.9.19",
   "python_version": "3.14.6",
   "numpy_version": "2.4.6",
   "scipy_version": "1.18.0",

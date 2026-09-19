@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/experimental/VASQE_H2.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -16,7 +16,7 @@ of the pool gradients at a selection temperature ``tau``:
 At low ``tau`` this concentrates on the largest-gradient operator, so VASQE
 reduces to ADAPT-VQE; a high initial ``tau`` (optionally **annealed** down)
 explores operators a greedy rule would skip.  The solver runs through the ASE
-interface of :class:`~carcara.algorithms.Carcara`
+interface of :class:`~mandacaru.algorithms.Mandacaru`
 (``method="vasqe"``), so H2 is defined once and the calculator is attached to
 it; the run result is on ``atoms.calc.result``.
 """
@@ -26,9 +26,9 @@ from __future__ import annotations
 import numpy as np
 from ase import Atoms
 
-import carcara.experimental  # noqa: F401  (registers method="vasqe")
-from carcara.algorithms import Carcara
-from carcara.units import from_hartree
+import mandacaru.experimental  # noqa: F401  (registers method="vasqe")
+from mandacaru.algorithms import Mandacaru
+from mandacaru.units import from_hartree
 
 
 atoms = Atoms("H2",
@@ -38,15 +38,15 @@ atoms = Atoms("H2",
 
 
 def run(label, **vasqe_kwargs):
-    atoms.calc = Carcara(method="vasqe",
-                         basis="FAO",
-                         h=0.20,
-                         mapping="jordan_wigner",
-                         optimizer="L-BFGS-B",
-                         profile=False,
-                         max_iterations=12,
-                         gradient_tolerance=1e-5,
-                         **vasqe_kwargs)
+    atoms.calc = Mandacaru(method="vasqe",
+                           basis="FAO",
+                           h=0.20,
+                           mapping="jordan_wigner",
+                           optimizer="L-BFGS-B",
+                           profile=False,
+                           max_iterations=12,
+                           gradient_tolerance=1e-5,
+                           **vasqe_kwargs)
     energy_ev = atoms.get_total_energy()
     res = atoms.calc.result
     taus = ", ".join(f"{t:.3g}" for t in res.temperatures)
@@ -56,13 +56,13 @@ def run(label, **vasqe_kwargs):
 
 
 # Exact FCI reference (lowest eigenvalue of the qubit Hamiltonian).
-atoms.calc = Carcara(method="vasqe",
-                     basis="FAO",
-                     h=0.20,
-                     temperature=1e-3,
-                     profile=False,
-                     max_iterations=1,
-                     gradient_tolerance=1e-5)
+atoms.calc = Mandacaru(method="vasqe",
+                       basis="FAO",
+                       h=0.20,
+                       temperature=1e-3,
+                       profile=False,
+                       max_iterations=1,
+                       gradient_tolerance=1e-5)
 atoms.get_total_energy()
 h = atoms.calc.hamiltonian.to_matrix()
 fci_ev = float(from_hartree(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min(), "eV"))

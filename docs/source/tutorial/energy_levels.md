@@ -2,7 +2,7 @@
 
 Ground-state VQE finds the lowest eigenvalue of the molecular Hamiltonian. To get
 the **energy levels** — the ground state *and* excited states —
-{class}`~carcara.algorithms.Carcara` exposes an `energy_levels` method
+{class}`~mandacaru.algorithms.Mandacaru` exposes an `energy_levels` method
 built on **variational quantum deflation** (VQD), available for every `method=`
 (in particular `"vqe"` and `"adapt-vqe"`).
 
@@ -30,13 +30,13 @@ Attach the calculator with `method="vqe"`, evaluate the ground-state energy once
 ```python
 import numpy as np
 from ase import Atoms
-from carcara.algorithms import Carcara
+from mandacaru.algorithms import Mandacaru
 
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
-atoms.calc = Carcara(method="vqe",
-                     basis="FAO",
-                     h=0.20)
+atoms.calc = Mandacaru(method="vqe",
+                       basis="FAO",
+                       h=0.20)
 atoms.get_potential_energy()                 # configures the solver
 
 levels = atoms.calc.energy_levels(num_states=2, restarts=4)
@@ -45,8 +45,8 @@ print(levels.excitation_energies)            # [0, E1 - E0, ...] (eV)
 print(levels.in_units("Ha"))                 # the same levels in Hartree
 ```
 
-`energy_levels` returns an {class}`~carcara.algorithms.EnergyLevels` with ascending
-energies (eV, like every Carcará result; Hartree only with `atomic_units=True`),
+`energy_levels` returns an {class}`~mandacaru.algorithms.EnergyLevels` with ascending
+energies (eV, like every Mandacaru result; Hartree only with `atomic_units=True`),
 the optimal state vectors, and convenience views: `ground_state_energy`,
 `excitation_energies`, `gaps`, and `in_units("Ha")`.
 
@@ -65,10 +65,10 @@ re-optimisation carry the penalty term, so the adaptive ansatz builds itself
 towards the next excited state:
 
 ```python
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool="fermionic",
-                     basis="FAO",
-                     h=0.20)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool="fermionic",
+                       basis="FAO",
+                       h=0.20)
 atoms.get_potential_energy()
 
 levels = atoms.calc.energy_levels(num_states=2)

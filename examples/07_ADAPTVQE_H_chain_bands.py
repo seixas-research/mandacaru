@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/07_ADAPTVQE_H_chain_bands.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -13,7 +13,7 @@ A **linear chain of hydrogen atoms 1.0 Angstrom apart**, periodic along *x* with
 the **one-atom primitive cell** of the chain (one H per cell -> one 1s band); basis
 **FAO**, fermion-to-qubit map **Jordan-Wigner**.
 
-The calculation uses the periodic :class:`~carcara.algorithms.BlochCalculator`,
+The calculation uses the periodic :class:`~mandacaru.algorithms.BlochCalculator`,
 whose ``method`` argument selects the variational eigensolver:
 
 * **Band structure** -- ``bloch.bands(...)`` solves the single-particle generalized
@@ -43,7 +43,7 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import BlochCalculator
+from mandacaru.algorithms import BlochCalculator
 
 SPACING = 1.0            # H-H distance = lattice constant a (Angstrom)
 VACUUM = 10.0            # y/z vacuum gap (Angstrom)

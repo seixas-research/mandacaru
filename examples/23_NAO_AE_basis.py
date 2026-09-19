@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/23_NAO_AE_basis.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -12,11 +12,11 @@ The ``NAO-AE`` family builds every function from the atom itself: the
 self-consistent LDA atom's occupied shells -- core included -- re-solved under
 a smooth exponential-wall confinement, plus hydrogen-like *tiers* whose
 effective charges are derived from the atom's valence radius rather than read
-from a table (see :mod:`carcara.basis.nao_ae`).
+from a table (see :mod:`mandacaru.basis.nao_ae`).
 
 .. code-block:: python
 
-    atoms.calc = Carcara(basis={"name": "NAO-AE", "tier": 1})
+    atoms.calc = Mandacaru(basis={"name": "NAO-AE", "tier": 1})
 
 What this script shows
 ----------------------
@@ -36,12 +36,12 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import estimate_qubits
-from carcara.basis import BasisSet
-from carcara.basis.nao_ae import confinement_potential
-from carcara.core import MolecularIntegrals
-from carcara.integrals import Grid
-from carcara.units import BOHR_TO_ANGSTROM, from_hartree, to_bohr
+from mandacaru.algorithms import estimate_qubits
+from mandacaru.basis import BasisSet
+from mandacaru.basis.nao_ae import confinement_potential
+from mandacaru.core import MolecularIntegrals
+from mandacaru.integrals import Grid
+from mandacaru.units import BOHR_TO_ANGSTROM, from_hartree, to_bohr
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)

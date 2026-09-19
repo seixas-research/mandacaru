@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/pes_utils.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -40,10 +40,10 @@ from math import ceil, floor
 import numpy as np
 from ase.data import atomic_numbers
 
-from carcara.algorithms import RHF, UHF
-from carcara.core import MolecularIntegrals
-from carcara.integrals import Grid
-from carcara.units import from_hartree
+from mandacaru.algorithms import RHF, UHF
+from mandacaru.core import MolecularIntegrals
+from mandacaru.integrals import Grid
+from mandacaru.units import from_hartree
 
 
 @dataclass
@@ -54,7 +54,7 @@ class GridSpec:
     spacing: float           # grid spacing h (Angstrom)
 
     def build(self) -> Grid:
-        """The origin-centered :class:`~carcara.integrals.Grid` of this spec."""
+        """The origin-centered :class:`~mandacaru.integrals.Grid` of this spec."""
         return Grid(center=[0.0, 0.0, 0.0], box_size=self.box_size,
                     h=self.spacing)
 

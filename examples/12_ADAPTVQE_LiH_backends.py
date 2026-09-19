@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/12_ADAPTVQE_LiH_backends.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -16,10 +16,10 @@ by far the most expensive stage, and completely independent of which SDK runs th
 circuits.  So it is built **once** with ``save_hamiltonian=...`` and every backend
 run afterwards uses ``load_hamiltonian=...``, which skips the integrals and the
 fermion-to-qubit transformation entirely.  Both modes go through
-:class:`~carcara.algorithms.Carcara`: the build is the ASE-calculator
-path (``atoms.calc = Carcara(method="adapt-vqe", ...)``), the cached
+:class:`~mandacaru.algorithms.Mandacaru`: the build is the ASE-calculator
+path (``atoms.calc = Mandacaru(method="adapt-vqe", ...)``), the cached
 runs use its **direct mode**
-(``Carcara(method="adapt-vqe", load_hamiltonian=...).run()``).
+(``Mandacaru(method="adapt-vqe", load_hamiltonian=...).run()``).
 
 **2. Multi-backend circuit execution.**  With ``execute_circuits=True`` the ansatz
 is no longer evaluated by the internal NumPy state-vector backend: each
@@ -49,9 +49,9 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.backends.providers import BACKEND_PROVIDERS, provider_available
-from carcara.units import HARTREE_TO_EV, from_hartree
+from mandacaru.algorithms import Mandacaru
+from mandacaru.backends.providers import BACKEND_PROVIDERS, provider_available
+from mandacaru.units import HARTREE_TO_EV, from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -73,13 +73,13 @@ atoms = Atoms("LiH",
               pbc=True)
 
 t0 = time.perf_counter()
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool=POOL,
-                     basis={"name": "FAO"},
-                     h=0.25,
-                     mapping="jordan_wigner",
-                     max_iterations=MAX_ITERATIONS,
-                     save_hamiltonian=HAMILTONIAN_FILE)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool=POOL,
+                       basis={"name": "FAO"},
+                       h=0.25,
+                       mapping="jordan_wigner",
+                       max_iterations=MAX_ITERATIONS,
+                       save_hamiltonian=HAMILTONIAN_FILE)
 atoms.get_total_energy()
 build_seconds = time.perf_counter() - t0
 
@@ -111,10 +111,10 @@ print("-" * len(header))
 
 # The internal NumPy state-vector backend, for comparison.
 t0 = time.perf_counter()
-matrix_run = Carcara(method="adapt-vqe",
-                     pool=POOL,
-                     load_hamiltonian=HAMILTONIAN_FILE,
-                     max_iterations=MAX_ITERATIONS).run()
+matrix_run = Mandacaru(method="adapt-vqe",
+                       pool=POOL,
+                       load_hamiltonian=HAMILTONIAN_FILE,
+                       max_iterations=MAX_ITERATIONS).run()
 print(f"{'(matrix)':<10}{matrix_run.optimal_energy:>16.6f}"
       f"{matrix_run.optimal_energy - exact_ev:>13.2e}"
       f"{matrix_run.num_operators:>6}{matrix_run.metrics.cnot_count:>7}"
@@ -127,12 +127,12 @@ for provider in BACKEND_PROVIDERS:
         continue
 
     t0 = time.perf_counter()
-    driver = Carcara(method="adapt-vqe",
-                     pool=POOL,
-                     load_hamiltonian=HAMILTONIAN_FILE,   # no integrals, no map
-                     backend_provider=provider,
-                     execute_circuits=True,   # really run circuits
-                     max_iterations=MAX_ITERATIONS)
+    driver = Mandacaru(method="adapt-vqe",
+                       pool=POOL,
+                       load_hamiltonian=HAMILTONIAN_FILE,   # no integrals, no map
+                       backend_provider=provider,
+                       execute_circuits=True,   # really run circuits
+                       max_iterations=MAX_ITERATIONS)
     result = driver.run()
     elapsed = time.perf_counter() - t0
     results[provider] = result

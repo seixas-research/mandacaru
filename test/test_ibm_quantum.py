@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_ibm_quantum.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -20,15 +20,15 @@ import textwrap
 import numpy as np
 import pytest
 
-from carcara.algorithms import ADAPTVQE, VQE
-from carcara.algorithms.base import measure_energies
-from carcara.backends.hardware import (available_devices, device_provider,
-                                       get_device, is_fake_device,
-                                       is_ibm_device, is_simulator,
-                                       normalize_device, require_runnable,
-                                       requires_shots)
-from carcara.backends.providers import QiskitProvider, build_provider
-from carcara.units import HARTREE_TO_EV
+from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.algorithms.base import measure_energies
+from mandacaru.backends.hardware import (available_devices, device_provider,
+                                         get_device, is_fake_device,
+                                         is_ibm_device, is_simulator,
+                                         normalize_device, require_runnable,
+                                         requires_shots)
+from mandacaru.backends.providers import QiskitProvider, build_provider
+from mandacaru.units import HARTREE_TO_EV
 
 
 def _h2():
@@ -57,9 +57,9 @@ def _isolated(code: str) -> str:
 _H2_RUN = """
     import warnings; warnings.simplefilter("ignore")
     from ase import Atoms
-    from carcara.algorithms import ADAPTVQE, VQE
-    from carcara.backends.providers import QiskitProvider
-    from carcara.units import HARTREE_TO_EV
+    from mandacaru.algorithms import ADAPTVQE, VQE
+    from mandacaru.backends.providers import QiskitProvider
+    from mandacaru.units import HARTREE_TO_EV
     def _h2():
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
         atoms.center(vacuum=3.0)
@@ -197,7 +197,7 @@ class TestEstimatorEnergies:
     provider = QiskitProvider(device="fake_manila", shots=1024,
                               physical_qubits=[3, 4, 1, 2])
     isa, observable = provider.pub(*calc.ansatz_problem())
-    # Carcará qubit k -> physical_qubits[k]; wire n-1-k carries qubit k.
+    # Mandacaru qubit k -> physical_qubits[k]; wire n-1-k carries qubit k.
     # (The *initial* layout is what the pin fixes; routing may permute the
     # final one, which apply_layout accounts for.)
     layout = isa.layout.initial_index_layout(filter_ancillas=True)
@@ -210,7 +210,7 @@ class TestEstimatorEnergies:
         with pytest.raises(ValueError, match="entries"):
             QiskitProvider(device="fake_manila", shots=1,
                            physical_qubits=[0, 1]).pub(
-                4, [0, 2], [], [], __import__("carcara.core", fromlist=["PauliSum"]).PauliSum({"ZIII": 1.0}))
+                4, [0, 2], [], [], __import__("mandacaru.core", fromlist=["PauliSum"]).PauliSum({"ZIII": 1.0}))
 
     def test_unknown_fake_backend(self):
         with pytest.raises(ValueError, match="fake backend"):

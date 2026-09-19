@@ -20,7 +20,7 @@ g_i &={\left.\frac{\partial}{\partial\theta}
 \end{aligned}
 ```
 
-The commutator is Hermitian, so this derivative is real. Carcará's local
+The commutator is Hermitian, so this derivative is real. Mandacaru's local
 `gradient="analytic"` option evaluates it directly from the state vector.
 
 ## Grow and optimise
@@ -76,7 +76,7 @@ non-zero.
 
 ## Pool choice and conserved quantities
 
-Carcará provides `fermionic`, `qubit`, `qeb` and `ceo` pools. Their constructions
+Mandacaru provides `fermionic`, `qubit`, `qeb` and `ceo` pools. Their constructions
 and implementation limits are summarised in the
 [LiH pool comparison](../tutorial/adapt_vqe_lih.md).
 
@@ -86,6 +86,6 @@ ansatz can therefore leave the intended particle-number sector. Compare the
 final state's conserved quantities when using such a pool. A low energy in a
 different sector is not a better solution of the original molecular problem.
 
-In Carcará's Jordan–Wigner construction, `ceo` reduces to `qeb`. Other mappings
+In Mandacaru's Jordan–Wigner construction, `ceo` reduces to `qeb`. Other mappings
 can produce larger groups, but the published CEO gate savings also depend on
 specialised circuit synthesis that is not implemented here.

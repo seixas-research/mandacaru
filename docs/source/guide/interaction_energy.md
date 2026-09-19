@@ -8,14 +8,14 @@ E_\text{int} = E(\text{AB}) - E(\text{A}) - E(\text{B}),
 
 and on a real-space grid that difference is only meaningful if all three are
 evaluated on **the same grid, with every atom at the same position relative
-to the grid nodes**. `Carcara` normally re-centres its box on the geometry it
+to the grid nodes**. `Mandacaru` normally re-centres its box on the geometry it
 is given, so a fragment computed on its own is sampled differently than it is
 inside the complex. For a soft hydrogen that costs a few meV; for an atom
 with a sharp core it costs electronvolts — a sodium ion at a 0.3 Å spacing
 moves by hundreds of eV — and the "interaction energy" then measures the
 grid, not the chemistry.
 
-{func}`~carcara.algorithms.interaction.interaction_energy` builds the grid
+{func}`~mandacaru.algorithms.interaction.interaction_energy` builds the grid
 once, from the complex, and evaluates the complex and each fragment on it.
 Each fragment is the complex with the other atoms deleted: same coordinates,
 same box, same spacing, same Coulomb softening.
@@ -23,7 +23,7 @@ same box, same spacing, same Coulomb softening.
 ```python
 from ase import Atoms
 from ase.build import molecule
-from carcara.algorithms import Carcara, interaction_energy
+from mandacaru.algorithms import Mandacaru, interaction_energy
 
 water = molecule("H2O")
 complex_ = water + Atoms("Na", positions=[[0, 0, 2.3]])
@@ -33,7 +33,7 @@ result = interaction_energy(complex_, fragments=[[0, 1, 2], [3]],
                             charges=[0, 1], charge=1,
                             method="adapt-vqe", basis="FAO",
                             frozen_core=True, h=0.25)
-result.energy              # eV (every Carcará result is eV)
+result.energy              # eV (every Mandacaru result is eV)
 result.in_units("Ha")      # the atomic-unit view
 result.fragment_energies   # one per fragment, eV
 result.results             # the per-fragment run results
@@ -51,10 +51,10 @@ The same helper is available on a configured calculator, reusing its method,
 basis and options:
 
 ```python
-calc = Carcara(method="adapt-vqe",
-               basis="FAO",
-               frozen_core=True,
-               h=0.25)
+calc = Mandacaru(method="adapt-vqe",
+                 basis="FAO",
+                 frozen_core=True,
+                 h=0.25)
 calc.interaction_energy(complex_, [[0, 1, 2], [3]], charges=[0, 1], charge=1)
 ```
 

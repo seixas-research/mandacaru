@@ -3,7 +3,7 @@
 The {doc}`energy_levels` tutorial found excited states **one at a time** with
 deflation. **Subspace-search VQE** (SSVQE) instead finds the ground state and the
 first few excited states **all at once**, in a single optimisation — select it on
-{class}`~carcara.algorithms.Carcara` with `method="subspace-vqe"`
+{class}`~mandacaru.algorithms.Mandacaru` with `method="subspace-vqe"`
 (fixed ansatz) or `method="subspace-adapt-vqe"` (adaptively grown ansatz).
 
 ## The idea
@@ -39,16 +39,16 @@ spectrum off `result`:
 ```python
 import numpy as np
 from ase import Atoms
-from carcara.algorithms import Carcara
+from mandacaru.algorithms import Mandacaru
 
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
 
-atoms.calc = Carcara(method="subspace-vqe",
-                     basis="FAO",
-                     h=0.20,
-                     num_states=2,
-                     weights=[2.0, 1.0])
+atoms.calc = Mandacaru(method="subspace-vqe",
+                       basis="FAO",
+                       h=0.20,
+                       num_states=2,
+                       weights=[2.0, 1.0])
 atoms.get_potential_energy()               # ASE energy = ground state (eV)
 
 result = atoms.calc.result
@@ -60,7 +60,7 @@ print(result.levels)                        # an EnergyLevels view
 
 `num_states` sets how many levels to compute; `weights` are the (strictly
 decreasing, positive) SSVQE weights, defaulting to $(k, k-1, \dots, 1)$. The
-result exposes `energies` (ascending, eV -- like every Carcará result),
+result exposes `energies` (ascending, eV -- like every Mandacaru result),
 `optimal_energy` (the ground state), the orthonormal `states`, and
 `in_units("Ha")` for the atomic-unit view.
 
@@ -75,13 +75,13 @@ inner re-optimisation minimises the weighted energy. It records how many operato
 were grown.
 
 ```python
-atoms.calc = Carcara(method="subspace-adapt-vqe",
-                     basis="FAO",
-                     h=0.20,
-                     pool="fermionic",
-                     num_states=2,
-                     gradient_tolerance=1e-4,
-                     max_iterations=20)
+atoms.calc = Mandacaru(method="subspace-adapt-vqe",
+                       basis="FAO",
+                       h=0.20,
+                       pool="fermionic",
+                       num_states=2,
+                       gradient_tolerance=1e-4,
+                       max_iterations=20)
 atoms.get_potential_energy()
 
 result = atoms.calc.result

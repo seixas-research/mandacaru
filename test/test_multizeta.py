@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_multizeta.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -14,15 +14,15 @@ import numpy as np
 import pytest
 from ase.data import atomic_numbers
 
-from carcara.basis import BasisSet
-from carcara.basis._config import ground_state_config, valence_subshells
-from carcara.basis.multizeta import (DEFAULT_SPLIT_NORM, ZETA_NAMES,
-                                     RadialTable, TabulatedOrbital,
-                                     resolve_zeta, split_radius,
-                                     split_valence_tail, zeta_tables)
-from carcara.basis.nao import solve_confined_radial
-from carcara.core import MolecularIntegrals
-from carcara.integrals import Grid
+from mandacaru.basis import BasisSet
+from mandacaru.basis._config import ground_state_config, valence_subshells
+from mandacaru.basis.multizeta import (DEFAULT_SPLIT_NORM, ZETA_NAMES,
+                                       RadialTable, TabulatedOrbital,
+                                       resolve_zeta, split_radius,
+                                       split_valence_tail, zeta_tables)
+from mandacaru.basis.nao import solve_confined_radial
+from mandacaru.core import MolecularIntegrals
+from mandacaru.integrals import Grid
 
 
 @pytest.fixture(scope="module")
@@ -173,13 +173,13 @@ class TestBasisConstruction:
 
     def test_single_zeta_is_unchanged_by_the_new_machinery(self):
         """SZ must still take the original NumericalAtomicOrbital path."""
-        from carcara.basis.nao import NumericalAtomicOrbital
+        from mandacaru.basis.nao import NumericalAtomicOrbital
         functions = BasisSet.build("NAO", size="SZ").atom("O")
         assert all(isinstance(f, NumericalAtomicOrbital) for f in functions)
 
     def test_default_size_is_dzp(self):
         """DZP is the default: 8 (double-zeta s+p) + 5 (d polarization)."""
-        from carcara.basis.multizeta import DEFAULT_NAO_SIZE
+        from mandacaru.basis.multizeta import DEFAULT_NAO_SIZE
         assert DEFAULT_NAO_SIZE == "DZP"
         assert len(BasisSet.build("NAO").atom("O")) == 13
         assert len(BasisSet.build("NAO").atom("O")) == \

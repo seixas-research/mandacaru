@@ -1,6 +1,6 @@
 # Wavefunction checkpoints and quantum phase estimation
 
-Every state Carcará prepares has one shape: a reference determinant followed
+Every state Mandacaru prepares has one shape: a reference determinant followed
 by an ordered product of exponentials,
 
 $$
@@ -11,7 +11,7 @@ whether ADAPT-VQE grew the generators $A_k$ one at a time or UCCSD fixed them
 up front.  A **wavefunction checkpoint** is that description written to disk —
 the register, the reference, the generators as Pauli sums, the angles, the
 qubit Hamiltonian and the solver's progress — in a JSON file that needs no
-Carcará object to be read back.  It serves two purposes: **resuming** a run
+Mandacaru object to be read back.  It serves two purposes: **resuming** a run
 that was interrupted, failed or ran out of iterations, and **handing the
 state to another algorithm**, here quantum phase estimation.
 
@@ -19,15 +19,15 @@ state to another algorithm**, here quantum phase estimation.
 
 ```python
 from ase import Atoms
-from carcara import Carcara
+from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
 atoms.center()
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis="FAO",
-                     h=0.25,
-                     checkpoint="examples/data/h2_wavefunction.json",
-                     checkpoint_every=1)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="FAO",
+                       h=0.25,
+                       checkpoint="examples/data/h2_wavefunction.json",
+                       checkpoint_every=1)
 atoms.get_potential_energy()
 ```
 
@@ -44,12 +44,12 @@ The record is also kept on the driver as `calc.solver.checkpoint` (or
 ## Resuming
 
 ```python
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis="FAO",
-                     h=0.25,
-                     resume="examples/data/h2_wavefunction.json",
-                     checkpoint="examples/data/h2_wavefunction.json",
-                     max_iterations=40)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="FAO",
+                       h=0.25,
+                       resume="examples/data/h2_wavefunction.json",
+                       checkpoint="examples/data/h2_wavefunction.json",
+                       max_iterations=40)
 ```
 
 ADAPT-VQE rebuilds the grown ansatz from the file — each stored generator is
@@ -69,7 +69,7 @@ warm-starts from the previous one.
 ## The file as a standalone object
 
 ```python
-from carcara.core import load_checkpoint
+from mandacaru.core import load_checkpoint
 
 ck = load_checkpoint("examples/data/h2_wavefunction.json")
 print(ck.summary())
@@ -95,7 +95,7 @@ turns the *variational* energy into a reading of the *exact* eigenvalue with a
 known resolution.
 
 ```python
-from carcara.algorithms import QuantumPhaseEstimation
+from mandacaru.algorithms import QuantumPhaseEstimation
 
 qpe = QuantumPhaseEstimation(n_evaluation_qubits=10)
 result = qpe.run("examples/data/h2_wavefunction.json")
@@ -123,7 +123,7 @@ per amplitude, about three of them in flight.  Before anything is allocated
 the run sizes it and compares with the memory actually available:
 
 ```python
-from carcara.algorithms import qpe_memory_estimate
+from mandacaru.algorithms import qpe_memory_estimate
 
 print(qpe_memory_estimate(n_system=24, n_evaluation=16).summary())
 # QPE statevector: 24 system + 16 evaluation qubits -> 2^40 amplitudes

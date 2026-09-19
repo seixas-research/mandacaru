@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_anisotropic_coulomb.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -16,9 +16,9 @@ energies on axis permutations of an anisotropic grid (a factor of four for
 import numpy as np
 import pytest
 
-from carcara.integrals import Grid, PoissonFFTSolver
-from carcara.integrals.poisson import (CUBE_SELF_CONSTANT, cell_self_potential,
-                                       voxel_self_potential)
+from mandacaru.integrals import Grid, PoissonFFTSolver
+from mandacaru.integrals.poisson import (CUBE_SELF_CONSTANT, cell_self_potential,
+                                         voxel_self_potential)
 
 
 def gaussian_grid(spacings, half=4.0):
@@ -143,8 +143,8 @@ class TestSkewedGrids:
         Before, the direct kernel clamped its own ``r12 = 0`` distance to
         1e-15 and returned ~1e12 for this integral.
         """
-        from carcara.basis import FullAtomicOrbital
-        from carcara.integrals import IntegralEngine
+        from mandacaru.basis import FullAtomicOrbital
+        from mandacaru.integrals import IntegralEngine
 
         grid = Grid(center=[0.0, 0.0, 0.0], h=0.6, units="bohr",
                     cell=self.CELL, skew=skew)

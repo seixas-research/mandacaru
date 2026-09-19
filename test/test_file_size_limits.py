@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_file_size_limits.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -13,11 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from carcara.algorithms.base import VariationalDriver
-from carcara.core.mapping import PauliSum
-from carcara.core.serialization import MAX_FILE_QUBITS, save_hamiltonian
-from carcara.utils.logging import (DETAILED_LOG_MAX_QUBITS, AdaptOutputLogger,
-                                   parse_output)
+from mandacaru.algorithms.base import VariationalDriver
+from mandacaru.core.mapping import PauliSum
+from mandacaru.core.serialization import MAX_FILE_QUBITS, save_hamiltonian
+from mandacaru.utils.logging import (DETAILED_LOG_MAX_QUBITS, AdaptOutputLogger,
+                                     parse_output)
 
 
 def test_hamiltonian_file_refused_above_the_limit(tmp_path):

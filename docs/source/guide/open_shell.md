@@ -6,12 +6,12 @@ high-spin state, runs through the same calculator as a closed-shell molecule:
 
 ```python
 from ase.build import molecule
-from carcara.algorithms import Carcara
+from mandacaru.algorithms import Mandacaru
 
 oh = molecule("OH"); oh.center(vacuum=3.0)          # 9 electrons: a doublet
-oh.calc = Carcara(method="adapt-vqe",
-                  basis="FAO",
-                  frozen_core=True)
+oh.calc = Mandacaru(method="adapt-vqe",
+                    basis="FAO",
+                    frozen_core=True)
 oh.get_potential_energy()
 oh.calc.num_particles                                 # (4, 3) after freezing the O 1s
 ```
@@ -38,7 +38,7 @@ only; it no longer decides anything.
 A closed shell has a natural molecular-orbital basis: the restricted
 Hartree–Fock orbitals, in which the reference determinant is a stationary
 point of the energy. An odd electron count has no such basis — RHF is not
-defined for it — so Carcará solves the **unrestricted** (UHF) problem instead
+defined for it — so Mandacaru solves the **unrestricted** (UHF) problem instead
 and builds the Hamiltonian in the **natural orbitals of the UHF total
 density**, $D_\alpha + D_\beta$, ordered by occupation. Filling the first
 $n_\alpha$ of them with spin-up and the first $n_\beta$ with spin-down
@@ -78,5 +78,5 @@ is the first $n_\beta$ natural orbitals, so lithium with its 1s frozen becomes
 a one-electron, one-orbital, two-qubit problem — and asking to freeze the
 singly occupied orbital is refused.
 
-See {mod}`carcara.algorithms.hartree_fock` and
-{meth}`carcara.core.MolecularIntegrals.molecular_hamiltonian`.
+See {mod}`mandacaru.algorithms.hartree_fock` and
+{meth}`mandacaru.core.MolecularIntegrals.molecular_hamiltonian`.

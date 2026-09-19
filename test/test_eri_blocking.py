@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_eri_blocking.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -19,9 +19,9 @@ actually matters.
 import numpy as np
 import pytest
 
-from carcara.basis import FullAtomicOrbital
-from carcara.integrals import Grid, IntegralEngine, PoissonFFTSolver
-from carcara.integrals import engine as engine_mod
+from mandacaru.basis import FullAtomicOrbital
+from mandacaru.integrals import Grid, IntegralEngine, PoissonFFTSolver
+from mandacaru.integrals import engine as engine_mod
 
 
 def _engine():
@@ -65,10 +65,10 @@ class TestBlockedHermitianERI:
             assert np.abs(eri - np.conj(eri.transpose(2, 3, 0, 1))).max() < 1e-12
 
     def test_environment_budget(self, monkeypatch):
-        monkeypatch.delenv("CARCARA_ERI_MEMORY_MB", raising=False)
+        monkeypatch.delenv("MANDACARU_ERI_MEMORY_MB", raising=False)
         assert engine_mod.eri_memory_budget_mb() == engine_mod.ERI_MEMORY_MB
-        monkeypatch.setenv("CARCARA_ERI_MEMORY_MB", "12.5")
+        monkeypatch.setenv("MANDACARU_ERI_MEMORY_MB", "12.5")
         assert engine_mod.eri_memory_budget_mb() == 12.5
-        monkeypatch.setenv("CARCARA_ERI_MEMORY_MB", "0")
+        monkeypatch.setenv("MANDACARU_ERI_MEMORY_MB", "0")
         with pytest.raises(ValueError):
             engine_mod.eri_memory_budget_mb()

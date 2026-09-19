@@ -3,7 +3,7 @@
 
 """VASQE (experimental): ADAPT-VQE with stochastic (softmax) operator selection.
 
-VASQE lives in :mod:`carcara.experimental` and registers its methods with the
+VASQE lives in :mod:`mandacaru.experimental` and registers its methods with the
 unified calculator on import; the stable code never names it.  Everything that
 exercises VASQE -- selection, schedules, quenching, the Hamiltonian cache, the
 periodic calculator, the packaging rules -- lives in this file.
@@ -17,9 +17,9 @@ and subspace) inherit the stochastic selection.
 import numpy as np
 import pytest
 
-import carcara.experimental  # noqa: F401  (registers the methods)
-from carcara.algorithms.adapt_vqe import ADAPTVQEResult
-from carcara.experimental import (
+import mandacaru.experimental  # noqa: F401  (registers the methods)
+from mandacaru.algorithms.adapt_vqe import ADAPTVQEResult
+from mandacaru.experimental import (
     SubspaceVASQE,
     TEMPERATURE_SCHEDULES,
     VASQE,
@@ -27,10 +27,10 @@ from carcara.experimental import (
     annealed_temperature,
     softmax_selection_probabilities,
 )
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid
-from carcara.optimizers import Optimizer
-from carcara.units import HARTREE_TO_EV
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.integrals import Grid
+from mandacaru.optimizers import Optimizer
+from mandacaru.units import HARTREE_TO_EV
 
 
 # --------------------------------------------------------------------------- #
@@ -247,15 +247,15 @@ def test_schedule_names_exported():
 
 class TestExperimentalPackaging:
     def test_not_exported_from_stable_algorithms(self):
-        import carcara.algorithms as algorithms
+        import mandacaru.algorithms as algorithms
         for name in ("VASQE", "VASQEResult", "SubspaceVASQE"):
             assert not hasattr(algorithms, name)
             assert name not in algorithms.__all__
 
     def test_registered_with_the_calculator(self):
-        from carcara.algorithms import (DEFAULT_METHOD, STABLE_METHODS,
-                                        available_methods,
-                                        experimental_methods, resolve_method)
+        from mandacaru.algorithms import (DEFAULT_METHOD, STABLE_METHODS,
+                                          available_methods,
+                                          experimental_methods, resolve_method)
         assert DEFAULT_METHOD == "adapt-vqe"
         assert "vasqe" in experimental_methods()
         assert "subspace-vasqe" in experimental_methods()
@@ -267,8 +267,8 @@ class TestExperimentalPackaging:
 
     def test_stable_code_never_names_vasqe(self):
         import pathlib
-        import carcara
-        root = pathlib.Path(carcara.__file__).parent
+        import mandacaru
+        root = pathlib.Path(mandacaru.__file__).parent
         for path in root.rglob("*.py"):
             if "experimental" in path.parts:
                 continue
@@ -276,8 +276,8 @@ class TestExperimentalPackaging:
 
     def test_calculators_default_to_adapt_vqe(self):
         from ase import Atoms
-        from carcara.algorithms import ADAPTVQE, BlochCalculator, Carcara
-        calc = Carcara()
+        from mandacaru.algorithms import ADAPTVQE, BlochCalculator, Mandacaru
+        calc = Mandacaru()
         assert calc.method == "adapt-vqe" and calc._solver_class is ADAPTVQE
         chain = Atoms("H", positions=[[0, 0, 0]], cell=[1.0, 10.0, 10.0],
                       pbc=[True, False, False])
@@ -285,10 +285,10 @@ class TestExperimentalPackaging:
 
     def test_calculator_and_dry_run_accept_the_method(self):
         from ase import Atoms
-        from carcara.algorithms import Carcara
+        from mandacaru.algorithms import Mandacaru
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
         for method in ("vasqe", "subspace-vasqe"):
-            atoms.calc = Carcara(method=method, dry_run=True)
+            atoms.calc = Mandacaru(method=method, dry_run=True)
             assert np.isnan(atoms.get_potential_energy())
             assert atoms.calc.dry_run_result.method == method
 
@@ -301,7 +301,7 @@ class TestExperimentalPackaging:
 @pytest.fixture(scope="module")
 def lih_cache(tmp_path_factory):
     from ase import Atoms
-    from carcara.algorithms import ADAPTVQE
+    from mandacaru.algorithms import ADAPTVQE
     path = str(tmp_path_factory.mktemp("cache") / "lih.json")
     atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7.0] * 3)
     atoms.calc = ADAPTVQE(pool="qeb", basis="FAO", h=0.4, verbose=False,
@@ -325,7 +325,7 @@ class TestVASQEQuenching:
     def test_low_temperature_quenched_vasqe_tracks_quenched_adapt(self,
                                                                    lih_cache):
         """tau -> 0 reduces VASQE to ADAPT-VQE, quenching policy included."""
-        from carcara.algorithms import ADAPTVQE
+        from mandacaru.algorithms import ADAPTVQE
         common = dict(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
                       profile=False, quenching=False, max_iterations=3,
                       gradient_tolerance=1e-8)
@@ -349,7 +349,7 @@ class TestHamiltonianCache:
 class TestBloch:
     def test_total_energy_through_the_bloch_calculator(self):
         from ase import Atoms
-        from carcara.algorithms import BlochCalculator
+        from mandacaru.algorithms import BlochCalculator
         atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                       cell=[[1.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
                       pbc=[True, False, False])

@@ -1,6 +1,6 @@
 # Basis sets: multiple zeta, polarisation, and the named Gaussian families
 
-Every basis in Carcará is generated from scratch — there are no tabulated
+Every basis in Mandacaru is generated from scratch — there are no tabulated
 exponents anywhere in the package. This page covers the two ways to buy
 variational freedom: the `size` argument of the numerical atomic orbitals
 (NAO), which selects how much radial and angular freedom each valence shell
@@ -9,8 +9,8 @@ Dunning, Karlsruhe), which are accepted by name and generated with the
 published shell structure.
 
 ```python
-atoms.calc = Carcara(method="vqe",
-                     basis={"name": "NAO", "size": "DZP"})
+atoms.calc = Mandacaru(method="vqe",
+                       basis={"name": "NAO", "size": "DZP"})
 ```
 
 ## Why a single zeta is not enough
@@ -80,7 +80,7 @@ to afford them.
 
 ## How the extra zetas are built
 
-They are *not* new eigenvalue problems. Carcará uses the SIESTA split-valence
+They are *not* new eigenvalue problems. Mandacaru uses the SIESTA split-valence
 construction (Artacho *et al.*, 1999). Given the first-zeta radial function
 $R_1$, pick a split radius $r_s$ leaving a prescribed fraction of the norm
 outside it (`split_norm`, 0.15 by default):
@@ -126,7 +126,7 @@ Double zeta is worth ~0.76 eV, polarisation a little more. But the third zeta
 adds essentially nothing — and the reason is not that it is redundant.
 
 ```{warning}
-Extra zetas are short-ranged **by construction**, and Carcará samples every
+Extra zetas are short-ranged **by construction**, and Mandacaru samples every
 basis function on a uniform real-space grid. The third hydrogen zeta extends to
 0.65 Å, which is 3.2 grid points at `h = 0.20 Å`. A function three points wide is
 not represented, it is aliased.
@@ -155,12 +155,12 @@ parsed into its *structure* — core contraction length, valence split,
 polarisation, diffuse and core-correlating functions — and the exponents and
 contraction coefficients are produced for the atom at hand from the cached
 Slater-orbital fits and Slater's rules
-({mod}`carcara.basis.gaussian_families`). No basis-set table is read.
+({mod}`mandacaru.basis.gaussian_families`). No basis-set table is read.
 
 ```python
-atoms.calc = Carcara(basis="cc-pVDZ")
-atoms.calc = Carcara(basis="6-311+G(2df,2p)")
-atoms.calc = Carcara(basis="def2-TZVP")
+atoms.calc = Mandacaru(basis="cc-pVDZ")
+atoms.calc = Mandacaru(basis="6-311+G(2df,2p)")
+atoms.calc = Mandacaru(basis="def2-TZVP")
 ```
 
 | Family | Names |
@@ -175,7 +175,7 @@ published set — `cc-pVTZ` carbon is `[4s3p2d1f]` (30 functions), `def2-TZVP`
 carbon `[5s3p2d1f]`, `6-311+G(2df,2p)` hydrogen `[3s2p]`:
 
 ```python
-from carcara.basis import BasisSet, parse_basis_name, shell_notation
+from mandacaru.basis import BasisSet, parse_basis_name, shell_notation
 
 bset = BasisSet.build("aug-cc-pVDZ")
 bset.notation("C")                       # '[4s3p2d]'
@@ -184,7 +184,7 @@ parse_basis_name("6-31+G*").summary()
 ```
 
 What is *not* reproduced are the published exponents, which come from
-molecular energy optimisations. Carcará's are its own: a Slater-orbital fit
+molecular energy optimisations. Mandacaru's are its own: a Slater-orbital fit
 partitioned tightest-first for the contracted and split-valence functions,
 polarisation exponents `f_l · ζ_val²` spread geometrically, diffuse functions
 at the atom's most diffuse exponent divided by 3.5, and tight
@@ -202,7 +202,7 @@ published, while `6-31G*` and `6-311G*` polarise every atom beyond helium.
 
 ## Virtual levels for the FAO basis
 
-`FAO` is the cheapest basis in Carcará: one analytic hydrogenic orbital per
+`FAO` is the cheapest basis in Mandacaru: one analytic hydrogenic orbital per
 **occupied** subshell, carrying the atom's bare nuclear charge (H → 1s; Li →
 1s, 2s; C → 1s, 2s, 2p). That minimality is also its limit — a correlated
 method has almost nothing to correlate *into*. H₂ in the occupied-only FAO
@@ -211,9 +211,9 @@ basis is 2 spatial orbitals, 4 qubits, and a single double excitation.
 `virtual_orbitals` buys room above the occupied set:
 
 ```python
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis={"name": "FAO", "virtual_orbitals": 1},
-                     h=0.30)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis={"name": "FAO", "virtual_orbitals": 1},
+                       h=0.30)
 ```
 
 It appends the *k* lowest **unoccupied** subshells of each atom, in aufbau
@@ -269,9 +269,9 @@ budget:
 basis = {"O": {"name": "NAO", "size": "DZP"},
          "H": {"name": "NAO", "size": "DZP"},
          "*": "FAO"}                              # every other element
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis=basis,
-                     frozen_core=True)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis=basis,
+                       frozen_core=True)
 ```
 
 Every driver, the dry run and `BasisSet.build(mapping)` accept it; an element

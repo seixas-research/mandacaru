@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_spin_and_sparse.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
-from carcara.algorithms._hamiltonian_from_atoms import (
+from mandacaru.algorithms import ADAPTVQE
+from mandacaru.algorithms._hamiltonian_from_atoms import (
     _num_particles, build_basis_hamiltonian, resolve_num_unpaired)
 
 
@@ -109,8 +109,8 @@ class TestSparsePool:
 
 class TestClosedFormAnsatz:
     def test_sparse_ansatz_matches_dense_state(self):
-        from carcara.circuits import AdaptAnsatz
-        from carcara.circuits.pools import build_pool
+        from mandacaru.circuits import AdaptAnsatz
+        from mandacaru.circuits.pools import build_pool
 
         pool = build_pool("fermionic", 3, (2, 1), mapping="jordan_wigner")
         ops = pool.operators()[:3]

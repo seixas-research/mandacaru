@@ -1,15 +1,15 @@
 # Stochastic Adaptive Eigensolving with VASQE
 
-> **Experimental.** VASQE lives in `carcara.experimental` and is *not* part of
+> **Experimental.** VASQE lives in `mandacaru.experimental` and is *not* part of
 > the stable API: it is still under development and not fully validated. This
 > page is deliberately kept outside the Sphinx manual (`docs/source/`) and is
 > not built with it. The production adaptive solver is ADAPT-VQE
 > (`method="adapt-vqe"`, the default everywhere). The stable package never
-> names VASQE: `import carcara.experimental` first, which registers
-> `method="vasqe"` and `method="subspace-vasqe"` with `Carcara`.
+> names VASQE: `import mandacaru.experimental` first, which registers
+> `method="vasqe"` and `method="subspace-vasqe"` with `Mandacaru`.
 
 **VASQE** — the **Variational Adaptive Stochastic Quantum Eigensolver**, selected
-with `method="vasqe"` on `Carcara` — is
+with `method="vasqe"` on `Mandacaru` — is
 ADAPT-VQE with a **stochastic operator-selection** rule.
 ADAPT-VQE greedily appends the pool operator with the largest gradient magnitude;
 VASQE instead **samples** the operator from a Boltzmann-like softmax of the
@@ -35,19 +35,19 @@ VASQE runs through the same ASE calculator as every other method:
 
 ```python
 from ase import Atoms
-import carcara.experimental          # registers method="vasqe"
-from carcara.algorithms import Carcara
+import mandacaru.experimental          # registers method="vasqe"
+from mandacaru.algorithms import Mandacaru
 
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
 
-atoms.calc = Carcara(method="vasqe",
-                     basis="FAO",
-                     pool="fermionic",
-                     temperature=1.0,
-                     h=0.20,
-                     max_iterations=12,
-                     gradient_tolerance=1e-5)
+atoms.calc = Mandacaru(method="vasqe",
+                       basis="FAO",
+                       pool="fermionic",
+                       temperature=1.0,
+                       h=0.20,
+                       max_iterations=12,
+                       gradient_tolerance=1e-5)
 energy_ev = atoms.get_total_energy()
 
 result = atoms.calc.result            # a VASQEResult (subclass of ADAPTVQEResult)
@@ -76,15 +76,15 @@ iterations. Four schedules are available via `schedule`:
 
 ```python
 # Anneal from a hot, exploratory tau=2.0 down to a greedy tau=0.01.
-atoms.calc = Carcara(method="vasqe",
-                     basis="FAO",
-                     temperature=2.0,
-                     final_temperature=0.01,
-                     schedule="exponential",
-                     annealing_steps=12,
-                     h=0.20,
-                     max_iterations=12,
-                     gradient_tolerance=1e-5)
+atoms.calc = Mandacaru(method="vasqe",
+                       basis="FAO",
+                       temperature=2.0,
+                       final_temperature=0.01,
+                       schedule="exponential",
+                       annealing_steps=12,
+                       h=0.20,
+                       max_iterations=12,
+                       gradient_tolerance=1e-5)
 atoms.get_total_energy()
 ```
 
@@ -96,7 +96,7 @@ The softmax and schedule helpers are also exposed directly:
 
 ```python
 import numpy as np
-from carcara.algorithms import softmax_selection_probabilities, annealed_temperature
+from mandacaru.algorithms import softmax_selection_probabilities, annealed_temperature
 
 softmax_selection_probabilities(np.array([0.1, 0.9, 0.4]), tau=0.05)  # ~[0,1,0]
 annealed_temperature("exponential", 2.0, 0.01, step=3, horizon=12)
@@ -106,7 +106,7 @@ annealed_temperature("exponential", 2.0, 0.01, step=3, horizon=12)
 
 ## Excited states
 
-Because selection is the single {meth}`~carcara.algorithms.ADAPTVQE._select_operator`
+Because selection is the single {meth}`~mandacaru.algorithms.ADAPTVQE._select_operator`
 hook, VASQE inherits both excited-state strategies from the driver framework, each
 growing its ansatz **stochastically**:
 
@@ -116,13 +116,13 @@ levels = atoms.calc.energy_levels(num_states=2)
 print(levels.energies)                # eV
 
 # Subspace search: ground + excited states simultaneously.
-atoms.calc = Carcara(method="subspace-vasqe",
-                     basis="FAO",
-                     pool="fermionic",
-                     num_states=2,
-                     temperature=0.5,
-                     h=0.20,
-                     gradient_tolerance=1e-5)
+atoms.calc = Mandacaru(method="subspace-vasqe",
+                       basis="FAO",
+                       pool="fermionic",
+                       num_states=2,
+                       temperature=0.5,
+                       h=0.20,
+                       gradient_tolerance=1e-5)
 atoms.get_total_energy()
 print(atoms.calc.result.energies)     # eV
 ```

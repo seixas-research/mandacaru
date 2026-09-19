@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_fao_virtual_orbitals.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -20,10 +20,10 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara import Carcara
-from carcara.algorithms.dry_run import estimate_qubits
-from carcara.basis import BasisSet, FAOBasisSet
-from carcara.basis._config import ground_state_config, unoccupied_subshells
+from mandacaru import Mandacaru
+from mandacaru.algorithms.dry_run import estimate_qubits
+from mandacaru.basis import BasisSet, FAOBasisSet
+from mandacaru.basis._config import ground_state_config, unoccupied_subshells
 
 
 def occupied_levels(symbol):
@@ -212,14 +212,14 @@ class TestVariationalPayoff:
         energies = {}
         for k in (0, 1):
             atoms = h2(cell=8.0)
-            atoms.calc = Carcara(method="adapt-vqe",
-                                 basis={"name": "FAO", "virtual_orbitals": k},
-                                 h=0.30,
-                                 pool="fermionic",
-                                 optimizer="L-BFGS-B",
-                                 max_iterations=40,
-                                 gradient_tolerance=1e-7,
-                                 profile=False)
+            atoms.calc = Mandacaru(method="adapt-vqe",
+                                   basis={"name": "FAO", "virtual_orbitals": k},
+                                   h=0.30,
+                                   pool="fermionic",
+                                   optimizer="L-BFGS-B",
+                                   max_iterations=40,
+                                   gradient_tolerance=1e-7,
+                                   profile=False)
             energies[k] = atoms.get_potential_energy()
             assert atoms.calc.n_qubits == (4 if k == 0 else 8)
         assert energies[1] < energies[0] - 0.05          # eV; measured 0.139

@@ -7,11 +7,11 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, VQE
-from carcara.circuits import UCCSD
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid
-from carcara.utils import banner
+from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.circuits import UCCSD
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.integrals import Grid
+from mandacaru.utils import banner
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ class TestBanner:
 @pytest.fixture(autouse=True)
 def fresh_banner():
     """The banner prints once per process; these tests each need a fresh one."""
-    from carcara.algorithms import base
+    from mandacaru.algorithms import base
     base._BANNER_SHOWN = False
     yield
     base._BANNER_SHOWN = False

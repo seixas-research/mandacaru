@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 # file: examples/22_H2_dissociation.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
 r"""H2 potential energy curve with ADAPT-VQE, referenced to the atoms.
 
-Scans the H--H bond length with the :class:`~carcara.algorithms.Carcara`
+Scans the H--H bond length with the :class:`~mandacaru.algorithms.Mandacaru`
 (``method="adapt-vqe"``) and references every point to the
 **sum of the isolated hydrogen atom energies**, so ``E = 0`` is the
 separated-atom limit and the well depth is the binding energy:
@@ -39,8 +39,8 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.basis import BasisSet
+from mandacaru.algorithms import Mandacaru
+from mandacaru.basis import BasisSet
 
 from pes_utils import (GridSpec, atomic_reference, commensurate_distances,
                        molecule_positions)
@@ -90,10 +90,10 @@ for method, options in METHOD_OPTIONS.items():
     total = np.empty(len(DISTANCES))
     for i, distance in enumerate(DISTANCES):
         atoms = h2(float(distance))
-        atoms.calc = Carcara(method=method,
-                             grid=grid,
-                             **SOLVER,
-                             **options)
+        atoms.calc = Mandacaru(method=method,
+                               grid=grid,
+                               **SOLVER,
+                               **options)
         atoms.get_total_energy()
         total[i] = atoms.calc.result.optimal_energy          # eV
         print(f"{method:<12}{distance:>8.2f}{total[i]:>14.4f}"

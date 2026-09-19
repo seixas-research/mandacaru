@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 # file: examples/13_braket_aws_compatibility.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Amazon Braket compatibility check: can Carcará run on a real QPU?
+"""Amazon Braket compatibility check: can Mandacaru run on a real QPU?
 
 This script *verifies*, rather than assumes, what the ``"braket"`` backend
 provider can and cannot do against the AWS Braket service, and prints a report.
@@ -15,7 +15,7 @@ charges -- but exercises the exact code path a QPU takes.
 
 What it checks
 --------------
-1. **The gate set.** Carcará emits ``X``, ``H``, ``S``, ``Si``, ``CNot`` and
+1. **The gate set.** Mandacaru emits ``X``, ``H``, ``S``, ``Si``, ``CNot`` and
    ``Rz`` only; all are Braket-native and available on every Braket QPU.
 2. **The state-vector path is simulator-only.** Braket rejects the
    ``StateVector`` result type whenever ``shots > 0``, and *every QPU requires*
@@ -32,9 +32,9 @@ Running on real hardware
 ------------------------
 Only the device changes -- the calculator API does not::
 
-    from carcara.algorithms import Carcara
+    from mandacaru.algorithms import Mandacaru
 
-    atoms.calc = Carcara(method="adapt-vqe",
+    atoms.calc = Mandacaru(method="adapt-vqe",
                          pool="qeb",
                          basis="FAO",
                          device="braket-ionq-aria",   # or the full ARN
@@ -42,7 +42,7 @@ Only the device changes -- the calculator API does not::
     atoms.get_total_energy()
 
 That needs configured AWS credentials (``aws configure``) and bills your
-account.  See :mod:`carcara.backends.hardware` for the registered devices.
+account.  See :mod:`mandacaru.backends.hardware` for the registered devices.
 
 Known limitation (stated plainly)
 ---------------------------------
@@ -60,15 +60,15 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.backends.hardware import (describe_devices, device_arn,
-                                       requires_shots)
-from carcara.backends.measurement import (qubit_wise_commuting_groups,
-                                          shot_noise_estimate)
-from carcara.units import HARTREE_TO_EV, from_hartree
-from carcara.backends.providers import build_provider, provider_available
-from carcara.circuits.adapt_ansatz import AdaptAnsatz
-from carcara.circuits.pools import build_pool
+from mandacaru.algorithms import Mandacaru
+from mandacaru.backends.hardware import (describe_devices, device_arn,
+                                         requires_shots)
+from mandacaru.backends.measurement import (qubit_wise_commuting_groups,
+                                            shot_noise_estimate)
+from mandacaru.units import HARTREE_TO_EV, from_hartree
+from mandacaru.backends.providers import build_provider, provider_available
+from mandacaru.circuits.adapt_ansatz import AdaptAnsatz
+from mandacaru.circuits.pools import build_pool
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
@@ -94,12 +94,12 @@ if not provider_available("braket"):
 
 atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
               cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool="qeb",
-                     basis="FAO",
-                     h=0.35,
-                     max_iterations=1,
-                     save_hamiltonian=os.path.join( DATA, "h2_braket.parquet"))
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool="qeb",
+                       basis="FAO",
+                       h=0.35,
+                       max_iterations=1,
+                       save_hamiltonian=os.path.join( DATA, "h2_braket.parquet"))
 atoms.get_total_energy()
 
 hamiltonian = atoms.calc.hamiltonian
@@ -199,7 +199,7 @@ print("       this bound is why, not a defect of the implementation.")
 # 5. Registered AWS devices.
 # --------------------------------------------------------------------------- #
 
-print("\n[5] Braket devices Carcará can target")
+print("\n[5] Braket devices Mandacaru can target")
 print(f"    {"device":<26}{"kind":<12}{"shots":<10}ARN")
 print("    " + "-" * 66)
 for device in describe_devices():
@@ -211,7 +211,7 @@ for device in describe_devices():
     print(f"    {device.name:<26}{kind:<12}{shots:<10}{arn}")
 
 print(f"\n{rule}")
-print("VERDICT: Carcará is compatible with Amazon Braket, including QPUs,")
+print("VERDICT: Mandacaru is compatible with Amazon Braket, including QPUs,")
 print("         through the shot-based path (device=..., shots=N).")
 print("         The state-vector path remains simulator-only by Braket's design.")
 print("         Caveat: ADAPT-VQE's pool-gradient screening is still classical;")

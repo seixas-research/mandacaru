@@ -12,13 +12,13 @@ Hamiltonian; the ground level must match exact diagonalization.
 import numpy as np
 import pytest
 
-from carcara.algorithms import ADAPTVQE, VQE, EnergyLevels
-from carcara.algorithms.deflation import spectral_width_beta
-from carcara.circuits import UCCSD
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid
-from carcara.optimizers import Optimizer
-from carcara.units import HARTREE_TO_EV
+from mandacaru.algorithms import ADAPTVQE, VQE, EnergyLevels
+from mandacaru.algorithms.deflation import spectral_width_beta
+from mandacaru.circuits import UCCSD
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.integrals import Grid
+from mandacaru.optimizers import Optimizer
+from mandacaru.units import HARTREE_TO_EV
 
 
 # --------------------------------------------------------------------------- #

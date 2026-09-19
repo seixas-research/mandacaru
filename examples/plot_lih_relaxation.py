@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/plot_lih_relaxation.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -30,7 +30,7 @@ d_fine = np.linspace(1.3, 2.0, 2001)
 d_eq_vasp = d_fine[np.argmin(np.polyval(fit, d_fine))]
 e_min_vasp = np.polyval(fit, d_fine).min()
 
-# Carcará relaxation steps.
+# Mandacaru relaxation steps.
 steps = read(os.path.join(DATA, "relax.traj"), index=":")
 d_steps = np.array([a.get_distance(0, 1) for a in steps])
 e_steps = np.array([a.get_potential_energy() for a in steps])
@@ -40,7 +40,7 @@ plt.plot(d_vasp, e_vasp - e_min_vasp, "o-", color="gray", ms=4,
          label="VASP, PBE (plane waves)")
 plt.plot(d_steps, e_steps, "--", color="tab:red", lw=0.8)
 plt.scatter(d_steps, e_steps, c=np.arange(len(steps)), cmap="autumn", zorder=3,
-            edgecolors="k", label="Carcará BFGS steps (ADAPT-VQE, PAW-DZP)")
+            edgecolors="k", label="Mandacaru BFGS steps (ADAPT-VQE, PAW-DZP)")
 labeled = None                  # label steps that moved, not the converged cluster
 for i, (d, e) in enumerate(zip(d_steps, e_steps)):
     if labeled is None or abs(d - labeled) > 0.015 or i == len(steps) - 1:
@@ -48,7 +48,7 @@ for i, (d, e) in enumerate(zip(d_steps, e_steps)):
         labeled = d
 plt.axvline(d_eq_vasp, color="gray", ls=":", label=f"PBE minimum {d_eq_vasp:.3f} Å")
 plt.axvline(d_steps[-1], color="tab:red", ls=":",
-            label=f"Carcará relaxed {d_steps[-1]:.3f} Å")
+            label=f"Mandacaru relaxed {d_steps[-1]:.3f} Å")
 plt.xlim(1.2, 2.5)
 plt.ylim(-0.05, 1.0)
 plt.xlabel("Li–H distance (Å)")
@@ -56,5 +56,5 @@ plt.ylabel("E − E_min (eV)")
 plt.title("LiH relaxation from 2.0 Å")
 plt.legend(fontsize=8)
 plt.savefig(os.path.join(DATA, "lih_relaxation_vs_vasp.png"), dpi=150)
-print(f"PBE minimum {d_eq_vasp:.4f} A, Carcará relaxed {d_steps[-1]:.4f} A "
+print(f"PBE minimum {d_eq_vasp:.4f} A, Mandacaru relaxed {d_steps[-1]:.4f} A "
       f"({len(steps) - 1} steps)")

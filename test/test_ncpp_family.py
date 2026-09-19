@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_ncpp_family.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -32,20 +32,20 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, Carcara, VQE
-from carcara.algorithms._hamiltonian_from_atoms import (
+from mandacaru.algorithms import ADAPTVQE, Mandacaru, VQE
+from mandacaru.algorithms._hamiltonian_from_atoms import (
     build_basis_hamiltonian, coherent_positions, grid_from_cell,
     pseudopotential_family, resolve_basis, resolve_pseudo_basis)
-from carcara.algorithms.dry_run import estimate_qubits
-from carcara.core import MolecularIntegrals
-from carcara.core.hamiltonian import assemble_block_matrix, projector_blocks
-from carcara.pseudopotentials import (
+from mandacaru.algorithms.dry_run import estimate_qubits
+from mandacaru.core import MolecularIntegrals
+from mandacaru.core.hamiltonian import assemble_block_matrix, projector_blocks
+from mandacaru.pseudopotentials import (
     DEFAULT_FAMILY, FORMAT_VERSION, LEGACY_FAMILY, PSEUDO_FAMILIES,
     FamilySpec, KBProjector, family_names, get_pseudopotential,
     canonical_family_name, kb_coupling_blocks, kb_projectors,
     load_pseudopotential, lookup_family, pseudo_basis, register_family,
     resolve_family, save_pseudopotential, unregister_family)
-from carcara.pseudopotentials.io import (FILE_EXTENSIONS,
+from mandacaru.pseudopotentials.io import (FILE_EXTENSIONS,
                                                        PSEUDO_FORMATS,
                                                        library_file)
 
@@ -285,9 +285,9 @@ class TestPinnedEnergies:
     @pytest.mark.parametrize("name", sorted(PINNED))
     def test_adapt_vqe_is_unchanged(self, name):
         atoms = SYSTEMS[name]()
-        atoms.calc = Carcara(method="adapt-vqe", basis="ncpp",
-                             h=PINNED[name]["h"], pool="qeb",
-                             max_iterations=4, profile=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="ncpp",
+                               h=PINNED[name]["h"], pool="qeb",
+                               max_iterations=4, profile=False)
         atoms.get_potential_energy()
         assert atoms.calc.n_qubits == 4
         # The pins are Hartree; the result is eV.
@@ -531,9 +531,9 @@ class TestDispatch:
 
     def test_calculator_dry_run(self):
         atoms = h2()
-        calc = Carcara(method="vqe", basis="ncpp-tm", h=H2_H)
+        calc = Mandacaru(method="vqe", basis="ncpp-tm", h=H2_H)
         assert calc.dry_run(atoms).n_qubits == 4
-        atoms.calc = Carcara(method="adapt-vqe", basis={"name": "TM"},
-                             h=H2_H, dry_run=True)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis={"name": "TM"},
+                               h=H2_H, dry_run=True)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4

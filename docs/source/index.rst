@@ -1,19 +1,19 @@
-Carcará: molecular quantum simulation
-=====================================
+Mandacaru: molecular quantum simulation
+=======================================
 
 .. image:: _static/logo_light.png
-   :alt: Carcará
+   :alt: Mandacaru
    :class: only-light
    :width: 640
    :align: center
 
 .. image:: _static/logo_dark.png
-   :alt: Carcará
+   :alt: Mandacaru
    :class: only-dark
    :width: 640
    :align: center
 
-Carcará is a Python framework for simulating fermionic systems with variational
+Mandacaru is a Python framework for simulating fermionic systems with variational
 quantum algorithms. Starting from an atomic geometry, it builds a molecular
 Hamiltonian, maps it to qubits and optimises a quantum circuit to estimate its
 energy. The Atomic Simulation Environment (ASE) provides the geometry and
@@ -25,7 +25,7 @@ Start with lithium hydride (LiH)
 The introductory tutorials follow one molecule from a single energy calculation
 to a potential-energy curve:
 
-1. :doc:`Install Carcará <installation>` and check your Python environment.
+1. :doc:`Install Mandacaru <installation>` and check your Python environment.
 2. :doc:`Run VQE for LiH <tutorial/vqe_lih>` and understand the basis, electron
    count, integration grid and energy units.
 3. :doc:`Build an adaptive circuit <tutorial/adapt_vqe_lih>` and compare operator
@@ -96,7 +96,7 @@ binding energy, which requires a separately defined fragment reference.
 Converging a variational optimiser does not establish convergence with respect
 to the basis or integration grid.
 
-Carcará generates its Gaussian basis functions internally. Named families
+Mandacaru generates its Gaussian basis functions internally. Named families
 reproduce the intended shell structure, but do not use the published exponent
 tables. Consult :doc:`guide/basis_sets` before comparing with literature values.
 
@@ -108,9 +108,9 @@ and execution backends. The :doc:`theory/index` explains the equations behind
 the tutorials, and the :doc:`api` documents the Python interfaces.
 
 Source code and issue reports are hosted on
-`GitHub <https://github.com/seixas-research/carcara>`_. Releases are available
-from `PyPI <https://pypi.org/project/carcara/>`_. Carcará is distributed under
-the `MIT licence <https://github.com/seixas-research/carcara/blob/main/LICENSE>`_.
+`GitHub <https://github.com/seixas-research/mandacaru>`_. Releases are available
+from `PyPI <https://pypi.org/project/mandacaru/>`_. Mandacaru is distributed under
+the `MIT licence <https://github.com/seixas-research/mandacaru/blob/main/LICENSE>`_.
 
 .. toctree::
    :maxdepth: 2
@@ -141,5 +141,5 @@ the `MIT licence <https://github.com/seixas-research/carcara/blob/main/LICENSE>`
 
    api
    contributing_docs
-   GitHub <https://github.com/seixas-research/carcara>
-   PyPI <https://pypi.org/project/carcara/>
+   GitHub <https://github.com/seixas-research/mandacaru>
+   PyPI <https://pypi.org/project/mandacaru/>

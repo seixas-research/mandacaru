@@ -13,22 +13,22 @@ returned states.  Validated on H2 (MO basis).
 import numpy as np
 import pytest
 
-from carcara.algorithms import (
+from mandacaru.algorithms import (
     SubspaceADAPTVQE,
     SubspaceADAPTVQEResult,
     SubspaceVQE,
     SubspaceVQEResult,
 )
-from carcara.algorithms.subspace import (
+from mandacaru.algorithms.subspace import (
     reference_matrix,
     resolve_weights,
     subspace_determinants,
 )
-from carcara.circuits import UCCSD
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid
-from carcara.optimizers import Optimizer
-from carcara.units import HARTREE_TO_EV
+from mandacaru.circuits import UCCSD
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.integrals import Grid
+from mandacaru.optimizers import Optimizer
+from mandacaru.units import HARTREE_TO_EV
 
 
 # --------------------------------------------------------------------------- #

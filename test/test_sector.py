@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_sector.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -11,10 +11,10 @@
 import numpy as np
 import pytest
 
-from carcara.algorithms.rdm import one_rdm, two_rdm
-from carcara.core.hamiltonian import spin_block_integrals
-from carcara.core.mapping import Fermion, PauliSum
-from carcara.core.sector import ParticleSector
+from mandacaru.algorithms.rdm import one_rdm, two_rdm
+from mandacaru.core.hamiltonian import spin_block_integrals
+from mandacaru.core.mapping import Fermion, PauliSum
+from mandacaru.core.sector import ParticleSector
 
 M = 3
 
@@ -74,7 +74,7 @@ def test_restrict_batches_without_changing_the_result():
     ``restrict`` therefore folds the terms into the running matrix in batches,
     which is only legitimate because the sum is linear in them.
     """
-    from carcara.core.sector import RESTRICT_BATCH_ENTRIES
+    from mandacaru.core.sector import RESTRICT_BATCH_ENTRIES
 
     rng = np.random.default_rng(11)
     n_qubits = 8

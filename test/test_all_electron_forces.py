@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_all_electron_forces.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -21,12 +21,12 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara import Carcara
-from carcara.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
-from carcara.algorithms.pseudo_forces import AlgebraicEnergy, spatial_rdms
-from carcara.algorithms.rdm import (expand_frozen_core, one_rdm, two_rdm)
-from carcara.integrals import Grid
-from carcara.units import HARTREE_TO_EV
+from mandacaru import Mandacaru
+from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
+from mandacaru.algorithms.pseudo_forces import AlgebraicEnergy, spatial_rdms
+from mandacaru.algorithms.rdm import (expand_frozen_core, one_rdm, two_rdm)
+from mandacaru.integrals import Grid
+from mandacaru.units import HARTREE_TO_EV
 
 
 def fixed_state_energy(atoms, basis, grid, h, algebra, **options):
@@ -57,8 +57,8 @@ def analytic_and_numerical(atoms, basis, grid, h, step=0.002, **options):
     default deliberately breaks it (see ``ForceResult.unprojected``).
     """
     atoms = atoms.copy()
-    atoms.calc = Carcara(method="adapt-vqe", basis=basis, grid=grid, h=h, profile=False,
-                         gradient_tolerance=1e-6, **options)
+    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, grid=grid, h=h, profile=False,
+                           gradient_tolerance=1e-6, **options)
     atoms.get_forces()
     forces = atoms.calc.force_result.unprojected
     solver = atoms.calc.solver
@@ -170,15 +170,15 @@ class TestOrbitalResponseResidual:
         """
         from scipy.sparse.linalg import eigsh
 
-        from carcara.core.sector import ParticleSector
+        from mandacaru.core.sector import ParticleSector
 
         grid = Grid(center=[4.0, 4.0, 4.0], box_size=4.5, h=0.3,
                     units="angstrom")
         atoms = Atoms("H3", positions=[[4.0, 4.0, 4.0], [4.9, 4.0, 4.0],
                                        [4.3, 4.8, 4.0]], cell=[8.0, 8.0, 8.0])
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", grid=grid, h=0.3,
-                             charge=1, pool="fermionic", profile=False,
-                             trace=False, gradient_tolerance=1e-8)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", grid=grid, h=0.3,
+                               charge=1, pool="fermionic", profile=False,
+                               trace=False, gradient_tolerance=1e-8)
         atoms.get_potential_energy()
         forces = atoms.get_forces()
         solver = atoms.calc.solver
@@ -201,7 +201,7 @@ class TestOrbitalResponseResidual:
 
     @staticmethod
     def _residual(calc, solver, psi):
-        from carcara.algorithms.pseudo_forces import pseudo_nuclear_gradient
+        from mandacaru.algorithms.pseudo_forces import pseudo_nuclear_gradient
 
         context = solver._gradient_context
         gamma = one_rdm(psi, solver.n_qubits, solver.mapping)
@@ -261,7 +261,7 @@ class TestOrbitalResponseResidual:
         assert errors[2] / errors[0] == pytest.approx(16.0, rel=0.35)
 
     def test_a_converged_run_stays_under_the_tolerance(self, problem):
-        from carcara.algorithms.calculator import ORBITAL_RESPONSE_TOLERANCE
+        from mandacaru.algorithms.calculator import ORBITAL_RESPONSE_TOLERANCE
 
         calc, _solver, _exact, _hf, _e, _forces = problem
         # H2 in this basis *is* reachable, so the run warns about nothing.

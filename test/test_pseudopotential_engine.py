@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_pseudopotential_engine.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -27,18 +27,18 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, Carcara, VQE
-from carcara.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
-from carcara.pseudopotentials.io import (LIBRARY_ELEMENTS, available_elements,
+from mandacaru.algorithms import ADAPTVQE, Mandacaru, VQE
+from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
+from mandacaru.pseudopotentials.io import (LIBRARY_ELEMENTS, available_elements,
                                      default_library_path,
                                      get_pseudopotential, library_file,
                                      load_pseudopotential,
                                      save_pseudopotential)
-from carcara.pseudopotentials.orbitals import (KBProjector, PseudoAtomicOrbital,
+from mandacaru.pseudopotentials.orbitals import (KBProjector, PseudoAtomicOrbital,
                                           kb_projectors, pseudo_basis,
                                           valence_electrons)
-from carcara.integrals import Grid, Potentials, _backend
-from carcara.units import BOHR_TO_ANGSTROM
+from mandacaru.integrals import Grid, Potentials, _backend
+from mandacaru.units import BOHR_TO_ANGSTROM
 
 pytestmark = pytest.mark.skipif(
     not available_elements(), reason="pseudopotential library not generated")
@@ -92,7 +92,7 @@ class TestLibrary:
     def test_rejects_a_foreign_file(self, tmp_path):
         alien = tmp_path / "X.json"
         alien.write_text('{"format": "something-else"}')
-        with pytest.raises(ValueError, match="not a Carcará pseudopotential"):
+        with pytest.raises(ValueError, match="not a Mandacaru pseudopotential"):
             load_pseudopotential(alien)
 
     def test_missing_element_is_reported_helpfully(self, tmp_path):
@@ -244,7 +244,7 @@ class TestHamiltonianAndDrivers:
         """H2 with pseudopotentials: two valence electrons, four qubits."""
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid)
+        atoms.calc = Mandacaru(method="vqe", basis="NCPP", grid=grid)
         energy = atoms.get_potential_energy()
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 4
@@ -258,7 +258,7 @@ class TestPseudopotentialForces:
     def test_forces_are_finite_and_balanced(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid)
+        atoms.calc = Mandacaru(method="vqe", basis="NCPP", grid=grid)
         forces = atoms.get_forces()
         assert np.isfinite(forces).all()
         # Newton's third law on a two-atom molecule.
@@ -267,7 +267,7 @@ class TestPseudopotentialForces:
     def test_force_breakdown_is_available(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
-        atoms.calc = Carcara(method="vqe", basis="NCPP", grid=grid)
+        atoms.calc = Mandacaru(method="vqe", basis="NCPP", grid=grid)
         atoms.get_forces()
         local, pulay = atoms.calc.get_force_breakdown()
         assert local.shape == (2, 3) and pulay.shape == (2, 3)
@@ -291,7 +291,7 @@ class TestGridPathologyIsCured:
     def _isolated_force(cls, spacing, pseudo):
         grid = Grid(center=[0, 0, 0], box_size=cls.BOX, h=spacing)
         atoms = lone_atom("O", grid)
-        atoms.calc = Carcara(
+        atoms.calc = Mandacaru(
             method="adapt-vqe", basis="NCPP" if pseudo else "FAO",
             grid=grid, frozen_core=not pseudo, pool="qeb", max_iterations=6, gradient_tolerance=1e-3,
             profile=False)
@@ -331,8 +331,8 @@ class TestPseudoBasisSize:
                 np.array([[0, 0, 0], [0, 0.76, 0.59], [0, -0.76, 0.59]]))
 
     def _basis(self, size):
-        from carcara.pseudopotentials.io import get_pseudopotential
-        from carcara.pseudopotentials.orbitals import pseudo_basis
+        from mandacaru.pseudopotentials.io import get_pseudopotential
+        from mandacaru.pseudopotentials.orbitals import pseudo_basis
 
         symbols, positions = self._water()
         pots = {s: get_pseudopotential(s) for s in set(symbols)}
@@ -354,14 +354,14 @@ class TestPseudoBasisSize:
         assert owners == sorted(owners)          # grouped per atom
 
     def test_single_zeta_path_is_unchanged(self):
-        from carcara.pseudopotentials.orbitals import PseudoAtomicOrbital
+        from mandacaru.pseudopotentials.orbitals import PseudoAtomicOrbital
 
         functions, _ = self._basis("SZ")
         assert all(isinstance(f, PseudoAtomicOrbital) for f in functions)
 
     def test_first_zeta_comes_from_the_pseudopotential(self):
         """It must be the pseudized orbital the KB projectors were built from."""
-        from carcara.pseudopotentials.io import get_pseudopotential
+        from mandacaru.pseudopotentials.io import get_pseudopotential
 
         oxygen = get_pseudopotential("O")
         functions, _ = self._basis("DZP")
@@ -375,7 +375,7 @@ class TestBasisArgumentIsHonored:
     """The family is the basis name; its options are the size hierarchy."""
 
     def test_size_is_forwarded(self):
-        from carcara.algorithms._hamiltonian_from_atoms import (
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
         family, options = resolve_pseudo_basis(
@@ -384,7 +384,7 @@ class TestBasisArgumentIsHonored:
 
     @pytest.mark.parametrize("name", ["NCPP", "ncpp", "TM", "ncpp-tm"])
     def test_the_family_is_accepted_by_every_alias(self, name):
-        from carcara.algorithms._hamiltonian_from_atoms import (
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
         family, options = resolve_pseudo_basis(
@@ -392,7 +392,7 @@ class TestBasisArgumentIsHonored:
         assert family.name == "ncpp" and options == {"size": "DZ"}
 
     def test_all_electron_names_stay_all_electron(self):
-        from carcara.algorithms._hamiltonian_from_atoms import (
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
         assert resolve_pseudo_basis(*resolve_basis("FAO"), ["O"]) == (None, {})
@@ -401,13 +401,13 @@ class TestBasisArgumentIsHonored:
                                                         "size": "DZ"}])
     def test_the_retired_names_are_refused(self, basis):
         """``basis="PP"`` was the old spelling; it must not alias silently."""
-        from carcara.algorithms._hamiltonian_from_atoms import resolve_basis
+        from mandacaru.algorithms._hamiltonian_from_atoms import resolve_basis
 
         with pytest.raises(ValueError, match="no longer a basis name"):
             resolve_basis(basis)
 
     def test_options_of_other_families_are_refused(self):
-        from carcara.algorithms._hamiltonian_from_atoms import (
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
             build_basis_hamiltonian)
 
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
@@ -422,7 +422,7 @@ class TestPerElementSize:
     def test_size_mapping_gives_each_element_its_own_hierarchy(self):
         from ase import Atoms
         from ase.build import molecule
-        from carcara.algorithms.dry_run import estimate_qubits
+        from mandacaru.algorithms.dry_run import estimate_qubits
         complex_ = molecule("H2O") + Atoms("Na", positions=[[0, 0, 2.3]])
         complex_.center(vacuum=3.0)
         uniform = estimate_qubits(complex_,
@@ -450,7 +450,7 @@ class TestVariationalPseudoBases:
         return w
 
     def test_sizes_are_ordered_and_levels_physical(self, water):
-        from carcara.algorithms._hamiltonian_from_atoms import \
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
             build_basis_hamiltonian
         energies = {}
         for size in ("SZ", "DZ", "DZP"):
@@ -466,7 +466,7 @@ class TestVariationalPseudoBases:
         assert energies["DZP"] <= energies["DZ"] + 1e-8
 
     def test_kinetic_operator_is_selectable(self, water):
-        from carcara.algorithms._hamiltonian_from_atoms import (
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
             DEFAULT_KINETIC, build_basis_hamiltonian)
         assert DEFAULT_KINETIC["pseudopotentials"] == "fd"
         energies = {}
@@ -483,7 +483,7 @@ class TestVariationalPseudoBases:
         """The projectors' grid norms approach their radial norms as the grid
         is refined; on a coarse grid the check flags them."""
         from ase import Atoms
-        from carcara.algorithms._hamiltonian_from_atoms import \
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
             build_basis_hamiltonian
         oxygen = Atoms("O", positions=[[0, 0, 0]], cell=[5.0] * 3)
         ratios = {}

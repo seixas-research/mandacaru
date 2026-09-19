@@ -1,5 +1,5 @@
 {
-  "format": "carcara-qubit-hamiltonian",
+  "format": "mandacaru-qubit-hamiltonian",
   "version": 1,
   "num_qubits": 6,
   "mapping": "jordan_wigner",

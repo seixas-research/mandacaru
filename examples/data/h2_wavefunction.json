@@ -1,5 +1,5 @@
 {
- "format": "carcara-wavefunction-checkpoint",
+ "format": "mandacaru-wavefunction-checkpoint",
  "version": 1,
  "written": "2026-09-16T18:02:01+00:00",
  "energy_unit": "Ha",
@@ -175,7 +175,7 @@
  },
  "metadata": {
   "driver": "ADAPTVQE",
-  "carcara_version": "26.9.18",
+  "mandacaru_version": "26.9.18",
   "basis": "FAO",
   "optimizer": "L-BFGS-B",
   "geometry": {

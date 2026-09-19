@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/16_ADAPTVQE_LiH_dissociation.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -9,7 +9,7 @@
 r"""LiH potential energy curve with ADAPT-VQE: operator pools and qubit mappings.
 
 Scans the Li--H bond distance and, at every geometry, solves the *same*
-electronic problem with ``Carcara(method="adapt-vqe", ...)`` under
+electronic problem with ``Mandacaru(method="adapt-vqe", ...)`` under
 
 * four **operator pools** -- ``fermionic``, ``qubit``, ``qeb`` and ``ceo`` -- all
   under Jordan-Wigner, and
@@ -65,9 +65,9 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.basis import BasisSet
-from carcara.integrals import Grid
+from mandacaru.algorithms import Mandacaru
+from mandacaru.basis import BasisSet
+from mandacaru.integrals import Grid
 
 from pes_utils import atomic_reference
 
@@ -106,15 +106,15 @@ def lih(distance):
 def solve(distance, pool, mapping):
     """ADAPT-VQE total energy (eV) and operator count at one geometry."""
     atoms = lih(distance)
-    atoms.calc = Carcara(method="adapt-vqe",
-                         pool=pool,
-                         basis=BASIS,
-                         mapping=mapping,
-                         h=GRID_SPACING,
-                         optimizer="L-BFGS-B",
-                         profile=False,
-                         max_iterations=MAX_ITERATIONS,
-                         gradient_tolerance=1e-5)
+    atoms.calc = Mandacaru(method="adapt-vqe",
+                           pool=pool,
+                           basis=BASIS,
+                           mapping=mapping,
+                           h=GRID_SPACING,
+                           optimizer="L-BFGS-B",
+                           profile=False,
+                           max_iterations=MAX_ITERATIONS,
+                           gradient_tolerance=1e-5)
     atoms.get_total_energy()
     result = atoms.calc.result
     return result.optimal_energy, result.num_operators

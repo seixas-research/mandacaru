@@ -29,7 +29,7 @@ per step of configuration, iterations and timings going to the file instead.
 `trace=True` prints the trace anyway (a log file *and* a running commentary),
 and `trace=False` suppresses it even without a log file. A single-point run with
 the trace off prints nothing: the energy is the return value and the file has
-the rest. There is no `verbose` argument on `Carcara` — it is refused with a
+the rest. There is no `verbose` argument on `Mandacaru` — it is refused with a
 message pointing at `trace=`.
 
 ## The standard-output trace
@@ -90,17 +90,17 @@ they read `-`.
 ## The `output.txt` log
 
 `output=` writes the machine-readable protocol of
-{mod}`carcara.utils.logging`: the start-up banner, metadata, optimizer setup,
+{mod}`mandacaru.utils.logging`: the start-up banner, metadata, optimizer setup,
 one row per iteration, a summary, and -- when forces were computed -- the
 forces. Each iteration row names the **selected operator** and the setup block
 the **pool's size** -- not the pool's contents, for the same reason the trace
-does not. {func}`carcara.utils.logging.parse_output` reads it back.
+does not. {func}`mandacaru.utils.logging.parse_output` reads it back.
 
 ```python
-calc = Carcara(method="adapt-vqe",
-               basis="FAO",
-               h=0.25,
-               output="output.txt")
+calc = Mandacaru(method="adapt-vqe",
+                 basis="FAO",
+                 h=0.25,
+                 output="output.txt")
 ```
 
 ### A geometry optimization writes one log
@@ -138,7 +138,7 @@ geometry -- and the relaxation's own summary is the single block at the end.
 
 The section markers and the rules sit at column 0 and everything a block
 *contains* is indented one level of
-{data}`carcara.utils.logging.INDENT` (4 spaces), with a nested table or the
+{data}`mandacaru.utils.logging.INDENT` (4 spaces), with a nested table or the
 atoms under `geometry:` one level further -- so the structure of the file can be
 read off the left margin:
 
@@ -196,7 +196,7 @@ block; every step's own block is headed with its `step:` number. The first
 logger of a path in a process truncates the file, and every later one appends --
 so nothing a relaxation computed is erased, and a run picking up a path from an
 earlier run in the same process (a notebook cell) can start a fresh file with
-{func}`carcara.utils.logging.reset_log`.
+{func}`mandacaru.utils.logging.reset_log`.
 
 `[SYSTEM]` says *where the atoms are* and `[ELECTRONS]` *what was solved* --
 the configuration the standard-output header used to carry, which is why it is in
@@ -210,7 +210,7 @@ unchanged (`metadata` is kept as an alias of `system`, and a log written with th
 old `[METADATA]` marker still parses):
 
 ```python
-from carcara.utils import parse_output
+from mandacaru.utils import parse_output
 
 log = parse_output("output.txt")
 for step in log["steps"]:
@@ -282,7 +282,7 @@ and calling the method *and* letting the hook run still writes one summary.
 
 ### The forces block
 
-Whenever `Carcara` computes forces it appends them to the same log, under the
+Whenever `Mandacaru` computes forces it appends them to the same log, under the
 iteration table of the step they belong to (the solver's own log is already
 closed by then -- the gradient is taken after the variational run):
 
@@ -314,12 +314,12 @@ closed by then -- the gradient is taken after the variational run):
 
 `forces` is what ASE consumes ($-dE/dR$); `hellmann_feynman` and `pulay` are the
 gradient components ($+dE/dR$) in the convention of
-{class}`~carcara.algorithms.forces.ForceResult`, so the split between "the
+{class}`~mandacaru.algorithms.forces.ForceResult`, so the split between "the
 operators moved" and "the basis functions moved" can be read off per atom.
 `max_force` is the number an ASE optimizer converges on, and the two residuals
 are the honest measures of whether the gradient is usable for geometry at all:
 `orbital_gradient` is the orbital response the RDM gradient neglects
-({data}`~carcara.algorithms.calculator.ORBITAL_RESPONSE_TOLERANCE` is where it
+({data}`~mandacaru.algorithms.calculator.ORBITAL_RESPONSE_TOLERANCE` is where it
 starts warning) and `net_force` is the grid's egg-box
 -- a free molecule feels no net force, so whatever appears there is
 discretization artifact.
@@ -364,7 +364,7 @@ therefore monotonic across a relaxation; `resident_memory_MiB` is what is
 resident at the end of *this* step, so the two together show whether a stage
 allocated and released. `openmp_threads` is what the C integral backend used
 against the `cpu_count` the machine offers, and `mpi` states plainly that there
-is no distributed parallelism -- Carcará is a single process.
+is no distributed parallelism -- Mandacaru is a single process.
 
 When a run reaches a quantum processor the block also carries the QPU
 accounting:
@@ -392,11 +392,11 @@ whole block back as `result["performance"]`, with the stages as
 Two options write what the trace leaves out, as JSON, once per run:
 
 ```python
-calc = Carcara(method="adapt-vqe",
-               basis="FAO",
-               h=0.25,
-               verbose_operators=True,      # -> pool.json
-               verbose_hamiltonian=True)    # -> hamiltonian.inspect.json
+calc = Mandacaru(method="adapt-vqe",
+                 basis="FAO",
+                 h=0.25,
+                 verbose_operators=True,      # -> pool.json
+                 verbose_hamiltonian=True)    # -> hamiltonian.inspect.json
 ```
 
 `pool.json` carries the pool's name and size and, for every operator, its
@@ -409,26 +409,26 @@ Either option also takes a path, which is how a scan gives each geometry its
 own file:
 
 ```python
-calc = Carcara(method="adapt-vqe",
-               basis="FAO",
-               h=0.25,
-               verbose_operators=f"data/pool_{distance:.2f}.json",
-               verbose_hamiltonian=f"data/hamiltonian_{distance:.2f}.json")
+calc = Mandacaru(method="adapt-vqe",
+                 basis="FAO",
+                 h=0.25,
+                 verbose_operators=f"data/pool_{distance:.2f}.json",
+                 verbose_hamiltonian=f"data/hamiltonian_{distance:.2f}.json")
 ```
 
 Both are capped at
-{data}`carcara.core.serialization.MAX_FILE_QUBITS` qubits: above that the file
+{data}`mandacaru.core.serialization.MAX_FILE_QUBITS` qubits: above that the file
 is skipped with a `RuntimeWarning` and the run continues.
 
 The same flags exist on the command line:
 
 ```bash
-carcara LiH --cell 10 --verbose-operators --verbose-hamiltonian
-carcara LiH --cell 10 --verbose-operators data/pool.json
+mandacaru LiH --cell 10 --verbose-operators --verbose-hamiltonian
+mandacaru LiH --cell 10 --verbose-operators data/pool.json
 ```
 
 ```{note}
-`verbose_hamiltonian` writes a file for *reading*. To write one Carcará can
+`verbose_hamiltonian` writes a file for *reading*. To write one Mandacaru can
 read *back* -- skipping the integrals and the fermion-to-qubit mapping on the
 next run -- use `save_hamiltonian=` and `load_hamiltonian=` instead; see
 [the Hamiltonian cache](hamiltonian_cache.md).

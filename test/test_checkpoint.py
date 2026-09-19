@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_checkpoint.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -23,10 +23,10 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara import Carcara
-from carcara.algorithms import ADAPTVQE, VQE
-from carcara.core import PauliSum, WavefunctionCheckpoint, load_checkpoint
-from carcara.core.checkpoint import prepare_state, reference_vector
+from mandacaru import Mandacaru
+from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.core import PauliSum, WavefunctionCheckpoint, load_checkpoint
+from mandacaru.core.checkpoint import prepare_state, reference_vector
 
 
 def h2(distance=0.74):
@@ -190,7 +190,7 @@ class TestAdaptResume:
         qeb run adopts its own operator for it; a single Pauli string from the
         qubit pool is no qeb generator and is applied exactly as stored.
         """
-        from carcara.core import load_checkpoint as load
+        from mandacaru.core import load_checkpoint as load
 
         fermionic = str(tmp_path / "fermionic.json")
         atoms = h2()
@@ -303,18 +303,18 @@ class TestCalculator:
     def test_options_pass_through_and_warm_start_a_relaxation(self, tmp_path):
         path = str(tmp_path / "relax.json")
         atoms = h2(0.74)
-        atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
-                             h=0.4, profile=False,
-                             max_iterations=6, checkpoint=path, resume=None)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="FAO",
+                               h=0.4, profile=False,
+                               max_iterations=6, checkpoint=path, resume=None)
         atoms.get_potential_energy()
         first = load_checkpoint(path)
         assert first.metadata["geometry"]["positions_angstrom"][1][2] == \
             pytest.approx(atoms.positions[1, 2])
 
         # A second geometry resumes from the first one's state (same file).
-        atoms.calc = Carcara(method="adapt-vqe", pool="qeb", basis="FAO",
-                             h=0.4, profile=False,
-                             max_iterations=8, checkpoint=path, resume=path)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="FAO",
+                               h=0.4, profile=False,
+                               max_iterations=8, checkpoint=path, resume=path)
         atoms.positions[1, 2] += 0.05
         atoms.get_potential_energy()
         second = load_checkpoint(path)

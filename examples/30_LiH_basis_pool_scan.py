@@ -1,6 +1,6 @@
 """Reproduce the documentation's LiH basis and operator-pool comparison.
 
-Run from the repository root after installing Carcará::
+Run from the repository root after installing Mandacaru::
 
     python examples/30_LiH_basis_pool_scan.py
     python examples/30_LiH_basis_pool_scan.py --plot-only
@@ -36,14 +36,14 @@ def calculate(output: Path, spacing: float, half_width: float,
               points: int, max_iterations: int) -> None:
     """Calculate every point and retain its convergence information."""
     import ase
-    import carcara
+    import mandacaru
     import scipy
     from ase import Atoms
-    from carcara.algorithms import Carcara
-    from carcara.core.sector import ParticleSector
-    from carcara.integrals import Grid
-    from carcara.optimizers import Optimizer
-    from carcara.units import BOHR_TO_ANGSTROM
+    from mandacaru.algorithms import Mandacaru
+    from mandacaru.core.sector import ParticleSector
+    from mandacaru.integrals import Grid
+    from mandacaru.optimizers import Optimizer
+    from mandacaru.units import BOHR_TO_ANGSTROM
 
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=half_width, h=spacing)
     actual_spacing = float(grid.dz * BOHR_TO_ANGSTROM)
@@ -53,7 +53,7 @@ def calculate(output: Path, spacing: float, half_width: float,
 
     metadata = {
         "description": "Calculated LiH total energies; numerical teaching example",
-        "carcara_version": carcara.__version__,
+        "mandacaru_version": mandacaru.__version__,
         "python_version": platform.python_version(),
         "numpy_version": np.__version__,
         "scipy_version": scipy.__version__,
@@ -80,7 +80,7 @@ def calculate(output: Path, spacing: float, half_width: float,
     with (output / "energies.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS, lineterminator="\n")
         writer.writeheader()
-        with tempfile.TemporaryDirectory(prefix="carcara-lih-") as directory:
+        with tempfile.TemporaryDirectory(prefix="mandacaru-lih-") as directory:
             for basis in BASES:
                 for index, distance in enumerate(distances):
                     atoms = Atoms(
@@ -99,7 +99,7 @@ def calculate(output: Path, spacing: float, half_width: float,
                             execute_circuits=False, profile=False,
                         )
                         if pool == POOLS[0]:
-                            calc = Carcara(
+                            calc = Mandacaru(
                                 **settings, basis=basis, grid=grid, h=spacing,
                                 frozen_core=True, mapping="jordan_wigner",
                                 save_hamiltonian=cache, hamiltonian_format="json",
@@ -108,7 +108,7 @@ def calculate(output: Path, spacing: float, half_width: float,
                             atoms.get_potential_energy()
                             result = calc.result
                         else:
-                            calc = Carcara(**settings, load_hamiltonian=cache)
+                            calc = Mandacaru(**settings, load_hamiltonian=cache)
                             result = calc.run()
                         if not np.isfinite(result.optimal_energy):
                             raise RuntimeError(f"Non-finite energy: {basis}, {pool}, {distance}")
@@ -174,7 +174,7 @@ def plot(output: Path) -> None:
                 if not good.all():
                     ax.scatter(distances[~good], values[~good], color="black",
                                marker="x", s=65, zorder=10)
-        axes[0, column].set_title(f"Carcará {basis} · {reference_rows[0]['n_qubits']} qubits")
+        axes[0, column].set_title(f"Mandacaru {basis} · {reference_rows[0]['n_qubits']} qubits")
         axes[0, column].set_ylabel("Total energy (eV)")
         axes[0, column].ticklabel_format(useOffset=False, axis="y")
         axes[0, column].legend(frameon=False, fontsize=9)

@@ -7,13 +7,13 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import VQE, VQEResult
-from carcara.circuits import UCCSD, double_excitation, single_excitation
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.core.mapping import PauliSum
-from carcara.integrals import Grid
-from carcara.optimizers import Optimizer
-from carcara.units import HARTREE_TO_EV
+from mandacaru.algorithms import VQE, VQEResult
+from mandacaru.circuits import UCCSD, double_excitation, single_excitation
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.core.mapping import PauliSum
+from mandacaru.integrals import Grid
+from mandacaru.optimizers import Optimizer
+from mandacaru.units import HARTREE_TO_EV
 
 CHEMICAL_ACCURACY = 1.6e-3 * HARTREE_TO_EV  # 0.043 eV (results are in eV)
 

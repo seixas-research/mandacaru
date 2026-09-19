@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/31_QPE_H2_from_checkpoint.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -33,9 +33,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from ase import Atoms
 
-from carcara import Carcara
-from carcara.algorithms import QuantumPhaseEstimation, qpe_memory_estimate
-from carcara.core import load_checkpoint
+from mandacaru import Mandacaru
+from mandacaru.algorithms import QuantumPhaseEstimation, qpe_memory_estimate
+from mandacaru.core import load_checkpoint
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
@@ -45,13 +45,13 @@ CHECKPOINT = os.path.join(DATA, "h2_wavefunction.json")
 atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]],
               cell=[6.0, 6.0, 6.0])
 atoms.center()
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis="FAO",
-                     h=0.25,
-                     pool="fermionic",
-                     optimizer="L-BFGS-B",
-                     gradient_tolerance=1e-6,
-                     checkpoint=CHECKPOINT)       # written after every operator
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="FAO",
+                       h=0.25,
+                       pool="fermionic",
+                       optimizer="L-BFGS-B",
+                       gradient_tolerance=1e-6,
+                       checkpoint=CHECKPOINT)       # written after every operator
 energy = atoms.get_potential_energy()
 print(f"ADAPT-VQE: E = {energy:.6f} eV with "
       f"{atoms.calc.result.num_operators} operators -> {CHECKPOINT}")

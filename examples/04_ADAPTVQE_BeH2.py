@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/04_ADAPTVQE_BeH2.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -14,8 +14,8 @@ hydrogens symmetric about the central beryllium along ``z``.  With
 (Be {1s, 2s} + 2 H {1s} = 4 spatial orbitals), and ``frozen_core=True`` freezes
 the Be ``1s`` core -- leaving a 3-orbital / 6-qubit active space with 4 active
 electrons (a ``(2, 2)`` closed shell).  The solver is attached through
-:class:`~carcara.algorithms.Carcara`
-(``atoms.calc = Carcara(method="adapt-vqe", ...)``);
+:class:`~mandacaru.algorithms.Mandacaru`
+(``atoms.calc = Mandacaru(method="adapt-vqe", ...)``);
 ``atoms.get_total_energy()`` then drives ADAPT-VQE with the CEO pool and returns
 the energy in **eV**, with the full run result on ``atoms.calc.result``.
 
@@ -34,8 +34,8 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.units import HARTREE_TO_EV, from_hartree
+from mandacaru.algorithms import Mandacaru
+from mandacaru.units import HARTREE_TO_EV, from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -51,17 +51,17 @@ atoms = Atoms("BeH2",
               cell=[[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
               pbc=True)
 
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool="ceo",
-                     basis={"name": "FAO"},
-                     sparse=True,
-                     mapping="jordan_wigner",
-                     gradient="parameter-shift",
-                     frozen_core=True,   # freeze the Be 1s core
-                     h=0.10,
-                     max_iterations=25,
-                     gradient_tolerance=1e-3,
-                     output=os.path.join(DATA, "output_BeH2.txt"))
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool="ceo",
+                       basis={"name": "FAO"},
+                       sparse=True,
+                       mapping="jordan_wigner",
+                       gradient="parameter-shift",
+                       frozen_core=True,   # freeze the Be 1s core
+                       h=0.10,
+                       max_iterations=25,
+                       gradient_tolerance=1e-3,
+                       output=os.path.join(DATA, "output_BeH2.txt"))
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)

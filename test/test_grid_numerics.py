@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_grid_numerics.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -29,14 +29,14 @@ import numpy as np
 import pytest
 from ase.build import molecule
 
-from carcara.algorithms import RHF, UHF
-from carcara.algorithms._hamiltonian_from_atoms import (build_basis_hamiltonian,
-                                                        coherent_positions)
-from carcara.basis import BasisSet, GaussianOrbital
-from carcara.basis.multizeta import zeta_tables
-from carcara.basis.nao import solve_confined_radial
-from carcara.core import MolecularIntegrals
-from carcara.integrals import Grid, IntegralEngine
+from mandacaru.algorithms import RHF, UHF
+from mandacaru.algorithms._hamiltonian_from_atoms import (build_basis_hamiltonian,
+                                                          coherent_positions)
+from mandacaru.basis import BasisSet, GaussianOrbital
+from mandacaru.basis.multizeta import zeta_tables
+from mandacaru.basis.nao import solve_confined_radial
+from mandacaru.core import MolecularIntegrals
+from mandacaru.integrals import Grid, IntegralEngine
 
 
 def _water_integrals(h=0.30, orthogonalize=True, **kw):
@@ -204,14 +204,14 @@ class TestSpectralKinetic:
 
     def test_drivers_accept_the_option(self):
         from ase import Atoms
-        from carcara.algorithms import Carcara
+        from mandacaru.algorithms import Mandacaru
         h2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
-        h2.calc = Carcara(method="vqe", basis="FAO", h=0.35, kinetic="spectral", optimizer="L-BFGS-B")
+        h2.calc = Mandacaru(method="vqe", basis="FAO", h=0.35, kinetic="spectral", optimizer="L-BFGS-B")
         e_sp = h2.get_potential_energy()
-        h2.calc = Carcara(method="vqe", basis="FAO", h=0.35, kinetic="fd", optimizer="L-BFGS-B")
+        h2.calc = Mandacaru(method="vqe", basis="FAO", h=0.35, kinetic="fd", optimizer="L-BFGS-B")
         e_fd = h2.get_potential_energy()
         assert abs(e_sp - e_fd) < 2.0                # same physics, finite grid
-        from carcara.algorithms import VQE
+        from mandacaru.algorithms import VQE
         with pytest.raises(ValueError):
             VQE(kinetic="fourier", verbose=False)
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_dry_run.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -23,12 +23,12 @@ import pytest
 from ase import Atoms
 from ase.build import molecule
 
-from carcara.algorithms import (ADAPTVQE, VQE, Carcara,
-                                QubitEstimate, SubspaceVQE,
-                                count_basis_functions, estimate_qubits)
-from carcara.algorithms.base import VariationalDriver
-from carcara.basis import BasisSet
-from carcara.cli import main
+from mandacaru.algorithms import (ADAPTVQE, VQE, Mandacaru,
+                                  QubitEstimate, SubspaceVQE,
+                                  count_basis_functions, estimate_qubits)
+from mandacaru.algorithms.base import VariationalDriver
+from mandacaru.basis import BasisSet
+from mandacaru.cli import main
 
 
 def _h2(R=0.74, box=6.0):
@@ -119,8 +119,8 @@ class TestEstimate:
         enlarge the valence basis exactly as a run would build it -- a 46-qubit
         water estimate is what makes the dry run indispensable here, since no
         state-vector driver could materialize that register."""
-        from carcara.pseudopotentials.families import lookup_family
-        from carcara.pseudopotentials.orbitals import pseudo_basis
+        from mandacaru.pseudopotentials.families import lookup_family
+        from mandacaru.pseudopotentials.orbitals import pseudo_basis
         water = _boxed("H2O")
         est = estimate_qubits(water, basis=basis)
         assert est.n_qubits == expected and est.per_atom == per_atom
@@ -136,7 +136,7 @@ class TestEstimate:
         assert est.n_qubits == 2 * len(fns)
 
     def test_plane_waves_match_the_engine(self):
-        from carcara.core import PlaneWaveIntegrals
+        from mandacaru.core import PlaneWaveIntegrals
         cell = np.diag([3.0, 3.0, 3.0])
         atoms = Atoms("H2", positions=[[1.1, 1.5, 1.5], [1.9, 1.5, 1.5]],
                       cell=cell, pbc=True)
@@ -193,7 +193,7 @@ class TestDevices:
         assert any("shots > 0" in n for n in est.notes)
 
     def test_registry_exposes_capacities(self):
-        from carcara.backends.hardware import device_qubits
+        from mandacaru.backends.hardware import device_qubits
         assert device_qubits("braket-ionq-forte") == 36
         assert device_qubits("braket-rigetti-ankaa") == 84
         assert device_qubits("AER_simulator") is None
@@ -240,7 +240,7 @@ class TestAgainstRealRuns:
         lih = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7.0] * 3)
         est = estimate_qubits(lih, frozen_core=True)
         assert est.n_qubits == 4 and est.n_frozen_orbitals == 1
-        from carcara.algorithms._hamiltonian_from_atoms import \
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
             build_basis_hamiltonian
         h, particles, n_orb, _profile, _ctx = build_basis_hamiltonian(
             lih, "FAO", None, 0.4, 0, None, frozen_core=True)
@@ -260,7 +260,7 @@ def _forbid_execution(monkeypatch):
     monkeypatch.setattr(VariationalDriver, "_build_hamiltonian", boom)
     monkeypatch.setattr(VariationalDriver, "_make_timings", boom)
     monkeypatch.setattr(VariationalDriver, "_configure", boom)
-    import carcara.algorithms.base as base
+    import mandacaru.algorithms.base as base
     monkeypatch.setattr(base, "build_provider", boom)
 
 
@@ -268,7 +268,7 @@ class TestEarlyStop:
     def test_ase_hook_stops_before_the_hamiltonian(self, monkeypatch):
         _forbid_execution(monkeypatch)
         atoms = _h2()
-        atoms.calc = Carcara(dry_run=True)
+        atoms.calc = Mandacaru(dry_run=True)
         energy = atoms.get_potential_energy()
         assert np.isnan(energy)
         assert atoms.calc.result is None
@@ -278,7 +278,7 @@ class TestEarlyStop:
     def test_forces_are_nan_in_a_dry_run(self, monkeypatch):
         _forbid_execution(monkeypatch)
         atoms = _h2()
-        atoms.calc = Carcara(dry_run=True)
+        atoms.calc = Mandacaru(dry_run=True)
         forces = atoms.get_forces()
         assert forces.shape == (2, 3) and np.isnan(forces).all()
 
@@ -287,13 +287,13 @@ class TestEarlyStop:
     def test_every_method_honors_dry_run(self, monkeypatch, method):
         _forbid_execution(monkeypatch)
         atoms = _h2()
-        atoms.calc = Carcara(method=method, dry_run=True)
+        atoms.calc = Mandacaru(method=method, dry_run=True)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.method == method
 
     def test_direct_mode_run_returns_the_estimate(self, monkeypatch):
-        from carcara.core import MolecularIntegrals, minimal_fao_basis
-        from carcara.integrals import Grid
+        from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+        from mandacaru.integrals import Grid
         nuclei = [(1.0, np.array([0.0, 0.0, -0.37])),
                   (1.0, np.array([0.0, 0.0, 0.37]))]
         grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.4)
@@ -309,7 +309,7 @@ class TestEarlyStop:
         est = driver.run()
         assert isinstance(est, QubitEstimate) and est.n_qubits == 4
         assert est.source == "hamiltonian" and driver.result is None
-        from carcara.circuits import UCCSD
+        from mandacaru.circuits import UCCSD
         vqe = VQE(h, UCCSD(2, (1, 1)), verbose=False, dry_run=True)
         assert vqe.run().n_qubits == 4
         sub = SubspaceVQE(h, UCCSD(2, (1, 1)), num_states=2, verbose=False,
@@ -323,8 +323,8 @@ class TestEarlyStop:
         so asking whether a 40-qubit problem fits would first try to allocate
         it.
         """
-        from carcara.core import PauliSum
-        from carcara.core.serialization import save_hamiltonian
+        from mandacaru.core import PauliSum
+        from mandacaru.core.serialization import save_hamiltonian
 
         for name in ("to_matrix", "to_sparse_matrix"):
             monkeypatch.setattr(
@@ -343,8 +343,8 @@ class TestEarlyStop:
 
     def test_a_cached_tapered_estimate_is_not_reduced_twice(self, tmp_path):
         """The stored width of a tapered file is already the reduced one."""
-        from carcara.core import PauliSum
-        from carcara.core.serialization import save_hamiltonian
+        from mandacaru.core import PauliSum
+        from mandacaru.core.serialization import save_hamiltonian
 
         path = save_hamiltonian(tmp_path / "tapered.json",
                                 PauliSum({"II": -1.0, "ZI": 0.2}),
@@ -360,19 +360,19 @@ class TestEarlyStop:
     def test_reserved_device_and_qpu_do_not_raise(self, monkeypatch):
         _forbid_execution(monkeypatch)
         atoms = _h2()
-        atoms.calc = Carcara(dry_run=True,
+        atoms.calc = Mandacaru(dry_run=True,
                                        device="ibm-quantum")
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.device == "ibm-quantum"
         # A Braket QPU with shots: the shot path would build a provider.
-        atoms.calc = Carcara(method="vqe", dry_run=True,
+        atoms.calc = Mandacaru(method="vqe", dry_run=True,
                                        device="braket-ionq-aria", shots=100)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.fits_device is True
 
     def test_verbose_dry_run_prints_the_summary(self, capsys):
         atoms = _h2()
-        atoms.calc = Carcara(dry_run=True)
+        atoms.calc = Mandacaru(dry_run=True)
         atoms.get_potential_energy()
         out = capsys.readouterr().out
         assert "QUBITS REQUIRED   : 4" in out
@@ -380,7 +380,7 @@ class TestEarlyStop:
 
     def test_calculator_dry_run_method_is_one_off(self, monkeypatch):
         _forbid_execution(monkeypatch)
-        calc = Carcara(frozen_core=True)
+        calc = Mandacaru(frozen_core=True)
         est = calc.dry_run(_boxed("H2O"))
         assert est.n_qubits == 12
         assert calc.dry_run_result is est and calc.result is None
@@ -459,7 +459,7 @@ class TestCLI:
             main(["H2", "--cell", "5", "5", "--dry-run", "--json"])
 
     def test_cell_flag_boxes_the_molecule(self, capsys, monkeypatch):
-        from carcara.cli import load_geometry, parse_cell
+        from mandacaru.cli import load_geometry, parse_cell
         _forbid_execution(monkeypatch)
         assert main(["H2", "--cell", "5", "--dry-run", "--json"]) == 0
         assert json.loads(capsys.readouterr().out)["n_qubits"] == 4

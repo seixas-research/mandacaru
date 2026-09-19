@@ -4,7 +4,7 @@
 import numpy as np
 import pytest
 
-from carcara.core.mapping import (
+from mandacaru.core.mapping import (
     Fermion,
     PauliSum,
     bravyi_kitaev,

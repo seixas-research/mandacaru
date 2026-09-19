@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 # file: test/test_nao_ae.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
 """All-electron numerical atomic orbitals (NAO-AE).
 
-Pins the construction in :mod:`carcara.basis.nao_ae`: the smooth confining
+Pins the construction in :mod:`mandacaru.basis.nao_ae`: the smooth confining
 wall, the hydrogen-like sizing rule, the all-electron minimal basis, the tier
 specification, the per-channel Gram-Schmidt, the factory wiring, and the
 variational payoff of the tiers at Hartree-Fock.
@@ -17,18 +17,18 @@ variational payoff of the tiers at Hartree-Fock.
 import numpy as np
 import pytest
 
-from carcara.basis import BasisSet, NAOAEBasisSet
-from carcara.basis import nao_ae
-from carcara.basis.multizeta import TabulatedOrbital
-from carcara.basis.nao_ae import (RadialFunction, build_species,
-                                  confined_atom, confinement_potential,
-                                  effective_charge_for_radius,
-                                  hydrogenic_function, hydrogenic_mean_radius,
-                                  mean_radius, minimal_functions,
-                                  orthonormalize, tier_specification)
-from carcara.core import MolecularIntegrals
-from carcara.integrals import Grid
-from carcara.units import to_bohr
+from mandacaru.basis import BasisSet, NAOAEBasisSet
+from mandacaru.basis import nao_ae
+from mandacaru.basis.multizeta import TabulatedOrbital
+from mandacaru.basis.nao_ae import (RadialFunction, build_species,
+                                    confined_atom, confinement_potential,
+                                    effective_charge_for_radius,
+                                    hydrogenic_function, hydrogenic_mean_radius,
+                                    mean_radius, minimal_functions,
+                                    orthonormalize, tier_specification)
+from mandacaru.core import MolecularIntegrals
+from mandacaru.integrals import Grid
+from mandacaru.units import to_bohr
 
 R = np.linspace(0.005, 12.0, 2400)
 
@@ -148,7 +148,7 @@ class TestMinimalBasis:
         assert confined.details["confined"] is True
         # The 1s of oxygen never reaches the wall; only the slightly confined
         # valence density (through the Hartree term) shifts it, by < 1 mHa.
-        from carcara.basis.atomic_solver import solve_atom
+        from mandacaru.basis.atomic_solver import solve_atom
         free = solve_atom(8)
         assert confined.eigenvalues[(1, 0)] == pytest.approx(
             free.eigenvalues[(1, 0)], abs=5e-3)
@@ -306,7 +306,7 @@ class TestBasisSet:
 
     def test_qubit_estimate_uses_it(self):
         from ase.build import molecule
-        from carcara.algorithms import estimate_qubits
+        from mandacaru.algorithms import estimate_qubits
         water = molecule("H2O")
         water.center(vacuum=3.0)
         est = estimate_qubits(water, basis={"name": "NAO-AE", "tier": 1})
@@ -314,7 +314,7 @@ class TestBasisSet:
         assert est.n_qubits == 48
 
     def test_cannot_be_mixed_with_a_pseudopotential_family(self):
-        from carcara.algorithms._hamiltonian_from_atoms import \
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
             resolve_pseudo_basis
         with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
             resolve_pseudo_basis("per-element",

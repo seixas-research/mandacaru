@@ -68,7 +68,7 @@ E_{\mathrm{nuc}} &= \sum_{A<B}\frac{Z_AZ_B}{|\mathbf R_A-\mathbf R_B|}.
 \end{aligned}
 ```
 
-The ideal Coulomb expressions explain the model. Carcará evaluates integrals on
+The ideal Coulomb expressions explain the model. Mandacaru evaluates integrals on
 a finite grid and uses numerical treatments of nuclear singularities, so a grid
 convergence study remains necessary. Its low-level integral arrays are in atomic
 units; the tutorial's result objects report eV.
@@ -81,7 +81,7 @@ count is not equivalent.
 
 ## Map fermions to qubits
 
-Carcará supports Jordan–Wigner, parity and Bravyi–Kitaev mappings. For zero-based
+Mandacaru supports Jordan–Wigner, parity and Bravyi–Kitaev mappings. For zero-based
 orbital indices, the Jordan–Wigner operators can be written
 
 ```{math}

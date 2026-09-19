@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/03_ADAPTVQE_H2O.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -19,8 +19,8 @@ At 12 qubits a *dense* operator pool would need tens of GB, so ADAPT-VQE
 automatically switches to its **sparse** pool (``sparse="auto"``): the generators
 are kept as sparse matrices and screened with the exact analytic gradient, and
 only the few selected operators are ever densified.  The solver is driven
-through :class:`~carcara.algorithms.Carcara`
-(``atoms.calc = Carcara(method="adapt-vqe", ...)``);
+through :class:`~mandacaru.algorithms.Mandacaru`
+(``atoms.calc = Mandacaru(method="adapt-vqe", ...)``);
 ``atoms.get_total_energy()`` returns the energy in **eV** and the full run
 result is on ``atoms.calc.result``.
 
@@ -42,8 +42,8 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.units import from_hartree
+from mandacaru.algorithms import Mandacaru
+from mandacaru.units import from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -81,16 +81,16 @@ atoms = Atoms("OH2",
               cell=[[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
               pbc=True)
 
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool="fermionic",
-                     basis={"name": "FAO"},
-                     mapping="jordan_wigner",
-                     frozen_core=True,   # freeze the oxygen 1s core
-                     h=0.30,
-                     max_iterations=20,
-                     gradient_tolerance=1e-3,
-                     profile=False,   # skip per-iteration circuit transpile
-                     output=os.path.join(DATA, "output_H2O.txt"))
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool="fermionic",
+                       basis={"name": "FAO"},
+                       mapping="jordan_wigner",
+                       frozen_core=True,   # freeze the oxygen 1s core
+                       h=0.30,
+                       max_iterations=20,
+                       gradient_tolerance=1e-3,
+                       profile=False,   # skip per-iteration circuit transpile
+                       output=os.path.join(DATA, "output_H2O.txt"))
 # (expressibility sampling is off by default -- it is a diagnostic whose cost
 #  grows quadratically over a run.  Pass run_options={"log_expressivity": True}
 #  to add the `expr` column.)

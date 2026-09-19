@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/27_pseudopotential_calculations.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -21,14 +21,14 @@ from an all-electron calculation to a **valence-only** one:
 
 .. code-block:: python
 
-    atoms.calc = Carcara(method="adapt-vqe",
+    atoms.calc = Mandacaru(method="adapt-vqe",
                          basis="NCPP",
                          h=0.15)
 
 The bundled NCPP library covers every element up to uranium and is loaded
-automatically; the ONCVPSP and PAW datasets live in the ``carcara-oncvpsp`` /
-``carcara-paw`` repositories and are linked in with
-``python -m carcara.pseudopotentials.link_library``.
+automatically; the ONCVPSP and PAW datasets live in the ``mandacaru-oncvpsp`` /
+``mandacaru-paw`` repositories and are linked in with
+``python -m mandacaru.pseudopotentials.link_library``.
 
 What this script measures
 -------------------------
@@ -49,13 +49,13 @@ import time
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.integrals import Grid
-from carcara.pseudopotentials import family_names
-from carcara.pseudopotentials.io import available_elements, get_pseudopotential
-from carcara.pseudopotentials.oncv import oncv_library_path
-from carcara.pseudopotentials.paw import paw_library_path
-from carcara.units import BOHR_TO_ANGSTROM
+from mandacaru.algorithms import Mandacaru
+from mandacaru.integrals import Grid
+from mandacaru.pseudopotentials import family_names
+from mandacaru.pseudopotentials.io import available_elements, get_pseudopotential
+from mandacaru.pseudopotentials.oncv import oncv_library_path
+from mandacaru.pseudopotentials.paw import paw_library_path
+from mandacaru.units import BOHR_TO_ANGSTROM
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
@@ -67,7 +67,7 @@ RULE = "=" * 76
 # --------------------------------------------------------------------------- #
 
 print(RULE)
-print("1. The pseudopotential library (carcara/pseudopotentials/library/)")
+print("1. The pseudopotential library (mandacaru/pseudopotentials/library/)")
 print(RULE)
 elements = available_elements()
 print(f"families: {', '.join(family_names())}")
@@ -101,9 +101,9 @@ for label, basis in FAMILIES:
         continue
     atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
     start = time.perf_counter()
-    atoms.calc = Carcara(method="vqe",
-                         basis=basis,
-                         grid=grid)
+    atoms.calc = Mandacaru(method="vqe",
+                           basis=basis,
+                           grid=grid)
     energy = atoms.get_potential_energy()
     print(f"  {label:<26} E = {energy:>12.4f} eV   "
           f"{atoms.calc.n_qubits} qubits   "
@@ -126,14 +126,14 @@ def isolated_force(spacing, use_pseudopotentials):
     box = Grid(center=[0, 0, 0], box_size=6.0, h=spacing)
     shift = 0.37 * box.dx * BOHR_TO_ANGSTROM
     atoms = Atoms("O", positions=[[shift, 0.0, 0.0]])
-    atoms.calc = Carcara(method="adapt-vqe",
-                         basis="NCPP" if use_pseudopotentials else "FAO",
-                         grid=box,
-                         frozen_core=not use_pseudopotentials,
-                         pool="qeb",
-                         max_iterations=6,
-                         gradient_tolerance=1e-3,
-                         profile=False)
+    atoms.calc = Mandacaru(method="adapt-vqe",
+                           basis="NCPP" if use_pseudopotentials else "FAO",
+                           grid=box,
+                           frozen_core=not use_pseudopotentials,
+                           pool="qeb",
+                           max_iterations=6,
+                           gradient_tolerance=1e-3,
+                           profile=False)
     atoms.get_potential_energy()
     return float(np.abs(atoms.get_forces()).max())
 
@@ -170,13 +170,13 @@ water = Atoms("OH2", positions=[[0.0, 0.0, 0.0],
 water_grid = Grid(center=water.get_positions().mean(axis=0), box_size=8.0,
                   h=0.15)
 start = time.perf_counter()
-water.calc = Carcara(method="adapt-vqe",
-                     basis={"name": "NCPP", "size": "SZ"},
-                     grid=water_grid,
-                     pool="qeb",
-                     max_iterations=12,
-                     gradient_tolerance=1e-3,
-                     profile=False)
+water.calc = Mandacaru(method="adapt-vqe",
+                       basis={"name": "NCPP", "size": "SZ"},
+                       grid=water_grid,
+                       pool="qeb",
+                       max_iterations=12,
+                       gradient_tolerance=1e-3,
+                       profile=False)
 energy = water.get_potential_energy()
 print(f"  E = {energy:.4f} eV   {water.calc.n_qubits} qubits   "
       f"num_particles = {water.calc.num_particles}   "

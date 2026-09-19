@@ -1,19 +1,19 @@
 # Pseudopotentials
 
 A pseudopotential replaces an atom's core electrons and the singular $-Z/r$
-potential by a smooth, valence-only problem. In Carcará a pseudopotential
+potential by a smooth, valence-only problem. In Mandacaru a pseudopotential
 **family is a basis name**, selected exactly like `"FAO"` or `"cc-pVTZ"`:
 
 ```python
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis="NCPP",        # norm-conserving Troullier-Martins
-                     h=0.15)
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis="ONCVPSP",     # Hamann's optimised norm-conserving Vanderbilt
-                     h=0.25)
-atoms.calc = Carcara(method="vqe",
-                     basis={"name": "PAW", "size": "DZP"},   # Bloechl's PAW, polarised double zeta
-                     h=0.25)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="NCPP",        # norm-conserving Troullier-Martins
+                       h=0.15)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="ONCVPSP",     # Hamann's optimised norm-conserving Vanderbilt
+                       h=0.25)
+atoms.calc = Mandacaru(method="vqe",
+                       basis={"name": "PAW", "size": "DZP"},   # Bloechl's PAW, polarised double zeta
+                       h=0.25)
 ```
 
 That basis turns an all-electron calculation into a valence-only one: the core
@@ -22,21 +22,21 @@ smooth pseudo-atomic orbitals — with the same `size` hierarchy as the
 [NAO family](basis_sets.md) as its options — and the singular $-Z/r$ external
 potential is replaced by a bounded local channel plus the family's projectors.
 Every driver, `interaction_energy`, `BlochCalculator`, the dry run and the
-command line (`carcara H2O --cell 8 --basis PAW --basis-option size=DZP`)
+command line (`mandacaru H2O --cell 8 --basis PAW --basis-option size=DZP`)
 accept the names; `frozen_core` is refused with them as redundant. There is no
 separate switch: the family is the basis, and the retired `"PP"` basis name
 raises an error that names the families instead of aliasing to one.
 
 ## Families
 
-Four families are shipped, all generated from scratch by Carcará's own LDA
-radial atomic solver (`carcara.basis.atomic_solver`):
+Four families are shipped, all generated from scratch by Mandacaru's own LDA
+radial atomic solver (`mandacaru.basis.atomic_solver`):
 
 | Basis name | Aliases | Family | Projectors | Overlap | Library |
 |---|---|---|---|---|---|
 | `"NCPP"` | `"TM"`, `"NCPP-TM"` | Troullier–Martins norm-conserving, Kleinman–Bylander separable form | one per channel | none | bundled, H–U |
-| `"ONCVPSP"` | `"ONCV"` | Hamann's optimised norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `carcara-oncvpsp`, H–U |
-| `"PAW"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `carcara-paw`, H–U |
+| `"ONCVPSP"` | `"ONCV"` | Hamann's optimised norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `mandacaru-oncvpsp`, H–U |
+| `"PAW"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `mandacaru-paw`, H–U |
 | `"UPAW"` | `"unitary-paw"` | the same, with a **unitary** transformation ($q = 0$, below) | two per channel, $2\times2$ coupling | $S$ (unaugmented) | generated on demand |
 
 Names are case-insensitive. Each family accepts the options `size`,
@@ -64,10 +64,10 @@ Hamiltonian is either valence-only or all-electron.
 ### The registry
 
 The driver only ever talks to a family through its registry entry in
-`carcara.pseudopotentials.families`:
+`mandacaru.pseudopotentials.families`:
 
 ```python
-from carcara.pseudopotentials import (
+from mandacaru.pseudopotentials import (
     PSEUDO_FAMILIES, FamilySpec, family_names, lookup_family,
     register_family, resolve_family)
 
@@ -106,16 +106,16 @@ driver, in the dry run and on the command line, with no change to any of them.
 *(2026-09-14, step 2 of the family plan.)* The second shipped family is
 `"oncvpsp"` (alias `"oncv"`), D. R. Hamann's construction, *Phys. Rev. B*
 **88**, 085117 (2013), written from scratch in
-`carcara.pseudopotentials.oncv` on top of the same LDA radial
+`mandacaru.pseudopotentials.oncv` on top of the same LDA radial
 atom as the TM family:
 
 ```python
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis="ONCVPSP",                        # or "ONCV"
-                     h=0.25)
-atoms.calc = Carcara(method="vqe",
-                     basis={"name": "ONCVPSP", "size": "DZP"},
-                     h=0.25)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="ONCVPSP",                        # or "ONCV"
+                       h=0.25)
+atoms.calc = Mandacaru(method="vqe",
+                       basis={"name": "ONCVPSP", "size": "DZP"},
+                       h=0.25)
 ```
 
 What makes it different from TM is **two projectors per angular-momentum
@@ -278,17 +278,17 @@ one-centre energies **linearised around the reference atom** — a fixed
 per-species coupling matrix $D^0$, which makes the dataset behave like an
 ultrasoft pseudopotential with an exact PAW reconstruction of the atomic
 partial waves. Written from scratch in
-`carcara.pseudopotentials.paw` on the same LDA radial atom as
+`mandacaru.pseudopotentials.paw` on the same LDA radial atom as
 the other two families, reusing the Numerov partial waves, the Bessel
 machinery and the polynomial local potential of the ONCVPSP module:
 
 ```python
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis="PAW",
-                     h=0.25)
-atoms.calc = Carcara(method="vqe",
-                     basis={"name": "PAW", "size": "DZ", "projector_basis": "raw"},
-                     h=0.25)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="PAW",
+                       h=0.25)
+atoms.calc = Mandacaru(method="vqe",
+                       basis={"name": "PAW", "size": "DZ", "projector_basis": "raw"},
+                       h=0.25)
 ```
 
 The name has no alias; `family_names()` lists `ncpp`, `oncvpsp`, `paw` first
@@ -600,7 +600,7 @@ O_{ij} \;=\; \langle\phi_i|\phi_j\rangle_{r_c}
            - \langle\tilde\phi_i|\tilde\phi_j\rangle_{r_c} \;=\; 0 ,
 ```
 
-which is exactly Carcará's `norm_deficit = 0`. The transformation
+which is exactly Mandacaru's `norm_deficit = 0`. The transformation
 $\mathcal{T} = 1 + \sum_i (|\phi_i\rangle - |\tilde\phi_i\rangle)\langle\tilde
 p_i|$ is then **unitary**: the smooth states are orthonormal, the overlap
 operator is the identity, and the whole augmentation of the metric disappears —
@@ -624,10 +624,10 @@ problem. With $q = 0$ the one-particle basis is orthonormal *before* the
 Löwdin step, the overlap operator never enters the Hamiltonian, and the
 generalised eigenproblem $Hc = \varepsilon S c$ becomes an ordinary one. In a
 plane-wave PAW code that removes a nontrivial metric from every algorithm built
-on top; in Carcará it removes one matrix product, because $S^{-1/2}$ is
+on top; in Mandacaru it removes one matrix product, because $S^{-1/2}$ is
 computed anyway for the grid basis.
 
-### What it costs (measured, `carcara` env, h as noted)
+### What it costs (measured, `mandacaru` env, h as noted)
 
 | | PAW | UPAW |
 |---|---|---|
@@ -681,7 +681,7 @@ geometry. Naming a `directory` explicitly is a statement that the library is
 there, and a missing element then raises with the `build_upaw_library` recipe:
 
 ```python
-from carcara.pseudopotentials.paw import build_upaw_library
+from mandacaru.pseudopotentials.paw import build_upaw_library
 
 build_upaw_library(("H", "C", "N", "O"))          # into library/upaw/
 build_upaw_library(("H", "O"), directory="/data/upaw")
@@ -712,7 +712,7 @@ the block is the $1\times1$ matrix $[E^{KB}_l]$ (`kb_coupling_blocks`), so
 $C\,D\,C^\dagger$ reduces to the familiar $\sum_p |\chi_p\rangle E^{KB}_p
 \langle\chi_p|$ — the test suite checks it agrees with the old rank-one formula
 to $10^{-12}$. ONCVPSP and PAW fill $2\times2$ blocks; the machinery
-(`projector_blocks`, `assemble_block_matrix` in `carcara.core.hamiltonian`)
+(`projector_blocks`, `assemble_block_matrix` in `mandacaru.core.hamiltonian`)
 validates and assembles them. `kb_nonlocal()` keeps its name (alias
 `nonlocal_matrix()`), and the projector resolution check
 (`kb_resolution_ratios`) is unchanged.
@@ -739,7 +739,7 @@ next to the nuclear repulsion — the frozen one-centre energies).
 
 ## Why they are not optional here
 
-Carcará samples everything on a uniform real-space grid, and that grid must
+Mandacaru samples everything on a uniform real-space grid, and that grid must
 resolve the shortest length scale in the problem. For an all-electron atom that
 scale is the 1s cusp, $a_0/Z$ — 0.066 Å for oxygen, against a practical spacing
 of 0.15–0.30 Å. The core is never resolved, and the error does not average out.
@@ -761,14 +761,14 @@ optimisation on this grid is not merely inaccurate — it does not converge.
 
 ## The bundled library
 
-`src/carcara/pseudopotentials/library/` holds one subdirectory
+`src/mandacaru/pseudopotentials/library/` holds one subdirectory
 per family. `library/ncpp/` ships norm-conserving Troullier–Martins
 pseudopotentials for **every element with Z ≤ 92** (H through U), generated
-from scratch by Carcará's own LDA radial atomic solver. They are loaded
+from scratch by Mandacaru's own LDA radial atomic solver. They are loaded
 automatically by symbol.
 
 ```python
-from carcara.pseudopotentials.io import available_elements, get_pseudopotential
+from mandacaru.pseudopotentials.io import available_elements, get_pseudopotential
 
 pp = get_pseudopotential("Fe")
 pp.valence_charge     # 8.0  -- 3d^6 4s^2
@@ -783,14 +783,14 @@ identically zero (the ONCVPSP family gives them two s projectors each).
 
 The ONCVPSP and PAW datasets (all 92 elements, generated 2026-09-14) are too
 large for this repository — about 110 MB and 190 MB — so they live in the
-`carcara-oncvpsp` and `carcara-paw` repositories as flat directories of
+`mandacaru-oncvpsp` and `mandacaru-paw` repositories as flat directories of
 `<Symbol>.parquet` files. The loaders read them from `library/oncvpsp/` and
 `library/paw/`, which are **symbolic links** created by
 
 ```bash
-carcara --link-paw ~/Repositories/carcara-paw
-carcara --link-oncvpsp ~/Repositories/carcara-oncvpsp
-carcara --pseudo-status          # what is linked, and how many datasets each serves
+mandacaru --link-paw ~/Repositories/mandacaru-paw
+mandacaru --link-oncvpsp ~/Repositories/mandacaru-oncvpsp
+mandacaru --pseudo-status          # what is linked, and how many datasets each serves
 ```
 
 Each command links the directory and then **loads one dataset through the
@@ -801,20 +801,20 @@ be moved freely); a real, non-empty `library/paw/` directory is refused rather
 than deleted. The underlying module takes a few more options:
 
 ```bash
-python -m carcara.pseudopotentials.link_library \
-    --oncvpsp ~/Repositories/carcara-oncvpsp --paw ~/Repositories/carcara-paw
+python -m mandacaru.pseudopotentials.link_library \
+    --oncvpsp ~/Repositories/mandacaru-oncvpsp --paw ~/Repositories/mandacaru-paw
 # --files links each dataset instead of the directory; --force replaces; --status reports
 ```
 
 (git ignores the links). `io.library_root()` is the common parent (overridden
-by `CARCARA_PSEUDO_PATH`); `io.default_library_path()` is the `ncpp/` directory,
+by `MANDACARU_PSEUDO_PATH`); `io.default_library_path()` is the `ncpp/` directory,
 `oncv_library_path()` / `paw_library_path()` the others. Without the links the
 ONCVPSP/PAW loaders raise `FileNotFoundError` and their tests skip.
 
 To regenerate or extend the library:
 
 ```python
-from carcara.pseudopotentials.io import build_library
+from mandacaru.pseudopotentials.io import build_library
 
 written, failures = build_library()               # all of Z <= 92
 written, failures = build_library(["Ti", "V"])    # or a subset
@@ -867,9 +867,9 @@ refinements of the pseudised function, and the polarisation shell is split
 from the outermost channel:
 
 ```python
-Carcara(method="adapt-vqe",
-        basis={"name": "NCPP", "size": "DZP"},
-        h=0.15)
+Mandacaru(method="adapt-vqe",
+          basis={"name": "NCPP", "size": "DZP"},
+          h=0.15)
 ```
 
 Sizes are the same names as for [the NAO family](basis_sets.md). The default
@@ -878,7 +878,7 @@ already at the edge of what a state-vector simulator can hold. The dry run
 counts the valence functions of the family and size you ask for:
 
 ```console
-$ carcara H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run
+$ mandacaru H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run
 ```
 
 ## Limits
@@ -920,7 +920,7 @@ addresses it (see [Basis sets](basis_sets.md)).
 
 The gradient itself is checked against a central difference of the same energy
 on the same frozen grid: 1e-4 eV/Å on H₂, 3e-3 eV/Å on water (oxygen exercises
-the L = 1 and L = 2 compensation multipoles). Carcará flags the two things that
+the L = 1 and L = 2 compensation multipoles). Mandacaru flags the two things that
 most often say a force will not be usable — an unresolved projector, and a
 state that is not stationary with respect to orbital rotations — as
 `RuntimeWarning`s, and warns when the net force is a significant fraction of

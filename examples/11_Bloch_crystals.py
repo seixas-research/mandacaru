@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 # file: examples/11_Bloch_crystals.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
 """The Bloch crystal calculator: vqe / adapt-vqe methods on a chain.
 
-A single :class:`~carcara.algorithms.BlochCalculator` covers periodic systems;
+A single :class:`~mandacaru.algorithms.BlochCalculator` covers periodic systems;
 its ``method`` argument selects the variational eigensolver.  The
 single-particle **band structure** is solver-independent (identical across the
 two methods), while the correlated **total energy per cell** is computed on
@@ -25,8 +25,8 @@ from __future__ import annotations
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import BlochCalculator
-from carcara.optimizers import Optimizer
+from mandacaru.algorithms import BlochCalculator
+from mandacaru.optimizers import Optimizer
 
 
 def make(method, **kwargs):

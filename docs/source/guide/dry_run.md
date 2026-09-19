@@ -8,7 +8,7 @@ integral, mapping a Hamiltonian, or executing a circuit.
 ## On the command line
 
 ```console
-$ carcara water.xyz --frozen-core --dry-run
+$ mandacaru water.xyz --frozen-core --dry-run
 Dry run -- no integrals computed, no circuits executed.
 
   method            : adapt-vqe
@@ -38,7 +38,7 @@ needed at all.
 Naming a real device compares the register with its capacity:
 
 ```console
-$ carcara H2O --cell 8 --basis NAO --basis-option size=DZP --device braket-ionq-aria --dry-run
+$ mandacaru H2O --cell 8 --basis NAO --basis-option size=DZP --device braket-ionq-aria --dry-run
   ...
   QUBITS REQUIRED   : 46
   device            : braket-ionq-aria  (IonQ Aria-1 trapped-ion QPU (25 qubits))
@@ -52,19 +52,19 @@ size, so pass `--device-qubits 127` to compare against a specific processor. `--
 
 ```python
 from ase.build import molecule
-from carcara.algorithms import Carcara, estimate_qubits
+from mandacaru.algorithms import Mandacaru, estimate_qubits
 
 water = molecule("H2O"); water.center(vacuum=3.0)
 
 # One-off, on an existing calculator:
-calc = Carcara(frozen_core=True)
+calc = Mandacaru(frozen_core=True)
 estimate = calc.dry_run(water)          # -> QubitEstimate
 print(estimate.n_qubits)                # 12
 
 # Or make every evaluation a dry run (energies come back as NaN):
-water.calc = Carcara(method="adapt-vqe",
-                     frozen_core=True,
-                     dry_run=True)
+water.calc = Mandacaru(method="adapt-vqe",
+                       frozen_core=True,
+                       dry_run=True)
 water.get_potential_energy()            # nan
 water.calc.dry_run_result.summary()
 
@@ -73,7 +73,7 @@ estimate_qubits(water, basis={"name": "NAO-AE", "tier": 1}, device="braket-iqm-g
 ```
 
 `dry_run=True` is honoured by every driver: the ASE hook stores the
-{class}`~carcara.algorithms.dry_run.QubitEstimate` on `dry_run_result` and
+{class}`~mandacaru.algorithms.dry_run.QubitEstimate` on `dry_run_result` and
 reports `NaN`, and a direct-mode `run()` returns the estimate instead of a
 result. Nothing expensive is touched — the test suite pins this by making the
 Hamiltonian builder, the timings and the circuit providers raise.
@@ -92,4 +92,4 @@ below the cutoff.
 Jordan-Wigner, parity and Bravyi-Kitaev all use this many qubits — the parity
 mapping's optional two-qubit symmetry reduction is reported separately.
 
-See {mod}`carcara.algorithms.dry_run` and {mod}`carcara.cli`.
+See {mod}`mandacaru.algorithms.dry_run` and {mod}`mandacaru.cli`.

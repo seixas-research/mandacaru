@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_verbose_dumps.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -11,7 +11,7 @@
 The run trace reports the *size* of the operator pool and of the qubit
 Hamiltonian, never their contents.  These two options write the contents to
 ``pool.json`` / ``hamiltonian.json`` (or to a path of your choosing) so they can
-still be read -- see :mod:`carcara.utils.dumps`.
+still be read -- see :mod:`mandacaru.utils.dumps`.
 """
 
 import json
@@ -20,19 +20,19 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara import Carcara
-from carcara.algorithms import ADAPTVQE, VQE
-from carcara.core.mapping import PauliSum
-from carcara.core.serialization import MAX_FILE_QUBITS
-from carcara.utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
-                                 dump_pool, resolve_dump_path)
+from mandacaru import Mandacaru
+from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.core.mapping import PauliSum
+from mandacaru.core.serialization import MAX_FILE_QUBITS
+from mandacaru.utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
+                                   dump_pool, resolve_dump_path)
 
 
 @pytest.fixture(scope="module")
 def h2_hamiltonian():
     """H2 at 0.74 A in the minimal FAO basis, molecular-orbital form."""
-    from carcara.core import MolecularIntegrals, minimal_fao_basis
-    from carcara.integrals import Grid
+    from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+    from mandacaru.integrals import Grid
 
     nuclei = [(1.0, np.array([0.0, 0.0, -0.37])),
               (1.0, np.array([0.0, 0.0, +0.37]))]
@@ -143,7 +143,7 @@ class TestHamiltonianDump:
         assert magnitudes == sorted(magnitudes, reverse=True)
 
     def test_vqe_writes_it_too(self, h2_hamiltonian, tmp_path):
-        from carcara.circuits import UCCSD
+        from mandacaru.circuits import UCCSD
 
         target = tmp_path / "h.json"
         VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False,
@@ -160,7 +160,7 @@ class TestLimits:
         assert not target.exists()
 
     def test_the_pool_obeys_the_same_limit(self, tmp_path):
-        from carcara.circuits.pools import PoolOperator
+        from mandacaru.circuits.pools import PoolOperator
 
         wide = PoolOperator(label="op", support=(0, 1), kind="double",
                             generator=PauliSum(
@@ -172,15 +172,15 @@ class TestLimits:
 
 
 class TestCalculator:
-    def test_carcara_forwards_both_options(self, tmp_path):
+    def test_mandacaru_forwards_both_options(self, tmp_path):
         atoms = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74)],
                       cell=[6.0] * 3)
         atoms.center()
-        atoms.calc = Carcara(method="adapt-vqe",
-                             basis="FAO",
-                             h=0.35,
-                             verbose_operators=str(tmp_path / "pool.json"),
-                             verbose_hamiltonian=str(tmp_path / "h.json"))
+        atoms.calc = Mandacaru(method="adapt-vqe",
+                               basis="FAO",
+                               h=0.35,
+                               verbose_operators=str(tmp_path / "pool.json"),
+                               verbose_hamiltonian=str(tmp_path / "h.json"))
         atoms.get_potential_energy()
         pool = json.loads((tmp_path / "pool.json").read_text())
         hamiltonian = json.loads((tmp_path / "h.json").read_text())

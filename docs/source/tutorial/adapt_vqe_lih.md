@@ -11,9 +11,9 @@ Save this complete example as `lih_adapt.py` and run `python lih_adapt.py`.
 
 ```python
 from ase import Atoms
-from carcara.algorithms import Carcara
-from carcara.integrals import Grid
-from carcara.optimizers import Optimizer
+from mandacaru.algorithms import Mandacaru
+from mandacaru.integrals import Grid
+from mandacaru.optimizers import Optimizer
 
 atoms = Atoms(
     "LiH",
@@ -22,7 +22,7 @@ atoms = Atoms(
 )
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.12)
 
-atoms.calc = Carcara(
+atoms.calc = Mandacaru(
     method="adapt-vqe",
     pool="fermionic",
     basis="STO-3G",
@@ -47,7 +47,7 @@ print(f"Unsuccessful inner optimisations: {result.optimizer_failures}")
 ```
 
 This calculation starts with the Hartree–Fock reference. At each growth step,
-Carcará evaluates the energy derivative for each candidate generator $A_i$:
+Mandacaru evaluates the energy derivative for each candidate generator $A_i$:
 
 ```{math}
 g_i = \left.\frac{\mathrm{d}}{\mathrm{d}\theta}
@@ -57,7 +57,7 @@ g_i = \left.\frac{\mathrm{d}}{\mathrm{d}\theta}
 \qquad A_i^\dagger=-A_i.
 ```
 
-The largest gradient magnitude identifies the next generator. Carcará adds it
+The largest gradient magnitude identifies the next generator. Mandacaru adds it
 and reoptimises all circuit parameters. The loop stops when the largest pool
 gradient is below `gradient_tolerance`, or when it reaches `max_iterations`.
 The screening threshold uses the internal Hamiltonian's **Hartree** units,
@@ -74,11 +74,11 @@ Check both the outer convergence flag and `optimizer_failures`.
 | `fermionic` | Mapped single and double fermionic excitations | A chemistry-based starting point; parity strings can increase circuit depth. |
 | `qubit` | Individual Pauli terms from mapped excitations | Fewer gates per generator may require more growth steps; individual terms need not preserve particle number. |
 | `qeb` | Excitation generators with parity-only Z strings removed | Often shorter circuits; check the resulting accuracy and conserved quantities. |
-| `ceo` | QEB generators grouped by qubit support | In Carcará's Jordan–Wigner implementation the groups are singletons, so this pool matches `qeb`. |
+| `ceo` | QEB generators grouped by qubit support | In Mandacaru's Jordan–Wigner implementation the groups are singletons, so this pool matches `qeb`. |
 
 These are implementation descriptions, not universal rankings. Gate counts
 depend on the mapping, selected operators, compiler and device connectivity.
-Carcará does not implement the specialised CEO synthesis required for the gate
+Mandacaru does not implement the specialised CEO synthesis required for the gate
 savings reported for that method in the literature.
 
 ## 3. Compare pools using one Hamiltonian
@@ -89,7 +89,7 @@ rebuilding integrals and ensures each pool receives exactly the same problem.
 
 ```python
 for pool in ("fermionic", "qubit", "qeb", "ceo"):
-    calc = Carcara(
+    calc = Mandacaru(
         method="adapt-vqe",
         pool=pool,
         load_hamiltonian="lih_sto3g_r1p6.json",

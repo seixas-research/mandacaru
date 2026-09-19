@@ -4,12 +4,12 @@ Every method accepts a `quenching` flag that controls **how many
 parameters the classical optimiser varies at each step**.
 
 ```python
-Carcara(method="adapt-vqe",
-        basis="FAO",
-        quenching=True)    # default: re-optimise everything
-Carcara(method="adapt-vqe",
-        basis="FAO",
-        quenching=False)   # freeze the past, tune only the newest
+Mandacaru(method="adapt-vqe",
+          basis="FAO",
+          quenching=True)    # default: re-optimise everything
+Mandacaru(method="adapt-vqe",
+          basis="FAO",
+          quenching=False)   # freeze the past, tune only the newest
 ```
 
 | | `quenching=True` (default) | `quenching=False` |
@@ -35,10 +35,10 @@ cost of variational freedom.
 
 ```python
 seen = []
-calc = Carcara(method="adapt-vqe",
-               pool="qeb",
-               load_hamiltonian="lih.parquet",
-               quenching=False)
+calc = Mandacaru(method="adapt-vqe",
+                 pool="qeb",
+                 load_hamiltonian="lih.parquet",
+                 quenching=False)
 calc.run(callback=lambda info: seen.append(info["parameters"].copy()))
 
 # Every step appends exactly one parameter and leaves the earlier ones untouched.
@@ -80,7 +80,7 @@ accuracy comes from re-optimisation rather than from operator selection.
 ## Where it applies
 
 `quenching` is implemented once on
-{class}`~carcara.algorithms.base.VariationalDriver` and is honoured by every
+{class}`~mandacaru.algorithms.base.VariationalDriver` and is honoured by every
 driver that inherits from it:
 
 - `_optimize_grown` — the growth loop of `ADAPTVQE`, the deflation

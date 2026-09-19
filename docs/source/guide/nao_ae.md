@@ -3,17 +3,17 @@
 `basis="NAO-AE"` selects an **all-electron numerical atomic orbital** basis:
 every function is a numerically tabulated radial part times a spherical
 harmonic, generated from scratch for each element by solving one-dimensional
-radial problems. Like every other family in Carcará it carries no tabulated
+radial problems. Like every other family in Mandacaru it carries no tabulated
 basis-set data.
 
 ```python
-atoms.calc = Carcara(basis={"name": "NAO-AE", "tier": 1, "onset": 3.0})
+atoms.calc = Mandacaru(basis={"name": "NAO-AE", "tier": 1, "onset": 3.0})
 ```
 
 ## What "all-electron" means here
 
 The **minimal basis is the atom itself**. A spherical, self-consistent LDA atom
-({func}`~carcara.basis.atomic_solver.solve_atom`) provides the effective
+({func}`~mandacaru.basis.atomic_solver.solve_atom`) provides the effective
 potential $v_\text{free}(r)$, and *every* occupied shell $(n, l)$ — core shells
 included — is re-solved as a bound state of the basis-defining potential
 
@@ -55,7 +55,7 @@ hydrogen-like $(n, l)$ state has mean radius
 
 so $z$ is chosen to give the function a prescribed extent relative to the
 valence shell's own $\langle r \rangle$
-({func}`~carcara.basis.nao_ae.effective_charge_for_radius`). The functions are
+({func}`~mandacaru.basis.nao_ae.effective_charge_for_radius`). The functions are
 organised in tiers:
 
 | `tier` | Added on top of the previous one |
@@ -80,7 +80,7 @@ norm lies beyond the onset — the wall is re-centred and the state re-solved �
 so compact functions stay compact.
 
 ```python
-from carcara.basis import BasisSet
+from mandacaru.basis import BasisSet
 
 bset = BasisSet.build("NAO-AE", tier=1)
 print(bset.describe("O"))
@@ -105,4 +105,4 @@ print(bset.describe("O"))
   integrals. Refine the grid and check convergence, or consider a suitable
   pseudopotential model.
 
-See `examples/23_NAO_AE_basis.py` and {mod}`carcara.basis.nao_ae`.
+See `examples/23_NAO_AE_basis.py` and {mod}`mandacaru.basis.nao_ae`.

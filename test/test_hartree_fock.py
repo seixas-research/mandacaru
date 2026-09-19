@@ -6,9 +6,9 @@
 import numpy as np
 import pytest
 
-from carcara.algorithms import RHF, UHF, transform_integrals
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid
+from mandacaru.algorithms import RHF, UHF, transform_integrals
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.integrals import Grid
 
 
 @pytest.fixture(scope="module")

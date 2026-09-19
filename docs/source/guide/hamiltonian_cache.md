@@ -1,6 +1,6 @@
 # Caching the Hamiltonian (Parquet / JSON)
 
-Building a molecular Hamiltonian is by far the most expensive stage of a Carcará
+Building a molecular Hamiltonian is by far the most expensive stage of a Mandacaru
 run: the real-space one- and two-body integrals scale as $O(N \log N)$ and
 $O(M^4)$ in the grid and basis size, and the fermion-to-qubit mapping then
 composes a Pauli sum per fermionic term.
@@ -11,23 +11,23 @@ optimisers, ansätze, mappings or temperature schedules essentially for free.
 
 ```python
 from ase import Atoms
-from carcara.algorithms import Carcara
+from mandacaru.algorithms import Mandacaru
 
 atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
               cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
 
 # 1. Build once and save.
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool="qeb",
-                     basis="FAO",
-                     h=0.25,
-                     save_hamiltonian="lih.parquet")
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool="qeb",
+                       basis="FAO",
+                       h=0.25,
+                       save_hamiltonian="lih.parquet")
 atoms.get_total_energy()
 
 # 2. Reload -- no geometry, no integrals, no mapping.
-result = Carcara(method="adapt-vqe",
-                 pool="ceo",
-                 load_hamiltonian="lih.parquet").run()
+result = Mandacaru(method="adapt-vqe",
+                   pool="ceo",
+                   load_hamiltonian="lih.parquet").run()
 ```
 
 The second run needs **no `Atoms` object at all**. The file records
@@ -60,10 +60,10 @@ Two interchangeable formats are selected with `hamiltonian_format`:
 | Best for | large active spaces; analysis in pandas/Arrow/Spark | inspection, diffing, dependency-free environments |
 
 ```python
-Carcara(method="adapt-vqe",
-        basis="FAO",
-        save_hamiltonian="lih",
-        hamiltonian_format="json")
+Mandacaru(method="adapt-vqe",
+          basis="FAO",
+          save_hamiltonian="lih",
+          hamiltonian_format="json")
 # -> writes lih.json
 ```
 
@@ -78,7 +78,7 @@ starts with the `PAR1` magic number; a JSON document with `{`). A cache written
 either way loads through the same call, even if the file is named `.cache`:
 
 ```python
-from carcara.core import detect_format, load_hamiltonian
+from mandacaru.core import detect_format, load_hamiltonian
 
 detect_format("lih.parquet")     # 'parquet'
 detect_format("opaque.bin")      # 'parquet' or 'json', read from the bytes
@@ -124,7 +124,7 @@ The same content as one object: `format`, `version`, `num_qubits`, `mapping`,
 ## Working with the record directly
 
 ```python
-from carcara.core import load_hamiltonian, save_hamiltonian
+from mandacaru.core import load_hamiltonian, save_hamiltonian
 
 record = load_hamiltonian("lih.parquet")
 record.hamiltonian          # a PauliSum
@@ -152,7 +152,7 @@ are portable between them and to any other Parquet reader.
 3.14 with `qiskit` 2.5 and `pyarrow` 25 — calling
 `pyarrow.parquet.write_table` in a process that has *also* run Qiskit's
 `transpile` crashes the interpreter, since both ship their own native runtimes.
-Carcará transpiles circuits for gate-count profiling in the same process that
+Mandacaru transpiles circuits for gate-count profiling in the same process that
 saves the Hamiltonian, so the default engine avoids that combination, and
 `resolve_engine("auto")` stops at the first engine that imports rather than
 importing them all.
@@ -169,21 +169,21 @@ dependency and cannot be affected.
 Caching turns a pool comparison into a few seconds of work:
 
 ```python
-from carcara.algorithms import Carcara
+from mandacaru.algorithms import Mandacaru
 
 # Build once ...
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis="FAO",
-                     h=0.25,
-                     save_hamiltonian="lih.parquet",
-                     max_iterations=1)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="FAO",
+                       h=0.25,
+                       save_hamiltonian="lih.parquet",
+                       max_iterations=1)
 atoms.get_total_energy()
 
 # ... compare every pool against the *same* operator.
 for pool in ("fermionic", "qubit", "qeb", "ceo"):
-    result = Carcara(method="adapt-vqe",
-                     pool=pool,
-                     load_hamiltonian="lih.parquet").run()
+    result = Mandacaru(method="adapt-vqe",
+                       pool=pool,
+                       load_hamiltonian="lih.parquet").run()
     print(f"{pool:<10} E = {result.optimal_energy:.6f} eV  "
           f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
 ```

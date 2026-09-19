@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_fao_forces.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -20,8 +20,8 @@ molecule cannot change its energy, so the forces must sum to zero.  On H2 they
 do.  On LiH the Li 1s is far too sharp for any affordable grid spacing and the
 net force reaches hundreds of eV/Angstrom -- larger than every real force in the
 problem -- while the energy, the RDMs and the orbital-response residual all look
-healthy.  ``Carcara`` warns about exactly that
-(:data:`~carcara.algorithms.calculator.TRANSLATIONAL_RESIDUAL_TOLERANCE`), and
+healthy.  ``Mandacaru`` warns about exactly that
+(:data:`~mandacaru.algorithms.calculator.TRANSLATIONAL_RESIDUAL_TOLERANCE`), and
 the same geometry in the PAW basis, which removes the core instead of sampling
 it, gives a net force of ~0.03 eV/Angstrom and a bond force that matches VASP.
 """
@@ -32,8 +32,8 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara import Carcara
-from carcara.integrals import Grid
+from mandacaru import Mandacaru
+from mandacaru.integrals import Grid
 from test_all_electron_forces import analytic_and_numerical
 
 # VASP 6 PBE PAW: bond-projected force on atom 0 (eV/A, + = toward atom 1).
@@ -54,10 +54,10 @@ def dimer(symbols, distance, cell=10.0):
 
 def forces_of(symbols, distance, basis, cell=9.0, h=0.25, **options):
     atoms = dimer(symbols, distance, cell)
-    atoms.calc = Carcara(method="adapt-vqe", basis=basis, h=h, pool="fermionic",
-                         optimizer="L-BFGS-B", max_iterations=60,
-                         gradient_tolerance=1e-6, profile=False,
-                         **options)
+    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, h=h, pool="fermionic",
+                           optimizer="L-BFGS-B", max_iterations=60,
+                           gradient_tolerance=1e-6, profile=False,
+                           **options)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         atoms.get_forces()
@@ -145,7 +145,7 @@ class TestH2:
 
 
 # --------------------------------------------------------------------------- #
-# LiH: the Li 1s core breaks the energy surface, and Carcara says so.
+# LiH: the Li 1s core breaks the energy surface, and Mandacaru says so.
 # --------------------------------------------------------------------------- #
 
 class TestLiHCoreArtifact:
@@ -157,11 +157,11 @@ class TestLiHCoreArtifact:
         assert residual > 10.0
         assert residual > np.abs(forces).max() / 10      # it dominates
 
-    def test_carcara_warns(self):
+    def test_mandacaru_warns(self):
         atoms = dimer("LiH", 2.19265)
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.25,
-                             pool="fermionic", optimizer="L-BFGS-B",
-                             max_iterations=60, gradient_tolerance=1e-6, profile=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.25,
+                               pool="fermionic", optimizer="L-BFGS-B",
+                               max_iterations=60, gradient_tolerance=1e-6, profile=False)
         with pytest.warns(RuntimeWarning, match="do not sum to zero"):
             atoms.get_forces()
 
@@ -175,9 +175,9 @@ class TestLiHCoreArtifact:
         """The PAW-DZP run of the same geometry, done once (it is the
         heaviest calculation in this file)."""
         atoms = dimer("LiH", 2.19265)
-        atoms.calc = Carcara(method="adapt-vqe", basis=PAW, h=0.25,
-                             pool="fermionic", optimizer="L-BFGS-B",
-                             max_iterations=60, gradient_tolerance=1e-6, profile=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis=PAW, h=0.25,
+                               pool="fermionic", optimizer="L-BFGS-B",
+                               max_iterations=60, gradient_tolerance=1e-6, profile=False)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             forces = atoms.get_forces()
@@ -201,8 +201,8 @@ class TestLiHCoreArtifact:
 class TestTranslationalCheck:
     def test_a_single_atom_is_exempt(self):
         """The grid re-centers on it, so the residual carries no information."""
-        from carcara.algorithms.calculator import Carcara as C
-        from carcara.algorithms.forces import ForceResult
+        from mandacaru.algorithms.calculator import Mandacaru as C
+        from mandacaru.algorithms.forces import ForceResult
 
         one = ForceResult(forces=np.array([[3.0, 0.0, 0.0]]),
                           hellmann_feynman=np.zeros((1, 3)),
@@ -212,8 +212,8 @@ class TestTranslationalCheck:
             assert C._check_translational_invariance(one) == 0.0
 
     def test_a_small_residual_is_tolerated(self):
-        from carcara.algorithms.calculator import Carcara as C
-        from carcara.algorithms.forces import ForceResult
+        from mandacaru.algorithms.calculator import Mandacaru as C
+        from mandacaru.algorithms.forces import ForceResult
 
         forces = np.array([[0.0, 0.0, 5.0], [0.0, 0.0, -4.99]])
         result = ForceResult(forces=forces, hellmann_feynman=np.zeros((2, 3)),
@@ -242,10 +242,10 @@ class TestTranslationProjectionPolicy:
     @staticmethod
     def _run(**options):
         atoms = dimer("H2", 0.74, 8.0)
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
-                             pool="fermionic", max_iterations=4,
-                             gradient_tolerance=1e-4, profile=False,
-                             **options)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=4,
+                               gradient_tolerance=1e-4, profile=False,
+                               **options)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             forces = atoms.get_forces()
@@ -270,9 +270,9 @@ class TestTranslationProjectionPolicy:
     def test_auto_leaves_a_periodic_system_alone(self):
         atoms = dimer("H2", 0.74, 8.0)
         atoms.pbc = True
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
-                             pool="fermionic", max_iterations=4,
-                             gradient_tolerance=1e-4, profile=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=4,
+                               gradient_tolerance=1e-4, profile=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             forces = atoms.get_forces()
@@ -289,14 +289,14 @@ class TestTranslationProjectionPolicy:
     def test_explicit_true_on_a_periodic_system_says_it_is_ignored(self):
         atoms = dimer("H2", 0.74, 8.0)
         atoms.pbc = True
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.35,
-                             pool="fermionic", max_iterations=4,
-                             gradient_tolerance=1e-4, profile=False,
-                             project_translation=True)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=4,
+                               gradient_tolerance=1e-4, profile=False,
+                               project_translation=True)
         with pytest.warns(RuntimeWarning, match="ignored for a periodic"):
             atoms.get_forces()
 
     @pytest.mark.parametrize("value", ["yes", 1, None, "AUTO"])
     def test_an_unknown_setting_is_refused(self, value):
         with pytest.raises(ValueError, match="project_translation must be"):
-            Carcara(method="adapt-vqe", project_translation=value)
+            Mandacaru(method="adapt-vqe", project_translation=value)

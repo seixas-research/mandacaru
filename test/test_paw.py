@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/experimental/test_paw.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -27,12 +27,12 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, Carcara, VQE
-from carcara.algorithms._hamiltonian_from_atoms import (
+from mandacaru.algorithms import ADAPTVQE, Mandacaru, VQE
+from mandacaru.algorithms._hamiltonian_from_atoms import (
     build_basis_hamiltonian, resolve_basis, resolve_pseudo_basis)
-from carcara.algorithms.dry_run import estimate_qubits
-from carcara.core.hamiltonian import projector_blocks
-from carcara.pseudopotentials import (
+from mandacaru.algorithms.dry_run import estimate_qubits
+from mandacaru.core.hamiltonian import projector_blocks
+from mandacaru.pseudopotentials import (
     PSEUDO_FAMILIES, PAWChannel, PAWDataset, PAWIntegrals, check_paw_channel,
     compensation_coulomb, compensation_potential, compensation_shape,
     family_names, generate_paw, get_oncv, get_paw, get_pseudopotential,
@@ -40,11 +40,11 @@ from carcara.pseudopotentials import (
     lookup_family, paw_eigenstate, paw_library_path,
     paw_spectrum, reconstruct_ae, report_paw, resolve_family,
     save_pseudopotential)
-from carcara.pseudopotentials import paw
-from carcara.pseudopotentials.io import (available_elements,
+from mandacaru.pseudopotentials import paw
+from mandacaru.pseudopotentials.io import (available_elements,
                                                        default_library_path,
                                                        detect_format)
-from carcara.units import HARTREE_TO_EV
+from mandacaru.units import HARTREE_TO_EV
 
 # --------------------------------------------------------------------------- #
 # Test systems (identical to test_ncpp_family / test_oncvpsp).
@@ -312,7 +312,7 @@ class TestAtomic:
         assert np.allclose(v[r > r_g], 1.0 / r[r > r_g])
         assert np.isfinite(v[0]) and v[0] == pytest.approx(315.0 / 128.0 / r_g)
         # Poisson: the analytic potential is the Hartree potential of g.
-        from carcara.basis.atomic_solver import hartree_potential
+        from mandacaru.basis.atomic_solver import hartree_potential
         rr = r[1:]
         assert np.abs(hartree_potential(rr, g[1:]) - v[1:]).max() < 1e-4
         # Disjoint spheres interact as point charges; the self-energy is
@@ -525,12 +525,12 @@ class TestResolution:
         dz = estimate_qubits(h2(), basis={"name": "PAW", "size": "DZ"})
         assert dz.n_qubits == 8
         atoms = h2()
-        atoms.calc = Carcara(method="adapt-vqe", basis="paw",
-                             h=H2_H, dry_run=True)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw",
+                               h=H2_H, dry_run=True)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4
-        assert Carcara(method="vqe", basis={"name": "PAW", "size": "DZ"},
-                       h=LIH_H).dry_run(lih()).n_qubits == 8
+        assert Mandacaru(method="vqe", basis={"name": "PAW", "size": "DZ"},
+                         h=LIH_H).dry_run(lih()).n_qubits == 8
 
 
 # --------------------------------------------------------------------------- #
@@ -657,9 +657,9 @@ class TestMolecular:
     def test_adapt_vqe(self, name):
         factory, h = SYSTEMS[name]
         atoms = factory()
-        atoms.calc = Carcara(method="adapt-vqe", basis="paw", h=h,
-                             pool="qeb", max_iterations=4,
-                             profile=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw", h=h,
+                               pool="qeb", max_iterations=4,
+                               profile=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             atoms.get_potential_energy()

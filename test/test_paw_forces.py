@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_paw_forces.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -12,8 +12,8 @@ H2 and LiH in ``basis={"name": "PAW", "size": "DZP"}`` have 10 basis
 functions, i.e. 20 qubits, solved exactly in the (1, 1) particle-number sector.
 
 The VASP numbers are a *qualitative* guide only: VASP is PBE-DFT in plane
-waves, Carcará is ADAPT-VQE in a localized basis, so the curves differ in
-detail (Carcará's H2 minimum is 0.712 A against VASP's 0.750 A).
+waves, Mandacaru is ADAPT-VQE in a localized basis, so the curves differ in
+detail (Mandacaru's H2 minimum is 0.712 A against VASP's 0.750 A).
 """
 
 from types import SimpleNamespace
@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara import Carcara
+from mandacaru import Mandacaru
 
 BASIS = {"name": "PAW", "size": "DZP"}
 
@@ -43,9 +43,9 @@ def dimer(symbols, distance, cell):
 
 
 def calculator(h):
-    return Carcara(method="adapt-vqe", basis=BASIS, h=h, pool="fermionic",
-                   optimizer="L-BFGS-B", max_iterations=80,
-                   gradient_tolerance=1e-5, profile=False)
+    return Mandacaru(method="adapt-vqe", basis=BASIS, h=h, pool="fermionic",
+                     optimizer="L-BFGS-B", max_iterations=80,
+                     gradient_tolerance=1e-5, profile=False)
 
 
 def bond_force(forces):
@@ -114,7 +114,7 @@ def test_hellmann_feynman_and_pulay(h2):
 def test_h2_force_curve_follows_vasp():
     """Sign and rough magnitude away from the minimum.
 
-    The two minima are 0.04 A apart (Carcara 0.712, VASP-PBE 0.750), so a
+    The two minima are 0.04 A apart (Mandacaru 0.712, VASP-PBE 0.750), so a
     sampled distance between them legitimately has opposite signs in the two
     methods -- the sign is only asked for where the reference force is well
     away from zero.  Near the minimum the force is merely required to be
@@ -143,14 +143,14 @@ def test_two_qubit_register_forces_exact_and_measured(tmp_path):
     """Parity + two-qubit reduction: forces from the tapered register equal the
     4-qubit Jordan-Wigner ones, from the state vector and from Estimator
     expectation values of the optimized state."""
-    from carcara.backends.providers import QiskitProvider
+    from mandacaru.backends.providers import QiskitProvider
 
     def run(**options):
         atoms = dimer("H2", 1.0, 8.0)
-        atoms.calc = Carcara(method="adapt-vqe", basis="PAW", h=0.25,
-                             pool="fermionic", optimizer="L-BFGS-B",
-                             max_iterations=10, gradient_tolerance=1e-6,
-                             profile=False, **options)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW", h=0.25,
+                               pool="fermionic", optimizer="L-BFGS-B",
+                               max_iterations=10, gradient_tolerance=1e-6,
+                               profile=False, **options)
         return atoms.get_forces(), atoms.get_potential_energy(), atoms.calc
 
     jw, e_jw, _ = run(mapping="jordan_wigner")
@@ -186,9 +186,9 @@ def water(cell=8.0):
 
 
 def water_calculator(h=0.25):
-    return Carcara(method="adapt-vqe", basis={"name": "PAW", "size": "SZ"},
-                   h=h, pool="fermionic", optimizer="L-BFGS-B",
-                   max_iterations=60, gradient_tolerance=1e-4, profile=False)
+    return Mandacaru(method="adapt-vqe", basis={"name": "PAW", "size": "SZ"},
+                     h=h, pool="fermionic", optimizer="L-BFGS-B",
+                     max_iterations=60, gradient_tolerance=1e-4, profile=False)
 
 
 @pytest.fixture(scope="module")
@@ -215,7 +215,7 @@ def test_compensation_potentials_are_hermitian_only_for_m_zero():
     ``M != 0``, so it is not Hermitian there -- and a derivative written as
     ``cross + cross^H`` would quietly put ``conj(v)`` in the second half.
     """
-    from carcara.algorithms._hamiltonian_from_atoms import (
+    from mandacaru.algorithms._hamiltonian_from_atoms import (
         build_basis_hamiltonian, grid_from_cell)
 
     atoms = water()

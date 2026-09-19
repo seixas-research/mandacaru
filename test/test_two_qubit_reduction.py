@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_two_qubit_reduction.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -15,15 +15,15 @@ generators and the reference determinant alike, so ADAPT-VQE and VQE run on
 """
 
 import numpy as np
-from carcara.units import HARTREE_TO_EV
+from mandacaru.units import HARTREE_TO_EV
 import pytest
 
-from carcara.algorithms import ADAPTVQE, VQE, SubspaceVQE
-from carcara.circuits import AdaptAnsatz, UCCSD
-from carcara.circuits.pools import build_pool
-from carcara.core.mapping import (parity_tapered_qubits, reference_qubit_bits,
-                                  two_qubit_reduce)
-from carcara.core import PauliSum
+from mandacaru.algorithms import ADAPTVQE, VQE, SubspaceVQE
+from mandacaru.circuits import AdaptAnsatz, UCCSD
+from mandacaru.circuits.pools import build_pool
+from mandacaru.core.mapping import (parity_tapered_qubits, reference_qubit_bits,
+                                    two_qubit_reduce)
+from mandacaru.core import PauliSum
 
 
 def _h2():
@@ -144,7 +144,7 @@ class TestDrivers:
         assert atoms.calc.dry_run_result.n_qubits == 2
 
     def test_measured_energy_on_the_reduced_register(self, reference):
-        from carcara.backends.providers import QiskitProvider
+        from mandacaru.backends.providers import QiskitProvider
         exact, _hf = reference
         atoms = _h2()
         atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,

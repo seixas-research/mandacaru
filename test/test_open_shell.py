@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_open_shell.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -17,15 +17,15 @@ that the variational drivers reach the sector's exact ground state.
 """
 
 import numpy as np
-from carcara.units import HARTREE_TO_EV
+from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import (ADAPTVQE, RHF, UHF, Carcara,
-                                estimate_qubits, natural_orbitals)
-from carcara.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid
+from mandacaru.algorithms import (ADAPTVQE, RHF, UHF, Mandacaru,
+                                  estimate_qubits, natural_orbitals)
+from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.integrals import Grid
 
 
 def _integrals(nuclei, h=0.30, box=6.0):
@@ -224,7 +224,7 @@ class TestGeometryPath:
 class TestSolvers:
     def test_adapt_vqe_hydrogen_atom(self):
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[5.0] * 3)
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.25, profile=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.25, profile=False)
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (1, 0) and calc.n_qubits == 2
@@ -249,7 +249,7 @@ class TestSolvers:
     def test_vqe_h3_doublet_through_the_calculator(self):
         atoms = Atoms("H3", positions=[[0, 0, -0.9], [0, 0, 0], [0, 0, 0.9]],
                       cell=[6.5] * 3)
-        atoms.calc = Carcara(method="vqe", basis="FAO", h=0.30, optimizer="L-BFGS-B")
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.30, optimizer="L-BFGS-B")
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (2, 1) and calc.n_qubits == 6
@@ -271,7 +271,7 @@ class TestSolvers:
 class TestPlaneWaves:
     @pytest.fixture(scope="class")
     def pw(self):
-        from carcara.core import PlaneWaveIntegrals
+        from mandacaru.core import PlaneWaveIntegrals
         # The tiny anisotropic cell of test_planewave: 8 eV -> 3 PWs, so the
         # 6-qubit sector diagonalization below stays instant.
         cell = np.diag([16.0, 3.0, 3.0])                         # Bohr
@@ -304,7 +304,7 @@ class TestPlaneWaves:
         atoms = Atoms("H2", positions=[[8 * B2A - 0.37, 1.5 * B2A, 1.5 * B2A],
                                        [8 * B2A + 0.37, 1.5 * B2A, 1.5 * B2A]],
                       cell=cell, pbc=True)
-        atoms.calc = Carcara(method="adapt-vqe",
+        atoms.calc = Mandacaru(method="adapt-vqe",
                                        basis={"name": "PW", "energy_cutoff": 8},
                                        charge=1, profile=False,
                                        optimizer="L-BFGS-B",

@@ -18,10 +18,10 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
-from carcara.circuits import AdaptAnsatz
-from carcara.backends import available_devices, is_simulator, normalize_device
-from carcara.integrals import Grid
+from mandacaru.algorithms import ADAPTVQE
+from mandacaru.circuits import AdaptAnsatz
+from mandacaru.backends import available_devices, is_simulator, normalize_device
+from mandacaru.integrals import Grid
 
 
 # --------------------------------------------------------------------------- #
@@ -30,15 +30,15 @@ from carcara.integrals import Grid
 
 class TestFAONaming:
     def test_fao_names_exist(self):
-        from carcara.basis import FAOBasisSet, FullAtomicOrbital
-        from carcara.core import MolecularIntegrals, minimal_fao_basis
+        from mandacaru.basis import FAOBasisSet, FullAtomicOrbital
+        from mandacaru.core import MolecularIntegrals, minimal_fao_basis
         assert FullAtomicOrbital is not None
         assert FAOBasisSet is not None
         assert MolecularIntegrals is not None
         assert minimal_fao_basis is not None
 
     def test_factory_builds_fao(self):
-        from carcara.basis import BasisSet, FAOBasisSet
+        from mandacaru.basis import BasisSet, FAOBasisSet
         assert isinstance(BasisSet.build("FAO"), FAOBasisSet)
         assert BasisSet.build("STO-3G").name == "STO-3G"
         with pytest.raises(ValueError):
@@ -51,7 +51,7 @@ class TestFAONaming:
 
 @pytest.fixture(scope="module")
 def h2_hamiltonian():
-    from carcara.core import MolecularIntegrals, minimal_fao_basis
+    from mandacaru.core import MolecularIntegrals, minimal_fao_basis
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
@@ -164,7 +164,7 @@ class TestArgumentSurface:
         assert res.num_operators <= 3
 
     def test_output_constructor_arg_writes_file(self, h2_hamiltonian, tmp_path):
-        from carcara.utils import parse_output
+        from mandacaru.utils import parse_output
         out = str(tmp_path / "output.txt")
         adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=False,
@@ -204,7 +204,7 @@ class TestOptimizerOption:
         assert adapt.optimizer.method == name
 
     def test_optimizer_instance_passthrough(self, h2_hamiltonian):
-        from carcara.optimizers import Optimizer
+        from mandacaru.optimizers import Optimizer
         opt = Optimizer("L-BFGS-B", maxiter=500)
         adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
                          n_spatial_orbitals=2, profile=False, optimizer=opt)

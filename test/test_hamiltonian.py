@@ -4,9 +4,9 @@
 import numpy as np
 import pytest
 
-from carcara.core.hamiltonian import MolecularIntegrals, minimal_fao_basis
-from carcara.core.mapping import Fermion
-from carcara.integrals import Grid
+from mandacaru.core.hamiltonian import MolecularIntegrals, minimal_fao_basis
+from mandacaru.core.mapping import Fermion
+from mandacaru.integrals import Grid
 
 
 R = 0.74  # H2 bond length, Angstrom

@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 # file: examples/01_ADAPTVQE_H2.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""H2 ground state with ADAPT-VQE (qubit pool) through the Carcara.
+"""H2 ground state with ADAPT-VQE (qubit pool) through the Mandacaru.
 
 End-to-end demonstration wiring the pieces together through the ASE interface:
 
 * the molecule is defined once as an ASE :class:`ase.Atoms` object and
-  :class:`~carcara.algorithms.Carcara` is attached to it as an ASE
-  *calculator* (``atoms.calc = Carcara(method="adapt-vqe", ...)``);
+  :class:`~mandacaru.algorithms.Mandacaru` is attached to it as an ASE
+  *calculator* (``atoms.calc = Mandacaru(method="adapt-vqe", ...)``);
 * the calculator builds the Hamiltonian from the current geometry using the
   chosen ``basis`` (here ``"FAO"`` -- Full Atomic Orbitals), so no manual
   integral wiring is needed;
@@ -31,8 +31,8 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.units import HARTREE_TO_EV, from_hartree
+from mandacaru.algorithms import Mandacaru
+from mandacaru.units import HARTREE_TO_EV, from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -44,17 +44,17 @@ atoms = Atoms("H2",
               cell=[[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]],
               pbc=True)
 
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool="qubit",
-                     basis={"name": "FAO"},
-                     mapping="jordan_wigner",
-                     optimizer="COBYLA",
-                     gradient="parameter-shift",
-                     device="AER_simulator",
-                     h=0.10,
-                     max_iterations=15,
-                     gradient_tolerance=1e-4,
-                     output=os.path.join(DATA, "output_H2.txt"))
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool="qubit",
+                       basis={"name": "FAO"},
+                       mapping="jordan_wigner",
+                       optimizer="COBYLA",
+                       gradient="parameter-shift",
+                       device="AER_simulator",
+                       h=0.10,
+                       max_iterations=15,
+                       gradient_tolerance=1e-4,
+                       output=os.path.join(DATA, "output_H2.txt"))
 
 energy_ev = atoms.get_total_energy()               # eV, like every result
 result = atoms.calc.result                         # result.optimal_energy is eV

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/plot_h2_ibm.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>

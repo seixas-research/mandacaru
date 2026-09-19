@@ -4,10 +4,10 @@
 import numpy as np
 import pytest
 
-from carcara.basis import NumericalAtomicOrbital, energy_shift_to_rc
-from carcara.basis.nao import solve_confined_radial
-from carcara.integrals import Grid
-from carcara.units import EV_TO_HARTREE
+from mandacaru.basis import NumericalAtomicOrbital, energy_shift_to_rc
+from mandacaru.basis.nao import solve_confined_radial
+from mandacaru.integrals import Grid
+from mandacaru.units import EV_TO_HARTREE
 
 
 class TestEnergyShift:
@@ -69,7 +69,7 @@ class TestNumericalAtomicOrbital:
         assert np.isclose(orb.r_c, energy_shift_to_rc(0.5))
 
     def test_is_basis_function(self):
-        from carcara.basis import BasisFunction
+        from mandacaru.basis import BasisFunction
         orb = NumericalAtomicOrbital(1, 0, 0, Z=1.0, r_c=6.0, units="bohr")
         assert isinstance(orb, BasisFunction)
         assert orb.state == (1, 0, 0)

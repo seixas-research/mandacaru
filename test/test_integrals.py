@@ -4,10 +4,10 @@
 import numpy as np
 import pytest
 
-from carcara.basis import FullAtomicOrbital
-from carcara.integrals import Grid, IntegralEngine, PoissonFFTSolver, Potentials
-from carcara.integrals.poisson import cell_self_potential
-from carcara.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, HARTREE_TO_EV
+from mandacaru.basis import FullAtomicOrbital
+from mandacaru.integrals import Grid, IntegralEngine, PoissonFFTSolver, Potentials
+from mandacaru.integrals.poisson import cell_self_potential
+from mandacaru.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
 # The physics core is validated in atomic units (Bohr, Hartree); the grids below
 # therefore pass units="bohr" and the engine energy_units="Ha".

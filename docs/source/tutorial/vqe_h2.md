@@ -11,9 +11,9 @@ spatial orbitals give four spin orbitals and four Jordan–Wigner qubits.
 
 ```python
 from ase import Atoms
-from carcara.algorithms import Carcara
-from carcara.integrals import Grid
-from carcara.optimizers import Optimizer
+from mandacaru.algorithms import Mandacaru
+from mandacaru.integrals import Grid
+from mandacaru.optimizers import Optimizer
 
 bond_length = 0.74  # Å
 atoms = Atoms(
@@ -22,7 +22,7 @@ atoms = Atoms(
     pbc=False,
 )
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.0, h=0.1)
-atoms.calc = Carcara(
+atoms.calc = Mandacaru(
     method="vqe",
     basis="FAO",
     grid=grid,

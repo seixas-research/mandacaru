@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_quenching.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -19,11 +19,11 @@ can never beat the fully re-optimized one).
 from __future__ import annotations
 
 import numpy as np
-from carcara.units import HARTREE_TO_EV
+from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, VQE
+from mandacaru.algorithms import ADAPTVQE, VQE
 
 
 @pytest.fixture(scope="module")

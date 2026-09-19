@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/experimental/test_oncvpsp.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -25,21 +25,21 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, Carcara, VQE
-from carcara.algorithms._hamiltonian_from_atoms import (
+from mandacaru.algorithms import ADAPTVQE, Mandacaru, VQE
+from mandacaru.algorithms._hamiltonian_from_atoms import (
     build_basis_hamiltonian, resolve_basis, resolve_pseudo_basis)
-from carcara.algorithms.dry_run import estimate_qubits
-from carcara.core.hamiltonian import projector_blocks
-from carcara.pseudopotentials import (
+from mandacaru.algorithms.dry_run import estimate_qubits
+from mandacaru.core.hamiltonian import projector_blocks
+from mandacaru.pseudopotentials import (
     PSEUDO_FAMILIES, ONCVChannel, ONCVPseudoPotential, check_oncv_channel,
     diagonalized_projectors, family_names, generate_oncv, get_oncv,
     load_pseudopotential, log_derivative_ae, log_derivative_ps,
     lookup_family, oncv_library_path, radial_spectrum,
     report_oncv, resolve_family, save_pseudopotential)
-from carcara.pseudopotentials.io import (available_elements,
+from mandacaru.pseudopotentials.io import (available_elements,
                                                        default_library_path,
                                                        detect_format)
-from carcara.pseudopotentials import oncv
+from mandacaru.pseudopotentials import oncv
 
 # --------------------------------------------------------------------------- #
 # Test systems (identical to test_ncpp_family, whose TM energies we compare to).
@@ -279,7 +279,7 @@ class TestIO:
         assert np.array_equal(again.projectors[0][0], back.projectors[0][0])
 
     def test_tm_files_still_load_as_tm(self):
-        from carcara.pseudopotentials import get_pseudopotential
+        from mandacaru.pseudopotentials import get_pseudopotential
         pp = get_pseudopotential("O")
         assert type(pp).__name__ == "PseudoPotential" and pp.family == "ncpp"
         assert isinstance(pp.projectors[0], np.ndarray)
@@ -322,11 +322,11 @@ class TestResolution:
         dzp = estimate_qubits(h2(), basis={"name": "oncv", "size": "DZP"})
         assert dzp.n_qubits == 20                       # (2 s + 3 p) x 2 atoms
         atoms = h2()
-        atoms.calc = Carcara(method="adapt-vqe", basis="oncv",
-                             h=H2_H, dry_run=True)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="oncv",
+                               h=H2_H, dry_run=True)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4
-        assert Carcara(method="vqe", basis="oncvpsp", h=H2_H).dry_run(lih()).n_qubits == 4
+        assert Mandacaru(method="vqe", basis="oncvpsp", h=H2_H).dry_run(lih()).n_qubits == 4
 
 
 # --------------------------------------------------------------------------- #
@@ -387,9 +387,9 @@ class TestMolecular:
     def test_adapt_vqe(self, name):
         factory, h = SYSTEMS[name]
         atoms = factory()
-        atoms.calc = Carcara(method="adapt-vqe", basis="oncv", h=h,
-                             pool="qeb", max_iterations=4,
-                             profile=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="oncv", h=h,
+                               pool="qeb", max_iterations=4,
+                               profile=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             atoms.get_potential_energy()

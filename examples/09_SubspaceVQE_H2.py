@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/09_SubspaceVQE_H2.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -15,7 +15,7 @@ weighted energy sum ``sum_j w_j <phi_j|U' H U|phi_j>`` with descending weights, 
 ``U|phi_0>`` becomes the ground state, ``U|phi_1>`` the first excited state, etc.
 
 Both subspace methods are driven through
-:class:`~carcara.algorithms.Carcara` (``method="subspace-vqe"`` and
+:class:`~mandacaru.algorithms.Mandacaru` (``method="subspace-vqe"`` and
 ``method="subspace-adapt-vqe"``); here H2 is defined once and a subspace
 calculator returns the whole low-lying spectrum on ``atoms.calc.result``.
 
@@ -29,8 +29,8 @@ from __future__ import annotations
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.units import from_hartree
+from mandacaru.algorithms import Mandacaru
+from mandacaru.units import from_hartree
 
 
 atoms = Atoms("H2",
@@ -52,12 +52,12 @@ def report(name, result, exact):
 
 
 # --- Subspace-search VQE (fixed UCCSD ansatz) --------------------------------
-atoms.calc = Carcara(method="subspace-vqe",
-                     basis="FAO",
-                     h=0.20,
-                     mapping="jordan_wigner",
-                     num_states=2,
-                     weights=[2.0, 1.0])
+atoms.calc = Mandacaru(method="subspace-vqe",
+                       basis="FAO",
+                       h=0.20,
+                       mapping="jordan_wigner",
+                       num_states=2,
+                       weights=[2.0, 1.0])
 atoms.get_potential_energy()
 ssvqe = atoms.calc.result
 
@@ -69,14 +69,14 @@ exact = from_hartree(np.sort(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).real), "
 report("Subspace-VQE", ssvqe, exact)
 
 # --- Subspace-search ADAPT-VQE (one shared, adaptively grown ansatz) ---------
-atoms.calc = Carcara(method="subspace-adapt-vqe",
-                     basis="FAO",
-                     h=0.20,
-                     pool="fermionic",
-                     num_states=2,
-                     profile=False,
-                     gradient_tolerance=1e-4,
-                     max_iterations=20)
+atoms.calc = Mandacaru(method="subspace-adapt-vqe",
+                       basis="FAO",
+                       h=0.20,
+                       pool="fermionic",
+                       num_states=2,
+                       profile=False,
+                       gradient_tolerance=1e-4,
+                       max_iterations=20)
 atoms.get_potential_energy()
 ss_adapt = atoms.calc.result
 report("Subspace-ADAPT-VQE", ss_adapt, exact)

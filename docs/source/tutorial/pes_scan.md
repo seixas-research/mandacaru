@@ -18,7 +18,7 @@ information alongside every energy.
 
 The supplied script calculates neutral LiH with a frozen lithium core, two
 active electrons, the Jordan–Wigner mapping and local state-vector evaluation.
-It compares Carcará's `STO-3G` and `3-21G` constructions, each with the
+It compares Mandacaru's `STO-3G` and `3-21G` constructions, each with the
 `fermionic`, `qubit`, `qeb` and `ceo` pools.
 
 | Basis | Spatial orbitals before freezing | Active spatial orbitals | Qubits |
@@ -43,8 +43,8 @@ the distance step is twice the **actual** grid spacing:
 
 ```python
 import numpy as np
-from carcara.integrals import Grid
-from carcara.units import BOHR_TO_ANGSTROM
+from mandacaru.integrals import Grid
+from mandacaru.units import BOHR_TO_ANGSTROM
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.12)
 spacing = grid.dz * BOHR_TO_ANGSTROM  # Grid stores its spacing in bohr.
@@ -59,7 +59,7 @@ variational problem, but its integrals still need adequate resolution.
 
 ## Reproduce the data and PNG
 
-From a source checkout with Carcará installed, run:
+From a source checkout with Mandacaru installed, run:
 
 ```bash
 python examples/30_LiH_basis_pool_scan.py

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_frozen_core.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -12,10 +12,10 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.basis import BasisSet, FullAtomicOrbital
-from carcara.core.hamiltonian import freeze_core_integrals
-from carcara.algorithms.hartree_fock import RHF
-from carcara.algorithms._hamiltonian_from_atoms import (
+from mandacaru.basis import BasisSet, FullAtomicOrbital
+from mandacaru.core.hamiltonian import freeze_core_integrals
+from mandacaru.algorithms.hartree_fock import RHF
+from mandacaru.algorithms._hamiltonian_from_atoms import (
     build_basis_hamiltonian, core_electrons, resolve_frozen_core)
 
 

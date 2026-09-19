@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_scf_convergence.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -21,9 +21,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from carcara.algorithms._jax_energy import (SCF_ITERATION_MARGIN,
-                                            _resolve_scf_iterations,
-                                            scf_iterations_required)
+from mandacaru.algorithms._jax_energy import (SCF_ITERATION_MARGIN,
+                                              _resolve_scf_iterations,
+                                              scf_iterations_required)
 
 pytest.importorskip("jax")
 
@@ -107,7 +107,7 @@ class TestUnrollSizing:
 
     def test_hard_non_convergence_is_an_error_not_a_number(self):
         """Better to refuse than to return a gradient through a transient."""
-        import carcara.algorithms._jax_energy as je
+        import mandacaru.algorithms._jax_energy as je
 
         original = je.scf_iterations_required
         je.scf_iterations_required = lambda *a, **k: None
@@ -127,7 +127,7 @@ class TestGradientStability:
 
         This is the property the fixed-40 default silently violated.
         """
-        from carcara.algorithms._jax_energy import integral_gradients
+        from mandacaru.algorithms._jax_energy import integral_gradients
 
         h, eri = _two_level_system()
         n = h.shape[0]

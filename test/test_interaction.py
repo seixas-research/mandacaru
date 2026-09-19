@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_interaction.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -9,18 +9,18 @@
 """Per-element basis mappings and interaction energies on a shared grid."""
 
 import numpy as np
-from carcara.units import HARTREE_TO_EV
+from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 from ase.build import molecule
 
-from carcara.algorithms import Carcara, InteractionEnergy, interaction_energy
-from carcara.algorithms._hamiltonian_from_atoms import (
+from mandacaru.algorithms import Mandacaru, InteractionEnergy, interaction_energy
+from mandacaru.algorithms._hamiltonian_from_atoms import (
     PER_ELEMENT, build_basis_hamiltonian, is_per_element_basis,
     per_element_basis, resolve_basis)
-from carcara.algorithms.dry_run import estimate_qubits
-from carcara.basis import BasisSet, PerElementBasisSet
-from carcara.integrals import Grid
+from mandacaru.algorithms.dry_run import estimate_qubits
+from mandacaru.basis import BasisSet, PerElementBasisSet
+from mandacaru.integrals import Grid
 
 
 # --------------------------------------------------------------------------- #
@@ -79,7 +79,7 @@ class TestPerElementBasis:
 
     def test_calculator_accepts_the_mapping(self):
         h2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
-        h2.calc = Carcara(basis={"H": "STO-4G"}, dry_run=True)
+        h2.calc = Mandacaru(basis={"H": "STO-4G"}, dry_run=True)
         assert np.isnan(h2.get_potential_energy())
         assert h2.calc.dry_run_result.n_qubits == 4
 
@@ -132,7 +132,7 @@ class TestInteractionEnergy:
                                     h=0.35)
         assert isinstance(shared.grid, Grid)
         # Re-centred fragment: a different sampling of the same molecule.
-        from carcara.algorithms._hamiltonian_from_atoms import \
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
             build_basis_hamiltonian
         frag = atoms[[0, 1]]
         frag.set_cell(atoms.get_cell()); frag.center()
@@ -162,7 +162,7 @@ class TestInteractionEnergy:
 
     def test_calculator_method_reuses_its_options(self):
         atoms = _two_h2(5.0)
-        calc = Carcara(method="vqe", basis="FAO", h=0.4,
-                       optimizer="L-BFGS-B")
+        calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
+                         optimizer="L-BFGS-B")
         result = calc.interaction_energy(atoms, [[0, 1], [2, 3]])
         assert result.method == "vqe" and abs(result.in_units("eV")) < 0.05

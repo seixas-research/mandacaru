@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_backend_build.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -14,13 +14,13 @@ integration.
 * a missing library triggers exactly one compile attempt per process, and a
   successful compile is loaded on the spot (``compiled=True``);
 * a failed compile falls back to the NumPy kernels with one
-  ``RuntimeWarning`` from the engine, and ``CARCARA_BACKEND=c`` refuses the
+  ``RuntimeWarning`` from the engine, and ``MANDACARU_BACKEND=c`` refuses the
   fallback;
-* ``CARCARA_BACKEND=numpy`` forces the reference kernels without building;
+* ``MANDACARU_BACKEND=numpy`` forces the reference kernels without building;
 * :func:`build_backend` really compiles the library for this machine when a
   tool chain exists (CMake, or the bare compiler when CMake is hidden), and a
   build into the default directory is loaded on the spot;
-* ``carcara --build-backend`` compiles on demand from the shell and reports
+* ``mandacaru --build-backend`` compiles on demand from the shell and reports
   what happened, exiting non-zero when only the NumPy kernels are left.
 """
 
@@ -33,10 +33,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from carcara.basis import FullAtomicOrbital
-from carcara.cli import main
-from carcara.integrals import (BackendStatus, Grid, IntegralEngine, _backend,
-                               build_backend, check_backend, ensure_backend)
+from mandacaru.basis import FullAtomicOrbital
+from mandacaru.cli import main
+from mandacaru.integrals import (BackendStatus, Grid, IntegralEngine, _backend,
+                                 build_backend, check_backend, ensure_backend)
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def backend_state(monkeypatch):
     """Snapshot/restore the module globals the check mutates."""
     saved = (_backend._LIB, _backend.HAS_C_BACKEND, _backend._build_attempted,
              _backend._fallback_warned)
-    monkeypatch.delenv("CARCARA_BACKEND", raising=False)
+    monkeypatch.delenv("MANDACARU_BACKEND", raising=False)
     yield
     (_backend._LIB, _backend.HAS_C_BACKEND, _backend._build_attempted,
      _backend._fallback_warned) = saved
@@ -63,8 +63,8 @@ class TestStatus:
         assert status.compiled is False
         if status.available:
             assert status.path and status.path.endswith(
-                ("libcarcara_integrals.dylib", "libcarcara_integrals.so",
-                 "carcara_integrals.dll"))
+                ("libmandacaru_integrals.dylib", "libmandacaru_integrals.so",
+                 "mandacaru_integrals.dll"))
             assert status.n_threads >= 1
             assert status.label.startswith("C (")
         else:
@@ -79,7 +79,7 @@ class TestStatus:
 
     def test_numpy_policy_forces_the_reference_kernels(self, backend_state,
                                                        monkeypatch):
-        monkeypatch.setenv("CARCARA_BACKEND", "numpy")
+        monkeypatch.setenv("MANDACARU_BACKEND", "numpy")
         monkeypatch.setattr(_backend, "build_backend",
                             lambda *a, **k: pytest.fail("must not build"))
         status = ensure_backend()
@@ -92,8 +92,8 @@ class TestStatus:
         assert np.isfinite(T).all()
 
     def test_invalid_policy_is_rejected(self, backend_state, monkeypatch):
-        monkeypatch.setenv("CARCARA_BACKEND", "fortran")
-        with pytest.raises(ValueError, match="CARCARA_BACKEND"):
+        monkeypatch.setenv("MANDACARU_BACKEND", "fortran")
+        with pytest.raises(ValueError, match="MANDACARU_BACKEND"):
             ensure_backend()
 
 
@@ -146,7 +146,7 @@ class TestCompileOnDemand:
 
     def test_c_policy_refuses_the_fallback(self, backend_state, monkeypatch):
         self._hide_library(monkeypatch)
-        monkeypatch.setenv("CARCARA_BACKEND", "c")
+        monkeypatch.setenv("MANDACARU_BACKEND", "c")
         monkeypatch.setattr(_backend, "build_backend", lambda *a, **k: None)
         with pytest.raises(RuntimeError, match="refuses the NumPy fallback"):
             ensure_backend()
@@ -159,9 +159,9 @@ def _threads_in_fresh_process(path) -> int:
     may link a *different* OpenMP runtime than the one already loaded here,
     and two OpenMP runtimes in one process abort.
     """
-    code = ("import ctypes, sys; from carcara.integrals import _backend; "
+    code = ("import ctypes, sys; from mandacaru.integrals import _backend; "
             f"lib = _backend._bind(ctypes.CDLL({str(path)!r})); "
-            "print(lib.carcara_num_threads())")
+            "print(lib.mandacaru_num_threads())")
     run = subprocess.run([sys.executable, "-c", code], capture_output=True,
                          text=True, timeout=120, check=False)
     assert run.returncode == 0, run.stderr
@@ -178,7 +178,7 @@ class TestRealBuild:
                                                        tmp_path):
         path = build_backend(tmp_path)
         assert path is not None and path.is_file()
-        assert (tmp_path / "build.log").read_text().startswith("# carcara")
+        assert (tmp_path / "build.log").read_text().startswith("# mandacaru")
         assert _threads_in_fresh_process(path) >= 1
 
     def test_bare_compiler_fallback_when_cmake_is_absent(self, toolchain,
@@ -255,7 +255,7 @@ class TestBuildLoadsWhatItBuilt:
 
 
 class TestBuildCommand:
-    """``carcara --build-backend``."""
+    """``mandacaru --build-backend``."""
 
     def test_reports_the_loaded_library_and_succeeds(self, backend_state,
                                                      capsys):
@@ -277,7 +277,7 @@ class TestBuildCommand:
                                                            monkeypatch,
                                                            capsys):
         log = tmp_path / "build.log"
-        log.write_text("# carcara C backend build\ncc: command not found\n")
+        log.write_text("# mandacaru C backend build\ncc: command not found\n")
         monkeypatch.setattr(_backend, "_BUILD_DIR", tmp_path)
         monkeypatch.setattr(_backend, "build_backend", lambda *a, **k: None)
         monkeypatch.setattr(_backend, "_find_library", lambda: None)

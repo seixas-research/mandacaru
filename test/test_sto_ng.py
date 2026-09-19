@@ -6,7 +6,7 @@
 import numpy as np
 import pytest
 
-from carcara.basis.sto_ng import (
+from mandacaru.basis.sto_ng import (
     _fit_reference,
     effective_principal_number,
     occupied_subshells,

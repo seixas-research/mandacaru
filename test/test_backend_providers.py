@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_backend_providers.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -20,17 +20,17 @@ from __future__ import annotations
 import re
 
 import numpy as np
-from carcara.units import HARTREE_TO_EV
+from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE, VQE
-from carcara.backends.providers import (BACKEND_PROVIDERS, basis_state_index,
-                                        build_provider, normalize_provider,
-                                        pauli_rotations, provider_available)
-from carcara.circuits import UCCSD, AdaptAnsatz
-from carcara.circuits.pools import build_pool
-from carcara.core import PauliSum
+from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.backends.providers import (BACKEND_PROVIDERS, basis_state_index,
+                                          build_provider, normalize_provider,
+                                          pauli_rotations, provider_available)
+from mandacaru.circuits import UCCSD, AdaptAnsatz
+from mandacaru.circuits.pools import build_pool
+from mandacaru.core import PauliSum
 
 PROVIDERS = [
     pytest.param(name,

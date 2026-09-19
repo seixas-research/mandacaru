@@ -1,6 +1,6 @@
 # Installation
 
-Use Python 3.11 or later. A virtual environment keeps Carcará's scientific and
+Use Python 3.11 or later. A virtual environment keeps Mandacaru's scientific and
 quantum SDK dependencies separate from other projects.
 
 ## Install a release
@@ -9,8 +9,8 @@ quantum SDK dependencies separate from other projects.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install carcara
-python -c "import carcara; print(carcara.__version__)"
+python -m pip install mandacaru
+python -c "import mandacaru; print(mandacaru.__version__)"
 ```
 
 On Windows, activate the environment with `.venv\Scripts\activate` instead.
@@ -25,8 +25,8 @@ introductory LiH examples run locally without credentials.
 Use this route to run the repository's examples or edit the documentation:
 
 ```bash
-git clone https://github.com/seixas-research/carcara.git
-cd carcara
+git clone https://github.com/seixas-research/mandacaru.git
+cd mandacaru
 python -m pip install -e ".[docs]"
 ```
 
@@ -41,13 +41,13 @@ not — about 110 MB and 190 MB for all 92 elements — so they live in their ow
 repositories, and the library holds a symbolic link to a checkout:
 
 ```bash
-git clone https://github.com/seixas-research/carcara-paw.git
-carcara --link-paw carcara-paw
+git clone https://github.com/seixas-research/mandacaru-paw.git
+mandacaru --link-paw mandacaru-paw
 
-git clone https://github.com/seixas-research/carcara-oncvpsp.git
-carcara --link-oncvpsp carcara-oncvpsp
+git clone https://github.com/seixas-research/mandacaru-oncvpsp.git
+mandacaru --link-oncvpsp mandacaru-oncvpsp
 
-carcara --pseudo-status        # what is linked, and how many datasets each serves
+mandacaru --pseudo-status        # what is linked, and how many datasets each serves
 ```
 
 Each command links the directory and then loads one dataset through the normal
@@ -58,7 +58,7 @@ real, non-empty `library/paw/` directory is refused rather than deleted.
 Without this, `basis="PAW"` and `basis="ONCVPSP"` raise a `FileNotFoundError`
 that repeats these commands. `basis="NCPP"` and the all-electron bases (`FAO`,
 `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. Set
-`CARCARA_PSEUDO_PATH` to serve the library from somewhere else entirely.
+`MANDACARU_PSEUDO_PATH` to serve the library from somewhere else entirely.
 
 `basis="UPAW"` needs nothing either: no library is shipped for it, so a missing
 dataset is generated on demand (a fraction of a second per element) and cached
@@ -67,24 +67,24 @@ pay that again.
 
 ## Numerical backend
 
-Carcará's integral kernels are written in C. Nothing has to be built by hand:
+Mandacaru's integral kernels are written in C. Nothing has to be built by hand:
 the first integral engine of a session looks for the shared library, compiles it
 when it is missing or stale, and loads it. Only if that compile fails does
-Carcará warn and fall back to the NumPy reference kernels, which give the same
+Mandacaru warn and fall back to the NumPy reference kernels, which give the same
 numbers more slowly.
 
 To build it ahead of time — in a container image, in CI, or to read the error
 when the automatic build did not work — run the command:
 
 ```bash
-carcara --build-backend
+mandacaru --build-backend
 ```
 
 It prints the library path and the OpenMP thread count on success, and on
 failure prints the build log and exits with status 1. The same call from Python:
 
 ```python
-from carcara.integrals import check_backend, ensure_backend
+from mandacaru.integrals import check_backend, ensure_backend
 
 print(check_backend())   # Inspect the backend without compiling it.
 print(ensure_backend())  # Build if necessary, then load the library.
@@ -94,22 +94,22 @@ The build needs a C compiler; CMake is used when it is installed, with a direct
 compiler invocation as the fallback. OpenMP gives the parallel kernels — it is
 found automatically on Linux, and on macOS comes from `brew install libomp`.
 
-`CARCARA_BACKEND=auto` selects the default policy. Use `CARCARA_BACKEND=c` to
+`MANDACARU_BACKEND=auto` selects the default policy. Use `MANDACARU_BACKEND=c` to
 require the compiled backend (it raises rather than falling back), or
-`CARCARA_BACKEND=numpy` to select NumPy.
+`MANDACARU_BACKEND=numpy` to select NumPy.
 
-The shared library is written into `src/carcara/integrals/csrc/build` and
-detected automatically; set `CARCARA_INTEGRALS_LIB` to point at one built
-elsewhere. Inspect `src/carcara/integrals/csrc/build/build.log` when a build
+The shared library is written into `src/mandacaru/integrals/csrc/build` and
+detected automatically; set `MANDACARU_INTEGRALS_LIB` to point at one built
+elsewhere. Inspect `src/mandacaru/integrals/csrc/build/build.log` when a build
 fails. The equivalent manual invocation is:
 
 ```bash
-cmake -S src/carcara/integrals/csrc -B src/carcara/integrals/csrc/build -DCMAKE_BUILD_TYPE=Release
-cmake --build src/carcara/integrals/csrc/build
+cmake -S src/mandacaru/integrals/csrc -B src/mandacaru/integrals/csrc/build -DCMAKE_BUILD_TYPE=Release
+cmake --build src/mandacaru/integrals/csrc/build
 ```
 
 The FFT integral stage processes orbital pairs in blocks. Set
-`CARCARA_ERI_MEMORY_MB` to change its working memory budget (256 MB by default).
+`MANDACARU_ERI_MEMORY_MB` to change its working memory budget (256 MB by default).
 This budget controls integral workspace, not the total memory used by grids,
 Hamiltonians or state vectors.
 
@@ -125,7 +125,7 @@ Hamiltonians or state vectors.
 For example:
 
 ```bash
-python -m pip install "carcara[dev]"
+python -m pip install "mandacaru[dev]"
 ```
 
 The default Parquet engine is `fastparquet`. The project has observed native

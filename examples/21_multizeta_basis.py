@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/21_multizeta_basis.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -19,7 +19,7 @@ freedom are missing, and the ``size`` argument adds them:
 
 .. code-block:: python
 
-    atoms.calc = Carcara(method="vqe",
+    atoms.calc = Mandacaru(method="vqe",
                          basis={"name": "NAO", "size": "DZP"})
 
 Sizes: ``SZ``, ``DZ``, ``TZ``, ``QZ``, each optionally polarized (``DZP``,
@@ -43,14 +43,14 @@ import os
 import numpy as np
 from ase.data import atomic_numbers
 
-from carcara.basis import BasisSet
-from carcara.basis._config import valence_subshells
-from carcara.basis.multizeta import zeta_tables
-from carcara.basis.nao import solve_confined_radial
-from carcara.basis.fao import FullAtomicOrbital
-from carcara.core import MolecularIntegrals
-from carcara.integrals import Grid
-from carcara.units import BOHR_TO_ANGSTROM, from_hartree
+from mandacaru.basis import BasisSet
+from mandacaru.basis._config import valence_subshells
+from mandacaru.basis.multizeta import zeta_tables
+from mandacaru.basis.nao import solve_confined_radial
+from mandacaru.basis.fao import FullAtomicOrbital
+from mandacaru.core import MolecularIntegrals
+from mandacaru.integrals import Grid
+from mandacaru.units import BOHR_TO_ANGSTROM, from_hartree
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)

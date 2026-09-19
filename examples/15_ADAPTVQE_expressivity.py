@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/15_ADAPTVQE_expressivity.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -34,7 +34,7 @@ energy *and* expressibility, until the ansatz saturates its symmetry sector.
 
 Important: the Haar reference dimension is **not** :math:`2^N`
 -----------------------------------------------------------
-Carcará's fermionic ansätze conserve particle number and :math:`S_z`, so they
+Mandacaru's fermionic ansätze conserve particle number and :math:`S_z`, so they
 never leave the Hartree-Fock symmetry sector, whose dimension is
 :math:`d = \binom{M}{n_\alpha}\binom{M}{n_\beta}` -- for LiH here,
 :math:`d = \binom{3}{2}^2 = 9`, not :math:`2^6 = 64`.  Scoring against a
@@ -58,12 +58,12 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.units import HARTREE_TO_EV, from_hartree
-from carcara.algorithms import Carcara
-from carcara.algorithms.expressivity import (active_space_dimension,
-                                             calculate_kl_divergence,
-                                             haar_density,
-                                             sample_pqc_fidelities)
+from mandacaru.units import HARTREE_TO_EV, from_hartree
+from mandacaru.algorithms import Mandacaru
+from mandacaru.algorithms.expressivity import (active_space_dimension,
+                                               calculate_kl_divergence,
+                                               haar_density,
+                                               sample_pqc_fidelities)
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -88,13 +88,13 @@ atoms = Atoms("LiH",
               positions=[[7.5, 7.5, 7.5 - 0.7975], [7.5, 7.5, 7.5 + 0.7975]],
               cell=[[15.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 15.0]],
               pbc=True)
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool=POOL,
-                     basis={"name": "FAO"},
-                     h=0.25,
-                     profile=False,
-                     max_iterations=1,
-                     save_hamiltonian=HAMILTONIAN_FILE)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool=POOL,
+                       basis={"name": "FAO"},
+                       h=0.25,
+                       profile=False,
+                       max_iterations=1,
+                       save_hamiltonian=HAMILTONIAN_FILE)
 atoms.get_total_energy()
 
 n_qubits = atoms.calc.n_qubits
@@ -141,13 +141,13 @@ def record(info):
         snapshots[step] = fidelities
 
 
-calc = Carcara(method="adapt-vqe",
-               pool=POOL,
-               load_hamiltonian=HAMILTONIAN_FILE,
-               profile=False,
-               optimizer="L-BFGS-B",
-               max_iterations=MAX_ITERATIONS,
-               gradient_tolerance=1e-6)
+calc = Mandacaru(method="adapt-vqe",
+                 pool=POOL,
+                 load_hamiltonian=HAMILTONIAN_FILE,
+                 profile=False,
+                 optimizer="L-BFGS-B",
+                 max_iterations=MAX_ITERATIONS,
+                 gradient_tolerance=1e-6)
 result = calc.run(callback=record)
 
 print(f"{'step':>5}  {'#params':>8}  {'E (eV)':>15}  {'E - FCI':>11}  "

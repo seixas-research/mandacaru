@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_pseudopotential.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -19,7 +19,7 @@ The tests follow the physics that defines a valid pseudopotential:
 * the Kleinman-Bylander separable form reproduces the semilocal channel.
 
 The last class measures the payoff: how much the grid sensitivity that blocks
-geometry optimization (see :mod:`carcara.algorithms.forces`) actually improves.
+geometry optimization (see :mod:`mandacaru.algorithms.forces`) actually improves.
 """
 
 from __future__ import annotations
@@ -27,13 +27,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from carcara.basis.atomic_solver import (hartree_potential, lda_xc, solve_atom,
-                                         solve_radial)
-from carcara.pseudopotentials.generation import (TM_POWERS, PseudoPotential,
+from mandacaru.basis.atomic_solver import (hartree_potential, lda_xc, solve_atom,
+                                           solve_radial)
+from mandacaru.pseudopotentials.generation import (TM_POWERS, PseudoPotential,
                                            check_channel,
                                            generate_pseudopotential,
                                            pseudize_channel, report)
-from carcara.units import BOHR_TO_ANGSTROM
+from mandacaru.units import BOHR_TO_ANGSTROM
 
 #: NIST LSD reference eigenvalues (Hartree) for closed-shell atoms.
 NIST_EIGENVALUES = {

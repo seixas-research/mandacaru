@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_qpe.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -22,12 +22,12 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import (ADAPTVQE, QPEResult, QuantumPhaseEstimation,
-                                phase_estimation, qpe_memory_estimate)
-from carcara.algorithms import qpe as qpe_module
-from carcara.core import PauliSum, load_checkpoint
-from carcara.core.checkpoint import reference_vector
-from carcara.units import HARTREE_TO_EV
+from mandacaru.algorithms import (ADAPTVQE, QPEResult, QuantumPhaseEstimation,
+                                  phase_estimation, qpe_memory_estimate)
+from mandacaru.algorithms import qpe as qpe_module
+from mandacaru.core import PauliSum, load_checkpoint
+from mandacaru.core.checkpoint import reference_vector
+from mandacaru.units import HARTREE_TO_EV
 
 
 @pytest.fixture(scope="module")

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/29_H2_relaxation_IBM.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -29,8 +29,8 @@ from ase import Atoms
 from ase.io import write
 from ase.optimize import BFGS
 
-from carcara import Carcara
-from carcara.backends.providers import QiskitProvider
+from mandacaru import Mandacaru
+from mandacaru.backends.providers import QiskitProvider
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
@@ -63,17 +63,17 @@ if HARDWARE:
     provider = QiskitProvider(device=HARDWARE, shots=SHOTS,
                               estimator_options=options)
 
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis="PAW",
-                     h=0.20,
-                     pool="fermionic",
-                     mapping="parity",
-                     two_qubit_reduction=True,
-                     optimizer="L-BFGS-B",
-                     max_iterations=10,
-                     gradient_tolerance=1e-5,
-                     measurement_provider=provider,
-                     output=os.path.join(DATA, "h2_relax_ibm_output.txt"))
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="PAW",
+                       h=0.20,
+                       pool="fermionic",
+                       mapping="parity",
+                       two_qubit_reduction=True,
+                       optimizer="L-BFGS-B",
+                       max_iterations=10,
+                       gradient_tolerance=1e-5,
+                       measurement_provider=provider,
+                       output=os.path.join(DATA, "h2_relax_ibm_output.txt"))
 
 
 def report():

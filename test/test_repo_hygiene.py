@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_repo_hygiene.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -52,7 +52,7 @@ def is_git_ignored(name: str) -> bool:
 ROOT_DIRS_ALLOWED = {".git", ".claude", ".github", "docs", "examples", "plan",
                      "latex", "logo",
                      "src", "test", "dist", "build", ".pytest_cache",
-                     ".ruff_cache", ".mypy_cache", "carcara.egg-info"}
+                     ".ruff_cache", ".mypy_cache", "mandacaru.egg-info"}
 
 # A write target given as a bare quoted file name (no directory join).
 _BARE_WRITE = re.compile(

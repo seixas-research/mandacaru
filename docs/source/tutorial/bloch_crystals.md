@@ -1,8 +1,8 @@
 # Periodic Systems with the Bloch Calculator
 
-Molecules are open-boundary systems, but crystals are periodic. Carcará extends to
+Molecules are open-boundary systems, but crystals are periodic. Mandacaru extends to
 **1-, 2- and 3-dimensional crystals** through a single Bloch / k-point calculator,
-{class}`~carcara.algorithms.BlochCalculator`, whose correlated supercell solver is
+{class}`~mandacaru.algorithms.BlochCalculator`, whose correlated supercell solver is
 selected with `method=`:
 
 | `method=` | Supercell solver |
@@ -26,7 +26,7 @@ lattice vectors and `atoms.pbc` selects which directions are periodic.
 ```python
 import numpy as np
 from ase import Atoms
-from carcara.algorithms import BlochCalculator
+from mandacaru.algorithms import BlochCalculator
 
 # One H per cell; periodic along x, vacuum in y and z.
 atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
@@ -77,7 +77,7 @@ mesh = bloch.monkhorst_pack((10, 1, 1))
 band_mp = bloch.bands(mesh)[:, 0]
 ```
 
-`band_structure` returns a {class}`~carcara.algorithms.BandStructure` with the
+`band_structure` returns a {class}`~mandacaru.algorithms.BandStructure` with the
 cumulative k-axis (`x`), band `energies` (eV), and the `xticks`/`labels` of the
 high-symmetry points — ready to save to CSV or plot.
 

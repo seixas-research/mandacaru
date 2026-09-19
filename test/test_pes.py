@@ -23,9 +23,9 @@ pes_utils = pytest.importorskip("pes_utils")
 from pes_utils import (GridSpec, atom_energy, atomic_reference,  # noqa: E402
                        commensurate_distances, cusp_softening,
                        molecule_positions, rhf_total_energy)
-from carcara.units import HARTREE_TO_EV
-from carcara.basis import BasisSet  # noqa: E402
-from carcara.integrals import Grid  # noqa: E402
+from mandacaru.units import HARTREE_TO_EV
+from mandacaru.basis import BasisSet  # noqa: E402
+from mandacaru.integrals import Grid  # noqa: E402
 
 
 class TestCommensurateDistances:
@@ -42,7 +42,7 @@ class TestCommensurateDistances:
 
 class TestGridSpec:
     def test_build_matches_the_spec(self):
-        from carcara.units import BOHR_TO_ANGSTROM
+        from mandacaru.units import BOHR_TO_ANGSTROM
 
         grid = GridSpec(box_size=6.0, spacing=0.22).build()
         assert isinstance(grid, Grid)

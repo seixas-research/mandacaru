@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/06_ADAPTVQE_O2_triplet.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -12,9 +12,9 @@ Molecular oxygen has a **triplet** (spin-polarized) ground state -- two unpaired
 electrons in the degenerate pi* orbitals.  That initial spin state is set the ASE
 way, through the atoms' **initial magnetic moments** (``magmoms=[1, 1]`` -> a
 total moment of 2, i.e. two unpaired electrons); the
-:class:`~carcara.algorithms.Carcara` (``method="adapt-vqe"``) reads
+:class:`~mandacaru.algorithms.Mandacaru` (``method="adapt-vqe"``) reads
 it and builds the reference with ``n_alpha - n_beta = 2`` (see
-:func:`carcara.algorithms._hamiltonian_from_atoms.resolve_num_unpaired`).  The
+:func:`mandacaru.algorithms._hamiltonian_from_atoms.resolve_num_unpaired`).  The
 grown ansatz then conserves ``S_z``, so the whole simulation stays in the triplet
 sector.
 
@@ -39,8 +39,8 @@ import os
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.units import from_hartree
+from mandacaru.algorithms import Mandacaru
+from mandacaru.units import from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -67,15 +67,15 @@ atoms = Atoms("O2",
               pbc=True,
               magmoms=[1.0, 1.0])                 # two unpaired electrons -> triplet
 
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool="fermionic",
-                     basis={"name": "FAO"},
-                     mapping="jordan_wigner",
-                     frozen_orbitals=[0, 1, 2, 3, 4],   # compact active space (tractable)
-                     h=0.25,
-                     max_iterations=12,
-                     gradient_tolerance=1e-3,
-                     output=os.path.join(DATA, "output_O2.txt"))
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool="fermionic",
+                       basis={"name": "FAO"},
+                       mapping="jordan_wigner",
+                       frozen_orbitals=[0, 1, 2, 3, 4],   # compact active space (tractable)
+                       h=0.25,
+                       max_iterations=12,
+                       gradient_tolerance=1e-3,
+                       output=os.path.join(DATA, "output_O2.txt"))
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_pseudo_io.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -16,7 +16,7 @@ import os
 import numpy as np
 import pytest
 
-from carcara.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
+from mandacaru.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
                                      PARQUET_MAGIC, PSEUDO_FORMATS, STRIDE,
                                      available_elements, detect_format,
                                      generation_points, get_pseudopotential,
@@ -180,7 +180,7 @@ class TestArrowStringIsolation:
         if not hasattr(pd.options.future, "infer_string"):
             pytest.skip("this pandas has no infer_string option")
 
-        from carcara.core.serialization import native_pandas_strings
+        from mandacaru.core.serialization import native_pandas_strings
 
         with native_pandas_strings():
             assert pd.options.future.infer_string is False

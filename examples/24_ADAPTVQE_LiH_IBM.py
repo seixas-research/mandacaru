@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/24_ADAPTVQE_LiH_IBM.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -26,14 +26,14 @@ import os
 import matplotlib.pyplot as plt
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.algorithms.base import measure_energies
-from carcara.backends.providers import QiskitProvider
+from mandacaru.algorithms import Mandacaru
+from mandacaru.algorithms.base import measure_energies
+from mandacaru.backends.providers import QiskitProvider
 
 # Outputs go to examples/data/ like every other example.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
-from carcara.units import HARTREE_TO_EV
+from mandacaru.units import HARTREE_TO_EV
 
 HARDWARE = None
 SHOTS = 4096
@@ -51,26 +51,26 @@ def lih(distance):
 
 
 def calculator():
-    return Carcara(method="adapt-vqe",
-                   pool="ceo",
-                   mapping="jordan_wigner",
-                   basis={"name": "GTO", "n_gaussians": 3},
-                   h=0.15,
-                   charge=0,
-                   spin=False,
-                   frozen_core=False,
-                   initial_state="hartree-fock",
-                   optimizer="COBYLA",
-                   gradient="finite_difference",
-                   max_iterations=14,
-                   gradient_tolerance=1e-3,
-                   quenching=True,
-                   sparse="auto",
-                   device="AER_simulator",
-                   shots=0,
-                   backend_provider="qiskit",
-                   execute_circuits=False,
-                   profile=True)
+    return Mandacaru(method="adapt-vqe",
+                     pool="ceo",
+                     mapping="jordan_wigner",
+                     basis={"name": "GTO", "n_gaussians": 3},
+                     h=0.15,
+                     charge=0,
+                     spin=False,
+                     frozen_core=False,
+                     initial_state="hartree-fock",
+                     optimizer="COBYLA",
+                     gradient="finite_difference",
+                     max_iterations=14,
+                     gradient_tolerance=1e-3,
+                     quenching=True,
+                     sparse="auto",
+                     device="AER_simulator",
+                     shots=0,
+                     backend_provider="qiskit",
+                     execute_circuits=False,
+                     profile=True)
 
 
 # 1. Optimize locally.

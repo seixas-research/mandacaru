@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/28_LiH_relaxation_PAW.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -18,7 +18,7 @@ from ase import Atoms
 from ase.io import write
 from ase.optimize import BFGS
 
-from carcara import Carcara
+from mandacaru import Mandacaru
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
@@ -29,15 +29,15 @@ atoms = Atoms("LiH",
               cell=[10.0, 10.0, 10.0])
 atoms.center()
 
-atoms.calc = Carcara(method="adapt-vqe",
-                     basis={"name": "PAW", "size": "SZ"},
-                     h=0.10,
-                     pool="ceo",
-                     mapping="jordan_wigner",
-                     optimizer="L-BFGS-B",
-                     max_iterations=80,
-                     gradient_tolerance=1e-5,
-                     output='output.txt')
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis={"name": "PAW", "size": "SZ"},
+                       h=0.10,
+                       pool="ceo",
+                       mapping="jordan_wigner",
+                       optimizer="L-BFGS-B",
+                       max_iterations=80,
+                       gradient_tolerance=1e-5,
+                       output='output.txt')
 
 opt = BFGS(atoms, trajectory=os.path.join(DATA, "relax.traj"))
 opt.attach(lambda: print(f"    Li-H distance {atoms.get_distance(0, 1):.4f} A"))

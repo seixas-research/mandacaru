@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 # file: examples/18_H2O_geometry_relaxation.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
 r"""Geometry relaxation driven by quantum-computed forces (H2O and H2).
 
-:class:`~carcara.algorithms.Carcara` is an ASE calculator that returns
+:class:`~mandacaru.algorithms.Mandacaru` is an ASE calculator that returns
 both the variational energy *and* the analytic nuclear gradient
 (Hellmann-Feynman **plus** Pulay), so any ASE optimizer can relax a molecule on a
 potential energy surface produced by a quantum eigensolver.
@@ -30,7 +30,7 @@ The script runs four stages:
 
    **Read stage 4 before using this for production geometries.**  The gradient
    is correct -- it reproduces finite differences of the energy.  The *energy
-   surface* is the problem: Carcará integrates on a uniform real-space grid, and
+   surface* is the problem: Mandacaru integrates on a uniform real-space grid, and
    a heavy-atom core such as oxygen's is badly resolved there.  The resulting
    force on the oxygen nucleus is of order :math:`10^3` eV/Angstrom (confirmed by
    finite difference, so it is the model, not a bug), and rigid translation of a
@@ -53,8 +53,8 @@ from ase import Atoms
 from ase.build import molecule
 from ase.optimize import BFGS
 
-from carcara.algorithms import Carcara
-from carcara.integrals import Grid
+from mandacaru.algorithms import Mandacaru
+from mandacaru.integrals import Grid
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -86,7 +86,7 @@ grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
 options = dict(method="vqe", basis="FAO", grid=grid)
 
 atoms = h2(0.74)
-atoms.calc = Carcara(**options)
+atoms.calc = Mandacaru(**options)
 forces = atoms.get_forces()
 reference = atoms.get_positions()
 
@@ -94,7 +94,7 @@ reference = atoms.get_positions()
 def energy_at(positions) -> float:
     probe = h2(0.74)
     probe.set_positions(positions)
-    probe.calc = Carcara(**options)
+    probe.calc = Mandacaru(**options)
     return probe.get_potential_energy()
 
 
@@ -153,16 +153,16 @@ print(RULE)
 start = 0.65
 fine_grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.10)
 relaxing = h2(start)
-relaxing.calc = Carcara(method="vqe",
-                        basis="FAO",
-                        grid=fine_grid)
+relaxing.calc = Mandacaru(method="vqe",
+                          basis="FAO",
+                          grid=fine_grid)
 BFGS(relaxing, logfile=os.path.join(DATA, "h2_relaxation.log")).run(
     fmax=0.15, steps=40)
 
 initial = h2(start)
-initial.calc = Carcara(method="vqe",
-                       basis="FAO",
-                       grid=fine_grid)
+initial.calc = Mandacaru(method="vqe",
+                         basis="FAO",
+                         grid=fine_grid)
 initial_force = float(np.max(np.linalg.norm(initial.get_forces(), axis=1)))
 
 final = float(np.linalg.norm(relaxing.positions[1] - relaxing.positions[0]))
@@ -190,14 +190,14 @@ print(RULE)
 water = molecule("H2O")
 water_grid = Grid(center=water.get_positions().mean(axis=0), box_size=6.0,
                   h=0.30)
-water.calc = Carcara(method="adapt-vqe",
-                     basis="FAO",
-                     grid=water_grid,
-                     frozen_core=True,
-                     pool="qeb",
-                     max_iterations=12,
-                     gradient_tolerance=1e-3,
-                     profile=False)
+water.calc = Mandacaru(method="adapt-vqe",
+                       basis="FAO",
+                       grid=water_grid,
+                       frozen_core=True,
+                       pool="qeb",
+                       max_iterations=12,
+                       gradient_tolerance=1e-3,
+                       profile=False)
 
 energy = water.get_potential_energy()
 water_forces = water.get_forces()
@@ -228,14 +228,14 @@ energies = []
 for shift in shifts:
     probe = molecule("H2O")
     probe.set_positions(probe.get_positions() + np.array([0.0, 0.0, shift]))
-    probe.calc = Carcara(method="adapt-vqe",
-                         basis="FAO",
-                         grid=water_grid,
-                         frozen_core=True,
-                         pool="qeb",
-                         max_iterations=8,
-                         gradient_tolerance=1e-3,
-                         profile=False)
+    probe.calc = Mandacaru(method="adapt-vqe",
+                           basis="FAO",
+                           grid=water_grid,
+                           frozen_core=True,
+                           pool="qeb",
+                           max_iterations=8,
+                           gradient_tolerance=1e-3,
+                           profile=False)
     energies.append(probe.get_potential_energy())
 amplitude = float(np.max(energies) - np.min(energies))
 print(f"  shift (A): {np.round(shifts, 4)}")

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "carcara"
+name = "mandacaru"
 dynamic = ["version"]
 authors = [
   { name="Leandro Seixas Rocha", email="leandro.rocha@ilum.cnpem.br" },
@@ -20,7 +20,7 @@ dependencies = [
     'matplotlib',         # expressivity / band-structure plotting helpers
     # -- Hamiltonian cache (Apache Parquet) ------------------------------ #
     # fastparquet is the default engine and pandas is its table interface; see
-    # carcara.core.serialization for why pyarrow is only an optional engine.
+    # mandacaru.core.serialization for why pyarrow is only an optional engine.
     'fastparquet',
     'pandas',
     # -- quantum SDKs (backend_provider / device registry) ---------------- #
@@ -32,7 +32,7 @@ dependencies = [
     'dotenv',             # Dotenv
     # -- nuclear gradients -------------------------------------------------- #
     # JAX differentiates the small algebraic layer (Loewdin / SCF / integral
-    # transforms) that the Pulay force needs; see carcara.algorithms.forces.
+    # transforms) that the Pulay force needs; see mandacaru.algorithms.forces.
     'jax',
     # -- test suite -------------------------------------------------------- #
     'pytest',             # `python -m pytest test/` ships with the package
@@ -50,7 +50,7 @@ classifiers = [
 [project.optional-dependencies]
 # Alternative Parquet engine.  Not a default: on some platforms pyarrow's
 # Parquet writer crashes in a process that has also run Qiskit's transpiler
-# (see the warning in carcara.core.serialization).
+# (see the warning in mandacaru.core.serialization).
 pyarrow = ['pyarrow']
 docs = ['sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 coverage = ['pytest-cov']
@@ -67,7 +67,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["src/carcara"]
+source = ["src/mandacaru"]
 branch = true
 
 [tool.coverage.report]
@@ -78,21 +78,21 @@ exclude_also = [
 ]
 
 [project.scripts]
-carcara = "carcara.cli:main"
+mandacaru = "mandacaru.cli:main"
 
 [project.urls]
-"Homepage" = "https://github.com/seixas-research/carcara"
-"Documentation" = "https://carcara.readthedocs.io/en/latest/"
+"Homepage" = "https://github.com/seixas-research/mandacaru"
+"Documentation" = "https://mandacaru.readthedocs.io/en/latest/"
 
 [tool.hatch.version]
-path = "src/carcara/version.py"
+path = "src/mandacaru/version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/carcara"]
-# The ONCVPSP and PAW libraries (~300 MB) live in the carcara-oncvpsp and
-# carcara-paw repositories and are linked into library/ locally; PyPI caps a
+packages = ["src/mandacaru"]
+# The ONCVPSP and PAW libraries (~300 MB) live in the mandacaru-oncvpsp and
+# mandacaru-paw repositories and are linked into library/ locally; PyPI caps a
 # release at 100 MB, so only the 11 MB NCPP library ships in the wheel.
 exclude = [
-  "src/carcara/pseudopotentials/library/oncvpsp",
-  "src/carcara/pseudopotentials/library/paw",
+  "src/mandacaru/pseudopotentials/library/oncvpsp",
+  "src/mandacaru/pseudopotentials/library/paw",
 ]

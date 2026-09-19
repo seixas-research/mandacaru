@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_convergence_status.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -18,10 +18,10 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
-from carcara.core.hamiltonian import spin_block_integrals
-from carcara.core.mapping import Fermion
-from carcara.optimizers.optim import Optimizer
+from mandacaru.algorithms import ADAPTVQE
+from mandacaru.core.hamiltonian import spin_block_integrals
+from mandacaru.core.mapping import Fermion
+from mandacaru.optimizers.optim import Optimizer
 
 
 def random_hamiltonian(orbitals=3, seed=5):
@@ -125,6 +125,6 @@ class TestAdaptEndToEndStillWorks:
         exact = np.linalg.eigvalsh(atoms.calc._h_matrix if isinstance(
             atoms.calc._h_matrix, np.ndarray)
             else atoms.calc._h_matrix.toarray())[0]
-        from carcara.units import HARTREE_TO_EV
+        from mandacaru.units import HARTREE_TO_EV
         assert atoms.calc.result.converged
         assert energy == pytest.approx(exact * HARTREE_TO_EV, abs=1e-6)

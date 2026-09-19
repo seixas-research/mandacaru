@@ -6,8 +6,8 @@
 import numpy as np
 import pytest
 
-from carcara.basis import BasisSet, GaussianOrbital, pople_631g_shells
-from carcara.basis.pople import (CORE_PRIMITIVES, VALENCE_INNER,
+from mandacaru.basis import BasisSet, GaussianOrbital, pople_631g_shells
+from mandacaru.basis.pople import (CORE_PRIMITIVES, VALENCE_INNER,
                                   _split_valence_shell)
 
 
@@ -74,7 +74,7 @@ class TestFactory:
 class TestNormalization:
     def test_gaussian_orbitals_are_normalized_on_grid(self):
         # A contracted 6-31G(d) orbital integrates to ~1 over a fine radial grid.
-        from carcara.integrals import Grid
+        from mandacaru.integrals import Grid
         b = BasisSet.build("6-31G(d)")
         orb = b.atom("H", center=[0.0, 0.0, 0.0])[0]
         grid = Grid(center=[0.0, 0.0, 0.0], box_size=8.0, h=0.12)

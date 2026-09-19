@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 # file: examples/05_ADAPTVQE_LiH_mappings.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
 """LiH ground state with ADAPT-VQE across fermion-to-qubit mappings.
 
-The same LiH molecule and fermionic pool are run through each of Carcará's three
+The same LiH molecule and fermionic pool are run through each of Mandacaru's three
 fermion-to-qubit mappings -- **Jordan-Wigner**, **parity** and **Bravyi-Kitaev**
 -- selected with the ``mapping`` argument of
-:class:`~carcara.algorithms.Carcara`
-(``atoms.calc = Carcara(method="adapt-vqe", ...)``).  The mappings
+:class:`~mandacaru.algorithms.Mandacaru`
+(``atoms.calc = Mandacaru(method="adapt-vqe", ...)``).  The mappings
 encode the fermionic
 Hamiltonian into *different* qubit Pauli operators, but all describe the same
 physics, so ADAPT-VQE must recover the **same** ground-state energy (the FCI
@@ -34,8 +34,8 @@ from __future__ import annotations
 import numpy as np
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.units import HARTREE_TO_EV, from_hartree
+from mandacaru.algorithms import Mandacaru
+from mandacaru.units import HARTREE_TO_EV, from_hartree
 
 # LiH centered in the cell so the auto-generated grid covers both orbitals.
 atoms = Atoms("LiH",
@@ -45,14 +45,14 @@ atoms = Atoms("LiH",
 
 energies = {}
 for mapping in ("jordan_wigner", "parity", "bravyi_kitaev"):
-    atoms.calc = Carcara(method="adapt-vqe",
-                         pool="fermionic",
-                         basis={"name": "FAO"},
-                         mapping=mapping,
-                         gradient="parameter-shift",
-                         h=0.10,
-                         max_iterations=25,
-                         gradient_tolerance=1e-3)                    # keep the loop output compact
+    atoms.calc = Mandacaru(method="adapt-vqe",
+                           pool="fermionic",
+                           basis={"name": "FAO"},
+                           mapping=mapping,
+                           gradient="parameter-shift",
+                           h=0.10,
+                           max_iterations=25,
+                           gradient_tolerance=1e-3)                    # keep the loop output compact
 
     energy_ev = atoms.get_total_energy()            # eV (ASE convention)
     result = atoms.calc.result                      # result.optimal_energy is eV

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_upaw.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -9,7 +9,7 @@
 """The unitary PAW family (``basis="UPAW"``), Ivanov et al. arXiv:2408.03159.
 
 UPAW is PAW with the orthonormality constraint ``O_ij = <phi_i|phi_j> -
-<phi~_i|phi~_j> = 0``, i.e. Carcará's ``norm_deficit = 0``: the transformation
+<phi~_i|phi~_j> = 0``, i.e. Mandacaru's ``norm_deficit = 0``: the transformation
 is unitary, so the pseudo states are orthonormal and the overlap operator is the
 identity.  It is an **option**, not the default -- the measurements that decided
 that are in ``smooth_partial_waves``' docstring and are pinned below, because
@@ -22,10 +22,10 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara import Carcara
-from carcara.pseudopotentials.families import family_names, resolve_family
-from carcara.pseudopotentials.paw import (UPAW_FAMILY, build_upaw_library,
-                                          generate_paw, generate_upaw, get_upaw)
+from mandacaru import Mandacaru
+from mandacaru.pseudopotentials.families import family_names, resolve_family
+from mandacaru.pseudopotentials.paw import (UPAW_FAMILY, build_upaw_library,
+                                            generate_paw, generate_upaw, get_upaw)
 
 CELL = 10.0
 CENTRE = CELL / 2 + 0.011
@@ -69,7 +69,7 @@ class TestUnitarity:
 
     def test_the_dataset_is_still_sound(self, hydrogen):
         """Unitarity must not buy a ghost state or a broken projector."""
-        from carcara.pseudopotentials.paw import check_paw_channel
+        from mandacaru.pseudopotentials.paw import check_paw_channel
 
         report = check_paw_channel(hydrogen, 0)
         assert abs(report["eigenvalue_error"]) < 1e-6
@@ -78,9 +78,9 @@ class TestUnitarity:
 
     def test_the_molecular_overlap_is_unaugmented(self):
         """`S = S~ + C q C†` collapses to the plain smooth overlap."""
-        from carcara.algorithms._hamiltonian_from_atoms import \
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
             build_basis_hamiltonian
-        from carcara.integrals import Grid
+        from mandacaru.integrals import Grid
 
         grid = Grid(center=[CENTRE] * 3, box_size=8.0, h=0.3, units="angstrom")
         with warnings.catch_warnings():
@@ -112,8 +112,8 @@ class TestFamilyRegistration:
         assert hydrogen.family == UPAW_FAMILY
 
     def test_a_paw_file_is_refused_as_upaw(self, tmp_path):
-        from carcara.pseudopotentials.io import (library_file,
-                                                 save_pseudopotential)
+        from mandacaru.pseudopotentials.io import (library_file,
+                                                   save_pseudopotential)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -132,10 +132,10 @@ class TestFamilyRegistration:
 class TestCalculatorPath:
     def test_the_basis_name_runs_end_to_end(self):
         atoms = h2()
-        atoms.calc = Carcara(method="adapt-vqe", basis="UPAW", h=0.3,
-                             pool="fermionic", max_iterations=8,
-                             gradient_tolerance=1e-5, profile=False,
-                             trace=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="UPAW", h=0.3,
+                               pool="fermionic", max_iterations=8,
+                               gradient_tolerance=1e-5, profile=False,
+                               trace=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             energy = atoms.get_potential_energy()
@@ -143,8 +143,8 @@ class TestCalculatorPath:
         assert atoms.calc.n_qubits == 4
 
     def test_the_dry_run_names_the_family(self):
-        estimate = Carcara(method="adapt-vqe",
-                           basis={"name": "UPAW", "size": "DZP"}).dry_run(h2())
+        estimate = Mandacaru(method="adapt-vqe",
+                             basis={"name": "UPAW", "size": "DZP"}).dry_run(h2())
         assert "UPAW" in estimate.basis
         assert estimate.n_qubits == 20
 
@@ -155,7 +155,7 @@ class TestCalculatorPath:
                       cell=[CELL] * 3)
         for spec in ({"H": "UPAW", "O": "PAW"}, {"H": "UPAW", "O": "FAO"}):
             with pytest.raises(ValueError, match="per-element basis"):
-                Carcara(method="adapt-vqe", basis=spec).dry_run(water)
+                Mandacaru(method="adapt-vqe", basis=spec).dry_run(water)
 
     def test_a_built_library_is_used_instead_of_generating(self, tmp_path):
         with warnings.catch_warnings():
@@ -182,9 +182,9 @@ class TestWhyItIsNotTheDefault:
         """UPAW zeroes L = 0 and leaves the higher multipoles -- on oxygen
         L = 2 is *larger* than PAW's, which is why the compensation machinery
         (and its force derivatives) cannot be deleted."""
-        from carcara.algorithms._hamiltonian_from_atoms import \
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
             build_basis_hamiltonian
-        from carcara.integrals import Grid
+        from mandacaru.integrals import Grid
 
         water = Atoms("OH2", positions=[[CENTRE, CENTRE, CENTRE],
                                         [CENTRE, CENTRE + 0.77, CENTRE + 0.59],
@@ -204,7 +204,7 @@ class TestWhyItIsNotTheDefault:
         assert max(by_l.get(L, 0.0) for L in (1, 2)) > 1e-4   # the rest is not
 
     def test_paw_is_still_the_default(self):
-        from carcara.algorithms._hamiltonian_from_atoms import resolve_basis
+        from mandacaru.algorithms._hamiltonian_from_atoms import resolve_basis
 
         # Nothing here may change what `basis="PAW"` means.
         assert resolve_basis("PAW")[0].lower() == "paw"

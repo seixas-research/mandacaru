@@ -1,6 +1,6 @@
 # Backend Providers: Qiskit, Braket and Cirq
 
-Carcará's ansätze are products of exponentials of anti-Hermitian generators,
+Mandacaru's ansätze are products of exponentials of anti-Hermitian generators,
 
 ```{math}
 |\psi(\vec\theta)\rangle = \prod_k e^{\theta_k A_k}\,|\mathrm{HF}\rangle .
@@ -10,17 +10,17 @@ The `backend_provider` argument chooses which quantum SDK **constructs** those
 circuits — and, with `execute_circuits=True`, which SDK **runs** them.
 
 ```python
-from carcara.algorithms import Carcara
+from mandacaru.algorithms import Mandacaru
 
-Carcara(method="adapt-vqe",
-        basis="FAO",
-        backend_provider="qiskit")   # default
-Carcara(method="adapt-vqe",
-        basis="FAO",
-        backend_provider="braket")   # amazon-braket-sdk
-Carcara(method="adapt-vqe",
-        basis="FAO",
-        backend_provider="cirq")     # cirq
+Mandacaru(method="adapt-vqe",
+          basis="FAO",
+          backend_provider="qiskit")   # default
+Mandacaru(method="adapt-vqe",
+          basis="FAO",
+          backend_provider="braket")   # amazon-braket-sdk
+Mandacaru(method="adapt-vqe",
+          basis="FAO",
+          backend_provider="cirq")     # cirq
 ```
 
 | provider | package | executes on |
@@ -60,9 +60,9 @@ cirq           -187.438636     2.22e-06     8    208    358     8.9s
 ```
 
 :::{note}
-**Endianness.** Carcará puts qubit 0 in the *most* significant position of the
+**Endianness.** Mandacaru puts qubit 0 in the *most* significant position of the
 amplitude index (the leftmost Kronecker factor), matching Braket and Cirq.
-Qiskit is little-endian, so the Qiskit provider lays Carcará qubit `k` on Qiskit
+Qiskit is little-endian, so the Qiskit provider lays Mandacaru qubit `k` on Qiskit
 wire `n-1-k`. Gate counts are unaffected — relabeling is an isomorphism.
 :::
 
@@ -74,16 +74,16 @@ wire `n-1-k`. Gate counts are unaffected — relabeling is an isomorphism.
 profiling) or actually *run* to prepare each state:
 
 ```python
-Carcara(method="adapt-vqe",
-        backend_provider="qiskit")   # execute_circuits=False
-Carcara(method="adapt-vqe",
-        backend_provider="braket")   # execute_circuits=True
-Carcara(method="adapt-vqe",
-        backend_provider="qiskit",
-        execute_circuits=True)                           # opt in
-Carcara(method="adapt-vqe",
-        backend_provider="cirq",
-        execute_circuits=False)                          # opt out
+Mandacaru(method="adapt-vqe",
+          backend_provider="qiskit")   # execute_circuits=False
+Mandacaru(method="adapt-vqe",
+          backend_provider="braket")   # execute_circuits=True
+Mandacaru(method="adapt-vqe",
+          backend_provider="qiskit",
+          execute_circuits=True)                           # opt in
+Mandacaru(method="adapt-vqe",
+          backend_provider="cirq",
+          execute_circuits=False)                          # opt out
 ```
 
 It defaults to `True` for `"braket"` and `"cirq"` — naming them is a request to
@@ -103,9 +103,9 @@ because only Qiskit re-optimises during transpilation; the unitary does not.
 The providers are also usable below the calculator level:
 
 ```python
-from carcara.backends.providers import build_provider
-from carcara.circuits import AdaptAnsatz
-from carcara.circuits.pools import build_pool
+from mandacaru.backends.providers import build_provider
+from mandacaru.circuits import AdaptAnsatz
+from mandacaru.circuits.pools import build_pool
 
 pool = build_pool("qeb", 2, (1, 1))
 provider = build_provider("cirq")
@@ -121,11 +121,11 @@ circuit = provider.build(4, ansatz.reference_qubits(),
 print(circuit)
 ```
 
-{class}`~carcara.circuits.UCCSD` accepts `provider=` too, but a circuit realises
+{class}`~mandacaru.circuits.UCCSD` accepts `provider=` too, but a circuit realises
 the **Trotter product** form, so `trotter=True` is required:
 
 ```python
-from carcara.circuits import UCCSD
+from mandacaru.circuits import UCCSD
 
 UCCSD(2, (1, 1), trotter=True, provider=build_provider("braket"))
 ```
@@ -146,7 +146,7 @@ reference raises a clear `ValueError`.
 Naming a provider never fails at import time; the SDK is imported on first use.
 
 ```python
-from carcara.backends.providers import BACKEND_PROVIDERS, provider_available
+from mandacaru.backends.providers import BACKEND_PROVIDERS, provider_available
 
 BACKEND_PROVIDERS                 # ('qiskit', 'braket', 'cirq')
 provider_available("braket")      # True if amazon-braket-sdk is importable

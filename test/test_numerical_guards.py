@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_numerical_guards.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -18,14 +18,14 @@ import warnings
 import numpy as np
 import pytest
 
-from carcara.basis import FullAtomicOrbital
-from carcara.core.hamiltonian import (OVERLAP_EIGENVALUE_FLOOR,
-                                      OVERLAP_EIGENVALUE_WARN,
-                                      MolecularIntegrals)
-from carcara.core.mapping import PauliSum
-from carcara.integrals import Grid
-from carcara.integrals._backend import (_check_filled, _check_samples,
-                                        one_body_matrices)
+from mandacaru.basis import FullAtomicOrbital
+from mandacaru.core.hamiltonian import (OVERLAP_EIGENVALUE_FLOOR,
+                                        OVERLAP_EIGENVALUE_WARN,
+                                        MolecularIntegrals)
+from mandacaru.core.mapping import PauliSum
+from mandacaru.integrals import Grid
+from mandacaru.integrals._backend import (_check_filled, _check_samples,
+                                          one_body_matrices)
 
 
 def hydrogen_integrals(basis_size=1):
@@ -130,11 +130,11 @@ class TestForceCapabilityGate:
         """Run the calculator's check against a stubbed solver."""
         from types import SimpleNamespace
 
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
-        calc = Carcara(method="adapt-vqe", basis="FAO",
-                       force_method=context.pop("force_method", "rdm"),
-                       measurement_provider=context.pop("provider", None))
+        calc = Mandacaru(method="adapt-vqe", basis="FAO",
+                         force_method=context.pop("force_method", "rdm"),
+                         measurement_provider=context.pop("provider", None))
         solver = SimpleNamespace(
             shots=context.pop("shots", 0),
             num_particles=context.pop("num_particles", (1, 1)),
@@ -181,13 +181,13 @@ class TestForceCapabilityGate:
     def test_spectral_kinetic_is_refused_end_to_end(self):
         from ase import Atoms
 
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.5,
-                             kinetic="spectral", profile=False,
-                             max_iterations=1)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.5,
+                               kinetic="spectral", profile=False,
+                               max_iterations=1)
         with pytest.raises(NotImplementedError, match="finite-difference"):
             atoms.get_forces()
 
@@ -196,11 +196,11 @@ class TestStaleResultsAreCleared:
     def test_an_energy_only_step_clears_the_force_breakdown(self):
         from ase import Atoms
 
-        from carcara import Carcara
+        from mandacaru import Mandacaru
 
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO", h=0.5, profile=False, max_iterations=2)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.5, profile=False, max_iterations=2)
         atoms.get_forces()
         assert atoms.calc.force_result is not None
         moved = atoms.copy()
@@ -212,8 +212,8 @@ class TestStaleResultsAreCleared:
 
 class TestHermiticityCheck:
     def test_a_non_hermitian_hamiltonian_is_refused(self):
-        from carcara.algorithms import ADAPTVQE
-        from carcara.core.mapping import PauliSum
+        from mandacaru.algorithms import ADAPTVQE
+        from mandacaru.core.mapping import PauliSum
 
         bad = PauliSum({"ZZ": 1.0, "XX": 0.5j})
         with pytest.raises(ValueError, match="not Hermitian"):
@@ -223,7 +223,7 @@ class TestHermiticityCheck:
 
 class TestPseudoBasisOptions:
     def test_split_norm_may_differ_per_element(self):
-        from carcara.algorithms._hamiltonian_from_atoms import (
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
         name, options = resolve_basis({"Li": {"name": "PAW", "split_norm": 0.3},
@@ -233,7 +233,7 @@ class TestPseudoBasisOptions:
         assert merged["split_norm"] == {"Li": 0.3, "H": 0.15}
 
     def test_one_shared_value_stays_a_scalar(self):
-        from carcara.algorithms._hamiltonian_from_atoms import (
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
         name, options = resolve_basis({"Li": {"name": "PAW", "split_norm": 0.2},
@@ -243,8 +243,8 @@ class TestPseudoBasisOptions:
         assert merged["split_norm"] == 0.2
 
     def test_per_element_split_norm_reaches_the_basis(self):
-        from carcara.pseudopotentials import pseudo_basis
-        from carcara.pseudopotentials.paw import get_paw
+        from mandacaru.pseudopotentials import pseudo_basis
+        from mandacaru.pseudopotentials.paw import get_paw
 
         potentials = {"H": get_paw("H")}
         shared = pseudo_basis(["H"], [[0.0, 0.0, 0.0]], potentials, size="DZ",
@@ -257,7 +257,7 @@ class TestPseudoBasisOptions:
     def test_n_electrons_is_refused_with_a_pseudopotential_basis(self):
         from ase import Atoms
 
-        from carcara.algorithms._hamiltonian_from_atoms import (
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
             build_basis_hamiltonian)
 
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],

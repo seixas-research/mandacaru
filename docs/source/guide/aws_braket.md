@@ -22,7 +22,7 @@ with each $\langle P_j\rangle$ estimated from shots in that Pauli's own
 eigenbasis.
 :::
 
-Carcará implements that path. Pass `shots > 0` and the calculator switches from
+Mandacaru implements that path. Pass `shots > 0` and the calculator switches from
 amplitudes to measurements automatically.
 
 ---
@@ -31,32 +31,32 @@ amplitudes to measurements automatically.
 
 ```python
 from ase import Atoms
-from carcara.algorithms import Carcara
+from mandacaru.algorithms import Mandacaru
 
 atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
               cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
 
 # Local Braket simulator, shot-based (identical protocol to a QPU).
-atoms.calc = Carcara(method="vqe",
-                     basis="FAO",
-                     h=0.35,
-                     device="braket-local",
-                     shots=8192)
+atoms.calc = Mandacaru(method="vqe",
+                       basis="FAO",
+                       h=0.35,
+                       device="braket-local",
+                       shots=8192)
 atoms.get_total_energy()
 
 # The AWS managed simulator.
-atoms.calc = Carcara(method="vqe",
-                     basis="FAO",
-                     h=0.35,
-                     device="braket-sv1",
-                     shots=8192)
+atoms.calc = Mandacaru(method="vqe",
+                       basis="FAO",
+                       h=0.35,
+                       device="braket-sv1",
+                       shots=8192)
 
 # A real trapped-ion QPU.
-atoms.calc = Carcara(method="vqe",
-                     basis="FAO",
-                     h=0.35,
-                     device="braket-ionq-aria",
-                     shots=8192)
+atoms.calc = Mandacaru(method="vqe",
+                       basis="FAO",
+                       h=0.35,
+                       device="braket-ionq-aria",
+                       shots=8192)
 ```
 
 Naming a Braket device selects the `braket` provider automatically, so
@@ -73,7 +73,7 @@ account** per quantum task. Estimate the cost first (see *Cost* below).
 ## How the energy is measured
 
 Measuring one Pauli term per circuit is correct but ruinous — a modest active
-space has $10^2$–$10^4$ terms. Carcará instead partitions the Hamiltonian into
+space has $10^2$–$10^4$ terms. Mandacaru instead partitions the Hamiltonian into
 **qubit-wise commuting (QWC)** groups: two Pauli strings are QWC when, on every
 qubit where both act non-trivially, they carry the *same* Pauli. A QWC set is
 measurable by a single circuit — rotate each qubit once into the basis its group
@@ -81,7 +81,7 @@ prescribes, measure everything, and read every term's expectation value out of
 the same bit-strings.
 
 ```python
-from carcara.backends.measurement import qubit_wise_commuting_groups
+from mandacaru.backends.measurement import qubit_wise_commuting_groups
 
 groups, identity = qubit_wise_commuting_groups(hamiltonian)
 len(groups)      # circuits per energy evaluation
@@ -112,7 +112,7 @@ its layout, and one job returns $\langle H\rangle$ with its standard error.
 Three device spellings cover the workflow, from rehearsal to the real machine:
 
 ```python
-from carcara.backends.providers import QiskitProvider
+from mandacaru.backends.providers import QiskitProvider
 
 QiskitProvider(shots=4096)                          # local estimator, sampled
 QiskitProvider(device="fake_kingston", shots=4096)  # that processor's fake backend, locally
@@ -128,11 +128,11 @@ evaluations. So run the optimisation on the local state vector and measure
 only the optimised states on hardware:
 
 ```python
-from carcara.algorithms.base import measure_energies
+from mandacaru.algorithms.base import measure_energies
 
-atoms.calc = Carcara(method="adapt-vqe",
-                     pool="ceo",
-                     basis="GTO")
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       pool="ceo",
+                       basis="GTO")
 atoms.get_total_energy()                                  # local
 provider = QiskitProvider(device="ibm_kingston", shots=4096)
 e_hw = atoms.calc.solver.measured_energy(provider)        # one job
@@ -145,14 +145,14 @@ molecules with a closed-shell reference the parity mapping's two-qubit
 reduction removes two qubits and their gates at no cost in physics:
 
 ```python
-Carcara(method="adapt-vqe",
-        pool="fermionic",
-        mapping="parity",
-        two_qubit_reduction=True,
-        basis="FAO")     # H2 on 2 qubits
+Mandacaru(method="adapt-vqe",
+          pool="fermionic",
+          mapping="parity",
+          two_qubit_reduction=True,
+          basis="FAO")     # H2 on 2 qubits
 ```
 
-A driver with `shots > 0` and an IBM device (`Carcara(..., device="ibm_kingston",
+A driver with `shots > 0` and an IBM device (`Mandacaru(..., device="ibm_kingston",
 shots=4096)`) runs the whole optimisation through the Estimator instead, one
 job per energy evaluation; do that on a fake backend, not on a budget.
 Example `24_ADAPTVQE_LiH_IBM.py` follows the optimise-locally pattern.
@@ -160,7 +160,7 @@ Example `24_ADAPTVQE_LiH_IBM.py` follows the optimise-locally pattern.
 ## Registered devices
 
 ```python
-from carcara.backends.hardware import describe_devices, device_arn
+from mandacaru.backends.hardware import describe_devices, device_arn
 
 for device in describe_devices():
     print(device.name, device.simulator, device.arn)
@@ -181,17 +181,17 @@ A **raw ARN** is accepted too, so a device released after this version can still
 be named:
 
 ```python
-Carcara(method="vqe",
-        basis="FAO",
-        device="arn:aws:braket:eu-west-2::device/qpu/vendor/New-1",
-        shots=4096)
+Mandacaru(method="vqe",
+          basis="FAO",
+          device="arn:aws:braket:eu-west-2::device/qpu/vendor/New-1",
+          shots=4096)
 ```
 
 Naming a QPU **without** `shots` is refused up front, when the solver is built,
 rather than at submission time:
 
 ```pycon
->>> Carcara(method="adapt-vqe",
+>>> Mandacaru(method="adapt-vqe",
 ...         device="braket-ionq-aria").run()
 ValueError: device 'braket-ionq-aria' is real quantum hardware, which cannot
 return a state vector: pass shots > 0 (e.g. shots=8192) so the energy is
@@ -202,7 +202,7 @@ estimated from measurements.
 
 ## Gate set
 
-Carcará emits only `X`, `H`, `S`, `Si`, `CNot` and `Rz` — all Braket-native and
+Mandacaru emits only `X`, `H`, `S`, `Si`, `CNot` and `Rz` — all Braket-native and
 available on every Braket QPU (the device's own compiler maps them to its native
 basis). `examples/13_braket_aws_compatibility.py` verifies this on every run.
 
@@ -214,9 +214,9 @@ A hardware run is billed per quantum task, and one energy evaluation costs one
 task per QWC group. Plan before submitting:
 
 ```python
-from carcara.backends.measurement import shot_noise_estimate
-from carcara.backends.providers import build_provider
-from carcara.units import from_hartree
+from mandacaru.backends.measurement import shot_noise_estimate
+from mandacaru.backends.providers import build_provider
+from mandacaru.units import from_hartree
 
 provider = build_provider("braket", shots=8192)
 groups = provider.measurement_groups(hamiltonian)

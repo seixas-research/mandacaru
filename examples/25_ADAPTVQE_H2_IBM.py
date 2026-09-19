@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: examples/25_ADAPTVQE_H2_IBM.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -27,21 +27,21 @@ import os
 import matplotlib.pyplot as plt
 from ase import Atoms
 
-from carcara.algorithms import Carcara
-from carcara.algorithms.base import measure_energies
-from carcara.backends.providers import QiskitProvider
+from mandacaru.algorithms import Mandacaru
+from mandacaru.algorithms.base import measure_energies
+from mandacaru.backends.providers import QiskitProvider
 
 # Outputs go to examples/data/ like every other example.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
-from carcara.units import HARTREE_TO_EV
+from mandacaru.units import HARTREE_TO_EV
 
 HARDWARE = None
 SHOTS = 4096
 #: Qiskit Runtime error mitigation: level 2 adds gate twirling and
 #: zero-noise extrapolation to the readout mitigation of level 1.
 ESTIMATOR_OPTIONS = {"resilience_level": 2}
-#: Physical qubits to run on (Carcara qubit k on PHYSICAL_QUBITS[k]); None
+#: Physical qubits to run on (Mandacaru qubit k on PHYSICAL_QUBITS[k]); None
 #: lets the transpiler choose.  Pin a pair with good *current* readout: a
 #: drifted qubit ruins the energy while its calibration record looks fine.
 PHYSICAL_QUBITS = None
@@ -59,27 +59,27 @@ def h2(distance):
 
 
 def calculator():
-    return Carcara(method="adapt-vqe",
-                   pool="fermionic",
-                   mapping="parity",
-                   two_qubit_reduction=True,   # H2 on 2 qubits instead of 4
-                   basis="FAO",
-                   h=0.10,
-                   charge=0,
-                   spin=False,
-                   frozen_core=False,
-                   initial_state="hartree-fock",
-                   optimizer="COBYLA",
-                   gradient="finite_difference",
-                   max_iterations=14,
-                   gradient_tolerance=1e-3,
-                   quenching=True,
-                   sparse="auto",
-                   device="AER_simulator",
-                   shots=0,
-                   backend_provider="qiskit",
-                   execute_circuits=False,
-                   profile=True)
+    return Mandacaru(method="adapt-vqe",
+                     pool="fermionic",
+                     mapping="parity",
+                     two_qubit_reduction=True,   # H2 on 2 qubits instead of 4
+                     basis="FAO",
+                     h=0.10,
+                     charge=0,
+                     spin=False,
+                     frozen_core=False,
+                     initial_state="hartree-fock",
+                     optimizer="COBYLA",
+                     gradient="finite_difference",
+                     max_iterations=14,
+                     gradient_tolerance=1e-3,
+                     quenching=True,
+                     sparse="auto",
+                     device="AER_simulator",
+                     shots=0,
+                     backend_provider="qiskit",
+                     execute_circuits=False,
+                     profile=True)
 
 
 # 1. Optimize locally.

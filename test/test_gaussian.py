@@ -4,9 +4,9 @@
 import numpy as np
 import pytest
 
-from carcara.basis import GaussianOrbital
-from carcara.basis.gaussian import primitive_norm
-from carcara.integrals import Grid
+from mandacaru.basis import GaussianOrbital
+from mandacaru.basis.gaussian import primitive_norm
+from mandacaru.integrals import Grid
 
 
 def _radial_norm(orb, r_max=40.0, n=400000):

@@ -30,11 +30,11 @@ between them is `bond_length`. `pbc=False` describes an isolated molecule.
 ## 2. Choose the numerical model
 
 A **basis set** supplies the spatial orbitals used to describe the electrons.
-A **grid** supplies the points at which Carcará evaluates the integrals.
+A **grid** supplies the points at which Mandacaru evaluates the integrals.
 These are independent choices.
 
 ```python
-from carcara.integrals import Grid
+from mandacaru.integrals import Grid
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.12)
 ```
@@ -45,7 +45,7 @@ that this example does not need an ASE unit cell. These modest settings are
 for learning; check finer grids and larger boxes before interpreting energies
 quantitatively.
 
-We use Carcará's `STO-3G` family and freeze the lowest doubly occupied
+We use Mandacaru's `STO-3G` family and freeze the lowest doubly occupied
 Hartree–Fock molecular orbital, associated mainly with lithium's 1s core.
 The resulting active problem has two electrons. The core still contributes
 to the Hamiltonian and total energy.
@@ -56,7 +56,7 @@ different charged system. Use `frozen_core=True` to remove the core pair from
 the variational search consistently.
 ```
 
-Carcará's minimal `STO-3G` construction contains Li 1s and 2s functions and an
+Mandacaru's minimal `STO-3G` construction contains Li 1s and 2s functions and an
 H 1s function: three spatial orbitals before freezing, two afterwards. Each
 active spatial orbital has two spin orbitals, giving four qubits under the
 Jordan–Wigner mapping. This small basis omits lithium p functions. It is a
@@ -66,10 +66,10 @@ published basis tables; see [basis sets](../guide/basis_sets.md).
 ## 3. Attach and run the calculator
 
 ```python
-from carcara.algorithms import Carcara
-from carcara.optimizers import Optimizer
+from mandacaru.algorithms import Mandacaru
+from mandacaru.optimizers import Optimizer
 
-atoms.calc = Carcara(
+atoms.calc = Mandacaru(
     method="vqe",
     basis="STO-3G",
     frozen_core=True,
@@ -94,7 +94,7 @@ The dry run estimates the qubit requirements without evaluating integrals.
 For a fixed molecular geometry, the returned energy includes electronic
 energy and nuclear repulsion; it excludes nuclear kinetic energy.
 
-With `method="vqe"`, Carcará constructs a fixed UCCSD ansatz automatically.
+With `method="vqe"`, Mandacaru constructs a fixed UCCSD ansatz automatically.
 The classical optimiser varies its circuit parameters to minimise
 
 ```{math}

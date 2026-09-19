@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_gaussian_families.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -21,11 +21,11 @@ import pytest
 from ase import Atoms
 from scipy.special import gamma
 
-from carcara.basis import (NAMED_BASIS_SETS, BasisSet, GaussianBasisSet,
-                           GaussianOrbital, GaussianRecipe, count_functions,
-                           gaussian_shells, parse_basis_name, pople_631g_shells,
-                           shell_notation)
-from carcara.basis.gaussian_families import DIFFUSE_RATIO
+from mandacaru.basis import (NAMED_BASIS_SETS, BasisSet, GaussianBasisSet,
+                             GaussianOrbital, GaussianRecipe, count_functions,
+                             gaussian_shells, parse_basis_name, pople_631g_shells,
+                             shell_notation)
+from mandacaru.basis.gaussian_families import DIFFUSE_RATIO
 
 REQUESTED = {
     "sto": ["STO-3G", "STO-4G", "STO-5G", "STO-6G"],
@@ -192,14 +192,14 @@ class TestProvenance:
                     == parse_basis_name("def2-SVP").summary())
 
     def test_the_published_namespace_resolves_to_nothing(self):
-        """Reserved for real tabulated data, which Carcará does not ship."""
+        """Reserved for real tabulated data, which Mandacaru does not ship."""
         with pytest.raises(ValueError, match="no published basis-set tables"):
             BasisSet.build("published:cc-pVTZ")
         with pytest.raises(ValueError, match="unknown basis-set namespace"):
             BasisSet.build("elsewhere:cc-pVTZ")
 
     def test_the_dry_run_reports_the_provenance(self):
-        from carcara.algorithms.dry_run import estimate_qubits
+        from mandacaru.algorithms.dry_run import estimate_qubits
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
                       cell=[6.0] * 3)
         assert estimate_qubits(atoms, basis="cc-pVDZ").basis == \
@@ -341,7 +341,7 @@ def h2():
 class TestIntegration:
     @pytest.mark.parametrize("family, name", sorted(REPRESENTATIVE.items()))
     def test_dry_run_counts_the_family(self, h2, family, name):
-        from carcara.algorithms import estimate_qubits
+        from mandacaru.algorithms import estimate_qubits
         est = estimate_qubits(h2, basis=name)
         expected = len(BasisSet.build(name).atom("H"))
         assert est.per_atom == [("H", expected), ("H", expected)]
@@ -350,8 +350,8 @@ class TestIntegration:
     @pytest.mark.parametrize("family, name", sorted(REPRESENTATIVE.items()))
     def test_hamiltonian_builds_and_hartree_fock_converges(self, h2, family,
                                                             name):
-        from carcara.core import MolecularIntegrals
-        from carcara.integrals import Grid
+        from mandacaru.core import MolecularIntegrals
+        from mandacaru.integrals import Grid
         bset = BasisSet.build(name)
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
         functions, nuclei = [], []
@@ -370,8 +370,8 @@ class TestIntegration:
 
     def test_split_valence_beats_minimal_at_hartree_fock(self, h2):
         """More flexibility cannot raise the variational minimum."""
-        from carcara.core import MolecularIntegrals
-        from carcara.integrals import Grid
+        from mandacaru.core import MolecularIntegrals
+        from mandacaru.integrals import Grid
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.25)
 
         def rhf(name):
@@ -390,9 +390,9 @@ class TestIntegration:
 
     def test_adapt_vqe_reaches_fci_with_a_named_set(self, h2):
         """A full run through the calculator with an STO-nG name."""
-        from carcara.algorithms import Carcara
+        from mandacaru.algorithms import Mandacaru
         atoms = h2.copy()
-        atoms.calc = Carcara(method="adapt-vqe", basis="STO-4G",
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="STO-4G",
                                        pool="qeb", h=0.35,
                                        profile=False, optimizer="L-BFGS-B",
                                        gradient_tolerance=1e-5)

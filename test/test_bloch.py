@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_bloch.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -18,13 +18,13 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import (
+from mandacaru.algorithms import (
     ADAPTVQEResult,
     BandStructure,
     BlochCalculator,
     VQEResult,
 )
-from carcara.optimizers import Optimizer
+from mandacaru.optimizers import Optimizer
 
 METHODS = ["vqe", "adapt-vqe"]
 
@@ -130,7 +130,7 @@ class TestBands:
         ``one_body()`` used to go through a ``_compute()`` that built both
         blocks, so the nominally one-body band workflow paid for every ERI.
         """
-        from carcara.core.hamiltonian import MolecularIntegrals
+        from mandacaru.core.hamiltonian import MolecularIntegrals
 
         monkeypatch.setattr(
             MolecularIntegrals, "_compute_two_body",

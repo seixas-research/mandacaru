@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_pool_encoding.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -9,7 +9,7 @@
 """Every pool is built in the encoding the Hamiltonian uses.
 
 The qubit-excitation pools (``qeb``, ``ceo``) are constructed from the
-encoding's own update and flip sets (:func:`carcara.core.mapping.qubit_excitation`),
+encoding's own update and flip sets (:func:`mandacaru.core.mapping.qubit_excitation`),
 not by deleting Jordan-Wigner ``Z`` strings: reusing the JW strings under
 parity or Bravyi-Kitaev gives operators that no longer commute with the mapped
 number operator, and the ansatz would leave the physical sector.
@@ -19,11 +19,11 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import ADAPTVQE
-from carcara.circuits.pools import build_pool
-from carcara.core.mapping import Fermion, PauliSum, qubit_excitation
-from carcara.core.sector import ParticleSector
-from carcara.units import HARTREE_TO_EV
+from mandacaru.algorithms import ADAPTVQE
+from mandacaru.circuits.pools import build_pool
+from mandacaru.core.mapping import Fermion, PauliSum, qubit_excitation
+from mandacaru.core.sector import ParticleSector
+from mandacaru.units import HARTREE_TO_EV
 
 MAPPINGS = ["jordan_wigner", "parity", "bravyi_kitaev"]
 CONSERVING = ["fermionic", "qeb", "ceo"]

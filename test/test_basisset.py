@@ -4,8 +4,8 @@
 import numpy as np
 import pytest
 
-from carcara.basis import BasisFunction, BasisSet, GTOBasisSet, NAOBasisSet
-from carcara.integrals import Grid
+from mandacaru.basis import BasisFunction, BasisSet, GTOBasisSet, NAOBasisSet
+from mandacaru.integrals import Grid
 
 
 class TestBuild:

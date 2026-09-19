@@ -8,16 +8,16 @@ Covers the resource-reporting features:
 * the C backend exposes its OpenMP thread count (``_backend.num_threads``);
 * the real-space integral engine times its one-/two-body stages and records the
   cores / backend / peak memory (``IntegralEngine.integration_profile``);
-* :class:`~carcara.utils.profiling.Timings` accumulates named stage wall-times.
+* :class:`~mandacaru.utils.profiling.Timings` accumulates named stage wall-times.
 """
 
 import numpy as np
 import pytest
 
-from carcara.core import MolecularIntegrals, minimal_fao_basis
-from carcara.integrals import Grid, IntegralEngine
-from carcara.integrals import _backend
-from carcara.utils.profiling import Timings, backend_cores, peak_memory_mb
+from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.integrals import Grid, IntegralEngine
+from mandacaru.integrals import _backend
+from mandacaru.utils.profiling import Timings, backend_cores, peak_memory_mb
 
 
 class TestBackendCores:

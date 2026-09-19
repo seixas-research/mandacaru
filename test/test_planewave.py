@@ -12,10 +12,10 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.core import PlaneWaveIntegrals, plane_wave_vectors
-from carcara.algorithms import ADAPTVQE, VQE
-from carcara.algorithms._hamiltonian_from_atoms import (build_basis_hamiltonian,
-                                                        resolve_basis)
+from mandacaru.core import PlaneWaveIntegrals, plane_wave_vectors
+from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.algorithms._hamiltonian_from_atoms import (build_basis_hamiltonian,
+                                                          resolve_basis)
 
 EV = 1.0 / 27.211386245988   # eV -> Hartree
 B2A = 0.52917721             # Bohr -> Angstrom
@@ -79,7 +79,7 @@ class TestPlaneWaveIntegrals:
         The isolated pair sum (1/0.8 = 1.25 Ha) stays available for comparison,
         but the Hamiltonian uses the Ewald energy of the periodic lattice.
         """
-        from carcara.core.ewald import ewald_energy
+        from mandacaru.core.ewald import ewald_energy
 
         assert pw.molecular_nuclear_repulsion == pytest.approx(1.25, abs=1e-9)
         expected = ewald_energy([R for _Z, R in pw.nuclei],

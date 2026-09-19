@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_ewald.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -16,7 +16,7 @@ standard references for that sum.
 import numpy as np
 import pytest
 
-from carcara.core.ewald import ewald_energy
+from mandacaru.core.ewald import ewald_energy
 
 #: Wigner's constant: one point charge per cubic cell in a neutralizing
 #: background has energy ``-zeta q^2 / 2L``.

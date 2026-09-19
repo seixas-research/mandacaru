@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test/test_forces.py
 
-# This code is part of Carcará.
+# This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
@@ -18,7 +18,7 @@ All finite-difference comparisons use a **fixed grid**.  The drivers regenerate
 the grid per geometry by default, which makes it move with the molecule and adds
 a spurious grid-drag term to the energy; the gradient is taken at fixed grid, so
 that is the configuration in which the two must agree (see
-:class:`~carcara.algorithms.Carcara`).
+:class:`~mandacaru.algorithms.Mandacaru`).
 """
 
 from __future__ import annotations
@@ -27,15 +27,15 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from carcara.algorithms import (ADAPTVQE, Carcara, VQE, nuclear_gradient,
-                                one_rdm, two_rdm)
-from carcara.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
-from carcara.algorithms._jax_energy import (energy_from_integrals,
-                                            integral_gradients, jax_available)
-from carcara.algorithms.rdm import electronic_energy, particle_number
-from carcara.core.hamiltonian import spin_block_integrals
-from carcara.integrals import Grid
-from carcara.units import HARTREE_TO_EV
+from mandacaru.algorithms import (ADAPTVQE, Mandacaru, VQE, nuclear_gradient,
+                                  one_rdm, two_rdm)
+from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
+from mandacaru.algorithms._jax_energy import (energy_from_integrals,
+                                              integral_gradients, jax_available)
+from mandacaru.algorithms.rdm import electronic_energy, particle_number
+from mandacaru.core.hamiltonian import spin_block_integrals
+from mandacaru.integrals import Grid
+from mandacaru.units import HARTREE_TO_EV
 
 needs_jax = pytest.mark.skipif(not jax_available(), reason="jax not installed")
 
@@ -283,11 +283,11 @@ def isolated_atom_force(symbol, n_electrons, spacing, box=5.0, offset=0.37,
     the test probes a generic sub-grid position rather than a symmetric one that
     would cancel the artifact by luck.
     """
-    from carcara.algorithms.forces import (hellmann_feynman_gradient,
-                                           orbital_gradients)
-    from carcara.basis import BasisSet
-    from carcara.core import MolecularIntegrals
-    from carcara.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
+    from mandacaru.algorithms.forces import (hellmann_feynman_gradient,
+                                             orbital_gradients)
+    from mandacaru.basis import BasisSet
+    from mandacaru.core import MolecularIntegrals
+    from mandacaru.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
 
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=box, h=spacing)
     position = np.array([0.0, 0.0, offset * grid.dx * BOHR_TO_ANGSTROM])
@@ -374,7 +374,7 @@ class TestIsolatedAtom:
         gradient is finite-differenced is a smoothing artifact across the nuclear
         cusp, not accuracy -- see `hellmann_feynman_gradient`.
         """
-        from carcara.algorithms.forces import orbital_gradients
+        from mandacaru.algorithms.forces import orbital_gradients
 
         standard = isolated_atom_force("Be", 4, spacing=0.10)
         faithful = isolated_atom_force("Be", 4, spacing=0.10, form="by-parts",
@@ -433,13 +433,13 @@ class TestByPartsMode:
         assert result.details["hellmann_feynman"] == "by-parts"
 
     def test_default_is_the_verified_form(self):
-        assert Carcara().hellmann_feynman == "analytic"
+        assert Mandacaru().hellmann_feynman == "analytic"
 
     def test_calculator_exposes_the_option(self, fixed_grid):
         # `hellmann_feynman` selects a form inside the legacy SCF-response
         # gradient; the default RDM gradient does not use it.
         atoms = h2(0.74)
-        atoms.calc = Carcara(method="vqe", basis="FAO",
+        atoms.calc = Mandacaru(method="vqe", basis="FAO",
                                        grid=fixed_grid,
                                        force_method="scf-response",
                                        hellmann_feynman="by-parts")
@@ -453,9 +453,9 @@ class TestByPartsMode:
 # --------------------------------------------------------------------------- #
 
 @needs_jax
-class TestCarcara:
+class TestMandacaru:
     def test_implements_energy_and_forces(self):
-        calc = Carcara(method="vqe", basis="FAO", h=SPACING)
+        calc = Mandacaru(method="vqe", basis="FAO", h=SPACING)
         assert "energy" in calc.implemented_properties
         assert "forces" in calc.implemented_properties
 
@@ -467,7 +467,7 @@ class TestCarcara:
         separate, deliberate step on top of it.
         """
         atoms = h2(0.74)
-        atoms.calc = Carcara(method="vqe", basis="FAO", grid=fixed_grid,
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", grid=fixed_grid,
                                        force_method="scf-response")
         atoms.get_forces()
         forces = atoms.calc.force_result.unprojected
@@ -484,14 +484,14 @@ class TestCarcara:
         """
         def run(method):
             atoms = h2(0.74)
-            atoms.calc = Carcara(method="vqe", basis="FAO", grid=fixed_grid, force_method=method)
+            atoms.calc = Mandacaru(method="vqe", basis="FAO", grid=fixed_grid, force_method=method)
             return atoms.get_forces()
 
         assert np.allclose(run("rdm"), run("scf-response"), atol=5e-3)
 
     def test_energy_matches_the_bare_driver(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = Carcara(method="vqe", basis="FAO",
+        atoms.calc = Mandacaru(method="vqe", basis="FAO",
                                        grid=fixed_grid)
         energy = atoms.get_potential_energy()
         reference = driver_energy(h2(0.74), fixed_grid)          # eV already
@@ -499,7 +499,7 @@ class TestCarcara:
 
     def test_grid_is_frozen_across_geometries(self):
         """The grid must not follow the atoms, or forces stop matching energies."""
-        calc = Carcara(method="vqe", basis="FAO", h=SPACING)
+        calc = Mandacaru(method="vqe", basis="FAO", h=SPACING)
         atoms = h2(0.74)
         atoms.center(vacuum=2.5)            # the cell is the frozen box
         atoms.calc = calc
@@ -513,7 +513,7 @@ class TestCarcara:
 
     def test_force_breakdown_is_exposed(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = Carcara(method="vqe", basis="FAO",
+        atoms.calc = Mandacaru(method="vqe", basis="FAO",
                                        grid=fixed_grid)
         atoms.get_forces()
         hf, pulay = atoms.calc.get_force_breakdown()
@@ -522,7 +522,7 @@ class TestCarcara:
 
     def test_adapt_vqe_driver_also_works(self, fixed_grid):
         atoms = h2(0.74)
-        atoms.calc = Carcara(method="adapt-vqe", basis="FAO",
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO",
                                        grid=fixed_grid, pool="qeb")
         forces = atoms.get_forces()
         # Same physics as the fixed-ansatz driver: H2 UCCSD and ADAPT both
@@ -532,11 +532,11 @@ class TestCarcara:
 
     def test_unknown_method_rejected(self):
         with pytest.raises(ValueError, match="unknown method"):
-            Carcara(method="qaoa")
+            Mandacaru(method="qaoa")
 
     def test_plane_wave_basis_is_rejected(self):
         """A plane-wave basis does not move with the nuclei: no Pulay machinery."""
-        from carcara.units import BOHR_TO_ANGSTROM
+        from mandacaru.units import BOHR_TO_ANGSTROM
 
         edge = 4 * BOHR_TO_ANGSTROM
         center = edge / 2
@@ -545,7 +545,7 @@ class TestCarcara:
                       cell=np.diag([edge, edge, edge]), pbc=True)
         # Rejected as soon as forces are requested, before any expensive
         # variational run (the energy path stays open for plane waves).
-        atoms.calc = Carcara(method="vqe",
+        atoms.calc = Mandacaru(method="vqe",
                                        basis={"name": "PW", "energy_cutoff": 60})
         with pytest.raises(NotImplementedError, match="atom-centered"):
             atoms.get_forces()
