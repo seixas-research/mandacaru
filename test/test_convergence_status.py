@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE
+from mandacaru.algorithms import Mandacaru, resolve_method
 from mandacaru.core.hamiltonian import spin_block_integrals
 from mandacaru.core.mapping import Fermion
 from mandacaru.optimizers.optim import Optimizer
@@ -39,9 +39,9 @@ def random_hamiltonian(orbitals=3, seed=5):
 
 
 def driver(**options):
-    return ADAPTVQE(hamiltonian=random_hamiltonian(), num_particles=(1, 1),
-                    n_spatial_orbitals=3, verbose=False, profile=False,
-                    **options)
+    return Mandacaru(method="adapt-vqe", hamiltonian=random_hamiltonian(),
+                     num_particles=(1, 1), n_spatial_orbitals=3, trace=False,
+                     profile=False, **options)
 
 
 class TestAdaptConvergenceFlag:
@@ -74,7 +74,8 @@ class TestSectorGuard:
             driver(pool="qubit", sector=True, max_iterations=1).run()
 
     def test_automatic_sector_falls_back_to_the_full_register(self, monkeypatch):
-        monkeypatch.setattr(ADAPTVQE, "SECTOR_AUTO_QUBITS", 4)
+        monkeypatch.setattr(resolve_method("adapt-vqe")[1],
+                            "SECTOR_AUTO_QUBITS", 4)
         # In direct mode the problem is configured in the constructor.
         with pytest.warns(RuntimeWarning, match="full register"):
             solver = driver(pool="qubit", sector="auto", max_iterations=1,
@@ -83,7 +84,8 @@ class TestSectorGuard:
         assert np.isfinite(solver.run().optimal_energy)
 
     def test_automatic_sector_is_used_for_a_conserving_pool(self, monkeypatch):
-        monkeypatch.setattr(ADAPTVQE, "SECTOR_AUTO_QUBITS", 4)
+        monkeypatch.setattr(resolve_method("adapt-vqe")[1],
+                            "SECTOR_AUTO_QUBITS", 4)
         sector_solver = driver(pool="qeb", sector="auto", max_iterations=3)
         full_solver = driver(pool="qeb", sector=False, max_iterations=3)
         sector_result, full_result = sector_solver.run(), full_solver.run()
@@ -118,9 +120,9 @@ class TestAdaptEndToEndStillWorks:
     def test_h2_reaches_its_fci_energy(self):
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
-        atoms.calc = ADAPTVQE(basis="FAO", h=0.4, pool="fermionic",
-                              verbose=False, profile=False,
-                              gradient_tolerance=1e-6)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.4,
+                               pool="fermionic", trace=False, profile=False,
+                               gradient_tolerance=1e-6)
         energy = atoms.get_potential_energy()
         exact = np.linalg.eigvalsh(atoms.calc._h_matrix if isinstance(
             atoms.calc._h_matrix, np.ndarray)
@@ -128,3 +130,32 @@ class TestAdaptEndToEndStillWorks:
         from mandacaru.units import HARTREE_TO_EV
         assert atoms.calc.result.converged
         assert energy == pytest.approx(exact * HARTREE_TO_EV, abs=1e-6)
+
+
+class TestSPSAEvaluationBudget:
+    """What an SPSA step costs, and when it may call itself converged."""
+
+    @staticmethod
+    def _quadratic(x):
+        return float(np.sum(np.asarray(x) ** 2))
+
+    def test_strict_form_costs_two_evaluations_per_step(self):
+        result = Optimizer(method="SPSA", maxiter=10,
+                           options={"track_best": False}).minimize(
+                               self._quadratic, [0.3, -0.2])
+        assert result.nfev == 2 * 10 + 1          # + the one final evaluation
+
+    def test_default_keeps_the_best_iterate_with_a_third_evaluation(self):
+        result = Optimizer(method="SPSA", maxiter=10).minimize(
+            self._quadratic, [0.3, -0.2])
+        assert result.nfev == 3 * 10 + 1          # + the starting point
+        assert result.fun <= self._quadratic([0.3, -0.2])
+
+    def test_one_small_step_is_not_convergence(self):
+        """``patience`` consecutive calm steps are required, not one."""
+        one = Optimizer(method="SPSA", maxiter=50, tol=1e-2,
+                        options={"patience": 1}).minimize(self._quadratic, [0.3])
+        five = Optimizer(method="SPSA", maxiter=50, tol=1e-2,
+                         options={"patience": 5}).minimize(self._quadratic, [0.3])
+        assert one.success and five.success
+        assert five.nfev >= one.nfev + 4 * 3       # at least four more steps

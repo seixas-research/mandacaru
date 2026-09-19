@@ -490,6 +490,44 @@ def library_file(symbol: str, directory=None,
                         f"{symbol}{FILE_EXTENSIONS[resolve_format(format)]}")
 
 
+def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
+                         *, label: str, noun: str, repository: str,
+                         link_flag: str, builder: str):
+    """Load ``symbol`` of an external family library (cached), or explain.
+
+    The ONCVPSP and PAW datasets are too large to ship, so an **empty** library
+    is the normal state of a fresh install and gets the ``git clone`` + link
+    recipe; a library that is present but lacks the element names what it does
+    hold.  A file of another family is refused.
+    """
+    key = f"{symbol}@{folder}"
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    path = library_file(symbol, folder)
+    if not os.path.exists(path):
+        available = available_elements(folder)
+        if not available:
+            raise FileNotFoundError(
+                f"the {label} dataset library at {folder!r} is empty. The "
+                "datasets are too large to ship, so they live in their own "
+                "repository:\n"
+                f"    git clone https://github.com/seixas-research/{repository}\n"
+                f"    mandacaru {link_flag} {repository}\n"
+                "(`mandacaru --pseudo-status` reports what is linked). To build "
+                f"them from scratch instead: {builder}([symbol]).")
+        raise FileNotFoundError(
+            f"no {label} {noun} for {symbol!r} at {path!r}. "
+            f"Available: {', '.join(available)}. "
+            f"Generate it with {builder}([symbol]).")
+    pp = load_pseudopotential(path)
+    if str(getattr(pp, "family", "")).lower() != family:
+        raise ValueError(f"{path!r} belongs to family {pp.family!r}, not "
+                         f"{family!r}")
+    cache[key] = pp
+    return pp
+
+
 def available_elements(directory=None) -> list[str]:
     """Elements present in the library directory, in either format."""
     directory = default_library_path() if directory is None else directory

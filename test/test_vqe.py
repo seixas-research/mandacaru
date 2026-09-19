@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import VQE, VQEResult
+from mandacaru.algorithms import Mandacaru, VQEResult
 from mandacaru.circuits import UCCSD, double_excitation, single_excitation
 from mandacaru.core import MolecularIntegrals, minimal_fao_basis
 from mandacaru.core.mapping import PauliSum
@@ -133,59 +133,70 @@ class TestOptimizer:
 
 class TestVQE:
     def test_h2_reaches_exact_ground_state(self, h2_hamiltonian, h2_exact):
-        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)),
-                  Optimizer("COBYLA", maxiter=2000))
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)),
+                        optimizer=Optimizer("COBYLA", maxiter=2000))
         result = vqe.run()
         assert isinstance(result, VQEResult)
         assert abs(result.optimal_energy - h2_exact) < CHEMICAL_ACCURACY
 
     def test_vqe_lowers_the_reference_energy(self, h2_hamiltonian):
-        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)))
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)))
         result = vqe.run()
         assert result.optimal_energy < result.reference_energy
 
     def test_accepts_pauli_sum_hamiltonian(self, h2_hamiltonian, h2_exact):
         qubit_h = h2_hamiltonian.map_to_qubits("jordan_wigner")
         assert isinstance(qubit_h, PauliSum)
-        vqe = VQE(qubit_h, UCCSD(2, (1, 1)), Optimizer("COBYLA", maxiter=2000))
+        vqe = Mandacaru(method="vqe", hamiltonian=qubit_h,
+                        ansatz=UCCSD(2, (1, 1)),
+                        optimizer=Optimizer("COBYLA", maxiter=2000))
         assert abs(vqe.run().optimal_energy - h2_exact) < CHEMICAL_ACCURACY
 
     def test_reference_energy_matches_hf_expectation(self, h2_hamiltonian):
-        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)))
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)))
         assert np.isclose(vqe.reference_energy(), vqe.energy_at(np.zeros(3)))
 
     def test_qubit_count_mismatch_raises(self, h2_hamiltonian):
         # A 4-qubit qubit Hamiltonian against a 6-qubit ansatz must be rejected.
         qubit_h = h2_hamiltonian.map_to_qubits("jordan_wigner")   # 4 qubits
         with pytest.raises(ValueError):
-            VQE(qubit_h, UCCSD(3, (1, 1)))                        # 6 qubits
+            Mandacaru(method="vqe", hamiltonian=qubit_h,
+                      ansatz=UCCSD(3, (1, 1)))                        # 6 qubits
 
 
 # --- Parity with ADAPTVQE / ADAPTVQEResult (requirement: mirror the API) ---
 
 class TestVQEMirrorsADAPT:
     def test_default_optimizer_is_cobyla(self, h2_hamiltonian):
-        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)))
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)))
         assert vqe.optimizer.method == "COBYLA"
 
     @pytest.mark.parametrize(
         "name",
         ["SPSA", "COBYLA", "Nelder-Mead", "SLSQP", "Adam", "L-BFGS-B"])
     def test_named_optimizers_build(self, h2_hamiltonian, name):
-        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), optimizer=name)
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)), optimizer=name)
         assert vqe.optimizer.method == name
 
     def test_optimizer_instance_passthrough(self, h2_hamiltonian):
         opt = Optimizer("L-BFGS-B", maxiter=500)
-        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), optimizer=opt)
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)), optimizer=opt)
         assert vqe.optimizer is opt
 
     def test_unknown_optimizer_rejected(self, h2_hamiltonian):
         with pytest.raises(ValueError):
-            VQE(h2_hamiltonian, UCCSD(2, (1, 1)), optimizer="nope")
+            Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                      ansatz=UCCSD(2, (1, 1)), optimizer="nope")
 
     def test_result_mirrors_adapt_result_shape(self, h2_hamiltonian):
-        res = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False).run()
+        res = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)), trace=False).run()
         # Same convenience views as ADAPTVQEResult.
         assert res.num_parameters == len(res.optimal_parameters)
         assert res.energy_history == list(res.history)
@@ -194,7 +205,8 @@ class TestVQEMirrorsADAPT:
 
     def test_verbose_summarizes_hamiltonian_without_dumping_paulis(
             self, h2_hamiltonian, capsys):
-        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=True)
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)), trace=True)
         vqe.run()
         out = capsys.readouterr().out
         # Only the term count is printed, not the Pauli-string expansion.
@@ -204,7 +216,8 @@ class TestVQEMirrorsADAPT:
         assert "VQE finished" in out
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
-        VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False).run()
+        Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                  ansatz=UCCSD(2, (1, 1)), trace=False).run()
         assert capsys.readouterr().out == ""
 
 
@@ -214,7 +227,8 @@ class TestVQEAsASECalculator:
     def test_get_total_energy_matches_exact(self):
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-        atoms.calc = VQE(basis="FAO", optimizer="COBYLA", h=0.30, verbose=False)
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", optimizer="COBYLA",
+                               h=0.30, trace=False)
         energy_ev = atoms.get_total_energy()
         result = atoms.calc.result
         # ASE returns eV, and so does the result (its unit is recorded).
@@ -240,31 +254,35 @@ class TestVQEAsASECalculator:
             return H, (1, 1), 2
 
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        atoms.calc = VQE(hamiltonian_builder=builder, verbose=False)
+        atoms.calc = Mandacaru(method="vqe", hamiltonian_builder=builder,
+                               trace=False)
         assert np.isfinite(atoms.get_total_energy())
 
     def test_missing_cell_raises(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])  # no cell
-        atoms.calc = VQE(basis="FAO", verbose=False)
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", trace=False)
         with pytest.raises(ValueError, match="no unit cell"):
             atoms.get_total_energy()
 
     def test_ibm_quantum_device_requires_shots(self):
         with pytest.raises(ValueError, match="shots > 0"):
-            VQE(basis="FAO", device="ibm-quantum", verbose=False)
+            Mandacaru(method="vqe", basis="FAO", device="ibm-quantum",
+                      trace=False)
 
 
 # --- Timing / memory / cores in the result and the summary (requirements 2-3) ---
 
 class TestVQEProfiling:
     def test_result_carries_timings(self, h2_hamiltonian):
-        res = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False).run()
+        res = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)), trace=False).run()
         assert res.timings is not None
         assert "parameter optimization" in res.timings["stages_s"]
         assert res.timings["peak_memory_mb"] > 0.0
 
     def test_summary_shows_timings_and_resources(self, h2_hamiltonian, capsys):
-        VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=True).run()
+        Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                  ansatz=UCCSD(2, (1, 1)), trace=True).run()
         out = capsys.readouterr().out
         assert "Timings (wall-clock)" in out
         assert "parameter optimization" in out
@@ -274,7 +292,8 @@ class TestVQEProfiling:
     def test_calculator_summary_includes_integration(self, capsys):
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-        atoms.calc = VQE(basis="FAO", optimizer="COBYLA", h=0.4, verbose=True)
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", optimizer="COBYLA",
+                               h=0.4, trace=True)
         atoms.get_total_energy()
         out = capsys.readouterr().out
         assert "integration:" in out              # integration stage is timed
@@ -285,21 +304,24 @@ class TestVQEProfiling:
 
 class TestVQEKPoints:
     def test_default_is_gamma(self, h2_hamiltonian):
-        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)))
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)))
         assert vqe.kpts == (1, 1, 1) and len(vqe.kpoints) == 1
 
     def test_mesh_from_ase(self):
         from ase.dft.kpoints import monkhorst_pack
-        vqe = VQE(basis="FAO", kpts=(3, 1, 1))
+        vqe = Mandacaru(method="vqe", basis="FAO", kpts=(3, 1, 1))
         np.testing.assert_allclose(vqe.kpoints, monkhorst_pack((3, 1, 1)))
 
     def test_non_gamma_rejected_at_run(self, h2_hamiltonian):
-        vqe = VQE(h2_hamiltonian, UCCSD(2, (1, 1)), kpts=(2, 2, 2), verbose=False)
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=UCCSD(2, (1, 1)), kpts=(2, 2, 2), trace=False)
         with pytest.raises(NotImplementedError, match="Monkhorst-Pack"):
             vqe.run()
 
     def test_dict_gamma_centering(self):
-        vqe = VQE(basis="FAO", kpts={"size": (2, 2, 2), "gamma": True})
+        vqe = Mandacaru(method="vqe", basis="FAO",
+                        kpts={"size": (2, 2, 2), "gamma": True})
         assert vqe.kpts == (2, 2, 2) and vqe.kpts_gamma is True
         assert any(np.allclose(k, [0, 0, 0]) for k in vqe.kpoints)
 
@@ -308,12 +330,16 @@ class TestVQEKPoints:
 
 class TestVQESpinAndInitialState:
     def test_spin_default_false(self, h2_hamiltonian):
-        assert VQE(h2_hamiltonian, UCCSD(2, (1, 1))).spin is False
+        assert Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                         ansatz=UCCSD(2, (1, 1))).spin is False
 
     def test_spin_flag_stored(self, h2_hamiltonian):
-        assert VQE(h2_hamiltonian, UCCSD(2, (1, 1)), spin=True).spin is True
+        assert Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                         ansatz=UCCSD(2, (1, 1)), spin=True).spin is True
 
     def test_initial_state_default_and_validation(self, h2_hamiltonian):
-        assert VQE(h2_hamiltonian, UCCSD(2, (1, 1))).initial_state == "hartree-fock"
+        assert Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                         ansatz=UCCSD(2, (1, 1))).initial_state == "hartree-fock"
         with pytest.raises(ValueError):
-            VQE(h2_hamiltonian, UCCSD(2, (1, 1)), initial_state="excited")
+            Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                      ansatz=UCCSD(2, (1, 1)), initial_state="excited")

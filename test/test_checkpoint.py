@@ -24,7 +24,6 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms import ADAPTVQE, VQE
 from mandacaru.core import PauliSum, WavefunctionCheckpoint, load_checkpoint
 from mandacaru.core.checkpoint import prepare_state, reference_vector
 
@@ -36,8 +35,9 @@ def h2(distance=0.74):
 
 
 def adapt(**options):
-    return ADAPTVQE(pool="qeb", basis="FAO", h=0.4, verbose=False,
-                    profile=False, gradient_tolerance=1e-6, **options)
+    return Mandacaru(method="adapt-vqe", pool="qeb", basis="FAO", h=0.4,
+                     trace=False, profile=False, gradient_tolerance=1e-6,
+                     **options)
 
 
 @pytest.fixture(scope="module")
@@ -194,9 +194,9 @@ class TestAdaptResume:
 
         fermionic = str(tmp_path / "fermionic.json")
         atoms = h2()
-        atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                              verbose=False, profile=False, max_iterations=1,
-                              checkpoint=fermionic)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                               basis="FAO", h=0.4, trace=False, profile=False,
+                               max_iterations=1, checkpoint=fermionic)
         atoms.get_total_energy()
         atoms = h2()
         atoms.calc = adapt(max_iterations=3, resume=fermionic)
@@ -208,8 +208,9 @@ class TestAdaptResume:
 
         pauli = str(tmp_path / "pauli.json")
         atoms = h2()
-        atoms.calc = ADAPTVQE(pool="qubit", basis="FAO", h=0.4, verbose=False,
-                              profile=False, max_iterations=1, checkpoint=pauli)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="qubit", basis="FAO",
+                               h=0.4, trace=False, profile=False,
+                               max_iterations=1, checkpoint=pauli)
         atoms.get_total_energy()
         stored = load(pauli)
         atoms = h2()
@@ -259,8 +260,9 @@ class TestVQEResume:
     def test_checkpoint_and_warm_start(self, tmp_path):
         path = str(tmp_path / "vqe.json")
         atoms = h2()
-        atoms.calc = VQE(basis="FAO", h=0.4, optimizer="L-BFGS-B",
-                         verbose=False, checkpoint=path, checkpoint_every=5)
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
+                               optimizer="L-BFGS-B", trace=False,
+                               checkpoint=path, checkpoint_every=5)
         energy = atoms.get_total_energy()
         record = load_checkpoint(path)
         assert record.method == "vqe" and record.status["complete"]
@@ -269,8 +271,8 @@ class TestVQEResume:
                                               abs=1e-12)
 
         atoms = h2()
-        atoms.calc = VQE(basis="FAO", h=0.4, optimizer="L-BFGS-B",
-                         verbose=False, resume=path)
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
+                               optimizer="L-BFGS-B", trace=False, resume=path)
         assert atoms.get_total_energy() == pytest.approx(energy, abs=1e-8)
         # Starting at the optimum, the warm start needs only a few evaluations.
         assert atoms.calc.result.num_evaluations < 10
@@ -278,8 +280,9 @@ class TestVQEResume:
     def test_the_best_point_is_what_gets_checkpointed(self, tmp_path):
         path = str(tmp_path / "best.json")
         atoms = h2()
-        atoms.calc = VQE(basis="FAO", h=0.4, optimizer="COBYLA", verbose=False,
-                         checkpoint=path, checkpoint_every=1)
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
+                               optimizer="COBYLA", trace=False,
+                               checkpoint=path, checkpoint_every=1)
         atoms.get_total_energy()
         assert load_checkpoint(path).energy == pytest.approx(
             atoms.calc.result.in_units("Ha"), abs=1e-12)
@@ -290,7 +293,8 @@ class TestVQEResume:
         atoms.calc = adapt(max_iterations=1, checkpoint=path)
         atoms.get_total_energy()
         atoms = h2()
-        atoms.calc = VQE(basis="FAO", h=0.4, verbose=False, resume=path)
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4, trace=False,
+                               resume=path)
         with pytest.raises(ValueError, match="not this ansatz"):
             atoms.get_total_energy()
 

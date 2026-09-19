@@ -43,6 +43,10 @@ ANGSTROM_TO_BOHR = 1.0 / BOHR_TO_ANGSTROM  # 1.8897259886...
 HARTREE_TO_EV = 27.211386245988
 EV_TO_HARTREE = 1.0 / HARTREE_TO_EV
 
+#: Default real-space grid spacing ``h`` (Angstrom) of every entry point -- the
+#: drivers, the calculator, the Bloch driver, the command line and the grid.
+DEFAULT_GRID_SPACING = 0.20
+
 # Accepted spellings for the public ``units`` / ``energy_units`` arguments.
 _LENGTH_TO_BOHR = {"angstrom": ANGSTROM_TO_BOHR, "a": ANGSTROM_TO_BOHR,
                    "bohr": 1.0, "au": 1.0, "a0": 1.0}

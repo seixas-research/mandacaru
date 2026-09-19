@@ -113,6 +113,28 @@ def pauli_rotations(generator: PauliSum, atol: float = 1e-12
     return out
 
 
+def evolve_determinants(provider, n_qubits: int, generators, theta,
+                        references: np.ndarray) -> np.ndarray:
+    """Run the ansatz circuit on every column of ``references`` (``(2**n, k)``).
+
+    A circuit cannot be initialized in a superposition, so each column must be
+    a computational-basis (Slater-determinant) state -- the HF reference and
+    the subspace-search references are.  Shared by every ansatz that can
+    execute on a :class:`CircuitProvider`.
+    """
+    columns = []
+    for j in range(references.shape[1]):
+        index = basis_state_index(references[:, j])
+        if index is None:
+            raise ValueError(
+                f"the {provider.name} circuit backend can only evolve "
+                "computational-basis (Slater-determinant) reference states; "
+                f"column {j} of `references` is a superposition")
+        columns.append(provider.statevector(
+            n_qubits, _occupied_qubits(index, n_qubits), generators, theta))
+    return np.asarray(columns, dtype=complex).T
+
+
 def basis_state_index(vector: np.ndarray, atol: float = 1e-9) -> int | None:
     """Index of the single non-zero amplitude of ``vector``, or ``None``.
 

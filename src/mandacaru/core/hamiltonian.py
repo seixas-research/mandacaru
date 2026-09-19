@@ -52,12 +52,10 @@ OVERLAP_EIGENVALUE_WARN = 1e-6
 
 def _radial_norm(fn) -> float:
     """``int R^2 r^2 dr`` of a radially tabulated function (``nan`` if none)."""
+    from ..integrals.engine import radial_norm
+
     radial = getattr(fn, "radial", None)
-    if radial is None:
-        return float("nan")
-    r = np.linspace(0.0, 40.0, 20001)
-    R = np.nan_to_num(np.asarray(radial(r), dtype=float))
-    return float(np.trapezoid(R * R * r * r, r))
+    return float("nan") if radial is None else radial_norm(radial)
 
 
 #: Resolution ratios outside ``[1 - RESOLUTION_TOLERANCE, 1 + RESOLUTION_TOLERANCE]``
@@ -65,7 +63,33 @@ def _radial_norm(fn) -> float:
 RESOLUTION_TOLERANCE = 0.25
 
 
-class MolecularIntegrals:
+class MeanFieldMixin:
+    """Hartree-Fock on the ``one_body()`` / ``two_body()`` of an integral class
+    whose basis is orthonormal (Löwdin-orthogonalized orbitals, plane waves)."""
+
+    def hartree_fock(self, n_electrons: int):
+        """Restricted Hartree-Fock in the orthonormal spatial basis.
+
+        Returns an :class:`~mandacaru.algorithms.hartree_fock.RHFResult` with the
+        MO coefficients, orbital energies and MO-basis integrals.
+        """
+        from ..algorithms.hartree_fock import RHF
+        return RHF(self.one_body(), self.two_body(), n_electrons).run()
+
+    def open_shell_hartree_fock(self, n_alpha: int, n_beta: int):
+        """Unrestricted Hartree-Fock for ``(n_alpha, n_beta)`` electrons.
+
+        Returns an :class:`~mandacaru.algorithms.hartree_fock.UHFResult` whose
+        ``h_mo`` / ``eri_mo`` are in the **natural-orbital** basis of the UHF
+        total density -- the single spatial basis an open-shell (odd-electron or
+        spin-polarized) Hamiltonian is written in.  Complex integrals are
+        handled.
+        """
+        from ..algorithms.hartree_fock import UHF
+        return UHF(self.one_body(), self.two_body(), n_alpha, n_beta).solve()
+
+
+class MolecularIntegrals(MeanFieldMixin):
     r"""One- and two-body integrals over a localized basis for a molecule.
 
     Parameters
@@ -477,29 +501,6 @@ class MolecularIntegrals:
         """
         return spin_block_integrals(self.one_body(), self.two_body())
 
-    # -- Hartree-Fock ----------------------------------------------------- #
-
-    def hartree_fock(self, n_electrons: int):
-        """Run restricted Hartree-Fock in the (orthonormal) spatial basis.
-
-        Returns an :class:`~mandacaru.algorithms.hartree_fock.RHFResult` with the MO
-        coefficients, orbital energies and MO-basis integrals.  Requires
-        ``orthogonalize=True`` (the default) so the basis overlap is the identity.
-        """
-        from ..algorithms.hartree_fock import RHF
-        return RHF(self.one_body(), self.two_body(), n_electrons).run()
-
-    def open_shell_hartree_fock(self, n_alpha: int, n_beta: int):
-        """Run unrestricted Hartree-Fock for ``(n_alpha, n_beta)`` electrons.
-
-        Returns an :class:`~mandacaru.algorithms.hartree_fock.UHFResult` whose
-        ``h_mo`` / ``eri_mo`` are in the **natural-orbital** basis of the UHF
-        total density -- the single spatial basis an open-shell (odd-electron or
-        spin-polarized) molecular Hamiltonian is written in.
-        """
-        from ..algorithms.hartree_fock import UHF
-        return UHF(self.one_body(), self.two_body(), n_alpha, n_beta).solve()
-
     # -- molecular Hamiltonian -------------------------------------------- #
 
     def molecular_hamiltonian(self, include_nuclear_repulsion: bool = True,
@@ -537,43 +538,8 @@ class MolecularIntegrals:
             else []
         core_energy = 0.0
         if mo_basis:
-            if n_electrons is None:
-                raise ValueError("mo_basis=True requires n_electrons")
-            n_el = int(n_electrons)
-            if num_particles is None:
-                n_unpaired = n_el % 2
-                num_particles = ((n_el + n_unpaired) // 2,
-                                 (n_el - n_unpaired) // 2)
-            na, nb = (int(v) for v in num_particles)
-            if na + nb != n_el:
-                raise ValueError(
-                    f"num_particles {num_particles} does not sum to "
-                    f"n_electrons={n_el}")
-            if open_shell is None:
-                open_shell = n_el % 2 == 1
-            if open_shell:
-                uhf = self.open_shell_hartree_fock(na, nb)
-                h_mo, eri_mo = uhf.h_mo, uhf.eri_mo
-                orbitals, blocks = uhf.natural_orbitals, (min(na, nb), max(na, nb))
-            else:
-                if n_el % 2:
-                    raise ValueError(
-                        "open_shell=False (closed-shell RHF) needs an even "
-                        f"electron count; got {n_el}")
-                rhf = self.hartree_fock(n_el)
-                h_mo, eri_mo = rhf.h_mo, rhf.eri_mo
-                orbitals, blocks = rhf.mo_coefficients, (n_el // 2,)
-            # Complex (l > 0) orbitals come out of the SCF with arbitrary phases
-            # and degenerate-pair mixing, which makes the MO Hamiltonian complex
-            # while every operator pool is real: ADAPT then stalls above the
-            # ground state (62 meV on H2 PAW-DZP).  Same determinant, real H.
-            real = self.real_orbitals(orbitals, blocks)
-            if real is not orbitals:
-                from ..algorithms.hartree_fock import transform_integrals
-                h_mo, eri_mo = transform_integrals(self.one_body(),
-                                                   self.two_body(), real)
-                h_mo, eri_mo = np.real_if_close(h_mo), np.real_if_close(eri_mo)
-            self.mo_coefficients = real
+            h_mo, eri_mo, self.mo_coefficients = molecular_orbital_integrals(
+                self, n_electrons, num_particles, open_shell)
             if frozen:
                 active = [p for p in range(self.n_orbitals) if p not in frozen]
                 h_mo, eri_mo, core_energy = freeze_core_integrals(
@@ -688,6 +654,71 @@ def assemble_block_matrix(projectors, blocks, diagonal=None) -> np.ndarray:
                 f"block for channel {key} must be ({n}, {n}), got {block.shape}")
         out[np.ix_(positions, positions)] = block
     return out
+
+
+def resolve_reference(n_electrons, num_particles=None, open_shell=None):
+    """``(n_el, n_alpha, n_beta, open_shell)`` of a mean-field reference.
+
+    ``num_particles`` defaults to the lowest spin state (one unpaired electron
+    for an odd count) and ``open_shell`` to "odd count"; ``open_shell=False``
+    with an odd count is refused.  The one place this is decided, for every
+    integral class.
+    """
+    if n_electrons is None:
+        raise ValueError("mo_basis=True requires n_electrons")
+    n_el = int(n_electrons)
+    if num_particles is None:
+        n_unpaired = n_el % 2
+        num_particles = ((n_el + n_unpaired) // 2, (n_el - n_unpaired) // 2)
+    na, nb = (int(v) for v in num_particles)
+    if na + nb != n_el:
+        raise ValueError(
+            f"num_particles {num_particles} does not sum to "
+            f"n_electrons={n_el}")
+    if open_shell is None:
+        open_shell = n_el % 2 == 1
+    if not open_shell and n_el % 2:
+        raise ValueError(
+            "open_shell=False (closed-shell RHF) needs an even "
+            f"electron count; got {n_el}")
+    return n_el, na, nb, bool(open_shell)
+
+
+def molecular_orbital_integrals(integrals, n_electrons, num_particles=None,
+                                open_shell=None):
+    """``(h_mo, eri_mo, orbitals)`` in the conjugation-real mean-field basis.
+
+    ``integrals`` is any integral class offering ``hartree_fock``,
+    ``open_shell_hartree_fock``, ``real_orbitals``, ``one_body`` and
+    ``two_body`` (:class:`MolecularIntegrals`,
+    :class:`~mandacaru.core.planewave.PlaneWaveIntegrals`).  The basis is
+    closed-shell RHF, or the UHF natural orbitals for an open shell
+    (:func:`resolve_reference`).
+
+    Complex orbitals (``l > 0`` harmonics, plane waves) leave the SCF with
+    arbitrary phases and degenerate-pair mixing, which makes the MO Hamiltonian
+    complex while every operator pool is real: ADAPT then stalls above the
+    ground state (62 meV on H2 PAW-DZP, 39 meV on H2 in plane waves).  The
+    orbitals are therefore rotated to conjugation-real form inside the
+    occupied / virtual blocks -- same determinant, real Hamiltonian.
+    """
+    n_el, na, nb, open_shell = resolve_reference(n_electrons, num_particles,
+                                                 open_shell)
+    if open_shell:
+        uhf = integrals.open_shell_hartree_fock(na, nb)
+        h_mo, eri_mo = uhf.h_mo, uhf.eri_mo
+        orbitals, blocks = uhf.natural_orbitals, (min(na, nb), max(na, nb))
+    else:
+        rhf = integrals.hartree_fock(n_el)
+        h_mo, eri_mo = rhf.h_mo, rhf.eri_mo
+        orbitals, blocks = rhf.mo_coefficients, (n_el // 2,)
+    real = integrals.real_orbitals(orbitals, blocks)
+    if real is not orbitals:
+        from ..algorithms.hartree_fock import transform_integrals
+        h_mo, eri_mo = transform_integrals(integrals.one_body(),
+                                           integrals.two_body(), real)
+        h_mo, eri_mo = np.real_if_close(h_mo), np.real_if_close(eri_mo)
+    return h_mo, eri_mo, real
 
 
 #: Largest residual (unitarity, block coupling, reality) :func:`conjugation_real_orbitals` accepts.

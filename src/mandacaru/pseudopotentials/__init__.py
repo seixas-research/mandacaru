@@ -9,14 +9,15 @@
 """Pseudopotentials: valence-only Hamiltonians for the real-space engine.
 
 Organized in **families** (:mod:`.families`, registry :data:`PSEUDO_FAMILIES`).
-Three are shipped: ``"ncpp"`` (aliases ``"tm"``, ``"ncpp-tm"``), the
+Four are shipped: ``"ncpp"`` (aliases ``"tm"``, ``"ncpp-tm"``), the
 Troullier-Martins pseudization of the self-consistent LDA atom
 (:mod:`mandacaru.basis.atomic_solver`) with Kleinman-Bylander separable
 projectors (:mod:`.generation`); ``"oncvpsp"`` (alias ``"oncv"``),
 Hamann's optimized norm-conserving Vanderbilt potentials with two projectors
-per channel (:mod:`.oncv`); and ``"paw"``, Bloechl's projector augmented-wave
+per channel (:mod:`.oncv`); ``"paw"``, Bloechl's projector augmented-wave
 datasets with an overlap correction and frozen one-center terms
-(:mod:`.paw`).  The on-disk library lives under ``library/``, one
+(:mod:`.paw`); and ``"upaw"`` (alias ``"unitary-paw"``), the PAW construction
+with a vanishing norm deficit, generated on demand.  The on-disk library lives under ``library/``, one
 subdirectory per family -- ``library/ncpp/`` (Troullier-Martins, :mod:`.io`),
 ``library/oncvpsp/`` and ``library/paw/`` -- and the valence
 pseudo-atomic orbitals and projectors are sampled on the real-space grid by

@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.algorithms._hamiltonian_from_atoms import grid_from_cell
 from mandacaru.basis import FullAtomicOrbital
 from mandacaru.core import MolecularIntegrals, minimal_fao_basis
@@ -200,8 +200,9 @@ def h2_hamiltonian():
 
 
 def _h2_adapt(hamiltonian, **kwargs):
-    return ADAPTVQE(hamiltonian, "fermionic", num_particles=(1, 1),
-                    n_spatial_orbitals=2, profile=False, **kwargs)
+    return Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
+                     pool="fermionic", num_particles=(1, 1),
+                     n_spatial_orbitals=2, profile=False, **kwargs)
 
 
 class TestAdaptOutputProtocol:
@@ -292,9 +293,11 @@ class TestAdaptOutputProtocol:
     def test_summary_reports_final_parameterization(self, h2_hamiltonian, tmp_path):
         # Requirement 5: richer summary (expressivity, gates, CNOTs, depth, ...).
         out = str(tmp_path / "output.txt")
-        adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=True,  # profile for gates
-                         max_iterations=4, gradient_tolerance=1e-4, output=out)
+        # profile=True: the summary reports gate counts.
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="fermionic", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=True, max_iterations=4,
+                          gradient_tolerance=1e-4, output=out)
         result = adapt.run(log_expressivity=True)  # the expressivity is opt-in
         summary = parse_output(out)["summary"]
         for key in ("optimal_energy_eV", "reference_energy_eV", "num_operators",
@@ -359,8 +362,9 @@ class TestADAPTVQECalculator:
             return H, (1, 1), 2
 
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        atoms.calc = ADAPTVQE(pool="ceo", hamiltonian_builder=builder,
-                              max_iterations=6, gradient_tolerance=1e-4)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo",
+                               hamiltonian_builder=builder, max_iterations=6,
+                               gradient_tolerance=1e-4)
         energy_ev = atoms.get_total_energy()
         result = atoms.calc.result
 
@@ -378,9 +382,9 @@ class TestADAPTVQECalculator:
         # With the default basis="FAO", no explicit builder is needed: the
         # calculator builds the Hamiltonian from the geometry itself.
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO",
-                              grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.30),
-                              max_iterations=6, gradient_tolerance=1e-3)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                               grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.30),
+                               max_iterations=6, gradient_tolerance=1e-3)
         energy = atoms.get_total_energy()
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 4        # H2 in FAO -> 2 orbitals
@@ -388,15 +392,17 @@ class TestADAPTVQECalculator:
     def test_ibm_quantum_device_requires_shots(self):
         # Real hardware never returns a state vector: refused up front.
         with pytest.raises(ValueError, match="shots > 0"):
-            ADAPTVQE(pool="ceo", basis="FAO", device="ibm-quantum")
+            Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                      device="ibm-quantum")
 
     def test_grid_auto_generated_from_cell(self):
         # No explicit grid: the calculator builds one from atoms.cell at
         # resolution h, and the run still reaches a finite energy.
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.30,
-                              max_iterations=6, gradient_tolerance=1e-3)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                               h=0.30, max_iterations=6,
+                               gradient_tolerance=1e-3)
         assert np.isfinite(atoms.get_total_energy())
         assert atoms.calc.n_qubits == 4
 
@@ -404,8 +410,8 @@ class TestADAPTVQECalculator:
         # Without an explicit grid AND without a unit cell, grid auto-generation
         # is impossible -> a clear error.
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])  # no cell
-        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO",
-                              max_iterations=4, gradient_tolerance=1e-3)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                               max_iterations=4, gradient_tolerance=1e-3)
         with pytest.raises(ValueError, match="no unit cell"):
             atoms.get_total_energy()
 

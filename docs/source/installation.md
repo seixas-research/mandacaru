@@ -1,6 +1,6 @@
 # Installation
 
-Use Python 3.11 or later. A virtual environment keeps Mandacaru's scientific and
+Use Python 3.14 or later. A virtual environment keeps Mandacaru's scientific and
 quantum SDK dependencies separate from other projects.
 
 ## Install a release
@@ -119,8 +119,10 @@ Hamiltonians or state vectors.
 | :--- | :--- |
 | `docs` | Sphinx, MyST and Furo for building this manual. |
 | `pyarrow` | An alternative Parquet engine for Hamiltonian caches. |
+| `memory` | `psutil`, for the resident-memory line of the `[PERFORMANCE]` block and the QPE memory check (both fall back to the standard library). |
+| `legacy-forces` | JAX, needed only by `force_method="scf-response"`; the default `force_method="rdm"` does not use it. |
 | `coverage` | Test coverage reporting with pytest-cov. |
-| `dev` | Documentation, the alternative Parquet engine and coverage tools. |
+| `dev` | Everything above. |
 
 For example:
 

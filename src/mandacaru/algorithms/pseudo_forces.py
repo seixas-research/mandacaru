@@ -273,12 +273,6 @@ def _moved_multipole(dataset, centre, grid, L, M, k, delta):
             / (2.0 * float(delta)))
 
 
-def _sampled_radial(radial, center, grid) -> np.ndarray:
-    radius = np.sqrt((grid.X - center[0]) ** 2 + (grid.Y - center[1]) ** 2
-                     + (grid.Z - center[2]) ** 2)
-    return np.asarray(radial(radius), dtype=float).ravel()
-
-
 # --------------------------------------------------------------------------- #
 # The gradient.
 # --------------------------------------------------------------------------- #

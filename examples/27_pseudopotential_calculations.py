@@ -22,8 +22,8 @@ from an all-electron calculation to a **valence-only** one:
 .. code-block:: python
 
     atoms.calc = Mandacaru(method="adapt-vqe",
-                         basis="NCPP",
-                         h=0.15)
+                           basis="NCPP",
+                           h=0.15)
 
 The bundled NCPP library covers every element up to uranium and is loaded
 automatically; the ONCVPSP and PAW datasets live in the ``mandacaru-oncvpsp`` /

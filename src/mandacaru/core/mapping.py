@@ -51,7 +51,6 @@ any encoding.  Bravyi-Kitaev's Fenwick structure makes ``|U|, |P|, |F|`` all
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 
 import numpy as np
 
@@ -591,13 +590,16 @@ _ALIASES = {
 }
 
 
+#: The canonical mapping names, in the order they are documented.
+MAPPINGS = tuple(dict.fromkeys(_ALIASES.values()))
+
+
 def _canonical_method(method: str) -> str:
     try:
         return _ALIASES[method.lower()]
     except KeyError:
         raise ValueError(
-            f"unknown mapping {method!r}; use 'jordan_wigner', 'parity' "
-            f"or 'bravyi_kitaev'") from None
+            f"unknown mapping {method!r}; use one of {MAPPINGS}") from None
 
 
 def parity_tapered_qubits(n_modes: int) -> tuple[int, int]:

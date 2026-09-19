@@ -38,14 +38,18 @@ import os
 import sys
 
 #: Family name -> subdirectory of the library it is served from.
-FAMILY_SUBDIRS = {"ncpp": "ncpp", "oncvpsp": "oncvpsp", "paw": "paw"}
-_ALIASES = {"tm": "ncpp", "ncpp-tm": "ncpp", "oncv": "oncvpsp"}
+FAMILY_SUBDIRS = {"ncpp": "ncpp", "oncvpsp": "oncvpsp", "paw": "paw",
+                  "upaw": "upaw"}
+#: Families with no shipped library: an empty folder is their normal state.
+GENERATED_ON_DEMAND = ("upaw",)
 _DATA_EXTENSIONS = (".parquet", ".pq", ".json")
 
 
 def _family(name: str) -> str:
-    key = str(name).strip().lower()
-    key = _ALIASES.get(key, key)
+    # The family registry is the single source of names and aliases.
+    from . import families
+
+    key = families.canonical_family_name(name)
     if key not in FAMILY_SUBDIRS:
         raise ValueError(
             f"unknown family {name!r}; use one of {sorted(FAMILY_SUBDIRS)}")
@@ -162,6 +166,20 @@ def status(root=None) -> dict:
     return out
 
 
+def status_lines(root=None) -> list[str]:
+    """:func:`status` as the text both command lines print, one family a line."""
+    lines = []
+    for family, (target, source, count) in status(root).items():
+        if not count:
+            empty = ("generated on demand" if family in GENERATED_ON_DEMAND
+                     else "MISSING")
+            lines.append(f"{family:8s} {target}: {empty}")
+            continue
+        where = f" -> {source}" if source and source != target else ""
+        lines.append(f"{family:8s} {target}{where}: {count} datasets")
+    return lines
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m mandacaru.pseudopotentials.link_library",
@@ -180,13 +198,12 @@ def main(argv=None) -> int:
 
     requested = {f: getattr(args, f) for f in FAMILY_SUBDIRS if getattr(args, f)}
     if not requested and not args.status:
-        parser.error("give at least one of --oncvpsp / --paw / --ncpp, or --status")
+        parser.error("give at least one of --oncvpsp / --paw / --upaw / --ncpp, "
+                     "or --status")
     for family, source in requested.items():
         link_library(family, source, files=args.files, force=args.force)
-    for family, (target, source, count) in status().items():
-        state = f"{count} datasets" + (f"  ({source})" if source and source != target
-                                       else "")
-        print(f"{family:8s} {target}: {state if count else 'MISSING'}")
+    for line in status_lines():
+        print(line)
     return 0
 
 

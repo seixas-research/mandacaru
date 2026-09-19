@@ -6,12 +6,15 @@
 import numpy as np
 import pytest
 
-from mandacaru.algorithms import (ADAPTExpressivityTracker, ADAPTVQE,
-                                  ExpressibilityResult, active_space_dimension,
+from mandacaru.algorithms import (active_space_dimension,
+                                  ADAPTExpressivityTracker,
                                   calculate_haar_distribution,
-                                  calculate_kl_divergence, compute_expressibility,
+                                  calculate_kl_divergence,
+                                  compute_expressibility,
                                   estimate_effective_dimension,
-                                  sample_pqc_fidelities, track_adapt_expressivity)
+                                  ExpressibilityResult, Mandacaru,
+                                  sample_pqc_fidelities,
+                                  track_adapt_expressivity)
 from mandacaru.circuits import UCCSD
 from mandacaru.core import MolecularIntegrals, minimal_fao_basis
 from mandacaru.integrals import Grid
@@ -146,9 +149,10 @@ class TestSamplingAndDriver:
 
 class TestADAPTTracking:
     def test_tracker_records_one_step_per_operator(self, h2_hamiltonian):
-        adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False,
-                         max_iterations=3, gradient_tolerance=1e-8)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="fermionic", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False,
+                          max_iterations=3, gradient_tolerance=1e-8)
         tracker = ADAPTExpressivityTracker(4, num_particles=(1, 1),
                                            num_samples=200, bins=50,
                                            rng=np.random.default_rng(7))
@@ -160,9 +164,10 @@ class TestADAPTTracking:
         assert tracker.dimension == 4
 
     def test_track_helper_returns_result_and_history(self, h2_hamiltonian):
-        adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False,
-                         max_iterations=2, gradient_tolerance=1e-8)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="fermionic", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False,
+                          max_iterations=2, gradient_tolerance=1e-8)
         result, history = track_adapt_expressivity(
             adapt, num_samples=200, rng=np.random.default_rng(8))
         assert result.num_operators == len(history)

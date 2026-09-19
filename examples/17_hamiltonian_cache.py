@@ -41,7 +41,6 @@ from __future__ import annotations
 import os
 import time
 
-import numpy as np
 from ase import Atoms
 
 from mandacaru.units import HARTREE_TO_EV

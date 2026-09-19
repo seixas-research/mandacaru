@@ -82,7 +82,7 @@ def test_adapt_reaches_the_sector_ground_state(h2):
 
 def test_forces_are_the_derivative_of_the_energy(h2):
     """Central difference of the energy on the calculator's frozen grid."""
-    atoms, forces = h2.atoms, h2.forces
+    atoms = h2.atoms
     step = 0.005
     energies = []
     for sign in (1, -1):
@@ -257,7 +257,7 @@ def test_p_valence_force_is_the_derivative_of_the_energy(h2o):
     whole multipole algebra; it was off by 0.57 eV/Angstrom (20 %) before the
     complex-weight fix.
     """
-    atoms, forces = h2o.atoms, h2o.forces
+    atoms = h2o.atoms
     step = 0.004
     # Oxygen along y: the component the complex M = +-1 channels carry, and the
     # one that was off by 0.57 eV/Angstrom.  One component keeps the test's

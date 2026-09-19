@@ -11,7 +11,7 @@ double excitation first and every pool reaches the FCI ground state.
 import numpy as np
 import pytest
 
-from mandacaru.algorithms import ADAPTVQE, ADAPTVQEResult, RHF
+from mandacaru.algorithms import ADAPTVQEResult, Mandacaru
 from mandacaru.circuits import AdaptAnsatz, profile_ansatz
 from mandacaru.circuits import (
     CEOPool,
@@ -62,10 +62,12 @@ def h2_exact_ev(h2_exact):
 
 def _adapt(hamiltonian, pool_name, max_iterations=50, gradient_tol=1e-6):
     # Stopping controls now live on the constructor (run() takes no duplicates).
-    return ADAPTVQE(hamiltonian, pool_name, num_particles=(1, 1),
-                    n_spatial_orbitals=2,
-                    optimizer=Optimizer("L-BFGS-B", maxiter=2000),
-                    max_iterations=max_iterations, gradient_tolerance=gradient_tol)
+    return Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
+                     pool=pool_name, num_particles=(1, 1),
+                     n_spatial_orbitals=2,
+                     optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                     max_iterations=max_iterations,
+                     gradient_tolerance=gradient_tol)
 
 
 # --------------------------------------------------------------------------- #
@@ -193,6 +195,10 @@ class TestConvergence:
         res = _adapt(h2_hamiltonian, "fermionic").run()
         assert len(res.energy_history) == res.num_operators
         assert len(res.operators) == res.num_operators
+        # One screening gradient per grown operator, each above the threshold
+        # that would have stopped the loop.
+        assert len(res.gradient_history) == res.num_operators
+        assert all(g > 0 for g in res.gradient_history)
         # Energy decreases monotonically as operators are added.
         assert np.all(np.diff(res.energy_history) <= 1e-9 * HARTREE_TO_EV)
 
@@ -238,17 +244,20 @@ class TestProfiling:
 class TestDriver:
     def test_accepts_pool_object(self, h2_hamiltonian, h2_exact_ev):
         pool = build_pool("ceo", 2, (1, 1))
-        res = ADAPTVQE(h2_hamiltonian, pool, num_particles=(1, 1),
-                       gradient_tolerance=1e-6).run()
+        res = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                        pool=pool, num_particles=(1, 1),
+                        gradient_tolerance=1e-6).run()
         assert abs(res.optimal_energy - h2_exact_ev) < 1e-6 * HARTREE_TO_EV
 
     def test_named_pool_requires_shape(self, h2_hamiltonian):
         with pytest.raises(ValueError):
-            ADAPTVQE(h2_hamiltonian, "fermionic")   # missing shape/particles
+            Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                      pool="fermionic")   # missing shape/particles
 
     def test_qubit_count_mismatch_raises(self, h2_hamiltonian):
         # A fixed-size qubit Hamiltonian against a wrongly-sized pool is rejected.
         qubit_h = h2_hamiltonian.map_to_qubits("jordan_wigner")   # 4 qubits
         with pytest.raises(ValueError):
-            ADAPTVQE(qubit_h, "fermionic", num_particles=(1, 1),
-                     n_spatial_orbitals=3)           # 6-qubit pool vs 4-qubit H
+            Mandacaru(method="adapt-vqe", hamiltonian=qubit_h,
+                      pool="fermionic", num_particles=(1, 1),
+                      n_spatial_orbitals=3)           # 6-qubit pool vs 4-qubit H

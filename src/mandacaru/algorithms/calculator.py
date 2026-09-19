@@ -26,9 +26,9 @@ come from a quantum variational eigensolver:
     water = molecule("H2O")
     water.center(vacuum=3.0)          # the cell is the real-space box
     water.calc = Mandacaru(method="adapt-vqe",
-                         basis="FAO",
-                         h=0.30,
-                         frozen_core=True)
+                           basis="FAO",
+                           h=0.30,
+                           frozen_core=True)
     BFGS(water).run(fmax=0.05)
 
 The run result of the most recent evaluation is available uniformly on
@@ -72,6 +72,8 @@ from time import perf_counter as _perf
 import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
 
+from ..units import DEFAULT_GRID_SPACING
+
 #: The default method: ADAPT-VQE, everywhere a ``method`` is not given.
 DEFAULT_METHOD = "adapt-vqe"
 
@@ -109,6 +111,12 @@ def available_methods() -> tuple[str, ...]:
     return STABLE_METHODS + experimental_methods()
 
 
+def _method_key(name) -> str:
+    """Spelling-insensitive key: ``"adapt-vqe"``, ``"adaptvqe"``, ``"ADAPT_VQE"``
+    and ``"Adapt VQE"`` all name the same method."""
+    return "".join(ch for ch in str(name).strip().lower() if ch not in "-_ ")
+
+
 def resolve_method(name: str):
     """Return ``(canonical_name, solver_class)`` for a method spec.
 
@@ -116,14 +124,21 @@ def resolve_method(name: str):
     must have been registered with :func:`register_method` first (the
     :mod:`mandacaru.experimental` package does so when it is imported).
     """
-    key = str(name).strip().lower()
-    if key in STABLE_METHODS:
-        from . import ADAPTVQE, VQE, SubspaceADAPTVQE, SubspaceVQE
-        return key, {"vqe": VQE, "adapt-vqe": ADAPTVQE,
-                     "subspace-vqe": SubspaceVQE,
-                     "subspace-adapt-vqe": SubspaceADAPTVQE}[key]
-    if key in _REGISTERED:
-        return key, _REGISTERED[key]
+    key = _method_key(name)
+    known = {_method_key(method): method
+             for method in (*STABLE_METHODS, *_REGISTERED)}
+    canonical = known.get(key)
+    if canonical in STABLE_METHODS:
+        # The solver classes are the internal layer: this is the one place
+        # they are reached from, and ``Mandacaru(method=...)`` the one way in.
+        from .adapt_vqe import ADAPTVQE
+        from .subspace import SubspaceADAPTVQE, SubspaceVQE
+        from .vqe import VQE
+        return canonical, {"vqe": VQE, "adapt-vqe": ADAPTVQE,
+                           "subspace-vqe": SubspaceVQE,
+                           "subspace-adapt-vqe": SubspaceADAPTVQE}[canonical]
+    if canonical is not None:
+        return canonical, _REGISTERED[canonical]
     raise ValueError(
         f"unknown method {name!r}; use one of {available_methods()}")
 
@@ -325,7 +340,7 @@ class Mandacaru(Calculator):
     implemented_properties = ["energy", "free_energy", "forces"]
 
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="FAO",
-                 h: float = 0.20, grid=None,
+                 h: float = DEFAULT_GRID_SPACING, grid=None,
                  include_pulay: bool = True, force_method: str = "rdm",
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
@@ -383,8 +398,12 @@ class Mandacaru(Calculator):
         self.trajectory: list[dict] = []
         self._summary_written = False
         self._exit_hook = False
-        #: The solver instance of the most recent evaluation.
-        self.solver = None
+        #: The solver instance -- built here, so an invalid option is refused
+        #: by the constructor rather than at the first energy, and a
+        #: direct-mode problem (``hamiltonian=`` / ``load_hamiltonian=``) can be
+        #: inspected before it is run.  Every geometry evaluation replaces it.
+        self.solver = self._make_solver(grid=self._grid)
+        self._solver_is_fresh = True
 
     # -- solver delegation ------------------------------------------------- #
 
@@ -413,11 +432,25 @@ class Mandacaru(Calculator):
         solver = self._make_solver(grid=self._grid)
         estimate = solver.estimate_qubits(atoms)
         solver.dry_run_result = estimate
-        self.solver = solver
+        self.solver, self._solver_is_fresh = solver, False
         return estimate
 
+    def __getattr__(self, name):
+        # Only reached for names Mandacaru itself does not define: the solver's
+        # own attributes (``pool``, ``ansatz``, ``kpoints``, ``energy_at``...)
+        # are readable on the calculator, which is the single entry point.
+        solver = self.__dict__.get("solver")
+        if solver is not None and not name.startswith("__"):
+            try:
+                return getattr(solver, name)
+            except AttributeError:
+                pass
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}")
+
     def _require_solver(self):
-        if self.solver is None:
+        if self.solver is None or getattr(self.solver, "hamiltonian",
+                                          None) is None:
             raise RuntimeError(
                 "the calculator has not been evaluated yet; attach it to an "
                 "Atoms object and get an energy, or call run()")
@@ -515,9 +548,16 @@ class Mandacaru(Calculator):
         or an explicit ``hamiltonian`` with its companions.  Keyword arguments
         are forwarded to the solver's ``run``.
         """
-        self.solver = self._make_solver(grid=self._grid)
-        self.solver.result = self.solver.run(**run_kwargs)
-        return self.solver.result
+        if not self._solver_is_fresh:            # the constructor's is unused
+            self.solver = self._make_solver(grid=self._grid)
+        self._solver_is_fresh = False
+        outcome = self.solver.run(**run_kwargs)
+        if getattr(self.solver, "dry_run", False):
+            # A dry run returns its estimate; nothing ran, so there is no result.
+            self.solver.dry_run_result = outcome
+        else:
+            self.solver.result = outcome
+        return outcome
 
     def interaction_energy(self, atoms, fragments, charges=None, **overrides):
         """``E(complex) - sum E(fragments)`` on one shared grid, with this
@@ -617,7 +657,7 @@ class Mandacaru(Calculator):
         # any measurement have been timed too (see :meth:`_log_performance`).
         solver.defer_performance = True
         energy_ev = self._single_point(solver, atoms)
-        self.solver = solver
+        self.solver, self._solver_is_fresh = solver, False
 
         stages: dict[str, float] = {}
         measured = None

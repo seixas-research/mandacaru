@@ -66,7 +66,7 @@ Everything is deterministic, cached, and produced in milliseconds.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -508,20 +508,6 @@ ANGULAR_CONVENTION = {
         "renormalized to <phi|phi> = 1 in 3D"),
     "units": "exponents in Bohr^-2",
 }
-
-
-def shell_data(atomic_number: int, recipe: GaussianRecipe) -> list[dict]:
-    """The generated shells of one atom as plain data.
-
-    Each entry is ``{"l", "shell", "exponents", "coefficients"}`` -- the numbers
-    this basis actually uses, not a published table.  ``coefficients`` are as
-    passed to :class:`~mandacaru.basis.gaussian.GaussianOrbital`, i.e. for
-    unit-normalized primitives (see :data:`ANGULAR_CONVENTION`).
-    """
-    return [{"l": int(l), "shell": _L_LETTERS[int(l)],
-             "exponents": [float(e) for e in np.asarray(exps).ravel()],
-             "coefficients": [float(c) for c in np.asarray(coeffs).ravel()]}
-            for (l, exps, coeffs) in gaussian_shells(atomic_number, recipe)]
 
 
 def shells_record(elements, shells_of, name: str, family: str,

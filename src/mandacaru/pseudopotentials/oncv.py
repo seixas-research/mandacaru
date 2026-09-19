@@ -402,7 +402,6 @@ def constrained_minimum(K: np.ndarray, k: np.ndarray, A: np.ndarray,
     G = np.asarray(G, dtype=float)
     A = np.atleast_2d(np.asarray(A, dtype=float))
     b = np.asarray(b, dtype=float)
-    n = K.shape[0]
     c0, *_ = np.linalg.lstsq(A, b, rcond=None)
     _u, sigma, vt = np.linalg.svd(A)
     rank = int(np.sum(sigma > 1e-10 * sigma.max()))
@@ -576,6 +575,18 @@ def matching_targets(r: np.ndarray, u: np.ndarray, potential: np.ndarray,
     ])
 
 
+def _pseudo_waves_record(l, r_cut, energies, waves, wavevectors, coefficients,
+                         residuals, norms, pseudo_in, r_in, q_cut) -> PseudoWaves:
+    """The :class:`PseudoWaves` of a finished optimization, with the inner
+    norms the pseudo waves actually achieved (shared with the PAW family)."""
+    achieved = np.array([[simpson(a * b * r_in * r_in, x=r_in) for b in pseudo_in]
+                         for a in pseudo_in])
+    return PseudoWaves(l=l, r_cut=float(r_cut), energies=list(energies),
+                       waves=list(waves), wavevectors=wavevectors,
+                       coefficients=coefficients, residual_kinetic=residuals,
+                       norms=norms, achieved=achieved, q_cut=float(q_cut))
+
+
 def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
                           waves: list, energies: list, r_cut: float,
                           q_cut: float = DEFAULT_Q_CUT,
@@ -635,12 +646,9 @@ def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
         pseudo_in.append(c @ basis_in)
         residuals.append(float(c @ K @ c + 2.0 * kvec @ c + k0))
 
-    achieved = np.array([[simpson(a * b * r_in * r_in, x=r_in) for b in pseudo_in]
-                         for a in pseudo_in])
-    return PseudoWaves(l=l, r_cut=float(r_cut), energies=list(energies),
-                       waves=list(waves), wavevectors=wavevectors,
-                       coefficients=coefficients, residual_kinetic=residuals,
-                       norms=norms, achieved=achieved, q_cut=float(q_cut))
+    return _pseudo_waves_record(l, r_cut, energies, waves, wavevectors,
+                                coefficients, residuals, norms, pseudo_in,
+                                r_in, q_cut)
 
 
 def assemble_channel(r: np.ndarray, pw: PseudoWaves, v_loc: np.ndarray,
@@ -764,10 +772,6 @@ class ONCVPseudoPotential(PseudoPotential):
     q_cut: float = DEFAULT_Q_CUT
     energy_offset: float = DEFAULT_ENERGY_OFFSET
 
-    @property
-    def nonlocal_channels(self) -> list:
-        return sorted(self.projectors)
-
     def projector(self, l: int, radius, index: int = 0) -> np.ndarray:
         """Interpolate projector ``index`` of channel ``l`` onto ``radius``."""
         radius = np.asarray(radius, dtype=float)
@@ -809,16 +813,55 @@ def _snap(r: np.ndarray, radius: float) -> float:
     return float(r[int(np.argmin(np.abs(r - radius)))])
 
 
-def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor):
+def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor, defaults=None):
+    """Cutoff radius of channel ``l``: explicit, tabulated (``defaults``, the
+    family's own table), else ``rc_factor`` times the outermost peak."""
     if isinstance(r_cut, dict):
         return float(r_cut[l])
     if r_cut is not None:
         return float(r_cut)
-    table = DEFAULT_CUTOFFS.get(symbol)
+    table = (DEFAULT_CUTOFFS if defaults is None else defaults).get(symbol)
     if table is not None and l in table:
         return float(table[l])
     peak = r[int(np.argmax(np.abs(radial * r)))]
     return float(rc_factor * peak)
+
+
+def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
+                    energy_offset, defaults=None):
+    """``(per_l, cutoffs, references)`` -- the all-electron input of a channel.
+
+    ``per_l[l]`` lists every occupied valence state ``(n, energy, R, occupancy)``
+    (bound, Numerov-refined); ``cutoffs[l]`` is the cutoff radius snapped to the
+    atomic grid, so "inside r_c" and the matching point are the same node; and
+    ``references[l] = (waves, energies)`` are the two partial waves each family
+    pseudizes -- the bound state(s) plus, when there is only one, the scattering
+    state ``energy_offset`` above it, normalized inside the sphere.  Shared by
+    the ONCVPSP and PAW generators.
+    """
+    r, v_ae = atom.r, atom.v_effective
+    per_l: dict = {}
+    for (n, l), occupancy in sorted(valence_config.items()):
+        u, energy = bound_state(r, v_ae, l, atom.eigenvalues[(n, l)], z_eff)
+        per_l.setdefault(l, []).append((n, energy, u / r, occupancy))
+
+    cutoffs = {l: _snap(r, _cutoff_for(symbol, l, r, states[0][2], r_cut,
+                                        rc_factor, defaults))
+               for l, states in per_l.items()}
+
+    references: dict = {}
+    for l, states in per_l.items():
+        waves = [w for _n, _e, w, _o in states]
+        energies = [e for _n, e, _w, _o in states]
+        if len(states) == 1:
+            energy_2 = energies[0] + float(energy_offset)
+            u2 = scattering_wave(r, v_ae, l, energy_2, z_eff)
+            inside = r <= cutoffs[l]
+            u2 = u2 / np.sqrt(np.trapezoid(u2[inside] ** 2, r[inside]))
+            waves.append(u2 / r)
+            energies.append(energy_2)
+        references[l] = (waves[:2], energies[:2])
+    return per_l, cutoffs, references
 
 
 def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTOR,
@@ -872,35 +915,15 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
     r, v_ae = atom.r, atom.v_effective
     z_eff = float(atomic_number)
 
-    # Partial waves per l: every occupied valence state of that l (bound,
-    # Numerov-refined) plus, when there is only one, the scattering state.
-    per_l: dict = {}
-    for (n, l), occupancy in sorted(valence_config.items()):
-        u, energy = bound_state(r, v_ae, l, atom.eigenvalues[(n, l)], z_eff)
-        per_l.setdefault(l, []).append((n, energy, u / r, occupancy))
-
-    # Cutoff radii snapped to the atomic grid, so "inside r_c" and the
-    # matching point are the same grid node.
-    cutoffs = {l: _snap(r, _cutoff_for(symbol, l, r, states[0][2], r_cut,
-                                        rc_factor))
-               for l, states in per_l.items()}
+    per_l, cutoffs, references = reference_waves(
+        symbol, atom, valence_config, z_eff, r_cut, rc_factor, energy_offset)
     r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
                     else float(local_factor * min(cutoffs.values())))
 
-    pseudo_waves: dict = {}
-    for l, states in per_l.items():
-        waves = [w for _n, _e, w, _o in states]
-        energies = [e for _n, e, _w, _o in states]
-        if len(states) == 1:
-            energy_2 = energies[0] + float(energy_offset)
-            u2 = scattering_wave(r, v_ae, l, energy_2, z_eff)
-            inside = r <= cutoffs[l]
-            u2 = u2 / np.sqrt(np.trapezoid(u2[inside] ** 2, r[inside]))
-            waves.append(u2 / r)
-            energies.append(energy_2)
-        pseudo_waves[l] = optimize_pseudo_waves(
-            r, v_ae, l, waves[:2], energies[:2], cutoffs[l], q_cut=q_cut,
-            n_bessel=n_bessel)
+    pseudo_waves = {
+        l: optimize_pseudo_waves(r, v_ae, l, waves, energies, cutoffs[l],
+                                 q_cut=q_cut, n_bessel=n_bessel)
+        for l, (waves, energies) in references.items()}
 
     shift = float(local_shift)
     v_loc = polynomial_local_potential(r, v_ae, r_local, shift)
@@ -1040,6 +1063,27 @@ def log_derivative_ps(pp: ONCVPseudoPotential, l: int, energy: float,
     return _log_derivative_of_u(r0, u, r_cut)
 
 
+def log_derivative_errors(pp, l, energies, r_cut, pseudo_log_derivative,
+                          midpoint: bool = True) -> dict:
+    """``{energy: (|L_ps - L_ae|, L_ae)}`` at the reference energies (and their
+    midpoint), against the all-electron atom stored on ``pp``.
+
+    ``pseudo_log_derivative(pp, l, energy)`` is the family's own pseudo-side
+    evaluation -- the only part that differs between ONCVPSP and PAW.
+    """
+    ae = pp.atom
+    probes = list(energies)
+    if midpoint:
+        probes.append(0.5 * (energies[0] + energies[1]))
+    errors = {}
+    for energy in probes:
+        l_ae = log_derivative_ae(pp.r, ae.v_effective, l, energy, r_cut,
+                                 float(pp.atomic_number))
+        l_ps = pseudo_log_derivative(pp, l, energy)
+        errors[float(energy)] = (float(abs(l_ps - l_ae)), float(l_ae))
+    return errors
+
+
 def check_oncv_channel(pp: ONCVPseudoPotential, l: int,
                        midpoint: bool = True) -> dict:
     """Validation numbers of one channel.
@@ -1082,14 +1126,8 @@ def check_oncv_channel(pp: ONCVPseudoPotential, l: int,
     if ae is None:
         return out
     z = float(pp.atomic_number)
-    probes = list(energies)
-    if midpoint:
-        probes.append(0.5 * (energies[0] + energies[1]))
-    errors = {}
-    for energy in probes:
-        l_ae = log_derivative_ae(r, ae.v_effective, l, energy, channel.r_cut, z)
-        l_ps = log_derivative_ps(pp, l, energy)
-        errors[float(energy)] = (float(abs(l_ps - l_ae)), float(l_ae))
+    errors = log_derivative_errors(pp, l, energies, channel.r_cut,
+                                   log_derivative_ps, midpoint)
     bound_u, _e = bound_state(r, ae.v_effective, l, energies[0], z)
     outside = r > channel.r_cut
     out["tail_error"] = float(np.max(np.abs(
@@ -1110,7 +1148,7 @@ def report_oncv(pp: ONCVPseudoPotential) -> str:
         checks = check_oncv_channel(pp, l)
         lines.append(f"  l={l}: rc={channel.r_cut:.3f}  eps="
                      + ", ".join(f"{e:+.4f}" for e in channel.reference_energies)
-                     + f"  E_res=" + ", ".join(f"{e:.2e}" for e in
+                     + "  E_res=" + ", ".join(f"{e:.2e}" for e in
                                                channel.residual_kinetic)
                      + f" Ha  norm-matrix err={checks['norm_matrix_error']:.1e}"
                      f"  eps err={checks['eigenvalue_error']:+.1e}  "
@@ -1183,35 +1221,13 @@ _CACHE: dict = {}
 
 def get_oncv(symbol: str, directory=None) -> ONCVPseudoPotential:
     """Load ``symbol`` from the ONCVPSP library (cached)."""
-    from .io import available_elements, library_file, load_pseudopotential
+    from .io import load_library_dataset
 
-    folder = oncv_library_path(directory)
-    key = f"{symbol}@{folder}"
-    cached = _CACHE.get(key)
-    if cached is not None:
-        return cached
-    path = library_file(symbol, folder)
-    if not os.path.exists(path):
-        available = available_elements(folder)
-        if not available:
-            raise FileNotFoundError(
-                f"the ONCVPSP dataset library at {folder!r} is empty. The "
-                "datasets are too large to ship, so they live in their own "
-                "repository:\n"
-                "    git clone https://github.com/seixas-research/mandacaru-oncvpsp\n"
-                "    mandacaru --link-oncvpsp mandacaru-oncvpsp\n"
-                "(`mandacaru --pseudo-status` reports what is linked). To build "
-                "them from scratch instead: build_oncv_library([symbol]).")
-        raise FileNotFoundError(
-            f"no ONCVPSP pseudopotential for {symbol!r} at {path!r}. "
-            f"Available: {', '.join(available)}. "
-            "Generate it with build_oncv_library([symbol]).")
-    pp = load_pseudopotential(path)
-    if str(getattr(pp, "family", "")).lower() != FAMILY:
-        raise ValueError(f"{path!r} belongs to family {pp.family!r}, not "
-                         f"{FAMILY!r}")
-    _CACHE[key] = pp
-    return pp
+    return load_library_dataset(
+        symbol, oncv_library_path(directory), FAMILY, _CACHE,
+        label="ONCVPSP", noun="pseudopotential",
+        repository="mandacaru-oncvpsp", link_flag="--link-oncvpsp",
+        builder="build_oncv_library")
 
 
 def build_oncv_library(elements=("H", "Li", "C", "N", "O", "F"),
@@ -1250,47 +1266,14 @@ def build_oncv(atoms, grid, h, charge, spin, options, kinetic=None):
     :math:`2\times2` coupling block per ``(atom, l, m)``; no overlap
     correction (norm-conserving).
     """
-    from ..algorithms._hamiltonian_from_atoms import (
-        DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
-        grid_from_cell, resolve_num_unpaired)
-    from ..core import MolecularIntegrals
-    from .orbitals import pseudo_basis, valence_electrons
+    from .families import build_valence_hamiltonian
 
-    directory = options.get("directory")
-    symbols = atoms.get_chemical_symbols()
-    positions = coherent_positions(atoms)
-    potentials = {symbol: get_oncv(symbol, directory) for symbol in set(symbols)}
-
-    basis_fns, atom_of_orbital = pseudo_basis(
-        symbols, positions, potentials, size=options.get("size", "SZ"),
-        split_norm=options.get("split_norm"))
-    projectors = oncv_projectors(symbols, positions, potentials)
-    blocks = oncv_coupling_blocks(projectors, symbols, potentials)
-    nuclei = [(potentials[symbol].valence_charge, position)
-              for symbol, position in zip(symbols, positions)]
-
-    n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
-    g = (grid if grid is not None
-         else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
-    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
-    num_particles = _num_particles(n_el, n_unpaired, FAMILY.upper())
-    integrals = MolecularIntegrals(
-        nuclei, basis_fns, g, softening=0.0,
-        pseudos=[potentials[s] for s in symbols],
-        kb_projectors=projectors, nonlocal_coupling=blocks,
-        nonlocal_overlap=None,
-        kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"])
-    hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,
-                                                  n_electrons=n_el,
-                                                  num_particles=num_particles)
-    _warn_unresolved(integrals, basis_fns, h)
-
-    context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
-               "frozen": (), "n_electrons": n_el,
-               "pseudopotentials": potentials, "kb_projectors": projectors,
-               "nonlocal_coupling": blocks, "family": FAMILY}
-    return (hamiltonian, num_particles, len(basis_fns),
-            integrals.integration_profile(), context)
+    return build_valence_hamiltonian(
+        atoms, grid, h, charge, spin, options, kinetic, family=FAMILY,
+        load=get_oncv,
+        projectors=lambda symbols, positions, potentials, _options:
+            oncv_projectors(symbols, positions, potentials),
+        coupling=oncv_coupling_blocks)
 
 
 # --------------------------------------------------------------------------- #

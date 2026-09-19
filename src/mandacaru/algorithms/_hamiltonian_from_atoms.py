@@ -333,16 +333,6 @@ def pseudopotential_family(name):
     return lookup_family(name)
 
 
-def is_pseudopotential_basis(basis) -> bool:
-    """True when ``basis`` (any accepted spelling) selects a pseudopotential
-    family -- for a per-element mapping, when its entries do."""
-    name, options = resolve_basis(basis)
-    if name == PER_ELEMENT:
-        return any(pseudopotential_family(resolve_basis(spec)[0]) is not None
-                   for spec in options.values())
-    return pseudopotential_family(name) is not None
-
-
 def resolve_pseudo_basis(name, options, symbols):
     """``(family, options)`` for a resolved basis spec, ``(None, options)``
     when it is all-electron.

@@ -54,7 +54,7 @@ Registered today:
     Bloechl's **projector augmented-wave** datasets -- two partial waves and
     projectors per channel, a :math:`2\times2` coupling block **and** a
     :math:`2\times2` overlap-correction block :math:`q` (``norm_conserving
-    = False``), monopole compensation charges in the two-body tensor and a
+    = False``), compensation multipoles in the one- and two-body terms and a
     frozen one-center constant.  Registered when :mod:`.paw` is imported
     (the package does so).
 """
@@ -239,6 +239,70 @@ def _get_tm(symbol, directory=None):
     return pp
 
 
+def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
+                              family: str, load, projectors, coupling,
+                              overlap=None, integrals_class=None,
+                              potentials_keyword: str = "pseudos"):
+    """The driver 5-tuple of a pseudopotential family -- the part every family
+    shares.
+
+    A family differs only in how a dataset is loaded (``load(symbol,
+    directory)``), which projectors it samples (``projectors(symbols, positions,
+    potentials, options)``), their coupling blocks (``coupling(projectors,
+    symbols, potentials)``), an optional overlap correction (``overlap``, same
+    signature; PAW) and the integral class (``integrals_class``, default
+    :class:`~mandacaru.core.MolecularIntegrals`; ``potentials_keyword`` names
+    its datasets argument).  The basis (with its ``size`` hierarchy), the grid,
+    the electron count, the spin state and the returned ``context`` are built
+    here once.
+    """
+    from ..algorithms._hamiltonian_from_atoms import (
+        DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
+        grid_from_cell, resolve_num_unpaired)
+    from ..core import MolecularIntegrals
+    from .orbitals import pseudo_basis, valence_electrons
+
+    directory = options.get("directory")
+    symbols = atoms.get_chemical_symbols()
+    positions = coherent_positions(atoms)
+    potentials = {symbol: load(symbol, directory) for symbol in set(symbols)}
+
+    basis_fns, atom_of_orbital = pseudo_basis(
+        symbols, positions, potentials, size=options.get("size", "SZ"),
+        split_norm=options.get("split_norm"))
+    kb = projectors(symbols, positions, potentials, options)
+    coupling_blocks = coupling(kb, symbols, potentials)
+    overlap_blocks = (None if overlap is None
+                      else overlap(kb, symbols, potentials))
+    nuclei = [(potentials[symbol].valence_charge, position)
+              for symbol, position in zip(symbols, positions)]
+
+    n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
+    g = (grid if grid is not None
+         else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
+    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
+    num_particles = _num_particles(n_el, n_unpaired, family.upper())
+    integrals = (integrals_class or MolecularIntegrals)(
+        nuclei, basis_fns, g, softening=0.0,
+        kb_projectors=kb, nonlocal_coupling=coupling_blocks,
+        nonlocal_overlap=overlap_blocks,
+        kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"],
+        **{potentials_keyword: [potentials[s] for s in symbols]})
+    hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,
+                                                  n_electrons=n_el,
+                                                  num_particles=num_particles)
+    _warn_unresolved(integrals, basis_fns, h)
+
+    context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
+               "frozen": (), "n_electrons": n_el,
+               "pseudopotentials": potentials, "kb_projectors": kb,
+               "nonlocal_coupling": coupling_blocks, "family": family}
+    if overlap_blocks is not None:
+        context["nonlocal_overlap"] = overlap_blocks
+    return (hamiltonian, num_particles, len(basis_fns),
+            integrals.integration_profile(), context)
+
+
 def _build_tm(atoms, grid, h, charge, spin, options, kinetic=None):
     r"""Valence-only Hamiltonian from Troullier-Martins pseudopotentials.
 
@@ -250,49 +314,15 @@ def _build_tm(atoms, grid, h, charge, spin, options, kinetic=None):
     correction.  The "nuclei" carry the *ionic* charges, so the constant term
     is the ion-ion repulsion.
     """
-    from ..algorithms._hamiltonian_from_atoms import (
-        DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
-        grid_from_cell, resolve_num_unpaired)
-    from ..core import MolecularIntegrals
-    from .orbitals import (kb_coupling_blocks, kb_projectors, pseudo_basis,
-                           valence_electrons)
+    from .orbitals import kb_coupling_blocks, kb_projectors
 
-    directory = options.get("directory")
-    symbols = atoms.get_chemical_symbols()
-    positions = coherent_positions(atoms)
-    potentials = {symbol: _get_tm(symbol, directory) for symbol in set(symbols)}
-
-    basis_fns, atom_of_orbital = pseudo_basis(
-        symbols, positions, potentials, size=options.get("size", "SZ"),
-        split_norm=options.get("split_norm"))
-    projectors = kb_projectors(symbols, positions, potentials)
-    nuclei = [(potentials[symbol].valence_charge, position)
-              for symbol, position in zip(symbols, positions)]
-
-    n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
-    g = (grid if grid is not None
-         else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
-
-    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
-    num_particles = _num_particles(n_el, n_unpaired, "NCPP")
-    integrals = MolecularIntegrals(
-        nuclei, basis_fns, g, softening=0.0,
-        pseudos=[potentials[s] for s in symbols],
-        kb_projectors=projectors,
-        nonlocal_coupling=kb_coupling_blocks(projectors),
-        nonlocal_overlap=None,
-        kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"])
-    hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,
-                                                  n_electrons=n_el,
-                                                  num_particles=num_particles)
-    _warn_unresolved(integrals, basis_fns, h)
-
-    context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
-               "frozen": (), "n_electrons": n_el,
-               "pseudopotentials": potentials, "kb_projectors": projectors,
-               "family": "ncpp"}
-    return (hamiltonian, num_particles, len(basis_fns),
-            integrals.integration_profile(), context)
+    return build_valence_hamiltonian(
+        atoms, grid, h, charge, spin, options, kinetic, family="ncpp",
+        load=_get_tm,
+        projectors=lambda symbols, positions, potentials, _options:
+            kb_projectors(symbols, positions, potentials),
+        coupling=lambda projectors, _symbols, _potentials:
+            kb_coupling_blocks(projectors))
 
 
 TM_FAMILY = register_family(FamilySpec(

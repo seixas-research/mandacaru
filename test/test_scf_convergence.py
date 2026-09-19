@@ -132,7 +132,6 @@ class TestGradientStability:
         h, eri = _two_level_system()
         n = h.shape[0]
         S = np.eye(n)
-        rng = np.random.default_rng(1)
         gamma = np.diag(np.concatenate([np.ones(2), np.zeros(n - 2),
                                         np.ones(2), np.zeros(n - 2)]))
         gamma2 = np.zeros((2 * n,) * 4)

@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.circuits.pools import build_pool
 from mandacaru.core.mapping import Fermion, PauliSum, qubit_excitation
 from mandacaru.core.sector import ParticleSector
@@ -136,10 +136,11 @@ class TestSamePhysicsEverywhere:
     def run(mapping, pool, reduction=False):
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
-        atoms.calc = ADAPTVQE(basis="FAO", h=0.4, pool=pool, mapping=mapping,
-                              two_qubit_reduction=reduction, verbose=False,
-                              profile=False, gradient_tolerance=1e-7,
-                              max_iterations=12)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.4,
+                               pool=pool, mapping=mapping,
+                               two_qubit_reduction=reduction, trace=False,
+                               profile=False, gradient_tolerance=1e-7,
+                               max_iterations=12)
         energy = atoms.get_potential_energy()
         matrix = atoms.calc._h_matrix
         exact = np.linalg.eigvalsh(

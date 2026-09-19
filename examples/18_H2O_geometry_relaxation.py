@@ -55,6 +55,7 @@ from ase.optimize import BFGS
 
 from mandacaru.algorithms import Mandacaru
 from mandacaru.integrals import Grid
+from mandacaru.units import BOHR_TO_ANGSTROM
 
 # All generated files (logs, CSV, plots) go to examples/data/.
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -206,7 +207,7 @@ print(f"start geometry: d(O-H) = "
       f"angle = {bond_angle(water):.2f} deg")
 print(f"active space  : {water.calc.n_qubits} qubits "
       f"(O 1s frozen), E = {energy:.4f} eV")
-print(f"\nforces (eV/Angstrom):")
+print("\nforces (eV/Angstrom):")
 for symbol, force in zip(water.get_chemical_symbols(), water_forces):
     print(f"  {symbol:>2}  {force[0]:>12.3f}{force[1]:>12.3f}{force[2]:>12.3f}")
 
@@ -223,7 +224,7 @@ print("large spurious gradient on the nucleus.")
 
 # Quantify the grid artifact that bounds any relaxation.
 print("\negg-box test -- rigidly translating H2O across the grid:")
-shifts = np.linspace(0.0, water_grid.dx * 0.529177, 4)
+shifts = np.linspace(0.0, water_grid.dx * BOHR_TO_ANGSTROM, 4)
 energies = []
 for shift in shifts:
     probe = molecule("H2O")

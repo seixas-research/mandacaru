@@ -20,7 +20,7 @@ freedom are missing, and the ``size`` argument adds them:
 .. code-block:: python
 
     atoms.calc = Mandacaru(method="vqe",
-                         basis={"name": "NAO", "size": "DZP"})
+                           basis={"name": "NAO", "size": "DZP"})
 
 Sizes: ``SZ``, ``DZ``, ``TZ``, ``QZ``, each optionally polarized (``DZP``,
 ``TZ2P``, ...).  Everything is generated from scratch -- no tabulated data.
@@ -152,7 +152,6 @@ print("here -- not because it is redundant, but because of point 4.")
 print(f"\n{RULE}")
 print("4. Why the third zeta is nearly free of effect on a coarse grid")
 print(RULE)
-BOHR_TO_ANGSTROM = 0.529177210903
 for table in tables[1:]:
     support = np.nonzero(np.abs(table.values) > 1e-12)[0]
     extent = radius[support.max()] * BOHR_TO_ANGSTROM

@@ -23,7 +23,7 @@ from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.algorithms import Mandacaru
 
 
 @pytest.fixture(scope="module")
@@ -32,8 +32,9 @@ def lih_cache(tmp_path_factory):
     path = str(tmp_path_factory.mktemp("ham") / "lih.parquet")
     atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
                   cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
-    atoms.calc = ADAPTVQE(pool="qeb", basis="FAO", h=0.35, verbose=False,
-                          max_iterations=1, save_hamiltonian=path)
+    atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="FAO", h=0.35,
+                           trace=False, max_iterations=1,
+                           save_hamiltonian=path)
     atoms.get_total_energy()
     return path
 
@@ -44,12 +45,12 @@ def lih_cache(tmp_path_factory):
 
 class TestQuenchingArgument:
     def test_defaults_to_true_on_every_driver(self):
-        assert ADAPTVQE().quenching is True
-        assert VQE().quenching is True
+        assert Mandacaru(method="adapt-vqe").quenching is True
+        assert Mandacaru(method="vqe").quenching is True
 
-    @pytest.mark.parametrize("driver", [ADAPTVQE, VQE])
-    def test_flag_is_stored(self, driver):
-        assert driver(quenching=False).quenching is False
+    @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
+    def test_flag_is_stored(self, method):
+        assert Mandacaru(method=method, quenching=False).quenching is False
 
 
 # --------------------------------------------------------------------------- #
@@ -61,8 +62,9 @@ class TestADAPTQuenching:
         """With ``quenching=False`` a parameter never changes after its own step."""
         seen: list[np.ndarray] = []
 
-        driver = ADAPTVQE(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
-                          max_iterations=6, quenching=False)
+        driver = Mandacaru(method="adapt-vqe", pool="qeb",
+                           load_hamiltonian=lih_cache, trace=False,
+                           max_iterations=6, quenching=False)
         driver.run(callback=lambda info: seen.append(
             np.array(info["parameters"], dtype=float)))
 
@@ -76,8 +78,9 @@ class TestADAPTQuenching:
     def test_unquenched_run_reoptimizes_earlier_parameters(self, lih_cache):
         seen: list[np.ndarray] = []
 
-        driver = ADAPTVQE(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
-                          max_iterations=6, quenching=True)
+        driver = Mandacaru(method="adapt-vqe", pool="qeb",
+                           load_hamiltonian=lih_cache, trace=False,
+                           max_iterations=6, quenching=True)
         driver.run(callback=lambda info: seen.append(
             np.array(info["parameters"], dtype=float)))
 
@@ -88,10 +91,10 @@ class TestADAPTQuenching:
         assert moved
 
     def test_quenched_energy_is_an_upper_bound(self, lih_cache):
-        common = dict(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
+        common = dict(pool="qeb", load_hamiltonian=lih_cache, trace=False,
                       max_iterations=8)
-        full = ADAPTVQE(**common, quenching=True).run()
-        quenched = ADAPTVQE(**common, quenching=False).run()
+        full = Mandacaru(method="adapt-vqe", **common, quenching=True).run()
+        quenched = Mandacaru(method="adapt-vqe", **common, quenching=False).run()
 
         # Both lower the energy below Hartree-Fock ...
         assert quenched.optimal_energy < quenched.reference_energy
@@ -99,10 +102,10 @@ class TestADAPTQuenching:
         assert quenched.optimal_energy >= full.optimal_energy - 1e-8 * HARTREE_TO_EV
 
     def test_quenched_step_is_cheaper_per_operator(self, lih_cache):
-        common = dict(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
+        common = dict(pool="qeb", load_hamiltonian=lih_cache, trace=False,
                       max_iterations=6)
-        full = ADAPTVQE(**common, quenching=True).run()
-        quenched = ADAPTVQE(**common, quenching=False).run()
+        full = Mandacaru(method="adapt-vqe", **common, quenching=True).run()
+        quenched = Mandacaru(method="adapt-vqe", **common, quenching=False).run()
         # A 1-D line search per growth step costs far fewer evaluations than a
         # k-dimensional re-optimization.
         assert (quenched.num_evaluations / max(quenched.num_operators, 1)
@@ -110,10 +113,10 @@ class TestADAPTQuenching:
 
     def test_both_settings_agree_on_the_first_operator(self, lih_cache):
         """Step 1 has a single parameter, so quenching cannot change it."""
-        common = dict(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
+        common = dict(pool="qeb", load_hamiltonian=lih_cache, trace=False,
                       max_iterations=1)
-        full = ADAPTVQE(**common, quenching=True).run()
-        quenched = ADAPTVQE(**common, quenching=False).run()
+        full = Mandacaru(method="adapt-vqe", **common, quenching=True).run()
+        quenched = Mandacaru(method="adapt-vqe", **common, quenching=False).run()
         assert quenched.operators == full.operators
         assert quenched.optimal_energy == pytest.approx(
             full.optimal_energy, abs=1e-6 * HARTREE_TO_EV)
@@ -125,22 +128,24 @@ class TestADAPTQuenching:
 
 class TestVQEQuenching:
     def test_sequential_sweep_still_lowers_the_energy(self, lih_cache):
-        vqe = VQE(load_hamiltonian=lih_cache, verbose=False, quenching=False)
+        vqe = Mandacaru(method="vqe", load_hamiltonian=lih_cache, trace=False,
+                        quenching=False)
         result = vqe.run()
         assert result.optimal_energy < result.reference_energy
         assert result.num_parameters == vqe.ansatz.num_parameters
         assert len(result.history) == result.num_evaluations
 
     def test_joint_optimization_is_at_least_as_good(self, lih_cache):
-        joint = VQE(load_hamiltonian=lih_cache, verbose=False,
-                    quenching=True).run()
-        swept = VQE(load_hamiltonian=lih_cache, verbose=False,
-                    quenching=False).run()
+        joint = Mandacaru(method="vqe", load_hamiltonian=lih_cache,
+                          trace=False, quenching=True).run()
+        swept = Mandacaru(method="vqe", load_hamiltonian=lih_cache,
+                          trace=False, quenching=False).run()
         assert swept.optimal_energy >= joint.optimal_energy - 1e-6 * HARTREE_TO_EV
 
     def test_sweep_moves_every_parameter_in_order(self, lih_cache):
         """Each parameter is optimized once, alone, in index order."""
-        vqe = VQE(load_hamiltonian=lih_cache, verbose=False, quenching=False)
+        vqe = Mandacaru(method="vqe", load_hamiltonian=lih_cache, trace=False,
+                        quenching=False)
         evaluated: list[np.ndarray] = []
 
         def cost(theta):
@@ -165,7 +170,8 @@ class TestVQEQuenching:
 
     def test_single_parameter_is_unaffected_by_the_policy(self, lih_cache):
         """With one parameter the two policies are the same optimization."""
-        vqe = VQE(load_hamiltonian=lih_cache, verbose=False, quenching=False)
+        vqe = Mandacaru(method="vqe", load_hamiltonian=lih_cache, trace=False,
+                        quenching=False)
 
         def cost(theta):
             return float((np.asarray(theta, dtype=float)[0] - 0.3) ** 2)

@@ -25,7 +25,7 @@ from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.core import PauliSum
 from mandacaru.core.serialization import (DEFAULT_FILENAME, DEFAULT_FORMAT,
                                           FILE_EXTENSION, FILE_EXTENSIONS,
@@ -75,8 +75,9 @@ def h2_atoms():
 def h2_cache(tmp_path, h2_atoms):
     """A built H2 run that dumps its qubit Hamiltonian; yields (path, energy)."""
     path = str(tmp_path / "h2.parquet")
-    h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4, verbose=False,
-                             max_iterations=4, save_hamiltonian=path)
+    h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                              basis="FAO", h=0.4, trace=False,
+                              max_iterations=4, save_hamiltonian=path)
     h2_atoms.get_total_energy()
     return path, h2_atoms.calc.result.optimal_energy
 
@@ -266,7 +267,7 @@ class TestFileFormats:
     def test_json_is_human_readable(self, tmp_path):
         import json
         pauli = PauliSum({"IZ": 0.5, "ZI": -0.25})
-        path = save_hamiltonian(tmp_path / "h.json", pauli, format="json")
+        save_hamiltonian(tmp_path / "h.json", pauli, format="json")
         payload = json.loads((tmp_path / "h.json").read_text())
 
         assert payload["format"] == FORMAT_TAG
@@ -353,43 +354,45 @@ class TestDriverFileFormats:
     def test_driver_saves_and_reloads_in_either_format(self, tmp_path,
                                                        h2_atoms, fmt):
         path = str(tmp_path / f"h2{FILE_EXTENSIONS[fmt]}")
-        h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                                 verbose=False, max_iterations=4,
-                                 save_hamiltonian=path, hamiltonian_format=fmt)
+        h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                                  basis="FAO", h=0.4, trace=False,
+                                  max_iterations=4, save_hamiltonian=path,
+                                  hamiltonian_format=fmt)
         h2_atoms.get_total_energy()
         built = h2_atoms.calc.result.optimal_energy
 
         assert detect_format(path) == fmt
-        loaded = ADAPTVQE(pool="fermionic", load_hamiltonian=path,
-                          verbose=False, max_iterations=4).run()
+        loaded = Mandacaru(method="adapt-vqe", pool="fermionic",
+                           load_hamiltonian=path, trace=False,
+                           max_iterations=4).run()
         assert loaded.optimal_energy == pytest.approx(built, abs=1e-9 * HARTREE_TO_EV)
 
     def test_default_format_is_parquet(self):
-        assert ADAPTVQE().hamiltonian_format == DEFAULT_FORMAT == "parquet"
-        assert VQE().hamiltonian_format == "parquet"
+        assert Mandacaru(method="adapt-vqe").hamiltonian_format == DEFAULT_FORMAT == "parquet"
+        assert Mandacaru(method="vqe").hamiltonian_format == "parquet"
 
     def test_format_selects_the_default_filename(self, tmp_path, monkeypatch,
                                                  h2_atoms):
         monkeypatch.chdir(tmp_path)
-        h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                                 verbose=False, max_iterations=1,
-                                 save_hamiltonian=True,
-                                 hamiltonian_format="json")
+        h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                                  basis="FAO", h=0.4, trace=False,
+                                  max_iterations=1, save_hamiltonian=True,
+                                  hamiltonian_format="json")
         h2_atoms.get_total_energy()
         assert (tmp_path / "hamiltonian.json").is_file()
         assert not (tmp_path / "hamiltonian.parquet").exists()
 
     def test_unknown_format_is_rejected(self):
         with pytest.raises(ValueError, match="unknown hamiltonian_format"):
-            ADAPTVQE(hamiltonian_format="hdf5")
+            Mandacaru(method="adapt-vqe", hamiltonian_format="hdf5")
 
     def test_the_path_extension_outranks_the_driver_default(self, tmp_path,
                                                             h2_atoms):
         """A file named '.json' must not be handed Parquet bytes."""
         path = str(tmp_path / "named.json")
-        h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                                 verbose=False, max_iterations=1,
-                                 save_hamiltonian=path)   # default: parquet
+        h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                                  basis="FAO", h=0.4, trace=False,
+                                  max_iterations=1, save_hamiltonian=path)   # default: parquet
         h2_atoms.get_total_energy()
         assert open(path, "rb").read(1) == b"{"
         assert detect_format(path) == "json"
@@ -418,10 +421,11 @@ class TestTaperedRecords:
 
     def _tapered(self, tmp_path, fmt, atoms):
         path = str(tmp_path / f"tapered{FILE_EXTENSIONS[fmt]}")
-        atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                              mapping="parity", two_qubit_reduction=True,
-                              verbose=False, profile=False, max_iterations=4,
-                              save_hamiltonian=path)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                               basis="FAO", h=0.4, mapping="parity",
+                               two_qubit_reduction=True, trace=False,
+                               profile=False, max_iterations=4,
+                               save_hamiltonian=path)
         return path, atoms.get_total_energy()
 
     @pytest.mark.parametrize("fmt", HAMILTONIAN_FORMATS)
@@ -432,22 +436,25 @@ class TestTaperedRecords:
         assert record.num_qubits == 2
 
         # A driver told nothing but the file reproduces the run exactly.
-        loaded = ADAPTVQE(pool="fermionic", load_hamiltonian=path,
-                          verbose=False, profile=False, max_iterations=4)
+        loaded = Mandacaru(method="adapt-vqe", pool="fermionic",
+                           load_hamiltonian=path, trace=False, profile=False,
+                           max_iterations=4)
         result = loaded.run()
         assert loaded.two_qubit_reduction is True and loaded.n_qubits == 2
         assert result.optimal_energy == pytest.approx(energy, abs=1e-9)
 
     def test_an_untapered_file_will_not_pretend(self, tmp_path, h2_atoms):
         path = str(tmp_path / "plain.json")
-        h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                                 verbose=False, profile=False,
-                                 max_iterations=1, save_hamiltonian=path)
+        h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                                  basis="FAO", h=0.4, trace=False,
+                                  profile=False, max_iterations=1,
+                                  save_hamiltonian=path)
         h2_atoms.get_total_energy()
         assert load_hamiltonian(path).two_qubit_reduction is False
         with pytest.raises(ValueError, match="untapered"):
-            ADAPTVQE(pool="fermionic", load_hamiltonian=path, mapping="parity",
-                     two_qubit_reduction=True, verbose=False)
+            Mandacaru(method="adapt-vqe", pool="fermionic",
+                      load_hamiltonian=path, mapping="parity",
+                      two_qubit_reduction=True, trace=False)
 
     def test_older_files_load_as_untapered(self, tmp_path):
         """The field is new; a file without it was written before tapering."""
@@ -539,9 +546,9 @@ class TestDriverSavesHamiltonian:
 
     def test_saved_operator_matches_the_live_one(self, tmp_path, h2_atoms):
         path = str(tmp_path / "h2.parquet")
-        h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                                 verbose=False, max_iterations=2,
-                                 save_hamiltonian=path)
+        h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                                  basis="FAO", h=0.4, trace=False,
+                                  max_iterations=2, save_hamiltonian=path)
         h2_atoms.get_total_energy()
         saved = load_hamiltonian(path).hamiltonian
         live = h2_atoms.calc.hamiltonian.simplify()
@@ -552,9 +559,9 @@ class TestDriverSavesHamiltonian:
     def test_save_true_uses_default_filename(self, tmp_path, monkeypatch,
                                              h2_atoms):
         monkeypatch.chdir(tmp_path)
-        h2_atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                                 verbose=False, max_iterations=1,
-                                 save_hamiltonian=True)
+        h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                                  basis="FAO", h=0.4, trace=False,
+                                  max_iterations=1, save_hamiltonian=True)
         h2_atoms.get_total_energy()
         assert (tmp_path / DEFAULT_FILENAME).is_file()
 
@@ -562,14 +569,16 @@ class TestDriverSavesHamiltonian:
 class TestDriverLoadsHamiltonian:
     def test_loaded_run_reproduces_the_built_energy(self, h2_cache):
         path, built_energy = h2_cache
-        loaded = ADAPTVQE(pool="fermionic", load_hamiltonian=path, verbose=False,
-                          max_iterations=4)
+        loaded = Mandacaru(method="adapt-vqe", pool="fermionic",
+                           load_hamiltonian=path, trace=False,
+                           max_iterations=4)
         assert loaded.run().optimal_energy == pytest.approx(
             built_energy, abs=1e-9 * HARTREE_TO_EV)
 
     def test_loading_needs_no_geometry_and_configures_the_pool(self, h2_cache):
         path, _ = h2_cache
-        loaded = ADAPTVQE(pool="ceo", load_hamiltonian=path, verbose=False)
+        loaded = Mandacaru(method="adapt-vqe", pool="ceo",
+                           load_hamiltonian=path, trace=False)
         # Direct mode without ever touching an Atoms object.
         assert loaded._configured
         assert loaded.n_qubits == 4
@@ -589,8 +598,9 @@ class TestDriverLoadsHamiltonian:
         monkeypatch.setattr(IntegralEngine, "one_body", fail)
         monkeypatch.setattr(IntegralEngine, "two_body", fail)
 
-        result = ADAPTVQE(pool="fermionic", load_hamiltonian=path, verbose=False,
-                          max_iterations=4).run()
+        result = Mandacaru(method="adapt-vqe", pool="fermionic",
+                           load_hamiltonian=path, trace=False,
+                           max_iterations=4).run()
         assert np.isfinite(result.optimal_energy)
 
     def test_loading_bypasses_the_hamiltonian_mapping(self, h2_cache):
@@ -600,7 +610,8 @@ class TestDriverLoadsHamiltonian:
         different operator and is unrelated to the Hamiltonian's transformation.)
         """
         path, _ = h2_cache
-        driver = ADAPTVQE(pool="fermionic", load_hamiltonian=path, verbose=False)
+        driver = Mandacaru(method="adapt-vqe", pool="fermionic",
+                           load_hamiltonian=path, trace=False)
         stored = load_hamiltonian(path).hamiltonian.simplify()
         live = driver.hamiltonian.simplify()
         assert isinstance(driver.hamiltonian, PauliSum)
@@ -610,7 +621,7 @@ class TestDriverLoadsHamiltonian:
 
     def test_vqe_rebuilds_its_uccsd_ansatz_from_the_file(self, h2_cache):
         path, built_energy = h2_cache
-        vqe = VQE(load_hamiltonian=path, verbose=False)
+        vqe = Mandacaru(method="vqe", load_hamiltonian=path, trace=False)
         assert vqe.ansatz.n_qubits == 4
         assert vqe.ansatz.num_particles == (1, 1)
         # UCCSD reaches the same ground state as the (converged) ADAPT run.
@@ -622,11 +633,11 @@ class TestDriverLoadsHamiltonian:
         """Loading and saving the same file must not rewrite (and clobber) it."""
         path, _ = h2_cache
         before = open(path, "rb").read()               # Parquet is binary
-        ADAPTVQE(pool="fermionic", load_hamiltonian=path,
-                 save_hamiltonian=path, verbose=False, max_iterations=1).run()
+        Mandacaru(method="adapt-vqe", pool="fermionic", load_hamiltonian=path,
+                  save_hamiltonian=path, trace=False, max_iterations=1).run()
         assert open(path, "rb").read() == before
 
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            ADAPTVQE(pool="fermionic",
-                     load_hamiltonian=str(tmp_path / "nope.parquet"))
+            Mandacaru(method="adapt-vqe", pool="fermionic",
+                      load_hamiltonian=str(tmp_path / "nope.parquet"))

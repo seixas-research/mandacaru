@@ -13,12 +13,8 @@ returned states.  Validated on H2 (MO basis).
 import numpy as np
 import pytest
 
-from mandacaru.algorithms import (
-    SubspaceADAPTVQE,
-    SubspaceADAPTVQEResult,
-    SubspaceVQE,
-    SubspaceVQEResult,
-)
+from mandacaru.algorithms import (Mandacaru, SubspaceADAPTVQEResult,
+                                  SubspaceVQEResult)
 from mandacaru.algorithms.subspace import (
     reference_matrix,
     resolve_weights,
@@ -59,17 +55,19 @@ TOL_1E5 = 1e-5 * HARTREE_TO_EV
 
 def _ssvqe(h2_hamiltonian, k, **kwargs):
     ansatz = UCCSD(2, (1, 1), mapping="jordan_wigner")
-    return SubspaceVQE(h2_hamiltonian, ansatz, num_states=k,
-                       optimizer=Optimizer("L-BFGS-B", maxiter=4000),
-                       verbose=False, **kwargs)
+    return Mandacaru(method="subspace-vqe", hamiltonian=h2_hamiltonian,
+                     ansatz=ansatz, num_states=k,
+                     optimizer=Optimizer("L-BFGS-B", maxiter=4000),
+                     trace=False, **kwargs)
 
 
 def _ss_adapt(h2_hamiltonian, k, **kwargs):
-    return SubspaceADAPTVQE(h2_hamiltonian, "fermionic", num_states=k,
-                            num_particles=(1, 1), n_spatial_orbitals=2,
-                            optimizer=Optimizer("L-BFGS-B", maxiter=4000),
-                            verbose=False, profile=False,
-                            gradient_tolerance=1e-6, max_iterations=30, **kwargs)
+    return Mandacaru(method="subspace-adapt-vqe", hamiltonian=h2_hamiltonian,
+                     pool="fermionic", num_states=k, num_particles=(1, 1),
+                     n_spatial_orbitals=2,
+                     optimizer=Optimizer("L-BFGS-B", maxiter=4000),
+                     trace=False, profile=False, gradient_tolerance=1e-6,
+                     max_iterations=30, **kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -149,7 +147,8 @@ class TestSubspaceVQE:
         from ase import Atoms
         atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
                       cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
-        atoms.calc = SubspaceVQE(basis="FAO", h=0.30, num_states=2, verbose=False)
+        atoms.calc = Mandacaru(method="subspace-vqe", basis="FAO", h=0.30,
+                               num_states=2, trace=False)
         energy_ev = atoms.get_potential_energy()
         result = atoms.calc.result
         assert isinstance(result, SubspaceVQEResult)
@@ -189,10 +188,10 @@ class TestSubspaceADAPTVQE:
         from ase import Atoms
         atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
                       cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
-        atoms.calc = SubspaceADAPTVQE(basis="FAO", h=0.30, num_states=2,
-                                      pool="fermionic", verbose=False,
-                                      profile=False, gradient_tolerance=1e-4,
-                                      max_iterations=20)
+        atoms.calc = Mandacaru(method="subspace-adapt-vqe", basis="FAO",
+                               h=0.30, num_states=2, pool="fermionic",
+                               trace=False, profile=False,
+                               gradient_tolerance=1e-4, max_iterations=20)
         atoms.get_potential_energy()
         assert isinstance(atoms.calc.result, SubspaceADAPTVQEResult)
         assert atoms.calc.result.num_states == 2
@@ -205,12 +204,13 @@ class TestSubspaceADAPTVQE:
 class TestConstruction:
     def test_num_states_validated_vqe(self):
         with pytest.raises(ValueError):
-            SubspaceVQE(num_states=0)
+            Mandacaru(method="subspace-vqe", num_states=0)
 
     def test_num_states_validated_adapt(self):
         with pytest.raises(ValueError):
-            SubspaceADAPTVQE(num_states=0)
+            Mandacaru(method="subspace-adapt-vqe", num_states=0)
 
     def test_run_requires_configuration(self):
         with pytest.raises(RuntimeError):
-            SubspaceVQE(basis="FAO", num_states=2, verbose=False).run()
+            Mandacaru(method="subspace-vqe", basis="FAO", num_states=2,
+                      trace=False).run()

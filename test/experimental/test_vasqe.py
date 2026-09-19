@@ -31,6 +31,7 @@ from mandacaru.core import MolecularIntegrals, minimal_fao_basis
 from mandacaru.integrals import Grid
 from mandacaru.optimizers import Optimizer
 from mandacaru.units import HARTREE_TO_EV
+from mandacaru import Mandacaru
 
 
 # --------------------------------------------------------------------------- #
@@ -63,9 +64,10 @@ TOL_1E8 = 1e-8 * HARTREE_TO_EV
 
 def _vasqe(h2_hamiltonian, **kwargs):
     kwargs.setdefault("optimizer", Optimizer("L-BFGS-B", maxiter=2000))
-    return VASQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                 n_spatial_orbitals=2, verbose=False, profile=False,
-                 gradient_tolerance=1e-6, **kwargs)
+    return Mandacaru(method="vasqe", hamiltonian=h2_hamiltonian,
+                     pool="fermionic", num_particles=(1, 1),
+                     n_spatial_orbitals=2, trace=False, profile=False,
+                     gradient_tolerance=1e-6, **kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -191,9 +193,9 @@ class TestVASQE:
         from ase import Atoms
         atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
                       cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
-        atoms.calc = VASQE(basis="FAO", h=0.30, temperature=1e-3, verbose=False,
-                           profile=False, gradient_tolerance=1e-4,
-                           max_iterations=10)
+        atoms.calc = Mandacaru(method="vasqe", basis="FAO", h=0.30,
+                               temperature=1e-3, trace=False, profile=False,
+                               gradient_tolerance=1e-4, max_iterations=10)
         atoms.get_potential_energy()
         assert isinstance(atoms.calc.result, VASQEResult)
 
@@ -213,12 +215,12 @@ class TestVASQEExcitedStates:
             assert float(np.min(np.abs(spectrum - e))) < TOL_1E5
 
     def test_subspace_vasqe(self, h2_hamiltonian, h2_fci):
-        sv = SubspaceVASQE(h2_hamiltonian, "fermionic", num_states=2,
-                           num_particles=(1, 1), n_spatial_orbitals=2,
-                           temperature=0.5, optimizer=Optimizer("L-BFGS-B",
-                                                                maxiter=2000),
-                           verbose=False, profile=False, gradient_tolerance=1e-6,
-                           max_iterations=20, seed=1)
+        sv = Mandacaru(method="subspace-vasqe", hamiltonian=h2_hamiltonian,
+                       pool="fermionic", num_states=2, num_particles=(1, 1),
+                       n_spatial_orbitals=2, temperature=0.5,
+                       optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                       trace=False, profile=False, gradient_tolerance=1e-6,
+                       max_iterations=20, seed=1)
         result = sv.run()
         assert result.num_states == 2
         assert result.energies[0] == pytest.approx(h2_fci, abs=TOL_1E4)
@@ -226,9 +228,10 @@ class TestVASQEExcitedStates:
 
     def test_subspace_vasqe_uses_stochastic_selection(self, h2_hamiltonian):
         # SubspaceVASQE must route selection through VASQE._select_operator.
-        sv = SubspaceVASQE(h2_hamiltonian, "fermionic", num_states=2,
-                           num_particles=(1, 1), n_spatial_orbitals=2,
-                           temperature=1.0, verbose=False, profile=False)
+        sv = Mandacaru(method="subspace-vasqe", hamiltonian=h2_hamiltonian,
+                       pool="fermionic", num_states=2, num_particles=(1, 1),
+                       n_spatial_orbitals=2, temperature=1.0, trace=False,
+                       profile=False)
         assert sv._select_operator.__qualname__.startswith("VASQE")
 
 
@@ -276,9 +279,10 @@ class TestExperimentalPackaging:
 
     def test_calculators_default_to_adapt_vqe(self):
         from ase import Atoms
-        from mandacaru.algorithms import ADAPTVQE, BlochCalculator, Mandacaru
+        from mandacaru.algorithms import BlochCalculator
         calc = Mandacaru()
-        assert calc.method == "adapt-vqe" and calc._solver_class is ADAPTVQE
+        assert calc.method == "adapt-vqe"
+        assert type(calc.solver).__name__ == "ADAPTVQE"
         chain = Atoms("H", positions=[[0, 0, 0]], cell=[1.0, 10.0, 10.0],
                       pbc=[True, False, False])
         assert BlochCalculator(chain).method == "adapt-vqe"
@@ -301,36 +305,34 @@ class TestExperimentalPackaging:
 @pytest.fixture(scope="module")
 def lih_cache(tmp_path_factory):
     from ase import Atoms
-    from mandacaru.algorithms import ADAPTVQE
     path = str(tmp_path_factory.mktemp("cache") / "lih.json")
     atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7.0] * 3)
-    atoms.calc = ADAPTVQE(pool="qeb", basis="FAO", h=0.4, verbose=False,
-                          profile=False, max_iterations=1,
-                          save_hamiltonian=path, hamiltonian_format="json")
+    atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="FAO", h=0.4,
+                           trace=False, profile=False, max_iterations=1,
+                           save_hamiltonian=path, hamiltonian_format="json")
     atoms.get_potential_energy()
     return path
 
 
 class TestVASQEQuenching:
     def test_default_is_quenched(self):
-        assert VASQE().quenching is True
+        assert Mandacaru(method="vasqe").quenching is True
 
     def test_quenched_vasqe_freezes_earlier_parameters(self, lih_cache):
-        result = VASQE(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
-                       profile=False, quenching=False, max_iterations=3,
-                       gradient_tolerance=1e-8, temperature=1e-6,
-                       seed=0).run()
+        result = Mandacaru(method="vasqe", pool="qeb",
+                           load_hamiltonian=lih_cache, trace=False,
+                           profile=False, quenching=False, max_iterations=3,
+                           gradient_tolerance=1e-8, temperature=1e-6, seed=0).run()
         assert result.num_operators >= 2
 
     def test_low_temperature_quenched_vasqe_tracks_quenched_adapt(self,
                                                                    lih_cache):
         """tau -> 0 reduces VASQE to ADAPT-VQE, quenching policy included."""
-        from mandacaru.algorithms import ADAPTVQE
-        common = dict(pool="qeb", load_hamiltonian=lih_cache, verbose=False,
+        common = dict(pool="qeb", load_hamiltonian=lih_cache, trace=False,
                       profile=False, quenching=False, max_iterations=3,
                       gradient_tolerance=1e-8)
-        adapt = ADAPTVQE(**common).run()
-        vasqe = VASQE(**common, temperature=1e-6, seed=0).run()
+        adapt = Mandacaru(method="adapt-vqe", **common).run()
+        vasqe = Mandacaru(method="vasqe", **common, temperature=1e-6, seed=0).run()
         # Symmetry-degenerate operators tie on their gradient, so the *set*
         # selected (and the energy) must match, not the tie-broken order.
         assert set(vasqe.operators) == set(adapt.operators)
@@ -340,9 +342,9 @@ class TestVASQEQuenching:
 
 class TestHamiltonianCache:
     def test_vasqe_loads_a_cached_hamiltonian(self, lih_cache):
-        result = VASQE(pool="fermionic", load_hamiltonian=lih_cache,
-                       verbose=False, profile=False, max_iterations=2,
-                       temperature=1e-6).run()
+        result = Mandacaru(method="vasqe", pool="fermionic",
+                           load_hamiltonian=lih_cache, trace=False,
+                           profile=False, max_iterations=2, temperature=1e-6).run()
         assert isinstance(result, VASQEResult)
 
 

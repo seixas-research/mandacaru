@@ -21,7 +21,6 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms import ADAPTVQE, VQE
 from mandacaru.core.mapping import PauliSum
 from mandacaru.core.serialization import MAX_FILE_QUBITS
 from mandacaru.utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
@@ -42,10 +41,11 @@ def h2_hamiltonian():
 
 
 def _adapt(hamiltonian, **options):
-    options.setdefault("verbose", False)
-    return ADAPTVQE(hamiltonian, "fermionic", num_particles=(1, 1),
-                    n_spatial_orbitals=2, profile=False,
-                    max_iterations=2, gradient_tolerance=1e-4, **options)
+    options.setdefault("trace", False)
+    return Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
+                     pool="fermionic", num_particles=(1, 1),
+                     n_spatial_orbitals=2, profile=False, max_iterations=2,
+                     gradient_tolerance=1e-4, **options)
 
 
 class TestPathResolution:
@@ -146,8 +146,9 @@ class TestHamiltonianDump:
         from mandacaru.circuits import UCCSD
 
         target = tmp_path / "h.json"
-        VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False,
-            verbose_hamiltonian=str(target)).run()
+        Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                  ansatz=UCCSD(2, (1, 1)), trace=False,
+                  verbose_hamiltonian=str(target)).run()
         assert json.loads(target.read_text())["n_qubits"] == 4
 
 
@@ -215,7 +216,7 @@ class TestExpressivityColumn:
     """
 
     def test_off_by_default(self, h2_hamiltonian, capsys):
-        adapt = _adapt(h2_hamiltonian, verbose=True)
+        adapt = _adapt(h2_hamiltonian, trace=True)
         adapt.run()
         out = capsys.readouterr().out
         assert _column(out, "expr") is None
@@ -224,7 +225,7 @@ class TestExpressivityColumn:
         assert "expr" not in heading.split()
 
     def test_true_computes_and_prints_it(self, h2_hamiltonian, capsys):
-        adapt = _adapt(h2_hamiltonian, verbose=True)
+        adapt = _adapt(h2_hamiltonian, trace=True)
         adapt.run(log_expressivity=True)
         values = _column(capsys.readouterr().out, "expr")
         assert values and all(float(v) >= 0.0 for v in values)
@@ -247,7 +248,7 @@ class TestExpressivityColumn:
         Whether the expressivity is computed is a per-run setting, so when it
         is off the table simply does not carry the column.
         """
-        adapt = _adapt(h2_hamiltonian, verbose=True)
+        adapt = _adapt(h2_hamiltonian, trace=True)
         adapt.run(log_expressivity=False)
         out = capsys.readouterr().out
         assert _column(out, "expr") is None

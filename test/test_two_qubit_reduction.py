@@ -18,7 +18,7 @@ import numpy as np
 from mandacaru.units import HARTREE_TO_EV
 import pytest
 
-from mandacaru.algorithms import ADAPTVQE, VQE, SubspaceVQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.circuits import AdaptAnsatz, UCCSD
 from mandacaru.circuits.pools import build_pool
 from mandacaru.core.mapping import (parity_tapered_qubits, reference_qubit_bits,
@@ -36,8 +36,8 @@ def _h2():
 @pytest.fixture(scope="module")
 def reference():
     atoms = _h2()
-    atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.4, verbose=False,
-                          profile=False, max_iterations=4)
+    atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO", h=0.4,
+                           trace=False, profile=False, max_iterations=4)
     atoms.get_total_energy()
     return atoms.calc.result.optimal_energy, atoms.calc.result.reference_energy
 
@@ -101,9 +101,10 @@ class TestDrivers:
     def test_adapt_vqe_reaches_the_untapered_energy(self, reference):
         exact, hf = reference
         atoms = _h2()
-        atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                              mapping="parity", two_qubit_reduction=True,
-                              verbose=False, profile=True, max_iterations=4)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                               basis="FAO", h=0.4, mapping="parity",
+                               two_qubit_reduction=True, trace=False,
+                               profile=True, max_iterations=4)
         atoms.get_total_energy()
         calc = atoms.calc
         assert calc.n_qubits == 2
@@ -118,9 +119,9 @@ class TestDrivers:
     def test_vqe_reaches_the_untapered_energy(self, reference):
         exact, _hf = reference
         atoms = _h2()
-        atoms.calc = VQE(basis="FAO", h=0.4, mapping="parity",
-                         two_qubit_reduction=True, optimizer="L-BFGS-B",
-                         verbose=False)
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
+                               mapping="parity", two_qubit_reduction=True,
+                               optimizer="L-BFGS-B", trace=False)
         atoms.get_total_energy()
         assert atoms.calc.n_qubits == 2
         assert atoms.calc.result.optimal_energy == pytest.approx(
@@ -128,18 +129,20 @@ class TestDrivers:
 
     def test_requires_parity(self):
         with pytest.raises(ValueError, match="parity"):
-            ADAPTVQE(pool="fermionic", basis="FAO", two_qubit_reduction=True)
+            Mandacaru(method="adapt-vqe", pool="fermionic", basis="FAO",
+                      two_qubit_reduction=True)
 
     def test_subspace_solvers_refuse(self):
         with pytest.raises(NotImplementedError):
-            SubspaceVQE(basis="FAO", mapping="parity",
-                        two_qubit_reduction=True, verbose=False)
+            Mandacaru(method="subspace-vqe", basis="FAO", mapping="parity",
+                      two_qubit_reduction=True, trace=False)
 
     def test_dry_run_counts_the_reduced_register(self):
         atoms = _h2()
-        atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", mapping="parity",
-                              two_qubit_reduction=True, dry_run=True,
-                              verbose=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                               basis="FAO", mapping="parity",
+                               two_qubit_reduction=True, dry_run=True,
+                               trace=False)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 2
 
@@ -147,9 +150,10 @@ class TestDrivers:
         from mandacaru.backends.providers import QiskitProvider
         exact, _hf = reference
         atoms = _h2()
-        atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4,
-                              mapping="parity", two_qubit_reduction=True,
-                              verbose=False, profile=False, max_iterations=4)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                               basis="FAO", h=0.4, mapping="parity",
+                               two_qubit_reduction=True, trace=False,
+                               profile=False, max_iterations=4)
         atoms.get_total_energy()
         provider = QiskitProvider()
         assert atoms.calc.measured_energy(provider) == pytest.approx(

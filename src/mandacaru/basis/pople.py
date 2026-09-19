@@ -41,8 +41,7 @@ from __future__ import annotations
 import numpy as np
 
 from ._config import ground_state_config
-from .sto_ng import (_fit_reference, effective_principal_number, slater_exponent,
-                     sto_ng_contraction)
+from .sto_ng import _fit_reference, slater_exponent, sto_ng_contraction
 
 # A "shell" spec is (l, exponents, coefficients): a single contracted Gaussian.
 ShellSpec = tuple[int, np.ndarray, np.ndarray]

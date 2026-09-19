@@ -17,14 +17,14 @@ This reference implementation is an **exact state-vector simulator**: the qubit
 Hamiltonian is materialized as a dense matrix and the ansatz produces the exact
 :math:`2^N` state vector, so the energy is the noiseless expectation value.
 
-The class mirrors :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE`:
+**This class is the internal layer.**  It is reached only through the
+calculator, ``Mandacaru(method="vqe", ...)``, which forwards every option here:
 
-* **direct mode** -- construct with a Hamiltonian and an ansatz and call
-  :meth:`run`;
-* **ASE calculator mode** -- construct with a ``basis`` (no Hamiltonian/ansatz),
-  attach to an ``Atoms`` object (``atoms.calc = VQE(...)``) and let
-  ``atoms.get_total_energy()`` build the Hamiltonian from the geometry, build a
-  default UCCSD ansatz, and drive :meth:`run`, returning eV.
+* **direct mode** -- ``Mandacaru(method="vqe", hamiltonian=..., ansatz=...)``
+  and :meth:`~mandacaru.algorithms.Mandacaru.run`;
+* **ASE calculator mode** -- ``atoms.calc = Mandacaru(method="vqe",
+  basis=...)``: ``atoms.get_total_energy()`` builds the Hamiltonian from the
+  geometry, builds a default UCCSD ansatz and runs, returning eV.
 
 The ``optimizer`` may be named by string, a ``verbose`` run prints the qubit
 Hamiltonian as Pauli strings and a timing / memory / cores summary, and the run
@@ -166,38 +166,10 @@ class VQE(DeflationMixin, VariationalDriver):
 
     def __init__(self, hamiltonian=None, ansatz=None,
                  optimizer: str | Optimizer = "COBYLA", verbose: bool = True,
-                 *, basis="FAO", mapping: str = "jordan_wigner",
-                 device: str = "AER_simulator", grid=None, h: float = 0.20,
-                 kpts=None, spin: bool = False,
-                 initial_state: str | None = "hartree-fock",
-                 charge: int = 0, n_electrons=None,
-                 frozen_core=False, frozen_orbitals=None,
-                 hamiltonian_builder=None, ansatz_builder=None,
-                 save_hamiltonian: bool | str = False,
-                 load_hamiltonian: str | None = None,
-                 hamiltonian_format: str = "parquet",
-                 backend_provider: str | None = None,
-                 execute_circuits: bool | None = None,
-                 backend_options: dict | None = None, shots: int = 0,
-                 quenching: bool = True, dry_run: bool = False,
-                 kinetic: str | None = None,
-                 two_qubit_reduction: bool = False,
-                 run_options: dict | None = None, **calc_kwargs):
-        super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
-                         device=device, grid=grid, h=h, kpts=kpts, spin=spin,
-                         initial_state=initial_state, charge=charge,
-                         n_electrons=n_electrons, frozen_core=frozen_core,
-                         frozen_orbitals=frozen_orbitals,
-                         hamiltonian_builder=hamiltonian_builder,
-                         save_hamiltonian=save_hamiltonian,
-                         load_hamiltonian=load_hamiltonian,
-                         hamiltonian_format=hamiltonian_format,
-                         backend_provider=backend_provider,
-                         execute_circuits=execute_circuits,
-                         backend_options=backend_options, shots=shots,
-                         quenching=quenching, dry_run=dry_run, kinetic=kinetic,
-                         two_qubit_reduction=two_qubit_reduction,
-                         run_options=run_options, verbose=verbose, **calc_kwargs)
+                 *, ansatz_builder=None, **driver_kwargs):
+        # Every other keyword is a VariationalDriver option, forwarded
+        # untouched so its name and default live in one place.
+        super().__init__(optimizer=optimizer, verbose=verbose, **driver_kwargs)
         self.ansatz_builder = ansatz_builder
         self._preset_ansatz = ansatz
 

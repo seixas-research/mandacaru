@@ -49,15 +49,24 @@ def eri_memory_budget_mb() -> float:
 PotentialFn = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 
 
+def _radial_table(radial, r_max: float = 40.0, points: int = 20001):
+    """``(r, R)`` of a radial function on the fine reference grid."""
+    r = np.linspace(0.0, r_max, points)
+    return r, np.nan_to_num(np.asarray(radial(r), dtype=float))
+
+
+def radial_norm(radial, r_max: float = 40.0, points: int = 20001) -> float:
+    r""":math:`\int R^2 r^2\,dr` of a radial function on that grid."""
+    r, R = _radial_table(radial, r_max, points)
+    return float(np.trapezoid(R * R * r * r, r))
+
+
 def radial_kinetic_energy(radial, l: int, r_max: float = 40.0,
                           points: int = 20001) -> float:
     r"""Exact kinetic energy per unit norm of ``R(r) Y_lm``,
     :math:`\tfrac12\int[(rR)'^2 + l(l+1)R^2]\,dr / \int R^2 r^2 dr`,
     from the radial function on a fine one-dimensional grid."""
-    r = np.linspace(0.0, r_max, points)
-    R = np.asarray(radial(r), dtype=float)
-    if not np.all(np.isfinite(R)):
-        R = np.nan_to_num(R)
+    r, R = _radial_table(radial, r_max, points)
     u = r * R
     du = np.gradient(u, r)
     norm = float(np.trapezoid(R * R * r * r, r))

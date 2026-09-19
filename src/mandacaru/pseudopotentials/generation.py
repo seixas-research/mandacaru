@@ -318,11 +318,6 @@ class PseudoPotential:
     #: file without the field is the historical TM family.
     family: str = "ncpp"
 
-    @property
-    def nonlocal_channels(self) -> list:
-        """Angular momenta carrying a projector (all but the local one)."""
-        return sorted(self.projectors)
-
     def local_potential(self, radius) -> np.ndarray:
         """Interpolate ``V_loc`` onto arbitrary radii (Bohr).
 

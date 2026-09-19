@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from mandacaru.core.hamiltonian import MolecularIntegrals, minimal_fao_basis
-from mandacaru.core.mapping import Fermion
 from mandacaru.integrals import Grid
 
 

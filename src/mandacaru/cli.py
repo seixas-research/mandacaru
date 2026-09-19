@@ -45,6 +45,7 @@ import json
 import os
 import sys
 
+from .units import DEFAULT_GRID_SPACING
 from .version import __version__
 
 
@@ -83,6 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
     """The ``mandacaru`` argument parser."""
     from .algorithms.calculator import DEFAULT_METHOD, STABLE_METHODS
     from .backends.hardware import available_devices
+    from .circuits.pools import available_pools
+    from .core.mapping import MAPPINGS
     from .optimizers.optim import NAMED_OPTIMIZERS
 
     parser = argparse.ArgumentParser(
@@ -178,8 +181,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="basis option, repeatable (size=DZP, "
                             "energy_shift=0.03, n_gaussians=3, "
                             "energy_cutoff=300, ...)")
-    basis.add_argument("--h", type=float, default=0.20,
-                       help="real-space grid spacing in Angstrom (default 0.20)")
+    basis.add_argument("--h", type=float, default=DEFAULT_GRID_SPACING,
+                       help="real-space grid spacing in Angstrom "
+                            f"(default {DEFAULT_GRID_SPACING:.2f})")
     basis.add_argument("--frozen-core", nargs="?", const=True, default=False,
                        type=_frozen_core, metavar="N|auto",
                        help="frozen-core approximation: 'auto' (the noble-gas "
@@ -188,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     basis.add_argument("--frozen-orbitals", type=int, nargs="+", default=None,
                        help="explicit spatial-MO indices to freeze")
     basis.add_argument("--mapping", default="jordan_wigner",
-                       choices=("jordan_wigner", "parity", "bravyi_kitaev"),
+                       choices=MAPPINGS,
                        help="fermion-to-qubit mapping (default jordan_wigner)")
     basis.add_argument("--load-hamiltonian", metavar="PATH", default=None,
                        help="reuse a cached qubit Hamiltonian (Parquet/JSON); "
@@ -208,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     solver = parser.add_argument_group("solver")
     solver.add_argument("--pool", default="fermionic",
-                        choices=("fermionic", "qubit", "qeb", "ceo"),
+                        choices=tuple(available_pools()),
                         help="ADAPT operator pool (default fermionic)")
     solver.add_argument("--optimizer", default="COBYLA",
                         choices=tuple(NAMED_OPTIMIZERS),
@@ -425,7 +429,7 @@ def link_library_command(*, paw=None, oncvpsp=None) -> int:
 
     Returns 0 when every requested family is linked and loadable.
     """
-    from .pseudopotentials.link_library import link_library, status
+    from .pseudopotentials.link_library import link_library, status_lines
 
     requested = [("paw", paw), ("oncvpsp", oncvpsp)]
     failed = False
@@ -441,12 +445,8 @@ def link_library_command(*, paw=None, oncvpsp=None) -> int:
             print(f"{family}: {exc}")
             failed = True
 
-    for family, (target, source, count) in status().items():
-        if not count:
-            print(f"{family:8s} {target}: MISSING")
-            continue
-        where = f" -> {source}" if source and source != target else ""
-        print(f"{family:8s} {target}{where}: {count} datasets")
+    for line in status_lines():
+        print(line)
 
     # Load one dataset per newly linked family: the real check.
     for family, source in requested:
@@ -464,11 +464,9 @@ def link_library_command(*, paw=None, oncvpsp=None) -> int:
 
 def _probe_element(family: str) -> str:
     """Load the first available dataset of ``family`` through its own loader."""
-    from .pseudopotentials.io import available_elements
-    from .pseudopotentials.link_library import FAMILY_SUBDIRS, _family
     from .pseudopotentials.families import resolve_family
-    from .pseudopotentials.io import library_root
-    import os
+    from .pseudopotentials.io import available_elements, library_root
+    from .pseudopotentials.link_library import FAMILY_SUBDIRS, _family
 
     key = _family(family)
     folder = os.path.join(library_root(), FAMILY_SUBDIRS[key])

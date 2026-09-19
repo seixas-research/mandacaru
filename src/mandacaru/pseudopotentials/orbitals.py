@@ -166,8 +166,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     shell is split from the highest occupied channel, so everything stays
     matched to the potential it came from.
     """
-    from ..basis.multizeta import (DEFAULT_SPLIT_NORM, RadialTable,
-                            orbitals_from_tables, resolve_zeta, zeta_tables)
+    from ..basis.multizeta import (DEFAULT_SPLIT_NORM, orbitals_from_tables,
+                                   resolve_zeta, zeta_tables)
 
     def split_norm_of(symbol):
         """``split_norm`` may be one value or ``{symbol: value}`` (with ``*``)."""

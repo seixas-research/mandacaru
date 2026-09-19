@@ -26,6 +26,7 @@ from mandacaru.core.mapping import PauliSum
 from mandacaru.integrals import Grid
 from mandacaru.integrals._backend import (_check_filled, _check_samples,
                                           one_body_matrices)
+from mandacaru import Mandacaru
 
 
 def hydrogen_integrals(basis_size=1):
@@ -212,13 +213,13 @@ class TestStaleResultsAreCleared:
 
 class TestHermiticityCheck:
     def test_a_non_hermitian_hamiltonian_is_refused(self):
-        from mandacaru.algorithms import ADAPTVQE
         from mandacaru.core.mapping import PauliSum
 
         bad = PauliSum({"ZZ": 1.0, "XX": 0.5j})
         with pytest.raises(ValueError, match="not Hermitian"):
-            ADAPTVQE(hamiltonian=bad, num_particles=(1, 1),
-                     n_spatial_orbitals=1, verbose=False, profile=False)
+            Mandacaru(method="adapt-vqe", hamiltonian=bad,
+                      num_particles=(1, 1), n_spatial_orbitals=1, trace=False,
+                      profile=False)
 
 
 class TestPseudoBasisOptions:

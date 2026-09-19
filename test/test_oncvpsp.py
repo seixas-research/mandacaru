@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE, Mandacaru, VQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.algorithms._hamiltonian_from_atoms import (
     build_basis_hamiltonian, resolve_basis, resolve_pseudo_basis)
 from mandacaru.algorithms.dry_run import estimate_qubits
@@ -306,13 +306,14 @@ class TestResolution:
             resolve_pseudo_basis("per-element", {"H": "oncv", "Li": "6-31G(d)"},
                                  ["Li", "H"])
 
-    @pytest.mark.parametrize("driver", [VQE, ADAPTVQE])
-    def test_drivers_accept_the_family(self, driver):
-        assert driver(basis="oncv").basis == "oncv"
-        assert driver(basis={"name": "oncvpsp", "size": "DZ"}).basis == \
-            {"name": "oncvpsp", "size": "DZ"}
+    @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
+    def test_drivers_accept_the_family(self, method):
+        assert Mandacaru(method=method, basis="oncv").basis == "oncv"
+        sized = {"name": "oncvpsp", "size": "DZ"}
+        assert Mandacaru(method=method, basis=sized).basis == sized
         with pytest.raises(ValueError, match="unknown option"):
-            driver(basis={"name": "oncv", "projector_basis": "raw"})
+            Mandacaru(method=method,
+                      basis={"name": "oncv", "projector_basis": "raw"})
 
     def test_dry_run(self):
         estimate = estimate_qubits(h2(), basis="oncv")

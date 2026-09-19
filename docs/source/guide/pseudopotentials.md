@@ -378,7 +378,8 @@ through Löwdin, RHF and UHF.
    reproduces every reference energy exactly in the generalised problem.
 6. **Compensation charge and unscreening.** The smooth reference density
    misses $\hat Q = \sum_l f_l q^l_{11}$ electrons (H 0.021, Li 0.0045, O
-   0.64); the **monopole compensation charge** $\hat n = \hat Q\,g(r)$, $g
+   0.64); the reference atom is spherical, so its compensation charge is the
+   **monopole** $\hat n = \hat Q\,g(r)$, $g
    \propto (1 - r^2/r_g^2)^3$ inside $r_g = \min_l r_c$
    (`compensation_shape`, analytic potential `compensation_potential`),
    restores neutrality with the ion outside the sphere. Unscreening follows
@@ -411,8 +412,8 @@ subclass with two additions:
 
 * **Augmented two-body tensor.** Pair densities carry their compensation
   charge, $\rho_{pr} = \tilde\phi_p^*\tilde\phi_r + \sum_A Q^A_{pr}\,g_A$ with
-  $Q^A = (C q C^\dagger)^A$ the monopole augmentation moments (the very blocks
-  that augment the overlap), so through the new hook
+  $Q^A = (C q C^\dagger)^A$ the augmentation moments, one per multipole channel
+  $(L, M)$ (the $L = 0$ one is the very block that augments the overlap), so through the new hook
   `MolecularIntegrals.two_body_augmentation()`
   $\langle pq|rs\rangle = \langle pq|rs\rangle_{grid} + \sum_A(Q^A_{pr}W^A_{qs}
   + W^A_{pr}Q^A_{qs}) + \sum_{AB}Q^A_{pr}U_{AB}Q^B_{qs}$, with
@@ -562,11 +563,12 @@ it as before. Round trips are lossless and idempotent (tested).
   $E_{1c}$. The full method recomputes $D_{ij}[\rho_{ij}]$ self-consistently
   from $n^1 - \tilde n^1$ every SCF step; here the error is second order in
   $\rho - \rho^{ref}$.
-* **Monopole compensation only.** $\hat n$ carries the $l = 0$ moment of the
-  augmentation; the higher multipoles $\hat n^{L}$ ($L \le 2l_{max}$) and the
-  multipole moments of $n^1 - \tilde n^1$ beyond the monopole are omitted, so
-  the electrostatics of overlapping spheres (H₂: $2r_c = 2.6 > R = 1.4$
-  Bohr; LiH: $3.9 > 3.0$) is that of neutral spherical atoms.
+* **Compensation multipoles up to $L = 2l_{max}$.** Each pair density carries
+  the multipoles $\hat n^{LM}$ of its augmentation charge (`multipoles.py`; an
+  s-valence atom has only $L = 0$, oxygen has $L = 0, 1, 2$), and the
+  compensation charge is attracted to the other ions as well as repelled by
+  the electrons. What is still omitted is the *one-centre* two-body
+  correction beyond the linearisation -- measured at 0.08-0.33 eV for oxygen.
 * **Frozen core, no nonlinear core correction.** The core density is frozen
   (stored as `core_density`); the core-valence xc of the reference atom stays
   inside $\tilde v^{ion}$ and $D^{ion}$ (unscreened with $v_{xc}[\tilde n_v]$

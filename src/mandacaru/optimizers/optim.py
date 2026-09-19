@@ -177,12 +177,20 @@ class Optimizer:
     def _minimize_spsa(self, cost, x0):
         """SPSA -- Spall's simultaneous perturbation stochastic approximation.
 
-        Each step estimates the gradient from just **two** cost evaluations at
+        Each step estimates the gradient from **two** cost evaluations at
         ``x +/- c_k * delta`` with a random ``+/-1`` perturbation ``delta``, then
-        takes a decaying step ``a_k``.  Gain sequences follow Spall's practical
-        recommendations, tunable through ``options``: ``a`` (0.2), ``c`` (0.1),
-        ``alpha`` (0.602), ``gamma`` (0.101) and the stability constant ``A``
-        (``0.1 * maxiter``).
+        takes a decaying step ``a_k``.  By default a **third** evaluation at the
+        new point keeps the best iterate seen, which is what a noiseless
+        state-vector cost wants; ``track_best=False`` is the strict
+        two-evaluation form (the last iterate is returned, evaluated once at
+        the end) -- the one to use when every evaluation is a hardware job.
+
+        Gain sequences follow Spall's practical recommendations, tunable through
+        ``options``: ``a`` (0.2), ``c`` (0.1), ``alpha`` (0.602), ``gamma``
+        (0.101) and the stability constant ``A`` (``0.1 * maxiter``).  The
+        gradient estimate is a single random sample, so one small step proves
+        nothing: convergence is claimed only after ``patience`` (5)
+        **consecutive** steps below ``tol``.
         """
         o = self.options
         a = float(o.get("a", 0.2))
@@ -190,11 +198,14 @@ class Optimizer:
         alpha = float(o.get("alpha", 0.602))
         gamma = float(o.get("gamma", 0.101))
         A = float(o.get("A", 0.1 * self.maxiter))
+        patience = max(1, int(o.get("patience", 5)))
+        track_best = bool(o.get("track_best", True))
         tol = self.tol if self.tol is not None else 0.0
 
         rng = np.random.default_rng(self.seed)
         x = np.array(x0, dtype=float)
-        best_x, best_f = x.copy(), cost(x)
+        best_x, best_f = x.copy(), (cost(x) if track_best else None)
+        calm, converged = 0, False
         for k in range(self.maxiter):
             ak = a / (k + 1 + A) ** alpha
             ck = c / (k + 1) ** gamma
@@ -203,12 +214,17 @@ class Optimizer:
             fm = cost(x - ck * delta)
             ghat = (fp - fm) / (2.0 * ck) * (1.0 / delta)
             x = x - ak * ghat
-            f = cost(x)
-            if f < best_f:
-                best_x, best_f = x.copy(), f
-            if tol and ak * np.linalg.norm(ghat) < tol:
-                return best_x, best_f, True
-        return best_x, best_f, False
+            if track_best:
+                f = cost(x)
+                if f < best_f:
+                    best_x, best_f = x.copy(), f
+            calm = calm + 1 if tol and ak * np.linalg.norm(ghat) < tol else 0
+            if calm >= patience:
+                converged = True
+                break
+        if not track_best:
+            best_x, best_f = x, cost(x)
+        return best_x, best_f, converged
 
     def _minimize_adam(self, cost, x0):
         """Adam -- adaptive moment estimation on a finite-difference gradient.

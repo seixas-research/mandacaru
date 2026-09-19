@@ -89,7 +89,8 @@ Construction (per species, :func:`generate_paw`)
    generalized eigenproblem.
 6. **Compensation charge and unscreening.**  The smooth reference valence
    density :math:`\tilde n_v` misses :math:`Q = \sum_l f_l\, q^l_{11}`
-   electrons; the **monopole compensation charge** :math:`\hat n = Q\,g(r)`
+   electrons; the reference atom is spherical, so its compensation charge
+   is the **monopole** :math:`\hat n = Q\,g(r)`
    with the shape :math:`g \propto (1 - r^2/r_g^2)^3` inside
    :math:`r_g = \min_l r_c` (:func:`compensation_shape`) restores neutrality
    with the ion outside the sphere.  Unscreening follows the norm-conserving
@@ -123,8 +124,9 @@ spheres).
 
 What is frozen or omitted relative to Blöchl's full method (see the guide):
 the one-center Hartree and xc terms are linearized at the reference (fixed
-:math:`D^0`, no self-consistent :math:`D_{ij}[\rho_{ij}]`); only the
-:math:`l = 0` compensation moment is built (no higher multipoles); the core
+:math:`D^0`, no self-consistent :math:`D_{ij}[\rho_{ij}]`); the
+compensation multipoles stop at :math:`L \le 2 l_{max}` of the valence
+channels (:mod:`.multipoles`); the core
 is frozen with no nonlinear core correction (the core-valence xc of the
 reference atom stays in :math:`\tilde v^{ion}` / :math:`D^{ion}`, the smooth
 core density is stored but not used); LDA only; no relativistic terms; no
@@ -146,12 +148,12 @@ from ..core.hamiltonian import MolecularIntegrals, projector_blocks
 from .generation import Channel, PseudoPotential, _valence_configuration
 from .oncv import (Q_MAX, Q_STEP, PseudoWaves, _bessel_table,
                    _bessel_transform_table, _inner_grid, _log_derivative_of_u,
-                   _radial_f, _resample, _snap, _spectrum_extent,
-                   _tail_transform, _with_origin, bessel_derivatives,
-                   bessel_wavevectors, bound_state, generation_points,
-                   log_derivative_ae, matching_targets, numerov_outward,
+                   _pseudo_waves_record, _radial_f, _resample, _snap,
+                   _spectrum_extent, _tail_transform, _with_origin,
+                   bessel_derivatives, bessel_wavevectors, generation_points,
+                   log_derivative_errors, matching_targets, numerov_outward,
                    optimize_pseudo_waves, polynomial_local_potential,
-                   scattering_wave)
+                   reference_waves)
 
 #: Registry name of the family (no aliases).
 FAMILY = "paw"
@@ -324,12 +326,9 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
         pseudo_in.append(c @ basis_in)
         residuals.append(float(c @ K @ c + 2.0 * kvec @ c + k0))
 
-    achieved = np.array([[simpson(a * b * r_in * r_in, x=r_in) for b in pseudo_in]
-                         for a in pseudo_in])
-    return PseudoWaves(l=l, r_cut=float(r_cut), energies=list(energies),
-                       waves=list(waves), wavevectors=wavevectors,
-                       coefficients=coefficients, residual_kinetic=residuals,
-                       norms=norms, achieved=achieved, q_cut=float(q_cut))
+    return _pseudo_waves_record(l, r_cut, energies, waves, wavevectors,
+                                coefficients, residuals, norms, pseudo_in,
+                                r_in, q_cut)
 
 
 # --------------------------------------------------------------------------- #
@@ -637,10 +636,6 @@ class PAWDataset(PseudoPotential):
         return np.where(inside, values,
                         -self.valence_charge / np.maximum(radius, 1e-12))
 
-    @property
-    def nonlocal_channels(self) -> list:
-        return sorted(self.projectors)
-
     def projector(self, l: int, radius, index: int = 0) -> np.ndarray:
         """Interpolate projector ``index`` of channel ``l`` onto ``radius``."""
         radius = np.asarray(radius, dtype=float)
@@ -687,11 +682,6 @@ class PAWDataset(PseudoPotential):
                     B_inv @ q @ B_inv.T)
         raise ValueError(f"unknown projector basis {basis!r}; use 'dual' or "
                          "'raw'")
-
-    @property
-    def multipole_max(self) -> int:
-        """Highest ``L`` a pair of this species' partial waves can carry."""
-        return 2 * max(self.channels) if self.channels else 0
 
     def multipole_moments(self, l1: int, l2: int, L: int,
                           basis: str = DEFAULT_PROJECTOR_BASIS) -> np.ndarray:
@@ -743,18 +733,6 @@ class PAWDataset(PseudoPotential):
 # --------------------------------------------------------------------------- #
 # Generation.
 # --------------------------------------------------------------------------- #
-
-def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor):
-    if isinstance(r_cut, dict):
-        return float(r_cut[l])
-    if r_cut is not None:
-        return float(r_cut)
-    table = DEFAULT_CUTOFFS.get(symbol)
-    if table is not None and l in table:
-        return float(table[l])
-    peak = r[int(np.argmax(np.abs(radial * r)))]
-    return float(rc_factor * peak)
-
 
 def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTOR,
                  r_cut_local: float | None = None,
@@ -814,33 +792,18 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     energy_offset = float(DEFAULT_ENERGY_OFFSETS.get(symbol, DEFAULT_ENERGY_OFFSET)
                           if energy_offset is None else energy_offset)
 
-    per_l: dict = {}
-    for (n, l), occupancy in sorted(valence_config.items()):
-        u, energy = bound_state(r, v_ae, l, atom.eigenvalues[(n, l)], z_eff)
-        per_l.setdefault(l, []).append((n, energy, u / r, occupancy))
-
-    cutoffs = {l: _snap(r, _cutoff_for(symbol, l, r, states[0][2], r_cut,
-                                        rc_factor))
-               for l, states in per_l.items()}
+    per_l, cutoffs, references = reference_waves(
+        symbol, atom, valence_config, z_eff, r_cut, rc_factor, energy_offset,
+        defaults=DEFAULT_CUTOFFS)
     r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
                     else float(local_factor * min(cutoffs.values())))
     r_g = float(min(cutoffs.values()))
 
-    waves: dict = {}
-    for l, states in per_l.items():
-        ae = [w for _n, _e, w, _o in states]
-        energies = [e for _n, e, _w, _o in states]
-        if len(states) == 1:
-            energy_2 = energies[0] + float(energy_offset)
-            u2 = scattering_wave(r, v_ae, l, energy_2, z_eff)
-            inside = r <= cutoffs[l]
-            u2 = u2 / np.sqrt(np.trapezoid(u2[inside] ** 2, r[inside]))
-            ae.append(u2 / r)
-            energies.append(energy_2)
-        waves[l] = smooth_partial_waves(r, v_ae, l, ae[:2], energies[:2],
-                                        cutoffs[l], q_cut=q_cut,
-                                        n_bessel=n_bessel,
-                                        norm_deficit=norm_deficit)
+    waves = {
+        l: smooth_partial_waves(r, v_ae, l, ae, energies, cutoffs[l],
+                                q_cut=q_cut, n_bessel=n_bessel,
+                                norm_deficit=norm_deficit)
+        for l, (ae, energies) in references.items()}
 
     shift = float(DEFAULT_LOCAL_SHIFTS.get(symbol, 0.0) if local_shift is None
                   else local_shift)
@@ -1114,19 +1077,10 @@ def check_paw_channel(pp: PAWDataset, l: int, midpoint: bool = True) -> dict:
             channel.pseudo_radial[(r > 0.05) & (r < 5.0)])) != 0)),
         "log_derivative_errors": None,
     }
-    ae = pp.atom
-    if ae is None:
+    if pp.atom is None:
         return out
-    z = float(pp.atomic_number)
-    probes = list(energies)
-    if midpoint:
-        probes.append(0.5 * (energies[0] + energies[1]))
-    errors = {}
-    for energy in probes:
-        l_ae = log_derivative_ae(r, ae.v_effective, l, energy, channel.r_cut, z)
-        l_ps = log_derivative_paw(pp, l, energy)
-        errors[float(energy)] = (float(abs(l_ps - l_ae)), float(l_ae))
-    out["log_derivative_errors"] = errors
+    out["log_derivative_errors"] = log_derivative_errors(
+        pp, l, energies, channel.r_cut, log_derivative_paw, midpoint)
     return out
 
 
@@ -1340,8 +1294,9 @@ class PAWIntegrals(MolecularIntegrals):
     A :class:`~mandacaru.core.hamiltonian.MolecularIntegrals` whose
     two-body tensor is built from the augmented pair densities
     :math:`\rho_{pr} = \tilde\phi_p^*\tilde\phi_r + \sum_A Q^A_{pr}\,g_A`,
-    :math:`Q^A = (C q C^\dagger)^A` being the monopole augmentation
-    moments of atom ``A`` (the same blocks that augment the overlap):
+    :math:`Q^A = (C q C^\dagger)^A` being the augmentation moments of atom
+    ``A`` -- one per multipole channel :math:`(L, M)`, the :math:`L = 0` one
+    being the block that also augments the overlap:
 
     .. math::
 
@@ -1441,8 +1396,6 @@ class PAWIntegrals(MolecularIntegrals):
         r"""``{(atom, L, M): W}`` -- :math:`W^{A,LM}_{qs} = \int
         \tilde\phi_q^*\tilde\phi_s\,v_L(r_A)\,Y_{LM}(\hat r_A)\,d^3r`
         on the grid."""
-        from .multipoles import shape_potential
-
         if self._W is None:
             psi = self._engine._psi
             X, Y, Z = (self.grid.X.ravel(), self.grid.Y.ravel(),
@@ -1599,37 +1552,13 @@ _CACHE: dict = {}
 
 def get_paw(symbol: str, directory=None) -> PAWDataset:
     """Load ``symbol`` from the PAW library (cached)."""
-    from .io import available_elements, library_file, load_pseudopotential
+    from .io import load_library_dataset
 
-    folder = paw_library_path(directory)
-    key = f"{symbol}@{folder}"
-    cached = _CACHE.get(key)
-    if cached is not None:
-        return cached
-    path = library_file(symbol, folder)
-    if not os.path.exists(path):
-        available = available_elements(folder)
-        if not available:
-            # The whole library is missing, which is the normal state of a
-            # fresh install: the datasets are ~190 MB and ship separately.
-            # Linking a checkout takes a second; generating them does not.
-            raise FileNotFoundError(
-                f"the PAW dataset library at {folder!r} is empty. The datasets "
-                "are too large to ship, so they live in their own repository:\n"
-                "    git clone https://github.com/seixas-research/mandacaru-paw\n"
-                "    mandacaru --link-paw mandacaru-paw\n"
-                "(`mandacaru --pseudo-status` reports what is linked). To build "
-                "them from scratch instead: build_paw_library([symbol]).")
-        raise FileNotFoundError(
-            f"no PAW dataset for {symbol!r} at {path!r}. Available: "
-            f"{', '.join(available)}. "
-            "Generate it with build_paw_library([symbol]).")
-    pp = load_pseudopotential(path)
-    if str(getattr(pp, "family", "")).lower() != FAMILY:
-        raise ValueError(f"{path!r} belongs to family {pp.family!r}, not "
-                         f"{FAMILY!r}")
-    _CACHE[key] = pp
-    return pp
+    return load_library_dataset(
+        symbol, paw_library_path(directory), FAMILY, _CACHE,
+        label="PAW", noun="dataset",
+        repository="mandacaru-paw", link_flag="--link-paw",
+        builder="build_paw_library")
 
 
 def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
@@ -1768,54 +1697,21 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
     partial waves (with the ``size`` hierarchy), the external potential the
     ionic local potential, the nonlocal term :math:`C D^{ion} C^\dagger`, the
     overlap :math:`\tilde S + C q C^\dagger`, the two-body tensor augmented
-    by the monopole compensation charges, and the constant the ion-ion
+    by the compensation multipoles (:math:`L = 0 \ldots 2 l_{max}`), and the
+    constant the ion-ion
     repulsion plus the frozen one-center energies.
     """
-    from ..algorithms._hamiltonian_from_atoms import (
-        DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
-        grid_from_cell, resolve_num_unpaired)
-    from .orbitals import pseudo_basis, valence_electrons
+    from .families import build_valence_hamiltonian
 
-    directory = options.get("directory")
-    load = get_paw if loader is None else loader
-    symbols = atoms.get_chemical_symbols()
-    positions = coherent_positions(atoms)
-    datasets = {symbol: load(symbol, directory) for symbol in set(symbols)}
-
-    basis_fns, atom_of_orbital = pseudo_basis(
-        symbols, positions, datasets, size=options.get("size", "SZ"),
-        split_norm=options.get("split_norm"))
-    projectors = paw_projectors(
-        symbols, positions, datasets,
-        projector_basis=options.get("projector_basis", DEFAULT_PROJECTOR_BASIS))
-    coupling = paw_coupling_blocks(projectors, symbols, datasets)
-    overlap = paw_overlap_blocks(projectors, symbols, datasets)
-    nuclei = [(datasets[symbol].valence_charge, position)
-              for symbol, position in zip(symbols, positions)]
-
-    n_el = int(round(valence_electrons(symbols, datasets))) - int(charge)
-    g = (grid if grid is not None
-         else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
-    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
-    num_particles = _num_particles(n_el, n_unpaired, FAMILY.upper())
-    integrals = PAWIntegrals(
-        nuclei, basis_fns, g, softening=0.0,
-        datasets=[datasets[s] for s in symbols],
-        kb_projectors=projectors, nonlocal_coupling=coupling,
-        nonlocal_overlap=overlap,
-        kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"])
-    hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,
-                                                  n_electrons=n_el,
-                                                  num_particles=num_particles)
-    _warn_unresolved(integrals, basis_fns, h)
-
-    context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
-               "frozen": (), "n_electrons": n_el,
-               "pseudopotentials": datasets, "kb_projectors": projectors,
-               "nonlocal_coupling": coupling, "nonlocal_overlap": overlap,
-               "family": FAMILY}
-    return (hamiltonian, num_particles, len(basis_fns),
-            integrals.integration_profile(), context)
+    return build_valence_hamiltonian(
+        atoms, grid, h, charge, spin, options, kinetic, family=FAMILY,
+        load=get_paw if loader is None else loader,
+        projectors=lambda symbols, positions, datasets, opts: paw_projectors(
+            symbols, positions, datasets,
+            projector_basis=opts.get("projector_basis",
+                                     DEFAULT_PROJECTOR_BASIS)),
+        coupling=paw_coupling_blocks, overlap=paw_overlap_blocks,
+        integrals_class=PAWIntegrals, potentials_keyword="datasets")
 
 
 # --------------------------------------------------------------------------- #
@@ -1969,7 +1865,7 @@ def _register():
     return register_family(FamilySpec(
         name=FAMILY,
         description="projector augmented wave (Bloechl 1994), frozen core, "
-                    "linearized one-center terms, monopole compensation",
+                    "linearized one-center terms, multipole compensation",
         generate=lambda symbol, **options: generate_paw(symbol, **options),
         get=get_paw,
         build=build_paw,

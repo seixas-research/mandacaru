@@ -16,16 +16,14 @@ no Hamiltonian is built and no solver loop runs: the ASE hook reports ``NaN``,
 """
 
 import json
-import os
 
 import numpy as np
 import pytest
 from ase import Atoms
 from ase.build import molecule
 
-from mandacaru.algorithms import (ADAPTVQE, VQE, Mandacaru,
-                                  QubitEstimate, SubspaceVQE,
-                                  count_basis_functions, estimate_qubits)
+from mandacaru.algorithms import (count_basis_functions, estimate_qubits,
+                                  Mandacaru, QubitEstimate)
 from mandacaru.algorithms.base import VariationalDriver
 from mandacaru.basis import BasisSet
 from mandacaru.cli import main
@@ -216,10 +214,11 @@ class TestAgainstRealRuns:
         atoms = _h2()
         est = estimate_qubits(atoms, mapping="parity")
         path = str(tmp_path / "h2.json")
-        atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.35,
-                              mapping="parity", verbose=False, profile=False,
-                              max_iterations=1, save_hamiltonian=path,
-                              hamiltonian_format="json")
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                               basis="FAO", h=0.35, mapping="parity",
+                               trace=False, profile=False, max_iterations=1,
+                               save_hamiltonian=path,
+                               hamiltonian_format="json")
         atoms.get_potential_energy()
         assert atoms.calc.n_qubits == est.n_qubits == 4
         assert atoms.calc.num_particles == est.num_particles
@@ -230,10 +229,10 @@ class TestAgainstRealRuns:
         assert cached.num_particles == (1, 1) and cached.mapping == "parity"
 
         # Direct-mode drivers estimate from the operator they hold.
-        driver = ADAPTVQE(pool="fermionic", load_hamiltonian=path,
-                          verbose=False, profile=False)
+        driver = Mandacaru(method="adapt-vqe", pool="fermionic",
+                           load_hamiltonian=path, trace=False, profile=False)
         assert driver.estimate_qubits().n_qubits == 4
-        vqe = VQE(load_hamiltonian=path, verbose=False)
+        vqe = Mandacaru(method="vqe", load_hamiltonian=path, trace=False)
         assert vqe.estimate_qubits().num_particles == (1, 1)
 
     def test_frozen_core_estimate_equals_the_active_space(self):
@@ -300,9 +299,9 @@ class TestEarlyStop:
         h = MolecularIntegrals(nuclei, minimal_fao_basis(nuclei),
                                grid).molecular_hamiltonian(mo_basis=True,
                                                            n_electrons=2)
-        driver = ADAPTVQE(h, "fermionic", num_particles=(1, 1),
-                          n_spatial_orbitals=2, verbose=False, profile=False,
-                          dry_run=True)
+        driver = Mandacaru(method="adapt-vqe", hamiltonian=h, pool="fermionic",
+                           num_particles=(1, 1), n_spatial_orbitals=2,
+                           trace=False, profile=False, dry_run=True)
         monkeypatch.setattr(VariationalDriver, "_make_timings",
                             lambda *_a, **_k: (_ for _ in ()).throw(
                                 AssertionError("ran")))
@@ -310,10 +309,12 @@ class TestEarlyStop:
         assert isinstance(est, QubitEstimate) and est.n_qubits == 4
         assert est.source == "hamiltonian" and driver.result is None
         from mandacaru.circuits import UCCSD
-        vqe = VQE(h, UCCSD(2, (1, 1)), verbose=False, dry_run=True)
+        vqe = Mandacaru(method="vqe", hamiltonian=h, ansatz=UCCSD(2, (1, 1)),
+                        trace=False, dry_run=True)
         assert vqe.run().n_qubits == 4
-        sub = SubspaceVQE(h, UCCSD(2, (1, 1)), num_states=2, verbose=False,
-                          dry_run=True)
+        sub = Mandacaru(method="subspace-vqe", hamiltonian=h,
+                        ansatz=UCCSD(2, (1, 1)), num_states=2, trace=False,
+                        dry_run=True)
         assert sub.run().n_qubits == 4
 
     def test_nothing_is_materialized_in_a_dry_run(self, tmp_path, monkeypatch):
@@ -335,11 +336,12 @@ class TestEarlyStop:
         path = save_hamiltonian(tmp_path / "cached.json",
                                 PauliSum({"IIII": -1.0, "ZIII": 0.2}),
                                 num_particles=(1, 1), n_spatial_orbitals=2)
-        driver = ADAPTVQE(pool="fermionic", load_hamiltonian=path,
-                          dry_run=True, verbose=False, profile=False)
+        driver = Mandacaru(method="adapt-vqe", pool="fermionic",
+                           load_hamiltonian=path, dry_run=True, trace=False,
+                           profile=False)
         assert driver.run().n_qubits == 4
-        assert VQE(load_hamiltonian=path, dry_run=True,
-                   verbose=False).run().n_qubits == 4
+        assert Mandacaru(method="vqe", load_hamiltonian=path, dry_run=True,
+                         trace=False).run().n_qubits == 4
 
     def test_a_cached_tapered_estimate_is_not_reduced_twice(self, tmp_path):
         """The stored width of a tapered file is already the reduced one."""
@@ -350,8 +352,9 @@ class TestEarlyStop:
                                 PauliSum({"II": -1.0, "ZI": 0.2}),
                                 mapping="parity", num_particles=(1, 1),
                                 n_spatial_orbitals=2, two_qubit_reduction=True)
-        driver = ADAPTVQE(pool="fermionic", load_hamiltonian=path,
-                          dry_run=True, verbose=False, profile=False)
+        driver = Mandacaru(method="adapt-vqe", pool="fermionic",
+                           load_hamiltonian=path, dry_run=True, trace=False,
+                           profile=False)
         estimate = driver.run()
         assert driver.two_qubit_reduction is True
         assert estimate.n_qubits == 2 and estimate.two_qubit_reduction
@@ -428,9 +431,10 @@ class TestCLI:
                                                   monkeypatch):
         path = str(tmp_path / "h2.json")
         atoms = _h2()
-        atoms.calc = ADAPTVQE(pool="fermionic", h=0.35, verbose=False,
-                              profile=False, max_iterations=1,
-                              save_hamiltonian=path, hamiltonian_format="json")
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic", h=0.35,
+                               trace=False, profile=False, max_iterations=1,
+                               save_hamiltonian=path,
+                               hamiltonian_format="json")
         atoms.get_potential_energy()
         _forbid_execution(monkeypatch)
         assert main(["--load-hamiltonian", path, "--dry-run", "--json"]) == 0

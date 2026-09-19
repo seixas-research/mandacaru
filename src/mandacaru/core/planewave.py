@@ -54,6 +54,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..units import EV_TO_HARTREE, to_bohr
+from .hamiltonian import MeanFieldMixin
 
 DEFAULT_ENERGY_CUTOFF_EV = 300.0
 
@@ -96,7 +97,7 @@ def plane_wave_vectors(cell_bohr: np.ndarray, energy_cutoff_ha: float):
     return G[order], miller[order]
 
 
-class PlaneWaveIntegrals:
+class PlaneWaveIntegrals(MeanFieldMixin):
     """Plane-wave one-/two-body integrals and the molecular Hamiltonian (PBC).
 
     Parameters
@@ -124,11 +125,13 @@ class PlaneWaveIntegrals:
         if self.cell_bohr.shape != (3, 3) or not np.any(self.cell_bohr):
             raise ValueError("the plane-wave basis requires a (3, 3) unit cell")
         self.volume = float(abs(np.linalg.det(self.cell_bohr)))
-        self.energy_cutoff_ev = float(energy_cutoff) * (
-            1.0 if energy_units.lower() in ("ev",) else 1.0 / EV_TO_HARTREE)
-        self.energy_cutoff_ha = (float(energy_cutoff) * EV_TO_HARTREE
-                                 if energy_units.lower() in ("ev",)
-                                 else float(energy_cutoff))
+        unit = str(energy_units).strip().lower()
+        if unit not in ("ev", "ha", "hartree"):
+            raise ValueError(
+                f"unknown energy_units {energy_units!r}; use 'eV' or 'Ha'")
+        self.energy_cutoff_ha = float(energy_cutoff) * (
+            EV_TO_HARTREE if unit == "ev" else 1.0)
+        self.energy_cutoff_ev = self.energy_cutoff_ha / EV_TO_HARTREE
         self.nuclei = [(float(Z), np.asarray(to_bohr(R, units), dtype=float))
                        for Z, R in nuclei]
 
@@ -146,6 +149,8 @@ class PlaneWaveIntegrals:
         self._index = {tuple(m): p for p, m in enumerate(self.miller)}
         self._h: np.ndarray | None = None
         self._eri: np.ndarray | None = None
+        #: MO coefficients of the last ``molecular_hamiltonian(mo_basis=True)``.
+        self.mo_coefficients = None
 
         from ..utils.profiling import Timings
         from ..integrals import _backend
@@ -198,6 +203,26 @@ class PlaneWaveIntegrals:
         """Overlap matrix -- the identity (plane waves are orthonormal)."""
         return np.eye(self.npw, dtype=complex)
 
+    def conjugation_matrix(self) -> np.ndarray:
+        r"""Complex conjugation of the basis, :math:`\chi^* = \chi K`.
+
+        :math:`(e^{i\mathbf G\cdot\mathbf r})^* = e^{-i\mathbf G\cdot\mathbf
+        r}`, and the cutoff sphere holds :math:`-\mathbf G` with every
+        :math:`\mathbf G`, so :math:`K` is the permutation that exchanges them.
+        """
+        K = np.zeros((self.npw, self.npw), dtype=complex)
+        for p, m in enumerate(self.miller):
+            K[self._index[tuple(-m)], p] = 1.0
+        return K
+
+    def real_orbitals(self, orbitals, boundaries=()):
+        """``orbitals`` made conjugation-real without changing the determinant
+        (see :func:`~mandacaru.core.hamiltonian.conjugation_real_orbitals`)."""
+        from .hamiltonian import conjugation_real_orbitals
+
+        return conjugation_real_orbitals(orbitals, self.conjugation_matrix(),
+                                         boundaries)
+
     # -- integrals -------------------------------------------------------- #
 
     def _compute(self) -> None:
@@ -249,23 +274,7 @@ class PlaneWaveIntegrals:
             self._compute()
         return self._eri
 
-    # -- Hartree-Fock and the molecular Hamiltonian ----------------------- #
-
-    def hartree_fock(self, n_electrons: int):
-        """Restricted Hartree-Fock in the (orthonormal) plane-wave basis."""
-        from ..algorithms.hartree_fock import RHF
-        return RHF(self.one_body(), self.two_body(), n_electrons).run()
-
-    def open_shell_hartree_fock(self, n_alpha: int, n_beta: int):
-        """Unrestricted Hartree-Fock for ``(n_alpha, n_beta)`` electrons.
-
-        Returns a :class:`~mandacaru.algorithms.hartree_fock.UHFResult` whose
-        ``h_mo`` / ``eri_mo`` are in the natural-orbital basis of the UHF total
-        density -- the basis an odd-electron plane-wave Hamiltonian is written
-        in.  The plane-wave integrals are complex, which the solver handles.
-        """
-        from ..algorithms.hartree_fock import UHF
-        return UHF(self.one_body(), self.two_body(), n_alpha, n_beta).solve()
+    # -- the molecular Hamiltonian (Hartree-Fock: MeanFieldMixin) ---------- #
 
     def molecular_hamiltonian(self, include_nuclear_repulsion: bool = True,
                               mo_basis: bool = False,
@@ -281,34 +290,18 @@ class PlaneWaveIntegrals:
         odd count or whenever ``open_shell=True`` (``num_particles`` gives the
         ``(n_alpha, n_beta)`` reference; the default is the lowest spin state).
         """
-        from .hamiltonian import spin_block_integrals
+        from .hamiltonian import (molecular_orbital_integrals,
+                                  spin_block_integrals)
         from .mapping import Fermion
 
         if mo_basis:
-            if n_electrons is None:
-                raise ValueError("mo_basis=True requires n_electrons")
-            n_el = int(n_electrons)
-            if num_particles is None:
-                n_unpaired = n_el % 2
-                num_particles = ((n_el + n_unpaired) // 2,
-                                 (n_el - n_unpaired) // 2)
-            na, nb = (int(v) for v in num_particles)
-            if na + nb != n_el:
-                raise ValueError(
-                    f"num_particles {num_particles} does not sum to "
-                    f"n_electrons={n_el}")
-            if open_shell is None:
-                open_shell = n_el % 2 == 1
-            if open_shell:
-                uhf = self.open_shell_hartree_fock(na, nb)
-                h_so, g_so = spin_block_integrals(uhf.h_mo, uhf.eri_mo)
-            else:
-                if n_el % 2:
-                    raise ValueError(
-                        "open_shell=False (closed-shell RHF) needs an even "
-                        f"electron count; got {n_el}")
-                rhf = self.hartree_fock(n_el)
-                h_so, g_so = spin_block_integrals(rhf.h_mo, rhf.eri_mo)
+            # The shared construction: the same reference rules as the
+            # molecular path *and* its conjugation-real orbitals, without which
+            # the MO integrals of plane waves are complex and the real operator
+            # pools stall above the ground state.
+            h_mo, eri_mo, self.mo_coefficients = molecular_orbital_integrals(
+                self, n_electrons, num_particles, open_shell)
+            h_so, g_so = spin_block_integrals(h_mo, eri_mo)
         else:
             h_so, g_so = spin_block_integrals(self.one_body(), self.two_body())
         H = Fermion.from_integrals(h_so, g_so)

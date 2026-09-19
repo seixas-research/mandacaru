@@ -13,7 +13,7 @@ import pytest
 from ase import Atoms
 
 from mandacaru.core import PlaneWaveIntegrals, plane_wave_vectors
-from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.algorithms._hamiltonian_from_atoms import (build_basis_hamiltonian,
                                                           resolve_basis)
 
@@ -149,22 +149,72 @@ class TestPlaneWaveDrivers:
 
     def test_vqe_runs_with_plane_wave_basis(self):
         atoms = self._atoms()
-        atoms.calc = VQE(basis={"name": "PW", "energy_cutoff": 8},
-                         optimizer="COBYLA", verbose=False)
+        atoms.calc = Mandacaru(method="vqe",
+                               basis={"name": "PW", "energy_cutoff": 8},
+                               optimizer="COBYLA", trace=False)
         energy = atoms.get_total_energy()
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 6            # 3 PWs -> 6 qubits
 
     def test_adapt_runs_with_plane_wave_basis(self):
         atoms = self._atoms()
-        atoms.calc = ADAPTVQE(pool="ceo", basis={"name": "PW", "energy_cutoff": 8},
-                              verbose=False, max_iterations=6,
-                              gradient_tolerance=1e-3)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo",
+                               basis={"name": "PW", "energy_cutoff": 8},
+                               trace=False, max_iterations=6,
+                               gradient_tolerance=1e-3)
         assert np.isfinite(atoms.get_total_energy())
         assert atoms.calc.result.integration_profile is not None
 
     def test_pw_requires_cell(self):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])  # no cell
-        atoms.calc = VQE(basis={"name": "PW", "energy_cutoff": 8}, verbose=False)
+        atoms.calc = Mandacaru(method="vqe",
+                               basis={"name": "PW", "energy_cutoff": 8},
+                               trace=False)
         with pytest.raises(ValueError, match="unit cell"):
             atoms.get_total_energy()
+
+
+class TestRealOrbitals:
+    """Plane waves are complex, so the MO basis has to be made conjugation-real.
+
+    Without the rotation the MO integrals carry imaginary parts, the qubit
+    Hamiltonian is complex while every operator pool is real, and ADAPT-VQE
+    stalls above the ground state (39 meV on this very system).
+    """
+
+    @pytest.fixture
+    def pw(self):
+        # Off-centre nuclei: a complex structure factor, the case that exposes it.
+        nuclei = [(1.0, np.array([1.5, 1.5, 1.13])),
+                  (1.0, np.array([1.5, 1.5, 1.87]))]
+        return PlaneWaveIntegrals(nuclei, 3.0 * np.eye(3), energy_cutoff=20)
+
+    def test_conjugation_is_the_g_to_minus_g_permutation(self, pw):
+        K = pw.conjugation_matrix()
+        assert np.allclose(K @ K.conj(), np.eye(pw.npw))          # an involution
+        for p in range(pw.npw):
+            q = int(np.argmax(np.abs(K[:, p])))
+            assert np.allclose(pw.G[q], -pw.G[p])
+
+    def test_mo_hamiltonian_is_real(self, pw):
+        hamiltonian = pw.molecular_hamiltonian(mo_basis=True, n_electrons=2)
+        worst = max(abs(complex(c).imag) for c in hamiltonian.terms.values())
+        assert worst < 1e-10
+        V = pw.mo_coefficients
+        assert np.allclose(pw.conjugation_matrix() @ V.conj(), V, atol=1e-8)
+
+    def test_the_reference_determinant_is_unchanged(self, pw):
+        """The rotation stays inside the occupied / virtual blocks."""
+        raw = pw.hartree_fock(2).mo_coefficients
+        pw.molecular_hamiltonian(mo_basis=True, n_electrons=2)
+        overlap = raw[:, :1].conj().T @ pw.mo_coefficients[:, :1]
+        assert abs(abs(overlap[0, 0]) - 1.0) < 1e-10
+
+    def test_energy_units_are_validated(self):
+        pw = PlaneWaveIntegrals([(1.0, np.zeros(3))], 3.0 * np.eye(3),
+                                energy_cutoff=1.0, energy_units="Ha")
+        assert pw.energy_cutoff_ha == 1.0
+        assert pw.energy_cutoff_ev == pytest.approx(27.211386245988)
+        with pytest.raises(ValueError, match="energy_units"):
+            PlaneWaveIntegrals([(1.0, np.zeros(3))], 3.0 * np.eye(3),
+                               energy_cutoff=1.0, energy_units="Ry")

@@ -25,15 +25,9 @@ dependencies = [
     'pandas',
     # -- quantum SDKs (backend_provider / device registry) ---------------- #
     'qiskit',             # IBM Qiskit -- default circuit provider + profiling
-    'qiskit-nature',      # IBM Qiskit Nature
     'qiskit-ibm-runtime', # IBM Qiskit Runtime -- the reserved 'ibm-quantum' device
     'amazon-braket-sdk',  # Amazon Braket SDK -- local simulator + AWS devices/QPUs
     'cirq',               # Google Cirq
-    'dotenv',             # Dotenv
-    # -- nuclear gradients -------------------------------------------------- #
-    # JAX differentiates the small algebraic layer (Loewdin / SCF / integral
-    # transforms) that the Pulay force needs; see mandacaru.algorithms.forces.
-    'jax',
     # -- test suite -------------------------------------------------------- #
     'pytest',             # `python -m pytest test/` ships with the package
 ]
@@ -52,13 +46,21 @@ classifiers = [
 # Parquet writer crashes in a process that has also run Qiskit's transpiler
 # (see the warning in mandacaru.core.serialization).
 pyarrow = ['pyarrow']
+# Current-RSS and available-memory readings (the [PERFORMANCE] block, the QPE
+# memory check); both fall back to the standard library without it.
+memory = ['psutil']
+# The legacy differentiated-SCF force path, force_method="scf-response": JAX
+# differentiates its Loewdin / SCF / integral-transform layer.  The default
+# force_method="rdm" needs none of it (see mandacaru.algorithms.forces).
+legacy-forces = ['jax']
 docs = ['sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 coverage = ['pytest-cov']
-dev = ['pyarrow', 'sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6',
-       'pytest-cov']
+dev = ['pyarrow', 'psutil', 'jax', 'sphinx>=8,<10', 'myst-parser>=4,<6',
+       'furo>=2024.8.6', 'pytest-cov']
 
 [tool.pytest.ini_options]
-# `python -m pytest` with no arguments runs the suite the way CI does.
+# `python -m pytest` with no arguments runs the whole suite (there is no CI:
+# it is run locally).
 testpaths = ["test"]
 addopts = "-q"
 filterwarnings = [

@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..units import to_bohr
+from ..units import DEFAULT_GRID_SPACING, to_bohr
 
 
 @dataclass
@@ -94,7 +94,7 @@ class Grid:
 
     center: np.ndarray
     box_size: float = 5.0
-    h: float = 0.20
+    h: float = DEFAULT_GRID_SPACING
     units: str = "angstrom"
     cell: np.ndarray | None = None
     skew: bool = False

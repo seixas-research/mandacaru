@@ -40,8 +40,8 @@ What is here
 * :func:`radial_moments` -- :math:`\Delta^{(L)}_{ij} = \int (R_iR_j -
   \tilde R_i\tilde R_j)\,r^{L+2}\,dr` between any two partial waves of a
   dataset, reconstructed from what the dataset already stores;
-* :func:`multipole_coulomb` -- the interaction of two compensation multipoles
-  on different centres.
+* :func:`multipole_coulomb_matrix` -- the interaction of every pair of
+  compensation multipoles on two centres, in one vectorized quadrature.
 
 Conventions are fixed so that the :math:`L = 0` term reproduces the previous
 monopole-only code exactly: :math:`g_L` is normalized to
@@ -256,10 +256,6 @@ def radial_moments(dataset, l1: int, l2: int, L: int) -> np.ndarray:
 # Compensation-compensation Coulomb.
 # --------------------------------------------------------------------------- #
 
-def channel_list(l_max: int) -> list[tuple[int, int]]:
-    """``[(L, M), ...]`` up to ``l_max``, in a fixed order."""
-    return [(L, M) for L in range(int(l_max) + 1) for M in range(-L, L + 1)]
-
 
 def _harmonics(channels, theta, phi) -> np.ndarray:
     """``(n_channels, n_points)`` table of ``Y_LM`` on given directions."""
@@ -307,57 +303,3 @@ def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
 
     weight = (wr * rp * rp)[:, None] * wang[None, :]            # (nr, nang)
     return np.einsum("arg,brg,rg->ab", v_a, density_b, weight)
-
-
-def multipole_coulomb(r_a: float, L_a: int, M_a: int,
-                      r_b: float, L_b: int, M_b: int,
-                      displacement, points: int = MULTIPOLE_RADIAL_POINTS
-                      ) -> complex:
-    r"""Coulomb energy of ``g_{L_a}Y_{L_aM_a}`` at the origin and
-    ``g_{L_b}Y_{L_bM_b}`` at ``displacement``.
-
-    Outside contact the shapes are irrelevant and the answer is the classical
-    multipole-multipole interaction; when the spheres overlap it is integrated
-    numerically over sphere ``B`` against the potential of ``A``.  Both are
-    done on the same quadrature so the result is continuous across contact.
-    """
-    displacement = np.asarray(displacement, dtype=float)
-    R = float(np.linalg.norm(displacement))
-    if R < COINCIDENT_TOLERANCE:
-        # Concentric: orthogonality of the harmonics leaves only L_a == L_b.
-        if int(L_a) != int(L_b) or int(M_a) != -int(M_b):
-            return 0.0 + 0.0j
-        rr = np.linspace(0.0, max(r_a, r_b), points)
-        radial = (shape_function(rr, r_b, L_b)
-                  * shape_potential(rr, r_a, L_a) * rr * rr)
-        # int Y_{L_a M_a} Y_{L_b M_b} dOmega = (-1)^M delta_{L L'} delta_{M,-M'}
-        angular = (-1.0) ** int(M_a) if int(M_a) == -int(M_b) else 0.0
-        return complex(simpson(radial, x=rr) * angular)
-
-    # Quadrature over sphere B: points r' around the B centre, evaluated in the
-    # potential of A's multipole (which needs the direction seen from A).
-    x, wx = np.polynomial.legendre.leggauss(points // 8)
-    rp = 0.5 * r_b * (x + 1.0)
-    wr = 0.5 * r_b * wx
-    theta, phi, wang = _angular_grid()
-    sin_t = np.sin(theta)
-    direction = np.stack([sin_t * np.cos(phi), sin_t * np.sin(phi),
-                          np.cos(theta)], axis=1)          # (nang, 3)
-
-    # Positions relative to A = displacement + r' * direction.
-    rel = displacement[None, None, :] + rp[:, None, None] * direction[None, :, :]
-    dist = np.linalg.norm(rel, axis=2)                     # (nr, nang)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        polar_a = np.arccos(np.clip(rel[:, :, 2] / np.maximum(dist, 1e-300),
-                                    -1.0, 1.0))
-    azimuth_a = np.arctan2(rel[:, :, 1], rel[:, :, 0])
-
-    v_a = (shape_potential(dist, r_a, L_a)
-           * spherical_harmonic(L_a, M_a, polar_a, azimuth_a))
-    density_b = (shape_function(rp, r_b, L_b)[:, None]
-                 * spherical_harmonic(L_b, M_b, theta, phi)[None, :])
-    # The ERI needs int int g_A(1) g_B(2)/r12 with no conjugation: the
-    # augmented pair density already carries whichever conjugation the
-    # orbital indices imply.
-    integrand = density_b * v_a * (rp * rp)[:, None]
-    return complex(np.sum(wr[:, None] * wang[None, :] * integrand))

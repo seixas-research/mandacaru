@@ -47,9 +47,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import numpy as np
 
-from ..units import convert_energy, energy_unit_label, from_hartree
+from ..units import (DEFAULT_GRID_SPACING, convert_energy, energy_unit_label,
+                     from_hartree)
 
 
 @dataclass
@@ -141,7 +141,7 @@ def _rhf_energy(atoms, charge, grid, h, basis, frozen_core, frozen_orbitals,
 
 def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
                        method: str = "adapt-vqe", basis="FAO",
-                       h: float = 0.20, grid=None,
+                       h: float = DEFAULT_GRID_SPACING, grid=None,
                        **solver_kwargs) -> InteractionEnergy:
     """``E(complex) - sum_i E(fragment_i)`` with every energy on one grid.
 
@@ -172,8 +172,6 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
     -------
     InteractionEnergy
     """
-    from ..integrals import Grid  # noqa: F401  (documents the shared object)
-
     frags, frag_charges = _check_fragments(atoms, fragments, charges, charge)
     shared = _shared_grid(atoms, h, grid)
     method_key = str(method).strip().lower()

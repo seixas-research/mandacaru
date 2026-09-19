@@ -54,11 +54,9 @@ import numpy as np
 
 def jax_available() -> bool:
     """True when JAX can be imported (the differentiable layer is usable)."""
-    try:
-        import jax  # noqa: F401
-    except Exception:
-        return False
-    return True
+    from importlib.util import find_spec
+
+    return find_spec("jax") is not None
 
 
 def _require_jax():
@@ -67,9 +65,10 @@ def _require_jax():
         import jax.numpy as jnp
     except ImportError as exc:                      # pragma: no cover
         raise ImportError(
-            "analytic nuclear gradients use JAX to differentiate the algebraic "
+            "force_method='scf-response' uses JAX to differentiate the algebraic "
             "layer (Loewdin orthogonalization, SCF, integral transforms); "
-            "install it with `pip install jax`") from exc
+            "install it with `pip install mandacaru[legacy-forces]`, or use the "
+            "default force_method='rdm', which needs no JAX") from exc
     # Gradients of a quantum-chemical energy are meaningless in float32.
     jax.config.update("jax_enable_x64", True)
     return jax, jnp

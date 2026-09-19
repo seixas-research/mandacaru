@@ -96,9 +96,7 @@ class TestMappings:
     def test_from_integrals_one_body_matches_matrix(self):
         h = np.array([[1.0, 0.5], [0.5, -0.3]])
         H = Fermion.from_integrals(h)
-        ref = np.zeros((4, 4), dtype=complex)
-        # occupation basis |n0 n1>: h_pq a+_p a_q
-        # easiest check: JW matrix equals to_matrix reference
+        # The JW matrix must equal the occupation-basis reference.
         assert np.allclose(H.map_to_qubits("jordan_wigner").to_matrix(),
                            H.to_matrix())
 

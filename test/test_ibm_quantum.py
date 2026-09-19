@@ -17,10 +17,9 @@ import subprocess
 import sys
 import textwrap
 
-import numpy as np
 import pytest
 
-from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.algorithms.base import measure_energies
 from mandacaru.backends.hardware import (available_devices, device_provider,
                                          get_device, is_fake_device,
@@ -57,7 +56,7 @@ def _isolated(code: str) -> str:
 _H2_RUN = """
     import warnings; warnings.simplefilter("ignore")
     from ase import Atoms
-    from mandacaru.algorithms import ADAPTVQE, VQE
+    from mandacaru import Mandacaru
     from mandacaru.backends.providers import QiskitProvider
     from mandacaru.units import HARTREE_TO_EV
     def _h2():
@@ -65,8 +64,8 @@ _H2_RUN = """
         atoms.center(vacuum=3.0)
         return atoms
     atoms = _h2()
-    calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.4, verbose=False,
-                    profile=False, max_iterations=3)
+    calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO", h=0.4,
+                     trace=False, profile=False, max_iterations=3)
     atoms.calc = calc
     atoms.get_total_energy()
     exact = calc.result.optimal_energy
@@ -77,8 +76,8 @@ _H2_RUN = """
 def h2_run():
     """An exact local ADAPT-VQE run on H2 (the driver keeps its ansatz)."""
     atoms = _h2()
-    calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.4, verbose=False,
-                    profile=False, max_iterations=3)
+    calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO", h=0.4,
+                     trace=False, profile=False, max_iterations=3)
     atoms.calc = calc
     atoms.get_total_energy()
     return calc
@@ -112,14 +111,16 @@ class TestRegistry:
 class TestDriverConfiguration:
     def test_hardware_requires_shots(self):
         with pytest.raises(ValueError, match="shots > 0"):
-            ADAPTVQE(pool="ceo", basis="FAO", device="ibm-quantum")
+            Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                      device="ibm-quantum")
         with pytest.raises(ValueError, match="shots > 0"):
-            VQE(basis="FAO", device="ibm_kingston", verbose=False)
+            Mandacaru(method="vqe", basis="FAO", device="ibm_kingston",
+                      trace=False)
 
     def test_ibm_device_configures_the_qiskit_provider(self):
-        driver = ADAPTVQE(pool="ceo", basis="FAO", device="ibm_kingston",
-                          shots=1024, verbose=False,
-                          backend_options={"instance": "crn:x"})
+        driver = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                           device="ibm_kingston", shots=1024, trace=False,
+                           backend_options={"instance": "crn:x"})
         assert driver.backend_provider == "qiskit"
         assert driver.execute_circuits is True
         provider = driver.circuit_provider()
@@ -130,16 +131,17 @@ class TestDriverConfiguration:
         assert driver.ansatz_provider() is None     # ansatz stays internal
 
     def test_exact_qiskit_path_is_unchanged(self):
-        driver = ADAPTVQE(pool="ceo", basis="FAO", verbose=False)
+        driver = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                           trace=False)
         assert driver.shots == 0 and driver.circuit_provider() is None
-        exact = ADAPTVQE(pool="ceo", basis="FAO", verbose=False,
-                         execute_circuits=True)
+        exact = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                          trace=False, execute_circuits=True)
         assert exact.circuit_provider() is build_provider("qiskit")
 
     def test_shots_refused_for_cirq(self):
         with pytest.raises(NotImplementedError, match="qiskit"):
-            ADAPTVQE(pool="ceo", basis="FAO", backend_provider="cirq",
-                     shots=100, verbose=False)
+            Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                      backend_provider="cirq", shots=100, trace=False)
 
 
 class TestEstimatorEnergies:
@@ -275,10 +277,10 @@ class TestDeviceSelection:
 class TestDriversEndToEnd:
     def test_adapt_vqe_with_estimated_energies(self, h2_run):
         atoms = _h2()
-        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.4, verbose=False,
-                              profile=False, max_iterations=3,
-                              device="AER_simulator", shots=4096,
-                              optimizer="COBYLA")
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                               h=0.4, trace=False, profile=False,
+                               max_iterations=3, device="AER_simulator",
+                               shots=4096, optimizer="COBYLA")
         atoms.get_total_energy()
         assert isinstance(atoms.calc.circuit_provider(), QiskitProvider)
         assert abs(atoms.calc.result.optimal_energy
@@ -287,8 +289,9 @@ class TestDriversEndToEnd:
     def test_vqe_on_a_fake_ibm_backend(self):
         out = _isolated(_H2_RUN + """
     atoms = _h2()
-    atoms.calc = VQE(basis="FAO", h=0.4, verbose=False,
-                     device="fake_manila", shots=4096, optimizer="COBYLA")
+    atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4, trace=False,
+                           device="fake_manila", shots=4096,
+                           optimizer="COBYLA")
     atoms.get_total_energy()
     print(atoms.calc.circuit_provider().backend().name,
           abs(atoms.calc.result.optimal_energy - exact) < 0.4 * HARTREE_TO_EV)

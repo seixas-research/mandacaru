@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE, Mandacaru, VQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
 from mandacaru.pseudopotentials.io import (LIBRARY_ELEMENTS, available_elements,
                                      default_library_path,
@@ -226,12 +226,13 @@ class TestHamiltonianAndDrivers:
                                                   None)
         assert context["integrals"].uses_pseudopotentials
 
-    @pytest.mark.parametrize("driver", [VQE, ADAPTVQE])
-    def test_driver_accepts_the_basis_name(self, driver):
-        assert driver(basis="NCPP").basis == "NCPP"
-        assert driver().basis == "FAO"
+    @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
+    def test_driver_accepts_the_basis_name(self, method):
+        assert Mandacaru(method=method, basis="NCPP").basis == "NCPP"
+        assert Mandacaru(method=method).basis == "FAO"
         # The old argument is gone: nothing on the driver carries it.
-        assert not hasattr(driver(basis="NCPP"), "pseudopotentials")
+        assert not hasattr(Mandacaru(method=method, basis="NCPP"),
+                           "pseudopotentials")
 
     def test_frozen_core_is_rejected_as_redundant(self):
         atoms = Atoms("O", positions=[[0, 0, 0]])

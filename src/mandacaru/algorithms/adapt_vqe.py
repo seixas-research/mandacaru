@@ -45,6 +45,7 @@ from __future__ import annotations
 import shutil
 import warnings
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -54,6 +55,9 @@ from ..circuits.profiling import CircuitMetrics, profile_ansatz
 from ..units import ANGSTROM_TO_BOHR, convert_energy, to_hartree
 from .base import VariationalDriver
 from .deflation import DeflationMixin, deflation_penalty
+
+if TYPE_CHECKING:
+    from ..optimizers.optim import Optimizer
 
 
 def _unique_frequencies(eigenvalues: np.ndarray, tol: float = 1e-7) -> np.ndarray:
@@ -221,15 +225,17 @@ EXPRESSIVITY_SAMPLES = 400
 
 
 class ADAPTVQE(DeflationMixin, VariationalDriver):
-    """Adaptive VQE on an exact state-vector backend; also an ASE calculator.
+    """Adaptive VQE on an exact state-vector backend.
 
-    Two usage modes:
+    **The internal layer**: reached only through the calculator,
+    ``Mandacaru(method="adapt-vqe", ...)``, which forwards every option here.
 
-    * **Direct** -- construct with a Hamiltonian and call :meth:`run`.
-    * **ASE calculator** -- construct with a ``hamiltonian_builder`` (no
-      Hamiltonian), attach to an ``Atoms`` object (``atoms.calc = ADAPTVQE(...)``)
-      and let ``atoms.get_total_energy()`` build the Hamiltonian from the current
-      geometry and drive :meth:`run`.  ASE energies are returned in **eV**.
+    * **Direct** -- ``Mandacaru(method="adapt-vqe", hamiltonian=..., pool=...,
+      num_particles=..., n_spatial_orbitals=...)`` and
+      :meth:`~mandacaru.algorithms.Mandacaru.run`.
+    * **ASE calculator** -- ``atoms.calc = Mandacaru(method="adapt-vqe", ...)``:
+      ``atoms.get_total_energy()`` builds the Hamiltonian from the current
+      geometry and runs.  ASE energies are returned in **eV**.
 
     Parameters
     ----------
@@ -437,43 +443,13 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  sparse: bool | str = "auto",
                  sector: bool | str = "auto",
                  atomic_units: bool = False,
-                 grid=None,
-                 h: float = 0.20,
-                 kpts=None,
-                 spin: bool = False,
-                 initial_state: str | None = "hartree-fock",
-                 charge: int = 0,
-                 n_electrons=None,
-                 frozen_core=False,
-                 frozen_orbitals=None,
-                 hamiltonian_builder=None,
-                 save_hamiltonian: bool | str = False,
-                 load_hamiltonian: str | None = None,
-                 hamiltonian_format: str = "parquet",
-                 backend_provider: str | None = None,
-                 execute_circuits: bool | None = None,
-                 backend_options: dict | None = None, shots: int = 0,
-                 quenching: bool = True, dry_run: bool = False,
-                 kinetic: str | None = None,
-                 two_qubit_reduction: bool = False,
-                 run_options: dict | None = None, **calc_kwargs):
+                 **driver_kwargs):
+        # Everything else -- the problem setup, the Hamiltonian cache, the
+        # circuit providers, checkpoints -- is a VariationalDriver option and is
+        # forwarded untouched, so its name and default live in one place.
         super().__init__(optimizer=optimizer, mapping=mapping, basis=basis,
-                         device=device, grid=grid, h=h, kpts=kpts, spin=spin,
-                         initial_state=initial_state, charge=charge,
-                         n_electrons=n_electrons, frozen_core=frozen_core,
-                         frozen_orbitals=frozen_orbitals,
-                         hamiltonian_builder=hamiltonian_builder,
-                         save_hamiltonian=save_hamiltonian,
-                         load_hamiltonian=load_hamiltonian,
-                         hamiltonian_format=hamiltonian_format,
-                         backend_provider=backend_provider,
-                         execute_circuits=execute_circuits,
-                         backend_options=backend_options, shots=shots,
-                         quenching=quenching, dry_run=dry_run, kinetic=kinetic,
-                         two_qubit_reduction=two_qubit_reduction,
-                         run_options=run_options, verbose=verbose,
-                         sparse=sparse, atomic_units=atomic_units,
-                         **calc_kwargs)
+                         device=device, verbose=verbose, sparse=sparse,
+                         atomic_units=atomic_units, **driver_kwargs)
 
         self.profile = profile
         if not (isinstance(sector, bool)
@@ -558,7 +534,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         self._maybe_dump_pool(self.pool, self._pool_ops)
         # The column layout depends on this pool's labels and on the register,
         # so it cannot outlive a reconfiguration: one driver instance reused
-        # for a second molecule (`atoms.calc = ADAPTVQE(...)`) would otherwise
+        # for a second molecule (a new geometry on the calculator) would otherwise
         # keep the first one's columns and print rows wider than the terminal.
         self._layout_cache = None
         self._label_width = None
@@ -1011,11 +987,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             "log_expressivity must be True or False, got "
             f"{log_expressivity!r}")
 
-    def _layout_has(self, key: str) -> bool:
-        """Whether ``key`` is one of the columns the trace will actually print."""
-        return any(column[0] == key for column
-                   in self._iteration_layout(self._energy_unit_label()))
-
     def _expressivity(self, ansatz) -> float:
         """Expressivity score ``E`` of the current ansatz (KL from Haar).
 
@@ -1364,8 +1335,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         trimmed sibling of :meth:`run` (no logging / profiling / verbose trace)
         used to build each excited state.
         """
-        from .deflation import deflation_penalty
-
         ansatz = self._new_ansatz()
         params = np.zeros(0)
         total_evals = 0
@@ -1642,12 +1611,12 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         The qubit Hamiltonian's Pauli expansion is deliberately not printed --
         it runs to thousands of lines for a realistic active space.  Only its
         size is reported; the operator is on ``self.hamiltonian``, and
-        ``verbose_hamiltonian=True`` writes it to ``hamiltonian.json``.
+        ``verbose_hamiltonian=True`` writes it to ``hamiltonian.inspect.json``.
         """
         rule = "=" * 70
         width = self.HEADER_LABEL_WIDTH
         print(rule)
-        print(f"ADAPT-VQE")
+        print("ADAPT-VQE")
         print(rule)
         for row in self._header_rows(ref_energy, e_unit, max_iterations,
                                      gradient_tol):

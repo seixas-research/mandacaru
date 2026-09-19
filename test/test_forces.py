@@ -27,9 +27,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import (ADAPTVQE, Mandacaru, VQE, nuclear_gradient,
-                                  one_rdm, two_rdm)
-from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
+from mandacaru.algorithms import Mandacaru, nuclear_gradient, one_rdm, two_rdm
 from mandacaru.algorithms._jax_energy import (energy_from_integrals,
                                               integral_gradients, jax_available)
 from mandacaru.algorithms.rdm import electronic_energy, particle_number
@@ -55,7 +53,7 @@ def h2(distance: float) -> Atoms:
 def run_vqe(atoms, grid):
     """Converge VQE on ``atoms`` and return ``(driver, state vector)``."""
     work = atoms.copy()
-    work.calc = VQE(basis="FAO", grid=grid, verbose=False)
+    work.calc = Mandacaru(method="vqe", basis="FAO", grid=grid, trace=False)
     work.get_potential_energy()
     driver = work.calc
     psi = driver.ansatz.state(driver.result.optimal_parameters)
@@ -186,7 +184,7 @@ def analytic_forces(atoms, grid):
 def driver_energy(atoms, grid) -> float:
     """VQE ground-state energy in eV (the unit of every driver result)."""
     work = atoms.copy()
-    work.calc = VQE(basis="FAO", grid=grid, verbose=False)
+    work.calc = Mandacaru(method="vqe", basis="FAO", grid=grid, trace=False)
     work.get_potential_energy()
     return work.calc.result.optimal_energy
 
@@ -374,8 +372,6 @@ class TestIsolatedAtom:
         gradient is finite-differenced is a smoothing artifact across the nuclear
         cusp, not accuracy -- see `hellmann_feynman_gradient`.
         """
-        from mandacaru.algorithms.forces import orbital_gradients
-
         standard = isolated_atom_force("Be", 4, spacing=0.10)
         faithful = isolated_atom_force("Be", 4, spacing=0.10, form="by-parts",
                                        use_analytic_density_gradient=True)

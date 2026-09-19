@@ -162,7 +162,8 @@ class TestMandacaruCommand:
         monkeypatch.setenv("MANDACARU_PSEUDO_PATH", str(tmp_path / "library"))
         assert cli.main(["--pseudo-status"]) == 0
         out = capsys.readouterr().out
-        assert out.count("MISSING") == 3      # nothing linked in a fresh root
+        assert out.count("MISSING") == 3      # ncpp, oncvpsp, paw: nothing linked
+        assert "generated on demand" in out  # upaw has no shipped library
 
 
 class TestLoadersThroughTheRealLinks:

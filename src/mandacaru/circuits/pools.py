@@ -185,7 +185,7 @@ class PoolBase:
                     "reduction would change them; use the 'fermionic', 'qeb' "
                     "or 'ceo' pool with mapping='parity'")
             self.n_qubits = self.n_modes - 2
-        (self._occ, self._virt, self._singles,
+        (self._occ, _virtual, self._singles,
          self._doubles) = _spin_conserving_excitations(
             self.n_spatial_orbitals, self.num_particles)
         self._operators: list[PoolOperator] | None = None

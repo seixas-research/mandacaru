@@ -9,12 +9,8 @@
  * The kernels operate on *sampled function values* on a uniform cubic grid,
  * never on analytic orbital forms.  This is what makes them agnostic to the
  * basis: hydrogen-like orbitals, Wannier functions or any localized function
- * are all just complex arrays here.  Two consumption paths are supported:
- *
- *   1. Pre-sampled arrays  (psi[i * ngrid + g])  -- the default, zero-copy from
- *      NumPy complex128 == C99 double _Complex.
- *   2. On-the-fly evaluation through a function pointer (mandacaru_basis_fn),
- *      for grids too large to store M full fields in memory.
+ * are all just complex arrays here: pre-sampled, psi[i * ngrid + g], passed
+ * zero-copy from NumPy complex128 == C99 double _Complex.
  *
  * Parallelism: OpenMP over matrix-element / grid indices (shared read-only
  * grids, no communication).  See the .c file for the schedule rationale.
@@ -31,14 +27,6 @@ extern "C" {
 /* Number of OpenMP threads the kernels run with (1 when built without OpenMP).
  * Lets the Python layer report the core count used by the integral backend. */
 int mandacaru_num_threads(void);
-
-/* Signature for on-the-fly basis evaluation: fills `out` (length ngrid) with
- * the value of basis function `i` at the supplied grid coordinates.  `ctx` is
- * an opaque user pointer (e.g. a struct of quantum numbers / Wannier tables). */
-typedef void (*mandacaru_basis_fn)(int i,
-                                 const double *x, const double *y,
-                                 const double *z, int ngrid,
-                                 double _Complex *out, void *ctx);
 
 /* One-body matrices for M sampled functions on a cubic grid of npts^3 nodes.
  *
@@ -120,13 +108,6 @@ void mandacaru_kb_project(const double _Complex *psi,
                         const double _Complex *chi,
                         int M, int P, long ngrid, double dV,
                         double _Complex *out_P);
-
-/* Optional helper: sample all M functions via a callback into `psi`
- * (M * ngrid).  Lets callers stream a basis (e.g. Wannier) into the same
- * kernels without materializing it in Python. */
-void mandacaru_sample_basis(mandacaru_basis_fn fn, int M,
-                          const double *xg, const double *yg, const double *zg,
-                          int ngrid, double _Complex *psi, void *ctx);
 
 #ifdef __cplusplus
 }

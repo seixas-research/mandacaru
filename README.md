@@ -10,7 +10,7 @@
 </h1>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](LICENSE)
-[![Python 3.11](https://img.shields.io/badge/Python-3.11+-fcbc2c.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Python 3.14](https://img.shields.io/badge/Python-3.14+-fcbc2c.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![PyPI version](https://img.shields.io/pypi/v/mandacaru.svg?style=for-the-badge&logo=pypi&logoColor=white)](https://pypi.org/project/mandacaru/)
 [![Documentation Status](https://readthedocs.org/projects/mandacaru/badge/?version=latest&style=for-the-badge&logo=readthedocs&logoColor=white)](https://mandacaru.readthedocs.io/en/latest/?badge=latest)
 
@@ -57,7 +57,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",                   # "vqe", "subspace-
                        device="AER_simulator",               # or an IBM Quantum / Amazon Braket device
                        shots=0,                              # 0 = exact expectation values
                        verbose_operators=False,              # True -> the pool to pool.json
-                       verbose_hamiltonian=False)            # True -> the Hamiltonian to hamiltonian.json
+                       verbose_hamiltonian=False)            # True -> hamiltonian.inspect.json
 
 forces = atoms.get_forces()                         # eV/Å, runs the simulation
 energy = atoms.get_potential_energy()               # eV, from the same run

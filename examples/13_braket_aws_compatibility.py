@@ -35,10 +35,10 @@ Only the device changes -- the calculator API does not::
     from mandacaru.algorithms import Mandacaru
 
     atoms.calc = Mandacaru(method="adapt-vqe",
-                         pool="qeb",
-                         basis="FAO",
-                         device="braket-ionq-aria",   # or the full ARN
-                         shots=8192)
+                           pool="qeb",
+                           basis="FAO",
+                           device="braket-ionq-aria",   # or the full ARN
+                           shots=8192)
     atoms.get_total_energy()
 
 That needs configured AWS credentials (``aws configure``) and bills your
@@ -99,7 +99,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="FAO",
                        h=0.35,
                        max_iterations=1,
-                       save_hamiltonian=os.path.join( DATA, "h2_braket.parquet"))
+                       save_hamiltonian=os.path.join(DATA, "h2_braket.parquet"))
 atoms.get_total_energy()
 
 hamiltonian = atoms.calc.hamiltonian
@@ -144,7 +144,7 @@ print("\n[2] State-vector result type vs shots")
 try:
     provider.statevector(n_qubits, occupied, generators, theta)
     verdict = "unexpectedly succeeded"
-except ValueError as exc:
+except ValueError:
     verdict = "correctly refused"
 print(f"    provider(shots>0).statevector(...) -> {verdict}")
 

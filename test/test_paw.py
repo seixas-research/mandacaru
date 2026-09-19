@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE, Mandacaru, VQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.algorithms._hamiltonian_from_atoms import (
     build_basis_hamiltonian, resolve_basis, resolve_pseudo_basis)
 from mandacaru.algorithms.dry_run import estimate_qubits
@@ -37,7 +37,7 @@ from mandacaru.pseudopotentials import (
     compensation_coulomb, compensation_potential, compensation_shape,
     family_names, generate_paw, get_oncv, get_paw, get_pseudopotential,
     load_pseudopotential, log_derivative_ae, log_derivative_paw,
-    lookup_family, paw_eigenstate, paw_library_path,
+    lookup_family, paw_library_path,
     paw_spectrum, reconstruct_ae, report_paw, resolve_family,
     save_pseudopotential)
 from mandacaru.pseudopotentials import paw
@@ -509,13 +509,13 @@ class TestResolution:
             resolve_pseudo_basis("per-element", {"H": "PAW", "Li": "6-31G(d)"},
                                  ["Li", "H"])
 
-    @pytest.mark.parametrize("driver", [VQE, ADAPTVQE])
-    def test_drivers_accept_the_family(self, driver):
-        assert driver(basis="paw").basis == "paw"
-        assert driver(basis={"name": "paw", "size": "DZ"}).basis == \
-            {"name": "paw", "size": "DZ"}
+    @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
+    def test_drivers_accept_the_family(self, method):
+        assert Mandacaru(method=method, basis="paw").basis == "paw"
+        sized = {"name": "paw", "size": "DZ"}
+        assert Mandacaru(method=method, basis=sized).basis == sized
         with pytest.raises(ValueError, match="frozen_core is redundant"):
-            driver(basis="PAW", frozen_core=True)
+            Mandacaru(method=method, basis="PAW", frozen_core=True)
 
     def test_dry_run(self):
         estimate = estimate_qubits(h2(), basis="paw")

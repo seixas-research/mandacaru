@@ -48,7 +48,8 @@ from ..core.serialization import (DEFAULT_FORMAT, EXTENSION_FORMATS,
 from ..optimizers.optim import NAMED_OPTIMIZERS, OptimizeResult, resolve_optimizer
 from ..utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
                            dump_pool, resolve_dump_path)
-from ..units import convert_energy, energy_unit_label, from_hartree
+from ..units import (DEFAULT_GRID_SPACING, convert_energy, energy_unit_label,
+                     from_hartree)
 from ._hamiltonian_from_atoms import monkhorst_pack_kpts, resolve_initial_state
 
 
@@ -117,7 +118,7 @@ class VariationalDriver(Calculator):
         where to read it.  See :mod:`mandacaru.utils.dumps`.
     verbose_hamiltonian : bool or str
         Write the **qubit Hamiltonian** as readable JSON (Pauli strings with
-        complex coefficients, in Hartree) to ``hamiltonian.json`` (default
+        complex coefficients, in Hartree) to ``hamiltonian.inspect.json`` (default
         ``False``); a path writes there instead.  This is for inspection --
         ``save_hamiltonian=`` writes the round-trippable form that
         ``load_hamiltonian=`` reads back.
@@ -205,7 +206,7 @@ class VariationalDriver(Calculator):
 
     def __init__(self, *, optimizer="COBYLA", mapping: str = "jordan_wigner",
                  basis="FAO", device: str = "AER_simulator", grid=None,
-                 h: float = 0.20, kpts=None, spin: bool = False,
+                 h: float = DEFAULT_GRID_SPACING, kpts=None, spin: bool = False,
                  initial_state: str | None = "hartree-fock", charge: int = 0,
                  n_electrons=None, frozen_core=False, frozen_orbitals=None,
                  hamiltonian_builder=None, run_options: dict | None = None,
@@ -628,7 +629,6 @@ class VariationalDriver(Calculator):
                 f"{record.num_qubits}-qubit Hamiltonian, but this driver was "
                 "built with two_qubit_reduction=True; drop the flag (the file "
                 "decides) or point at a file written with it")
-        self._loaded_record = record
         return (record.hamiltonian, record.num_particles,
                 record.n_spatial_orbitals)
 
@@ -693,7 +693,7 @@ class VariationalDriver(Calculator):
 
     def _maybe_dump_hamiltonian(self, num_particles=None,
                                 n_spatial_orbitals=None) -> str | None:
-        """Write ``hamiltonian.json`` when ``verbose_hamiltonian`` is set."""
+        """Write ``hamiltonian.inspect.json`` when ``verbose_hamiltonian`` is set."""
         if self._hamiltonian_dump_path is None:
             return None
         return dump_hamiltonian(

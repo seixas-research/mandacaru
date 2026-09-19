@@ -229,20 +229,10 @@ class UCCSD:
         each column must be a computational-basis (Slater-determinant) state, as
         a circuit cannot be initialized in a superposition.
         """
-        from ..backends.providers import basis_state_index, _occupied_qubits
+        from ..backends.providers import evolve_determinants
 
-        columns = []
-        for j in range(refs.shape[1]):
-            index = basis_state_index(refs[:, j])
-            if index is None:
-                raise ValueError(
-                    f"the {self.provider.name} circuit backend can only evolve "
-                    "computational-basis (Slater-determinant) reference states; "
-                    f"column {j} of `references` is a superposition")
-            columns.append(self.provider.statevector(
-                self.n_qubits, _occupied_qubits(index, self.n_qubits),
-                self._pauli_generators, theta))
-        return np.asarray(columns, dtype=complex).T
+        return evolve_determinants(self.provider, self.n_qubits,
+                                   self._pauli_generators, theta, refs)
 
     def __repr__(self) -> str:
         return (f"UCCSD(n_qubits={self.n_qubits}, "

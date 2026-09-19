@@ -12,7 +12,7 @@ Hamiltonian; the ground level must match exact diagonalization.
 import numpy as np
 import pytest
 
-from mandacaru.algorithms import ADAPTVQE, VQE, EnergyLevels
+from mandacaru.algorithms import EnergyLevels, Mandacaru
 from mandacaru.algorithms.deflation import spectral_width_beta
 from mandacaru.circuits import UCCSD
 from mandacaru.core import MolecularIntegrals, minimal_fao_basis
@@ -53,8 +53,10 @@ def _is_eigenvalue(energy, spectrum, tol=1e-5 * HARTREE_TO_EV):
 class TestVQEEnergyLevels:
     def _vqe(self, h2_hamiltonian):
         ansatz = UCCSD(2, (1, 1), mapping="jordan_wigner")
-        return VQE(h2_hamiltonian, ansatz,
-                   optimizer=Optimizer("L-BFGS-B", maxiter=2000), verbose=False)
+        return Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                         ansatz=ansatz,
+                         optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                         trace=False)
 
     def test_ground_level_matches_exact(self, h2_hamiltonian, h2_spectrum):
         levels = self._vqe(h2_hamiltonian).energy_levels(1)
@@ -96,10 +98,11 @@ class TestVQEEnergyLevels:
 
 class TestADAPTEnergyLevels:
     def _adapt(self, h2_hamiltonian):
-        return ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                        n_spatial_orbitals=2,
-                        optimizer=Optimizer("L-BFGS-B", maxiter=2000),
-                        verbose=False, profile=False, gradient_tolerance=1e-6)
+        return Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                         pool="fermionic", num_particles=(1, 1),
+                         n_spatial_orbitals=2,
+                         optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                         trace=False, profile=False, gradient_tolerance=1e-6)
 
     def test_ground_level_matches_exact(self, h2_hamiltonian, h2_spectrum):
         levels = self._adapt(h2_hamiltonian).energy_levels(1)
@@ -130,12 +133,13 @@ class TestADAPTEnergyLevels:
 class TestEnergyLevelsHelpers:
     def test_num_states_validated(self, h2_hamiltonian):
         ansatz = UCCSD(2, (1, 1), mapping="jordan_wigner")
-        vqe = VQE(h2_hamiltonian, ansatz, verbose=False)
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=ansatz, trace=False)
         with pytest.raises(ValueError):
             vqe.energy_levels(0)
 
     def test_requires_configuration(self):
-        vqe = VQE(basis="FAO", verbose=False)          # calculator mode, unconfigured
+        vqe = Mandacaru(method="vqe", basis="FAO", trace=False)          # calculator mode, unconfigured
         with pytest.raises(RuntimeError):
             vqe.energy_levels(2)
 

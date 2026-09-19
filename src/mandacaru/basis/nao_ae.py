@@ -81,7 +81,7 @@ from functools import lru_cache
 import numpy as np
 
 from ..units import to_bohr
-from ._config import ground_state_config, valence_subshells
+from ._config import valence_subshells
 from .atomic_solver import DEFAULT_POINTS, DEFAULT_R_MAX, solve_atom, solve_radial
 from .multizeta import RadialTable
 

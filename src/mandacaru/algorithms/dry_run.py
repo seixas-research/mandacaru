@@ -336,7 +336,6 @@ def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
 
     notes: list[str] = []
     canon_device, capacity = _device_fields(device, notes)
-    fits = None
     method = str(method)
     mapping = str(mapping)
 

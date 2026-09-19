@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.algorithms._hamiltonian_from_atoms import (
     _num_particles, build_basis_hamiltonian, resolve_num_unpaired)
 
@@ -84,9 +84,9 @@ class TestSparsePool:
                      cell=[6, 6, 6], pbc=True)
 
     def _energy(self, atoms, sparse):
-        atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.5, sparse=sparse,
-                              verbose=False, max_iterations=6,
-                              gradient_tolerance=1e-4)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                               basis="FAO", h=0.5, sparse=sparse, trace=False,
+                               max_iterations=6, gradient_tolerance=1e-4)
         return atoms.get_total_energy()
 
     def test_sparse_matches_dense(self, lih):
@@ -95,14 +95,15 @@ class TestSparsePool:
         assert dense == pytest.approx(sparse, abs=1e-5)
 
     def test_auto_enables_sparse_beyond_10_qubits(self):
-        assert ADAPTVQE._resolve_sparse("auto", 10) is True
-        assert ADAPTVQE._resolve_sparse("auto", 8) is False
-        assert ADAPTVQE._resolve_sparse(True, 4) is True
-        assert ADAPTVQE._resolve_sparse(False, 20) is False
+        adapt = Mandacaru(method="adapt-vqe")
+        assert adapt._resolve_sparse("auto", 10) is True
+        assert adapt._resolve_sparse("auto", 8) is False
+        assert adapt._resolve_sparse(True, 4) is True
+        assert adapt._resolve_sparse(False, 20) is False
 
     def test_sparse_flag_stored(self, lih):
-        lih.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.5, sparse=True,
-                            verbose=False, max_iterations=2)
+        lih.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="FAO",
+                             h=0.5, sparse=True, trace=False, max_iterations=2)
         lih.get_total_energy()
         assert lih.calc._sparse is True
 

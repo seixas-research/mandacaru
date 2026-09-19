@@ -22,8 +22,9 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import (ADAPTVQE, QPEResult, QuantumPhaseEstimation,
-                                  phase_estimation, qpe_memory_estimate)
+from mandacaru.algorithms import (Mandacaru, phase_estimation,
+                                  qpe_memory_estimate, QPEResult,
+                                  QuantumPhaseEstimation)
 from mandacaru.algorithms import qpe as qpe_module
 from mandacaru.core import PauliSum, load_checkpoint
 from mandacaru.core.checkpoint import reference_vector
@@ -36,9 +37,9 @@ def h2_checkpoint(tmp_path_factory):
     path = str(tmp_path_factory.mktemp("qpe") / "h2.json")
     atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
     atoms.center()
-    atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4, verbose=False,
-                          profile=False, max_iterations=6,
-                          gradient_tolerance=1e-8, checkpoint=path)
+    atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="FAO",
+                           h=0.4, trace=False, profile=False, max_iterations=6,
+                           gradient_tolerance=1e-8, checkpoint=path)
     atoms.get_total_energy()
     return load_checkpoint(path)
 

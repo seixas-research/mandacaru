@@ -5,9 +5,8 @@
 
 import numpy as np
 import pytest
-from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.circuits import UCCSD
 from mandacaru.core import MolecularIntegrals, minimal_fao_basis
 from mandacaru.integrals import Grid
@@ -52,19 +51,21 @@ def fresh_banner():
 
 class TestBannerInRun:
     def test_verbose_run_shows_banner_before_header(self, h2_hamiltonian, capsys):
-        VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=True).run()
+        Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                  ansatz=UCCSD(2, (1, 1)), trace=True).run()
         out = capsys.readouterr().out
         assert "Dependencies:" in out               # the banner ran
         assert out.index("Dependencies:") < out.index("Qubit Hamiltonian")
 
     def test_banner_precedes_output_txt(self, h2_hamiltonian, tmp_path, capsys):
         out_file = str(tmp_path / "output.txt")
-        ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                 n_spatial_orbitals=2, profile=False, verbose=True,
-                 max_iterations=2, gradient_tolerance=1e-6,
-                 output=out_file).run()
+        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian, pool="ceo",
+                  num_particles=(1, 1), n_spatial_orbitals=2, profile=False,
+                  trace=True, max_iterations=2, gradient_tolerance=1e-6,
+                  output=out_file).run()
         assert "Dependencies:" in capsys.readouterr().out
 
     def test_silent_when_not_verbose(self, h2_hamiltonian, capsys):
-        VQE(h2_hamiltonian, UCCSD(2, (1, 1)), verbose=False).run()
+        Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                  ansatz=UCCSD(2, (1, 1)), trace=False).run()
         assert capsys.readouterr().out == ""

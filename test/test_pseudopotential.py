@@ -27,10 +27,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mandacaru.basis.atomic_solver import (hartree_potential, lda_xc, solve_atom,
-                                           solve_radial)
-from mandacaru.pseudopotentials.generation import (TM_POWERS, PseudoPotential,
-                                           check_channel,
+from mandacaru.basis.atomic_solver import hartree_potential, lda_xc, solve_atom
+from mandacaru.pseudopotentials.generation import (check_channel,
                                            generate_pseudopotential,
                                            pseudize_channel, report)
 from mandacaru.units import BOHR_TO_ANGSTROM

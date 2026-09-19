@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.circuits import AdaptAnsatz
 from mandacaru.backends import available_devices, is_simulator, normalize_device
 from mandacaru.integrals import Grid
@@ -67,9 +67,10 @@ def h2_hamiltonian():
 class TestGradientStrategies:
     @pytest.mark.parametrize("pool", ["fermionic", "qubit", "qeb", "ceo"])
     def test_finite_difference_matches_analytic(self, h2_hamiltonian, pool):
-        adapt = ADAPTVQE(h2_hamiltonian, pool, num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False,
-                         gradient="finite_difference")
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool=pool, num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False,
+                          gradient="finite_difference")
         psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
             np.zeros(0))
         g_an = adapt._analytic_gradients(psi)
@@ -78,9 +79,10 @@ class TestGradientStrategies:
 
     @pytest.mark.parametrize("pool", ["fermionic", "qubit", "qeb", "ceo"])
     def test_parameter_shift_is_exact(self, h2_hamiltonian, pool):
-        adapt = ADAPTVQE(h2_hamiltonian, pool, num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False,
-                         gradient="parameter-shift")
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool=pool, num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False,
+                          gradient="parameter-shift")
         psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
             np.zeros(0))
         g_an = adapt._analytic_gradients(psi)
@@ -90,8 +92,9 @@ class TestGradientStrategies:
     def test_analytic_is_the_default_and_screens_analytically(
             self, h2_hamiltonian):
         """The exact derivative, not an estimate of it, out of the box."""
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False)
         assert adapt.gradient == "analytic"
         psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
             np.zeros(0))
@@ -101,8 +104,9 @@ class TestGradientStrategies:
     def test_the_eigendecomposition_is_built_only_when_asked_for(
             self, h2_hamiltonian):
         """|pool| dense diagonalizations are the shift estimators' cost alone."""
-        adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="fermionic", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False)
         psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
             np.zeros(0))
         adapt._gradients(psi)
@@ -114,16 +118,19 @@ class TestGradientStrategies:
         m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
         for grad in ("analytic", "finite_difference", "parameter-shift"):
-            adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                             n_spatial_orbitals=2, profile=False, gradient=grad,
-                             max_iterations=10, gradient_tolerance=1e-4)
+            adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                              pool="ceo", num_particles=(1, 1),
+                              n_spatial_orbitals=2, profile=False,
+                              gradient=grad, max_iterations=10,
+                              gradient_tolerance=1e-4)
             res = adapt.run()
             assert abs(res.in_units("Ha") - exact) < 1e-4, grad
 
     def test_invalid_gradient_rejected(self, h2_hamiltonian):
         with pytest.raises(ValueError):
-            ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                     n_spatial_orbitals=2, gradient="nope")
+            Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                      pool="ceo", num_particles=(1, 1), n_spatial_orbitals=2,
+                      gradient="nope")
 
 
 # --------------------------------------------------------------------------- #
@@ -134,18 +141,19 @@ class TestArgumentSurface:
     @pytest.mark.parametrize("pool", ["ceo", "fermionic", "qubit", "qeb"])
     def test_pool_options(self, pool):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        atoms.calc = ADAPTVQE(pool=pool, basis="FAO",
-                              grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.3),
-                              max_iterations=8, gradient_tolerance=1e-3)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool=pool, basis="FAO",
+                               grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.3),
+                               max_iterations=8, gradient_tolerance=1e-3)
         assert np.isfinite(atoms.get_total_energy())
 
     @pytest.mark.parametrize("mapping",
                              ["jordan_wigner", "parity", "bravyi_kitaev"])
     def test_mapping_options_reach_fci(self, mapping):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", mapping=mapping,
-                              grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.25),
-                              max_iterations=8, gradient_tolerance=1e-3)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                               basis="FAO", mapping=mapping,
+                               grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.25),
+                               max_iterations=8, gradient_tolerance=1e-3)
         energy_ev = atoms.get_total_energy()
         h = atoms.calc.hamiltonian.to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min())
@@ -155,9 +163,10 @@ class TestArgumentSurface:
     def test_run_defaults_come_from_constructor(self, h2_hamiltonian):
         # max_iterations / gradient_tolerance / output are constructor args and
         # supply the defaults for run().
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False,
-                         max_iterations=3, gradient_tolerance=1e-2)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False,
+                          max_iterations=3, gradient_tolerance=1e-2)
         assert adapt.max_iterations == 3
         assert adapt.gradient_tolerance == 1e-2
         res = adapt.run()                       # no args -> uses the defaults
@@ -166,9 +175,11 @@ class TestArgumentSurface:
     def test_output_constructor_arg_writes_file(self, h2_hamiltonian, tmp_path):
         from mandacaru.utils import parse_output
         out = str(tmp_path / "output.txt")
-        adapt = ADAPTVQE(h2_hamiltonian, "fermionic", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False,
-                         max_iterations=4, gradient_tolerance=1e-3, output=out)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="fermionic", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False,
+                          max_iterations=4, gradient_tolerance=1e-3,
+                          output=out)
         adapt.run()                             # output taken from constructor
         parsed = parse_output(out)
         assert parsed["setup"]["classical_optimizer"] == "COBYLA"
@@ -177,9 +188,9 @@ class TestArgumentSurface:
     def test_basis_option_sets_qubit_count(self):
         # FAO on LiH -> Li{1s,2s} + H{1s} = 3 orbitals -> 6 qubits.
         atoms = Atoms("LiH", positions=[[0, 0, -0.8], [0, 0, 0.8]])
-        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO",
-                              grid=Grid(center=[0, 0, 0], box_size=7.0, h=0.3),
-                              max_iterations=4, gradient_tolerance=1e-2)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                               grid=Grid(center=[0, 0, 0], box_size=7.0, h=0.3),
+                               max_iterations=4, gradient_tolerance=1e-2)
         atoms.get_total_energy()
         assert atoms.calc.n_qubits == 6
         assert atoms.calc.num_particles == (2, 2)
@@ -191,29 +202,33 @@ class TestArgumentSurface:
 
 class TestOptimizerOption:
     def test_default_is_cobyla(self, h2_hamiltonian):
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False)
         assert adapt.optimizer.method == "COBYLA"
 
     @pytest.mark.parametrize(
         "name",
         ["SPSA", "COBYLA", "Nelder-Mead", "SLSQP", "Adam", "L-BFGS-B"])
     def test_named_optimizers_build(self, h2_hamiltonian, name):
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False, optimizer=name)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False, optimizer=name)
         assert adapt.optimizer.method == name
 
     def test_optimizer_instance_passthrough(self, h2_hamiltonian):
         from mandacaru.optimizers import Optimizer
         opt = Optimizer("L-BFGS-B", maxiter=500)
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False, optimizer=opt)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False, optimizer=opt)
         assert adapt.optimizer is opt
 
     def test_unknown_optimizer_rejected(self, h2_hamiltonian):
         with pytest.raises(ValueError):
-            ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                     n_spatial_orbitals=2, optimizer="nope")
+            Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                      pool="ceo", num_particles=(1, 1), n_spatial_orbitals=2,
+                      optimizer="nope")
 
 
 # --------------------------------------------------------------------------- #
@@ -222,9 +237,10 @@ class TestOptimizerOption:
 
 class TestVerbosePauliOutput:
     def test_no_pauli_strings_are_dumped(self, h2_hamiltonian, capsys):
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False, verbose=True,
-                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False, trace=True,
+                          max_iterations=3, gradient_tolerance=1e-6)
         adapt.run()
         out = capsys.readouterr().out
         # The Hamiltonian is summarized by size only -- its Pauli expansion runs
@@ -244,9 +260,10 @@ class TestVerbosePauliOutput:
     def test_iterations_are_single_aligned_lines(self, h2_hamiltonian, capsys,
                                                 monkeypatch):
         monkeypatch.setenv("COLUMNS", "100")
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=True, verbose=True,
-                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=True, trace=True,
+                          max_iterations=3, gradient_tolerance=1e-6)
         result = adapt.run(log_expressivity=True)   # the `expr` column is opt-in
         out = capsys.readouterr().out
 
@@ -306,9 +323,10 @@ class TestVerbosePauliOutput:
         derivable columns (``npar``, then ``dE``) until the row fits.
         """
         monkeypatch.setenv("COLUMNS", "80")
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=True, verbose=True,
-                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=True, trace=True,
+                          max_iterations=3, gradient_tolerance=1e-6)
         adapt.run()
         lines = capsys.readouterr().out.splitlines()
         # From the run banner onward: the start-up banner prints the working
@@ -321,9 +339,10 @@ class TestVerbosePauliOutput:
     def test_a_wide_terminal_keeps_every_column(self, h2_hamiltonian, capsys,
                                                 monkeypatch):
         monkeypatch.setenv("COLUMNS", "200")
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=True, verbose=True,
-                         max_iterations=2, gradient_tolerance=1e-6)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=True, trace=True,
+                          max_iterations=2, gradient_tolerance=1e-6)
         adapt.run(log_expressivity=True)            # the `expr` column is opt-in
         out = capsys.readouterr().out
         heading = next(line for line in out.splitlines()
@@ -333,9 +352,10 @@ class TestVerbosePauliOutput:
             "depth", "type", "operator"}
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False, verbose=False,
-                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False, trace=False,
+                          max_iterations=3, gradient_tolerance=1e-6)
         adapt.run()
         assert capsys.readouterr().out == ""
 
@@ -346,9 +366,10 @@ class TestVerbosePauliOutput:
 
 class TestADAPTProfiling:
     def test_result_carries_stage_timings(self, h2_hamiltonian):
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False, verbose=False,
-                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False, trace=False,
+                          max_iterations=3, gradient_tolerance=1e-6)
         res = adapt.run()
         t = res.timings
         assert t is not None
@@ -358,9 +379,10 @@ class TestADAPTProfiling:
         assert t["peak_memory_mb"] > 0.0
 
     def test_summary_prints_timings_cores_memory(self, h2_hamiltonian, capsys):
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, profile=False, verbose=True,
-                         max_iterations=3, gradient_tolerance=1e-6)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False, trace=True,
+                          max_iterations=3, gradient_tolerance=1e-6)
         adapt.run()
         out = capsys.readouterr().out
         assert "Timings (wall-clock)" in out
@@ -372,8 +394,9 @@ class TestADAPTProfiling:
     def test_calculator_summary_includes_integration(self, capsys):
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-        atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.4, verbose=True,
-                              max_iterations=4, gradient_tolerance=1e-3)
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                               h=0.4, trace=True, max_iterations=4,
+                               gradient_tolerance=1e-3)
         atoms.get_total_energy()
         out = capsys.readouterr().out
         assert "integration:" in out
@@ -386,47 +409,50 @@ class TestADAPTProfiling:
 
 class TestKPoints:
     def test_default_is_gamma(self):
-        adapt = ADAPTVQE(pool="ceo", basis="FAO")
+        adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO")
         assert adapt.kpts == (1, 1, 1)
         assert len(adapt.kpoints) == 1
         np.testing.assert_allclose(adapt.kpoints[0], [0.0, 0.0, 0.0])
 
     def test_mesh_generated_via_ase_monkhorst_pack(self):
         from ase.dft.kpoints import monkhorst_pack
-        adapt = ADAPTVQE(pool="ceo", basis="FAO", kpts=(2, 2, 1))
+        adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                          kpts=(2, 2, 1))
         np.testing.assert_allclose(adapt.kpoints, monkhorst_pack((2, 2, 1)))
 
     def test_non_gamma_rejected_at_run(self, h2_hamiltonian):
-        adapt = ADAPTVQE(h2_hamiltonian, "ceo", num_particles=(1, 1),
-                         n_spatial_orbitals=2, kpts=(2, 1, 1))
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, kpts=(2, 1, 1))
         with pytest.raises(NotImplementedError, match="Monkhorst-Pack"):
             adapt.run()
 
     def test_invalid_kpts_rejected(self):
         with pytest.raises(ValueError):
-            ADAPTVQE(pool="ceo", basis="FAO", kpts=(1, 1))       # not length-3
+            Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO", kpts=(1, 1))       # not length-3
 
     def test_dict_spec_with_gamma_centering(self):
         # ASE dict form {"size": ..., "gamma": True}: Gamma-centered mesh.
-        adapt = ADAPTVQE(pool="ceo", basis="FAO",
-                         kpts={"size": (2, 2, 1), "gamma": True})
+        adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                          kpts={"size": (2, 2, 1), "gamma": True})
         assert adapt.kpts == (2, 2, 1)
         assert adapt.kpts_gamma is True
         # Gamma-centering shifts the even-axis mesh so it includes the Gamma point.
         assert any(np.allclose(k, [0, 0, 0]) for k in adapt.kpoints)
 
     def test_dict_gamma_only(self):
-        adapt = ADAPTVQE(pool="ceo", basis="FAO",
-                         kpts={"size": (1, 1, 1), "gamma": True})
+        adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                          kpts={"size": (1, 1, 1), "gamma": True})
         assert len(adapt.kpoints) == 1 and adapt.kpts_gamma is True
 
 
 class TestSpinAndInitialState:
     def test_spin_defaults_false(self):
-        assert ADAPTVQE(pool="ceo", basis="FAO").spin is False
+        assert Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO").spin is False
 
     def test_spin_flag_stored(self):
-        assert ADAPTVQE(pool="ceo", basis="FAO", spin=True).spin is True
+        assert Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                         spin=True).spin is True
 
     def test_even_electron_spin_polarized_matches_closed_shell(self):
         # For a singlet (even electrons) spin-polarized == closed-shell.
@@ -434,23 +460,24 @@ class TestSpinAndInitialState:
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
 
         def energy(spin):
-            atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.4, spin=spin,
-                                  verbose=False, max_iterations=6,
-                                  gradient_tolerance=1e-3)
+            atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                                   h=0.4, spin=spin, trace=False,
+                                   max_iterations=6, gradient_tolerance=1e-3)
             return atoms.get_total_energy()
 
         assert energy(False) == pytest.approx(energy(True), abs=1e-6)
 
     def test_initial_state_default_is_hartree_fock(self):
-        assert ADAPTVQE(pool="ceo", basis="FAO").initial_state == "hartree-fock"
+        assert Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO").initial_state == "hartree-fock"
 
     def test_initial_state_none_is_hartree_fock(self):
-        assert ADAPTVQE(pool="ceo", basis="FAO",
-                        initial_state=None).initial_state == "hartree-fock"
+        assert Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                         initial_state=None).initial_state == "hartree-fock"
 
     def test_unknown_initial_state_rejected(self):
         with pytest.raises(ValueError):
-            ADAPTVQE(pool="ceo", basis="FAO", initial_state="random")
+            Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                      initial_state="random")
 
 
 class TestPlacementInvariance:
@@ -460,8 +487,9 @@ class TestPlacementInvariance:
         def energy(pos):
             atoms = Atoms("H2", positions=pos,
                           cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=True)
-            atoms.calc = ADAPTVQE(pool="ceo", basis="FAO", h=0.35, verbose=False,
-                                  max_iterations=6, gradient_tolerance=1e-3)
+            atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
+                                   h=0.35, trace=False, max_iterations=6,
+                                   gradient_tolerance=1e-3)
             return atoms.get_total_energy()
 
         corner = energy([[0, 0, -0.37], [0, 0, 0.37]])
@@ -475,7 +503,7 @@ class TestPlacementInvariance:
 
 class TestDeviceRegistry:
     def test_aer_is_default_and_simulator(self):
-        adapt = ADAPTVQE(pool="ceo", basis="FAO")
+        adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO")
         assert adapt.device == "AER_simulator"
         assert is_simulator("AER_simulator")
 
@@ -486,7 +514,7 @@ class TestDeviceRegistry:
 
     def test_unknown_device_rejected(self):
         with pytest.raises(ValueError):
-            ADAPTVQE(pool="ceo", device="quantum-thing")
+            Mandacaru(method="adapt-vqe", pool="ceo", device="quantum-thing")
 
     def test_ibm_quantum_listed_but_not_simulator(self):
         assert "ibm-quantum" in available_devices()

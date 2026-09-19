@@ -113,29 +113,6 @@ def _indent(lines: Iterable[str], level: int = 1) -> list[str]:
     return [pad + line if line else line for line in lines]
 
 
-def _format_pauli(generator, atol: float = 1e-9) -> str:
-    """Explicit Pauli-string form of an anti-Hermitian generator ``A``.
-
-    Renders ``sum_k c_k * P_k`` with the complex coefficients of the pool
-    operator's :class:`~mandacaru.core.mapping.PauliSum`, e.g.
-    ``+0.5j XYZI  -0.5j YXZI``.  Terms are sorted for a stable, diffable order.
-    """
-    terms = generator.simplify(atol).terms
-    if not terms:
-        return "0"
-    parts = []
-    for label, coeff in sorted(terms.items()):
-        c = complex(coeff)
-        if abs(c.imag) < atol:
-            cstr = f"{c.real:+.6g}"
-        elif abs(c.real) < atol:
-            cstr = f"{c.imag:+.6g}j"
-        else:
-            cstr = f"({c.real:+.6g}{c.imag:+.6g}j)"
-        parts.append(f"{cstr} {label}")
-    return "  ".join(parts)
-
-
 class AdaptOutputLogger:
     """Append-only writer for the ADAPT-VQE ``output.txt`` protocol.
 
@@ -708,7 +685,7 @@ def append_optimization_summary(path: str, history, symbols=None,
     ----------
     path : str
         The log the steps were written to.
-    history : sequence of mapping
+    history : sequence of dict
         One entry per geometry step, with ``energy`` (in ``energy_unit``),
         ``max_force`` and ``net_force`` (eV/Angstrom); optional ``wall_time_s``
         and ``com`` (centre of mass) are used when present.
@@ -727,7 +704,7 @@ def append_optimization_summary(path: str, history, symbols=None,
         The footer verbatim, for a caller that knows something this function
         cannot -- that the run was interrupted, or that completion was never
         signaled at all.
-    extra : mapping, optional
+    extra : dict, optional
         Further ``KEY: value`` lines for the summary block.
     """
     history = [dict(entry) for entry in history]
@@ -829,17 +806,17 @@ def append_performance(path: str, stages=None, wall_time_s=None,
     ----------
     path : str
         The log this step's other blocks were written to.
-    stages : mapping, optional
+    stages : dict, optional
         Stage name -> seconds, in the order they should be listed.
     wall_time_s : float, optional
         End-to-end time of the step.
-    resources : mapping, optional
+    resources : dict, optional
         Machine context (backend, threads, CPUs, memory); see
         :meth:`~mandacaru.utils.profiling.Timings.resources`.
     step : int, optional
         Geometry step; defaults to the number of blocks already written to
         ``path`` (:func:`log_steps`).
-    extra : mapping, optional
+    extra : dict, optional
         Further ``KEY: value`` lines -- the QPU accounting, for instance.
     """
     if step is None:

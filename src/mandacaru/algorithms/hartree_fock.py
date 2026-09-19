@@ -87,10 +87,6 @@ class DIIS:
     def error(F: np.ndarray, D: np.ndarray) -> np.ndarray:
         return F @ D - D @ F
 
-    @property
-    def error_norm(self) -> float:
-        return float(np.abs(self._errors[-1]).max()) if self._errors else np.inf
-
     def extrapolate(self, F: np.ndarray, D: np.ndarray) -> np.ndarray:
         e = self.error(F, D)
         self._focks.append(F)

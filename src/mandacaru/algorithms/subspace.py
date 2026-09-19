@@ -127,24 +127,8 @@ def resolve_weights(weights, num_states: int) -> np.ndarray:
 # Result containers.
 # --------------------------------------------------------------------------- #
 
-@dataclass
-class SubspaceVQEResult:
-    """Result of a :class:`SubspaceVQE` run (ground + excited states).
-
-    Every energy is in :attr:`energy_unit` -- **eV** by default, Hartree when
-    the driver was built with ``atomic_units=True``; :meth:`in_units` converts.
-    """
-
-    energies: np.ndarray                 # per-level energy, ascending
-    optimal_parameters: np.ndarray       # shared ansatz parameters
-    weights: np.ndarray                  # SSVQE weights used
-    states: list = field(default_factory=list)      # optimal state vectors
-    reference_energy: float | None = None
-    num_evaluations: int = 0
-    success: bool = True
-    timings: dict | None = None
-    integration_profile: dict | None = None
-    energy_unit: str = "eV"              # unit of every energy above
+class _SpectrumViews:
+    """What both subspace results derive from ``energies`` / ``states``."""
 
     @property
     def optimal_energy(self) -> float:
@@ -171,6 +155,26 @@ class SubspaceVQEResult:
     def in_units(self, units: str = "eV") -> np.ndarray:
         return self.levels.in_units(units)
 
+
+@dataclass
+class SubspaceVQEResult(_SpectrumViews):
+    """Result of a :class:`SubspaceVQE` run (ground + excited states).
+
+    Every energy is in :attr:`energy_unit` -- **eV** by default, Hartree when
+    the driver was built with ``atomic_units=True``; :meth:`in_units` converts.
+    """
+
+    energies: np.ndarray                 # per-level energy, ascending
+    optimal_parameters: np.ndarray       # shared ansatz parameters
+    weights: np.ndarray                  # SSVQE weights used
+    states: list = field(default_factory=list)      # optimal state vectors
+    reference_energy: float | None = None
+    num_evaluations: int = 0
+    success: bool = True
+    timings: dict | None = None
+    integration_profile: dict | None = None
+    energy_unit: str = "eV"              # unit of every energy above
+
     def __repr__(self) -> str:
         levels = ", ".join(f"{e:.6f}" for e in np.asarray(self.energies))
         return (f"SubspaceVQEResult([{levels}] {self.energy_unit}, "
@@ -178,7 +182,7 @@ class SubspaceVQEResult:
 
 
 @dataclass
-class SubspaceADAPTVQEResult:
+class SubspaceADAPTVQEResult(_SpectrumViews):
     """Result of a :class:`SubspaceADAPTVQE` run (ground + excited states).
 
     Every energy is in :attr:`energy_unit` -- **eV** by default, Hartree when
@@ -200,31 +204,8 @@ class SubspaceADAPTVQEResult:
     energy_unit: str = "eV"              # unit of every energy above
 
     @property
-    def optimal_energy(self) -> float:
-        return float(self.energies[0])
-
-    @property
-    def num_states(self) -> int:
-        return int(len(self.energies))
-
-    @property
     def num_operators(self) -> int:
         return len(self.operators)
-
-    @property
-    def excitation_energies(self) -> np.ndarray:
-        return np.asarray(self.energies, float) - float(self.energies[0])
-
-    @property
-    def levels(self) -> EnergyLevels:
-        return EnergyLevels(energies=np.asarray(self.energies, float),
-                            states=list(self.states),
-                            reference_energy=self.reference_energy,
-                            num_evaluations=self.num_evaluations,
-                            energy_unit=self.energy_unit)
-
-    def in_units(self, units: str = "eV") -> np.ndarray:
-        return self.levels.in_units(units)
 
     def __repr__(self) -> str:
         levels = ", ".join(f"{e:.6f}" for e in np.asarray(self.energies))

@@ -21,8 +21,8 @@ from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import (ADAPTVQE, RHF, UHF, Mandacaru,
-                                  estimate_qubits, natural_orbitals)
+from mandacaru.algorithms import (estimate_qubits, Mandacaru, natural_orbitals,
+                                  RHF, UHF)
 from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
 from mandacaru.core import MolecularIntegrals, minimal_fao_basis
 from mandacaru.integrals import Grid
@@ -237,10 +237,10 @@ class TestSolvers:
     def test_adapt_vqe_h3_doublet_reaches_sector_fci(self, h3):
         H = h3.molecular_hamiltonian(mo_basis=True, n_electrons=3)
         exact = _sector_ground_state(H, (2, 1))
-        driver = ADAPTVQE(H, "fermionic", num_particles=(2, 1),
-                          n_spatial_orbitals=3, verbose=False, profile=False,
-                          optimizer="L-BFGS-B", gradient_tolerance=1e-6,
-                          max_iterations=30)
+        driver = Mandacaru(method="adapt-vqe", hamiltonian=H, pool="fermionic",
+                           num_particles=(2, 1), n_spatial_orbitals=3,
+                           trace=False, profile=False, optimizer="L-BFGS-B",
+                           gradient_tolerance=1e-6, max_iterations=30)
         result = driver.run()
         assert result.in_units("Ha") == pytest.approx(exact, abs=1e-5)
         # Singles carry gradient from a non-stationary reference: allowed.

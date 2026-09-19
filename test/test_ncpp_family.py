@@ -32,7 +32,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE, Mandacaru, VQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.algorithms._hamiltonian_from_atoms import (
     build_basis_hamiltonian, coherent_positions, grid_from_cell,
     pseudopotential_family, resolve_basis, resolve_pseudo_basis)
@@ -186,15 +186,15 @@ class TestFamilyResolution:
         with pytest.raises(ValueError, match="cannot be unregistered"):
             unregister_family("tm")
 
-    @pytest.mark.parametrize("driver", [VQE, ADAPTVQE])
-    def test_drivers_validate_the_basis_at_construction(self, driver):
-        assert driver(basis="ncpp-tm").basis == "ncpp-tm"
+    @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
+    def test_drivers_validate_the_basis_at_construction(self, method):
+        assert Mandacaru(method=method, basis="ncpp-tm").basis == "ncpp-tm"
         with pytest.raises(ValueError, match="unknown option.*'tier'.*NCPP"):
-            driver(basis={"name": "NCPP", "tier": 1})
+            Mandacaru(method=method, basis={"name": "NCPP", "tier": 1})
         with pytest.raises(ValueError, match="frozen_core is redundant"):
-            driver(basis="NCPP", frozen_core=True)
+            Mandacaru(method=method, basis="NCPP", frozen_core=True)
         with pytest.raises(ValueError, match="no longer a basis name"):
-            driver(basis="PP")
+            Mandacaru(method=method, basis="PP")
 
 
 # --------------------------------------------------------------------------- #

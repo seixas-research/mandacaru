@@ -54,6 +54,8 @@ from itertools import product
 
 import numpy as np
 
+from ..units import DEFAULT_GRID_SPACING
+
 
 @dataclass
 class BandStructure:
@@ -122,7 +124,8 @@ class BlochCalculator:
 
     def __init__(self, atoms, method: str = "adapt-vqe", basis="FAO",
                  mapping: str = "jordan_wigner",
-                 n_cells: int = 4, n_images: int = 7, h: float = 0.20):
+                 n_cells: int = 4, n_images: int = 7,
+                 h: float = DEFAULT_GRID_SPACING):
         from .calculator import resolve_method
         self.method, _ = resolve_method(method)     # raises on unknown method
         self.atoms = atoms.copy()

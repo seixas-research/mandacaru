@@ -39,7 +39,6 @@ import os
 
 import numpy as np
 
-from mandacaru.basis import solve_atom
 from mandacaru.pseudopotentials import generate_pseudopotential
 from mandacaru.pseudopotentials.generation import check_channel, report
 from mandacaru.units import BOHR_TO_ANGSTROM

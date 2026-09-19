@@ -53,8 +53,6 @@ from .base import BasisFunction
 #: Default energy shift (eV) setting the confinement radius, as in SIESTA.
 DEFAULT_ENERGY_SHIFT = 0.03
 
-_trapezoid = getattr(np, "trapezoid", None) or np.trapz
-
 
 def energy_shift_to_rc(energy_shift: float = DEFAULT_ENERGY_SHIFT) -> float:
     r"""Confinement radius ``r_c`` (Bohr) from an ``energy_shift`` (eV).
@@ -99,7 +97,7 @@ def solve_confined_radial(n: int, l: int, Z: float, r_c: float,
                                     select_range=(k, k))
     u = evecs[:, 0]
     R = u / r
-    norm = np.sqrt(_trapezoid(R * R * r * r, r))
+    norm = np.sqrt(np.trapezoid(R * R * r * r, r))
     R = R / norm
     if R[0] < 0.0:  # fix the global sign so R > 0 near the origin
         R = -R

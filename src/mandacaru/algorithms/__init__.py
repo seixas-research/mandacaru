@@ -8,13 +8,17 @@
 
 """Variational quantum algorithms.
 
-The stable solvers: VQE, **ADAPT-VQE** (the default method everywhere), the
-excited-state extensions and the periodic :class:`BlochCalculator`, all reached
-through :class:`Mandacaru`.  Solvers outside the stable API plug in through
-:func:`register_method` and are not exported from here.
+The stable solvers -- VQE, **ADAPT-VQE** (the default method everywhere) and
+their subspace-search variants -- are reached **only** through
+:class:`Mandacaru`: ``Mandacaru(method="vqe")``, ``Mandacaru(method="adapt-vqe")``,
+``"subspace-vqe"``, ``"subspace-adapt-vqe"``.  The solver classes themselves are
+the internal layer and are deliberately **not exported**; what is exported is
+the calculator, the result types the solvers return, and the periodic
+:class:`BlochCalculator`.  Solvers outside the stable API plug in through
+:func:`register_method`.
 """
 
-from .adapt_vqe import ADAPTVQE, ADAPTVQEResult, AdaptIteration
+from .adapt_vqe import ADAPTVQEResult, AdaptIteration
 from .deflation import DeflationMixin, EnergyLevels
 from .dry_run import QubitEstimate, count_basis_functions, estimate_qubits
 from .bloch import BandStructure, BlochCalculator
@@ -34,12 +38,7 @@ from .expressivity import (
 )
 from .hartree_fock import (RHF, RHFResult, UHF, UHFResult, natural_orbitals,
                            transform_integrals)
-from .subspace import (
-    SubspaceADAPTVQE,
-    SubspaceADAPTVQEResult,
-    SubspaceVQE,
-    SubspaceVQEResult,
-)
+from .subspace import SubspaceADAPTVQEResult, SubspaceVQEResult
 from .base import format_pauli_sum
 from .calculator import (DEFAULT_METHOD, METHODS, STABLE_METHODS, Mandacaru,
                          available_methods, experimental_methods,
@@ -47,12 +46,11 @@ from .calculator import (DEFAULT_METHOD, METHODS, STABLE_METHODS, Mandacaru,
 from .forces import ForceResult, hellmann_feynman_gradient, nuclear_gradient
 from .interaction import InteractionEnergy, interaction_energy
 from .rdm import electronic_energy, one_rdm, particle_number, two_rdm
-from .vqe import VQE, VQEResult
+from .vqe import VQEResult
 from .qpe import (QPEMemoryEstimate, QPEResult, QuantumPhaseEstimation,
                   phase_estimation, qpe_memory_estimate)
 
 __all__ = [
-    "VQE",
     "VQEResult",
     "QuantumPhaseEstimation",
     "QPEResult",
@@ -65,15 +63,12 @@ __all__ = [
     "UHFResult",
     "natural_orbitals",
     "transform_integrals",
-    "ADAPTVQE",
     "ADAPTVQEResult",
     "AdaptIteration",
     "BlochCalculator",
     "BandStructure",
     "EnergyLevels",
-    "SubspaceVQE",
     "SubspaceVQEResult",
-    "SubspaceADAPTVQE",
     "SubspaceADAPTVQEResult",
     "compute_expressibility",
     "ExpressibilityResult",

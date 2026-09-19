@@ -24,7 +24,7 @@ from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import ADAPTVQE, VQE
+from mandacaru.algorithms import Mandacaru
 from mandacaru.backends.providers import (BACKEND_PROVIDERS, basis_state_index,
                                           build_provider, normalize_provider,
                                           pauli_rotations, provider_available)
@@ -46,8 +46,9 @@ def h2_cache(tmp_path_factory):
     path = str(tmp_path_factory.mktemp("ham") / "h2.parquet")
     atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                   cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-    atoms.calc = ADAPTVQE(pool="fermionic", basis="FAO", h=0.4, verbose=False,
-                          max_iterations=1, save_hamiltonian=path)
+    atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="FAO",
+                           h=0.4, trace=False, max_iterations=1,
+                           save_hamiltonian=path)
     atoms.get_total_energy()
     return path
 
@@ -76,17 +77,17 @@ class TestProviderRegistry:
 
     def test_driver_rejects_unknown_provider(self):
         with pytest.raises(ValueError, match="unknown backend_provider"):
-            ADAPTVQE(backend_provider="rigetti")
+            Mandacaru(method="adapt-vqe", backend_provider="rigetti")
 
     def test_execute_circuits_defaults_per_provider(self):
-        assert ADAPTVQE(backend_provider="qiskit").execute_circuits is False
-        assert ADAPTVQE(backend_provider="braket").execute_circuits is True
-        assert ADAPTVQE(backend_provider="cirq").execute_circuits is True
+        assert Mandacaru(method="adapt-vqe", backend_provider="qiskit").execute_circuits is False
+        assert Mandacaru(method="adapt-vqe", backend_provider="braket").execute_circuits is True
+        assert Mandacaru(method="adapt-vqe", backend_provider="cirq").execute_circuits is True
         # ... and is overridable in both directions.
-        assert ADAPTVQE(backend_provider="qiskit",
-                        execute_circuits=True).execute_circuits is True
-        assert ADAPTVQE(backend_provider="cirq",
-                        execute_circuits=False).execute_circuits is False
+        assert Mandacaru(method="adapt-vqe", backend_provider="qiskit",
+                         execute_circuits=True).execute_circuits is True
+        assert Mandacaru(method="adapt-vqe", backend_provider="cirq",
+                         execute_circuits=False).execute_circuits is False
 
 
 class TestPauliRotationDecomposition:
@@ -196,11 +197,13 @@ class TestProviderProfiling:
 class TestDriverAcrossProviders:
     @pytest.mark.parametrize("name", PROVIDERS)
     def test_adapt_vqe_energy_is_provider_independent(self, name, h2_cache):
-        reference = ADAPTVQE(pool="qeb", load_hamiltonian=h2_cache,
-                             verbose=False, max_iterations=4).run()
-        executed = ADAPTVQE(pool="qeb", load_hamiltonian=h2_cache, verbose=False,
-                            max_iterations=4, backend_provider=name,
-                            execute_circuits=True).run()
+        reference = Mandacaru(method="adapt-vqe", pool="qeb",
+                              load_hamiltonian=h2_cache, trace=False,
+                              max_iterations=4).run()
+        executed = Mandacaru(method="adapt-vqe", pool="qeb",
+                             load_hamiltonian=h2_cache, trace=False,
+                             max_iterations=4, backend_provider=name,
+                             execute_circuits=True).run()
         assert executed.optimal_energy == pytest.approx(
             reference.optimal_energy, abs=1e-8 * HARTREE_TO_EV)
         # The selected *set* must match; the order of symmetry-degenerate
@@ -209,9 +212,11 @@ class TestDriverAcrossProviders:
 
     @pytest.mark.parametrize("name", PROVIDERS)
     def test_vqe_energy_is_provider_independent(self, name, h2_cache):
-        reference = VQE(load_hamiltonian=h2_cache, verbose=False).run()
-        executed = VQE(load_hamiltonian=h2_cache, verbose=False,
-                       backend_provider=name, execute_circuits=True).run()
+        reference = Mandacaru(method="vqe", load_hamiltonian=h2_cache,
+                              trace=False).run()
+        executed = Mandacaru(method="vqe", load_hamiltonian=h2_cache,
+                             trace=False, backend_provider=name,
+                             execute_circuits=True).run()
         # The circuit path is the Trotter product form, exact for H2's single
         # (double) excitation but only close for the general cluster operator.
         assert executed.optimal_energy == pytest.approx(
@@ -219,9 +224,9 @@ class TestDriverAcrossProviders:
 
     @pytest.mark.parametrize("name", PROVIDERS)
     def test_verbose_header_reports_the_provider(self, name, h2_cache, capsys):
-        ADAPTVQE(pool="qeb", load_hamiltonian=h2_cache, verbose=True,
-                 max_iterations=1, backend_provider=name,
-                 execute_circuits=True).run()
+        Mandacaru(method="adapt-vqe", pool="qeb", load_hamiltonian=h2_cache,
+                  trace=True, max_iterations=1, backend_provider=name,
+                  execute_circuits=True).run()
         out = capsys.readouterr().out
         # The run-configuration block is one option per line: label then value.
         assert re.search(rf"^backend provider\s+{name}$", out, re.M)

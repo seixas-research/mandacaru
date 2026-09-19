@@ -186,18 +186,8 @@ class AdaptAnsatz:
         every column must be a Slater determinant -- which is exactly what the
         Hartree-Fock reference and the SSVQE reference determinants are.
         """
-        from ..backends.providers import basis_state_index, _occupied_qubits
+        from ..backends.providers import evolve_determinants
 
-        generators = [op.generator for op in self._ops]
-        columns = []
-        for j in range(refs.shape[1]):
-            index = basis_state_index(refs[:, j])
-            if index is None:
-                raise ValueError(
-                    f"the {self.provider.name} circuit backend can only evolve "
-                    "computational-basis (Slater-determinant) reference states; "
-                    f"column {j} of `references` is a superposition")
-            occupied = _occupied_qubits(index, self.n_qubits)
-            columns.append(self.provider.statevector(
-                self.n_qubits, occupied, generators, theta))
-        return np.asarray(columns, dtype=complex).T
+        return evolve_determinants(self.provider, self.n_qubits,
+                                   [op.generator for op in self._ops], theta,
+                                   refs)

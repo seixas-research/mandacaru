@@ -173,7 +173,7 @@ read off the left margin:
     ----------------------------------------------------------------------------------------
        1     -27.6211823512  fermionic-double  2.714649e-01      38      48      65 D(0,2->1,3)
 ========================================================================
-[SUMMARY]
+[QUANTUM VARIATIONAL SUMMARY]
     converged: True
     optimal_energy_eV: -27.6211823512
     num_operators: 1

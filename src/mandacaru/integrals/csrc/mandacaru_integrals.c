@@ -288,13 +288,3 @@ void mandacaru_two_body_g0(const double _Complex *psi,
     free(rho2);
     free(phi);
 }
-
-void mandacaru_sample_basis(mandacaru_basis_fn fn, int M,
-                          const double *xg, const double *yg, const double *zg,
-                          int ngrid, double _Complex *psi, void *ctx) {
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic)
-#endif
-    for (int i = 0; i < M; ++i)
-        fn(i, xg, yg, zg, ngrid, psi + (long)i * ngrid, ctx);
-}

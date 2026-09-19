@@ -113,15 +113,6 @@ class Timings:
         self.stages[name] = self.stages.get(name, 0.0) + float(seconds)
         self._peak_mb = max(self._peak_mb, peak_memory_mb())
 
-    def merge(self, other: "Timings", prefix: str = "") -> None:
-        """Merge another :class:`Timings`' stages (optionally name-prefixed)."""
-        for name, secs in other.stages.items():
-            self.add(f"{prefix}{name}", secs)
-        if other.n_cores is not None and self.n_cores is None:
-            self.n_cores = other.n_cores
-        if other.backend is not None and self.backend is None:
-            self.backend = other.backend
-
     @property
     def peak_memory_mb(self) -> float:
         self._peak_mb = max(self._peak_mb, peak_memory_mb())
