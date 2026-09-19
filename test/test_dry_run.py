@@ -387,7 +387,9 @@ class TestEarlyStop:
         est = calc.dry_run(_boxed("H2O"))
         assert est.n_qubits == 12
         assert calc.dry_run_result is est and calc.result is None
-        assert calc.solver.dry_run is False        # the calculator still runs
+        # One-off: the calculator itself was not switched to dry-run mode, so
+        # the next energy / run() builds a real solver.
+        assert "dry_run" not in calc.solver_kwargs
 
 
 # --------------------------------------------------------------------------- #

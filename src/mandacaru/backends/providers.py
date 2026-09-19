@@ -91,14 +91,20 @@ def pauli_rotations(generator: PauliSum, atol: float = 1e-12
     r"""Decompose an anti-Hermitian generator into ``(pauli_string, angle_coeff)``.
 
     For ``A = sum_j i c_j P_j`` this returns ``[(P_j, c_j), ...]`` with real
-    ``c_j``, so ``exp(theta A) = prod_j exp(i theta c_j P_j)``.  Identity strings
-    contribute only a global phase and are dropped.
+    ``c_j``, so ``exp(theta A) = prod_j exp(i theta c_j P_j)`` -- an identity
+    that holds **because the terms commute**, which is checked, not assumed.
+    Identity strings contribute only a global phase and are dropped.
 
     Raises
     ------
     ValueError
         If any coefficient has a non-negligible real part (the operator is not
-        anti-Hermitian and does not generate a unitary for real ``theta``).
+        anti-Hermitian and does not generate a unitary for real ``theta``), or
+        if two of its Pauli terms anticommute: the product of their rotations
+        would then be a first-order Trotter *approximation* of ``exp(theta A)``
+        (fidelity 0.98 for ``0.3i X + 0.2i Z`` at ``theta = 1.7``), silently a
+        different state from the one the state-vector backend prepares.  Every
+        pool generator Mandacaru builds has commuting terms, in every mapping.
     """
     out: list[tuple[str, float]] = []
     for label, coeff in sorted(generator.simplify().terms.items()):
@@ -110,7 +116,25 @@ def pauli_rotations(generator: PauliSum, atol: float = 1e-12
         if abs(c.imag) <= atol or set(label) == {"I"}:
             continue                       # negligible, or a global phase only
         out.append((label, float(c.imag)))
+    for i, (first, _c) in enumerate(out):
+        for second, _d in out[i + 1:]:
+            if not pauli_strings_commute(first, second):
+                raise ValueError(
+                    f"generator terms {first!r} and {second!r} anticommute, so "
+                    "exp(theta A) is not the product of their rotations and a "
+                    "circuit built from them would prepare a different state. "
+                    "Split the generator into commuting parts (one ansatz "
+                    "operator each), or evaluate it on the state-vector "
+                    "backend, which exponentiates it exactly.")
     return out
+
+
+def pauli_strings_commute(first: str, second: str) -> bool:
+    """Two Pauli strings commute iff they differ, with neither the identity,
+    at an **even** number of positions."""
+    clashes = sum(1 for a, b in zip(first, second)
+                  if a != "I" and b != "I" and a != b)
+    return clashes % 2 == 0
 
 
 def evolve_determinants(provider, n_qubits: int, generators, theta,

@@ -216,10 +216,12 @@ class TestHermiticityCheck:
         from mandacaru.core.mapping import PauliSum
 
         bad = PauliSum({"ZZ": 1.0, "XX": 0.5j})
+        calc = Mandacaru(method="adapt-vqe", hamiltonian=bad,
+                         num_particles=(1, 1), n_spatial_orbitals=1, trace=False,
+                         profile=False)
+        # Materializing the operator is what detects it: on first use.
         with pytest.raises(ValueError, match="not Hermitian"):
-            Mandacaru(method="adapt-vqe", hamiltonian=bad,
-                      num_particles=(1, 1), n_spatial_orbitals=1, trace=False,
-                      profile=False)
+            calc.run()
 
 
 class TestPseudoBasisOptions:

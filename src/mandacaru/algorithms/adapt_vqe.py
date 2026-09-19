@@ -477,7 +477,12 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # A cached Hamiltonian is a complete problem specification (operator plus
         # num_particles / n_spatial_orbitals), so loading one puts the driver in
         # direct mode without a geometry -- no integrals, no mapping.
-        if hamiltonian is None and self.load_hamiltonian is not None:
+        # (A dry run does not even load it: the estimate reads the file's
+        # header -- `read_hamiltonian_header` -- and never its Pauli table.)
+        if hamiltonian is None and self.load_hamiltonian is not None \
+                and self.dry_run:
+            self._check_cache_header()
+        elif hamiltonian is None and self.load_hamiltonian is not None:
             hamiltonian, loaded_particles, loaded_orbitals = \
                 self._load_hamiltonian_record()
             num_particles = num_particles or loaded_particles

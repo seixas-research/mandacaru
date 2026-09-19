@@ -162,9 +162,12 @@ class TestVQE:
     def test_qubit_count_mismatch_raises(self, h2_hamiltonian):
         # A 4-qubit qubit Hamiltonian against a 6-qubit ansatz must be rejected.
         qubit_h = h2_hamiltonian.map_to_qubits("jordan_wigner")   # 4 qubits
+        calc = Mandacaru(method="vqe", hamiltonian=qubit_h,
+                         ansatz=UCCSD(3, (1, 1)))                     # 6 qubits
+        # A property of the *problem*, so it is refused where the problem is
+        # built -- on first use -- not by the (option-checking) constructor.
         with pytest.raises(ValueError):
-            Mandacaru(method="vqe", hamiltonian=qubit_h,
-                      ansatz=UCCSD(3, (1, 1)))                        # 6 qubits
+            calc.solver
 
 
 # --- Parity with ADAPTVQE / ADAPTVQEResult (requirement: mirror the API) ---

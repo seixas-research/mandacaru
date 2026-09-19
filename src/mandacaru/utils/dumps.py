@@ -36,8 +36,8 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 
+from ..core.atomic import atomic_path
 from ..core.serialization import file_qubits_allowed
 from ..version import __version__
 
@@ -96,22 +96,10 @@ def _write(path: str, payload: dict) -> str:
     file in the same directory and then moved onto the destination, which is
     atomic on every platform Mandacaru supports -- the same thing checkpoints do.
     """
-    parent = os.path.dirname(os.path.abspath(path))
-    os.makedirs(parent, exist_ok=True)
-    handle = tempfile.NamedTemporaryFile(
-        "w", dir=parent, prefix=os.path.basename(path) + ".", suffix=".tmp",
-        delete=False)
-    try:
-        with handle:
+    with atomic_path(path) as staging:
+        with open(staging, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")
-        os.replace(handle.name, path)
-    except BaseException:
-        try:
-            os.unlink(handle.name)
-        except OSError:
-            pass
-        raise
     return path
 
 

@@ -82,10 +82,10 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import warnings
 from dataclasses import dataclass
 
+from .atomic import atomic_path
 from .mapping import PauliSum
 
 #: Value of the ``mandacaru.format`` metadata key identifying these files.
@@ -391,21 +391,9 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
     }
 
     path = os.fspath(path)
-    parent = os.path.dirname(os.path.abspath(path))
-    os.makedirs(parent, exist_ok=True)
-
-    # Written through a temporary file in the same directory and then moved
-    # into place: a cache is a *snapshot*, and opening the destination directly
-    # means a crash, a serialization error or a full filesystem destroys the
-    # previous one and leaves a truncated file where a loadable one was.
-    parent = os.path.dirname(os.path.abspath(path)) or "."
-    os.makedirs(parent, exist_ok=True)
-    handle = tempfile.NamedTemporaryFile(
-        dir=parent, prefix=os.path.basename(path) + ".", suffix=".tmp",
-        delete=False)
-    handle.close()
-    staging = handle.name
-    try:
+    # A cache is a snapshot: written beside its destination and moved onto it,
+    # so a failed write leaves the previous cache intact (see `core.atomic`).
+    with atomic_path(path) as staging:
         if format == "json":
             _write_json(staging, labels, reals, imags, key_value)
         elif resolve_engine(engine) == "fastparquet":
@@ -413,13 +401,6 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
                                compression)
         else:
             _write_pyarrow(staging, labels, reals, imags, key_value, compression)
-        os.replace(staging, path)
-    except BaseException:
-        try:
-            os.unlink(staging)
-        except OSError:
-            pass
-        raise
     return path
 
 
@@ -505,16 +486,7 @@ def load_hamiltonian(path, engine: str = "auto",
         columns, meta = _read_fastparquet(path)
     else:
         columns, meta = _read_pyarrow(path)
-
-    if meta.get("mandacaru.format") != FORMAT_TAG:
-        raise ValueError(
-            f"{path!r} is not a Mandacaru qubit-Hamiltonian Parquet file "
-            f"(expected mandacaru.format = {FORMAT_TAG!r})")
-    version = int(meta.get("mandacaru.version", 0))
-    if version > FORMAT_VERSION:
-        raise ValueError(
-            f"{path!r} uses Hamiltonian format version {version}, but this build "
-            f"understands up to {FORMAT_VERSION}")
+    header = _header_from_meta(path, meta)
 
     for required in COLUMNS:
         if required not in columns:
@@ -522,7 +494,7 @@ def load_hamiltonian(path, engine: str = "auto",
                 f"{path!r} is missing the {required!r} column "
                 f"(found {sorted(columns)})")
 
-    n_qubits = int(meta["mandacaru.num_qubits"])
+    n_qubits = header.num_qubits
     terms: dict[str, complex] = {}
     for label, real, imag in zip(columns["pauli"], columns["real"],
                                  columns["imag"]):
@@ -533,22 +505,90 @@ def load_hamiltonian(path, engine: str = "auto",
                 f"expected {n_qubits}")
         terms[label] = terms.get(label, 0j) + complex(float(real), float(imag))
 
-    num_particles = json.loads(meta.get("mandacaru.num_particles", "null"))
-    if num_particles is not None:
-        num_particles = (int(num_particles[0]), int(num_particles[1]))
-    n_orbitals = json.loads(meta.get("mandacaru.n_spatial_orbitals", "null"))
-
     return HamiltonianRecord(
         # The width comes from the metadata, not from the labels: a zero
         # operator (or one whose terms cancelled) has no labels to infer it
         # from and would load as a 0-qubit register.
         hamiltonian=PauliSum(terms, num_qubits=n_qubits),
+        mapping=header.mapping, num_particles=header.num_particles,
+        n_spatial_orbitals=header.n_spatial_orbitals,
+        two_qubit_reduction=header.two_qubit_reduction,
+        metadata=header.metadata)
+
+
+@dataclass
+class HamiltonianHeader:
+    """The problem specification of a cache file, **without** its terms.
+
+    What a dry run needs: the register width and the particle numbers decide
+    the qubit count, and neither requires the Pauli table.  ``n_terms`` is the
+    row count when the container records it (Parquet does), else ``None``.
+    """
+
+    num_qubits: int
+    mapping: str = "jordan_wigner"
+    num_particles: tuple[int, int] | None = None
+    n_spatial_orbitals: int | None = None
+    two_qubit_reduction: bool = False
+    metadata: dict | None = None
+    n_terms: int | None = None
+
+
+def _header_from_meta(path, meta, n_terms=None) -> HamiltonianHeader:
+    """Validate the format tag / version and parse the key-value metadata."""
+    if meta.get("mandacaru.format") != FORMAT_TAG:
+        raise ValueError(
+            f"{path!r} is not a Mandacaru qubit-Hamiltonian Parquet file "
+            f"(expected mandacaru.format = {FORMAT_TAG!r})")
+    version = int(meta.get("mandacaru.version", 0))
+    if version > FORMAT_VERSION:
+        raise ValueError(
+            f"{path!r} uses Hamiltonian format version {version}, but this build "
+            f"understands up to {FORMAT_VERSION}")
+    num_particles = json.loads(meta.get("mandacaru.num_particles", "null"))
+    if num_particles is not None:
+        num_particles = (int(num_particles[0]), int(num_particles[1]))
+    n_orbitals = json.loads(meta.get("mandacaru.n_spatial_orbitals", "null"))
+    return HamiltonianHeader(
+        num_qubits=int(meta["mandacaru.num_qubits"]),
         mapping=meta.get("mandacaru.mapping", "jordan_wigner"),
         num_particles=num_particles,
         n_spatial_orbitals=None if n_orbitals is None else int(n_orbitals),
         two_qubit_reduction=bool(json.loads(
             meta.get("mandacaru.two_qubit_reduction", "false"))),
-        metadata=json.loads(meta.get("mandacaru.metadata", "{}")))
+        metadata=json.loads(meta.get("mandacaru.metadata", "{}")),
+        n_terms=n_terms)
+
+
+def read_hamiltonian_header(path, engine: str = "auto",
+                            format: str | None = None) -> HamiltonianHeader:
+    """The :class:`HamiltonianHeader` of a cache file, without loading its terms.
+
+    A **Parquet** file keeps its metadata in the footer, so only that is read
+    -- the Pauli table (the part that grows with the problem) is never
+    decoded.  A **JSON** cache is a single document and has to be parsed whole
+    to reach its header; nothing is built from the terms, but the read is not
+    metadata-only, and for a very large cache Parquet is the format to use.
+    """
+    path = os.fspath(path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"no such Hamiltonian file: {path!r}")
+    format = detect_format(path) if format is None else resolve_format(format)
+    if format == "json":
+        columns, meta = _read_json(path)
+        return _header_from_meta(path, meta, len(columns.get("pauli", ())))
+    if resolve_engine(engine) == "fastparquet":
+        import fastparquet
+
+        parquet_file = fastparquet.ParquetFile(path)          # footer only
+        meta = {str(k): str(v)
+                for k, v in (parquet_file.key_value_metadata or {}).items()}
+        return _header_from_meta(path, meta, int(parquet_file.count()))
+    import pyarrow.parquet as pq
+
+    footer = pq.read_metadata(path)
+    meta = {k.decode(): v.decode() for k, v in (footer.metadata or {}).items()}
+    return _header_from_meta(path, meta, int(footer.num_rows))
 
 
 def _read_json(path):

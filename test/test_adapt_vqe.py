@@ -250,14 +250,18 @@ class TestDriver:
         assert abs(res.optimal_energy - h2_exact_ev) < 1e-6 * HARTREE_TO_EV
 
     def test_named_pool_requires_shape(self, h2_hamiltonian):
+        calc = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                         pool="fermionic")   # missing shape/particles
+        # Refused where the problem is built (first use), not by the
+        # option-checking constructor.
         with pytest.raises(ValueError):
-            Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                      pool="fermionic")   # missing shape/particles
+            calc.solver
 
     def test_qubit_count_mismatch_raises(self, h2_hamiltonian):
         # A fixed-size qubit Hamiltonian against a wrongly-sized pool is rejected.
         qubit_h = h2_hamiltonian.map_to_qubits("jordan_wigner")   # 4 qubits
+        calc = Mandacaru(method="adapt-vqe", hamiltonian=qubit_h,
+                         pool="fermionic", num_particles=(1, 1),
+                         n_spatial_orbitals=3)        # 6-qubit pool vs 4-qubit H
         with pytest.raises(ValueError):
-            Mandacaru(method="adapt-vqe", hamiltonian=qubit_h,
-                      pool="fermionic", num_particles=(1, 1),
-                      n_spatial_orbitals=3)           # 6-qubit pool vs 4-qubit H
+            calc.solver

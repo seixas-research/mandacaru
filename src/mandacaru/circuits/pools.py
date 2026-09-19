@@ -365,6 +365,15 @@ class CEOPool(QEBPool):
     are genuinely summed.  Either way the gate savings reported for CEO need
     several exchange directions per support *and* their specialized circuit
     synthesis, which is not implemented here.
+
+    **Consequence for circuits.** The Pauli terms of a *summed* generator do not
+    all commute, so ``exp(theta A)`` is not the product of their rotations.  The
+    state-vector backend exponentiates it exactly; a circuit provider -- used by
+    ``execute_circuits=True``, ``measured_energy`` and ``measurement_provider``
+    -- would prepare a *different* state, so it refuses such a generator
+    (:func:`~mandacaru.backends.providers.pauli_rotations`).  ``ceo`` is
+    therefore circuit-exportable under Jordan-Wigner (where it equals ``qeb``)
+    and state-vector-only under parity / Bravyi-Kitaev.
     """
 
     name = "ceo"

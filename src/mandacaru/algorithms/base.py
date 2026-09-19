@@ -289,7 +289,6 @@ class VariationalDriver(Calculator):
         self._pool_dump_path = resolve_dump_path(verbose_operators, POOL_FILE)
         self._hamiltonian_dump_path = resolve_dump_path(verbose_hamiltonian,
                                                         HAMILTONIAN_FILE)
-        self._check_output_paths()      # again from a subclass owning `output`
 
         # Circuit-construction / execution SDK.  Naming an Amazon Braket device
         # implies the braket provider, so `device="braket-sv1"` alone is enough.
@@ -310,11 +309,8 @@ class VariationalDriver(Calculator):
         self.shots = int(shots)
         # A dry run only *estimates* the register, so hardware may be named
         # without shots there.
-        if requires_shots(self.device) and self.shots <= 0 and not dry_run:
-            raise ValueError(
-                f"device {self.device!r} is real quantum hardware, which cannot "
-                "return a state vector: pass shots > 0 (e.g. shots=8192) so the "
-                "energy is estimated from measurements.")
+        if not dry_run:
+            self._check_shots_for_hardware()
         if self.shots and self.backend_provider not in ("braket", "qiskit"):
             raise NotImplementedError(
                 f"shot-based execution is implemented for the 'qiskit' and "
@@ -364,6 +360,21 @@ class VariationalDriver(Calculator):
         #: The last :class:`~mandacaru.core.checkpoint.WavefunctionCheckpoint`
         #: written (or built) by this driver.
         self.checkpoint = None
+        # Every base-owned output path exists now, so this is the first point
+        # the collision check can see them all (it used to run before
+        # `checkpoint_path` was assigned, which let a VQE checkpoint overwrite
+        # its own Hamiltonian cache).  A subclass owning another path -- ADAPT's
+        # `output` -- checks again once it has set it.
+        self._check_output_paths()
+
+    def _check_shots_for_hardware(self) -> None:
+        """Real hardware needs ``shots > 0`` -- the one constructor check a dry
+        run waives (it may *ask about* a QPU without planning to run on it)."""
+        if requires_shots(self.device) and self.shots <= 0:
+            raise ValueError(
+                f"device {self.device!r} is real quantum hardware, which cannot "
+                "return a state vector: pass shots > 0 (e.g. shots=8192) so the "
+                "energy is estimated from measurements.")
 
     # -- output units ----------------------------------------------------- #
 
@@ -543,7 +554,21 @@ class VariationalDriver(Calculator):
     def ansatz_problem(self, theta=None):
         """``(n_qubits, occupied, generators, theta, hamiltonian)`` of the
         optimized ansatz -- what a provider's ``energy``/``energies`` takes."""
+        from ..circuits.base import is_serializable
+
         ansatz = self.ansatz
+        if not is_serializable(ansatz):
+            raise TypeError(
+                f"{type(ansatz).__name__} exposes no `pauli_generators` / "
+                "`reference_qubits()` (SerializableAnsatz), so its state cannot "
+                "be exported as a circuit or measured on a provider")
+        if getattr(ansatz, "preparation", "product") == "sum" \
+                and ansatz.num_parameters > 1:
+            raise ValueError(
+                "this ansatz is the exact UCC exponential exp(sum theta_k A_k); "
+                "a circuit prepares the ordered product, which is a different "
+                "state.  Build the ansatz with trotter=True to export or "
+                "measure it.")
         if theta is None:
             theta = self.result.optimal_parameters
         return (ansatz.n_qubits, ansatz.reference_qubits(),
@@ -615,6 +640,24 @@ class VariationalDriver(Calculator):
         the mapping it was written in -- and says so.
         """
         record = load_hamiltonian(self.load_hamiltonian)
+        self._adopt_cache_header(record)
+        return (record.hamiltonian, record.num_particles,
+                record.n_spatial_orbitals)
+
+    def _check_cache_header(self) -> None:
+        """A dry run's view of ``load_hamiltonian``: the header only.
+
+        The file must exist, be a Mandacaru cache this build understands, and
+        agree with the tapering the driver was asked for -- everything
+        :meth:`_load_hamiltonian_record` checks, without decoding the Pauli
+        table (:func:`~mandacaru.core.serialization.read_hamiltonian_header`).
+        """
+        from ..core.serialization import read_hamiltonian_header
+
+        self._adopt_cache_header(read_hamiltonian_header(self.load_hamiltonian))
+
+    def _adopt_cache_header(self, record) -> None:
+        """Take the mapping and the tapering from a cache record or header."""
         self.mapping = record.mapping
         if record.two_qubit_reduction and not self.two_qubit_reduction:
             if not self._supports_two_qubit_reduction:
@@ -629,8 +672,6 @@ class VariationalDriver(Calculator):
                 f"{record.num_qubits}-qubit Hamiltonian, but this driver was "
                 "built with two_qubit_reduction=True; drop the flag (the file "
                 "decides) or point at a file written with it")
-        return (record.hamiltonian, record.num_particles,
-                record.n_spatial_orbitals)
 
     def _check_output_paths(self) -> None:
         """Refuse two outputs that resolve to the same file.
@@ -651,7 +692,9 @@ class VariationalDriver(Calculator):
         for option, path in named.items():
             if path is None:
                 continue
-            key = os.path.abspath(os.fspath(path))
+            # realpath, not abspath: two spellings through a symlinked
+            # directory are still one file.
+            key = os.path.realpath(os.fspath(path))
             if key in seen:
                 raise ValueError(
                     f"{option}= and {seen[key]}= both resolve to {key!r}, but "
@@ -726,6 +769,8 @@ class VariationalDriver(Calculator):
         from ..core.checkpoint import WavefunctionCheckpoint
 
         generators = list(ansatz.pauli_generators)
+        # exp(sum) and prod(exp) are different states; the record says which.
+        preparation = getattr(ansatz, "preparation", "product")
         operators = getattr(ansatz, "operators", None)
         if labels is None:
             labels = ([op.label for op in operators] if operators is not None
@@ -766,7 +811,38 @@ class VariationalDriver(Calculator):
             energy=None if energy_ha is None else float(energy_ha),
             hamiltonian=getattr(self, "hamiltonian", None),
             method=self._method_name(),
-            status=dict(status), metadata=metadata)
+            status=dict(status), metadata=metadata, preparation=preparation)
+
+    def _check_checkpointable(self, ansatz) -> None:
+        """Refuse ``checkpoint=`` / ``resume=`` with an ansatz that cannot be
+        described -- before the run, not after the optimization.
+
+        The :class:`~mandacaru.circuits.base.Ansatz` protocol is enough to *run*;
+        a checkpoint needs :class:`~mandacaru.circuits.base.SerializableAnsatz`.
+        """
+        from ..circuits.base import is_serializable
+
+        asked = [name for name, path in (("checkpoint", self.checkpoint_path),
+                                         ("resume", self.resume_path))
+                 if path is not None]
+        if asked and not is_serializable(ansatz):
+            raise TypeError(
+                f"{' / '.join(asked)}= needs an ansatz that exposes "
+                "`pauli_generators` and `reference_qubits()` "
+                f"(SerializableAnsatz); {type(ansatz).__name__} implements only "
+                "the state-vector Ansatz protocol, so its state cannot be "
+                "written to or read from a checkpoint")
+
+    def _record_checkpoint(self, ansatz, parameters, energy_ha, status,
+                           **labels):
+        """Build and write the checkpoint of a serializable ansatz; an ansatz
+        that only evaluates states (no generators) is left alone."""
+        from ..circuits.base import is_serializable
+
+        if not is_serializable(ansatz):
+            return None
+        return self._write_checkpoint(self._checkpoint_record(
+            ansatz, parameters, energy_ha, status, **labels))
 
     def _write_checkpoint(self, record) -> str | None:
         """Save ``record`` to :attr:`checkpoint_path` (a no-op without one)."""
@@ -800,6 +876,17 @@ class VariationalDriver(Calculator):
         if sorted(record.reference_qubits) != sorted(ansatz.reference_qubits()):
             problems.append(f"reference determinant {record.reference_qubits} "
                             f"in the file, {ansatz.reference_qubits()} here")
+        mine = getattr(ansatz, "preparation", "product")
+        if not record.is_product and mine != "sum":
+            problems.append(
+                "the file holds the exact-UCC state exp(sum theta_k A_k)|ref>, "
+                "but this run prepares an ordered product of exponentials -- "
+                "the same angles would be a different state")
+        elif record.preparation == "product" and mine == "sum" \
+                and record.num_parameters > 1:
+            problems.append(
+                "the file holds a product of exponentials, but this run's "
+                "UCCSD is the exact exponential of the sum (trotter=False)")
         if problems:
             raise ValueError(
                 f"cannot resume from {self.resume_path!r}: "

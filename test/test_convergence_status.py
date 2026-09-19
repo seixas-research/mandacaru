@@ -76,11 +76,12 @@ class TestSectorGuard:
     def test_automatic_sector_falls_back_to_the_full_register(self, monkeypatch):
         monkeypatch.setattr(resolve_method("adapt-vqe")[1],
                             "SECTOR_AUTO_QUBITS", 4)
-        # In direct mode the problem is configured in the constructor.
+        solver = driver(pool="qubit", sector="auto", max_iterations=1,
+                        gradient_tolerance=1e-6)
+        # The problem is configured on first use, which is where the sector is
+        # resolved and the fallback announced.
         with pytest.warns(RuntimeWarning, match="full register"):
-            solver = driver(pool="qubit", sector="auto", max_iterations=1,
-                            gradient_tolerance=1e-6)
-        assert solver._sector is None
+            assert solver._sector is None
         assert np.isfinite(solver.run().optimal_energy)
 
     def test_automatic_sector_is_used_for_a_conserving_pool(self, monkeypatch):

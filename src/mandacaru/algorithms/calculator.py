@@ -173,9 +173,6 @@ def _watchable_stdout() -> None:
         pass
 
 
-#: Pseudopotential families whose forces come from
-#: :func:`~mandacaru.algorithms.pseudo_forces.pseudo_nuclear_gradient`.
-PSEUDO_GRADIENT_FAMILIES = ("paw", "oncvpsp")
 #: Largest orbital-rotation residual (Hartree) the RDM gradient accepts quietly.
 #:
 #: The residual is ``max |dE/dkappa|`` with the density matrices held fixed, and
@@ -398,24 +395,49 @@ class Mandacaru(Calculator):
         self.trajectory: list[dict] = []
         self._summary_written = False
         self._exit_hook = False
-        #: The solver instance -- built here, so an invalid option is refused
-        #: by the constructor rather than at the first energy, and a
-        #: direct-mode problem (``hamiltonian=`` / ``load_hamiltonian=``) can be
-        #: inspected before it is run.  Every geometry evaluation replaces it.
-        self.solver = self._make_solver(grid=self._grid)
-        self._solver_is_fresh = True
+        # Options are validated *now*, by building the solver once with its
+        # dry-run switch on: every constructor check runs, but nothing is
+        # configured -- no pool, no Hamiltonian matrix, not even the terms of a
+        # cache file.  The real solver is built on first use (:attr:`solver`),
+        # so a calculator that is only asked for a `dry_run()` never
+        # materializes the problem it is estimating.
+        self._solver = None
+        self._solver_is_fresh = False
+        probe = self._make_solver(grid=self._grid, dry_run=True)
+        if not self.solver_kwargs.get("dry_run", False):
+            probe._check_shots_for_hardware()    # the one check a dry run waives
 
     # -- solver delegation ------------------------------------------------- #
 
     @property
+    def solver(self):
+        """The solver instance -- built on first use, replaced by every
+        geometry evaluation.
+
+        For a direct-mode problem (``hamiltonian=`` / ``load_hamiltonian=``)
+        building it configures the problem -- pool, Hamiltonian matrix -- so
+        ``calc.n_qubits``, ``calc.pool`` ... are available without a run; an
+        invalid *problem* (a non-Hermitian operator, say) is refused at that
+        point, an invalid *option* already by the constructor.
+        """
+        if self._solver is None:
+            self._solver = self._make_solver(grid=self._grid)
+            self._solver_is_fresh = True
+        return self._solver
+
+    @solver.setter
+    def solver(self, value) -> None:
+        self._solver, self._solver_is_fresh = value, False
+
+    @property
     def result(self):
         """Run result of the most recent evaluation (``None`` before any run)."""
-        return getattr(self.solver, "result", None)
+        return getattr(self._solver, "result", None)
 
     @property
     def dry_run_result(self):
         """:class:`~mandacaru.algorithms.dry_run.QubitEstimate` of the last dry run."""
-        return getattr(self.solver, "dry_run_result", None)
+        return getattr(self._solver, "dry_run_result", None)
 
     def dry_run(self, atoms=None):
         """Estimate the qubit requirements **without running** anything.
@@ -429,28 +451,29 @@ class Mandacaru(Calculator):
         """
         if atoms is None:
             atoms = self.atoms
-        solver = self._make_solver(grid=self._grid)
+        # Built with the solver's own dry-run switch on, so constructing it
+        # cannot configure the real problem (pool, Hamiltonian matrix): an
+        # estimate that materialized what it estimates would be pointless.
+        solver = self._make_solver(grid=self._grid, dry_run=True)
         estimate = solver.estimate_qubits(atoms)
         solver.dry_run_result = estimate
-        self.solver, self._solver_is_fresh = solver, False
+        self.solver = solver
         return estimate
 
     def __getattr__(self, name):
         # Only reached for names Mandacaru itself does not define: the solver's
         # own attributes (``pool``, ``ansatz``, ``kpoints``, ``energy_at``...)
         # are readable on the calculator, which is the single entry point.
-        solver = self.__dict__.get("solver")
-        if solver is not None and not name.startswith("__"):
+        if "_solver" in self.__dict__ and not name.startswith("__"):
             try:
-                return getattr(solver, name)
+                return getattr(self.solver, name)
             except AttributeError:
                 pass
         raise AttributeError(
             f"{type(self).__name__!r} object has no attribute {name!r}")
 
     def _require_solver(self):
-        if self.solver is None or getattr(self.solver, "hamiltonian",
-                                          None) is None:
+        if getattr(self.solver, "hamiltonian", None) is None:
             raise RuntimeError(
                 "the calculator has not been evaluated yet; attach it to an "
                 "Atoms object and get an energy, or call run()")
@@ -535,10 +558,10 @@ class Mandacaru(Calculator):
         return not (self.solver_kwargs.get("output") is not None
                     and getattr(self._solver_class, "writes_output_log", False))
 
-    def _make_solver(self, grid):
+    def _make_solver(self, grid, **overrides):
+        options = {**self.solver_kwargs, **overrides}
         return self._solver_class(basis=self.basis, grid=grid, h=self.h,
-                                  verbose=self._show_trace(),
-                                  **self.solver_kwargs)
+                                  verbose=self._show_trace(), **options)
 
     def run(self, **run_kwargs):
         """Run the solver in **direct mode** (no geometry) and return its result.
@@ -548,8 +571,8 @@ class Mandacaru(Calculator):
         or an explicit ``hamiltonian`` with its companions.  Keyword arguments
         are forwarded to the solver's ``run``.
         """
-        if not self._solver_is_fresh:            # the constructor's is unused
-            self.solver = self._make_solver(grid=self._grid)
+        if not self._solver_is_fresh:       # reuse one built only to be read
+            self._solver = self._make_solver(grid=self._grid)
         self._solver_is_fresh = False
         outcome = self.solver.run(**run_kwargs)
         if getattr(self.solver, "dry_run", False):
@@ -584,8 +607,6 @@ class Mandacaru(Calculator):
         first (``atoms.get_potential_energy()``) so the Hamiltonian exists; in
         direct mode (``load_hamiltonian=``) it can be called immediately.
         """
-        if self.solver is None:
-            self.solver = self._make_solver(grid=self._grid)
         return self.solver.energy_levels(num_states, **solver_kwargs)
 
     # -- the frozen force grid --------------------------------------------- #
@@ -657,7 +678,7 @@ class Mandacaru(Calculator):
         # any measurement have been timed too (see :meth:`_log_performance`).
         solver.defer_performance = True
         energy_ev = self._single_point(solver, atoms)
-        self.solver, self._solver_is_fresh = solver, False
+        self.solver = solver
 
         stages: dict[str, float] = {}
         measured = None
@@ -846,7 +867,11 @@ class Mandacaru(Calculator):
                 orbital_delta=self.orbital_delta,
                 include_pulay=self.include_pulay)
             if reference_energy is None and not getattr(solver, "shots", 0):
-                reference_energy = solver.result.in_units("Ha")
+                # `optimal_energy` is the scalar every result type has -- the
+                # ground state, the one `_converged_state` returns -- whereas
+                # `in_units()` is the whole spectrum for the subspace solvers.
+                reference_energy = float(solver._from_energy_units(
+                    solver.result.optimal_energy, "Ha"))
             if reference_energy is not None:
                 reported = reference_energy
                 rebuilt = result.details["energy_hartree"]

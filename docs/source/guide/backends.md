@@ -35,8 +35,15 @@ Mandacaru(method="adapt-vqe",
 
 Each generator is a qubit `PauliSum` whose terms are $A = \sum_j i\,c_j P_j$ with
 **real** $c_j$ and **mutually commuting** Pauli strings $P_j$ — a property of the
-fermionic and qubit excitation generators. The exponential therefore factorises
-*exactly*, with no Trotter error:
+fermionic, qubit and QEB excitation generators in every mapping. It is
+**checked, not assumed**: a generator with two anticommuting terms is refused
+when its circuit is built, because the product below would then be a Trotter
+approximation and the circuit a different state from the one optimised. The
+one shipped case is the `ceo` pool under the parity and Bravyi–Kitaev mappings,
+whose generators sum several excitations of one support: it runs on the
+state-vector backend, and is exportable under Jordan–Wigner, where it coincides
+with `qeb`. The exponential therefore factorises *exactly*, with no Trotter
+error:
 
 ```{math}
 e^{\theta A} = \prod_j e^{i\,\theta c_j P_j},

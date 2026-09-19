@@ -22,7 +22,9 @@ from .hamiltonian import MolecularIntegrals, minimal_fao_basis
 from .mapping import Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity
 from .planewave import PlaneWaveIntegrals, plane_wave_vectors
 from .serialization import (HAMILTONIAN_FORMATS, HamiltonianRecord,
-                            detect_format, load_hamiltonian, save_hamiltonian)
+                            HamiltonianHeader, detect_format,
+                            load_hamiltonian, read_hamiltonian_header,
+                            save_hamiltonian)
 from .checkpoint import (WavefunctionCheckpoint, load_checkpoint,
                          prepare_state)
 
@@ -40,6 +42,8 @@ __all__ = [
     "HAMILTONIAN_FORMATS",
     "save_hamiltonian",
     "load_hamiltonian",
+    "read_hamiltonian_header",
+    "HamiltonianHeader",
     "detect_format",
     "WavefunctionCheckpoint",
     "load_checkpoint",

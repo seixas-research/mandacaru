@@ -55,3 +55,31 @@ class Ansatz(Protocol):
         solvers to send several orthogonal references through one shared unitary.
         """
         ...
+
+
+@runtime_checkable
+class SerializableAnsatz(Ansatz, Protocol):
+    """An :class:`Ansatz` that can also be *described*, not only evaluated.
+
+    Checkpoints, circuit export and provider measurement need the state as
+    data: the generators as Pauli sums and the reference determinant in
+    register terms.  This is **optional** -- an ansatz that only implements
+    :class:`Ansatz` still runs through VQE; it just cannot be checkpointed or
+    exported, and asking for either is refused before the run starts.
+    """
+
+    @property
+    def pauli_generators(self) -> list:
+        """The anti-Hermitian generators as :class:`~mandacaru.core.mapping.PauliSum`."""
+        ...
+
+    def reference_qubits(self) -> list[int]:
+        """Qubits set to ``|1>`` in the reference determinant."""
+        ...
+
+
+def is_serializable(ansatz) -> bool:
+    """Whether ``ansatz`` can be written to a checkpoint / exported as a circuit."""
+    return (hasattr(ansatz, "pauli_generators")
+            and callable(getattr(ansatz, "reference_qubits", None)))
+

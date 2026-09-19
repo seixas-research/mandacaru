@@ -26,8 +26,10 @@ calculator, ``Mandacaru(method="vqe", ...)``, which forwards every option here:
   basis=...)``: ``atoms.get_total_energy()`` builds the Hamiltonian from the
   geometry, builds a default UCCSD ansatz and runs, returning eV.
 
-The ``optimizer`` may be named by string, a ``verbose`` run prints the qubit
-Hamiltonian as Pauli strings and a timing / memory / cores summary, and the run
+The ``optimizer`` may be named by string, a ``verbose`` run prints the run
+configuration -- the qubit Hamiltonian by its **term count** only; its Pauli
+expansion goes to a file with ``verbose_hamiltonian=`` -- and a timing / memory /
+cores summary, and the run
 returns a :class:`VQEResult` shaped like
 :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQEResult`.
 
@@ -115,8 +117,8 @@ class VQE(DeflationMixin, VariationalDriver):
         ``"Nelder-Mead"``, ``"SLSQP"``, ``"Adam"``, ``"L-BFGS-B"`` -- or a
         pre-built :class:`~mandacaru.optimizers.optim.Optimizer`.
     verbose : bool
-        Print the qubit Hamiltonian (Pauli strings) and a timing / resources
-        summary to standard output (default ``True``).
+        Print the run configuration (the qubit Hamiltonian as a term count) and
+        a timing / resources summary to standard output (default ``True``).
     basis, mapping, device, grid, h, kpts, charge, n_electrons, hamiltonian_builder, ansatz_builder, run_options :
         Calculator-mode options mirroring
         :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE`: ``basis`` (a name or a
@@ -176,7 +178,12 @@ class VQE(DeflationMixin, VariationalDriver):
         # A cached Hamiltonian carries num_particles / n_spatial_orbitals, so it
         # is a complete problem specification: the default UCCSD ansatz can be
         # built from it with no geometry, no integrals and no mapping step.
-        if hamiltonian is None and self.load_hamiltonian is not None:
+        if hamiltonian is None and self.load_hamiltonian is not None \
+                and self.dry_run:
+            # Never even loaded in a dry run: the estimate reads the file's
+            # header (`read_hamiltonian_header`), not its Pauli table.
+            self._check_cache_header()
+        elif hamiltonian is None and self.load_hamiltonian is not None:
             hamiltonian, num_particles, n_orbitals = \
                 self._load_hamiltonian_record()
             if ansatz is None and (num_particles is None or n_orbitals is None):
@@ -184,13 +191,8 @@ class VQE(DeflationMixin, VariationalDriver):
                     f"{self.load_hamiltonian!r} does not record num_particles / "
                     "n_spatial_orbitals, so the default UCCSD ansatz cannot be "
                     "rebuilt from it; pass an explicit `ansatz`")
-            if self.dry_run:
-                # Never materialize in a dry run: the 2^n matrix is what the
-                # estimate exists to warn about.
-                self._dry_run_problem = (hamiltonian, num_particles, n_orbitals)
-            else:
-                self._configure(hamiltonian, num_particles, n_orbitals)
-                self._built_from_hamiltonian = True
+            self._configure(hamiltonian, num_particles, n_orbitals)
+            self._built_from_hamiltonian = True
         # Direct mode: a Hamiltonian and ansatz were supplied at construction.
         elif hamiltonian is not None and ansatz is not None:
             if self.dry_run:
@@ -289,6 +291,7 @@ class VQE(DeflationMixin, VariationalDriver):
             raise ValueError(f"expected {n} initial parameters, got {x0.size}")
 
         # Resume: start from the checkpointed parameters of this same ansatz.
+        self._check_checkpointable(self.ansatz)
         resumed = self._load_resume(self.ansatz)
         if resumed is not None:
             if initial_parameters is not None:
@@ -314,19 +317,19 @@ class VQE(DeflationMixin, VariationalDriver):
                 best["x"], best["fun"] = np.array(x, dtype=float), float(value)
             if self.checkpoint_path is not None \
                     and nfev % self.checkpoint_every == 0:
-                self._write_checkpoint(self._checkpoint_record(
+                self._record_checkpoint(
                     self.ansatz, best["x"], best["fun"],
                     {"complete": False, "num_evaluations": int(nfev),
-                     "reference_energy": float(ref_energy)}))
+                     "reference_energy": float(ref_energy)})
 
         with timings.time("parameter optimization"):
             result = self._optimize_all(self.energy_at, x0, callback=track)
 
-        self._write_checkpoint(self._checkpoint_record(
+        self._record_checkpoint(
             self.ansatz, result.x, float(result.fun),
             {"complete": True, "converged": bool(result.success),
              "num_evaluations": int(result.nfev),
-             "reference_energy": float(ref_energy)}))
+             "reference_energy": float(ref_energy)})
 
         self._finalize_timings(timings, run_t0)
 

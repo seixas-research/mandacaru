@@ -367,10 +367,12 @@ def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
 
     # -- the cache file -------------------------------------------------- #
     if load_hamiltonian is not None:
-        from ..core.serialization import load_hamiltonian as _load
+        from ..core.serialization import read_hamiltonian_header
 
-        record = _load(str(load_hamiltonian))
-        n_qubits = int(record.hamiltonian.num_qubits)
+        # The header alone: a Parquet cache is never decoded (a JSON one has to
+        # be parsed to reach it -- see `read_hamiltonian_header`).
+        record = read_hamiltonian_header(str(load_hamiltonian))
+        n_qubits = int(record.num_qubits)
         n_orb = (int(record.n_spatial_orbitals)
                  if record.n_spatial_orbitals else n_qubits // 2)
         if record.num_particles is None:

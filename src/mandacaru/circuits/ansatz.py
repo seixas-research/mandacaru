@@ -173,6 +173,12 @@ class UCCSD:
         """The cluster generators as qubit operators (for circuit backends)."""
         return list(self._pauli_generators)
 
+    @property
+    def preparation(self) -> str:
+        """``"product"`` (Trotter) or ``"sum"`` (the exact UCC exponential) --
+        the form a checkpoint of this ansatz has to record."""
+        return "product" if self.trotter else "sum"
+
     def reference_qubits(self) -> list[int]:
         """Qubit indices set to ``|1>`` in the Hartree-Fock determinant."""
         from ..backends.providers import _occupied_qubits, basis_state_index

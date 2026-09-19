@@ -46,6 +46,9 @@ import os
 import sys
 
 from .units import DEFAULT_GRID_SPACING
+
+#: Operator pool of the adaptive methods when ``--pool`` is not given.
+DEFAULT_POOL = "fermionic"
 from .version import __version__
 
 
@@ -211,7 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "pool's name and size")
 
     solver = parser.add_argument_group("solver")
-    solver.add_argument("--pool", default="fermionic",
+    solver.add_argument("--pool", default=None,
                         choices=tuple(available_pools()),
                         help="ADAPT operator pool (default fermionic)")
     solver.add_argument("--optimizer", default="COBYLA",
@@ -306,18 +309,18 @@ def solver_options(args) -> dict:
                    verbose_hamiltonian=args.verbose_hamiltonian,
                    verbose_operators=args.verbose_operators,
                    dry_run=args.dry_run)
+    # Whatever the user typed is forwarded, for *every* method: an option the
+    # selected solver does not take is then refused by `Mandacaru` (and turned
+    # into a parser error by `main`) instead of vanishing here -- `--method vqe
+    # --output run.txt` used to run and write nothing.
+    for name in ("pool", "max_iterations", "gradient_tolerance", "output",
+                 "num_states"):
+        value = getattr(args, name)
+        if value is not None:
+            options[name] = value
     _name, cls = resolve_method(args.method)
-    adaptive = hasattr(cls, "_select_operator")
-    if adaptive:
-        options["pool"] = args.pool
-        if args.max_iterations is not None:
-            options["max_iterations"] = args.max_iterations
-        if args.gradient_tolerance is not None:
-            options["gradient_tolerance"] = args.gradient_tolerance
-        if args.output is not None:
-            options["output"] = args.output
-    if args.num_states is not None:
-        options["num_states"] = args.num_states
+    if hasattr(cls, "_select_operator"):              # an adaptive method
+        options.setdefault("pool", DEFAULT_POOL)
     return options
 
 
@@ -496,7 +499,12 @@ def main(argv=None) -> int:
     atoms = None
     if args.geometry is not None:
         atoms = load_geometry(args.geometry, args.cell, args.magmoms)
-    calc = Mandacaru(**solver_options(args))
+    try:
+        calc = Mandacaru(**solver_options(args))
+    except TypeError as exc:
+        # An option the selected method does not take (or accepts and would
+        # ignore): a usage error, reported the way argparse reports one.
+        parser.error(str(exc))
     if args.dry_run:
         return run_dry(calc, atoms, args)
     return run_full(calc, atoms, args)

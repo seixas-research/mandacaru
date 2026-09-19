@@ -283,6 +283,12 @@ class SubspaceMixin:
         order = np.argsort(energies)
         energies = np.asarray(energies, dtype=float)[order]
         states = [states[i] for i in order]
+        # State j is U|phi_j>: sorting the levels must carry the references
+        # along, or exporting "the ground state" would prepare U|HF> whichever
+        # reference the lowest level actually grew from.
+        determinants = subspace_determinants(
+            self.n_qubits, self._reference_occupied(), self.num_states)
+        self.state_determinants = [determinants[i] for i in order]
 
         self._finalize_timings(timings, run_t0)
         # The single Hartree -> output-unit boundary of the subspace search.
@@ -292,6 +298,33 @@ class SubspaceMixin:
         if self.verbose:
             self._print_subspace_summary(result, timings)
         return result
+
+    # -- export ------------------------------------------------------------ #
+
+    def ansatz_problem(self, theta=None, state: int = 0):
+        """``(n_qubits, occupied, generators, theta, hamiltonian)`` of level
+        ``state`` (0 = the ground state, in the result's ascending order).
+
+        The shared unitary is the same for every level; what distinguishes them
+        is the reference determinant it acts on, which is the one the *sorted*
+        level grew from -- not necessarily Hartree-Fock.
+        """
+        n_qubits, _hf, generators, theta, hamiltonian = super().ansatz_problem(
+            theta)
+        determinants = getattr(self, "state_determinants", None)
+        if determinants is None:
+            raise RuntimeError("run the solver before exporting a state")
+        if not 0 <= int(state) < len(determinants):
+            raise IndexError(f"state {state} of {len(determinants)} levels")
+        bits = reference_qubit_bits(self.mapping, n_qubits,
+                                    determinants[int(state)])
+        occupied = [k for k, bit in enumerate(bits) if bit]
+        return n_qubits, occupied, generators, theta, hamiltonian
+
+    def measured_energy(self, provider, theta=None, state: int = 0) -> float:
+        """``<H>`` of level ``state`` evaluated on ``provider`` (output units)."""
+        return self._to_energy_units(
+            provider.energy(*self.ansatz_problem(theta, state)))
 
     # -- driver hooks ----------------------------------------------------- #
 
@@ -519,6 +552,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
         extra = {"converged": converged, "final_max_gradient": max_grad,
                  "operators": selected, "metrics": metrics,
                  "num_evaluations": total_evals}
+        self.ansatz = ansatz          # kept, like ADAPTVQE.run, for export
         return energies, params, states, extra
 
     def _make_subspace_result(self, energies, params, weights, states,

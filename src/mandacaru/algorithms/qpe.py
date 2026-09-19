@@ -403,6 +403,11 @@ class QuantumPhaseEstimation:
             if hamiltonian is None:
                 raise ValueError("the checkpoint stores no Hamiltonian; pass "
                                  "one to QuantumPhaseEstimation(hamiltonian=)")
+            if not checkpoint.is_product:
+                # The exact-UCC exponential of a sum: a state, but not a product
+                # of the stored generators, so there is no circuit description.
+                return (checkpoint.state_vector(), checkpoint.n_qubits,
+                        hamiltonian, None)
             n, ref, gens, theta, _ = checkpoint.problem()
             return None, n, hamiltonian, (n, ref, gens, theta)
         if isinstance(initial_state, tuple) and len(initial_state) == 4:

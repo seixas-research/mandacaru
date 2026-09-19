@@ -134,6 +134,9 @@ class AdaptAnsatz:
         """The appended generators as qubit operators (for circuit backends)."""
         return [op.generator for op in self._ops]
 
+    #: An adaptively grown ansatz is always an ordered product of exponentials.
+    preparation = "product"
+
     def reference_qubits(self) -> list[int]:
         """Qubit indices set to ``|1>`` in the reference determinant."""
         from ..backends.providers import _occupied_qubits

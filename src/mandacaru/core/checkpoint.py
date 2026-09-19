@@ -44,18 +44,18 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
-import tempfile
 from dataclasses import dataclass, field
 
 import numpy as np
 
+from .atomic import atomic_path
 from .mapping import PauliSum
 from .serialization import MAX_FILE_QUBITS
 
 #: Identifies a Mandacaru wavefunction checkpoint file.
 FORMAT_TAG = "mandacaru-wavefunction-checkpoint"
 #: Current schema version.
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2          # 2: the `preparation` field (product / sum)
 #: Extension a checkpoint path defaults to.
 FILE_EXTENSION = ".json"
 
@@ -109,19 +109,38 @@ def apply_exponential(generator: PauliSum, angle: float, vector) -> np.ndarray:
     return expm_multiply(float(angle) * A, vector)
 
 
-def prepare_state(n_qubits: int, reference_qubits, generators, parameters
-                  ) -> np.ndarray:
-    r"""``prod_k exp(theta_k A_k) |ref>`` as a full-register state vector.
+#: How the generators act on the reference.  ``"product"`` is
+#: :math:`\prod_k e^{\theta_k A_k}|ref\rangle` (ADAPT-VQE, Trotterized UCCSD --
+#: what a circuit prepares); ``"sum"`` is :math:`e^{\sum_k\theta_k A_k}|ref\rangle`
+#: (the exact UCC exponential, the default local UCCSD).  The two coincide only
+#: when the generators commute, so a record has to say which one it is.
+PREPARATIONS = ("product", "sum")
 
-    Independent of every driver and ansatz class: this is the state a
-    checkpoint *means*, and what a circuit provider prepares on hardware.
+
+def prepare_state(n_qubits: int, reference_qubits, generators, parameters,
+                  preparation: str = "product") -> np.ndarray:
+    r"""The state a checkpoint *means*, as a full-register state vector.
+
+    ``preparation="product"``: :math:`\prod_k e^{\theta_k A_k}|ref\rangle`,
+    which is also what a circuit provider prepares on hardware;
+    ``"sum"``: :math:`e^{\sum_k \theta_k A_k}|ref\rangle` (see
+    :data:`PREPARATIONS`).  Independent of every driver and ansatz class.
     """
+    if preparation not in PREPARATIONS:
+        raise ValueError(f"unknown preparation {preparation!r}; use one of "
+                         f"{PREPARATIONS}")
     parameters = np.asarray(parameters, dtype=float).ravel()
     generators = list(generators)
     if parameters.size != len(generators):
         raise ValueError(f"{len(generators)} generators but {parameters.size} "
                          "parameters")
     psi = reference_vector(n_qubits, reference_qubits)
+    if preparation == "sum" and len(generators) > 1:
+        from scipy.sparse.linalg import expm_multiply
+
+        total = sum(float(angle) * generator.to_sparse_matrix()
+                    for generator, angle in zip(generators, parameters))
+        return expm_multiply(total.tocsc(), psi)
     for generator, angle in zip(generators, parameters):
         psi = apply_exponential(generator, angle, psi)
     return psi
@@ -199,6 +218,11 @@ class WavefunctionCheckpoint:
         file is a complete input for another algorithm.
     method : str
         The algorithm that wrote the state (``"adapt-vqe"``, ``"vqe"``).
+    preparation : {"product", "sum"}
+        How the generators act on the reference (:data:`PREPARATIONS`).  The
+        exact-UCC ansatz is a *sum* in one exponential; reading it back as a
+        product gives a different state (fidelity 0.94 on a three-angle H2
+        example), so the form is part of the record.
     status : dict
         Solver progress needed to resume: ``complete``, ``converged``,
         ``iteration``, ``max_gradient``, ``num_evaluations``, the per-step
@@ -223,9 +247,14 @@ class WavefunctionCheckpoint:
     method: str = ""
     status: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
+    preparation: str = "product"
 
     def __post_init__(self):
         self.n_qubits = int(self.n_qubits)
+        self.preparation = str(self.preparation)
+        if self.preparation not in PREPARATIONS:
+            raise ValueError(f"unknown preparation {self.preparation!r}; use "
+                             f"one of {PREPARATIONS}")
         self.reference_qubits = [int(k) for k in self.reference_qubits]
         self.parameters = np.asarray(self.parameters, dtype=float).ravel()
         self.generators = list(self.generators)
@@ -267,9 +296,25 @@ class WavefunctionCheckpoint:
         ``energy`` / ``build`` takes and :class:`~mandacaru.algorithms.qpe.QuantumPhaseEstimation`
         starts from.  ``hamiltonian`` overrides the stored one.
         """
+        self._require_product("a circuit problem")
         h = self.hamiltonian if hamiltonian is None else hamiltonian
         return (self.n_qubits, list(self.reference_qubits),
                 list(self.generators), self.parameters.copy(), h)
+
+    @property
+    def is_product(self) -> bool:
+        """Whether the state is a product of exponentials -- trivially so with
+        at most one generator, where the two forms coincide."""
+        return self.preparation == "product" or len(self.generators) <= 1
+
+    def _require_product(self, what: str) -> None:
+        if not self.is_product:
+            raise ValueError(
+                f"{what} needs a product of exponentials, but this checkpoint "
+                "holds the exact-UCC state exp(sum_k theta_k A_k)|ref> "
+                "(preparation='sum'), which no ordered circuit of these "
+                "generators prepares.  Use state_vector() -- QPE accepts the "
+                "checkpoint as it is -- or run the ansatz with trotter=True.")
 
     def hamiltonian_fingerprint(self, atol: float = 1e-10) -> str | None:
         """A canonical digest of the stored Hamiltonian, or ``None`` without one.
@@ -285,9 +330,10 @@ class WavefunctionCheckpoint:
         return fingerprint(self.hamiltonian, atol)
 
     def state_vector(self) -> np.ndarray:
-        """The prepared state, ``prod_k exp(theta_k A_k) |ref>``."""
+        """The prepared state, in the form :attr:`preparation` names."""
         return prepare_state(self.n_qubits, self.reference_qubits,
-                             self.generators, self.parameters)
+                             self.generators, self.parameters,
+                             self.preparation)
 
     def circuit(self, provider=None):
         """The state-preparation circuit on an SDK (default: Qiskit).
@@ -298,6 +344,7 @@ class WavefunctionCheckpoint:
         if provider is None:
             from ..backends.providers import QiskitProvider
             provider = QiskitProvider()
+        self._require_product("a state-preparation circuit")
         return provider.build(self.n_qubits, self.reference_qubits,
                               self.generators, self.parameters)
 
@@ -329,6 +376,7 @@ class WavefunctionCheckpoint:
             "occupied_orbitals": (None if self.occupied_orbitals is None
                                   else [int(k) for k in self.occupied_orbitals]),
             "method": self.method,
+            "preparation": self.preparation,
             "energy": None if self.energy is None else float(self.energy),
             "operators": [{"label": label, "kind": kind,
                            "parameter": float(theta),
@@ -367,6 +415,8 @@ class WavefunctionCheckpoint:
             energy=payload.get("energy"),
             hamiltonian=_pauli_from_payload(payload.get("hamiltonian")),
             method=str(payload.get("method", "")),
+            # Absent in version-1 files, which only ever held products.
+            preparation=str(payload.get("preparation", "product")),
             status=dict(payload.get("status") or {}),
             metadata=dict(payload.get("metadata") or {}))
 
@@ -382,21 +432,10 @@ class WavefunctionCheckpoint:
             raise ValueError(
                 f"refusing to write a {self.n_qubits}-qubit checkpoint: "
                 f"Pauli-string files are limited to {MAX_FILE_QUBITS} qubits")
-        directory = os.path.dirname(os.path.abspath(path)) or "."
-        os.makedirs(directory, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=".checkpoint-", suffix=".tmp",
-                                   dir=directory)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        with atomic_path(path) as staging:
+            with open(staging, "w", encoding="utf-8") as fh:
                 json.dump(self.to_payload(), fh, indent=1)
                 fh.write("\n")
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
         return path
 
     @classmethod

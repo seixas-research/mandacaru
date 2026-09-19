@@ -83,6 +83,27 @@ n, reference, generators, thetas, H = ck.problem()
 which is what makes the format algorithm-agnostic: nothing in it refers to a
 pool, an ansatz class or a driver.
 
+One thing the generators and angles do not determine is **how they are
+combined**, so the file records it as `preparation`:
+
+| `preparation` | state | written by |
+| :--- | :--- | :--- |
+| `"product"` | $\prod_k e^{\theta_k A_k}\,|\mathrm{ref}\rangle$ | ADAPT-VQE, and UCCSD with `trotter=True` |
+| `"sum"` | $e^{\sum_k \theta_k A_k}\,|\mathrm{ref}\rangle$ | the default, exact UCCSD of `method="vqe"` |
+
+The two coincide only when the generators commute (on a three-angle H₂ example
+their fidelity is 0.94), so a reader must not guess. `state_vector()`,
+`expectation()` and QPE honour either form. A circuit is an ordered product, so
+`circuit()` and `problem()` refuse a `"sum"` checkpoint, and so does resuming it
+into a run that prepares a product; run the ansatz with `trotter=True` when the
+state is meant for hardware. Files written before this field existed held
+products only and load as such.
+
+A checkpoint also needs an ansatz that can be *described* — generators and a
+reference determinant (`SerializableAnsatz`). A custom ansatz implementing only
+the state-vector `Ansatz` protocol runs through `method="vqe"` unchanged; asking
+for `checkpoint=` or `resume=` with it is refused before the optimisation starts.
+
 ## Quantum phase estimation
 
 QPE reads eigenvalues of $H$ off the phases of $U = e^{2\pi i (H - E_{\rm lo})/W}$:

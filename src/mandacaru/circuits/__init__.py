@@ -10,7 +10,7 @@
 
 from .adapt_ansatz import AdaptAnsatz
 from .ansatz import UCCSD
-from .base import Ansatz
+from .base import Ansatz, SerializableAnsatz
 from .gates import double_excitation, single_excitation
 from .pools import (
     CEOPool,
@@ -26,6 +26,7 @@ from .profiling import CircuitMetrics, profile_ansatz
 
 __all__ = [
     "Ansatz",
+    "SerializableAnsatz",
     "UCCSD",
     "AdaptAnsatz",
     "single_excitation",
