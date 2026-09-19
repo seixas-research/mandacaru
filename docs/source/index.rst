@@ -1,5 +1,3 @@
-Mandacaru: molecular quantum simulation
-=======================================
 
 .. image:: _static/logo_light.png
    :alt: Mandacaru
@@ -13,7 +11,7 @@ Mandacaru: molecular quantum simulation
    :width: 640
    :align: center
 
-Mandacaru is a Python framework for simulating fermionic systems with variational
+**Mandacaru** is a Python framework for simulating fermionic systems with variational
 quantum algorithms. Starting from an atomic geometry, it builds a molecular
 Hamiltonian, maps it to qubits and optimises a quantum circuit to estimate its
 energy. The Atomic Simulation Environment (ASE) provides the geometry and
