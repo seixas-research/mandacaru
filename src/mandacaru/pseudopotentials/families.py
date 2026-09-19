@@ -232,9 +232,10 @@ def _get_tm(symbol, directory=None):
     from .io import get_pseudopotential
     pp = get_pseudopotential(symbol, directory)
     if canonical_family_name(getattr(pp, "family", DEFAULT_FAMILY)) != "ncpp":
+        location = directory or "the bundled library"
         raise ValueError(
-            f"the pseudopotential for {symbol!r} in {directory or 'the bundled '
-            'library'} belongs to family {pp.family!r}, not 'ncpp'")
+            f"the pseudopotential for {symbol!r} in {location} belongs to "
+            f"family {pp.family!r}, not 'ncpp'")
     return pp
 
 

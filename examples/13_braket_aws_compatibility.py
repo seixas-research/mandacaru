@@ -200,7 +200,7 @@ print("       this bound is why, not a defect of the implementation.")
 # --------------------------------------------------------------------------- #
 
 print("\n[5] Braket devices Mandacaru can target")
-print(f"    {"device":<26}{"kind":<12}{"shots":<10}ARN")
+print(f"    {'device':<26}{'kind':<12}{'shots':<10}ARN")
 print("    " + "-" * 66)
 for device in describe_devices():
     if device.provider != "braket":
