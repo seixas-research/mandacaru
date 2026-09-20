@@ -46,7 +46,8 @@ from ..core.mapping import Fermion, PauliSum
 from ..core.serialization import (DEFAULT_FORMAT, EXTENSION_FORMATS,
                                   load_hamiltonian, resolve_format,
                                   resolve_save_path, save_hamiltonian)
-from ..optimizers.optim import NAMED_OPTIMIZERS, OptimizeResult, resolve_optimizer
+from ..optimizers.optim import (DEFAULT_OPTIMIZER, NAMED_OPTIMIZERS,
+                                OptimizeResult, resolve_optimizer)
 from ..utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
                            dump_pool, resolve_dump_path)
 from ..units import (DEFAULT_GRID_SPACING, convert_energy, energy_unit_label,
@@ -213,7 +214,8 @@ class VariationalDriver(Calculator):
     #: Default ``sparse`` policy (``False`` dense; ``"auto"`` for adaptive drivers).
     _default_sparse = False
 
-    def __init__(self, *, optimizer="COBYLA", mapping: str = "jordan_wigner",
+    def __init__(self, *, optimizer=DEFAULT_OPTIMIZER,
+                 mapping: str = "jordan_wigner",
                  basis="FAO", device: str = "AER_simulator", grid=None,
                  h: float = DEFAULT_GRID_SPACING, kpts=None, spin: bool = False,
                  initial_state: str | None = "hartree-fock", charge: int = 0,
@@ -1077,7 +1079,7 @@ class VariationalDriver(Calculator):
                                np.asarray(result.x, dtype=float).ravel()])
         return OptimizeResult(x=full, fun=result.fun, nfev=result.nfev,
                               history=result.history, success=result.success,
-                              message=result.message)
+                              message=result.message, nit=result.nit)
 
     def _optimize_all(self, cost, x0, callback=None) -> OptimizeResult:
         """Optimize a fixed-size parameter vector, honoring :attr:`quenching`.
@@ -1095,6 +1097,9 @@ class VariationalDriver(Calculator):
         params = x0.copy()
         history: list[float] = []
         nfev = 0
+        # One sweep is one pass over the parameters, but the effort is the sum
+        # of the per-parameter searches -- that is what the step count reports.
+        steps = 0
         value = float(cost(params))
         success = True
         for k in range(params.size):
@@ -1114,10 +1119,11 @@ class VariationalDriver(Calculator):
             params[k] = float(np.asarray(step.x, dtype=float).ravel()[0])
             history.extend(step.history)
             nfev += step.nfev
+            steps += step.nit or 0
             value = float(step.fun)
             success = success and step.success
         return OptimizeResult(x=params, fun=value, nfev=nfev, history=history,
-                              success=success,
+                              success=success, nit=steps,
                               message="sequential (quenching=False) sweep")
 
     @staticmethod

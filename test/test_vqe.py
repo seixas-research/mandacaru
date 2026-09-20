@@ -12,8 +12,15 @@ from mandacaru.circuits import UCCSD, double_excitation, single_excitation
 from mandacaru.core import MolecularIntegrals, minimal_fao_basis
 from mandacaru.core.mapping import PauliSum
 from mandacaru.integrals import Grid
-from mandacaru.optimizers import Optimizer
+from mandacaru.optimizers import DEFAULT_OPTIMIZER, Optimizer
 from mandacaru.units import HARTREE_TO_EV
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+COBYLA_OPT = Optimizer(method="COBYLA", maxiter=2000, tol=1e-12)
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=500, tol=1e-12)
 
 CHEMICAL_ACCURACY = 1.6e-3 * HARTREE_TO_EV  # 0.043 eV (results are in eV)
 
@@ -103,7 +110,8 @@ class TestUCCSD:
 
 class TestOptimizer:
     def test_minimizes_quadratic(self):
-        res = Optimizer(method="COBYLA").minimize(lambda x: (x[0] - 3.0) ** 2, [0.0])
+        res = Optimizer(method="COBYLA").minimize(
+            lambda x: (x[0] - 3.0) ** 2, [0.0])
         assert np.isclose(res.x[0], 3.0, atol=1e-3)
         assert res.history and res.nfev == len(res.history)
 
@@ -135,7 +143,7 @@ class TestVQE:
     def test_h2_reaches_exact_ground_state(self, h2_hamiltonian, h2_exact):
         vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                         ansatz=UCCSD(2, (1, 1)),
-                        optimizer=Optimizer("COBYLA", maxiter=2000))
+                        optimizer=COBYLA_OPT)
         result = vqe.run()
         assert isinstance(result, VQEResult)
         assert abs(result.optimal_energy - h2_exact) < CHEMICAL_ACCURACY
@@ -151,7 +159,7 @@ class TestVQE:
         assert isinstance(qubit_h, PauliSum)
         vqe = Mandacaru(method="vqe", hamiltonian=qubit_h,
                         ansatz=UCCSD(2, (1, 1)),
-                        optimizer=Optimizer("COBYLA", maxiter=2000))
+                        optimizer=COBYLA_OPT)
         assert abs(vqe.run().optimal_energy - h2_exact) < CHEMICAL_ACCURACY
 
     def test_reference_energy_matches_hf_expectation(self, h2_hamiltonian):
@@ -176,7 +184,7 @@ class TestVQEMirrorsADAPT:
     def test_default_optimizer_is_cobyla(self, h2_hamiltonian):
         vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                         ansatz=UCCSD(2, (1, 1)))
-        assert vqe.optimizer.method == "COBYLA"
+        assert vqe.optimizer.method == DEFAULT_OPTIMIZER
 
     @pytest.mark.parametrize(
         "name",
@@ -187,7 +195,7 @@ class TestVQEMirrorsADAPT:
         assert vqe.optimizer.method == name
 
     def test_optimizer_instance_passthrough(self, h2_hamiltonian):
-        opt = Optimizer("L-BFGS-B", maxiter=500)
+        opt = LBFGSB
         vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                         ansatz=UCCSD(2, (1, 1)), optimizer=opt)
         assert vqe.optimizer is opt
@@ -230,7 +238,7 @@ class TestVQEAsASECalculator:
     def test_get_total_energy_matches_exact(self):
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-        atoms.calc = Mandacaru(method="vqe", basis="FAO", optimizer="COBYLA",
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", optimizer=COBYLA_OPT,
                                h=0.30, trace=False)
         energy_ev = atoms.get_total_energy()
         result = atoms.calc.result
@@ -295,7 +303,7 @@ class TestVQEProfiling:
     def test_calculator_summary_includes_integration(self, capsys):
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-        atoms.calc = Mandacaru(method="vqe", basis="FAO", optimizer="COBYLA",
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", optimizer=COBYLA_OPT,
                                h=0.4, trace=True)
         atoms.get_total_energy()
         out = capsys.readouterr().out

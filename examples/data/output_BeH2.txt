@@ -4,9 +4,10 @@
     ██    ██ ██▀██ ██ ▀██ ████▀ ██▀██ ▀████ ██▀██ ██ ██ ▀███▀
 
 -----------------------------------------------------------------
-    version:       26.9.34
+    version:       26.9.37
     developed by:  Leandro Seixas Rocha
-    homepage:      https://github.com/seixas-research/mandacaru
+    website:       https://mandacaru.seixas.dev
+    repository:    https://github.com/seixas-research/mandacaru
     documentation: https://mandacaru.readthedocs.io/
 -----------------------------------------------------------------
 
@@ -16,7 +17,7 @@ System:
 ├── user:         leseixas
 ├── hostname:     safira
 ├── cwd:          /Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru/examples
-└── PID:          77920
+└── PID:          19953
 
 Python:
 ├── version:    3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:04:32) [Clang 20.1.8 ]
@@ -77,7 +78,7 @@ Dependencies:
     qubits: 6
 
 [OPTIMIZATION SETUP]
-    classical_optimizer: COBYLA
+    classical_optimizer: SLSQP
     max_iterations: 25
     gradient_method: analytic
     gradient_formula: exact derivative, g = 2 Re<H psi|A psi> (overrides parameter_shift: sparse pool)
@@ -85,7 +86,9 @@ Dependencies:
     gradient_units: Hartree
     pool: ceo
     pool_class: CEOPool
-    pool_size: 8
+    pool_size: 24
+    growth: single (largest gradient)
+    pruning: off
     reoptimize_all_parameters: True
     state_vector_backend: sparse matrices, 2^6 amplitudes
     device: AER_simulator
@@ -98,45 +101,46 @@ Dependencies:
     initial_ansatz: |HF> (0 parameters)
 
 [ITERATIONS]
-    iter        energy (eV)              type        |grad|      1q    cnot   depth operator
-    ----------------------------------------------------------------------------------------
-       1    -384.4389144887               ceo  1.453864e-01      40      48      65 CEO[q0,q2,q3,q5]{D(0,3->2,5)}
-       2    -384.4612389839               ceo  7.497554e-02      74      96     129 CEO[q1,q2,q4,q5]{D(1,4->2,5)}
-       3    -384.4623829351               ceo  1.161331e-02      80     100     136 CEO[q0,q2]{S(0->2)}
-       4    -384.4632146924               ceo  9.788392e-03      85     104     137 CEO[q3,q5]{S(3->5)}
+    iter        energy (eV)              type        |grad|   steps      1q    cnot   depth operator
+    ------------------------------------------------------------------------------------------------
+       1    -384.4389145056               ceo  1.453864e-01       3      24      24      33 CEO[o0,o2,o3,o5]{D(0,3->2,5)+D(0,5->2,3)}
+       2    -384.4612390263               ceo  7.498310e-02       4      42      48      65 CEO[o1,o2,o4,o5]{D(1,4->2,5)+D(1,5->2,4)}
+       3    -384.4623830622               ceo  1.160794e-02       8      48      52      72 CEO[o0,o2]{S(0->2)}
+       4    -384.4632149460               ceo  9.781166e-03       9      53      56      73 CEO[o3,o5]{S(3->5)}
 ========================================================================
 [VARIATIONAL QUANTUM SUMMARY]
     converged: True
-    optimal_energy_eV: -384.4632146924
+    optimal_energy_eV: -384.4632149460
     reference_energy_eV: -384.3573093979
-    correlation_energy_eV: -0.1059052945
+    correlation_energy_eV: -0.1059055480
     num_operators: 4
     num_parameters: 4
-    final_max_gradient: 1.419008e-04
-    cost_evaluations: 148
-    cnot_count: 104
-    circuit_depth: 137
-    one_qubit_gates: 85
-    total_gates: 189
+    final_max_gradient: 2.408601e-07
+    cost_evaluations: 103
+    optimizer_steps: 24
+    cnot_count: 56
+    circuit_depth: 73
+    one_qubit_gates: 53
+    total_gates: 109
 ========================================================================
 
 [PERFORMANCE]
     step: 1
     stages (wall-clock seconds):
-        gradient screening                          0.0003
-        parameter optimization                      0.0475
-        circuit profiling                           0.2598
-        integration: one-body integrals             0.0161
-        integration: two-body integrals (fft)       1.2295
+        gradient screening                          0.0006
+        parameter optimization                      0.0047
+        circuit profiling                           0.2755
+        integration: one-body integrals             0.0164
+        integration: two-body integrals (fft)       1.5534
         --------------------------------------------------
-        sum of timed stages                         1.5533
-    untimed_s: 0.8001
-    wall_time_s: 2.3534
-    solver_wall_time_s: 2.3533
+        sum of timed stages                         1.8506
+    untimed_s: 0.8802
+    wall_time_s: 2.7308
+    solver_wall_time_s: 2.7306
     integration_backend: C (OpenMP)
     openmp_threads: 8
     cpu_count: 8
     mpi: not used (single process, shared-memory OpenMP)
-    peak_memory_MiB: 1632.3
+    peak_memory_MiB: 1685.1
     resident_memory_MiB: n/a
 ========================================================================

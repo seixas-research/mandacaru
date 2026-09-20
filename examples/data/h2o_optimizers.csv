@@ -1,0 +1,8 @@
+# H2O, PAW-SZ, h=0.25, Jordan-Wigner, 12 qubits; sector FCI -492.521982 eV; maxiter=1000, tol=1e-8 and 1e-12 (identical)
+optimizer,optimizer_steps,cost_evaluations,num_operators,energy_eV,max_gradient,adapt_converged,inner_failures,cnot_count,circuit_depth,seconds,error_eV
+SPSA,77454,232402,40,-492.508176,,False,38,538,576,166.1,1.38e-02
+COBYLA,23273,34184,40,-492.512342,,False,10,486,527,54.5,9.64e-03
+Nelder-Mead,59751,77245,40,-492.512307,,False,24,488,526,66.1,9.67e-03
+SLSQP,236,6244,40,-492.512345,,False,0,486,527,8.3,9.64e-03
+Adam,15703,746747,40,-492.512345,,False,2,490,528,784.6,9.64e-03
+L-BFGS-B,166,5912,40,-492.512265,,False,0,486,524,10.8,9.72e-03

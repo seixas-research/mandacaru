@@ -408,6 +408,13 @@ class AdaptOutputLogger:
                          # be wide enough or every later column shifts.
                          ("type", "type", 17, "s"),
                          ("grad", "|grad|", 13, ".6e"),
+                         # Classical effort of this growth step: how many
+                         # parameter updates the optimizer made to re-optimize
+                         # the grown ansatz (not cost evaluations -- the two
+                         # differ by an order of magnitude for a
+                         # gradient-based method).  The run's total is in the
+                         # summary block.
+                         ("steps", "steps", 7, "s"),
                          # Circuit cost, cheapest gate first: single-qubit
                          # gates, then CNOTs, then the depth they compile to.
                          ("1q", "1q", 7, "s"),
@@ -428,7 +435,8 @@ class AdaptOutputLogger:
                         gradients: Iterable[float], selected_index: int,
                         expressivity: float | None, energy: float,
                         num_parameters: int, energy_unit: str = "eV",
-                        metrics: Any = None) -> None:
+                        metrics: Any = None,
+                        optimizer_steps: int | None = None) -> None:
         """Append **one row** describing this ADAPT iteration.
 
         Each iteration is a single line and each tracked property is a column
@@ -459,6 +467,9 @@ class AdaptOutputLogger:
             Unit label for ``energy`` (default ``"eV"``).
         metrics : optional
             Object exposing ``cnot_count`` / ``depth`` / ``num_1q_gates``.
+        optimizer_steps : int, optional
+            Parameter updates the classical optimizer took at this step
+            (``None`` when the method reports none, printed as ``-``).
         """
         grads = [float(g) for g in gradients]
         selected = pool_operators[selected_index]
@@ -484,6 +495,7 @@ class AdaptOutputLogger:
             "expr": None if expressivity is None else float(expressivity),
             "type": str(selected.kind),
             "grad": abs(grads[selected_index]),
+            "steps": count(optimizer_steps),
             "cnot": count(getattr(metrics, "cnot_count", None)),
             "depth": count(getattr(metrics, "depth", None)),
             "1q": count(getattr(metrics, "num_1q_gates", None)),
@@ -523,6 +535,7 @@ class AdaptOutputLogger:
                       final_max_gradient: float | None = None,
                       expressivity: float | None = None,
                       num_evaluations: int | None = None,
+                      optimizer_steps: int | None = None,
                       metrics: Any = None, optimizer: str | None = None,
                       extra: dict | None = None) -> None:
         """Write this step's ``[VARIATIONAL QUANTUM SUMMARY]``: the converged state.
@@ -562,6 +575,10 @@ class AdaptOutputLogger:
             self._emit_body(f"final_max_gradient: {final_max_gradient:.6e}")
         if num_evaluations is not None:
             self._emit_body(f"cost_evaluations: {num_evaluations}")
+        # The classical effort, in the optimizer's own currency: the `steps`
+        # column of the table above, summed over the run.
+        if optimizer_steps is not None:
+            self._emit_body(f"optimizer_steps: {optimizer_steps}")
 
         # Final compiled-circuit cost.
         if metrics is not None and getattr(metrics, "cnot_count", None) is not None:
@@ -1251,6 +1268,10 @@ def parse_output(path: str) -> dict:
                     "cnot_count": record.get("cnot", "-"),
                     "circuit_depth": record.get("depth", "-"),
                     "one_qubit_gates": record.get("1q", "-"),
+                    # Classical optimizer steps for this growth step; "-" both
+                    # when the method reports none and when an older log has
+                    # no such column at all.
+                    "optimizer_steps": record.get("steps", "-"),
                     "columns": list(columns),
                 }
                 step["iterations"].append(entry)

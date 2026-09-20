@@ -35,6 +35,7 @@ from mandacaru.algorithms import Mandacaru
 from mandacaru.units import HARTREE_TO_EV, from_hartree
 
 # All generated files (logs, CSV, plots) go to examples/data/.
+from mandacaru.optimizers import Optimizer
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
@@ -48,7 +49,9 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="qubit",
                        basis={"name": "FAO"},
                        mapping="jordan_wigner",
-                       optimizer="COBYLA",
+                       optimizer=Optimizer(method="SLSQP",  # the default
+                                           maxiter=2000,
+                                           tol=1e-12),
                        gradient="parameter_shift",
                        device="AER_simulator",
                        h=0.10,

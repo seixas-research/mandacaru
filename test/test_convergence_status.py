@@ -23,6 +23,15 @@ from mandacaru.core.hamiltonian import spin_block_integrals
 from mandacaru.core.mapping import Fermion
 from mandacaru.optimizers.optim import Optimizer
 
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+SPSA_OPT = Optimizer(method="SPSA", maxiter=2000, tol=1e-12)
+# Without a tolerance a native method has no criterion to certify against,
+# so it always reports failure -- which is what the reporting test needs.
+UNCERTIFIABLE = Optimizer(method="SPSA", maxiter=20, tol=None)
+
 
 def random_hamiltonian(orbitals=3, seed=5):
     """A Hermitian, number-conserving Hamiltonian on ``2 * orbitals`` modes."""
@@ -63,7 +72,7 @@ class TestAdaptConvergenceFlag:
         with pytest.warns(RuntimeWarning, match="no convergence"):
             result = driver(pool="qeb", max_iterations=2,
                             gradient_tolerance=1e-12,
-                            optimizer="SPSA").run()
+                            optimizer=UNCERTIFIABLE).run()
         assert result.optimizer_failures
         assert all(isinstance(step, int) for step, _ in result.optimizer_failures)
 
@@ -106,7 +115,9 @@ class TestOptimizerStatus:
 
     def test_native_optimizers_only_claim_success_with_a_tolerance(self):
         quadratic = lambda x: float(np.sum(np.asarray(x) ** 2))
-        without = Optimizer(method="SPSA", maxiter=20).minimize(quadratic, [0.3])
+        # tol=None is the only way to get there now that DEFAULT_TOL is set.
+        without = Optimizer(method="SPSA", maxiter=20, tol=None).minimize(
+            quadratic, [0.3])
         assert not without.success and "no tol set" in without.message
         with_tol = Optimizer(method="Adam", maxiter=200,
                              tol=1e-3).minimize(quadratic, [0.3])

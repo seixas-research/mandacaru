@@ -26,10 +26,33 @@ from ase import Atoms
 from mandacaru import Mandacaru
 from mandacaru.core import PauliSum, WavefunctionCheckpoint, load_checkpoint
 from mandacaru.core.checkpoint import prepare_state, reference_vector
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+COBYLA_OPT = Optimizer(method="COBYLA", maxiter=2000, tol=1e-12)
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
 
 
 def h2(distance=0.74):
     atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, distance]], cell=[6.0] * 3)
+    atoms.center()
+    return atoms
+
+
+def lih(distance=1.6):
+    """The growth system.
+
+    H2 in a minimal basis is exactly one double excitation away from its
+    ground state, so ADAPT converges after a *single* operator and there is no
+    growth to interrupt, checkpoint and resume.  LiH needs six operators at
+    this tolerance, which is what these tests are about; ``h2`` stays for the
+    register- and serialization-level checks above.
+    """
+    atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, distance]],
+                  cell=[8.0] * 3)
     atoms.center()
     return atoms
 
@@ -42,6 +65,16 @@ def adapt(**options):
 
 @pytest.fixture(scope="module")
 def straight_run():
+    """A six-operator LiH run: the growth the resume tests replay."""
+    atoms = lih()
+    atoms.calc = adapt(max_iterations=6)
+    energy = atoms.get_total_energy()
+    return atoms.calc, energy
+
+
+@pytest.fixture(scope="module")
+def h2_run():
+    """A one-operator H2 run: the 4-qubit register the record tests name."""
     atoms = h2()
     atoms.calc = adapt(max_iterations=6)
     energy = atoms.get_total_energy()
@@ -54,8 +87,8 @@ def straight_run():
 
 class TestRecord:
     def test_reproduces_the_driver_state_and_round_trips(self, tmp_path,
-                                                         straight_run):
-        driver, _ = straight_run
+                                                         h2_run):
+        driver, _ = h2_run
         record = driver.checkpoint                  # written at the end of run()
         assert isinstance(record, WavefunctionCheckpoint)
         assert record.labels == driver.result.operators
@@ -79,9 +112,9 @@ class TestRecord:
         assert back.metadata["geometry"]["symbols"] == ["H", "H"]
         assert json.load(open(path))["energy_unit"] == "Ha"
 
-    def test_the_circuit_prepares_the_same_state(self, straight_run):
+    def test_the_circuit_prepares_the_same_state(self, h2_run):
         from qiskit.quantum_info import Statevector
-        record = straight_run[0].checkpoint
+        record = h2_run[0].checkpoint
         qc = record.circuit()
         assert qc.num_qubits == 4
         amplitudes = np.asarray(Statevector(qc).data)
@@ -124,7 +157,7 @@ class TestAdaptResume:
         driver, energy = straight_run
         path = str(tmp_path / "adapt.json")
 
-        atoms = h2()
+        atoms = lih()
         atoms.calc = adapt(max_iterations=2, checkpoint=path)
         atoms.get_total_energy()
         partial = load_checkpoint(path)
@@ -133,7 +166,7 @@ class TestAdaptResume:
         assert partial.status["complete"] is True      # the run *ended*
         assert partial.status["converged"] is False    # ... unconverged
 
-        atoms = h2()
+        atoms = lih()
         atoms.calc = adapt(max_iterations=6, resume=path, checkpoint=path)
         resumed_energy = atoms.get_total_energy()
         result = atoms.calc.result
@@ -155,7 +188,7 @@ class TestAdaptResume:
             if info["iteration"] == 3:
                 raise RuntimeError("simulated interruption")
 
-        atoms = h2()
+        atoms = lih()
         atoms.calc = adapt(max_iterations=6, checkpoint=path)
         with pytest.raises(RuntimeError, match="simulated"):
             _configured(atoms).run(callback=crash)
@@ -164,7 +197,7 @@ class TestAdaptResume:
         assert saved.status["complete"] is False
         assert len(saved.status["iterations"]) == 3
 
-        atoms = h2()
+        atoms = lih()
         atoms.calc = adapt(max_iterations=6, resume=path)
         assert atoms.get_total_energy() == pytest.approx(energy, abs=1e-8)
         assert atoms.calc.result.operators == driver.result.operators
@@ -177,7 +210,7 @@ class TestAdaptResume:
             seen.append(load_checkpoint(path).num_parameters
                         if info["iteration"] % 2 == 0 else None)
 
-        atoms = h2()
+        atoms = lih()
         atoms.calc = adapt(max_iterations=4, checkpoint=path, checkpoint_every=2)
         _configured(atoms).run(callback=watch)
         assert seen == [None, 2, None, 4]
@@ -224,20 +257,20 @@ class TestAdaptResume:
 
     def test_mismatched_register_is_refused(self, tmp_path):
         path = str(tmp_path / "parity.json")
-        atoms = h2()
+        atoms = lih()
         atoms.calc = adapt(max_iterations=1, mapping="parity", checkpoint=path)
         atoms.get_total_energy()
-        atoms = h2()
+        atoms = lih()
         atoms.calc = adapt(max_iterations=2, resume=path)       # Jordan-Wigner
         with pytest.raises(ValueError, match="mapping"):
             atoms.get_total_energy()
 
     def test_resume_and_initial_parameters_are_exclusive(self, tmp_path):
         path = str(tmp_path / "x.json")
-        atoms = h2()
+        atoms = lih()
         atoms.calc = adapt(max_iterations=1, checkpoint=path)
         atoms.get_total_energy()
-        atoms = h2()
+        atoms = lih()
         atoms.calc = adapt(max_iterations=2, resume=path)
         with pytest.raises(ValueError, match="not both"):
             _configured(atoms).run(initial_parameters=[0.1])
@@ -261,7 +294,7 @@ class TestVQEResume:
         path = str(tmp_path / "vqe.json")
         atoms = h2()
         atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
-                               optimizer="L-BFGS-B", trace=False,
+                               optimizer=LBFGSB, trace=False,
                                checkpoint=path, checkpoint_every=5)
         energy = atoms.get_total_energy()
         record = load_checkpoint(path)
@@ -270,18 +303,27 @@ class TestVQEResume:
         assert record.energy == pytest.approx(atoms.calc.result.in_units("Ha"),
                                               abs=1e-12)
 
+        cold = h2()
+        cold.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
+                              optimizer=LBFGSB, trace=False)
+        cold.get_total_energy()
+
         atoms = h2()
         atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
-                               optimizer="L-BFGS-B", trace=False, resume=path)
+                               optimizer=LBFGSB, trace=False, resume=path)
         assert atoms.get_total_energy() == pytest.approx(energy, abs=1e-8)
-        # Starting at the optimum, the warm start needs only a few evaluations.
-        assert atoms.calc.result.num_evaluations < 10
+        # Starting at the optimum costs less than starting from zero.  How
+        # much less is the optimizer's tolerance to decide -- a tight one
+        # still spends a gradient and a line search confirming it is there --
+        # so this compares the two runs rather than pinning a number.
+        assert atoms.calc.result.num_evaluations < \
+            cold.calc.result.num_evaluations
 
     def test_the_best_point_is_what_gets_checkpointed(self, tmp_path):
         path = str(tmp_path / "best.json")
         atoms = h2()
         atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
-                               optimizer="COBYLA", trace=False,
+                               optimizer=COBYLA_OPT, trace=False,
                                checkpoint=path, checkpoint_every=1)
         atoms.get_total_energy()
         assert load_checkpoint(path).energy == pytest.approx(

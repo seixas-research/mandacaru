@@ -33,6 +33,7 @@ from mandacaru import Mandacaru
 from mandacaru.backends.providers import QiskitProvider
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+from mandacaru.optimizers import Optimizer
 os.makedirs(DATA, exist_ok=True)
 
 HARDWARE = "ibm_kingston,ibm_fez,ibm_marrakesh"
@@ -68,7 +69,9 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        h=0.20,
                        pool="fermionic",
                        mapping="parity_reduced",
-                       optimizer="L-BFGS-B",
+                       optimizer=Optimizer(method="L-BFGS-B",
+                                           maxiter=2000,
+                                           tol=1e-12),
                        max_iterations=10,
                        gradient_tolerance=1e-5,
                        measurement_provider=provider,

@@ -53,6 +53,7 @@ from ..circuits.adapt_ansatz import AdaptAnsatz
 from ..circuits.pools import (GRADIENT_FLOOR, PoolBase, PoolOperator,
                              _support_of, build_pool)
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
+from ..optimizers.optim import DEFAULT_OPTIMIZER
 from ..units import ANGSTROM_TO_BOHR, convert_energy, to_hartree
 from .base import VariationalDriver
 from .calculator import _method_key
@@ -196,6 +197,12 @@ class AdaptIteration:
     cnot_count: int | None
     depth: int | None
     num_parameters: int
+    #: Steps the classical optimizer took to re-optimize the grown ansatz
+    #: (parameter updates, not cost evaluations -- see
+    #: :attr:`~mandacaru.optimizers.optim.OptimizeResult.nit`).
+    optimizer_steps: int | None = None
+    #: Cost evaluations the same re-optimization spent.
+    num_evaluations: int | None = None
 
 
 @dataclass
@@ -216,6 +223,9 @@ class ADAPTVQEResult:
     operators: list[str]                      # selected operator labels, in order
     iterations: list[AdaptIteration] = field(default_factory=list)
     num_evaluations: int = 0                  # total inner cost evaluations
+    #: Total classical-optimizer **steps** over every growth step (parameter
+    #: updates; ``num_evaluations`` counts cost evaluations instead).
+    optimizer_steps: int = 0
     #: ``(growth step, message)`` of every inner optimization that did not
     #: report convergence -- empty when every step converged.
     optimizer_failures: list = field(default_factory=list)
@@ -343,9 +353,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         Number of spatial orbitals; required to build a pool from a name.
     optimizer : str or Optimizer
         Classical optimizer for the inner re-optimization.  Either a method name
-        -- one of ``"SPSA"``, ``"COBYLA"`` (default), ``"Nelder-Mead"``,
-        ``"SLSQP"``, ``"Adam"``, ``"L-BFGS-B"`` -- or a pre-built
-        :class:`~mandacaru.optimizers.optim.Optimizer` instance.
+        -- one of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``, ``"SLSQP"``
+        (default), ``"Adam"``, ``"L-BFGS-B"`` -- or a pre-built
+        :class:`~mandacaru.optimizers.optim.Optimizer` instance, which is how
+        the iteration budget and the tolerance are set.
     mapping : str
         Fermion-to-qubit mapping -- one of ``"jordan_wigner"`` (default),
         ``"parity"``, ``"bravyi_kitaev"`` -- used when ``hamiltonian`` is a
@@ -518,7 +529,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  basis="FAO",
                  num_particles=None,
                  n_spatial_orbitals=None,
-                 optimizer: str | Optimizer = "COBYLA",
+                 optimizer: str | Optimizer = DEFAULT_OPTIMIZER,
                  mapping: str = "jordan_wigner",
                  gradient: str = "analytic",
                  device: str = "AER_simulator",
@@ -956,7 +967,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 "energy_ha": float(to_hartree(it.energy,
                                               self._energy_unit_label())),
                 "cnot_count": it.cnot_count, "depth": it.depth,
-                "num_parameters": int(it.num_parameters)}
+                "num_parameters": int(it.num_parameters),
+                "optimizer_steps": it.optimizer_steps,
+                "num_evaluations": it.num_evaluations}
 
     def _match_pool_operator(self, generator, label: str, kind: str
                              ) -> PoolOperator:
@@ -999,7 +1012,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             max_gradient=float(it["max_gradient"]),
             energy=self._to_energy_units(float(it["energy_ha"])),
             cnot_count=it.get("cnot_count"), depth=it.get("depth"),
-            num_parameters=int(it["num_parameters"]))
+            num_parameters=int(it["num_parameters"]),
+            optimizer_steps=it.get("optimizer_steps"),
+            num_evaluations=it.get("num_evaluations"))
             for it in status.get("iterations", [])]
         params = np.asarray(record.parameters, dtype=float)
 
@@ -1041,6 +1056,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         return {"parameters": params, "selected": selected,
                 "iterations": iterations,
                 "num_evaluations": int(status.get("num_evaluations", 0)),
+                "optimizer_steps": int(status.get("optimizer_steps", 0)),
                 "optimizer_failures": [(int(s), str(m)) for s, m
                                        in status.get("optimizer_failures", [])],
                 "energy": energy, "unit": unit,
@@ -1377,6 +1393,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         iterations: list[AdaptIteration] = []
         selected: list[str] = []
         total_evals = 0
+        total_steps = 0
         converged = False
         optimizer_failures: list[tuple[int, str]] = []
         #: (iteration, label) of every operator pruning took back out.
@@ -1389,6 +1406,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             iterations = restored["iterations"]
             selected = restored["selected"]
             total_evals = restored["num_evaluations"]
+            total_steps = restored["optimizer_steps"]
             optimizer_failures = restored["optimizer_failures"]
             energy = restored["energy"]
 
@@ -1401,6 +1419,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     "max_gradient": float(max_grad) if np.isfinite(max_grad)
                     else None,
                     "num_evaluations": int(total_evals),
+                    "optimizer_steps": int(total_steps),
                     "reference_energy": float(ref_energy),
                     "optimizer_failures": [[int(s), str(m)]
                                            for s, m in optimizer_failures],
@@ -1448,6 +1467,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 params = np.asarray(result.x, dtype=float)
                 energy = float(result.fun)
                 total_evals += result.nfev
+                total_steps += result.nit or 0
 
                 if self.prune:
                     params, dropped = self._prune_ansatz(ansatz, params)
@@ -1485,20 +1505,24 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 if verbose:
                     self._print_iteration(len(iterations) + 1, op, max_grad,
                                           energy, energy - previous_energy,
-                                          metrics, e_unit, expressivity=expr)
+                                          metrics, e_unit, expressivity=expr,
+                                          optimizer_steps=result.nit)
                 iterations.append(AdaptIteration(
                     operator_label=op.label, operator_kind=op.kind,
                     max_gradient=max_grad,
                     energy=self._to_energy_units(energy),
                     cnot_count=metrics.cnot_count, depth=metrics.depth,
-                    num_parameters=ansatz.num_parameters))
+                    num_parameters=ansatz.num_parameters,
+                    optimizer_steps=result.nit,
+                    num_evaluations=int(result.nfev)))
 
                 if logger is not None:
                     logger.write_iteration(
                         iteration=len(iterations), pool_operators=self._pool_ops,
                         gradients=grads, selected_index=idx, expressivity=expr,
                         energy=self._to_energy_units(energy), energy_unit=e_unit,
-                        num_parameters=ansatz.num_parameters, metrics=metrics)
+                        num_parameters=ansatz.num_parameters, metrics=metrics,
+                        optimizer_steps=result.nit)
 
                 if self.checkpoint_path is not None \
                         and len(iterations) % self.checkpoint_every == 0:
@@ -1541,7 +1565,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     num_parameters=int(params.size),
                     final_max_gradient=max_grad, expressivity=final_expr,
                     num_evaluations=total_evals, metrics=metrics,
-                    optimizer=self.optimizer.method)
+                    optimizer=self.optimizer.method,
+                    optimizer_steps=total_steps)
         finally:
             if logger is not None:
                 logger.close()
@@ -1571,6 +1596,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             operators=selected,
             iterations=iterations,
             num_evaluations=total_evals,
+            optimizer_steps=total_steps,
             optimizer_failures=optimizer_failures,
             pruned_operators=pruned,
             metrics=metrics,
@@ -1691,6 +1717,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                           ("energy", "E", 13, ".6f"),
                           ("dE", "dE", 8, ".1e"),
                           ("expr", "expr", 7, ".2f"),
+                          ("steps", "steps", 6, "s"),
                           ("cnot", "cnot", 6, "s"),
                           ("1q", "1q", 6, "s"),
                           ("depth", "depth", 6, "s"),
@@ -1703,9 +1730,12 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     #: something it exists to show.
     #: ``iter``, ``grad``, ``energy``, ``type`` and ``operator`` are never
     #: dropped.
+    #: ``steps`` goes before ``cnot`` because the classical effort is
+    #: reconstructible from ``[PERFORMANCE]`` and the summary's total, while
+    #: the CNOT count of a given ansatz size is not.
     #: ``expr`` is absent unless it was explicitly asked for, so it is never
     #: dropped: having asked for it, you get it.
-    _ITERATION_DROP_ORDER = ("dE", "1q", "depth", "cnot")
+    _ITERATION_DROP_ORDER = ("dE", "1q", "depth", "steps", "cnot")
 
     #: Terminal width assumed when it cannot be detected (piped output).
     FALLBACK_TERMINAL_WIDTH = 80
@@ -1964,14 +1994,15 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     def _print_iteration(self, iteration: int, op: PoolOperator,
                          max_grad: float, energy: float, delta: float,
                          metrics: CircuitMetrics | None, e_unit: str,
-                         expressivity: float | None = None) -> None:
+                         expressivity: float | None = None,
+                         optimizer_steps: int | None = None) -> None:
         """Print one iteration as a single, column-aligned line.
 
         One column per property of the step: the largest pool gradient that
         drove the selection, the energy and its change, the ansatz's
-        expressivity (KL divergence from Haar), the parameter count, the
-        compiled CNOT / single-qubit-gate counts and depth, and the selected
-        operator's kind and label.  Which of those fit is
+        expressivity (KL divergence from Haar), the classical optimizer's step
+        count for this growth step, the compiled CNOT / single-qubit-gate
+        counts and depth, and the selected operator's kind and label.  Which of those fit is
         :meth:`_iteration_layout`'s decision -- the line is never wrapped.
         Neither the pool nor the operator's Pauli-string expansion is printed;
         they are on ``result.operators`` and, with ``verbose_operators=True``,
@@ -1987,6 +2018,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             "dE": self._to_energy_units(delta),
             "expr": (None if expressivity is None
                      or not np.isfinite(expressivity) else float(expressivity)),
+            "steps": count(optimizer_steps),
             "cnot": count(None if metrics is None else metrics.cnot_count),
             "1q": count(None if metrics is None else metrics.num_1q_gates),
             "depth": count(None if metrics is None else metrics.depth),

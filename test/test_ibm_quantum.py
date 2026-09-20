@@ -28,6 +28,13 @@ from mandacaru.backends.hardware import (available_devices, device_provider,
                                          requires_shots)
 from mandacaru.backends.providers import QiskitProvider, build_provider
 from mandacaru.units import HARTREE_TO_EV
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+COBYLA_OPT = Optimizer(method="COBYLA", maxiter=2000, tol=1e-12)
 
 
 def _h2():
@@ -58,6 +65,7 @@ _H2_RUN = """
     from ase import Atoms
     from mandacaru import Mandacaru
     from mandacaru.backends.providers import QiskitProvider
+    from mandacaru.optimizers import Optimizer
     from mandacaru.units import HARTREE_TO_EV
     def _h2():
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
@@ -285,7 +293,7 @@ class TestDriversEndToEnd:
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
                                h=0.4, trace=False, profile=False,
                                max_iterations=3, device="AER_simulator",
-                               shots=4096, optimizer="COBYLA",
+                               shots=4096, optimizer=COBYLA_OPT,
                                backend_options={"seed": 1234})
         atoms.get_total_energy()
         provider = atoms.calc.circuit_provider()
@@ -298,7 +306,8 @@ class TestDriversEndToEnd:
     atoms = _h2()
     atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4, trace=False,
                            device="fake_manila", shots=4096,
-                           optimizer="COBYLA")
+                           optimizer=Optimizer(method="COBYLA",
+                                               maxiter=2000, tol=1e-12))
     atoms.get_total_energy()
     print(atoms.calc.circuit_provider().backend().name,
           abs(atoms.calc.result.optimal_energy - exact) < 0.4 * HARTREE_TO_EV)

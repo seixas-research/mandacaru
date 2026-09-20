@@ -38,6 +38,7 @@ from mandacaru.algorithms import QuantumPhaseEstimation, qpe_memory_estimate
 from mandacaru.core import load_checkpoint
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+from mandacaru.optimizers import Optimizer
 os.makedirs(DATA, exist_ok=True)
 CHECKPOINT = os.path.join(DATA, "h2_wavefunction.json")
 
@@ -49,7 +50,9 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="FAO",
                        h=0.25,
                        pool="fermionic",
-                       optimizer="L-BFGS-B",
+                       optimizer=Optimizer(method="L-BFGS-B",
+                                           maxiter=2000,
+                                           tol=1e-12),
                        gradient_tolerance=1e-6,
                        checkpoint=CHECKPOINT)       # written after every operator
 energy = atoms.get_potential_energy()

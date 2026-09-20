@@ -27,6 +27,7 @@ lattice vectors and `atoms.pbc` selects which directions are periodic.
 import numpy as np
 from ase import Atoms
 from mandacaru.algorithms import BlochCalculator
+from mandacaru.optimizers import Optimizer
 
 # One H per cell; periodic along x, vacuum in y and z.
 atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
@@ -106,7 +107,10 @@ selected molecular method (the box is the supercell's own cell), and returns
 e_cell, res = BlochCalculator(atoms,
                               method="vqe",
                               h=0.20).total_energy(
-                                  (4, 1, 1), optimizer="L-BFGS-B")
+                                  (4, 1, 1),
+                                  optimizer=Optimizer(method="L-BFGS-B",
+                                                      maxiter=2000,
+                                                      tol=1e-12))
 
 # Adaptive ADAPT-VQE (extra adaptive controls).
 e_cell, res = BlochCalculator(atoms,

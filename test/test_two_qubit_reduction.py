@@ -24,6 +24,13 @@ from mandacaru.circuits.pools import build_pool
 from mandacaru.core.mapping import (parity_tapered_qubits, reference_qubit_bits,
                                     two_qubit_reduce)
 from mandacaru.core import PauliSum
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
 
 
 def _h2():
@@ -118,7 +125,7 @@ class TestDrivers:
         atoms = _h2()
         atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
                                mapping="parity_reduced",
-                               optimizer="L-BFGS-B", trace=False)
+                               optimizer=LBFGSB, trace=False)
         atoms.get_total_energy()
         assert atoms.calc.n_qubits == 2
         assert atoms.calc.result.optimal_energy == pytest.approx(

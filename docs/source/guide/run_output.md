@@ -55,17 +55,17 @@ operator pool           qeb (8 operators)
 operator selection      largest |gradient| (greedy)
 gradient method         analytic
   formula               exact derivative, g = 2 Re<H psi|A psi>
-optimizer               COBYLA
+optimizer               SLSQP
 gradient tolerance      0.001
 ...
 ----------------------------------------------------------------------
 Hartree-Fock reference  -154.59070457 eV
 ======================================================================
-iter   |grad|      E (eV)       dE   expr  cnot    1q depth   type operator
------------------------------------------------------------------------------
-   1 2.72e-01 -154.730899 -1.4e-01   6.21    48    40    65 double QD(0,3->2,5)
-   2 8.31e-02 -154.765242 -3.4e-02   2.91    96    74   129 double QD(1,4->2,5)
-   3 5.54e-02 -154.776105 -1.1e-02   2.05   144   108   193 double QD(1,3->2,5)
+iter   |grad|      E (eV)       dE   expr  steps  cnot    1q depth   type operator
+------------------------------------------------------------------------------------
+   1 2.72e-01 -154.730899 -1.4e-01   6.21      4    48    40    65 double QD(0,3->2,5)
+   2 8.31e-02 -154.765242 -3.4e-02   2.91      6    96    74   129 double QD(1,4->2,5)
+   3 5.54e-02 -154.776105 -1.1e-02   2.05      7   144   108   193 double QD(1,3->2,5)
 ```
 
 The **pool's type and size** and the Hamiltonian's **term count** appear in the
@@ -83,7 +83,7 @@ Each iteration is one row, one column per property computed at that step:
 | `E (eV)` | Energy after the inner re-optimization (Hartree with `atomic_units=True`). |
 | `dE` | Change from the previous step. |
 | `expr` | Expressivity of the grown ansatz: KL divergence from the Haar distribution over the number-conserving sector. It falls as the ansatz specializes. **Off by default** and the column is then absent rather than blank; `run(log_expressivity=True)` adds it. It is a diagnostic, not a result, and not cheap: `2 x 400` state preparations per iteration, each applying every operator in the ansatz, so the cost is linear in the ansatz and quadratic over a run (0.010 / 0.031 / 0.059 / 0.125 s at 1 / 4 / 8 / 16 operators, 6 qubits). |
-| `npar` | Variational parameters in the ansatz. Equal to `iter`, so it is the first column dropped on a narrow terminal. |
+| `steps` | **Steps the classical optimizer took** to re-optimize the grown ansatz — parameter updates, not cost evaluations. The two differ by the method: L-BFGS-B spends several evaluations per step on a finite-difference gradient and a line search, Adam spends `2N + 1`, SPSA two or three, while COBYLA evaluates once per trial point. `-` when a method reports neither a count nor a per-iteration callback. |
 | `cnot` | CNOT gates after compiling to the native gate set. |
 | `1q` | Single-qubit gates in the same compilation. |
 | `depth` | Circuit depth in the same compilation. |
@@ -92,9 +92,10 @@ Each iteration is one row, one column per property computed at that step:
 
 **One iteration is always one line.** The row is sized to the terminal
 (`shutil.get_terminal_size()`, falling back to 80 columns when the output is
-piped): if the full set will not fit, columns are dropped in the order `npar`,
-`dE`, `1q`, `depth`, `expr`, `cnot` — the derivable ones first — rather than
-letting rows wrap. `iter`, the gradient, the energy, the operator type and its
+piped): if the full set will not fit, columns are dropped in the order `dE`,
+`1q`, `depth`, `steps`, `cnot` — the derivable ones first — rather than
+letting rows wrap. `expr` is absent unless it was asked for, so it is never
+dropped: having asked for it, you get it. `iter`, the gradient, the energy, the operator type and its
 label are never dropped. Set the `COLUMNS` environment variable to override the
 detected width.
 
@@ -217,7 +218,7 @@ read off the left margin:
     qubits: 12
 
 [OPTIMIZATION SETUP]
-    classical_optimizer: COBYLA
+    classical_optimizer: SLSQP
     max_iterations: 50
     gradient_method: analytic
     gradient_formula: exact derivative, g = 2 Re<H psi|A psi>
@@ -238,22 +239,27 @@ read off the left margin:
     initial_ansatz: |HF> (0 parameters)
 
 [ITERATIONS]
-    iter        energy (eV)              type        |grad|      1q    cnot   depth operator
-    ----------------------------------------------------------------------------------------
-       1     -27.6211823512  fermionic-double  2.714649e-01      38      48      65 D(0,2->1,3)
+    iter        energy (eV)              type        |grad|   steps      1q    cnot   depth operator
+    ------------------------------------------------------------------------------------------------
+       1     -27.6211823512  fermionic-double  2.714649e-01       4      38      48      65 D(0,2->1,3)
 ========================================================================
 [VARIATIONAL QUANTUM SUMMARY]
     converged: True
     optimal_energy_eV: -27.6211823512
     num_operators: 1
+    cost_evaluations: 31
+    optimizer_steps: 4
     cnot_count: 48
     circuit_depth: 65
 ```
 
 The log's table keeps full precision and the pool's own operator *kind*
 (`fermionic-double`, not the trace's stripped `double`), and its circuit columns
-run cheapest gate first -- `1q`, `cnot`, `depth`. The summary does **not** repeat
-the operator sequence: the table above already names the operator every step
+run cheapest gate first -- `1q`, `cnot`, `depth`. The summary closes the two
+classical-effort counters the `steps` column opens: `optimizer_steps` is that
+column summed over the run and `cost_evaluations` the energy evaluations those
+steps spent -- the number a QPU would be billed for. The summary does **not**
+repeat the operator sequence: the table above already names the operator every step
 selected, in order, and `result.operators` has it as data.
 
 Indentation is cosmetic to the reader and invisible to the parser --

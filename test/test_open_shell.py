@@ -26,6 +26,13 @@ from mandacaru.algorithms import (estimate_qubits, Mandacaru, natural_orbitals,
 from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
 from mandacaru.core import MolecularIntegrals, minimal_fao_basis
 from mandacaru.integrals import Grid
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
 
 
 def _integrals(nuclei, h=0.30, box=6.0):
@@ -239,7 +246,7 @@ class TestSolvers:
         exact = _sector_ground_state(H, (2, 1))
         driver = Mandacaru(method="adapt-vqe", hamiltonian=H, pool="fermionic",
                            num_particles=(2, 1), n_spatial_orbitals=3,
-                           trace=False, profile=False, optimizer="L-BFGS-B",
+                           trace=False, profile=False, optimizer=LBFGSB,
                            gradient_tolerance=1e-6, max_iterations=30)
         result = driver.run()
         assert result.in_units("Ha") == pytest.approx(exact, abs=1e-5)
@@ -249,7 +256,8 @@ class TestSolvers:
     def test_vqe_h3_doublet_through_the_calculator(self):
         atoms = Atoms("H3", positions=[[0, 0, -0.9], [0, 0, 0], [0, 0, 0.9]],
                       cell=[6.5] * 3)
-        atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.30, optimizer="L-BFGS-B")
+        atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.30,
+                               optimizer=LBFGSB)
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (2, 1) and calc.n_qubits == 6
@@ -307,7 +315,7 @@ class TestPlaneWaves:
         atoms.calc = Mandacaru(method="adapt-vqe",
                                        basis={"name": "PW", "energy_cutoff": 8},
                                        charge=1, profile=False,
-                                       optimizer="L-BFGS-B",
+                                       optimizer=LBFGSB,
                                        gradient_tolerance=1e-6)
         atoms.get_potential_energy()
         calc = atoms.calc

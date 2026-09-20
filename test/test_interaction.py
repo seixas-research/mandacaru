@@ -21,6 +21,13 @@ from mandacaru.algorithms._hamiltonian_from_atoms import (
 from mandacaru.algorithms.dry_run import estimate_qubits
 from mandacaru.basis import BasisSet, PerElementBasisSet
 from mandacaru.integrals import Grid
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
 
 
 # --------------------------------------------------------------------------- #
@@ -151,7 +158,7 @@ class TestInteractionEnergy:
         atoms.center()
         result = interaction_energy(atoms, [[0, 1], [2]], charges=[0, 1],
                                     charge=1, method="adapt-vqe", h=0.4,
-                                    profile=False, optimizer="L-BFGS-B",
+                                    profile=False, optimizer=LBFGSB,
                                     gradient_tolerance=1e-5)
         assert result.charges == [0, 1]
         # A bare proton has no electrons: its "energy" is exactly zero.
@@ -163,6 +170,6 @@ class TestInteractionEnergy:
     def test_calculator_method_reuses_its_options(self):
         atoms = _two_h2(5.0)
         calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
-                         optimizer="L-BFGS-B")
+                         optimizer=LBFGSB)
         result = calc.interaction_energy(atoms, [[0, 1], [2, 3]])
         assert result.method == "vqe" and abs(result.in_units("eV")) < 0.05

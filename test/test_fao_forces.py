@@ -35,6 +35,14 @@ from ase import Atoms
 from mandacaru import Mandacaru
 from mandacaru.integrals import Grid
 from test_all_electron_forces import analytic_and_numerical
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizer used below, with its budget and tolerance written
+# out.  `tol` is deliberately looser than the library default (1e-12): these
+# tests compare an analytic gradient against a finite difference of the *same*
+# state, so they need a converged state, not a converged screening gradient --
+# and 1e-12 costs 15x the wall time here for no change in what is measured.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-8)
 
 # VASP 6 PBE PAW: bond-projected force on atom 0 (eV/A, + = toward atom 1).
 VASP_LIH_2_19 = 1.35493
@@ -55,7 +63,7 @@ def dimer(symbols, distance, cell=10.0):
 def forces_of(symbols, distance, basis, cell=9.0, h=0.25, **options):
     atoms = dimer(symbols, distance, cell)
     atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, h=h, pool="fermionic",
-                           optimizer="L-BFGS-B", max_iterations=60,
+                           optimizer=LBFGSB, max_iterations=60,
                            gradient_tolerance=1e-6, profile=False,
                            **options)
     with warnings.catch_warnings():
@@ -160,7 +168,7 @@ class TestLiHCoreArtifact:
     def test_mandacaru_warns(self):
         atoms = dimer("LiH", 2.19265)
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.25,
-                               pool="fermionic", optimizer="L-BFGS-B",
+                               pool="fermionic", optimizer=LBFGSB,
                                max_iterations=60, gradient_tolerance=1e-6, profile=False)
         with pytest.warns(RuntimeWarning, match="do not sum to zero"):
             atoms.get_forces()
@@ -176,7 +184,7 @@ class TestLiHCoreArtifact:
         heaviest calculation in this file)."""
         atoms = dimer("LiH", 2.19265)
         atoms.calc = Mandacaru(method="adapt-vqe", basis=PAW, h=0.25,
-                               pool="fermionic", optimizer="L-BFGS-B",
+                               pool="fermionic", optimizer=LBFGSB,
                                max_iterations=60, gradient_tolerance=1e-6, profile=False)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")

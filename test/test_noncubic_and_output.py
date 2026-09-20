@@ -25,6 +25,7 @@ from mandacaru.algorithms._hamiltonian_from_atoms import grid_from_cell
 from mandacaru.basis import FullAtomicOrbital
 from mandacaru.core import MolecularIntegrals, minimal_fao_basis
 from mandacaru.integrals import Grid, IntegralEngine
+from mandacaru.optimizers import DEFAULT_OPTIMIZER
 from mandacaru.utils import AdaptOutputLogger, parse_output
 
 
@@ -208,7 +209,8 @@ def _h2_adapt(hamiltonian, **kwargs):
 class TestAdaptOutputProtocol:
     def test_default_optimizer_is_cobyla(self, h2_hamiltonian):
         # Requirement 6: the default classical optimizer must be COBYLA.
-        assert _h2_adapt(h2_hamiltonian).optimizer.method == "COBYLA"
+        assert _h2_adapt(h2_hamiltonian).optimizer.method == \
+            DEFAULT_OPTIMIZER
 
     def test_output_file_written_and_parseable(self, h2_hamiltonian, tmp_path):
         R = 0.74
@@ -229,7 +231,7 @@ class TestAdaptOutputProtocol:
         assert "cell_angles" in parsed["system"]
 
         # Optimization setup block -- energies default to eV (requirement 1).
-        assert parsed["setup"]["classical_optimizer"] == "COBYLA"
+        assert parsed["setup"]["classical_optimizer"] == DEFAULT_OPTIMIZER
         assert parsed["setup"]["energy_unit"] == "eV"
         assert "reference_energy_eV" in parsed["setup"]
 
@@ -1127,7 +1129,7 @@ class TestNothingIsSaidTwice:
 
     def test_the_optimizer_belongs_to_the_setup_block(self, text):
         parsed = parse_output(text)
-        assert parsed["setup"]["classical_optimizer"] == "COBYLA"
+        assert parsed["setup"]["classical_optimizer"] == DEFAULT_OPTIMIZER
         assert "classical_optimizer" not in parsed["summary"]
         assert open(text).read().count("classical_optimizer:") == 1
 
@@ -1271,6 +1273,8 @@ class TestOptimizationSetupBlock:
                        encoding="utf-8")
         setup = parse_output(str(old))["setup"]
         assert setup["gradient_method"] == "parameter-shift"
+        # The fixture above is a *file*, so it reads back what it says, not
+        # what today's default would have written.
         assert setup["classical_optimizer"] == "COBYLA"
 
     def test_a_sparse_run_logs_what_it_actually_screened_with(

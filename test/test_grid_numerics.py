@@ -38,6 +38,13 @@ from mandacaru.basis.nao import solve_confined_radial
 from mandacaru.core import MolecularIntegrals
 from mandacaru.integrals import Grid, IntegralEngine
 from mandacaru import Mandacaru
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
 
 
 def _water_integrals(h=0.30, orthogonalize=True, **kw):
@@ -206,9 +213,11 @@ class TestSpectralKinetic:
     def test_drivers_accept_the_option(self):
         from ase import Atoms
         h2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
-        h2.calc = Mandacaru(method="vqe", basis="FAO", h=0.35, kinetic="spectral", optimizer="L-BFGS-B")
+        h2.calc = Mandacaru(method="vqe", basis="FAO", h=0.35,
+                            kinetic="spectral", optimizer=LBFGSB)
         e_sp = h2.get_potential_energy()
-        h2.calc = Mandacaru(method="vqe", basis="FAO", h=0.35, kinetic="fd", optimizer="L-BFGS-B")
+        h2.calc = Mandacaru(method="vqe", basis="FAO", h=0.35,
+                            kinetic="fd", optimizer=LBFGSB)
         e_fd = h2.get_potential_energy()
         assert abs(e_sp - e_fd) < 2.0                # same physics, finite grid
         with pytest.raises(ValueError):

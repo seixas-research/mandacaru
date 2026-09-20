@@ -34,6 +34,14 @@ from mandacaru.algorithms._hamiltonian_from_atoms import (build_basis_hamiltonia
 from mandacaru.pseudopotentials import local_split as ls
 from mandacaru.pseudopotentials.paw import PAWIntegrals
 from mandacaru.units import HARTREE_TO_EV
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizer used below, with its budget and tolerance written
+# out.  `tol` is deliberately looser than the library default (1e-12): these
+# tests compare an analytic gradient against a finite difference of the *same*
+# state, so they need a converged state, not a converged screening gradient --
+# and 1e-12 costs 15x the wall time here for no change in what is measured.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-8)
 
 SZ = {"name": "PAW", "size": "SZ"}
 
@@ -372,7 +380,7 @@ class TestInertElsewhere:
 
 def water_calculator(h=0.25):
     return Mandacaru(method="adapt-vqe", basis=SZ, h=h, pool="fermionic",
-                     optimizer="L-BFGS-B", max_iterations=60,
+                     optimizer=LBFGSB, max_iterations=60,
                      gradient_tolerance=1e-4, profile=False)
 
 
@@ -434,7 +442,7 @@ class TestForces:
             try:
                 atoms = h2(distance=0.80)
                 atoms.calc = Mandacaru(method="adapt-vqe", basis=SZ, h=0.25,
-                                       pool="fermionic", optimizer="L-BFGS-B",
+                                       pool="fermionic", optimizer=LBFGSB,
                                        max_iterations=10,
                                        gradient_tolerance=1e-6,
                                        project_translation=False,

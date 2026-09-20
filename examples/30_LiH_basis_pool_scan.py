@@ -21,6 +21,7 @@ from pathlib import Path
 import tempfile
 
 import numpy as np
+from mandacaru.optimizers import Optimizer
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "docs/source/_static/lih"
@@ -42,7 +43,6 @@ def calculate(output: Path, spacing: float, half_width: float,
     from mandacaru.algorithms import Mandacaru
     from mandacaru.core.sector import ParticleSector
     from mandacaru.integrals import Grid
-    from mandacaru.optimizers import Optimizer
     from mandacaru.units import BOHR_TO_ANGSTROM
 
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=half_width, h=spacing)
@@ -92,7 +92,9 @@ def calculate(output: Path, spacing: float, half_width: float,
                     for pool in POOLS:
                         settings = dict(
                             method="adapt-vqe", pool=pool,
-                            optimizer=Optimizer("L-BFGS-B", maxiter=1000),
+                            optimizer=Optimizer(method="L-BFGS-B",
+                                                maxiter=1000,
+                                                tol=1e-12),
                             gradient="analytic", gradient_tolerance=1e-5,
                             max_iterations=max_iterations,
                             sparse=True, sector=(pool != "qubit"),

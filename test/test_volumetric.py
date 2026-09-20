@@ -464,8 +464,11 @@ class TestRegisterRepresentations:
         atoms = _molecule("H2", [[0, 0, 0], [0, 0, 0.74]], [6, 6, 6])
         sector = _solved(atoms, sector=True)
         assert sector.solver._sector is not None
+        # Two independent ADAPT runs, so they stop at very slightly different
+        # points; what is pinned is that the sector representation changes
+        # nothing about the density, not that an optimizer is deterministic.
         assert np.abs(sector.volumetric_field("density").data
-                      - reference).max() < 1e-12
+                      - reference).max() < 1e-9
 
 
 class TestExcitedStates:

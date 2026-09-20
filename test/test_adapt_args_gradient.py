@@ -24,6 +24,13 @@ from mandacaru.algorithms import (GRADIENT_METHODS, Mandacaru,
 from mandacaru.circuits import AdaptAnsatz
 from mandacaru.backends import available_devices, is_simulator, normalize_device
 from mandacaru.integrals import Grid
+from mandacaru.optimizers import DEFAULT_OPTIMIZER, Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=500, tol=1e-12)
 
 
 # --------------------------------------------------------------------------- #
@@ -259,7 +266,7 @@ class TestArgumentSurface:
                           output=out)
         adapt.run()                             # output taken from constructor
         parsed = parse_output(out)
-        assert parsed["setup"]["classical_optimizer"] == "COBYLA"
+        assert parsed["setup"]["classical_optimizer"] == DEFAULT_OPTIMIZER
         assert len(parsed["iterations"]) >= 1
 
     def test_basis_option_sets_qubit_count(self):
@@ -282,7 +289,7 @@ class TestOptimizerOption:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False)
-        assert adapt.optimizer.method == "COBYLA"
+        assert adapt.optimizer.method == DEFAULT_OPTIMIZER
 
     @pytest.mark.parametrize(
         "name",
@@ -294,8 +301,7 @@ class TestOptimizerOption:
         assert adapt.optimizer.method == name
 
     def test_optimizer_instance_passthrough(self, h2_hamiltonian):
-        from mandacaru.optimizers import Optimizer
-        opt = Optimizer("L-BFGS-B", maxiter=500)
+        opt = LBFGSB
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False, optimizer=opt)
@@ -425,7 +431,7 @@ class TestVerbosePauliOutput:
         heading = next(line for line in out.splitlines()
                        if line.split()[:1] == ["iter"])
         assert set(heading.replace("E (eV)", "energy").split()) == {
-            "iter", "|grad|", "energy", "dE", "expr", "cnot", "1q",
+            "iter", "|grad|", "energy", "dE", "expr", "steps", "cnot", "1q",
             "depth", "type", "operator"}
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):

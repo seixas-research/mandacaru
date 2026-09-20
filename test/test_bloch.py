@@ -26,6 +26,12 @@ from mandacaru.algorithms import (
 )
 from mandacaru.optimizers import Optimizer
 
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
+
 METHODS = ["vqe", "adapt-vqe"]
 
 
@@ -50,8 +56,8 @@ def band_driver():
 
 # total_energy kwargs differ per method (VQE has no adaptive controls).
 _TOTAL_ENERGY_KWARGS = {
-    "vqe": dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000)),
-    "adapt-vqe": dict(h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+    "vqe": dict(h=0.40, optimizer=LBFGSB),
+    "adapt-vqe": dict(h=0.40, optimizer=LBFGSB,
                       max_iterations=6, gradient_tolerance=1e-3),
 }
 _RESULT_TYPES = {"vqe": VQEResult, "adapt-vqe": ADAPTVQEResult}

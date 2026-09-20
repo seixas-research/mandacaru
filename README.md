@@ -16,18 +16,7 @@
 
 # Mandacaru
 
-**Mandacaru** is a Python framework for fermionic quantum simulation with variational quantum algorithms. From an ASE geometry it builds a real-space Hamiltonian — with all-electron basis sets or NCPP / ONCVPSP / PAW pseudopotentials — maps it to qubits, and solves it with VQE or ADAPT-VQE on a state-vector simulator or on quantum hardware (IBM Quantum, Amazon Braket). Energies are reported in eV and distances in Å.
-
-**Latest updates**
-
-- **Forces with PAW + DZP.** Hellmann–Feynman and Pulay forces for `basis={"name": "PAW", "size": "DZP"}` — the augmented overlap, the projectors and the compensation charges are all differentiated — through `atoms.get_forces()`.
-- **Particle-number sectors.** 20-qubit problems such as LiH in PAW-DZP are solved exactly in their (n<sub>α</sub>, n<sub>β</sub>) sector: 100 states instead of 2<sup>20</sup>.
-- **Real molecular orbitals.** Orbitals with l > 0 are rotated to real form, so the operator pools reach the exact ground state.
-- **Wavefunction checkpoints.** `Mandacaru(..., checkpoint="state.json")` writes the reference, the generators, the angles and the Hamiltonian after every accepted operator; `resume="state.json"` continues an interrupted or unconverged run where it stopped.
-- **Virtual orbitals for the FAO basis.** `basis={"name": "FAO", "virtual_orbitals": 1}` appends the lowest unoccupied atomic levels (H gains 2s, C gains 3s), giving a correlated method room above the occupied orbitals; the default `0` is the minimal basis as before.
-- **Quantum phase estimation.** `QuantumPhaseEstimation(n_evaluation_qubits=10).run("state.json")` reads the exact eigenvalue off the checkpointed state, with a memory estimate checked before the 2<sup>n+t</sup> state vector is allocated.
-- **A run cites itself.** Alongside the `output=` log a run writes `references.bib` — the papers behind the method, the operator pool, the fermion-to-qubit mapping, the basis family and the codes, selected from what actually ran rather than from what was typed (a default-filtered, confined PAW basis cites all three), with abbreviated journal names.
-- **Volumetric output for VESTA and VMD.** `atoms.calc.write_cube("density.cube")` writes the converged state's one-particle reductions — electron density, spin density, correlation density `n − n_HF` and natural orbitals with their occupations — on the calculation's own real-space grid; `atoms.calc.natural_orbitals()` returns the occupations as data.
+**Mandacaru** is a Python framework for fermionic quantum simulation with variational quantum algorithms. From an ASE geometry it builds a real-space Hamiltonian, maps it to qubits, and solves it with VQE or ADAPT-VQE on a state-vector simulator or on quantum hardware (IBM Quantum, Amazon Braket).
 
 ## Installation
 
@@ -44,6 +33,7 @@ mandacaru --link-paw mandacaru-paw
 ```python
 from ase import Atoms
 from mandacaru import Mandacaru
+from mandacaru.optimizers import Optimizer
 
 atoms = Atoms("LiH",
               positions=[[0.0, 0.0, 0.0],
@@ -51,12 +41,16 @@ atoms = Atoms("LiH",
               cell=[10.0, 10.0, 10.0])
 atoms.center()                                      # the cell is the real-space box
 
-atoms.calc = Mandacaru(method="adapt-vqe",                   # "vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe"
-                       basis={"name": "PAW", "size": "DZP"}, # pseudopotential family + valence basis
+atoms.calc = Mandacaru(method="adapt-vqe",                   # "vqe" | "adapt-vqe" | "subspace-vqe" | "subspace-adapt-vqe"
+                       basis={"name": "PAW",
+                              "size": "DZP",
+                              "energy_shift": 0.1},          # pseudopotential family + valence basis
                        h=0.10,                               # grid spacing (Å)
-                       pool="fermionic",                     # "fermionic", "qubit", "qeb", "ceo", "ceo-ovp"
-                       mapping="jordan_wigner",              # "jordan_wigner", "parity", "parity_reduced", "bravyi_kitaev"
-                       optimizer="COBYLA",                   # "COBYLA", "SPSA", "Nelder-Mead", "SLSQP", "Adam", "L-BFGS-B"
+                       pool="fermionic",                     # "fermionic" | "qubit" | "qeb" | "ceo" | "ceo-ovp"
+                       mapping="jordan_wigner",              # "jordan_wigner" | "parity" | "parity_reduced" | "bravyi_kitaev"
+                       optimizer=Optimizer(method="SLSQP",   # or SPSA | COBYLA | Nelder-Mead | Adam | L-BFGS-B
+                                           maxiter=2000,
+                                           tol=1e-12),
                        max_iterations=300,                   # at most 300 operators
                        gradient_tolerance=1e-3,              # stop when every pool gradient is smaller
                        device="AER_simulator",               # or an IBM Quantum / Amazon Braket device
@@ -79,6 +73,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from ase import Atoms
 from mandacaru import Mandacaru
+from mandacaru.optimizers import Optimizer
 
 distances = np.linspace(1.2, 3.0, 10)
 energies = []
@@ -90,10 +85,14 @@ for d in distances:
     atoms.center()
 
     atoms.calc = Mandacaru(method="adapt-vqe",
-                           basis={"name": "PAW", "size": "DZP"},
+                           basis={"name": "PAW",
+                                  "size": "DZP",
+                                  "energy_shift": 0.1},
                            h=0.10,
                            pool="fermionic",
-                           optimizer="L-BFGS-B")
+                           optimizer=Optimizer(method="L-BFGS-B",
+                                               maxiter=2000,
+                                               tol=1e-12))
     energies.append(atoms.get_potential_energy())
 
 plt.plot(distances, energies, "o-")
@@ -110,10 +109,14 @@ plt.savefig("lih_pes.png", dpi=150)
 
 **Operator pools.** The pool is the set of anti-Hermitian generators ADAPT-VQE chooses from, and it sets the trade-off between circuit depth and the number of iterations. `fermionic` holds spin-adapted single and double excitations; `qubit` splits them into individual Pauli strings (the shallowest gates, more iterations); `qeb` uses qubit excitations — the same occupation moves without the fermionic sign; `ceo` couples the qubit excitations that act on the same spin-orbitals, and `ceo-ovp` keeps that coupling to one parameter per step, roughly halving the two-qubit gate count of `qeb`. Every pool is built in the encoding you ask for (Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev) and reaches the same ground state. The fermionic and qubit-excitation pools conserve the particle number; the individual Pauli strings of `qubit` do not, by design.
 
-**Classical optimization.** The parameters are updated by the optimizer named in `optimizer=`. COBYLA (the default) and Nelder–Mead are gradient-free and robust; L-BFGS-B and SLSQP use gradients and converge quickly on exact simulators; SPSA (two energy evaluations per step, whatever the number of parameters) and Adam tolerate the statistical noise of shot-based hardware.
+**Classical optimization.** The parameters are updated by the optimizer in `optimizer=` — a method name, or an `Optimizer` with an explicit iteration budget and tolerance. SLSQP (the default) and L-BFGS-B use gradients and stop in one to two orders of magnitude fewer steps on exact simulators; Nelder–Mead and COBYLA are gradient-free and more robust on a small, nearly-converged problem; SPSA (two energy evaluations per step, whatever the number of parameters) and Adam tolerate the statistical noise of shot-based hardware. Both costs of a run — optimizer steps and energy evaluations — are reported per growth step and in total; see [the guide](https://mandacaru.readthedocs.io/en/latest/guide/optimizers.html).
 
 ## License
 
-Mandacaru is released under the [MIT License](LICENSE). Developer: **Leandro Seixas Rocha** (<leandro.rocha@ilum.cnpem.br>). Documentation: [mandacaru.readthedocs.io](https://mandacaru.readthedocs.io/).
+Mandacaru is released under the [MIT License](LICENSE).
 
-We thank financial support from [INCT Materials Informatics](https://inct-mi.pesquisa.ufabc.edu.br/) (Grant No. 406447/2022-5).
+Developer: **Leandro Seixas Rocha** (<leandro.rocha@ilum.cnpem.br>).
+
+Documentation: [mandacaru.readthedocs.io](https://mandacaru.readthedocs.io/).
+
+We thank financial support from [INCT Materials Informatics](https://inct-mi.com.br/) (Grant No. 406447/2022-5).

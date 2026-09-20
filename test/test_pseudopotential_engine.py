@@ -216,7 +216,7 @@ class TestHamiltonianAndDrivers:
         assert np.allclose(nonlocal_matrix, nonlocal_matrix.conj().T)
         # Rank is bounded by the number of projectors -- that is the whole point
         # of the separable form.
-        rank = np.linalg.matrix_rank(nonlocal_matrix, tol=1e-8)
+        rank = np.linalg.matrix_rank(nonlocal_matrix, tol=1e-12)
         assert rank <= len(context["kb_projectors"])
 
     def test_engine_flags_the_pseudopotential_path(self):

@@ -52,7 +52,7 @@ print("1s band along Gamma->X (eV):", np.round(bands[:, 0], 3))
 print("(the band structure is solver-independent -- identical for all methods)\n")
 
 # --- Correlated total energy per cell (Born-von Karman supercell) ------------
-opt = Optimizer("L-BFGS-B", maxiter=2000)
+opt = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
 mesh = (4, 1, 1)
 
 e_vqe, _ = make("vqe").total_energy(mesh, optimizer=opt)

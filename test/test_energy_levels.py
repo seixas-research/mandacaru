@@ -20,6 +20,12 @@ from mandacaru.integrals import Grid
 from mandacaru.optimizers import Optimizer
 from mandacaru.units import HARTREE_TO_EV
 
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
+
 
 # --------------------------------------------------------------------------- #
 # Shared H2 fixtures (MO basis) -- mirrors test_adapt_vqe.py.
@@ -55,7 +61,7 @@ class TestVQEEnergyLevels:
         ansatz = UCCSD(2, (1, 1), mapping="jordan_wigner")
         return Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                          ansatz=ansatz,
-                         optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                         optimizer=LBFGSB,
                          trace=False)
 
     def test_ground_level_matches_exact(self, h2_hamiltonian, h2_spectrum):
@@ -101,7 +107,7 @@ class TestADAPTEnergyLevels:
         return Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                          pool="fermionic", num_particles=(1, 1),
                          n_spatial_orbitals=2,
-                         optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                         optimizer=LBFGSB,
                          trace=False, profile=False, gradient_tolerance=1e-6)
 
     def test_ground_level_matches_exact(self, h2_hamiltonian, h2_spectrum):

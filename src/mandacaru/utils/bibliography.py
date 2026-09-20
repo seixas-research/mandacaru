@@ -553,9 +553,8 @@ _OPTIMIZERS = [
 _CODES = [
     _ref("Mandacaru", """
 @software{Mandacaru,
-  author  = {Seixas Rocha, Leandro},
-  title   = {Mandacaru: fermionic quantum simulation with variational quantum
-             algorithms},
+  author  = {Seixas, Leandro},
+  title   = {Mandacaru: fermionic quantum simulation with variational quantum algorithms},
   url     = {https://github.com/seixas-research/mandacaru},
   year    = {2026}
 }""", "this code", topics=("code",)),

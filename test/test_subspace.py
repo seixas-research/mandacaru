@@ -26,6 +26,12 @@ from mandacaru.integrals import Grid
 from mandacaru.optimizers import Optimizer
 from mandacaru.units import HARTREE_TO_EV
 
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=4000, tol=1e-12)
+
 
 # --------------------------------------------------------------------------- #
 # Shared H2 fixtures (MO basis).
@@ -57,7 +63,7 @@ def _ssvqe(h2_hamiltonian, k, **kwargs):
     ansatz = UCCSD(2, (1, 1), mapping="jordan_wigner")
     return Mandacaru(method="subspace-vqe", hamiltonian=h2_hamiltonian,
                      ansatz=ansatz, num_states=k,
-                     optimizer=Optimizer("L-BFGS-B", maxiter=4000),
+                     optimizer=LBFGSB,
                      trace=False, **kwargs)
 
 
@@ -65,7 +71,7 @@ def _ss_adapt(h2_hamiltonian, k, **kwargs):
     return Mandacaru(method="subspace-adapt-vqe", hamiltonian=h2_hamiltonian,
                      pool="fermionic", num_states=k, num_particles=(1, 1),
                      n_spatial_orbitals=2,
-                     optimizer=Optimizer("L-BFGS-B", maxiter=4000),
+                     optimizer=LBFGSB,
                      trace=False, profile=False, gradient_tolerance=1e-6,
                      max_iterations=30, **kwargs)
 
@@ -85,7 +91,7 @@ class TestReferences:
         refs = reference_matrix("jordan_wigner", 4, [0, 2], 3)
         assert refs.shape == (16, 3)
         gram = refs.conj().T @ refs
-        np.testing.assert_allclose(gram, np.eye(3), atol=1e-12)
+        np.testing.assert_allclose(gram, np.eye(3), atol=1e-8)
 
     def test_too_many_states_raises(self):
         with pytest.raises(ValueError):

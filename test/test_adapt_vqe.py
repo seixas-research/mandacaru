@@ -26,6 +26,12 @@ from mandacaru.integrals import Grid
 from mandacaru.optimizers import Optimizer
 from mandacaru.units import HARTREE_TO_EV
 
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
+
 POOL_NAMES = ["fermionic", "qubit", "qeb", "ceo", "ceo-ovp"]
 
 
@@ -65,7 +71,7 @@ def _adapt(hamiltonian, pool_name, max_iterations=50, gradient_tol=1e-6):
     return Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
                      pool=pool_name, num_particles=(1, 1),
                      n_spatial_orbitals=2,
-                     optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                     optimizer=LBFGSB,
                      max_iterations=max_iterations,
                      gradient_tolerance=gradient_tol)
 

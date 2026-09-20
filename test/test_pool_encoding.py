@@ -24,6 +24,13 @@ from mandacaru.circuits.pools import build_pool
 from mandacaru.core.mapping import Fermion, PauliSum, qubit_excitation
 from mandacaru.core.sector import ParticleSector
 from mandacaru.units import HARTREE_TO_EV
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+COBYLA_OPT = Optimizer(method="COBYLA", maxiter=2000, tol=1e-12)
 
 MAPPINGS = ["jordan_wigner", "parity", "bravyi_kitaev"]
 CONSERVING = ["fermionic", "qeb", "ceo"]
@@ -246,7 +253,7 @@ class TestCEOGrouping:
             work.calc = Mandacaru(method="adapt-vqe", pool=pool,
                                   mapping="jordan_wigner",
                                   basis={"name": "GTO", "n_gaussians": 3},
-                                  h=0.15, optimizer="COBYLA",
+                                  h=0.15, optimizer=COBYLA_OPT,
                                   max_iterations=14, gradient_tolerance=1e-3,
                                   profile=True, trace=False)
             energy = work.get_potential_energy()

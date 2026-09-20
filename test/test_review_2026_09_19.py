@@ -248,8 +248,15 @@ class TestR05CustomAnsatz:
         assert isinstance(UCCSD(2, (1, 1)), SerializableAnsatz)
 
     def test_it_runs_without_a_checkpoint(self):
+        # `Rotation` starts at theta = 0, which is the *maximum* of cos(theta):
+        # the gradient is exactly zero there, so a gradient method (the SLSQP
+        # default included) correctly reports a stationary point and does not
+        # move.  This test is about a custom Ansatz running through VQE, so it
+        # names a direct search -- the family that can leave such a point.
         calc = Mandacaru(method="vqe", hamiltonian=PauliSum({"Z": 1.0}),
-                         ansatz=Rotation(), trace=False, atomic_units=True)
+                         ansatz=Rotation(), trace=False, atomic_units=True,
+                         optimizer=Optimizer(method="Nelder-Mead",
+                                             maxiter=1000, tol=1e-12))
         result = calc.run()
         assert result.optimal_energy == pytest.approx(-1.0, abs=1e-4)
         assert calc.checkpoint is None

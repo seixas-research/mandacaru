@@ -26,6 +26,13 @@ from mandacaru.basis import (NAMED_BASIS_SETS, BasisSet, GaussianBasisSet,
                              gaussian_shells, parse_basis_name, pople_631g_shells,
                              shell_notation)
 from mandacaru.basis.gaussian_families import DIFFUSE_RATIO
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
 
 REQUESTED = {
     "sto": ["STO-3G", "STO-4G", "STO-5G", "STO-6G"],
@@ -394,7 +401,7 @@ class TestIntegration:
         atoms = h2.copy()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="STO-4G",
                                        pool="qeb", h=0.35,
-                                       profile=False, optimizer="L-BFGS-B",
+                                       profile=False, optimizer=LBFGSB,
                                        gradient_tolerance=1e-5)
         atoms.get_potential_energy()
         calc = atoms.calc

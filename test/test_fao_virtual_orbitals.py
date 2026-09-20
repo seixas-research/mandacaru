@@ -24,6 +24,13 @@ from mandacaru import Mandacaru
 from mandacaru.algorithms.dry_run import estimate_qubits
 from mandacaru.basis import BasisSet, FAOBasisSet
 from mandacaru.basis._config import ground_state_config, unoccupied_subshells
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGSB = Optimizer(method="L-BFGS-B", maxiter=2000, tol=1e-12)
 
 
 def occupied_levels(symbol):
@@ -216,7 +223,7 @@ class TestVariationalPayoff:
                                    basis={"name": "FAO", "virtual_orbitals": k},
                                    h=0.30,
                                    pool="fermionic",
-                                   optimizer="L-BFGS-B",
+                                   optimizer=LBFGSB,
                                    max_iterations=40,
                                    gradient_tolerance=1e-7,
                                    profile=False)

@@ -4,9 +4,10 @@
     ██    ██ ██▀██ ██ ▀██ ████▀ ██▀██ ▀████ ██▀██ ██ ██ ▀███▀
 
 -----------------------------------------------------------------
-    version:       26.9.34
+    version:       26.9.37
     developed by:  Leandro Seixas Rocha
-    homepage:      https://github.com/seixas-research/mandacaru
+    website:       https://mandacaru.seixas.dev
+    repository:    https://github.com/seixas-research/mandacaru
     documentation: https://mandacaru.readthedocs.io/
 -----------------------------------------------------------------
 
@@ -16,7 +17,7 @@ System:
 ├── user:         leseixas
 ├── hostname:     safira
 ├── cwd:          /Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru/examples
-└── PID:          77926
+└── PID:          19960
 
 Python:
 ├── version:    3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:04:32) [Clang 20.1.8 ]
@@ -75,7 +76,7 @@ Dependencies:
     qubits: 10
 
 [OPTIMIZATION SETUP]
-    classical_optimizer: COBYLA
+    classical_optimizer: SLSQP
     max_iterations: 12
     gradient_method: analytic
     gradient_formula: exact derivative, g = 2 Re<H psi|A psi>
@@ -84,6 +85,8 @@ Dependencies:
     pool: fermionic
     pool_class: FermionicPool
     pool_size: 37
+    growth: single (largest gradient)
+    pruning: off
     reoptimize_all_parameters: True
     state_vector_backend: sparse matrices, 2^10 amplitudes
     device: AER_simulator
@@ -96,27 +99,28 @@ Dependencies:
     initial_ansatz: |HF> (0 parameters)
 
 [ITERATIONS]
-    iter        energy (eV)              type        |grad|      1q    cnot   depth operator
-    ----------------------------------------------------------------------------------------
-       1   -3242.6811065273  fermionic-double  7.959962e-01      42      76      93 D(2,6->4,8)
-       2   -3242.9790459304  fermionic-double  1.781774e-01      77     208     241 D(0,5->4,9)
-       3   -3243.8344589987  fermionic-double  1.647904e-01     114     256     304 D(3,6->4,7)
-       4   -3246.7048200500  fermionic-double  3.240587e-01     149     360     423 D(1,6->4,9)
-       5   -3246.9038374019  fermionic-single  9.079404e-02     156     364     430 S(6->7)
-       6   -3247.5479381609  fermionic-double  8.863109e-02     191     452     533 D(2,6->4,9)
-       7   -3248.3255457175  fermionic-single  1.499410e-01     198     456     538 S(3->4)
-       8   -3250.0911142204  fermionic-double  8.126749e-02     233     548     644 D(1,6->4,8)
-       9   -3250.1002902031  fermionic-double  1.675385e-02     267     680     792 D(0,5->4,9)
+    iter        energy (eV)              type        |grad|   steps      1q    cnot   depth operator
+    ------------------------------------------------------------------------------------------------
+       1   -3242.6811065663  fermionic-double  7.959962e-01       5      42      76      93 D(2,6->4,8)
+       2   -3242.9790459309  fermionic-double  1.781879e-01       6      77     208     241 D(0,5->4,9)
+       3   -3243.8344590256  fermionic-double  1.647906e-01       9     114     256     304 D(3,6->4,7)
+       4   -3246.7048200936  fermionic-double  3.240703e-01      11     149     360     423 D(1,6->4,9)
+       5   -3246.9038374359  fermionic-single  9.079451e-02      10     156     364     430 S(6->7)
+       6   -3247.5479431701  fermionic-double  8.862014e-02      22     191     452     533 D(2,6->4,9)
+       7   -3248.3255467035  fermionic-single  1.497391e-01      14     198     456     538 S(3->4)
+       8   -3250.0911191185  fermionic-double  8.122710e-02      18     233     548     644 D(1,6->4,8)
+       9   -3250.1002945472  fermionic-double  1.676941e-02      16     267     680     792 D(0,5->4,9)
 ========================================================================
 [VARIATIONAL QUANTUM SUMMARY]
     converged: True
-    optimal_energy_eV: -3250.1002902031
+    optimal_energy_eV: -3250.1002945472
     reference_energy_eV: -3234.9050414316
-    correlation_energy_eV: -15.1952487715
+    correlation_energy_eV: -15.1952531155
     num_operators: 9
     num_parameters: 9
-    final_max_gradient: 1.949444e-04
-    cost_evaluations: 3456
+    final_max_gradient: 1.062292e-04
+    cost_evaluations: 825
+    optimizer_steps: 111
     cnot_count: 680
     circuit_depth: 792
     one_qubit_gates: 267
@@ -126,20 +130,20 @@ Dependencies:
 [PERFORMANCE]
     step: 1
     stages (wall-clock seconds):
-        gradient screening                          0.0021
-        parameter optimization                      1.5351
-        circuit profiling                           0.2698
-        integration: one-body integrals             0.0017
-        integration: two-body integrals (fft)       0.1456
+        gradient screening                          0.0022
+        parameter optimization                      0.0724
+        circuit profiling                           0.3004
+        integration: one-body integrals             0.0019
+        integration: two-body integrals (fft)       0.1651
         --------------------------------------------------
-        sum of timed stages                         1.9543
-    untimed_s: 0.6603
-    wall_time_s: 2.6146
-    solver_wall_time_s: 2.6145
+        sum of timed stages                         0.5420
+    untimed_s: 0.7297
+    wall_time_s: 1.2717
+    solver_wall_time_s: 1.2715
     integration_backend: C (OpenMP)
     openmp_threads: 8
     cpu_count: 8
     mpi: not used (single process, shared-memory OpenMP)
-    peak_memory_MiB: 393.0
+    peak_memory_MiB: 369.9
     resident_memory_MiB: n/a
 ========================================================================

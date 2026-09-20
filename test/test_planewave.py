@@ -16,6 +16,13 @@ from mandacaru.core import PlaneWaveIntegrals, plane_wave_vectors
 from mandacaru.algorithms import Mandacaru
 from mandacaru.algorithms._hamiltonian_from_atoms import (build_basis_hamiltonian,
                                                           resolve_basis)
+from mandacaru.optimizers import Optimizer
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+COBYLA_OPT = Optimizer(method="COBYLA", maxiter=2000, tol=1e-12)
 
 EV = 1.0 / 27.211386245988   # eV -> Hartree
 B2A = 0.52917721             # Bohr -> Angstrom
@@ -151,7 +158,7 @@ class TestPlaneWaveDrivers:
         atoms = self._atoms()
         atoms.calc = Mandacaru(method="vqe",
                                basis={"name": "PW", "energy_cutoff": 8},
-                               optimizer="COBYLA", trace=False)
+                               optimizer=COBYLA_OPT, trace=False)
         energy = atoms.get_total_energy()
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 6            # 3 PWs -> 6 qubits

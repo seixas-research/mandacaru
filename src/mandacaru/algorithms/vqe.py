@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..optimizers.optim import Optimizer
+from ..optimizers.optim import DEFAULT_OPTIMIZER, Optimizer
 from ..units import convert_energy
 from .base import VariationalDriver
 from .deflation import DeflationMixin, deflation_penalty
@@ -113,9 +113,10 @@ class VQE(DeflationMixin, VariationalDriver):
         :class:`~mandacaru.circuits.ansatz.UCCSD`).  Omit in calculator mode; a
         UCCSD ansatz is then built from the geometry.
     optimizer : str or Optimizer
-        Method name -- one of ``"SPSA"``, ``"COBYLA"`` (default),
-        ``"Nelder-Mead"``, ``"SLSQP"``, ``"Adam"``, ``"L-BFGS-B"`` -- or a
-        pre-built :class:`~mandacaru.optimizers.optim.Optimizer`.
+        Method name -- one of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``,
+        ``"SLSQP"`` (default), ``"Adam"``, ``"L-BFGS-B"`` -- or a pre-built
+        :class:`~mandacaru.optimizers.optim.Optimizer`, which is how the
+        iteration budget and the tolerance are set.
     verbose : bool
         Print the run configuration (the qubit Hamiltonian as a term count) and
         a timing / resources summary to standard output (default ``True``).
@@ -168,7 +169,8 @@ class VQE(DeflationMixin, VariationalDriver):
     citation_method = "vqe"
 
     def __init__(self, hamiltonian=None, ansatz=None,
-                 optimizer: str | Optimizer = "COBYLA", verbose: bool = True,
+                 optimizer: str | Optimizer = DEFAULT_OPTIMIZER,
+                 verbose: bool = True,
                  *, ansatz_builder=None, **driver_kwargs):
         # Every other keyword is a VariationalDriver option, forwarded
         # untouched so its name and default live in one place.

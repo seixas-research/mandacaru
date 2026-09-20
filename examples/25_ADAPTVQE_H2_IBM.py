@@ -37,6 +37,7 @@ os.makedirs(DATA, exist_ok=True)
 from mandacaru.units import HARTREE_TO_EV
 
 HARDWARE = None
+from mandacaru.optimizers import Optimizer
 SHOTS = 4096
 #: Qiskit Runtime error mitigation: level 2 adds gate twirling and
 #: zero-noise extrapolation to the readout mitigation of level 1.
@@ -68,7 +69,9 @@ def calculator():
                      spin=False,
                      frozen_core=False,
                      initial_state="hartree-fock",
-                     optimizer="COBYLA",
+                     optimizer=Optimizer(method="COBYLA",
+                                         maxiter=2000,
+                                         tol=1e-12),
                      gradient="finite_difference",
                      max_iterations=14,
                      gradient_tolerance=1e-3,

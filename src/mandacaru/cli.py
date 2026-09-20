@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .backends.hardware import available_devices
     from .circuits.pools import available_pools
     from .core.mapping import MAPPINGS
-    from .optimizers.optim import NAMED_OPTIMIZERS
+    from .optimizers.optim import DEFAULT_OPTIMIZER, NAMED_OPTIMIZERS
 
     parser = argparse.ArgumentParser(
         prog="mandacaru",
@@ -217,9 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
     solver.add_argument("--pool", default=None,
                         choices=tuple(available_pools()),
                         help="ADAPT operator pool (default fermionic)")
-    solver.add_argument("--optimizer", default="COBYLA",
+    solver.add_argument("--optimizer", default=DEFAULT_OPTIMIZER,
                         choices=tuple(NAMED_OPTIMIZERS),
-                        help="classical optimizer (default COBYLA)")
+                        help=f"classical optimizer "
+                             f"(default {DEFAULT_OPTIMIZER})")
     solver.add_argument("--max-iterations", type=int, default=None,
                         help="ADAPT growth steps (adaptive methods)")
     solver.add_argument("--gradient-tolerance", type=float, default=None,

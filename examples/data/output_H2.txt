@@ -4,9 +4,10 @@
     ██    ██ ██▀██ ██ ▀██ ████▀ ██▀██ ▀████ ██▀██ ██ ██ ▀███▀
 
 -----------------------------------------------------------------
-    version:       26.9.34
+    version:       26.9.37
     developed by:  Leandro Seixas Rocha
-    homepage:      https://github.com/seixas-research/mandacaru
+    website:       https://mandacaru.seixas.dev
+    repository:    https://github.com/seixas-research/mandacaru
     documentation: https://mandacaru.readthedocs.io/
 -----------------------------------------------------------------
 
@@ -16,7 +17,7 @@ System:
 ├── user:         leseixas
 ├── hostname:     safira
 ├── cwd:          /Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru/examples
-└── PID:          77904
+└── PID:          19944
 
 Python:
 ├── version:    3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:04:32) [Clang 20.1.8 ]
@@ -74,7 +75,7 @@ Dependencies:
     qubits: 4
 
 [OPTIMIZATION SETUP]
-    classical_optimizer: COBYLA
+    classical_optimizer: SLSQP
     max_iterations: 15
     gradient_method: parameter_shift
     gradient_formula: parameter-shift rule, exact for the generator's frequency set
@@ -83,6 +84,8 @@ Dependencies:
     pool: qubit
     pool_class: QubitPool
     pool_size: 12
+    growth: single (largest gradient)
+    pruning: off
     reoptimize_all_parameters: True
     state_vector_backend: dense matrices, 2^4 amplitudes
     device: AER_simulator
@@ -95,19 +98,20 @@ Dependencies:
     initial_ansatz: |HF> (0 parameters)
 
 [ITERATIONS]
-    iter        energy (eV)              type        |grad|      1q    cnot   depth operator
-    ----------------------------------------------------------------------------------------
-       1     -29.9604462980             pauli  2.795877e-01       9       6       9 iP[XXYX]
+    iter        energy (eV)              type        |grad|   steps      1q    cnot   depth operator
+    ------------------------------------------------------------------------------------------------
+       1     -29.9604463332             pauli  2.795877e-01       4       9       6       9 iP[XXYX]
 ========================================================================
 [VARIATIONAL QUANTUM SUMMARY]
     converged: True
-    optimal_energy_eV: -29.9604462980
+    optimal_energy_eV: -29.9604463332
     reference_energy_eV: -29.5361989680
-    correlation_energy_eV: -0.4242473300
+    correlation_energy_eV: -0.4242473652
     num_operators: 1
     num_parameters: 1
-    final_max_gradient: 8.094953e-05
-    cost_evaluations: 23
+    final_max_gradient: 3.092467e-08
+    cost_evaluations: 9
+    optimizer_steps: 4
     cnot_count: 6
     circuit_depth: 9
     one_qubit_gates: 9
@@ -118,19 +122,19 @@ Dependencies:
     step: 1
     stages (wall-clock seconds):
         gradient screening                          0.0014
-        parameter optimization                      0.0205
-        circuit profiling                           0.5787
-        integration: one-body integrals             0.0172
-        integration: two-body integrals (fft)       0.8528
+        parameter optimization                      0.0007
+        circuit profiling                           0.3515
+        integration: one-body integrals             0.0193
+        integration: two-body integrals (fft)       0.7787
         --------------------------------------------------
-        sum of timed stages                         1.4705
-    untimed_s: 1.0347
-    wall_time_s: 2.5053
-    solver_wall_time_s: 2.5051
+        sum of timed stages                         1.1517
+    untimed_s: 0.8039
+    wall_time_s: 1.9556
+    solver_wall_time_s: 1.9554
     integration_backend: C (OpenMP)
     openmp_threads: 8
     cpu_count: 8
     mpi: not used (single process, shared-memory OpenMP)
-    peak_memory_MiB: 1381.6
+    peak_memory_MiB: 2065.5
     resident_memory_MiB: n/a
 ========================================================================
