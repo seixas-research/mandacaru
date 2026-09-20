@@ -202,7 +202,7 @@ class GaussianRecipe:
 # Name grammar.
 # --------------------------------------------------------------------------- #
 
-_STO_RE = re.compile(r"^STO-?(\d)G$", re.IGNORECASE)
+_STO_RE = re.compile(r"^(?:STO-(\d)G|STO([456])G)$", re.IGNORECASE)
 _POPLE_RE = re.compile(
     r"^(\d)-(\d{2,3})(\+{0,2})G(\*{0,2})(?:\((.+)\))?$", re.IGNORECASE)
 _DUNNING_RE = re.compile(r"^(AUG-)?CC-P(C?)V(D|T|Q|5|6)Z$", re.IGNORECASE)
@@ -342,7 +342,7 @@ def parse_basis_name(name: str) -> GaussianRecipe:
                 f"{NATIVE_NAMESPACE!r} or no prefix at all")
     match = _STO_RE.match(key)
     if match:
-        n = int(match.group(1))
+        n = int(match.group(1) or match.group(2))
         return GaussianRecipe(name=f"STO-{n}G", family="sto", core=(n,),
                               valence=(n,),
                               description=f"minimal STO-{n}G, one {n}-primitive "

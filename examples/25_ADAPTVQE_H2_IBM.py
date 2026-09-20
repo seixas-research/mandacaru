@@ -61,8 +61,7 @@ def h2(distance):
 def calculator():
     return Mandacaru(method="adapt-vqe",
                      pool="fermionic",
-                     mapping="parity",
-                     two_qubit_reduction=True,   # H2 on 2 qubits instead of 4
+                     mapping="parity_reduced",  # H2 on 2 qubits instead of 4
                      basis="FAO",
                      h=0.10,
                      charge=0,

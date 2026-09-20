@@ -16,8 +16,7 @@ optimization live.  The file has these kinds of section:
 * the start-up **banner** (:func:`mandacaru.utils.banner.lines`), written once at
   the very top of the file so the log carries its own provenance;
 * a **system** block with the geometry of this step and the explicit unit-cell
-  parameters (named ``[METADATA]`` before 2026-09-18; :func:`parse_output` still
-  reads that name);
+  parameters;
 * an **electrons** block with how the electronic problem was posed -- basis,
   grid, kinetic operator, k-points, spin, the fermion-to-qubit mapping and the
   size of the register and Hamiltonian it produced;
@@ -458,7 +457,7 @@ class AdaptOutputLogger:
                       num_evaluations: int | None = None,
                       metrics: Any = None, optimizer: str | None = None,
                       extra: dict | None = None) -> None:
-        """Write this step's ``[QUANTUM VARIATIONAL SUMMARY]``: the converged state.
+        """Write this step's ``[VARIATIONAL QUANTUM SUMMARY]``: the converged state.
 
         One per geometry -- it closes the variational run, not the relaxation
         (:func:`append_optimization_summary` closes that).
@@ -474,7 +473,7 @@ class AdaptOutputLogger:
         wants it as data.  On a wide register that one line was longer than the
         table it duplicated.
         """
-        self._emit(_BANNER, "[QUANTUM VARIATIONAL SUMMARY]")
+        self._emit(_BANNER, "[VARIATIONAL QUANTUM SUMMARY]")
         self._emit_body(f"converged: {converged}")
         if optimizer is not None:
             self._emit_body(f"classical_optimizer: {optimizer}")
@@ -897,16 +896,6 @@ def _cell_parameters(cell: np.ndarray):
             angle(b_vec, c_vec), angle(a_vec, c_vec), angle(a_vec, b_vec))
 
 
-#: Markers that open a geometry step.  ``[METADATA]`` is the name ``[SYSTEM]``
-#: had before 2026-09-18 and is still read, so a log written by an older version
-#: still parses.
-_STEP_MARKERS = ("[SYSTEM]", "[METADATA]")
-
-#: Markers of the per-step variational summary.  ``[SUMMARY]`` is what
-#: ``[QUANTUM VARIATIONAL SUMMARY]`` was called before 2026-09-18 and is still
-#: read, so an older log still parses.
-_SUMMARY_MARKERS = ("[QUANTUM VARIATIONAL SUMMARY]", "[SUMMARY]")
-
 #: ``[GEOMETRY OPTIMIZATION SUMMARY]`` keys that are counts, not measurements.
 _RELAXATION_COUNTS = ("geometry_steps",)
 
@@ -919,9 +908,9 @@ _PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs")
 _SECTIONS = {"[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
              "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
+             "[VARIATIONAL QUANTUM SUMMARY]": "summary",
              "[GEOMETRY OPTIMIZATION SUMMARY]": "optimization",
-             "[RELAXATION COMPLETE]": "completion",
-             **{marker: "summary" for marker in _SUMMARY_MARKERS}}
+             "[RELAXATION COMPLETE]": "completion"}
 
 
 def parse_output(path: str) -> dict:
@@ -936,8 +925,7 @@ def parse_output(path: str) -> dict:
     (see the module docstring).  ``result["steps"]`` is the list of those blocks,
     in order; the top-level ``system`` / ``electrons`` / ``setup`` /
     ``iterations`` / ``summary`` / ``forces`` / ``performance`` keys describe the
-    **last** step, so reading a single-point log is unchanged.  ``metadata`` is
-    kept as an alias of ``system``.
+    **last** step, so reading a single-point log is unchanged.
     """
     steps: list[dict[str, Any]] = []
     step: dict[str, Any] | None = None
@@ -958,9 +946,6 @@ def parse_output(path: str) -> dict:
         nonlocal columns
         columns = []
         fresh: dict[str, Any] = {"system": {}, "setup": {}, "iterations": []}
-        # ``metadata`` is the key ``system`` had before 2026-09-18; the same dict
-        # answers to both so an existing reader keeps working.
-        fresh["metadata"] = fresh["system"]
         steps.append(fresh)
         return fresh
 
@@ -968,14 +953,14 @@ def parse_output(path: str) -> dict:
         for raw in fh:
             stripped = raw.strip()
             indent = len(raw) - len(raw.lstrip())
-            if stripped in _STEP_MARKERS:
+            if stripped == "[SYSTEM]":
                 # The system block opens a geometry step; a second one starts
                 # the next step of a relaxation.
                 step = new_step()
                 section = "system"
                 continue
             if stripped in _SECTIONS:
-                # A log need not start with metadata (a forces block appended on
+                # A log need not start with a system block (a forces block appended on
                 # its own is still a step), so the first section opens one.
                 if step is None:
                     step = new_step()
@@ -1152,8 +1137,7 @@ def parse_output(path: str) -> dict:
 
     # The top level is the last step, so a single-point log parses exactly as it
     # did before there were steps; every step is kept under "steps".
-    result: dict[str, Any] = {"system": {}, "metadata": {}, "setup": {},
-                              "iterations": []}
+    result: dict[str, Any] = {"system": {}, "setup": {}, "iterations": []}
     if steps:
         result.update(steps[-1])
     result["steps"] = steps

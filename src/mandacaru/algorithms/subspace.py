@@ -220,7 +220,7 @@ class SubspaceADAPTVQEResult(_SpectrumViews):
 
 class SubspaceMixin:
     #: The extra reference determinants are built untapered.
-    _supports_two_qubit_reduction = False
+    _supports_parity_reduced = False
     #: ... and on the full register, so no particle-number sector either.
     _supports_sector = False
     """Shared SSVQE scaffolding: one unitary over several orthogonal references.

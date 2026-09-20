@@ -249,19 +249,19 @@ class HamiltonianRecord:
     the geometry entirely: they are exactly the two quantities the ADAPT-VQE pool
     and the UCCSD ansatz are built from.
 
-    ``two_qubit_reduction`` records whether the stored operator is **already
-    tapered**.  Without it the register width and the orbital count disagree
-    (``2M - 2`` Pauli characters for ``M`` spatial orbitals) and a loaded driver
-    builds a pool two qubits too wide, so a reader must be told.  Files written
-    before this field default to ``False``, which is what they were.
+    The mapping name fully describes the register representation, including
+    whether the parity register is reduced.
     """
 
     hamiltonian: PauliSum
     mapping: str = "jordan_wigner"
     num_particles: tuple[int, int] | None = None
     n_spatial_orbitals: int | None = None
-    two_qubit_reduction: bool = False
     metadata: dict | None = None
+
+    def __post_init__(self):
+        from .mapping import _canonical_method
+        self.mapping = _canonical_method(self.mapping)
 
     @property
     def num_qubits(self) -> int:
@@ -325,7 +325,6 @@ def resolve_save_path(spec, fmt: str = DEFAULT_FORMAT,
 def save_hamiltonian(path, hamiltonian: PauliSum, *,
                      mapping: str = "jordan_wigner",
                      num_particles=None, n_spatial_orbitals=None,
-                     two_qubit_reduction: bool = False,
                      metadata: dict | None = None,
                      format: str | None = None,
                      compression: str = "zstd",
@@ -348,6 +347,9 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
         Parquet writer -- ``"auto"``, ``"fastparquet"`` or ``"pyarrow"`` (see the
         module docstring).  Ignored for JSON.
     """
+    from .mapping import _canonical_method
+    mapping = _canonical_method(mapping)
+
     extension = os.path.splitext(os.fspath(path))[1].lower()
     named = _EXTENSION_FORMATS.get(extension)
     if format is None:
@@ -383,7 +385,6 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
             else [int(num_particles[0]), int(num_particles[1])]),
         "mandacaru.n_spatial_orbitals": json.dumps(
             None if n_spatial_orbitals is None else int(n_spatial_orbitals)),
-        "mandacaru.two_qubit_reduction": json.dumps(bool(two_qubit_reduction)),
         # The Pauli coefficients are the internal Hartree ones; say so in the
         # file so a reader never has to guess.
         "mandacaru.metadata": json.dumps(
@@ -413,8 +414,6 @@ def _write_json(path, labels, reals, imags, key_value):
         "mapping": key_value["mandacaru.mapping"],
         "num_particles": json.loads(key_value["mandacaru.num_particles"]),
         "n_spatial_orbitals": json.loads(key_value["mandacaru.n_spatial_orbitals"]),
-        "two_qubit_reduction": json.loads(
-            key_value["mandacaru.two_qubit_reduction"]),
         "metadata": json.loads(key_value["mandacaru.metadata"]),
         "terms": [[label, real, imag]
                   for label, real, imag in zip(labels, reals, imags)],
@@ -512,7 +511,6 @@ def load_hamiltonian(path, engine: str = "auto",
         hamiltonian=PauliSum(terms, num_qubits=n_qubits),
         mapping=header.mapping, num_particles=header.num_particles,
         n_spatial_orbitals=header.n_spatial_orbitals,
-        two_qubit_reduction=header.two_qubit_reduction,
         metadata=header.metadata)
 
 
@@ -529,9 +527,12 @@ class HamiltonianHeader:
     mapping: str = "jordan_wigner"
     num_particles: tuple[int, int] | None = None
     n_spatial_orbitals: int | None = None
-    two_qubit_reduction: bool = False
     metadata: dict | None = None
     n_terms: int | None = None
+
+    def __post_init__(self):
+        from .mapping import _canonical_method
+        self.mapping = _canonical_method(self.mapping)
 
 
 def _header_from_meta(path, meta, n_terms=None) -> HamiltonianHeader:
@@ -554,8 +555,6 @@ def _header_from_meta(path, meta, n_terms=None) -> HamiltonianHeader:
         mapping=meta.get("mandacaru.mapping", "jordan_wigner"),
         num_particles=num_particles,
         n_spatial_orbitals=None if n_orbitals is None else int(n_orbitals),
-        two_qubit_reduction=bool(json.loads(
-            meta.get("mandacaru.two_qubit_reduction", "false"))),
         metadata=json.loads(meta.get("mandacaru.metadata", "{}")),
         n_terms=n_terms)
 
@@ -622,8 +621,6 @@ def _read_json(path):
         "mandacaru.num_particles": json.dumps(payload.get("num_particles")),
         "mandacaru.n_spatial_orbitals": json.dumps(
             payload.get("n_spatial_orbitals")),
-        "mandacaru.two_qubit_reduction": json.dumps(
-            bool(payload.get("two_qubit_reduction", False))),
         "mandacaru.metadata": json.dumps(payload.get("metadata") or {}),
     }
     entries = payload.get("terms", [])

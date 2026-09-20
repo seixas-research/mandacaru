@@ -546,7 +546,7 @@ class TestBlockIndentation:
 
     def test_markers_and_rules_stay_at_column_zero(self, log):
         for marker in ("[SYSTEM]", "[OPTIMIZATION SETUP]", "[ITERATIONS]",
-                       "[QUANTUM VARIATIONAL SUMMARY]", "[FORCES]"):
+                       "[VARIATIONAL QUANTUM SUMMARY]", "[FORCES]"):
             assert marker in log, marker
         assert all(not line.startswith(" ")
                    for line in log if set(line) == {"="})
@@ -917,7 +917,7 @@ class TestElectronsBlock:
     """
 
     FIELDS = ("basis", "grid spacing", "kinetic operator", "k-points",
-              "spin-polarized", "mapping", "two-qubit reduction", "Hamiltonian",
+              "spin-polarized", "mapping", "Hamiltonian",
               "spatial orbitals", "electrons (alpha, beta)", "qubits")
 
     @pytest.fixture(scope="class")
@@ -948,7 +948,6 @@ class TestElectronsBlock:
         assert block["spin-polarized"] == "False"
         # The transformation's own name, not the identifier the code uses.
         assert block["mapping"] == "Jordan-Wigner"
-        assert block["two-qubit reduction"] == "False"
         assert block["qubits"] == str(calc.n_qubits) == "4"
         assert block["electrons (alpha, beta)"] == str(calc.num_particles)
         assert block["spatial orbitals"] == "2"
@@ -967,28 +966,10 @@ class TestElectronsBlock:
     def test_the_system_block_is_named_system(self, run):
         out, _calc = run
         text = open(out, encoding="utf-8").read()
-        assert "[SYSTEM]" in text and "[METADATA]" not in text
+        assert "[SYSTEM]" in text
         # The block order is the reading order: what, then how, then the run.
         assert text.index("[SYSTEM]") < text.index("[ELECTRONS]") \
             < text.index("[OPTIMIZATION SETUP]") < text.index("[ITERATIONS]")
-
-    def test_metadata_stays_readable_as_an_alias(self, run):
-        out, _calc = run
-        parsed = parse_output(out)
-        # A reader written against the old name keeps working.
-        assert parsed["metadata"] is parsed["system"]
-        assert parsed["system"]["n_atoms"] == "2"
-
-    def test_a_log_written_with_the_old_marker_still_parses(self, tmp_path):
-        """``[METADATA]`` is what this block was called before 2026-09-18."""
-        path = tmp_path / "old.txt"
-        path.write_text("[METADATA]\n    step: 1\n    n_atoms: 2\n"
-                        "[SUMMARY]\n    converged: True\n", encoding="utf-8")
-        parsed = parse_output(str(path))
-        assert len(parsed["steps"]) == 1
-        assert parsed["system"]["n_atoms"] == "2"
-        assert parsed["summary"]["converged"] == "True"
-
 
 class TestGeometryOptimizationSummary:
     """A relaxation closes its log with the trajectory seen as one thing.
@@ -1069,9 +1050,8 @@ class TestGeometryOptimizationSummary:
         text = open(out, encoding="utf-8").read()
         # The per-step block is the *variational* summary; the relaxation's own
         # summary is the single block at the end.
-        assert text.count("[QUANTUM VARIATIONAL SUMMARY]") == \
+        assert text.count("[VARIATIONAL QUANTUM SUMMARY]") == \
             len(parse_output(out)["steps"])
-        assert "\n[SUMMARY]" not in text
 
     def test_a_single_point_gets_no_optimization_summary(self, tmp_path):
         from mandacaru import Mandacaru
@@ -1087,9 +1067,3 @@ class TestGeometryOptimizationSummary:
         assert atoms.calc.write_optimization_summary() is False
         assert "[GEOMETRY OPTIMIZATION SUMMARY]" not in open(out).read()
         assert atoms.calc.write_optimization_summary(force=True) is True
-
-    def test_an_old_log_with_the_previous_marker_still_parses(self, tmp_path):
-        path = tmp_path / "old.txt"
-        path.write_text("[SYSTEM]\n    step: 1\n"
-                        "[SUMMARY]\n    converged: True\n", encoding="utf-8")
-        assert parse_output(str(path))["summary"]["converged"] == "True"

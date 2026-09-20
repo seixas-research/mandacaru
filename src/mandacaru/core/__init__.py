@@ -10,8 +10,9 @@
 
 * :class:`MolecularIntegrals` -- one-/two-body integrals and the molecular
   Hamiltonian over a localized basis;
-* :class:`Fermion` -- second-quantized fermionic operators and the three
-  fermion-to-qubit mappings (Jordan-Wigner, parity, Bravyi-Kitaev);
+* :class:`Fermion` -- second-quantized fermionic operators and the four
+  fermion-to-qubit mappings (Jordan-Wigner, parity, reduced parity,
+  Bravyi-Kitaev);
 * :class:`PauliSum` -- the qubit-operator output type;
 * :func:`save_hamiltonian` / :func:`load_hamiltonian` -- the on-disk Pauli-string
   cache (Apache Parquet or JSON) that lets a run skip the integrals and the
@@ -19,7 +20,8 @@
 """
 
 from .hamiltonian import MolecularIntegrals, minimal_fao_basis
-from .mapping import Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity
+from .mapping import (Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity,
+                      parity_reduced)
 from .planewave import PlaneWaveIntegrals, plane_wave_vectors
 from .serialization import (HAMILTONIAN_FORMATS, HamiltonianRecord,
                             HamiltonianHeader, detect_format,
@@ -37,6 +39,7 @@ __all__ = [
     "PauliSum",
     "jordan_wigner",
     "parity",
+    "parity_reduced",
     "bravyi_kitaev",
     "HamiltonianRecord",
     "HAMILTONIAN_FORMATS",

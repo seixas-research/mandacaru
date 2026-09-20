@@ -6,10 +6,12 @@ import pytest
 
 from mandacaru.core.mapping import (
     Fermion,
+    MAPPINGS,
     PauliSum,
     bravyi_kitaev,
     jordan_wigner,
     parity,
+    parity_reduced,
 )
 
 METHODS = ["jordan_wigner", "parity", "bravyi_kitaev"]
@@ -129,11 +131,11 @@ class TestMappings:
             ev = np.linalg.eigvalsh(_herm(ps.to_matrix()))
             assert np.allclose(np.unique(np.round(ev, 9)), [0.0, 1.0])
 
-    def test_aliases_and_module_functions(self):
+    def test_module_functions(self):
         H = _random_hermitian_fermion(2, seed=3)
-        assert np.allclose(H.map_to_qubits("jw").to_matrix(),
+        assert np.allclose(H.map_to_qubits("jordan_wigner").to_matrix(),
                            jordan_wigner(H).to_matrix())
-        assert np.allclose(H.map_to_qubits("bk").to_matrix(),
+        assert np.allclose(H.map_to_qubits("bravyi_kitaev").to_matrix(),
                            bravyi_kitaev(H).to_matrix())
         assert np.allclose(H.map_to_qubits("parity").to_matrix(),
                            parity(H).to_matrix())
@@ -141,6 +143,13 @@ class TestMappings:
     def test_unknown_method_raises(self):
         with pytest.raises(ValueError):
             _random_hermitian_fermion(2).map_to_qubits("nonsense")
+
+    def test_exactly_four_mapping_names_are_accepted(self):
+        assert MAPPINGS == ("jordan_wigner", "parity", "parity_reduced",
+                            "bravyi_kitaev")
+        for alias in ("jw", "bk"):
+            with pytest.raises(ValueError):
+                _random_hermitian_fermion(2).map_to_qubits(alias)
 
 
 # --- parity two-qubit reduction ---
@@ -163,9 +172,14 @@ class TestTwoQubitReduction:
 
     def test_reduction_removes_two_qubits(self):
         H, npart = self._spin_conserving_h()
-        red = H.map_to_qubits("parity", two_qubit_reduction=True,
-                              num_particles=npart)
+        red = H.map_to_qubits("parity_reduced", num_particles=npart)
         assert red.num_qubits == H.n_modes() - 2
+
+    def test_reduced_mapping_function_matches_the_variant(self):
+        H, npart = self._spin_conserving_h()
+        variant = H.map_to_qubits("parity_reduced", num_particles=npart)
+        helper = parity_reduced(H, npart)
+        assert helper.terms == pytest.approx(variant.terms)
 
     def test_reduction_preserves_sector_ground_state(self):
         H, npart = self._spin_conserving_h()
@@ -173,21 +187,25 @@ class TestTwoQubitReduction:
         # restricting the particle-conserving Fock matrix to that occupation
         # block (robust to cross-sector degeneracies).
         sector_min = _sector_ground_state(H, sum(npart))
-        red = H.map_to_qubits("parity", two_qubit_reduction=True,
-                              num_particles=npart)
+        red = H.map_to_qubits("parity_reduced", num_particles=npart)
         rmin = np.linalg.eigvalsh(_herm(red.to_matrix())).min()
         assert np.isclose(rmin, sector_min, atol=1e-8)
 
-    def test_reduction_requires_parity(self):
-        H, npart = self._spin_conserving_h()
-        with pytest.raises(ValueError):
-            H.map_to_qubits("bravyi_kitaev", two_qubit_reduction=True,
-                            num_particles=npart)
+    @pytest.mark.parametrize(
+        "method", ["jordan_wigner", "parity", "bravyi_kitaev"])
+    def test_unreduced_mappings_keep_every_qubit(self, method):
+        H, _ = self._spin_conserving_h()
+        assert H.map_to_qubits(method).num_qubits == H.n_modes()
 
     def test_reduction_requires_num_particles(self):
         H, _ = self._spin_conserving_h()
         with pytest.raises(ValueError):
-            H.map_to_qubits("parity", two_qubit_reduction=True)
+            H.map_to_qubits("parity_reduced")
+
+    def test_reduced_mapping_rejects_a_sector_changing_operator(self):
+        with pytest.raises(ValueError, match="preserve"):
+            Fermion.creation(0).map_to_qubits(
+                "parity_reduced", n_modes=4, num_particles=(1, 1))
 
 
 def _herm(m):

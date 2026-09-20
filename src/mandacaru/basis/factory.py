@@ -95,15 +95,15 @@ class BasisSet:
             return FAOBasisSet(**kwargs)
         if key == "NAO":
             return NAOBasisSet(**kwargs)
-        if key in ("NAO-AE", "NAOAE", "NAO_AE", "AE-NAO", "AENAO"):
+        if key in ("NAO-AE", "NAO_AE", "AE-NAO"):
             return NAOAEBasisSet(**kwargs)
         if key == "GTO":
             return GTOBasisSet(**kwargs)
-        if key in ("STO-3G", "STO3G", "STO-4G", "STO4G", "STO-5G", "STO5G",
+        if key in ("STO-3G", "STO-4G", "STO4G", "STO-5G", "STO5G",
                    "STO-6G", "STO6G"):
             return GTOBasisSet(n_gaussians=int(key[3:].lstrip("-")[0]),
                                **kwargs)
-        if key in ("6-31G", "631G"):
+        if key == "6-31G":
             return Pople631GBasisSet(polarization=False, **kwargs)
         if key in ("6-31G(D)", "631G(D)", "6-31G*", "631G*", "6-31GD"):
             return Pople631GBasisSet(polarization=True, **kwargs)

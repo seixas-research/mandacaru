@@ -221,10 +221,13 @@ class VariationalDriver(Calculator):
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
                  kinetic: str | None = None,
-                 two_qubit_reduction: bool = False,
                  atomic_units: bool = False,
                  checkpoint: str | None = None, checkpoint_every: int = 1,
                  resume: str | None = None, **calc_kwargs):
+        if "two_qubit_reduction" in calc_kwargs:
+            raise TypeError(
+                "two_qubit_reduction is no longer a constructor option; "
+                "use mapping='parity_reduced'")
         Calculator.__init__(self, **calc_kwargs)
 
         self.verbose = bool(verbose)
@@ -235,14 +238,11 @@ class VariationalDriver(Calculator):
         self.energy_units = "Ha" if self.atomic_units else "eV"
         self.length_units = "bohr" if self.atomic_units else "angstrom"
         self.optimizer = resolve_optimizer(optimizer, allowed=self._OPTIMIZERS)
-        self.mapping = mapping
-        # Parity mapping's Z2 tapering: two qubits fewer, same physics.
-        self.two_qubit_reduction = bool(two_qubit_reduction)
-        if self.two_qubit_reduction:
-            from ..core.mapping import _canonical_method
-            if _canonical_method(mapping) != "parity":
-                raise ValueError("two_qubit_reduction requires mapping='parity'")
-            if not self._supports_two_qubit_reduction:
+        from ..core.mapping import resolve_mapping
+        # The mapping name is the sole source of the register representation.
+        self.mapping = resolve_mapping(mapping)
+        if self.mapping == "parity_reduced":
+            if not self._supports_parity_reduced:
                 raise NotImplementedError(
                     f"{type(self).__name__} does not support the two-qubit "
                     "reduction (its reference determinants are not tapered)")
@@ -438,7 +438,7 @@ class VariationalDriver(Calculator):
         return bool(sparse)
 
     #: Drivers whose reference states cannot be tapered override this.
-    _supports_two_qubit_reduction = True
+    _supports_parity_reduced = True
 
     def _as_pauli_sum(self, hamiltonian, n_qubits: int,
                       num_particles=None) -> PauliSum:
@@ -450,12 +450,12 @@ class VariationalDriver(Calculator):
         if isinstance(hamiltonian, PauliSum):
             return hamiltonian
         if isinstance(hamiltonian, Fermion):
-            if self.two_qubit_reduction:
+            if self.mapping == "parity_reduced":
                 particles = (num_particles if num_particles is not None
                              else getattr(self, "num_particles", None))
                 return hamiltonian.map_to_qubits(
                     self.mapping, n_modes=n_qubits + 2,
-                    two_qubit_reduction=True, num_particles=particles)
+                    num_particles=particles)
             return hamiltonian.map_to_qubits(self.mapping, n_modes=n_qubits)
         raise TypeError("hamiltonian must be a PauliSum or Fermion")
 
@@ -632,12 +632,9 @@ class VariationalDriver(Calculator):
         fermion-to-qubit mapping is touched, and the driver's ``mapping`` is
         adopted from the file so the ansatz / pool stay consistent with it.
 
-        A **tapered** record (``two_qubit_reduction``) restores that setting the
-        same way: the stored operator is ``2M - 2`` qubits wide, so a driver that
-        did not know would build a pool two qubits too wide and refuse to run.
-        A driver that asked for tapering and is handed an untapered file is a
-        real contradiction -- the file cannot be tapered after the fact without
-        the mapping it was written in -- and says so.
+        A record with ``mapping="parity_reduced"`` restores the reduced
+        register the same way: the stored operator is ``2M - 2`` qubits wide,
+        so the pool and reference state must use that mapping too.
         """
         record = load_hamiltonian(self.load_hamiltonian)
         self._adopt_cache_header(record)
@@ -657,21 +654,25 @@ class VariationalDriver(Calculator):
         self._adopt_cache_header(read_hamiltonian_header(self.load_hamiltonian))
 
     def _adopt_cache_header(self, record) -> None:
-        """Take the mapping and the tapering from a cache record or header."""
-        self.mapping = record.mapping
-        if record.two_qubit_reduction and not self.two_qubit_reduction:
-            if not self._supports_two_qubit_reduction:
-                raise NotImplementedError(
-                    f"{self.load_hamiltonian!r} holds a tapered Hamiltonian, "
-                    f"which {type(self).__name__} does not support (its "
-                    "reference determinants are not tapered)")
-            self.two_qubit_reduction = True
-        elif self.two_qubit_reduction and not record.two_qubit_reduction:
+        """Take the mapping from a cache record or header."""
+        from ..core.mapping import resolve_mapping
+
+        requested_reduced = self.mapping == "parity_reduced"
+        record_mapping = resolve_mapping(record.mapping)
+        record_reduced = record_mapping == "parity_reduced"
+        if requested_reduced and not record_reduced:
             raise ValueError(
                 f"{self.load_hamiltonian!r} holds an untapered "
                 f"{record.num_qubits}-qubit Hamiltonian, but this driver was "
-                "built with two_qubit_reduction=True; drop the flag (the file "
-                "decides) or point at a file written with it")
+                "built with mapping='parity_reduced'; use mapping='parity' "
+                "(the file decides) or point at a parity_reduced file")
+        self.mapping = record_mapping
+        if self.mapping == "parity_reduced" \
+                and not self._supports_parity_reduced:
+            raise NotImplementedError(
+                f"{self.load_hamiltonian!r} uses mapping='parity_reduced', "
+                f"which {type(self).__name__} does not support (its reference "
+                "determinants are not tapered)")
 
     def _check_output_paths(self) -> None:
         """Refuse two outputs that resolve to the same file.
@@ -727,7 +728,7 @@ class VariationalDriver(Calculator):
         return save_hamiltonian(
             self._save_path, self.hamiltonian, mapping=self.mapping,
             num_particles=num_particles, n_spatial_orbitals=n_spatial_orbitals,
-            two_qubit_reduction=self.two_qubit_reduction, format=fmt,
+            format=fmt,
             metadata={"driver": type(self).__name__,
                       "basis": self.basis if isinstance(self.basis, str)
                       else dict(self.basis),
@@ -743,8 +744,7 @@ class VariationalDriver(Calculator):
             self._hamiltonian_dump_path, self.hamiltonian,
             n_qubits=self.n_qubits, mapping=self.mapping,
             num_particles=num_particles,
-            n_spatial_orbitals=n_spatial_orbitals,
-            two_qubit_reduction=self.two_qubit_reduction)
+            n_spatial_orbitals=n_spatial_orbitals)
 
     def _maybe_dump_pool(self, pool, operators) -> str | None:
         """Write ``pool.json`` when ``verbose_operators`` is set."""
@@ -752,8 +752,7 @@ class VariationalDriver(Calculator):
             return None
         return dump_pool(
             self._pool_dump_path, pool, operators, n_qubits=self.n_qubits,
-            mapping=self.mapping, num_particles=self.num_particles,
-            two_qubit_reduction=self.two_qubit_reduction)
+            mapping=self.mapping, num_particles=self.num_particles)
 
     # -- wavefunction checkpoints ---------------------------------------- #
 
@@ -804,7 +803,6 @@ class VariationalDriver(Calculator):
             parameters=np.asarray(parameters, dtype=float),
             labels=list(labels), kinds=list(kinds),
             mapping=str(self.mapping),
-            two_qubit_reduction=bool(self.two_qubit_reduction),
             num_particles=None if particles is None else tuple(particles),
             n_spatial_orbitals=getattr(self, "n_spatial_orbitals", None),
             occupied_orbitals=None if occupied is None else list(occupied),
@@ -871,8 +869,6 @@ class VariationalDriver(Calculator):
         if _canonical_method(record.mapping) != _canonical_method(self.mapping):
             problems.append(f"mapping {record.mapping!r} in the file, "
                             f"{self.mapping!r} in this run")
-        if bool(record.two_qubit_reduction) != bool(self.two_qubit_reduction):
-            problems.append("two-qubit reduction differs")
         if sorted(record.reference_qubits) != sorted(ansatz.reference_qubits()):
             problems.append(f"reference determinant {record.reference_qubits} "
                             f"in the file, {ansatz.reference_qubits()} here")
@@ -1060,15 +1056,6 @@ class VariationalDriver(Calculator):
     def _dry_run_estimate(self, atoms=None):
         """Perform the dry run: store, optionally print, and return the estimate."""
         estimate = self.estimate_qubits(atoms)
-        # A cached tapered Hamiltonian already reports the reduced width;
-        # applying the reduction again would subtract two qubits twice.
-        if self.two_qubit_reduction and not estimate.two_qubit_reduction:
-            import dataclasses
-            estimate = dataclasses.replace(
-                estimate, n_qubits=estimate.n_qubits_reduced,
-                two_qubit_reduction=True,
-                notes=list(estimate.notes) + [
-                    "parity two-qubit reduction applied: two qubits fewer"])
         self.dry_run_result = estimate
         self.result = None
         if self.verbose:

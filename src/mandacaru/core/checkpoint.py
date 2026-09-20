@@ -208,7 +208,7 @@ class WavefunctionCheckpoint:
     labels, kinds : list of str
         Human-readable names and pool categories of the generators (the
         ADAPT-VQE operator sequence).
-    mapping, two_qubit_reduction, num_particles, n_spatial_orbitals, occupied_orbitals
+    mapping, num_particles, n_spatial_orbitals, occupied_orbitals
         The fermionic problem the register encodes -- what lets a solver
         rebuild its pool / ansatz around the state.
     energy : float or None
@@ -238,7 +238,6 @@ class WavefunctionCheckpoint:
     labels: list[str] = field(default_factory=list)
     kinds: list[str] = field(default_factory=list)
     mapping: str = "jordan_wigner"
-    two_qubit_reduction: bool = False
     num_particles: tuple[int, int] | None = None
     n_spatial_orbitals: int | None = None
     occupied_orbitals: list[int] | None = None
@@ -250,6 +249,9 @@ class WavefunctionCheckpoint:
     preparation: str = "product"
 
     def __post_init__(self):
+        from .mapping import resolve_mapping
+
+        self.mapping = resolve_mapping(self.mapping)
         self.n_qubits = int(self.n_qubits)
         self.preparation = str(self.preparation)
         if self.preparation not in PREPARATIONS:
@@ -369,7 +371,6 @@ class WavefunctionCheckpoint:
             "n_qubits": self.n_qubits,
             "reference_qubits": list(self.reference_qubits),
             "mapping": self.mapping,
-            "two_qubit_reduction": bool(self.two_qubit_reduction),
             "num_particles": (None if self.num_particles is None
                               else list(self.num_particles)),
             "n_spatial_orbitals": self.n_spatial_orbitals,
@@ -408,7 +409,6 @@ class WavefunctionCheckpoint:
                     for k, op in enumerate(operators)],
             kinds=[str(op.get("kind", "")) for op in operators],
             mapping=str(payload.get("mapping", "jordan_wigner")),
-            two_qubit_reduction=bool(payload.get("two_qubit_reduction", False)),
             num_particles=None if particles is None else tuple(particles),
             n_spatial_orbitals=payload.get("n_spatial_orbitals"),
             occupied_orbitals=payload.get("occupied_orbitals"),
@@ -455,9 +455,8 @@ class WavefunctionCheckpoint:
         status = self.status
         lines = [f"Wavefunction checkpoint ({self.method or 'unknown method'}): "
                  f"{self.n_qubits} qubits, {self.num_parameters} generators",
-                 f"  mapping: {self.mapping}"
-                 + (" (two-qubit reduction)" if self.two_qubit_reduction else "")
-                 + f", reference |1> on qubits {self.reference_qubits}"]
+                 f"  mapping: {self.mapping}, reference |1> on qubits "
+                 f"{self.reference_qubits}"]
         if self.energy is not None:
             lines.append(f"  energy: {self.energy:+.10f} Ha")
         if status:

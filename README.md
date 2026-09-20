@@ -43,17 +43,19 @@ mandacaru --link-paw mandacaru-paw
 from ase import Atoms
 from mandacaru import Mandacaru
 
-atoms = Atoms("LiH", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.6]], cell=[10.0, 10.0, 10.0])
+atoms = Atoms("LiH",
+              positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.6]],
+              cell=[10.0, 10.0, 10.0])
 atoms.center()                                      # the cell is the real-space box
 
-atoms.calc = Mandacaru(method="adapt-vqe",                   # "vqe", "subspace-vqe", "subspace-adapt-vqe"
+atoms.calc = Mandacaru(method="adapt-vqe",                   # "vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe"
                        basis={"name": "PAW", "size": "DZP"}, # pseudopotential family + valence basis
-                       h=0.25,                               # grid spacing (Å)
-                       pool="fermionic",                     # "qubit", "qeb", "ceo"
-                       mapping="jordan_wigner",              # "parity", "bravyi_kitaev"
-                       optimizer="L-BFGS-B",                 # "COBYLA", "SLSQP", "Nelder-Mead", "SPSA", "Adam"
-                       max_iterations=80,                    # at most 80 operators
-                       gradient_tolerance=1e-5,              # stop when every pool gradient is smaller
+                       h=0.10,                               # grid spacing (Å)
+                       pool="fermionic",                     # "fermionic", "qubit", "qeb", "ceo"
+                       mapping="jordan_wigner",              # "jordan_wigner", "parity", "parity_reduced", "bravyi_kitaev"
+                       optimizer="COBYLA",                   # "COBYLA", "SPSA", "Nelder-Mead", "SLSQP", "Adam", "L-BFGS-B"
+                       max_iterations=300,                   # at most 300 operators
+                       gradient_tolerance=1e-3,              # stop when every pool gradient is smaller
                        device="AER_simulator",               # or an IBM Quantum / Amazon Braket device
                        shots=0,                              # 0 = exact expectation values
                        verbose_operators=False,              # True -> the pool to pool.json
@@ -99,7 +101,7 @@ plt.savefig("lih_pes.png", dpi=150)
 
 **ADAPT-VQE.** ADAPT-VQE builds the ansatz during the calculation instead of fixing it in advance. At each iteration it evaluates the energy gradient ⟨ψ|[H, A<sub>k</sub>]|ψ⟩ of every generator A<sub>k</sub> in an operator pool, appends exp(θ<sub>k</sub>A<sub>k</sub>) for the largest one, and re-optimizes all parameters. It stops when every gradient falls below `gradient_tolerance`, producing compact circuits tailored to the molecule.
 
-**Operator pools.** The pool is the set of anti-Hermitian generators ADAPT-VQE chooses from, and it sets the trade-off between circuit depth and the number of iterations. `fermionic` holds spin-adapted single and double excitations; `qubit` splits them into individual Pauli strings (the shallowest gates, more iterations); `qeb` uses qubit excitations — the same occupation moves without the fermionic sign; `ceo` groups QEB generators that share a qubit support. Every pool is built in the encoding you ask for (Jordan–Wigner, parity or Bravyi–Kitaev) and reaches the same ground state. The fermionic and qubit-excitation pools conserve the particle number; the individual Pauli strings of `qubit` do not, by design.
+**Operator pools.** The pool is the set of anti-Hermitian generators ADAPT-VQE chooses from, and it sets the trade-off between circuit depth and the number of iterations. `fermionic` holds spin-adapted single and double excitations; `qubit` splits them into individual Pauli strings (the shallowest gates, more iterations); `qeb` uses qubit excitations — the same occupation moves without the fermionic sign; `ceo` groups QEB generators that share a qubit support. Every pool is built in the encoding you ask for (Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev) and reaches the same ground state. The fermionic and qubit-excitation pools conserve the particle number; the individual Pauli strings of `qubit` do not, by design.
 
 **Classical optimization.** The parameters are updated by the optimizer named in `optimizer=`. COBYLA (the default) and Nelder–Mead are gradient-free and robust; L-BFGS-B and SLSQP use gradients and converge quickly on exact simulators; SPSA (two energy evaluations per step, whatever the number of parameters) and Adam tolerate the statistical noise of shot-based hardware.
 

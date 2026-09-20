@@ -117,7 +117,7 @@ of blocks -- energies then forces, one pair per step -- in one file:
 [ELECTRONS]                     basis, grid, mapping, register, Hamiltonian
 [OPTIMIZATION SETUP]            the optimizer and the operator pool
 [ITERATIONS]                    one row per grown operator
-[QUANTUM VARIATIONAL SUMMARY]   the converged state of *this* geometry
+[VARIATIONAL QUANTUM SUMMARY]   the converged state of *this* geometry
 [FORCES]                        step: 1, the vectors and their breakdown
 [PERFORMANCE]                   step: 1, where the time and memory went
 ========================================================================
@@ -162,7 +162,6 @@ read off the left margin:
     k-points: Gamma (1x1x1 Monkhorst-Pack)
     spin-polarized: False
     mapping: Jordan-Wigner
-    two-qubit reduction: False
     Hamiltonian: 1079 Pauli terms
     spatial orbitals: 6
     electrons (alpha, beta): (4, 4)
@@ -173,7 +172,7 @@ read off the left margin:
     ----------------------------------------------------------------------------------------
        1     -27.6211823512  fermionic-double  2.714649e-01      38      48      65 D(0,2->1,3)
 ========================================================================
-[QUANTUM VARIATIONAL SUMMARY]
+[VARIATIONAL QUANTUM SUMMARY]
     converged: True
     optimal_energy_eV: -27.6211823512
     num_operators: 1
@@ -206,8 +205,7 @@ left: the classical optimizer and the operator pool.
 `parse_output` returns the blocks as `result["steps"]`, in order, while the
 top-level `system` / `electrons` / `setup` / `iterations` / `summary` / `forces` /
 `performance` keys describe the **last** step -- so reading a single-point log is
-unchanged (`metadata` is kept as an alias of `system`, and a log written with the
-old `[METADATA]` marker still parses):
+unchanged:
 
 ```python
 from mandacaru.utils import parse_output

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..core.mapping import reference_qubit_bits
+from ..core.mapping import reference_qubit_bits, resolve_mapping
 from .pools import PoolOperator
 
 
@@ -61,21 +61,20 @@ class AdaptAnsatz:
 
     def __init__(self, n_qubits: int, occupied: tuple[int, ...],
                  mapping: str = "jordan_wigner", sparse: bool = False,
-                 provider=None, two_qubit_reduction: bool = False,
-                 num_particles=None, sector=None):
+                 provider=None, num_particles=None, sector=None):
         self.n_qubits = int(n_qubits)
         #: Particle-number sector the generators act in (``None``: full register).
         self.sector = sector
         if sector is not None and provider is not None:
             raise ValueError("a circuit provider prepares full-register states; "
                              "it cannot be combined with a particle-number sector")
-        self.mapping = mapping
+        self.mapping = resolve_mapping(mapping)
         self.occupied = tuple(occupied)
         # With the parity two-qubit reduction the register is two qubits
         # smaller than the spin-orbital count the occupations refer to.
-        self.two_qubit_reduction = bool(two_qubit_reduction)
         self.num_particles = num_particles
-        self.n_modes = self.n_qubits + (2 if self.two_qubit_reduction else 0)
+        self.n_modes = self.n_qubits + (
+            2 if self.mapping == "parity_reduced" else 0)
         self.sparse = bool(sparse) or sector is not None
         self.provider = provider
         self._ops: list[PoolOperator] = []
@@ -87,8 +86,7 @@ class AdaptAnsatz:
         # The Hartree-Fock determinant is a computational basis state whose bits
         # depend on the fermion-to-qubit map (occupation for JW, parity sums for
         # parity / Bravyi-Kitaev).
-        bits = reference_qubit_bits(self.mapping, self.n_modes, self.occupied,
-                                    self.two_qubit_reduction, self.num_particles)
+        bits = reference_qubit_bits(self.mapping, self.n_modes, self.occupied)
         index = 0
         for i, bit in enumerate(bits):
             if bit:

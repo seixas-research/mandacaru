@@ -97,7 +97,7 @@ as a run would (so `size`, polarisation and cutoff options are honoured) and
 its functions are *counted* rather than integrated; the frozen core removes
 doubly occupied spatial orbitals; the plane-wave family counts plane waves
 below the cutoff.
-Jordan-Wigner, parity and Bravyi-Kitaev all use this many qubits — the parity
-mapping's optional two-qubit symmetry reduction is reported separately.
+Jordan-Wigner, parity and Bravyi-Kitaev all use this many qubits.
+`parity_reduced` uses two fewer.
 
 See {mod}`mandacaru.algorithms.dry_run` and {mod}`mandacaru.cli`.

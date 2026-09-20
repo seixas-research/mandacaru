@@ -40,8 +40,8 @@ from math import comb
 
 import numpy as np
 
-from .mapping import (PauliSum, _canonical_method, _encoding_matrix,
-                      parity_tapered_qubits)
+from .mapping import (PauliSum, _encoding_matrix, parity_tapered_qubits,
+                      resolve_mapping)
 
 #: Largest sector the enumeration accepts (states).
 MAX_SECTOR_DIMENSION = 5_000_000
@@ -131,15 +131,12 @@ class ParticleSector:
     Parameters
     ----------
     n_qubits : int
-        Register width (after tapering, when ``two_qubit_reduction``).
+        Register width after any tapering selected by ``mapping``.
     num_particles : (int, int)
         ``(n_alpha, n_beta)``.
     mapping : str
-        ``"jordan_wigner"``, ``"parity"`` or ``"bravyi_kitaev"``.
-    two_qubit_reduction : bool
-        The register is the parity mapping with its two particle-number
-        qubits tapered.
-
+        One of ``"jordan_wigner"``, ``"parity"``, ``"parity_reduced"`` or
+        ``"bravyi_kitaev"``.
     Attributes
     ----------
     indices : numpy.ndarray
@@ -149,19 +146,17 @@ class ParticleSector:
         :attr:`indices`.
     """
 
-    def __init__(self, n_qubits: int, num_particles, mapping: str = "jordan_wigner",
-                 two_qubit_reduction: bool = False):
+    def __init__(self, n_qubits: int, num_particles,
+                 mapping: str = "jordan_wigner"):
         self.n_qubits = int(n_qubits)
         n_alpha, n_beta = (int(v) for v in num_particles)
         self.num_particles = (n_alpha, n_beta)
-        self.mapping = _canonical_method(mapping)
-        self.two_qubit_reduction = bool(two_qubit_reduction)
-        if self.two_qubit_reduction and self.mapping != "parity":
-            raise ValueError("two-qubit reduction requires mapping='parity'")
+        self.mapping = resolve_mapping(mapping)
         if self.n_qubits > MAX_SECTOR_QUBITS:
             raise ValueError(f"a {self.n_qubits}-qubit register exceeds the "
                              f"{MAX_SECTOR_QUBITS}-qubit index range")
-        self.n_modes = self.n_qubits + (2 if self.two_qubit_reduction else 0)
+        self.n_modes = self.n_qubits + (
+            2 if self.mapping == "parity_reduced" else 0)
         if self.n_modes % 2:
             raise ValueError(f"a spin-blocked register needs an even number of "
                              f"spin-orbitals, got {self.n_modes}")
@@ -188,7 +183,7 @@ class ParticleSector:
         # Qubit register q = beta_matrix . x (mod 2), as reference_qubit_bits.
         encoding = _encoding_matrix(self.mapping, self.n_modes).astype(np.int64)
         bits = (occupations @ encoding.T) % 2
-        if self.two_qubit_reduction:
+        if self.mapping == "parity_reduced":
             drop = set(parity_tapered_qubits(self.n_modes))
             bits = bits[:, [k for k in range(self.n_modes) if k not in drop]]
         weights = np.int64(1) << (np.int64(self.n_qubits) - 1

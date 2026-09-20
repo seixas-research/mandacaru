@@ -251,8 +251,7 @@ class VQE(DeflationMixin, VariationalDriver):
                      # A circuit realizes the Trotter product, so the state
                      # matches the executed circuit whenever one is run.
                      trotter=provider is not None or bool(self.shots),
-                     provider=provider,
-                     two_qubit_reduction=self.two_qubit_reduction)
+                     provider=provider)
 
     # -- energy ----------------------------------------------------------- #
 

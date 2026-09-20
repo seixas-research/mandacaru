@@ -350,14 +350,13 @@ class TestEarlyStop:
 
         path = save_hamiltonian(tmp_path / "tapered.json",
                                 PauliSum({"II": -1.0, "ZI": 0.2}),
-                                mapping="parity", num_particles=(1, 1),
-                                n_spatial_orbitals=2, two_qubit_reduction=True)
+                                mapping="parity_reduced",
+                                num_particles=(1, 1), n_spatial_orbitals=2)
         driver = Mandacaru(method="adapt-vqe", pool="fermionic",
                            load_hamiltonian=path, dry_run=True, trace=False,
                            profile=False)
         estimate = driver.run()
-        assert driver.two_qubit_reduction is True
-        assert estimate.n_qubits == 2 and estimate.two_qubit_reduction
+        assert estimate.n_qubits == 2 and estimate.mapping == "parity_reduced"
         assert any("already tapered" in note for note in estimate.notes)
 
     def test_reserved_device_and_qpu_do_not_raise(self, monkeypatch):

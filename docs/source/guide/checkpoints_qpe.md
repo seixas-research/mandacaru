@@ -61,7 +61,7 @@ it is raised.  VQE checks that the stored generators are its own ansatz's and
 starts the optimisation from the stored angles.
 
 A checkpoint resumes only into the register it was written for: the qubit
-count, the mapping, the two-qubit reduction and the reference determinant must
+count, the mapping and the reference determinant must
 match, or the run refuses with a message saying which does not.  With
 `checkpoint` and `resume` set to the same path, each geometry of a relaxation
 warm-starts from the previous one.

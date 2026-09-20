@@ -137,8 +137,9 @@ class TestSamePhysicsEverywhere:
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.4,
-                               pool=pool, mapping=mapping,
-                               two_qubit_reduction=reduction, trace=False,
+                               pool=pool, mapping=("parity_reduced"
+                                                   if reduction else mapping),
+                               trace=False,
                                profile=False, gradient_tolerance=1e-7,
                                max_iterations=12)
         energy = atoms.get_potential_energy()
@@ -156,15 +157,14 @@ class TestSamePhysicsEverywhere:
     @pytest.mark.parametrize("pool", ["qeb", "ceo"])
     def test_the_two_qubit_reduction_applies_to_qubit_excitations(self, pool):
         """They commute with both tapered symmetries, so tapering is exact."""
-        assert build_pool(pool, 2, (1, 1), mapping="parity",
-                          two_qubit_reduction=True).n_qubits == 2
+        assert build_pool(pool, 2, (1, 1),
+                          mapping="parity_reduced").n_qubits == 2
         energy, exact = self.run("parity", pool, reduction=True)
         assert energy == pytest.approx(exact, abs=1e-6)
 
     def test_the_qubit_pool_cannot_be_tapered(self):
         with pytest.raises(ValueError, match="do not commute"):
-            build_pool("qubit", 2, (1, 1), mapping="parity",
-                       two_qubit_reduction=True)
+            build_pool("qubit", 2, (1, 1), mapping="parity_reduced")
 
 
 class TestSectorLeakage:

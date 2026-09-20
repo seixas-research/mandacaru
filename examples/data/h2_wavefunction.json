@@ -9,7 +9,6 @@
   2
  ],
  "mapping": "jordan_wigner",
- "two_qubit_reduction": false,
  "num_particles": [
   1,
   1

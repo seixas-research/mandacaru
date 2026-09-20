@@ -8,7 +8,7 @@
 
 """The parity mapping's two-qubit reduction, end to end.
 
-``two_qubit_reduction=True`` with ``mapping="parity"`` tapers the two parity
+``mapping="parity_reduced"`` tapers the two parity
 qubits fixed by the particle numbers from the Hamiltonian, the pool / UCCSD
 generators and the reference determinant alike, so ADAPT-VQE and VQE run on
 ``2M - 2`` qubits and reach exactly the energies of the untapered register.
@@ -46,11 +46,10 @@ class TestMapping:
     def test_tapered_positions_and_reference_bits(self):
         assert parity_tapered_qubits(4) == (1, 3)
         full = reference_qubit_bits("parity", 4, [0, 2])
-        reduced = reference_qubit_bits("parity", 4, [0, 2], True, (1, 1))
+        reduced = reference_qubit_bits("parity_reduced", 4, [0, 2])
         assert list(full) == [1, 1, 0, 0]       # parity sums of |1010>
         assert list(reduced) == [1, 0]           # positions 1 and 3 dropped
-        with pytest.raises(ValueError, match="parity"):
-            reference_qubit_bits("jordan_wigner", 4, [0, 2], True, (1, 1))
+        assert len(reference_qubit_bits("jordan_wigner", 4, [0, 2])) == 4
 
     def test_reduce_drops_z_on_tapered_qubits_with_the_sector_sign(self):
         op = PauliSum({"IZIZ": 1.0, "ZIII": 0.5, "XIXI": 0.25})
@@ -63,8 +62,8 @@ class TestMapping:
 
 class TestPoolsAndAnsatze:
     def test_fermionic_pool_is_tapered(self):
-        pool = build_pool("fermionic", 2, (1, 1), mapping="parity",
-                          two_qubit_reduction=True)
+        pool = build_pool("fermionic", 2, (1, 1),
+                          mapping="parity_reduced")
         assert pool.n_qubits == 2 and pool.n_modes == 4
         assert all(op.generator.num_qubits == 2 for op in pool.operators())
         assert pool.occupied_orbitals == (0, 2)
@@ -72,8 +71,7 @@ class TestPoolsAndAnsatze:
     @pytest.mark.parametrize("name", ["qeb", "ceo"])
     def test_qubit_excitation_pools_are_tapered(self, name):
         """They commute with both tapered symmetries, so the taper is exact."""
-        pool = build_pool(name, 2, (1, 1), mapping="parity",
-                          two_qubit_reduction=True)
+        pool = build_pool(name, 2, (1, 1), mapping="parity_reduced")
         assert pool.n_qubits == 2 and pool.n_modes == 4
         assert all(op.generator.num_qubits == 2 for op in pool.operators())
         assert pool.operators()
@@ -81,17 +79,16 @@ class TestPoolsAndAnsatze:
     def test_the_qubit_pool_still_refuses(self):
         """Individual Pauli strings do not commute with the symmetries."""
         with pytest.raises(ValueError, match="do not commute"):
-            build_pool("qubit", 2, (1, 1), mapping="parity",
-                       two_qubit_reduction=True)
+            build_pool("qubit", 2, (1, 1), mapping="parity_reduced")
 
     def test_adapt_ansatz_reference_is_tapered(self):
-        ansatz = AdaptAnsatz(2, (0, 2), "parity", two_qubit_reduction=True,
+        ansatz = AdaptAnsatz(2, (0, 2), "parity_reduced",
                              num_particles=(1, 1))
         assert ansatz.reference_qubits() == [0]
         assert np.isclose(np.abs(ansatz.reference_state()[0b10]), 1.0)
 
     def test_uccsd_is_tapered(self):
-        uccsd = UCCSD(2, (1, 1), mapping="parity", two_qubit_reduction=True)
+        uccsd = UCCSD(2, (1, 1), mapping="parity_reduced")
         assert uccsd.n_qubits == 2
         assert all(g.num_qubits == 2 for g in uccsd.pauli_generators)
         assert np.isclose(np.abs(uccsd.reference_state()[0b10]), 1.0)
@@ -102,8 +99,8 @@ class TestDrivers:
         exact, hf = reference
         atoms = _h2()
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="FAO", h=0.4, mapping="parity",
-                               two_qubit_reduction=True, trace=False,
+                               basis="FAO", h=0.4,
+                               mapping="parity_reduced", trace=False,
                                profile=True, max_iterations=4)
         atoms.get_total_energy()
         calc = atoms.calc
@@ -120,28 +117,28 @@ class TestDrivers:
         exact, _hf = reference
         atoms = _h2()
         atoms.calc = Mandacaru(method="vqe", basis="FAO", h=0.4,
-                               mapping="parity", two_qubit_reduction=True,
+                               mapping="parity_reduced",
                                optimizer="L-BFGS-B", trace=False)
         atoms.get_total_energy()
         assert atoms.calc.n_qubits == 2
         assert atoms.calc.result.optimal_energy == pytest.approx(
             exact, abs=1e-6 * HARTREE_TO_EV)
 
-    def test_requires_parity(self):
-        with pytest.raises(ValueError, match="parity"):
+    def test_the_old_constructor_argument_is_removed(self):
+        with pytest.raises(TypeError, match="two_qubit_reduction"):
             Mandacaru(method="adapt-vqe", pool="fermionic", basis="FAO",
                       two_qubit_reduction=True)
 
     def test_subspace_solvers_refuse(self):
         with pytest.raises(NotImplementedError):
-            Mandacaru(method="subspace-vqe", basis="FAO", mapping="parity",
-                      two_qubit_reduction=True, trace=False)
+            Mandacaru(method="subspace-vqe", basis="FAO",
+                      mapping="parity_reduced", trace=False)
 
     def test_dry_run_counts_the_reduced_register(self):
         atoms = _h2()
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="FAO", mapping="parity",
-                               two_qubit_reduction=True, dry_run=True,
+                               basis="FAO", mapping="parity_reduced",
+                               dry_run=True,
                                trace=False)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 2
@@ -151,8 +148,8 @@ class TestDrivers:
         exact, _hf = reference
         atoms = _h2()
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="FAO", h=0.4, mapping="parity",
-                               two_qubit_reduction=True, trace=False,
+                               basis="FAO", h=0.4,
+                               mapping="parity_reduced", trace=False,
                                profile=False, max_iterations=4)
         atoms.get_total_energy()
         provider = QiskitProvider()

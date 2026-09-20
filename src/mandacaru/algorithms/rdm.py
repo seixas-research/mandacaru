@@ -61,7 +61,7 @@ def _ladder_operators(n_modes: int, mapping: str):
 
 
 def _check_sector(psi, n_modes, sector):
-    if sector.two_qubit_reduction:
+    if sector.mapping == "parity_reduced":
         raise NotImplementedError(
             "RDMs need ladder operators, which do not survive the parity "
             "two-qubit reduction")
@@ -224,14 +224,14 @@ MAX_PAULI_RDM_MODES = 12
 
 
 def rdm_qubit_operators(n_modes: int, mapping: str = "jordan_wigner",
-                        two_qubit_reduction: bool = False, num_particles=None):
+                        num_particles=None):
     r"""Qubit operators of the spin-conserving RDM elements.
 
     Returns ``(ones, twos)``: ``{(p, q): PauliSum}`` for
     :math:`a^\dagger_p a_q` and ``{(p, q, r, s): PauliSum}`` for
     :math:`a^\dagger_p a^\dagger_q a_s a_r` (spin-blocked modes, alpha first),
-    mapped with ``mapping`` and, optionally, tapered by the parity two-qubit
-    reduction.  Only elements that conserve both spin populations are built:
+    mapped with ``mapping``.  With ``"parity_reduced"`` they are tapered by
+    the two parity symmetries.  Only elements that conserve both spin populations are built:
     the others vanish for a state of definite :math:`(n_\alpha, n_\beta)`, and
     only those operators survive the tapering.  Their expectation values
     determine the RDMs -- which is how a tapered register, or a state measured
@@ -246,8 +246,7 @@ def rdm_qubit_operators(n_modes: int, mapping: str = "jordan_wigner",
 
     def qubit(term):
         return Fermion({term: 1.0}, n_modes=n_modes).map_to_qubits(
-            mapping, n_modes=n_modes, two_qubit_reduction=two_qubit_reduction,
-            num_particles=num_particles if two_qubit_reduction else None)
+            mapping, n_modes=n_modes, num_particles=num_particles)
 
     beta = [int(p >= half) for p in range(n_modes)]
     ones = {(p, q): qubit(((p, True), (q, False)))

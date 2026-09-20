@@ -422,8 +422,8 @@ class TestTaperedRecords:
     def _tapered(self, tmp_path, fmt, atoms):
         path = str(tmp_path / f"tapered{FILE_EXTENSIONS[fmt]}")
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="FAO", h=0.4, mapping="parity",
-                               two_qubit_reduction=True, trace=False,
+                               basis="FAO", h=0.4,
+                               mapping="parity_reduced", trace=False,
                                profile=False, max_iterations=4,
                                save_hamiltonian=path)
         return path, atoms.get_total_energy()
@@ -432,7 +432,7 @@ class TestTaperedRecords:
     def test_the_reduction_round_trips(self, tmp_path, h2_atoms, fmt):
         path, energy = self._tapered(tmp_path, fmt, h2_atoms)
         record = load_hamiltonian(path)
-        assert record.two_qubit_reduction is True
+        assert record.mapping == "parity_reduced"
         assert record.num_qubits == 2
 
         # A driver told nothing but the file reproduces the run exactly.
@@ -440,7 +440,7 @@ class TestTaperedRecords:
                            load_hamiltonian=path, trace=False, profile=False,
                            max_iterations=4)
         result = loaded.run()
-        assert loaded.two_qubit_reduction is True and loaded.n_qubits == 2
+        assert loaded.mapping == "parity_reduced" and loaded.n_qubits == 2
         assert result.optimal_energy == pytest.approx(energy, abs=1e-9)
 
     def test_an_untapered_file_will_not_pretend(self, tmp_path, h2_atoms):
@@ -450,21 +450,22 @@ class TestTaperedRecords:
                                   profile=False, max_iterations=1,
                                   save_hamiltonian=path)
         h2_atoms.get_total_energy()
-        assert load_hamiltonian(path).two_qubit_reduction is False
+        assert load_hamiltonian(path).mapping != "parity_reduced"
         with pytest.raises(ValueError, match="untapered"):
             Mandacaru(method="adapt-vqe", pool="fermionic",
-                      load_hamiltonian=path, mapping="parity",
-                      two_qubit_reduction=True, trace=False)
+                      load_hamiltonian=path, mapping="parity_reduced",
+                      trace=False)
 
-    def test_older_files_load_as_untapered(self, tmp_path):
-        """The field is new; a file without it was written before tapering."""
+    def test_mapping_is_the_only_reduction_setting(self, tmp_path):
         import json
-        path = save_hamiltonian(tmp_path / "old.json", PauliSum({"ZZ": 1.0}),
+        path = save_hamiltonian(tmp_path / "mapping.json",
+                                PauliSum({"II": 1.0}),
+                                mapping="parity_reduced",
                                 num_particles=(1, 1), n_spatial_orbitals=2)
         payload = json.loads(open(path).read())
-        del payload["two_qubit_reduction"]
-        open(path, "w").write(json.dumps(payload))
-        assert load_hamiltonian(path).two_qubit_reduction is False
+        assert payload["mapping"] == "parity_reduced"
+        assert "two_qubit_reduction" not in payload
+        assert load_hamiltonian(path).mapping == "parity_reduced"
 
 
 # --------------------------------------------------------------------------- #

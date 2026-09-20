@@ -786,11 +786,10 @@ class Mandacaru(Calculator):
         from ..units import HARTREE_TO_EV
         from .rdm import rdm_qubit_operators, rdms_from_expectations
 
-        reduced = bool(getattr(solver, "two_qubit_reduction", False))
+        reduced = solver.mapping == "parity_reduced"
         n_qubits = int(solver.n_qubits)
         n_modes = n_qubits + (2 if reduced else 0)
         ones, twos = rdm_qubit_operators(n_modes, solver.mapping,
-                                         two_qubit_reduction=reduced,
                                          num_particles=solver.num_particles)
         hamiltonian = solver.hamiltonian
         identity = "I" * n_qubits
@@ -818,12 +817,11 @@ class Mandacaru(Calculator):
 
         psi = self._converged_state(solver)
         n_qubits = int(solver.n_qubits)
-        if getattr(solver, "two_qubit_reduction", False):
+        if solver.mapping == "parity_reduced":
             # A tapered register has no ladder operators of its own: its RDM
             # elements are expectation values of the tapered qubit operators.
             n_modes = n_qubits + 2
             ones, twos = rdm_qubit_operators(n_modes, solver.mapping,
-                                             two_qubit_reduction=True,
                                              num_particles=solver.num_particles)
             labels = {label for op in (*ones.values(), *twos.values())
                       for label in op.terms}
@@ -1298,4 +1296,3 @@ class Mandacaru(Calculator):
     def __repr__(self) -> str:
         return (f"Mandacaru(method={self.method!r}, "
                 f"basis={self.basis!r}, h={self.h})")
-

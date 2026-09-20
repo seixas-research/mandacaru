@@ -39,7 +39,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.linalg import expm
 
-from ..core.mapping import Fermion
+from ..core.mapping import Fermion, resolve_mapping
 from .gates import double_excitation, single_excitation
 
 # UCCSD conforms to the mandacaru.circuits.base.Ansatz protocol
@@ -73,17 +73,16 @@ class UCCSD:
 
     def __init__(self, n_spatial_orbitals: int, num_particles: tuple[int, int],
                  mapping: str = "jordan_wigner", include_singles: bool = True,
-                 trotter: bool = False, provider=None,
-                 two_qubit_reduction: bool = False):
+                 trotter: bool = False, provider=None):
         self.n_spatial_orbitals = int(n_spatial_orbitals)
         self.num_particles = (int(num_particles[0]), int(num_particles[1]))
-        self.mapping = mapping
+        self.mapping = resolve_mapping(mapping)
         self.include_singles = include_singles
         self.trotter = trotter
         self.provider = provider
-        self.two_qubit_reduction = bool(two_qubit_reduction)
         self.n_modes = 2 * self.n_spatial_orbitals
-        self.n_qubits = self.n_modes - (2 if self.two_qubit_reduction else 0)
+        self.n_qubits = self.n_modes - (
+            2 if self.mapping == "parity_reduced" else 0)
         if provider is not None and not trotter:
             raise ValueError(
                 "a circuit backend realizes the Trotter product form of UCCSD; "
@@ -97,7 +96,6 @@ class UCCSD:
         # the state-vector backends, the PauliSums the circuit backends.
         self._pauli_generators = [
             g.map_to_qubits(self.mapping, n_modes=self.n_modes,
-                            two_qubit_reduction=self.two_qubit_reduction,
                             num_particles=self.num_particles)
             for g in self.excitations]
         # Pre-materialize each generator matrix once (skipped for circuit
@@ -125,8 +123,7 @@ class UCCSD:
         reduction is on.
         """
         from ..core.mapping import reference_qubit_bits
-        bits = reference_qubit_bits(self.mapping, self.n_modes, self._occupied,
-                                    self.two_qubit_reduction, self.num_particles)
+        bits = reference_qubit_bits(self.mapping, self.n_modes, self._occupied)
         index = 0
         for k, bit in enumerate(bits):
             if bit:

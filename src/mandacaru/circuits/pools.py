@@ -51,7 +51,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..core.mapping import Fermion, PauliSum, qubit_excitation
+from ..core.mapping import (Fermion, PauliSum, qubit_excitation,
+                            resolve_mapping)
 from .gates import double_excitation, single_excitation
 
 
@@ -162,28 +163,26 @@ class PoolBase:
 
     #: Whether the pool's generators survive the parity two-qubit reduction
     #: (they must commute with both tapered symmetries).
-    supports_two_qubit_reduction = False
+    supports_parity_reduced = False
 
     #: Whether every generator commutes with the number operators (N, Sz).
     conserves_particle_number = True
 
     def __init__(self, n_spatial_orbitals: int, num_particles: tuple[int, int],
-                 mapping: str = "jordan_wigner",
-                 two_qubit_reduction: bool = False):
+                 mapping: str = "jordan_wigner"):
         self.n_spatial_orbitals = int(n_spatial_orbitals)
         self.num_particles = (int(num_particles[0]), int(num_particles[1]))
-        self.mapping = mapping
-        self.two_qubit_reduction = bool(two_qubit_reduction)
+        self.mapping = resolve_mapping(mapping)
         #: Spin-orbital (mode) count; the register is two smaller when tapered.
         self.n_modes = 2 * self.n_spatial_orbitals
         self.n_qubits = self.n_modes
-        if self.two_qubit_reduction:
-            if not self.supports_two_qubit_reduction:
+        if self.mapping == "parity_reduced":
+            if not self.supports_parity_reduced:
                 raise ValueError(
                     f"the {self.name!r} pool's generators do not commute with "
                     "the tapered parity symmetries, so the two-qubit "
                     "reduction would change them; use the 'fermionic', 'qeb' "
-                    "or 'ceo' pool with mapping='parity'")
+                    "or 'ceo' pool with mapping='parity_reduced'")
             self.n_qubits = self.n_modes - 2
         (self._occ, _virtual, self._singles,
          self._doubles) = _spin_conserving_excitations(
@@ -237,14 +236,13 @@ class FermionicPool(PoolBase):
     """
 
     name = "fermionic"
-    supports_two_qubit_reduction = True
+    supports_parity_reduced = True
 
     def _build(self) -> list[PoolOperator]:
         ops: list[PoolOperator] = []
         for label, gen, support in self._fermionic_generators():
             pauli = gen.map_to_qubits(
                 self.mapping, n_modes=self.n_modes,
-                two_qubit_reduction=self.two_qubit_reduction,
                 num_particles=self.num_particles).simplify()
             if not pauli.terms:
                 continue
@@ -318,7 +316,7 @@ class QEBPool(PoolBase):
     name = "qeb"
 
     #: Qubit excitations commute with both tapered symmetries.
-    supports_two_qubit_reduction = True
+    supports_parity_reduced = True
 
     def _qeb_operators(self) -> list[PoolOperator]:
         ops: list[PoolOperator] = []
@@ -334,7 +332,6 @@ class QEBPool(PoolBase):
     def _append_excitation(self, ops, label, modes_out, modes_in, kind) -> None:
         generator = qubit_excitation(
             modes_out, modes_in, self.n_modes, self.mapping,
-            two_qubit_reduction=self.two_qubit_reduction,
             num_particles=self.num_particles)
         if generator.terms:
             ops.append(PoolOperator(label, generator, _support_of(generator),
@@ -437,16 +434,13 @@ def available_pools() -> list[str]:
 
 def build_pool(name: str, n_spatial_orbitals: int,
                num_particles: tuple[int, int],
-               mapping: str = "jordan_wigner",
-               two_qubit_reduction: bool = False) -> PoolBase:
-    return _build_pool(name, n_spatial_orbitals, num_particles, mapping,
-                       two_qubit_reduction)
+               mapping: str = "jordan_wigner") -> PoolBase:
+    return _build_pool(name, n_spatial_orbitals, num_particles, mapping)
 
 
 def _build_pool(name: str, n_spatial_orbitals: int,
                num_particles: tuple[int, int],
-               mapping: str = "jordan_wigner",
-               two_qubit_reduction: bool = False) -> PoolBase:
+               mapping: str = "jordan_wigner") -> PoolBase:
     """Construct an :class:`PoolBase` by name.
 
     ``name`` is one of ``"fermionic"``, ``"qubit"``, ``"qeb"``, ``"ceo"`` (plus a
@@ -462,5 +456,4 @@ def _build_pool(name: str, n_spatial_orbitals: int,
         raise ValueError(
             f"unknown pool {name!r}; choose from {sorted(_POOLS)} "
             f"(or aliases {sorted(_POOL_ALIASES)})") from None
-    return cls(n_spatial_orbitals, num_particles, mapping=mapping,
-               two_qubit_reduction=two_qubit_reduction)
+    return cls(n_spatial_orbitals, num_particles, mapping=mapping)

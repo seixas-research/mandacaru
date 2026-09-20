@@ -8,8 +8,9 @@
 
 """LiH ground state with ADAPT-VQE across fermion-to-qubit mappings.
 
-The same LiH molecule and fermionic pool are run through each of Mandacaru's three
-fermion-to-qubit mappings -- **Jordan-Wigner**, **parity** and **Bravyi-Kitaev**
+The same LiH molecule and fermionic pool are run through each of Mandacaru's four
+fermion-to-qubit mappings -- **Jordan-Wigner**, **parity**, **reduced parity**
+and **Bravyi-Kitaev**
 -- selected with the ``mapping`` argument of
 :class:`~mandacaru.algorithms.Mandacaru`
 (``atoms.calc = Mandacaru(method="adapt-vqe", ...)``).  The mappings
@@ -44,7 +45,8 @@ atoms = Atoms("LiH",
               pbc=True)
 
 energies = {}
-for mapping in ("jordan_wigner", "parity", "bravyi_kitaev"):
+for mapping in ("jordan_wigner", "parity", "parity_reduced",
+                "bravyi_kitaev"):
     atoms.calc = Mandacaru(method="adapt-vqe",
                            pool="fermionic",
                            basis={"name": "FAO"},
@@ -70,7 +72,7 @@ for mapping in ("jordan_wigner", "parity", "bravyi_kitaev"):
           f"E = {energy_ev:.6f} eV  "
           f"{result.num_operators} ops, {result.metrics.cnot_count} CNOTs")
 
-# All three mappings describe the same physics -> the same ground-state energy.
+# All four mappings describe the same physics -> the same ground-state energy.
 spread = max(energies.values()) - min(energies.values())          # eV
 assert spread < 1e-4 * HARTREE_TO_EV, "mappings disagree on the ground-state energy"
 print(f"\nmapping spread = {spread:.2e} eV "

@@ -201,6 +201,7 @@ RESUME_ENERGY_TOLERANCE = 1e-8
 #: these are the transformations' own names.  An unlisted mapping is written
 #: verbatim.
 MAPPING_LABELS = {"jordan_wigner": "Jordan-Wigner", "parity": "parity",
+                  "parity_reduced": "reduced parity",
                   "bravyi_kitaev": "Bravyi-Kitaev"}
 
 #: Shortest the operator label is elided to before a row is allowed to wrap.
@@ -512,8 +513,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     "building a pool by name requires n_spatial_orbitals and "
                     "num_particles")
             self.pool = build_pool(pool, n_spatial_orbitals, num_particles,
-                                   mapping=self.mapping,
-                                   two_qubit_reduction=self.two_qubit_reduction)
+                                   mapping=self.mapping)
         self.num_particles = (tuple(num_particles) if num_particles is not None
                               else self.pool.num_particles)
 
@@ -719,8 +719,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 "sector=True needs the internal state-vector backend; executing "
                 "the ansatz as a circuit prepares full-register states")
         from ..core.sector import ParticleSector
-        sector = ParticleSector(n_qubits, self.num_particles, self.mapping,
-                                two_qubit_reduction=self.two_qubit_reduction)
+        sector = ParticleSector(n_qubits, self.num_particles, self.mapping)
 
         leaking = self._sector_leak(sector, qubit_h, operators)
         if leaking is not None:
@@ -862,7 +861,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         return AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                            self.mapping, sparse=getattr(self, "_sparse", False),
                            provider=self.ansatz_provider(),
-                           two_qubit_reduction=self.two_qubit_reduction,
                            num_particles=self.num_particles,
                            sector=self._sector)
 
@@ -969,7 +967,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             "k-points": self._kpts_label(),
             "spin-polarized": str(self.spin),
             "mapping": MAPPING_LABELS.get(str(self.mapping), str(self.mapping)),
-            "two-qubit reduction": str(self.two_qubit_reduction),
             "Hamiltonian": f"{len(self.hamiltonian.simplify().terms)} "
                            f"Pauli terms",
             "spatial orbitals": str(orbitals),
@@ -1003,7 +1000,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                                    calculate_kl_divergence,
                                    sample_pqc_fidelities)
         # The sector lives on the spin-orbitals: a tapered register has two more.
-        n_modes = self.n_qubits + (2 if self.two_qubit_reduction else 0)
+        n_modes = self.n_qubits + (2 if self.mapping == "parity_reduced" else 0)
         dim = active_space_dimension(n_modes, self.num_particles)
         fidelities = sample_pqc_fidelities(ansatz,
                                            num_samples=EXPRESSIVITY_SAMPLES,
@@ -1582,7 +1579,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             ("spatial orbitals", str(getattr(self, "n_spatial_orbitals", None)
                                      or self.pool.n_spatial_orbitals)),
             ("mapping", str(self.mapping)),
-            ("two-qubit reduction", str(self.two_qubit_reduction)),
             ("qubit Hamiltonian", f"{n_terms} Pauli terms"),
             None,
             ("operator pool", f"{getattr(self.pool, 'name', '?')} "

@@ -154,10 +154,10 @@ def test_two_qubit_register_forces_exact_and_measured(tmp_path):
         return atoms.get_forces(), atoms.get_potential_energy(), atoms.calc
 
     jw, e_jw, _ = run(mapping="jordan_wigner")
-    tapered, _, _ = run(mapping="parity", two_qubit_reduction=True,
+    tapered, _, _ = run(mapping="parity_reduced",
                         output=str(tmp_path / "output.txt"))
     measured, e_measured, calc = run(
-        mapping="parity", two_qubit_reduction=True,
+        mapping="parity_reduced",
         measurement_provider=QiskitProvider(device="statevector", shots=0))
     assert calc.n_qubits == 2
     assert np.allclose(tapered, jw, atol=1e-5)

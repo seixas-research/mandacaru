@@ -99,8 +99,7 @@ class TestMolecularHamiltonian:
         idx = [i for i in range(2 ** n) if bin(i).count("1") == 2]
         sector_min = float(np.linalg.eigvalsh(full[np.ix_(idx, idx)]).min())
 
-        red = H.map_to_qubits("parity", two_qubit_reduction=True,
-                              num_particles=(1, 1))
+        red = H.map_to_qubits("parity_reduced", num_particles=(1, 1))
         assert red.num_qubits == 2
         rmat = _herm(red.to_matrix())
         assert np.isclose(np.linalg.eigvalsh(rmat).min(), sector_min, atol=1e-7)

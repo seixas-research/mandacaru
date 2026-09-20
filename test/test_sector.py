@@ -35,15 +35,14 @@ def random_hamiltonian(seed=7):
 @pytest.mark.parametrize("mapping, reduction", [("jordan_wigner", False),
                                                 ("parity", False),
                                                 ("bravyi_kitaev", False),
-                                                ("parity", True)])
+                                                ("parity_reduced", True)])
 @pytest.mark.parametrize("num_particles", [(1, 1), (2, 1)])
 def test_restriction_is_the_full_matrix_on_the_sector(mapping, reduction,
                                                       num_particles):
     H = random_hamiltonian()
-    P = H.map_to_qubits(mapping, n_modes=2 * M, two_qubit_reduction=reduction,
+    P = H.map_to_qubits(mapping, n_modes=2 * M,
                         num_particles=num_particles if reduction else None)
-    sector = ParticleSector(P.num_qubits, num_particles, mapping,
-                            two_qubit_reduction=reduction)
+    sector = ParticleSector(P.num_qubits, num_particles, mapping)
     full = P.to_sparse_matrix()[sector.indices][:, sector.indices].toarray()
     assert np.allclose(sector.restrict(P).toarray(), full, atol=1e-12)
 

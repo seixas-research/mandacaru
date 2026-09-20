@@ -325,7 +325,7 @@ def _build_tm(atoms, grid, h, charge, spin, options, kinetic=None):
             kb_coupling_blocks(projectors))
 
 
-TM_FAMILY = register_family(FamilySpec(
+NCPP_FAMILY = register_family(FamilySpec(
     name="ncpp",
     description="norm-conserving Troullier-Martins, Kleinman-Bylander "
                 "separable form (one projector per channel)",
@@ -335,4 +335,3 @@ TM_FAMILY = register_family(FamilySpec(
     norm_conserving=True,
     aliases=("tm", "ncpp-tm"),
 ))
-NCPP_FAMILY = TM_FAMILY

@@ -40,7 +40,7 @@ How a calculation works
      <li><strong>Atomic geometry</strong><span>ASE Atoms: elements and positions in ångströms</span></li>
      <li><strong>Basis and integration grid</strong><span>Spatial orbitals sampled on a real-space grid</span></li>
      <li><strong>Molecular Hamiltonian</strong><span>Integrals, Hartree–Fock orbitals and optional frozen core</span></li>
-     <li><strong>Qubit Hamiltonian</strong><span>Jordan–Wigner, parity or Bravyi–Kitaev mapping; optional cache</span></li>
+     <li><strong>Qubit Hamiltonian</strong><span>Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev mapping; optional cache</span></li>
      <li><strong>Variational calculation</strong><span>VQE or ADAPT-VQE; circuit evaluation and classical optimisation</span></li>
      <li><strong>Results</strong><span>Energy, convergence information and circuit parameters</span></li>
    </ol>

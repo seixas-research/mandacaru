@@ -23,9 +23,8 @@ one qubit per **spin-orbital** of the active space, where :math:`M_\text{basis}`
 is the number of spatial basis functions of the molecule (summed over its atoms)
 and :math:`M_\text{frozen}` the number of doubly occupied core orbitals removed by
 the frozen-core approximation.  The Jordan-Wigner, parity and Bravyi-Kitaev
-mappings all use exactly that many qubits; the parity mapping *can* drop two
-more (particle-number and spin-parity symmetries), which is reported separately
-as :attr:`QubitEstimate.n_qubits_reduced`.
+mappings all use exactly that many qubits; ``parity_reduced`` uses two fewer by
+tapering the fixed particle-number and spin-parity qubits.
 
 The estimate also says whether the register fits a **device** -- the registered
 QPUs carry their qubit counts -- and, for a state-vector simulator, how much
@@ -82,12 +81,7 @@ class QubitEstimate:
         Qubits the run would allocate: one per active spin-orbital.
     n_qubits_reduced : int
         The count after the parity mapping's two-qubit reduction (``n_qubits -
-        2``; only reachable with ``mapping="parity"`` and a reduction step the
-        drivers do not apply by default).
-    two_qubit_reduction : bool
-        Whether :attr:`n_qubits` is **already** the tapered count -- true for a
-        cached Hamiltonian written with the reduction, whose stored operator is
-        ``2M - 2`` qubits wide.  It stops the reduction being counted twice.
+        2``), or :attr:`n_qubits` itself when ``mapping="parity_reduced"``.
     n_spatial_orbitals : int
         Active spatial orbitals (basis functions minus frozen core).
     n_basis_functions : int
@@ -129,7 +123,6 @@ class QubitEstimate:
     device_qubits: int | None = None
     fits_device: bool | None = None
     source: str = "geometry"
-    two_qubit_reduction: bool = False
     notes: list[str] = field(default_factory=list)
 
     # -- derived ---------------------------------------------------------- #
@@ -141,7 +134,8 @@ class QubitEstimate:
     @property
     def n_qubits_reduced(self) -> int:
         """Qubits after the parity mapping's two-qubit symmetry reduction."""
-        return max(int(self.n_qubits) - 2, 0)
+        return (int(self.n_qubits) if self.mapping == "parity_reduced"
+                else max(int(self.n_qubits) - 2, 0))
 
     @property
     def statevector_bytes(self) -> int:
@@ -332,15 +326,20 @@ def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
 
     Every keyword mirrors the driver argument of the same name.
     """
-    from ..core.mapping import Fermion, PauliSum
+    from ..core.mapping import Fermion, PauliSum, _canonical_method
 
     notes: list[str] = []
     canon_device, capacity = _device_fields(device, notes)
     method = str(method)
-    mapping = str(mapping)
+    mapping = _canonical_method(str(mapping))
 
     def finish(**kw):
         kw.setdefault("mapping", mapping)
+        kw["mapping"] = _canonical_method(kw["mapping"])
+        if (kw["mapping"] == "parity_reduced"
+                and kw.get("source") == "geometry"):
+            kw["n_qubits"] = max(int(kw["n_qubits"]) - 2, 0)
+            notes.append("parity_reduced mapping: two qubits fewer")
         est = QubitEstimate(method=method, device=canon_device,
                             device_qubits=capacity, notes=notes, **kw)
         if capacity is not None:
@@ -353,6 +352,8 @@ def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
             n_qubits = int(hamiltonian.num_qubits)
         elif isinstance(hamiltonian, Fermion):
             n_qubits = int(hamiltonian.n_modes())
+            if mapping == "parity_reduced":
+                n_qubits = max(n_qubits - 2, 0)
         else:
             raise TypeError("hamiltonian must be a PauliSum or Fermion")
         n_orb = int(n_spatial_orbitals) if n_spatial_orbitals else n_qubits // 2
@@ -379,16 +380,14 @@ def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
             raise ValueError(f"{load_hamiltonian!r} records no num_particles")
         na, nb = (int(v) for v in record.num_particles)
         meta = getattr(record, "metadata", None) or {}
-        # The file fixes the mapping the operator was written in, and says
-        # whether the stored operator is already tapered.
-        if record.two_qubit_reduction:
+        # The file's mapping fixes the register representation.
+        if record.mapping == "parity_reduced":
             notes.append("cached Hamiltonian is already tapered: its "
                          f"{n_qubits} qubits are the reduced count")
         return finish(n_qubits=n_qubits, n_spatial_orbitals=n_orb,
                       n_electrons=na + nb, num_particles=(na, nb),
                       n_basis_functions=n_orb, mapping=str(record.mapping),
                       basis=str(meta.get("basis", "(cached)")),
-                      two_qubit_reduction=bool(record.two_qubit_reduction),
                       source="hamiltonian-file")
 
     # -- a geometry ------------------------------------------------------ #

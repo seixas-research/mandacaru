@@ -13,11 +13,10 @@ electronic problem with ``Mandacaru(method="adapt-vqe", ...)`` under
 
 * four **operator pools** -- ``fermionic``, ``qubit``, ``qeb`` and ``ceo`` -- all
   under Jordan-Wigner, and
-* three **fermion-to-qubit mappings** -- Jordan-Wigner, parity and Bravyi-Kitaev
-  -- all with the ``fermionic`` pool.
+* four **fermion-to-qubit mappings** -- Jordan-Wigner, parity, reduced parity
+  and Bravyi-Kitaev -- all with the ``fermionic`` pool.
 
-(Every pool is built in the encoding it is asked for, so a full 4x3 grid would
-run; the two sweeps are factored this way to keep the figure readable.)
+The two sweeps are factored this way to keep the figure readable.
 
 Every energy is referenced to the **sum of the isolated-atom energies**
 ``E(Li) + E(H)`` (unrestricted Hartree-Fock in the same basis, on the same grid,
@@ -82,7 +81,7 @@ PNG_PATH = os.path.join(DATA, "lih_dissociation.png")
 #: sample the Li 1s core consistently on the grid, whereas nearby values do not.
 DISTANCES = np.array([1.0, 1.3, 1.6, 1.9, 2.2, 2.6, 2.8])
 POOLS = ("fermionic", "qubit", "qeb", "ceo")
-MAPPINGS = ("jordan_wigner", "parity", "bravyi_kitaev")
+MAPPINGS = ("jordan_wigner", "parity", "parity_reduced", "bravyi_kitaev")
 
 #: Contracted Gaussians (STO-3G-like): smoother on a grid than the bare-Z FAO
 #: cusp, which matters for a geometry scan.

@@ -81,7 +81,7 @@ count is not equivalent.
 
 ## Map fermions to qubits
 
-Mandacaru supports Jordan–Wigner, parity and Bravyi–Kitaev mappings. For zero-based
+Mandacaru supports Jordan–Wigner, parity, reduced parity and Bravyi–Kitaev mappings. For zero-based
 orbital indices, the Jordan–Wigner operators can be written
 
 ```{math}
@@ -93,8 +93,8 @@ a_j = \left(\prod_{k<j}Z_k\right)\frac{X_j+iY_j}{2}.
 An omitted factor is an identity on the other qubits. The Z string enforces the
 fermionic anticommutation signs. Its weight can grow linearly with the orbital
 index; Bravyi–Kitaev distributes the parity information to obtain logarithmic
-operator weight. Parity mapping also allows an optional two-qubit reduction
-when the required spin-parity sectors are fixed.
+operator weight. The `parity_reduced` mapping tapers the two parity-register
+qubits fixed by the spin populations; `parity` keeps the full register.
 
 A mapping changes the representation, not the underlying spectrum. The physical
 particle-number sector must still be identified when comparing eigenvalues.

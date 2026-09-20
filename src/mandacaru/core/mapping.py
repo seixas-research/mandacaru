@@ -24,10 +24,11 @@ This module provides
   r_{12}^{-1}\,\phi_r(1)\phi_s(2)` is the two-electron integral in physicists'
   notation;
 
-* three fermion-to-qubit mappings -- **Jordan-Wigner** (default), **parity**
-  (with optional two-qubit reduction) and **Bravyi-Kitaev**.
+* three fermion-to-qubit encodings -- **Jordan-Wigner** (default), **parity**
+  and **Bravyi-Kitaev** -- plus the reduced parity variant
+  ``"parity_reduced"``.
 
-All three mappings share one construction.  A mapping is fixed by an invertible
+All four schemes share one construction.  An encoding is fixed by an invertible
 binary *encoding matrix* :math:`\beta` acting on the occupation vector,
 :math:`q = \beta f \pmod 2`:
 
@@ -242,6 +243,7 @@ def _gf2_inverse(mat: np.ndarray) -> np.ndarray:
 
 
 def _encoding_matrix(method: str, n: int) -> np.ndarray:
+    method = _base_method(method)
     if method == "jordan_wigner":
         return np.eye(n, dtype=np.int8)
     if method == "parity":
@@ -335,7 +337,6 @@ def _qubit_ladder_pauli(n: int, j: int, dagger: bool,
 
 def qubit_excitation(modes_out, modes_in, n_modes: int,
                      method: str = "jordan_wigner",
-                     two_qubit_reduction: bool = False,
                      num_particles: tuple[int, int] | None = None) -> PauliSum:
     r"""Anti-Hermitian **qubit excitation** :math:`T - T^\dagger` in any encoding.
 
@@ -356,13 +357,16 @@ def qubit_excitation(modes_out, modes_in, n_modes: int,
         Spin-orbital count (the untapered register width).
     method : str
         Fermion-to-qubit encoding.
-    two_qubit_reduction, num_particles
-        Taper the two parity qubits afterwards (parity encoding only); a qubit
-        excitation conserves both particle numbers, so the tapering is exact.
+    num_particles
+        Particle numbers required by ``"parity_reduced"`` to taper the two
+        fixed parity qubits.  A qubit excitation conserves both particle
+        numbers, so the tapering is exact.
     """
     method = _canonical_method(method)
+    reduced = method == "parity_reduced"
+    base_method = _base_method(method)
     n = int(n_modes)
-    update, parity, remainder = _mapping_sets(method, n)
+    update, parity, remainder = _mapping_sets(base_method, n)
     term = PauliSum.identity(n)
     for j in modes_out:
         # R = P XOR F, so F = P XOR R.
@@ -377,9 +381,9 @@ def qubit_excitation(modes_out, modes_in, n_modes: int,
     adjoint = PauliSum({label: np.conj(coeff)
                         for label, coeff in term.terms.items()}, num_qubits=n)
     generator = (term + (-1.0) * adjoint).simplify()
-    if two_qubit_reduction:
+    if reduced:
         if num_particles is None:
-            raise ValueError("two_qubit_reduction requires num_particles")
+            raise ValueError("parity_reduced requires num_particles")
         generator = two_qubit_reduce(generator, n, num_particles)
     return generator
 
@@ -518,27 +522,24 @@ class Fermion:
 
     def map_to_qubits(self, method: str = "jordan_wigner",
                       n_modes: int | None = None,
-                      two_qubit_reduction: bool = False,
                       num_particles: tuple[int, int] | None = None) -> PauliSum:
         """Map to a qubit :class:`PauliSum` using the requested encoding.
 
         Parameters
         ----------
-        method : {"jordan_wigner", "parity", "bravyi_kitaev"}
-            Fermion-to-qubit mapping (aliases ``"jw"``, ``"bk"``).  Default is
-            Jordan-Wigner.
+        method : {"jordan_wigner", "parity", "parity_reduced", "bravyi_kitaev"}
+            Fermion-to-qubit mapping.  Default is Jordan-Wigner.
         n_modes : int, optional
             Number of modes/qubits; defaults to the operator's mode count.
-        two_qubit_reduction : bool
-            Parity mapping only: taper the two qubits fixed by the particle-number
-            :math:`Z_2` symmetries, removing 2 qubits.  Requires ``num_particles``.
         num_particles : (int, int)
-            ``(n_alpha, n_beta)`` for the reduction, assuming a spin-blocked
-            ordering (first half alpha, second half beta).
+            ``(n_alpha, n_beta)`` required by ``"parity_reduced"``, assuming
+            a spin-blocked ordering (first half alpha, second half beta).
         """
         method = _canonical_method(method)
+        reduced = method == "parity_reduced"
+        base_method = _base_method(method)
         n = n_modes if n_modes is not None else self.n_modes()
-        U, P, R = _mapping_sets(method, n)
+        U, P, R = _mapping_sets(base_method, n)
 
         result = PauliSum()
         accumulated = result.terms      # in place: `result + op` copies every term
@@ -551,11 +552,9 @@ class Fermion:
                 accumulated[label] = accumulated.get(label, 0j) + value
         result = result.simplify()
 
-        if two_qubit_reduction:
-            if method != "parity":
-                raise ValueError("two-qubit reduction requires method='parity'")
+        if reduced:
             if num_particles is None:
-                raise ValueError("two-qubit reduction requires num_particles")
+                raise ValueError("parity_reduced requires num_particles")
             result = _parity_two_qubit_reduction(result, n, num_particles)
         return result
 
@@ -583,23 +582,25 @@ class Fermion:
 # Helpers.
 # --------------------------------------------------------------------------- #
 
-_ALIASES = {
-    "jw": "jordan_wigner", "jordan_wigner": "jordan_wigner",
-    "parity": "parity",
-    "bk": "bravyi_kitaev", "bravyi_kitaev": "bravyi_kitaev",
-}
-
-
-#: The canonical mapping names, in the order they are documented.
-MAPPINGS = tuple(dict.fromkeys(_ALIASES.values()))
+#: The accepted mapping names, in the order they are documented.
+MAPPINGS = ("jordan_wigner", "parity", "parity_reduced", "bravyi_kitaev")
 
 
 def _canonical_method(method: str) -> str:
-    try:
-        return _ALIASES[method.lower()]
-    except KeyError:
-        raise ValueError(
-            f"unknown mapping {method!r}; use one of {MAPPINGS}") from None
+    if method not in MAPPINGS:
+        raise ValueError(f"unknown mapping {method!r}; use one of {MAPPINGS}")
+    return method
+
+
+def _base_method(method: str) -> str:
+    """Return the underlying encoding for a public mapping variant."""
+    canonical = _canonical_method(method)
+    return "parity" if canonical == "parity_reduced" else canonical
+
+
+def resolve_mapping(method: str) -> str:
+    """Validate and return one of the four accepted mapping names."""
+    return _canonical_method(method)
 
 
 def parity_tapered_qubits(n_modes: int) -> tuple[int, int]:
@@ -625,10 +626,7 @@ def two_qubit_reduce(op: PauliSum, n_modes: int,
     return _parity_two_qubit_reduction(op, int(n_modes), tuple(num_particles))
 
 
-def reference_qubit_bits(method: str, n_modes: int, occupied,
-                         two_qubit_reduction: bool = False,
-                         num_particles: tuple[int, int] | None = None
-                         ) -> np.ndarray:
+def reference_qubit_bits(method: str, n_modes: int, occupied) -> np.ndarray:
     r"""Qubit bit-string of a Slater determinant under a fermion-to-qubit map.
 
     A determinant is the occupation vector ``x`` (``x_j = 1`` iff spin-orbital
@@ -642,11 +640,11 @@ def reference_qubit_bits(method: str, n_modes: int, occupied,
     x = np.zeros(int(n_modes), dtype=np.int8)
     for j in occupied:
         x[int(j)] = 1
-    beta = _encoding_matrix(_canonical_method(method), int(n_modes))
+    canonical = _canonical_method(method)
+    beta = _encoding_matrix(canonical, int(n_modes))
     bits = (beta @ x) % 2
-    if two_qubit_reduction:
-        if _canonical_method(method) != "parity":
-            raise ValueError("two-qubit reduction requires method='parity'")
+    reduced = canonical == "parity_reduced"
+    if reduced:
         drop = parity_tapered_qubits(n_modes)
         bits = np.array([b for k, b in enumerate(bits) if k not in drop],
                         dtype=np.int8)
@@ -682,10 +680,9 @@ def _parity_two_qubit_reduction(op: PauliSum, n: int,
         for k, ch in enumerate(label):
             if k in positions:
                 if ch in ("X", "Y"):
-                    # Term anticommutes with the symmetry: must be absent in a
-                    # symmetric H; drop defensively.
-                    c = 0
-                    break
+                    raise ValueError(
+                        "parity_reduced is defined only for operators that "
+                        "preserve the alpha and total particle parities")
                 if ch == "Z":
                     c *= positions[k]
             else:
@@ -703,12 +700,15 @@ def jordan_wigner(operator: Fermion, n_modes: int | None = None) -> PauliSum:
     return operator.map_to_qubits("jordan_wigner", n_modes=n_modes)
 
 
-def parity(operator: Fermion, n_modes: int | None = None,
-           two_qubit_reduction: bool = False,
-           num_particles: tuple[int, int] | None = None) -> PauliSum:
-    """Parity map of a :class:`Fermion` operator (optional 2-qubit reduction)."""
-    return operator.map_to_qubits("parity", n_modes=n_modes,
-                                  two_qubit_reduction=two_qubit_reduction,
+def parity(operator: Fermion, n_modes: int | None = None) -> PauliSum:
+    """Parity map of a :class:`Fermion` operator."""
+    return operator.map_to_qubits("parity", n_modes=n_modes)
+
+
+def parity_reduced(operator: Fermion, num_particles: tuple[int, int],
+                   n_modes: int | None = None) -> PauliSum:
+    """Parity map with its two particle-parity qubits tapered."""
+    return operator.map_to_qubits("parity_reduced", n_modes=n_modes,
                                   num_particles=num_particles)
 
 

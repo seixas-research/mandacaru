@@ -147,8 +147,7 @@ reduction removes two qubits and their gates at no cost in physics:
 ```python
 Mandacaru(method="adapt-vqe",
           pool="fermionic",
-          mapping="parity",
-          two_qubit_reduction=True,
+          mapping="parity_reduced",
           basis="FAO")     # H2 on 2 qubits
 ```
 

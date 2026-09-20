@@ -104,8 +104,7 @@ def _write(path: str, payload: dict) -> str:
 
 
 def dump_pool(path: str, pool, operators, *, n_qubits: int | None = None,
-              mapping: str | None = None, num_particles=None,
-              two_qubit_reduction: bool = False) -> str | None:
+              mapping: str | None = None, num_particles=None) -> str | None:
     """Write the ADAPT operator pool to ``path`` as JSON.
 
     Each entry carries the operator's label, kind, support and the Pauli
@@ -128,7 +127,6 @@ def dump_pool(path: str, pool, operators, *, n_qubits: int | None = None,
         "mapping": mapping,
         "num_particles": None if num_particles is None
         else [int(n) for n in num_particles],
-        "two_qubit_reduction": bool(two_qubit_reduction),
         "operators": [
             {"index": i, "label": op.label, "kind": op.kind,
              "support": [int(q) for q in op.support],
@@ -141,7 +139,6 @@ def dump_pool(path: str, pool, operators, *, n_qubits: int | None = None,
 
 def dump_hamiltonian(path: str, hamiltonian, *, n_qubits: int | None = None,
                      mapping: str | None = None, num_particles=None,
-                     two_qubit_reduction: bool = False,
                      n_spatial_orbitals: int | None = None) -> str | None:
     """Write the qubit Hamiltonian to ``path`` as JSON.
 
@@ -167,7 +164,6 @@ def dump_hamiltonian(path: str, hamiltonian, *, n_qubits: int | None = None,
         else [int(n) for n in num_particles],
         "n_spatial_orbitals": None if n_spatial_orbitals is None
         else int(n_spatial_orbitals),
-        "two_qubit_reduction": bool(two_qubit_reduction),
         "terms": terms,
     }
     return _write(path, payload)

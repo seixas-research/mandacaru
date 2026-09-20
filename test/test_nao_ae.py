@@ -241,9 +241,14 @@ class TestOrthonormalize:
 # --------------------------------------------------------------------------- #
 
 class TestBasisSet:
-    @pytest.mark.parametrize("name", ["NAO-AE", "naoae", "AE-NAO", "nao_ae"])
+    @pytest.mark.parametrize("name", ["NAO-AE", "AE-NAO", "nao_ae"])
     def test_names(self, name):
         assert isinstance(BasisSet.build(name), NAOAEBasisSet)
+
+    @pytest.mark.parametrize("name", ["NAOAE", "AENAO", "STO3G", "631G"])
+    def test_removed_aliases_are_rejected(self, name):
+        with pytest.raises(ValueError, match="unknown basis method"):
+            BasisSet.build(name)
 
     @pytest.mark.parametrize("symbol, tier, count", [
         ("H", 0, 1), ("H", 1, 5), ("H", 2, 14),

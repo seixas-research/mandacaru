@@ -2,7 +2,7 @@
  ADAPT-VQE (FermionicPool, 12 qubits)
 ========================================================================
 
-[METADATA]
+[SYSTEM]
 units: Angstrom
 n_atoms: 3
 geometry:
