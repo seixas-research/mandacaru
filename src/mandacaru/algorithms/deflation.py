@@ -164,6 +164,8 @@ class DeflationMixin:
         if beta is None:
             beta = spectral_width_beta(self.hamiltonian)
         beta = float(beta)
+        # Excited states are a method of their own, cited only once used.
+        self._cite("Higgott2019")
 
         states: list[np.ndarray] = []
         energies: list[float] = []

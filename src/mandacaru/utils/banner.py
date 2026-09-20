@@ -92,7 +92,8 @@ def lines() -> list[str]:
         "-----------------------------------------------------------------",
         f"    version:       {__version__}",
         "    developed by:  Leandro Seixas Rocha",
-        "    homepage:      https://github.com/seixas-research/mandacaru",
+        "    website:       https://mandacaru.seixas.dev"
+        "    repository:    https://github.com/seixas-research/mandacaru",
         "    documentation: https://mandacaru.readthedocs.io/",
         "-----------------------------------------------------------------",
         "",

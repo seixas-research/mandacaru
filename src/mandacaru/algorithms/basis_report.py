@@ -83,7 +83,7 @@ def _pseudo_report(name, context, symbols, fields, tables):
     if tail_norms is not None:
         fields["zeta_split"] = (
             "tail_norm " + ", ".join(f"{t:g}" for t in tail_norms)
-            + " (GPAW: norm of the tail, every zeta split from the first)")
+            + " (norm of the tail, every zeta split from the first)")
     else:
         fields["zeta_split"] = (
             "split_norm " + _option_text(options.get("split_norm")
@@ -108,7 +108,7 @@ def _pseudo_report(name, context, symbols, fields, tables):
         kind = resolve_polarization(options.get("polarization"),
                                     options.get("energy_shift"))
         fields["polarization"] = (
-            "gaussian (GPAW quasi-Gaussian: r^l [exp(-r^2/r_char^2) - "
+            "gaussian (quasi-Gaussian: r^l [exp(-r^2/r_char^2) - "
             "(a - b r^2)], further shells split from it)"
             if kind == "gaussian" else
             "orbital (r^k R_outer(r), one shell per added l)")

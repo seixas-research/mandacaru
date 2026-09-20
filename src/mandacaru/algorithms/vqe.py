@@ -165,6 +165,7 @@ class VQE(DeflationMixin, VariationalDriver):
     """
 
     _default_sparse = False
+    citation_method = "vqe"
 
     def __init__(self, hamiltonian=None, ansatz=None,
                  optimizer: str | Optimizer = "COBYLA", verbose: bool = True,
@@ -193,6 +194,7 @@ class VQE(DeflationMixin, VariationalDriver):
                     "rebuilt from it; pass an explicit `ansatz`")
             self._configure(hamiltonian, num_particles, n_orbitals)
             self._built_from_hamiltonian = True
+            self._maybe_write_references()
         # Direct mode: a Hamiltonian and ansatz were supplied at construction.
         elif hamiltonian is not None and ansatz is not None:
             if self.dry_run:
@@ -203,6 +205,7 @@ class VQE(DeflationMixin, VariationalDriver):
                     getattr(ansatz, "n_spatial_orbitals", None))
             else:
                 self._configure(hamiltonian, None, None)
+                self._maybe_write_references()
                 self._built_from_hamiltonian = True
 
     # -- setup ------------------------------------------------------------ #

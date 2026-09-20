@@ -26,6 +26,7 @@
 - **Wavefunction checkpoints.** `Mandacaru(..., checkpoint="state.json")` writes the reference, the generators, the angles and the Hamiltonian after every accepted operator; `resume="state.json"` continues an interrupted or unconverged run where it stopped.
 - **Virtual orbitals for the FAO basis.** `basis={"name": "FAO", "virtual_orbitals": 1}` appends the lowest unoccupied atomic levels (H gains 2s, C gains 3s), giving a correlated method room above the occupied orbitals; the default `0` is the minimal basis as before.
 - **Quantum phase estimation.** `QuantumPhaseEstimation(n_evaluation_qubits=10).run("state.json")` reads the exact eigenvalue off the checkpointed state, with a memory estimate checked before the 2<sup>n+t</sup> state vector is allocated.
+- **A run cites itself.** Alongside the `output=` log a run writes `references.bib` — the papers behind the method, the operator pool, the fermion-to-qubit mapping, the basis family and the codes, selected from what actually ran rather than from what was typed (a default-filtered, confined PAW basis cites all three), with abbreviated journal names.
 - **Volumetric output for VESTA and VMD.** `atoms.calc.write_cube("density.cube")` writes the converged state's one-particle reductions — electron density, spin density, correlation density `n − n_HF` and natural orbitals with their occupations — on the calculation's own real-space grid; `atoms.calc.natural_orbitals()` returns the occupations as data.
 
 ## Installation
@@ -53,7 +54,7 @@ atoms.center()                                      # the cell is the real-space
 atoms.calc = Mandacaru(method="adapt-vqe",                   # "vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe"
                        basis={"name": "PAW", "size": "DZP"}, # pseudopotential family + valence basis
                        h=0.10,                               # grid spacing (Å)
-                       pool="fermionic",                     # "fermionic", "qubit", "qeb", "ceo"
+                       pool="fermionic",                     # "fermionic", "qubit", "qeb", "ceo", "ceo-ovp"
                        mapping="jordan_wigner",              # "jordan_wigner", "parity", "parity_reduced", "bravyi_kitaev"
                        optimizer="COBYLA",                   # "COBYLA", "SPSA", "Nelder-Mead", "SLSQP", "Adam", "L-BFGS-B"
                        max_iterations=300,                   # at most 300 operators
@@ -107,7 +108,7 @@ plt.savefig("lih_pes.png", dpi=150)
 
 **ADAPT-VQE.** ADAPT-VQE builds the ansatz during the calculation instead of fixing it in advance. At each iteration it evaluates the energy gradient ⟨ψ|[H, A<sub>k</sub>]|ψ⟩ of every generator A<sub>k</sub> in an operator pool, appends exp(θ<sub>k</sub>A<sub>k</sub>) for the largest one, and re-optimizes all parameters. It stops when every gradient falls below `gradient_tolerance`, producing compact circuits tailored to the molecule.
 
-**Operator pools.** The pool is the set of anti-Hermitian generators ADAPT-VQE chooses from, and it sets the trade-off between circuit depth and the number of iterations. `fermionic` holds spin-adapted single and double excitations; `qubit` splits them into individual Pauli strings (the shallowest gates, more iterations); `qeb` uses qubit excitations — the same occupation moves without the fermionic sign; `ceo` groups QEB generators that share a qubit support. Every pool is built in the encoding you ask for (Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev) and reaches the same ground state. The fermionic and qubit-excitation pools conserve the particle number; the individual Pauli strings of `qubit` do not, by design.
+**Operator pools.** The pool is the set of anti-Hermitian generators ADAPT-VQE chooses from, and it sets the trade-off between circuit depth and the number of iterations. `fermionic` holds spin-adapted single and double excitations; `qubit` splits them into individual Pauli strings (the shallowest gates, more iterations); `qeb` uses qubit excitations — the same occupation moves without the fermionic sign; `ceo` couples the qubit excitations that act on the same spin-orbitals, and `ceo-ovp` keeps that coupling to one parameter per step, roughly halving the two-qubit gate count of `qeb`. Every pool is built in the encoding you ask for (Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev) and reaches the same ground state. The fermionic and qubit-excitation pools conserve the particle number; the individual Pauli strings of `qubit` do not, by design.
 
 **Classical optimization.** The parameters are updated by the optimizer named in `optimizer=`. COBYLA (the default) and Nelder–Mead are gradient-free and robust; L-BFGS-B and SLSQP use gradients and converge quickly on exact simulators; SPSA (two energy evaluations per step, whatever the number of parameters) and Adam tolerate the statistical noise of shot-based hardware.
 

@@ -367,7 +367,7 @@ class QiskitProvider(CircuitProvider):
                  instance: str | None = None, token: str | None = None,
                  channel: str | None = None, optimization_level: int = 3,
                  estimator_options: dict | None = None,
-                 physical_qubits=None):
+                 physical_qubits=None, seed: int | None = None):
         self.device_spec = str(device).strip()
         self.physical_qubits = (None if physical_qubits is None
                                 else [int(q) for q in physical_qubits])
@@ -378,6 +378,12 @@ class QiskitProvider(CircuitProvider):
         self.optimization_level = int(optimization_level)
         self.estimator_options = (None if estimator_options is None
                                   else dict(estimator_options))
+        #: Seed of the local Estimator's sampling, so a shot-based run is
+        #: reproducible.  ``None`` samples freshly, which is what a real
+        #: measurement does; a seed is for tests and for comparing two runs
+        #: whose difference should not be shot noise.  Hardware and the fake
+        #: backends ignore it -- their randomness is not ours to fix.
+        self.seed = None if seed is None else int(seed)
         self._backend = None
         self._estimator = None
         #: The Runtime job of the last hardware submission (``None`` locally).
@@ -462,7 +468,7 @@ class QiskitProvider(CircuitProvider):
             if self.is_local:
                 from qiskit.primitives import StatevectorEstimator
                 self._estimator = StatevectorEstimator(
-                    default_precision=self.precision)
+                    default_precision=self.precision, seed=self.seed)
             elif self.is_fake_device:
                 from qiskit.primitives import BackendEstimatorV2
                 self._estimator = BackendEstimatorV2(

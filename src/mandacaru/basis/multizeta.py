@@ -118,10 +118,9 @@ def resolve_split_scheme(split_norm=None, tail_norm=None):
     tail_norms = validate_tail_norm(tail_norm)
     if split_norm is not None and tail_norms is not None:
         raise ValueError(
-            "give 'tail_norm' (GPAW's scheme: every zeta split from the "
-            "first, by the tail's norm) or 'split_norm' (SIESTA-style: each "
-            "zeta split from the previous one, by the tail's squared norm), "
-            "not both")
+            "give 'tail_norm' (every zeta split from the first, by the "
+            "tail's norm) or 'split_norm' (each zeta split from the previous "
+            "one, by the tail's squared norm), not both")
     if split_norm is not None:
         if isinstance(split_norm, dict):
             return split_norm, None

@@ -26,7 +26,7 @@ from mandacaru.integrals import Grid
 from mandacaru.optimizers import Optimizer
 from mandacaru.units import HARTREE_TO_EV
 
-POOL_NAMES = ["fermionic", "qubit", "qeb", "ceo"]
+POOL_NAMES = ["fermionic", "qubit", "qeb", "ceo", "ceo-ovp"]
 
 
 # --------------------------------------------------------------------------- #

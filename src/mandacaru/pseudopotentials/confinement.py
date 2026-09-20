@@ -554,8 +554,8 @@ def polarization_factory(kind, energy_shift, record: dict | None = None,
         if shift is None:
             raise ValueError(
                 f"polarization='gaussian' needs an energy_shift for "
-                f"{symbol!r}: GPAW's polarization function takes its cutoff "
-                "from the confined orbital, and an unconfined orbital has none")
+                f"{symbol!r}: the Gaussian shell takes its cutoff from the "
+                "confined orbital, and an unconfined orbital has none")
         shell = gaussian_polarization(pp, shift, confinement)
         if record is not None:
             record[symbol] = shell

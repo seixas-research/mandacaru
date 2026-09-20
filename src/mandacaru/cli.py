@@ -228,6 +228,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="number of states for the subspace methods")
     solver.add_argument("--output", metavar="PATH", default=None,
                         help="ADAPT output.txt log path")
+    solver.add_argument("--references", metavar="PATH", default=None,
+                        help="BibTeX of the methods and codes the run used "
+                             "(default: references.bib beside --output)")
     return parser
 
 
@@ -314,7 +317,7 @@ def solver_options(args) -> dict:
     # into a parser error by `main`) instead of vanishing here -- `--method vqe
     # --output run.txt` used to run and write nothing.
     for name in ("pool", "max_iterations", "gradient_tolerance", "output",
-                 "num_states"):
+                 "num_states", "references"):
         value = getattr(args, name)
         if value is not None:
             options[name] = value

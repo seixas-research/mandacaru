@@ -1,8 +1,9 @@
 # Reading a run
 
-A variational run reports itself in three places, each with a different job:
-**standard output** while it runs, the structured **`output.txt`** log, and two
-optional **JSON dumps** for the objects that are too large to print.
+A variational run reports itself in four places, each with a different job:
+**standard output** while it runs, the structured **`output.txt`** log, two
+optional **JSON dumps** for the objects that are too large to print, and a
+**`references.bib`** of the methods it used.
 
 ## What goes where
 
@@ -579,4 +580,92 @@ mandacaru LiH --cell 10 --verbose-operators data/pool.json
 read *back* -- skipping the integrals and the fermion-to-qubit mapping on the
 next run -- use `save_hamiltonian=` and `load_hamiltonian=` instead; see
 [the Hamiltonian cache](hamiltonian_cache.md).
+```
+
+## `references.bib`: what the run should cite
+
+A run also writes the bibliography of the methods it used, in BibTeX, ready to
+`\bibliography{references}` from a manuscript:
+
+```
+% ADAPT-VQE, and the fermionic operator pool
+@article{Grimsley2019,
+  author  = {Grimsley, Harper R. and Economou, Sophia E. and Barnes, Edwin and
+             Mayhall, Nicholas J.},
+  title   = {An adaptive variational algorithm for exact molecular simulations
+             on a quantum computer},
+  journal = {Nat. Commun.},
+  ...
+}
+```
+
+Journal names are abbreviated, and each entry carries a comment saying what in
+the run pulled it in.
+
+### It cites what ran, not what was typed
+
+The selection comes from the run's actual configuration, which is not the same
+as the options a user wrote. A PAW basis is Fourier-filtered and confined by
+default, so
+
+```python
+calc = Mandacaru(method="adapt-vqe",
+                 basis={"name": "PAW", "size": "SZ"},
+                 h=0.25,
+                 pool="ceo")
+```
+
+cites Blöchl for the datasets, Anglada and Soler for the filter, *and*
+Sankey--Niklewski and Junquera *et al.* for the confining potential behind the
+default `energy_shift` -- none of which appear in the call. Equally, `"ceo"`
+cites both the coupled-exchange paper and the qubit-excitation paper whose
+operators it couples, `tetris=True` adds TETRIS-ADAPT-VQE and the default does
+not, and Qiskit is cited only when circuits actually went through it.
+
+A few citations cannot be known from the configuration at all, because they
+depend on what is *called*: `energy_levels()` adds the variational-deflation
+paper, and an expressibility trace adds Sim *et al.* Those are added when they
+happen, and the file already on disk is rewritten so it does not go stale.
+
+### Where it goes
+
+`references=` follows the same convention as the other files a run writes:
+
+| value | effect |
+| --- | --- |
+| `"auto"` (default) | `references.bib` beside the `output=` log, and nothing when there is no log |
+| `True` | `references.bib` in the working directory |
+| `"papers.bib"` | that file |
+| `False` / `None` | nothing |
+
+```python
+calc = Mandacaru(method="adapt-vqe",
+                 basis="PAW",
+                 h=0.20,
+                 pool="qubit",
+                 output="run/output.txt")      # -> run/references.bib
+```
+
+On the command line:
+
+```bash
+mandacaru H2O --cell 10 --output run/output.txt        # run/references.bib
+mandacaru H2O --cell 10 --references papers.bib
+```
+
+The calculator also exposes the two pieces directly, which is what a script
+that assembles one bibliography for a whole study wants:
+
+```python
+atoms.calc.citation_keys()            # ['Grimsley2019', 'Jordan1928', ...]
+atoms.calc.write_references("all.bib")
+```
+
+```{warning}
+The table lives in {mod}`mandacaru.utils.bibliography`. Entries taken from a
+paper in the author's own library are marked verified; the rest are standard
+citations written from the usual bibliographic data and are rendered with an
+`[unverified record]` comment. **Check those against the journal before they go
+into a manuscript** --
+{data}`mandacaru.utils.bibliography.UNVERIFIED` lists them.
 ```

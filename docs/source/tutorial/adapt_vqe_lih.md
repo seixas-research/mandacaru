@@ -74,12 +74,14 @@ Check both the outer convergence flag and `optimizer_failures`.
 | `fermionic` | Mapped single and double fermionic excitations | A chemistry-based starting point; parity strings can increase circuit depth. |
 | `qubit` | Individual Pauli terms from mapped excitations | Fewer gates per generator may require more growth steps; individual terms need not preserve particle number. |
 | `qeb` | Excitation generators with parity-only Z strings removed | Often shorter circuits; check the resulting accuracy and conserved quantities. |
-| `ceo` | QEB generators grouped by qubit support | In Mandacaru's Jordan–Wigner implementation the groups are singletons, so this pool matches `qeb`. |
+| `ceo` | The qubit excitations on one set of spin-orbitals, coupled | Built from generalized excitations, so the pool is much larger; a growth step can add more than one parameter. |
+| `ceo-ovp` | The same pool, one parameter per step | Roughly half the CNOTs of `qeb` at the same energy — the variant to use when the gate count matters. |
 
 These are implementation descriptions, not universal rankings. Gate counts
 depend on the mapping, selected operators, compiler and device connectivity.
-Mandacaru does not implement the specialized CEO synthesis required for the gate
-savings reported for that method in the literature.
+Mandacaru does not implement the specialized 9- and 13-CNOT circuit syntheses of
+the CEO paper; the reduction seen here comes from a coupled double needing four
+Pauli strings where a qubit excitation needs eight.
 
 ## 3. Compare pools using one Hamiltonian
 

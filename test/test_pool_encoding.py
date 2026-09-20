@@ -95,38 +95,164 @@ class TestJordanWignerIsUnchanged:
 
 
 class TestCEOGrouping:
-    def test_ceo_equals_qeb_in_jordan_wigner(self):
-        """One excitation per support there, so every group is a singleton."""
-        qeb = build_pool("qeb", 3, (1, 1)).operators()
-        ceo = build_pool("ceo", 3, (1, 1)).operators()
-        assert ([op.generator.terms for op in qeb]
-                == [op.generator.terms for op in ceo])
+    """The CEO pool of Ramoa et al., npj Quantum Inf. 11, 86 (2025), Sec. II B.
 
-    @pytest.mark.parametrize("mapping", ["parity", "bravyi_kitaev"])
-    def test_ceo_genuinely_groups_in_other_encodings(self, mapping):
-        """Wider update/flip sets make distinct excitations share a support.
+    A CEO couples the qubit excitations acting on one set of spin-orbitals.
+    Before 2026-09-20 the pool summed QEB generators grouped by their *mapped*
+    support and, with the occupied-to-virtual enumeration, every group was a
+    singleton: ``ceo`` was ``qeb`` under Jordan-Wigner and an encoding artifact
+    under parity / Bravyi-Kitaev.  These tests pin the paper's construction.
+    """
 
-        Each CEO generator must be exactly the sum of the QEB generators on its
-        support, and at least one group must hold more than one of them.
+    def test_the_paper_equations(self):
+        """Eqs. (11), (12), (25) and (26), sign for sign.
+
+        Four qubits ordered alpha2 alpha1 beta2 beta1 from most to least
+        significant, as the paper sets up before Eq. (11).
         """
-        qeb = build_pool("qeb", 3, (1, 1), mapping=mapping).operators()
-        ceo = build_pool("ceo", 3, (1, 1), mapping=mapping).operators()
-        assert len(ceo) < len(qeb)
+        a2, a1, b2, b1 = 0, 1, 2, 3
+        t1 = qubit_excitation((a2, b2), (a1, b1), 4, "jordan_wigner")
+        t2 = qubit_excitation((a1, b2), (a2, b1), 4, "jordan_wigner")
 
-        members = 0
-        for group in ceo:
+        def pattern(op):
+            return {k: ("+" if (complex(v) / 1j).real > 0 else "-")
+                    for k, v in op.simplify().terms.items()}
+
+        assert pattern(t1) == {"XXXY": "+", "XXYX": "-", "XYXX": "+",
+                               "XYYY": "+", "YXXX": "-", "YXYY": "-",
+                               "YYXY": "+", "YYYX": "-"}          # Eq. (11)
+        assert pattern(t2) == {"XXXY": "+", "XXYX": "-", "XYXX": "-",
+                               "XYYY": "-", "YXXX": "+", "YXYY": "+",
+                               "YYXY": "+", "YYYX": "-"}          # Eq. (12)
+        # Both QEs carry the same eight strings with coefficient 1/8, which is
+        # why coupling them costs no extra entangling structure.
+        assert all(abs(complex(v)) == pytest.approx(0.125)
+                   for v in t1.simplify().terms.values())
+        assert pattern(t1 + t2) == {"XXXY": "+", "XXYX": "-",
+                                    "YYXY": "+", "YYYX": "-"}     # Eq. (25)
+        assert pattern(t1 + t2 * -1.0) == {"XYXX": "+", "XYYY": "+",
+                                           "YXXX": "-", "YXYY": "-"}  # Eq. (26)
+
+    def test_ceo_is_not_qeb(self):
+        """The whole point: a larger pool built from generalized excitations."""
+        qeb = build_pool("qeb", 3, (1, 1))
+        ceo = build_pool("ceo", 3, (1, 1))
+        assert len(ceo) > len(qeb)
+        assert ([op.generator.simplify().terms for op in ceo.operators()]
+                != [op.generator.simplify().terms for op in qeb.operators()])
+
+    @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity",
+                                         "bravyi_kitaev"])
+    def test_sizes_follow_the_construction(self, mapping):
+        """2 CEOs per opposite-spin set, 6 per same-spin set, 1 per single.
+
+        Of the three ways to pair four spin-orbitals only the S_z-conserving
+        ones are excitations: two when the set holds two alpha and two beta
+        orbitals, three when all four share a spin.  Each set then contributes
+        one CEO per ordered pair of its excitations and sign.
+        """
+        from math import comb
+        for M in (2, 3, 4):
+            pool = build_pool("ceo", M, (1, 1), mapping=mapping)
+            singles = 2 * comb(M, 2)
+            opposite = comb(M, 2) ** 2 * 2
+            same = 2 * comb(M, 4) * 6
+            assert len(pool) == singles + opposite + same
+
+    def test_every_operator_couples_excitations_on_one_orbital_set(self):
+        ceo = build_pool("ceo", 3, (1, 1)).operators()
+        for op in ceo:
+            assert 1 <= len(op.members) <= 2
             summed = PauliSum(num_qubits=6)
-            count = 0
-            for op in qeb:
-                if op.support == group.support:
-                    summed = summed + op.generator
-                    count += 1
-            members = max(members, count)
-            summed = summed.simplify()
-            assert set(summed.terms) == set(group.generator.terms)
-            for label, coeff in summed.terms.items():
-                assert group.generator.terms[label] == pytest.approx(coeff)
-        assert members > 1
+            for member, sign in zip(op.members, (1.0, 1.0)):
+                summed = summed + member.generator * sign
+            difference = PauliSum(num_qubits=6)
+            for member, sign in zip(op.members, (1.0, -1.0)):
+                difference = difference + member.generator * sign
+            target = op.generator.simplify().terms
+            assert (target == summed.simplify().terms
+                    or target == difference.simplify().terms)
+
+    def test_a_coupled_double_has_four_pauli_strings(self):
+        """Eqs. (25)-(26): four strings where a QE needs eight.
+
+        This is what the paper's 9-CNOT circuit exploits, and what makes the
+        generic compilation cheaper here too.
+        """
+        ceo = build_pool("ceo", 2, (1, 1)).operators()
+        doubles = [op for op in ceo if len(op.support) == 4]
+        assert doubles and all(len(op.generator.simplify().terms) == 4
+                               for op in doubles)
+
+    def test_coupled_excitations_commute(self):
+        """So appending them in sequence is exactly ``exp(sum_i theta_i T_i)``.
+
+        The growth step relies on this to realize an MVP-CEO without a
+        multi-parameter block in the ansatz.
+        """
+        for op in build_pool("ceo", 3, (1, 1)).operators():
+            for x in range(len(op.members)):
+                for y in range(x + 1, len(op.members)):
+                    A = op.members[x].matrix()
+                    B = op.members[y].matrix()
+                    assert np.abs(A @ B - B @ A).max() == pytest.approx(0.0,
+                                                                        abs=1e-12)
+
+    @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity",
+                                         "bravyi_kitaev"])
+    def test_generators_conserve_the_particle_numbers(self, mapping):
+        """A CEO is a sum of qubit excitations, so it keeps N and S_z."""
+        pool = build_pool("ceo", 3, (1, 1), mapping=mapping)
+        sector = ParticleSector(pool.n_qubits, (1, 1), mapping)
+        for op in pool.operators():
+            assert sector.conserves(op.generator)
+
+    def test_growth_expands_only_when_two_excitations_are_live(self):
+        """The paper's modified step 3."""
+        pool = build_pool("ceo", 3, (1, 1))
+        coupled = next(op for op in pool.operators() if len(op.members) == 2)
+        first, second = coupled.members
+
+        assert pool.grown_operators(coupled, lambda o: 0.0) == [coupled]
+        assert pool.grown_operators(
+            coupled, lambda o: 1.0 if o is first else 0.0) == [coupled]
+        assert pool.grown_operators(coupled, lambda o: 1.0) == [first, second]
+
+        single = next(op for op in pool.operators() if len(op.members) == 1)
+        assert pool.grown_operators(single, lambda o: 1.0) == [single]
+
+    def test_ovp_variant_is_the_same_pool_without_the_mvp_expansion(self):
+        """``ceo-ovp``: the paper's one-parameter variant (Supplementary I).
+
+        Mandacaru has no MVP circuit synthesis, so an expanded step compiles as
+        separate eight-string excitations and costs gates; keeping the
+        one-parameter form is what actually halves the CNOT count here.
+        """
+        ceo = build_pool("ceo", 3, (2, 2))
+        ovp = build_pool("ceo-ovp", 3, (2, 2))
+        assert [op.label for op in ovp.operators()] == [op.label
+                                                        for op in ceo.operators()]
+        coupled = next(op for op in ovp.operators() if len(op.members) == 2)
+        assert ovp.grown_operators(coupled, lambda o: 1.0) == [coupled]
+        assert len(ceo.grown_operators(coupled, lambda o: 1.0)) == 2
+
+    def test_ovp_halves_the_gate_count_of_qeb(self):
+        """The reason ``examples/24_ADAPTVQE_LiH_IBM.py`` uses it."""
+        atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
+                      cell=[15.0] * 3, pbc=True)
+        counts = {}
+        for pool in ("qeb", "ceo-ovp"):
+            work = atoms.copy()
+            work.calc = Mandacaru(method="adapt-vqe", pool=pool,
+                                  mapping="jordan_wigner",
+                                  basis={"name": "GTO", "n_gaussians": 3},
+                                  h=0.15, optimizer="COBYLA",
+                                  max_iterations=14, gradient_tolerance=1e-3,
+                                  profile=True, trace=False)
+            energy = work.get_potential_energy()
+            counts[pool] = (energy, work.calc.result.metrics.cnot_count)
+        assert counts["ceo-ovp"][0] == pytest.approx(counts["qeb"][0], abs=1e-3)
+        assert counts["ceo-ovp"][1] < 0.6 * counts["qeb"][1]
 
 
 class TestSamePhysicsEverywhere:

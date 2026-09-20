@@ -336,10 +336,14 @@ class TestAdaptOutputProtocol:
 class TestCEOLabels:
     def test_ceo_labels_unique_and_descriptive(self):
         from mandacaru.circuits import build_pool
-        labels = [op.label for op in build_pool("ceo", 3, (2, 2)).operators()]
-        # Requirement 4: no collisions, and each label names its support.
-        assert len(labels) == len(set(labels))
-        assert all(lbl.startswith("CEO[q") for lbl in labels)
+        for name in ("ceo", "ceo-ovp"):
+            labels = [op.label for op in build_pool(name, 3, (2, 2)).operators()]
+            # No collisions, and each label names the spin-orbital set it
+            # couples plus the excitations it combines -- the grouping key is
+            # the orbital set, so the label says "o", not "q".
+            assert len(labels) == len(set(labels))
+            assert all(lbl.startswith("CEO[o") for lbl in labels)
+            assert all("{" in lbl and lbl.endswith("}") for lbl in labels)
 
 
 class TestADAPTVQECalculator:
@@ -1022,10 +1026,12 @@ class TestBasisBlock:
         block = parse_output(out)["basis"]
         assert block["name"] == "PAW" and block["family"].startswith("PAW (")
         assert block["size"] == "DZ"
-        # GPAW's split-valence scheme is the default, and the line names the
-        # scheme: a tail *norm* and a squared-norm fraction are not comparable.
-        assert block["zeta_split"].startswith("tail_norm 0.16, 0.3, 0.6 (GPAW")
-        # The shell follows the confinement: GPAW's Gaussian when confined.
+        # The tail-norm scheme is the default, and the line names it rather
+        # than printing a bare number: a tail *norm* and a squared-norm
+        # fraction are not comparable.  The output never names another code.
+        assert block["zeta_split"].startswith("tail_norm 0.16, 0.3, 0.6 (norm")
+        assert "GPAW" not in open(out).read()
+        # The shell follows the confinement: the Gaussian when confined.
         assert block["polarization"].startswith("gaussian")
         assert block["energy_shift"] == "0.1 eV"
         assert "A = 12 Ha" in block["confinement_potential"]
@@ -1183,8 +1189,10 @@ class TestOptimizationSetupBlock:
               "gradient_method", "gradient_formula", "gradient_tol",
               "gradient_units",
               "pool", "pool_class", "pool_size",
-              # How a growth step is optimized and where it executes: the log
-              # is the only record when the standard-output header is off.
+              # How the ansatz grows, how a growth step is optimized and where
+              # it executes: the log is the only record when the
+              # standard-output header is off.
+              "growth", "pruning",
               "reoptimize_all_parameters", "state_vector_backend", "device",
               "backend_provider", "circuit_execution", "shots",
               "circuit_profiling",

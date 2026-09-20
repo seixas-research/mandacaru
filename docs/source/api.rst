@@ -306,3 +306,13 @@ Utilities & Profiling
    :members:
    :undoc-members:
    :show-inheritance:
+
+.. automodule:: mandacaru.utils.bibliography
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: mandacaru.utils.citations
+   :members:
+   :undoc-members:
+   :show-inheritance:

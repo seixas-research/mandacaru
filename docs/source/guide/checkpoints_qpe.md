@@ -166,3 +166,17 @@ distribution to machine precision (`QuantumPhaseEstimation.evaluation_distributi
 Its gate count is what a hardware run would transpile.
 
 See `examples/31_QPE_H2_from_checkpoint.py`.
+
+### Citing it
+
+Phase estimation runs from a checkpoint, outside any driver, so nothing writes
+a bibliography for it the way a variational run does (see
+[`references.bib`](run_output.md#referencesbib-what-the-run-should-cite)). Ask
+for the keys and write them yourself:
+
+```python
+from mandacaru.utils.citations import citation_keys, write_references
+
+write_references("references.bib",
+                 citation_keys(method="qpe", mapping="jordan_wigner"))
+```

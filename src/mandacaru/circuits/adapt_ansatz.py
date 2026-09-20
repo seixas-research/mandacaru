@@ -119,6 +119,22 @@ class AdaptAnsatz:
         w, V = np.linalg.eigh(-1j * a)
         self._eig.append((w, V))
 
+    def remove(self, index: int) -> PoolOperator:
+        """Drop the operator at ``index`` and return it.
+
+        Used by the pruning growth strategy
+        (:class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE`, ``prune=True``),
+        which takes an irrelevant operator back out of a grown ansatz.  The
+        per-operator caches are index-aligned with ``_ops``, so each is popped
+        with it rather than rebuilt -- re-appending the survivors would redo
+        every eigendecomposition.
+        """
+        op = self._ops.pop(index)
+        for cache in (self._sparse_ops, self._eig):
+            if cache:
+                cache.pop(index)
+        return op
+
     @property
     def num_parameters(self) -> int:
         return len(self._ops)

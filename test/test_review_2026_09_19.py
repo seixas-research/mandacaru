@@ -360,23 +360,30 @@ class TestR07CommutingTermsOnly:
         for operator in build_pool(pool, 3, (2, 1), mapping=mapping).operators():
             assert pauli_rotations(operator.generator)
 
-    def test_ceo_is_exportable_only_where_it_is_qeb(self):
-        """Under parity / Bravyi-Kitaev a CEO generator sums several qubit
-        excitations of one support, and those anticommute: the state-vector
-        backend exponentiates it exactly, a circuit cannot (no CEO synthesis is
-        implemented), so export is refused rather than silently approximated."""
-        for operator in build_pool("ceo", 3, (2, 1),
-                                   mapping="jordan_wigner").operators():
-            assert pauli_rotations(operator.generator)
-        refused = 0
-        for mapping in ("parity", "bravyi_kitaev"):
-            for operator in build_pool("ceo", 3, (2, 1),
-                                       mapping=mapping).operators():
-                try:
-                    pauli_rotations(operator.generator)
-                except ValueError:
-                    refused += 1
-        assert refused > 0
+    def test_every_pool_generator_is_exportable(self):
+        """The guard's original case is gone: CEO generators now commute.
+
+        When this check was written, ``ceo`` summed qubit excitations that
+        happened to share a *mapped* support, and under parity / Bravyi-Kitaev
+        those anticommute, so a circuit could not realize them.  The pool now
+        couples excitations on one set of *spin-orbitals*, which commute in
+        every encoding, so nothing is refused -- see
+        ``test_pool_encoding.TestCEOGrouping``.
+        """
+        for mapping in ("jordan_wigner", "parity", "bravyi_kitaev"):
+            for name in ("fermionic", "qeb", "ceo", "qubit"):
+                for operator in build_pool(name, 3, (2, 1),
+                                           mapping=mapping).operators():
+                    assert pauli_rotations(operator.generator)
+
+    def test_non_commuting_terms_are_still_refused(self):
+        """The guard itself must stay: a product of rotations is not the
+        exponential of a sum unless the terms commute."""
+        # XY and YX differ on both qubits, so they commute; XX and XY differ on
+        # one, so they anticommute.
+        assert pauli_rotations(PauliSum({"XY": 0.5j, "YX": 0.5j}))
+        with pytest.raises(ValueError, match="commut"):
+            pauli_rotations(PauliSum({"XX": 0.5j, "XY": 0.5j}))
 
 
 # --------------------------------------------------------------------------- #

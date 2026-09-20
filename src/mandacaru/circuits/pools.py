@@ -33,16 +33,20 @@ Four pools are provided, in increasing hardware-friendliness:
   the fermionic excitation generators with their JW ``Z``-strings removed, i.e.
   excitations acting only on the involved qubits.  Same excitation structure as
   the fermionic pool but distance-independent two-qubit cost.
-* **CEO** (:class:`CEOPool`) -- Coupled-Exchange Operators (Ramôa *et al.*, 2024):
-  QEB generators sharing the same qubit support are combined into a single
-  generator (one variational parameter, one shared entangling structure -- the
-  OVP-CEO variant).  With the present excitation enumeration each support
-  carries one excitation, so this pool currently equals ``qeb`` (see
-  :class:`CEOPool`).
+* **CEO** (:class:`CEOPool`) -- Coupled Exchange Operators (Ramôa *et al.*, npj
+  Quantum Inf. **11**, 86, 2025): the qubit excitations acting on one set of
+  spin-orbitals are combined into a single generator.  Every excitation on a
+  given set is built from the same eight Pauli strings, so coupling them costs
+  no extra entangling structure; a coupled double needs only four of those
+  strings, which roughly halves its compiled CNOT count against ``qeb``.  Unlike
+  the other pools it is built from **generalized** excitations -- without them a
+  set carries one excitation and there is nothing to couple.
 
 All pools are built from the spin-blocked spin-orbital ordering used throughout
 Mandacaru (first ``M`` :math:`\alpha`, next ``M`` :math:`\beta`) and only include
-excitations that conserve the spin projection :math:`S_z`.
+excitations that conserve the spin projection :math:`S_z`.  ``fermionic``,
+``qubit`` and ``qeb`` restrict the source and target orbitals to be occupied and
+unoccupied in the reference; ``ceo`` does not (see :class:`CEOPool`).
 """
 
 from __future__ import annotations
@@ -77,6 +81,12 @@ class PoolOperator:
     kind : str
         Pool-specific category (``"fermionic-single"``, ``"double"``, ``"pauli"``,
         ``"qeb-single"``, ``"ceo"`` ...).
+    members : tuple of PoolOperator
+        The operators this one is a linear combination of, empty for a plain
+        generator.  Only :class:`CEOPool` fills it: an OVP-CEO carries the qubit
+        excitations it couples, which the growth step needs to decide between
+        the one- and the multiple-parameter form (see :meth:`CEOPool.
+        grown_operators`).
     """
 
     label: str
@@ -84,6 +94,7 @@ class PoolOperator:
     support: tuple[int, ...]
     kind: str
     _matrix: np.ndarray | None = field(default=None, repr=False, compare=False)
+    members: tuple = field(default=(), repr=False, compare=False)
 
     @property
     def n_qubits(self) -> int:
@@ -102,6 +113,13 @@ class PoolOperator:
 # --------------------------------------------------------------------------- #
 # Shared helpers.
 # --------------------------------------------------------------------------- #
+
+#: Below this an excitation's energy derivative counts as zero, so it is not
+#: worth an independent variational parameter (:meth:`CEOPool.grown_operators`).
+#: Well under any ADAPT convergence threshold and well above round-off on the
+#: matrix-vector products the gradient is assembled from.
+GRADIENT_FLOOR = 1e-12
+
 
 def _support_of(op: PauliSum) -> tuple[int, ...]:
     """Qubit indices acted on by any non-identity Pauli in ``op``."""
@@ -209,6 +227,18 @@ class PoolBase:
     def __repr__(self) -> str:
         return (f"{type(self).__name__}(n_qubits={self.n_qubits}, "
                 f"size={len(self)})")
+
+    def grown_operators(self, selected: PoolOperator, gradient) -> list:
+        """Operators to append when ``selected`` wins the gradient screening.
+
+        One operator for every pool but :class:`CEOPool`, whose selected
+        element may expand into the several independently parameterized
+        excitations it couples.  ``gradient(op)`` returns the energy derivative
+        of a candidate at the current state; it is supplied by the driver
+        because only the driver knows the state and the matrix backend, and it
+        is called only for the operators of the *selected* support.
+        """
+        return [selected]
 
     # -- shared fermionic generators (used by several pools) --------------- #
 
@@ -346,62 +376,172 @@ class QEBPool(PoolBase):
 # --------------------------------------------------------------------------- #
 
 class CEOPool(QEBPool):
-    r"""Coupled-Exchange Operators: QEBs on a shared qubit support, combined.
+    r"""Coupled Exchange Operators (Ramoa *et al.*, npj Quantum Inf. **11**, 86, 2025).
 
-    All QEB generators acting on the *same* set of qubits are summed into a single
-    anti-Hermitian generator (the OVP-CEO variant: one variational parameter and
-    one shared entangling structure per group), so several exchange terms ride a
-    single CNOT ladder.
+    A CEO is a linear combination of the qubit excitations that act on **the same
+    set of spin-orbitals**.  The construction rests on an algebraic coincidence
+    (verified in ``test/test_pool_encoding.py``): every double QE on a given set
+    of four spin-orbitals is a uniformly weighted combination of *the same eight
+    Pauli strings*, differing only in the signs of the coefficients.  Combining
+    them therefore costs no extra entangling structure, which is where the gate
+    savings come from.
 
-    **What this construction actually yields.** In Jordan-Wigner the excitation
-    enumeration supplies exactly one spin-conserving excitation per qubit
-    support, so every group is a *singleton* and the pool is
-    generator-for-generator identical to ``qeb`` (verified in
-    ``test/test_pool_encoding.py``).  Under parity / Bravyi-Kitaev the update
-    and flip sets widen the supports, so distinct excitations can share one and
-    are genuinely summed.  Either way the gate savings reported for CEO need
-    several exchange directions per support *and* their specialized circuit
-    synthesis, which is not implemented here.
+    **The excitations are generalized.**  A set of four spin-orbitals carries
+    more than one excitation only if the source and target orbitals are *not*
+    restricted to be occupied and unoccupied in the reference: with that
+    restriction each set carries exactly one, every group is a singleton and the
+    pool degenerates into ``qeb``.  So, following Sec. II B of the paper, this
+    pool is built from **generalized** singles and doubles (:meth:`excitations`),
+    unlike :class:`QEBPool`, which keeps the occupied-to-virtual restriction.
+    The consequence is a much larger pool -- 660 operators against QEB's 92 for a
+    frozen-core water -- screened for the same measurement cost, since every
+    gradient is a linear combination of the same Pauli expectation values.
 
-    **Consequence for circuits.** The Pauli terms of a *summed* generator do not
-    all commute, so ``exp(theta A)`` is not the product of their rotations.  The
-    state-vector backend exponentiates it exactly; a circuit provider -- used by
-    ``execute_circuits=True``, ``measured_energy`` and ``measurement_provider``
-    -- would prepare a *different* state, so it refuses such a generator
-    (:func:`~mandacaru.backends.providers.pauli_rotations`).  ``ceo`` is
-    therefore circuit-exportable under Jordan-Wigner (where it equals ``qeb``)
-    and state-vector-only under parity / Bravyi-Kitaev.
+    **Unique excitations per set.** Of the three ways to pair four spin-orbitals,
+    only those conserving :math:`S_z` survive: **two** when the set holds two
+    :math:`\alpha` and two :math:`\beta` orbitals (Eqs. 8-9), **three** when all
+    four have the same spin.  A pair of spin-orbitals carries exactly one single
+    excitation.
+
+    **What the pool contains** (the OVP-CEO set, Eqs. 23-24): for every set with
+    :math:`k` excitations, all :math:`2\binom{k}{2}` sums and differences of
+    pairs -- 2 operators for an opposite-spin set, 6 for a same-spin one -- plus
+    every single excitation, which is trivially its own CEO.  An OVP-CEO of a
+    double is a combination of only **four** Pauli strings where a QE needs
+    eight, which is what its 9-CNOT circuit (against 13) exploits.
+
+    **Growth** (:meth:`grown_operators`, the paper's modified step 3): the
+    selected OVP-CEO is appended as one operator with one parameter when only
+    one of its excitations has a non-zero gradient, and otherwise expands into
+    the MVP-CEO -- those excitations with independent parameters.  The
+    excitations on a shared set commute, so appending them consecutively
+    realizes :math:`\exp(\sum_i \theta_i T_i)` exactly.
+
+    **Not implemented:** the specialized 9- and 13-CNOT circuit syntheses of the
+    paper's Figs. 5-9.  Mandacaru compiles every generator through the generic
+    ``{cx, u}`` path, so the operator counts and parameter counts here follow the
+    paper but the CNOT counts do not reach its figures.
     """
 
     name = "ceo"
 
-    def _build(self) -> list[PoolOperator]:
-        groups: dict[tuple[int, ...], PauliSum] = {}
-        members: dict[tuple[int, ...], list[str]] = {}
-        order: list[tuple[int, ...]] = []
-        for op in self._qeb_operators():
-            key = op.support
-            if key not in groups:
-                groups[key] = PauliSum()
-                members[key] = []
-                order.append(key)
-            groups[key] = groups[key] + op.generator
-            members[key].append(op.label)
+    #: Ways to split four spin-orbitals into an ordered pair of pairs.  The third
+    #: entry is the one that moves both same-spin orbitals together, so it is the
+    #: one an opposite-spin set drops for violating S_z.
+    _PAIRINGS = (((0, 1), (2, 3)), ((0, 2), (1, 3)), ((0, 3), (1, 2)))
 
+    def _spin(self, mode: int) -> int:
+        return int(mode) // self.n_spatial_orbitals
+
+    def excitations(self) -> dict:
+        """``{spin-orbital set: [PoolOperator, ...]}`` of generalized QEs.
+
+        Generalized: every same-spin pair carries a single excitation and every
+        four-orbital set carries its :math:`S_z`-conserving double excitations,
+        whether or not the orbitals are occupied in the reference.
+        """
+        groups: dict[tuple[int, ...], list[PoolOperator]] = {}
+        modes = range(self.n_modes)
+
+        for i in modes:
+            for a in range(i + 1, self.n_modes):
+                if self._spin(i) != self._spin(a):
+                    continue
+                ops: list[PoolOperator] = []
+                self._append_excitation(ops, f"S({i}->{a})", (a,), (i,),
+                                        "qeb-single")
+                if ops:
+                    groups[(i, a)] = ops
+
+        for p in modes:
+            for q in range(p + 1, self.n_modes):
+                for r in range(q + 1, self.n_modes):
+                    for s in range(r + 1, self.n_modes):
+                        quad = (p, q, r, s)
+                        ops = []
+                        for (x, y), (u, v) in self._PAIRINGS:
+                            i, j, a, b = quad[x], quad[y], quad[u], quad[v]
+                            if (self._spin(i) + self._spin(j)
+                                    != self._spin(a) + self._spin(b)):
+                                continue
+                            self._append_excitation(
+                                ops, f"D({i},{j}->{a},{b})", (a, b), (i, j),
+                                "qeb-double")
+                        if ops:
+                            groups[quad] = ops
+        return groups
+
+    def _build(self) -> list[PoolOperator]:
         ops: list[PoolOperator] = []
-        for key in order:
-            generator = groups[key].simplify()
-            if not generator.terms:
+        for modes, excitations in self.excitations().items():
+            orbitals = ",".join(f"o{m}" for m in modes)
+            if len(excitations) == 1:
+                # A single excitation realizes the one viable exchange on its
+                # orbitals, so it is already its own CEO (paper, Sec. II B 3).
+                only = excitations[0]
+                ops.append(PoolOperator(f"CEO[{orbitals}]{{{only.label}}}",
+                                        only.generator, only.support, "ceo",
+                                        members=(only,)))
                 continue
-            # Label with the *full* qubit support (not just its endpoints, which
-            # collide for non-contiguous supports) plus the coupled QEB
-            # excitations, so every CEO operator is uniquely and descriptively
-            # named -- e.g. "CEO[q0,q1,q4,q5]{QD(0,1->4,5)}".
-            qubits = ",".join(f"q{q}" for q in key)
-            excitations = "+".join(m[1:] for m in members[key])  # drop the "Q"
-            label = f"CEO[{qubits}]{{{excitations}}}"
-            ops.append(PoolOperator(label, generator, key, "ceo"))
+            for x in range(len(excitations)):
+                for y in range(x + 1, len(excitations)):
+                    first, second = excitations[x], excitations[y]
+                    for sign, mark in ((1.0, "+"), (-1.0, "-")):
+                        generator = (first.generator
+                                     + second.generator * sign).simplify()
+                        if not generator.terms:
+                            continue
+                        label = (f"CEO[{orbitals}]"
+                                 f"{{{first.label}{mark}{second.label}}}")
+                        ops.append(PoolOperator(
+                            label, generator, _support_of(generator), "ceo",
+                            members=(first, second)))
         return ops
+
+    def grown_operators(self, selected: PoolOperator, gradient) -> list:
+        """The paper's modified step 3, applied to the selected OVP-CEO.
+
+        Excitations whose gradient vanishes cannot change the energy at this
+        state, so giving them their own parameter buys nothing: when exactly one
+        of the coupled excitations is live, the OVP-CEO itself is appended (one
+        parameter, the cheaper circuit).  Otherwise the live excitations are
+        appended with independent parameters -- the MVP-CEO.  They commute, so
+        appending them in sequence is exactly ``exp(sum_i theta_i T_i)``.
+        """
+        members = tuple(selected.members)
+        if len(members) < 2:
+            return [selected]
+        live = [op for op in members if abs(gradient(op)) > GRADIENT_FLOOR]
+        if len(live) < 2:
+            return [selected]
+        return live
+
+
+class OVPCEOPool(CEOPool):
+    r"""CEO with one variational parameter per growth step (OVP-CEO only).
+
+    The same pool as :class:`CEOPool`; only the growth differs.  The paper's
+    algorithm expands the selected operator into the MVP-CEO -- its coupled
+    excitations with independent parameters -- whenever more than one of them
+    has a non-zero gradient, and implements that as a single 13-CNOT circuit.
+    Mandacaru has no such synthesis, so an expanded step compiles as two or
+    three separate eight-string excitations and *costs* gates instead of saving
+    them.  Keeping the one-parameter form throughout sidesteps that: every
+    appended operator is a four-string combination with the cheap circuit.
+
+    The paper considers this variant explicitly (Sec. II B 4 and Supplementary
+    Sec. I): the trade is variational freedom, since the coupled excitations are
+    then constrained to one shared parameter magnitude.  Measured on the LiH
+    curve of ``examples/24_ADAPTVQE_LiH_IBM.py`` (STO-3G, 12 qubits) it costs
+    nothing in energy and halves the gate count -- 104 CNOTs against 208 for
+    ``qeb`` and 248 for the adaptive ``ceo`` -- which is why the hardware
+    example uses it.
+    """
+
+    name = "ceo-ovp"
+
+    def grown_operators(self, selected: PoolOperator, gradient) -> list:
+        return [selected]
 
 
 # --------------------------------------------------------------------------- #
@@ -413,6 +553,7 @@ _POOLS = {
     "qubit": QubitPool,
     "qeb": QEBPool,
     "ceo": CEOPool,
+    "ceo-ovp": OVPCEOPool,
 }
 
 # Friendly aliases.
@@ -422,7 +563,7 @@ _POOL_ALIASES = {
     "qubit-adapt": "qubit",
     "pauli": "qubit",
     "qubit-excitation": "qeb",
-    "ceo-ovp": "ceo",
+    "ovp-ceo": "ceo-ovp",
     "coupled-exchange": "ceo",
 }
 

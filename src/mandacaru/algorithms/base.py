@@ -31,6 +31,7 @@ across every driver.
 from __future__ import annotations
 
 import os
+import warnings
 from time import perf_counter as _perf
 
 import numpy as np
@@ -140,6 +141,14 @@ class VariationalDriver(Calculator):
         same register (width, mapping, tapering, reference determinant).
         With ``checkpoint`` set to the same path, every geometry of a
         relaxation warm-starts from the previous one.
+    references : {"auto", True, False} or str
+        Where to write the run's **BibTeX bibliography** -- the papers behind
+        the method, the pool and its growth strategy, the fermion-to-qubit
+        mapping, the basis family and the options that actually built it, the
+        optimizer and the codes (see :mod:`mandacaru.utils.citations`).
+        ``"auto"`` (default) writes ``references.bib`` beside the ``output=``
+        log and nothing when there is no log, ``True`` writes it in the working
+        directory, a string names the file, ``False`` switches it off.
     load_hamiltonian : str, optional
         Path of a Hamiltonian file written by ``save_hamiltonian``.  When given,
         the driver loads the qubit Hamiltonian from disk and **skips the molecular
@@ -223,7 +232,8 @@ class VariationalDriver(Calculator):
                  kinetic: str | None = None,
                  atomic_units: bool = False,
                  checkpoint: str | None = None, checkpoint_every: int = 1,
-                 resume: str | None = None, **calc_kwargs):
+                 resume: str | None = None, references="auto",
+                 **calc_kwargs):
         if "two_qubit_reduction" in calc_kwargs:
             raise TypeError(
                 "two_qubit_reduction is no longer a constructor option; "
@@ -360,6 +370,19 @@ class VariationalDriver(Calculator):
         #: The last :class:`~mandacaru.core.checkpoint.WavefunctionCheckpoint`
         #: written (or built) by this driver.
         self.checkpoint = None
+        # BibTeX of the methods, bases, pools and codes the run used
+        # (mandacaru.utils.citations).  `references_path` is a property, so a
+        # subclass that sets `output` later -- ADAPT -- gets the "auto" path
+        # beside its log without re-resolving anything here; resolving it once
+        # now is what makes a bad value fail at construction.
+        self.references = references
+        self.references_path
+        #: Path of the ``references.bib`` most recently written, if any.
+        self.references_written = None
+        # Keys a *part* of the run adds once it actually runs -- excited states,
+        # an expressibility analysis.  Configuration alone cannot know them.
+        self._citation_extras: set = set()
+
         # Every base-owned output path exists now, so this is the first point
         # the collision check can see them all (it used to run before
         # `checkpoint_path` was assigned, which let a VQE checkpoint overwrite
@@ -674,6 +697,134 @@ class VariationalDriver(Calculator):
                 f"which {type(self).__name__} does not support (its reference "
                 "determinants are not tapered)")
 
+    # -- bibliography ----------------------------------------------------- #
+
+    @property
+    def references_path(self) -> str | None:
+        """Where this run writes its ``references.bib``, or ``None``.
+
+        Resolved on demand rather than stored, so it follows ``output`` even
+        when a subclass sets that after the base constructor has run.
+        """
+        from ..utils.citations import resolve_references_path
+        return resolve_references_path(self.references,
+                                       getattr(self, "output", None))
+
+    #: Method name this driver cites (``None`` = cite no specific algorithm).
+    citation_method: str | None = None
+
+    def _citation_config(self) -> dict:
+        """The run configuration :func:`~mandacaru.utils.citations.citation_keys`
+        reads.
+
+        It reports what *ran*: the pool object's own name rather than the
+        string that was typed, and the basis options the builder resolved
+        (family defaults included) rather than the ones the user wrote.  In
+        direct mode -- a Hamiltonian or a cache handed in, no geometry -- there
+        is no basis to cite and none is claimed.
+        """
+        from ._hamiltonian_from_atoms import PER_ELEMENT, resolve_basis
+
+        context = getattr(self, "_gradient_context", None) or {}
+        built = bool(context)
+        family = context.get("family")
+        options = dict(context.get("options") or {})
+        name = None
+        if self.load_hamiltonian is None and not self._built_from_hamiltonian:
+            name, spec = resolve_basis(self.basis)
+            if name == PER_ELEMENT:
+                # One entry per element; the families are cited through the
+                # builder's context, the all-electron names through the specs.
+                name = [resolve_basis(value)[0] for value in spec.values()]
+            elif not options:
+                options = dict(spec or {})
+        pool = getattr(getattr(self, "pool", None), "name", None) \
+            or getattr(self, "_pool_spec", None)
+        return {"method": self.citation_method,
+                "pool": pool if isinstance(pool, str) else None,
+                "mapping": self.mapping,
+                "basis": name,
+                "family": family,
+                "basis_options": options,
+                "optimizer": getattr(self.optimizer, "method", None),
+                "backend_provider": self.backend_provider,
+                "shots": self.shots,
+                "execute_circuits": self.execute_circuits,
+                "profile": bool(getattr(self, "profile", False)),
+                "tetris": bool(getattr(self, "tetris", False)),
+                "prune": bool(getattr(self, "prune", False)),
+                "has_geometry": self.atoms is not None,
+                "built_basis": built,
+                "extras": tuple(sorted(self._citation_extras))}
+
+    def citation_keys(self) -> list:
+        """Bibliography keys for this run's configuration.
+
+        Public because a script that assembles its own bibliography wants the
+        keys, not the file.
+        """
+        from ..utils.citations import citation_keys
+
+        config = self._citation_config()
+        basis = config.pop("basis")
+        if isinstance(basis, list):
+            # A per-element basis cites every element's family.
+            keys: list = []
+            for one in basis:
+                keys += citation_keys(basis=one, **config)
+            config["extras"] = keys
+            return citation_keys(basis=None, **config)
+        return citation_keys(basis=basis, **config)
+
+    def _cite(self, *keys) -> None:
+        """Record that part of the run used ``keys``, and refresh the file.
+
+        Called by the pieces whose citations the configuration cannot predict
+        -- a deflation sweep, an expressibility analysis -- so the bibliography
+        already on disk gains them instead of going stale.
+        """
+        new = set(keys) - self._citation_extras
+        if not new:
+            return
+        self._citation_extras |= new
+        if self.references_written:
+            self._maybe_write_references()
+
+    def write_references(self, path=None) -> str | None:
+        """Write the run's ``references.bib``; returns the path, or ``None``.
+
+        ``None`` when ``references=`` asks for no file and ``path`` names none.
+        Called automatically once the problem is set up, so a run that writes a
+        log writes its bibliography beside it.
+        """
+        from ..utils.citations import write_references
+
+        target = path or self.references_path
+        if target is None:
+            return None
+        header = ("References for a Mandacaru run: the methods, bases, pools "
+                  "and codes\nit used, selected from "
+                  "mandacaru.utils.bibliography by the run's own\n"
+                  "configuration.  Entries marked [unverified record] were not "
+                  "read from a\nlocal source -- check them before citing.")
+        self.references_written = write_references(
+            target, self.citation_keys(), header=header)
+        return self.references_written
+
+    def _maybe_write_references(self) -> None:
+        """Write the bibliography once per configured problem (never raising).
+
+        A missing citation must not end a calculation, so a failure here is a
+        warning: the energy is the point of the run, the BibTeX is a courtesy.
+        """
+        if self.dry_run or self.references_path is None:
+            return
+        try:
+            self.write_references()
+        except Exception as error:                  # noqa: BLE001
+            warnings.warn(f"could not write {self.references_path!r}: {error}",
+                          RuntimeWarning, stacklevel=2)
+
     def _check_output_paths(self) -> None:
         """Refuse two outputs that resolve to the same file.
 
@@ -688,7 +839,8 @@ class VariationalDriver(Calculator):
                  "verbose_operators": self._pool_dump_path,
                  "verbose_hamiltonian": self._hamiltonian_dump_path,
                  "checkpoint": getattr(self, "checkpoint_path", None),
-                 "output": getattr(self, "output", None)}
+                 "output": getattr(self, "output", None),
+                 "references": self.references_path}
         seen: dict[str, str] = {}
         for option, path in named.items():
             if path is None:
@@ -891,22 +1043,28 @@ class VariationalDriver(Calculator):
 
     # -- optimization policy (quenching) ---------------------------------- #
 
-    def _optimize_grown(self, cost, previous_parameters) -> OptimizeResult:
-        """Optimize after appending one new parameter, honoring :attr:`quenching`.
+    def _optimize_grown(self, cost, previous_parameters,
+                        n_new: int = 1) -> OptimizeResult:
+        """Optimize after appending ``n_new`` parameters, honoring :attr:`quenching`.
 
         ``quenching=True`` (default) hands **all** parameters to the classical
-        optimizer, warm-started from the previous optimum with the new angle at
+        optimizer, warm-started from the previous optimum with the new angles at
         zero -- standard ADAPT-VQE.  ``quenching=False`` freezes the previously
-        optimized parameters and varies only the newly added one, a cheaper
-        one-dimensional line search per growth step that trades variational
-        freedom for cost-function evaluations.
+        optimized parameters and varies only the newly added ones, a cheaper
+        search per growth step that trades variational freedom for cost-function
+        evaluations.
+
+        ``n_new`` is 1 for every pool but :class:`~mandacaru.circuits.pools.
+        CEOPool`, whose growth step may append an MVP-CEO -- two or three
+        coupled excitations, each with its own parameter.
 
         ``cost`` takes the **full** parameter vector in both cases; the returned
         :class:`~mandacaru.optimizers.optim.OptimizeResult` also carries the full
         vector, so callers need no branching.
         """
         previous = np.asarray(previous_parameters, dtype=float).ravel()
-        x0 = np.concatenate([previous, [0.0]])
+        n_new = int(n_new)
+        x0 = np.concatenate([previous, np.zeros(n_new)])
         if self.quenching:
             return self.optimizer.minimize(cost, x0)
 
@@ -914,7 +1072,7 @@ class VariationalDriver(Calculator):
             return cost(np.concatenate(
                 [previous, np.asarray(tail, dtype=float).ravel()]))
 
-        result = self.optimizer.minimize(last_only, np.zeros(1))
+        result = self.optimizer.minimize(last_only, np.zeros(n_new))
         full = np.concatenate([previous,
                                np.asarray(result.x, dtype=float).ravel()])
         return OptimizeResult(x=full, fun=result.fun, nfev=result.nfev,
@@ -1011,8 +1169,8 @@ class VariationalDriver(Calculator):
                     and validate_energy_shift(
                         resolved.get("energy_shift")) is None):
                 raise ValueError(
-                    "polarization='gaussian' needs an energy_shift: GPAW's "
-                    "polarization function takes its cutoff from the confined "
+                    "polarization='gaussian' needs an energy_shift: the "
+                    "Gaussian shell takes its cutoff from the confined "
                     "orbital, and an unconfined orbital has none")
         if frozen_core or frozen_orbitals:
             raise ValueError(
@@ -1167,6 +1325,7 @@ class VariationalDriver(Calculator):
         if not self._built_from_hamiltonian:
             hamiltonian, num_particles, n_orbitals = self._build_hamiltonian(atoms)
             self._configure(hamiltonian, num_particles, n_orbitals)
+            self._maybe_write_references()
 
         result = self.run(**self._run_kwargs(atoms))
         self.result = result

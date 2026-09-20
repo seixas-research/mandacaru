@@ -50,7 +50,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ..circuits.adapt_ansatz import AdaptAnsatz
-from ..circuits.pools import PoolBase, PoolOperator, _support_of, build_pool
+from ..circuits.pools import (GRADIENT_FLOOR, PoolBase, PoolOperator,
+                             _support_of, build_pool)
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
 from ..units import ANGSTROM_TO_BOHR, convert_energy, to_hartree
 from .base import VariationalDriver
@@ -66,6 +67,33 @@ if TYPE_CHECKING:
 #: accepts any spelling of them (:func:`resolve_gradient_method`), the same way
 #: ``method="ADAPT_VQE"`` names ``"adapt-vqe"``.
 GRADIENT_METHODS = ("analytic", "finite_difference", "parameter_shift")
+
+#: TETRIS-ADAPT-VQE (Anastasiou *et al.*, Phys. Rev. Research **6**, 013254,
+#: 2024) grows the ansatz with every operator whose support is disjoint from
+#: the ones already taken this iteration, in descending gradient order, instead
+#: of only the largest.  The extra operators are free -- their gradients were
+#: measured anyway -- and they compile into the same circuit layer, so the
+#: ansatz gets denser and shallower.
+#:
+#: Pruned-ADAPT-VQE (Ramos-Calderer-style pruning, J. Chem. Theory Comput.
+#: **21**, 8720, 2025) does the opposite at the other end: after each growth it
+#: removes the one operator that has become irrelevant, ranked by a decision
+#: factor f_i = F1(theta_i) F2(x_i) with F1 = 1 / theta^2 and
+#: F2 = exp(-alpha x), x the relative position in the ansatz.  Only the
+#: top-ranked operator is considered, and only when its parameter is below a
+#: threshold set by the most recently added ones.
+PRUNE_ALPHA = 10.0
+#: Fraction of the recent mean amplitude that sets the removal threshold.
+PRUNE_FRACTION = 0.1
+#: How many of the most recently added operators define that mean.
+PRUNE_RECENT = 4
+#: Never prune below this many operators: the ranking needs a position scale.
+PRUNE_MIN_OPERATORS = 2
+#: Growth steps allowed per operator of ``max_iterations`` when pruning is on.
+#: Pruning can remove the operator the next step re-adds -- the paper reports
+#: exactly that near convergence -- and the loop counts *operators*, so without
+#: a cap on the steps themselves such a cycle would never end.
+PRUNE_STEP_BUDGET = 3
 
 #: Step of the central difference used by ``gradient="finite_difference"``.  It
 #: is that estimator's truncation-error scale -- the one number that says how
@@ -191,6 +219,8 @@ class ADAPTVQEResult:
     #: ``(growth step, message)`` of every inner optimization that did not
     #: report convergence -- empty when every step converged.
     optimizer_failures: list = field(default_factory=list)
+    #: ``(iteration, label)`` of every operator ``prune=True`` took back out.
+    pruned_operators: list = field(default_factory=list)
     metrics: CircuitMetrics | None = None     # final compiled-circuit metrics
     timings: dict | None = None               # per-stage wall time / cores / memory
     integration_profile: dict | None = None   # real-space integration profile
@@ -478,6 +508,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
     _default_sparse = "auto"
 
+    citation_method = "adapt-vqe"
     #: ADAPT's ``run()`` writes the ``output=`` log and honors checkpoints.
     writes_output_log = True
 
@@ -498,6 +529,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  verbose: bool = True,
                  sparse: bool | str = "auto",
                  sector: bool | str = "auto",
+                 tetris: bool = False,
+                 prune: bool = False,
                  atomic_units: bool = False,
                  **driver_kwargs):
         # Everything else -- the problem setup, the Hamiltonian cache, the
@@ -517,6 +550,12 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # canonical spelling: `self.gradient` is what the log, the trace and the
         # tests read back, so it must not depend on how the user typed it.
         self.gradient = resolve_gradient_method(gradient)
+        # Two growth strategies, independent of each other and of the pool.
+        for name, value in (("tetris", tetris), ("prune", prune)):
+            if not isinstance(value, bool):
+                raise ValueError(f"{name} must be True or False, got {value!r}")
+        self.tetris = tetris
+        self.prune = prune
 
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
@@ -550,6 +589,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         if hamiltonian is not None and not self.dry_run:
             self._configure(hamiltonian, num_particles, n_spatial_orbitals)
             self._built_from_hamiltonian = True
+            self._maybe_write_references()
         elif hamiltonian is not None:
             self._dry_run_problem = (hamiltonian, num_particles,
                                      n_spatial_orbitals)
@@ -628,6 +668,103 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         for i, a in enumerate(self._pool_matrices):
             grads[i] = 2.0 * np.real(np.vdot(h_psi, a @ psi))
         return grads
+
+    def _select_disjoint(self, grads: np.ndarray) -> list:
+        """TETRIS-ADAPT-VQE: pool indices to grow with this iteration.
+
+        The largest gradient, then the largest remaining one whose support does
+        not touch any qubit already taken, and so on until the register is
+        covered or nothing disjoint is left.  The gradients were measured for
+        the whole pool anyway, so the extra operators cost no measurement; they
+        act on different qubits, so they occupy the same circuit layer and the
+        ansatz grows denser instead of deeper (Anastasiou *et al.*, Phys. Rev.
+        Research 6, 013254, 2024).
+
+        Falls back to the single largest gradient when the pool is not
+        disjointly partitionable at this step, so it is never worse than the
+        ordinary growth.
+        """
+        order = np.argsort(np.abs(grads))[::-1]
+        chosen, covered = [], set()
+        for idx in order:
+            if abs(grads[idx]) <= GRADIENT_FLOOR:
+                break
+            support = set(self._pool_ops[int(idx)].support)
+            if chosen and (support & covered):
+                continue
+            chosen.append(int(idx))
+            covered |= support
+            if len(covered) >= self.n_qubits:
+                break
+        return chosen or [int(np.argmax(np.abs(grads)))]
+
+    def _prune_ansatz(self, ansatz, params: np.ndarray):
+        """Pruned-ADAPT-VQE: drop the one operator that has become irrelevant.
+
+        Ranks the ansatz by ``f_i = F1(theta_i) F2(x_i)`` -- ``F1 = 1/theta^2``
+        favors near-zero amplitudes, ``F2 = exp(-alpha x)`` favors operators
+        early in the ansatz, which are the ones a later operator has rendered
+        redundant -- and removes the top-ranked one only if its amplitude is
+        under ``PRUNE_FRACTION`` of the mean amplitude of the ``PRUNE_RECENT``
+        most recent operators.  Recently added operators keep their parameters
+        small while still doing work, which is why the threshold is measured
+        against *them* rather than being absolute.
+
+        Returns ``(params, removed_label)``; the parameters are not
+        re-optimized, since the removed operator was by construction doing
+        almost nothing (J. Chem. Theory Comput. 21, 8720, 2025).
+        """
+        n = int(ansatz.num_parameters)
+        if n <= PRUNE_MIN_OPERATORS:
+            return params, None
+        theta = np.asarray(params, dtype=float).ravel()
+        recent = np.abs(theta[-min(PRUNE_RECENT, n):])
+        threshold = PRUNE_FRACTION * float(np.mean(recent))
+        position = np.arange(1, n + 1) / n
+        with np.errstate(divide="ignore", over="ignore"):
+            factor = np.exp(-PRUNE_ALPHA * position) / np.square(theta)
+        # The newest operator is never pruned: it was just selected on the
+        # largest gradient, and removing it would make the loop cycle.
+        factor[-1] = -np.inf
+        candidate = int(np.argmax(factor))
+        if abs(theta[candidate]) >= threshold:
+            return params, None
+        removed = ansatz.remove(candidate)
+        return np.delete(theta, candidate), removed.label
+
+    def _operator_matrix(self, op: PoolOperator):
+        """``op``'s generator in this run's representation.
+
+        A pool operator caches its own dense matrix, but the sparse and sector
+        paths never build one, so the representation has to follow the run
+        rather than the operator.  Used for operators the growth step considers
+        outside the pool (:meth:`CEOPool.grown_operators`).
+        """
+        if self._sector is not None:
+            return self._sector.restrict(op.generator)
+        if getattr(self, "_sparse", False):
+            return op.generator.to_sparse_matrix()
+        return op.matrix()
+
+    def _operator_gradient(self, op: PoolOperator, psi: np.ndarray) -> float:
+        """``2 Re<H psi | A psi>`` for a single operator, pooled or not."""
+        return 2.0 * float(np.real(np.vdot(self._h_matrix @ psi,
+                                           self._operator_matrix(op) @ psi)))
+
+    def _grow(self, ansatz, selected: list, op: PoolOperator, gradient) -> int:
+        """Append what ``op`` grows into; returns the number of new parameters.
+
+        One operator for every pool but the coupled-exchange one, where the
+        selected element may expand into the several excitations it couples
+        (the paper's MVP-CEO).  ``gradient`` is the energy derivative of a
+        candidate at the current state, which differs between the ground-state,
+        deflated and subspace loops, so each caller supplies its own.
+        """
+        grown = self.pool.grown_operators(op, gradient)
+        for new in grown:
+            ansatz.append(new)
+            selected.append(new.label)
+        return len(grown)
 
     def _pool_eigendecomposition(self):
         r"""Per-operator eigendecomposition of the dense pool, built on demand.
@@ -1011,6 +1148,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 # How each growth step is optimized and where it executes --
                 # until now only the standard-output header said, and that
                 # header is off whenever this file is written.
+                "growth": ("tetris (all disjoint-support operators per step)"
+                           if self.tetris else "single (largest gradient)"),
+                "pruning": ("on (drop one irrelevant operator per step)"
+                            if self.prune else "off"),
                 "reoptimize_all_parameters": str(self.quenching),
                 "state_vector_backend": self._backend_description(),
                 "device": str(self.device),
@@ -1121,6 +1262,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         from .expressivity import (active_space_dimension,
                                    calculate_kl_divergence,
                                    sample_pqc_fidelities)
+        self._cite("Sim2019")
         # The sector lives on the spin-orbitals: a tapered register has two more.
         n_modes = self.n_qubits + (2 if self.mapping == "parity_reduced" else 0)
         dim = active_space_dimension(n_modes, self.num_particles)
@@ -1237,6 +1379,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         total_evals = 0
         converged = False
         optimizer_failures: list[tuple[int, str]] = []
+        #: (iteration, label) of every operator pruning took back out.
+        pruned: list[tuple[int, str]] = []
         max_grad = np.inf
         energy = ref_energy
         metrics: CircuitMetrics | None = None
@@ -1263,8 +1407,13 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     "iterations": [self._iteration_payload(it)
                                    for it in iterations]}))
 
+        # Growth steps are bounded as well as operators: pruning can hand an
+        # operator back for the next step to re-select, which leaves the
+        # operator count unchanged and would otherwise loop forever.
+        step_budget = (PRUNE_STEP_BUDGET * max_iterations if self.prune
+                       else max_iterations)
         try:
-            while len(selected) < max_iterations:
+            while len(selected) < max_iterations and len(iterations) < step_budget:
                 with timings.time("gradient screening"):
                     psi = ansatz.state(params) if ansatz.num_parameters else \
                         ansatz.reference_state()
@@ -1273,22 +1422,43 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 if max_grad < gradient_tol:
                     converged = True
                     break
-                idx = self._select_operator(grads, len(selected))
-
+                # `op` is what the screening *selected* and what the iteration
+                # row names; `n_new` counts everything actually appended, which
+                # is one except for an MVP-CEO or a TETRIS layer.
+                if self.tetris:
+                    chosen = self._select_disjoint(grads)
+                else:
+                    chosen = [self._select_operator(grads, len(selected))]
+                idx = chosen[0]
                 op = self._pool_ops[idx]
-                ansatz.append(op)
-                selected.append(op.label)
+                n_new = 0
+                for pick in chosen:
+                    n_new += self._grow(ansatz, selected, self._pool_ops[pick],
+                                        lambda o, _psi=psi:
+                                        self._operator_gradient(o, _psi))
 
-                # Warm start: reuse previous optimum, new parameter set to 0.
+                # Warm start: reuse previous optimum, new parameters set to 0.
                 # `quenching` decides whether the previous angles are re-optimized
-                # alongside the new one or frozen at their prior values.
+                # alongside the new ones or frozen at their prior values.
                 previous_energy = energy
                 with timings.time("parameter optimization"):
                     result = self._optimize_grown(
-                        lambda t: self.ansatz_energy(ansatz, t), params)
+                        lambda t: self.ansatz_energy(ansatz, t), params,
+                        n_new=n_new)
                 params = np.asarray(result.x, dtype=float)
                 energy = float(result.fun)
                 total_evals += result.nfev
+
+                if self.prune:
+                    params, dropped = self._prune_ansatz(ansatz, params)
+                    if dropped is not None:
+                        # The ansatz is one operator shorter; the reported
+                        # energy is re-evaluated because it is the energy of a
+                        # different state, however slightly.
+                        if dropped in selected:
+                            selected.remove(dropped)
+                        pruned.append((len(iterations) + 1, dropped))
+                        energy = float(self.ansatz_energy(ansatz, params))
                 if not result.success:
                     # The inner optimizer did not certify convergence; the
                     # growth continues from its best point, but the run says so.
@@ -1402,6 +1572,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             iterations=iterations,
             num_evaluations=total_evals,
             optimizer_failures=optimizer_failures,
+            pruned_operators=pruned,
             metrics=metrics,
             timings=timings.as_dict(),
             integration_profile=self._integration_profile,
@@ -1469,13 +1640,26 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             if _max_abs(grads) < gradient_tol:
                 break
             idx = self._select_operator(grads, ansatz.num_parameters)
-            ansatz.append(self._pool_ops[idx])
+
+            def deflated_gradient(op, _psi=psi, _states=states, _beta=beta):
+                """The screening gradient of one operator, penalty included."""
+                grad = self._operator_gradient(op, _psi)
+                a_psi = self._operator_matrix(op) @ _psi
+                for sj in _states:
+                    grad += 2.0 * _beta * float(np.real(
+                        np.vdot(_psi, sj) * np.vdot(sj, a_psi)))
+                return grad
+
+            # This loop tracks the ansatz, not the labels, so the growth's
+            # label list is a throwaway.
+            n_new = self._grow(ansatz, [], self._pool_ops[idx],
+                               deflated_gradient)
 
             def cost(t, _states=states):
                 phi = ansatz.state(t)
                 return self.energy(phi) + deflation_penalty(phi, _states, beta)
 
-            result = self._optimize_grown(cost, params)
+            result = self._optimize_grown(cost, params, n_new=n_new)
             params = np.asarray(result.x, dtype=float)
             total_evals += result.nfev
         psi = (ansatz.state(params) if ansatz.num_parameters

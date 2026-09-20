@@ -376,6 +376,8 @@ class SubspaceVQE(SubspaceMixin, VQE):
     the full spectrum is on :attr:`result`.
     """
 
+    citation_method = "subspace-vqe"
+
     def __init__(self, hamiltonian=None, ansatz=None, *, num_states: int = 2,
                  weights=None, **kwargs):
         self._init_subspace(num_states, weights)
@@ -464,6 +466,8 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
     on :attr:`result`.
     """
 
+    citation_method = "subspace-adapt-vqe"
+
     def __init__(self, hamiltonian=None, pool="fermionic", *,
                  num_states: int = 2, weights=None, **kwargs):
         self._init_subspace(num_states, weights)
@@ -510,9 +514,15 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
                 break
             idx = self._select_operator(grads, len(selected))
 
+            def weighted_gradient(op, _evolved=evolved, _weights=weights):
+                """One operator's gradient of the weighted subspace energy."""
+                return sum(_weights[j] * self._operator_gradient(op, _evolved[:, j])
+                           for j in range(_evolved.shape[1]))
+
+            # `op` is the selection the trace names; `n_new` is how many
+            # operators it grew into (one, except for an MVP-CEO).
             op = self._pool_ops[idx]
-            ansatz.append(op)
-            selected.append(op.label)
+            n_new = self._grow(ansatz, selected, op, weighted_gradient)
 
             def weighted_cost(theta, _ansatz=ansatz):
                 ev = _ansatz.evolve(theta, refs)
@@ -520,7 +530,8 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
 
             previous_energy = energy
             with timings.time("parameter optimization"):
-                result = self._optimize_grown(weighted_cost, params)
+                result = self._optimize_grown(weighted_cost, params,
+                                              n_new=n_new)
             params = np.asarray(result.x, float)
             total_evals += result.nfev
             energy = min(self.energy(ansatz.evolve(params, refs)[:, j])

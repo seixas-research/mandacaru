@@ -277,12 +277,19 @@ class TestDeviceSelection:
 class TestDriversEndToEnd:
     def test_adapt_vqe_with_estimated_energies(self, h2_run):
         atoms = _h2()
+        # Seeded: at 4096 shots the standard error on this Hamiltonian is
+        # ~0.02 Ha per evaluation, so an unseeded comparison against the exact
+        # run sits ~2 sigma from the tolerance and fails every so often.  The
+        # test is about the shot-based path running end to end and landing near
+        # the exact answer, not about the size of a particular noise draw.
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="FAO",
                                h=0.4, trace=False, profile=False,
                                max_iterations=3, device="AER_simulator",
-                               shots=4096, optimizer="COBYLA")
+                               shots=4096, optimizer="COBYLA",
+                               backend_options={"seed": 1234})
         atoms.get_total_energy()
-        assert isinstance(atoms.calc.circuit_provider(), QiskitProvider)
+        provider = atoms.calc.circuit_provider()
+        assert isinstance(provider, QiskitProvider) and provider.seed == 1234
         assert abs(atoms.calc.result.optimal_energy
                    - h2_run.result.optimal_energy) < 0.05 * HARTREE_TO_EV
 
