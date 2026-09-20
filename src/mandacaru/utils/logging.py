@@ -269,6 +269,43 @@ class AdaptOutputLogger:
                             "cell_vectors: (non-periodic)")
         self._emit("")
 
+    # -- basis block ------------------------------------------------------- #
+
+    def write_basis(self, fields: dict, tables: dict | None = None) -> None:
+        """Write the ``[BASIS]`` block: the single-particle basis that ran.
+
+        A Mandacaru basis is built at run time from options, several of which
+        have family defaults (a PAW basis is Fourier-filtered unless told
+        otherwise) or resolve to numbers only the builder knows (the cutoff
+        radius an ``energy_shift`` gives each orbital, the file each dataset
+        was read from).  The options the user typed are therefore not a record
+        of the basis; this block is.  ``fields`` are keyed lines in the order
+        given; each entry of ``tables`` is a list of rows, the first being the
+        column names, written as an aligned table one level deeper.  Cells must
+        not contain spaces: a reader splits the rows on whitespace.
+        """
+        self._emit("[BASIS]")
+        for key, value in fields.items():
+            if value is not None:
+                self._emit_body(f"{key}: {value}")
+        for name, rows in (tables or {}).items():
+            rows = [[str(cell) for cell in row] for row in rows]
+            if len(rows) < 2:
+                continue
+            widths = [max(len(row[i]) for row in rows)
+                      for i in range(len(rows[0]))]
+            self._emit_body(f"{name}:")
+            for index, row in enumerate(rows):
+                # Left-aligned, so a long last cell (a dataset's path) cannot
+                # push the columns before it around.
+                self._emit_body("  ".join(
+                    cell.ljust(width) for cell, width in zip(row, widths)
+                ).rstrip(), level=2)
+                if index == 0:
+                    self._emit_body("-" * (sum(widths) + 2 * (len(widths) - 1)),
+                                    level=2)
+        self._emit("")
+
     # -- electronic-structure block ---------------------------------------- #
 
     def write_electrons(self, fields: dict) -> None:
@@ -506,8 +543,9 @@ class AdaptOutputLogger:
         """
         self._emit(_BANNER, "[VARIATIONAL QUANTUM SUMMARY]")
         self._emit_body(f"converged: {converged}")
-        if optimizer is not None:
-            self._emit_body(f"classical_optimizer: {optimizer}")
+        # `optimizer` is accepted for the callers that pass it and is not
+        # written: [OPTIMIZATION SETUP] owns the optimizer, and a fact stated in
+        # two blocks is a fact that can disagree with itself.
         self._emit_body(f"optimal_energy_{energy_unit}: {optimal_energy:.10f}")
         if reference_energy is not None:
             self._emit_body(f"reference_energy_{energy_unit}: "
@@ -670,6 +708,13 @@ def _performance_block_lines(stages=None, wall_time_s=None, resources=None,
             lines += _indent([f"untimed_s: {float(wall_time_s) - total:.4f}"])
     if wall_time_s is not None:
         lines += _indent([f"wall_time_s: {float(wall_time_s):.4f}"])
+    # The solver's own share of the step sits with the step's wall time, not
+    # after the memory lines where `extra` would otherwise put it.
+    extra = dict(extra or {})
+    if "solver_wall_time_s" in extra:
+        value = extra.pop("solver_wall_time_s")
+        lines += _indent(["solver_wall_time_s: "
+                          f"{_performance_value('solver_wall_time_s', value)}"])
 
     for table in (resources, extra):
         if table:
@@ -936,7 +981,8 @@ _PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs")
 
 #: Section markers of the protocol, mapped to the key they fill (the step
 #: markers are handled separately: they open a new geometry step).
-_SECTIONS = {"[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
+_SECTIONS = {"[BASIS]": "basis",
+             "[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
              "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
              "[VARIATIONAL QUANTUM SUMMARY]": "summary",
@@ -977,6 +1023,7 @@ def parse_output(path: str) -> dict:
     columns: list[str] = []
     energy_unit = "eV"
     table = None                      # which force table rows are landing in
+    basis_columns = None              # heading of the [BASIS] table being read
 
     def number(text):
         try:
@@ -1020,6 +1067,10 @@ def parse_output(path: str) -> dict:
                     step["performance"] = {"stages_s": {}}
                 elif section in ("electrons", "measurement"):
                     step[section] = {}
+                elif section == "basis":
+                    table = None
+                    basis_columns = None
+                    step["basis"] = {}
                 elif section in ("optimization", "completion"):
                     # The relaxation's own blocks: they close the file, not a
                     # geometry step, so they are kept at the top level.
@@ -1060,6 +1111,30 @@ def parse_output(path: str) -> dict:
                         block[key] = int(numeric)
                     else:
                         block[key] = numeric
+            elif section == "basis":
+                block = step["basis"]
+                if stripped.endswith(":") and indent < len(INDENT) * 2:
+                    table = stripped[:-1]          # "datasets", "orbitals", ...
+                    basis_columns = None
+                    block[table] = []
+                elif table is not None and indent >= len(INDENT) * 2:
+                    cells = stripped.split()
+                    if basis_columns is None:
+                        basis_columns = cells               # the heading row
+                    else:
+                        def typed(cell):
+                            # Counts and quantum numbers stay integers.
+                            if cell.lstrip("+-").isdigit():
+                                return int(cell)
+                            value = number(cell)
+                            return cell if value is None else value
+                        block[table].append(
+                            {name: typed(cell)
+                             for name, cell in zip(basis_columns, cells)})
+                elif ":" in stripped:
+                    table = None
+                    key, _, value = stripped.partition(":")
+                    block[key.strip()] = value.strip()
             elif section == "system" and stripped.startswith(("a1 =", "a2 =",
                                                               "a3 =")):
                 # "a1 = [ x y z ]": the lattice vector itself, which the cell

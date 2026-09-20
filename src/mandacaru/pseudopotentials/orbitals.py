@@ -156,7 +156,8 @@ class KBProjector(_RadialTabulated):
 # --------------------------------------------------------------------------- #
 
 def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
-                 size="SZ", split_norm=None, filter_cutoff=None):
+                 size="SZ", split_norm=None, filter_cutoff=None,
+                 first_zeta=None, tail_norms=None, polarization_shape=None):
     """Valence pseudo-atomic basis for a molecule.
 
     Returns ``(functions, atom_of_orbital)``: the orbitals and which atom each
@@ -173,6 +174,28 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     split-valence refinements *of* that pseudo-orbital, and the polarization
     shell is split from the highest occupied channel, so everything stays
     matched to the potential it came from.
+
+    ``first_zeta`` (optional) is a callable ``(symbol, potential, l) -> R(r)``
+    on the potential's radial table, or ``None`` to keep the stored orbital.
+    It is how a family supplies a **confined** first zeta -- the
+    ``energy_shift`` of :mod:`~.confinement` -- and it is the one sanctioned
+    replacement of the pseudopotential's own orbital: the function it returns
+    solves the *same* pseudo-Hamiltonian (same projectors, same couplings) in a
+    confining potential, so it stays matched to the operator in the sense the
+    paragraph above requires.  The extra zetas and the polarization shell are
+    then split from the confined orbital and inherit its cutoff radius.
+
+    ``tail_norms`` (a sequence, GPAW's ``tailnorm``) switches the extra zetas
+    from the SIESTA-style scheme ``split_norm`` controls to GPAW's: every zeta
+    split from the *first* one, at the radius leaving a tail of that **norm**
+    (see :func:`~mandacaru.basis.multizeta.zeta_tables`).
+
+    ``polarization_shape`` (optional) is a callable ``(symbol, potential) ->
+    (l, R(r))`` -- or ``None`` to decline for that element -- that replaces the polarization shell built here --
+    :func:`~.confinement.polarization_factory` supplies GPAW's quasi-Gaussian.
+    Further polarization functions are then split-valence refinements of that
+    shape with the *same* ``l``, as GPAW makes them, instead of shells of
+    higher ``l``.
 
     ``filter_cutoff`` (a wave-vector in Bohr\\ :sup:`-1`, ``None`` = off) runs
     every radial table through the Fourier filter of
@@ -197,8 +220,9 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     the filter barely moves it.
     """
     from ..basis.filtering import filter_radial, filter_table
-    from ..basis.multizeta import (DEFAULT_SPLIT_NORM, orbitals_from_tables,
-                                   resolve_zeta, zeta_tables)
+    from ..basis.multizeta import (DEFAULT_SPLIT_NORM, GPAW_TAIL_NORMS,
+                                   orbitals_from_tables, resolve_zeta,
+                                   zeta_tables)
 
     k_c = None if filter_cutoff is None else float(filter_cutoff)
     # One filter evaluation per (element, radial function), not per atom and
@@ -223,6 +247,20 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             memo, _info = filter_table(table, k_c)
             cache[(symbol, key)] = memo
         return memo
+
+    confined: dict = {}
+
+    def first_radial(symbol, pp, l):
+        """The first zeta's ``R(r)``: the family's confined orbital when it
+        supplies one, else the pseudopotential's stored orbital."""
+        key = (symbol, int(l))
+        if key not in confined:
+            radial = None if first_zeta is None else first_zeta(symbol, pp, l)
+            confined[key] = (np.asarray(pp.channels[l].pseudo_radial,
+                                        dtype=float)
+                             if radial is None
+                             else np.asarray(radial, dtype=float))
+        return confined[key]
 
     def split_norm_of(symbol):
         """``split_norm`` may be one value or ``{symbol: value}`` (with ``*``)."""
@@ -254,9 +292,11 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         if n_zeta == 1 and n_polarization == 0:
             # Minimal valence set: the original path, unchanged.
             for l in sorted(pp.channels):
-                radial = (None if k_c is None else
-                          filtered(symbol, ("sz", l), pp.r,
-                                   pp.channels[l].pseudo_radial, l))
+                radial = first_radial(symbol, pp, l)
+                if k_c is None and first_zeta is None:
+                    radial = None          # the stored table, byte for byte
+                else:
+                    radial = filtered(symbol, ("sz", l), pp.r, radial, l)
                 for m in range(-l, l + 1):
                     functions.append(PseudoAtomicOrbital(
                         pp, l, m, center=position, units=units, radial=radial))
@@ -267,9 +307,10 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         l_max = max(pp.channels)
         for l in sorted(pp.channels):
             channel = pp.channels[l]
-            for table in zeta_tables(pp.r, channel.pseudo_radial,
+            for table in zeta_tables(pp.r, first_radial(symbol, pp, l),
                                      int(channel.n), l, n_zeta,
-                                     split_norm_of(symbol)):
+                                     split_norm_of(symbol),
+                                     tail_norms=tail_norms):
                 tables.append(filtered_table(symbol, ("z", l, table.zeta),
                                              table))
         # Polarization: raise the outermost channel to l+1.  Solving a new
@@ -279,12 +320,31 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         # nucleus.  (Reusing R_outer itself gave R_p(0) != 0, a function
         # discontinuous at its own center whose derivative blew up whenever a
         # nucleus sat on a grid node.)
-        outermost = pp.channels[l_max]
+        outermost = first_radial(symbol, pp, l_max)
         r_table = np.asarray(pp.r, dtype=float)
+        custom = (polarization_shape(symbol, pp)
+                  if polarization_shape is not None and n_polarization > 0
+                  else None)
+        if custom is not None:
+            l, shape = custom
+            # GPAW hands `rsplit_by_norm` the tail norm *unsquared* for these
+            # (it squares it for the valence zetas), so here the numbers are
+            # squared-norm fractions; `zeta_tables` squares what it is given.
+            norms = [np.sqrt(t) for t in (tail_norms or GPAW_TAIL_NORMS)]
+            if tail_norms is None:
+                # The SIESTA-style scheme was asked for: keep it for the
+                # polarization zetas too, rather than mixing conventions.
+                norms = None
+            for table in zeta_tables(pp.r, shape, l + 1, l, n_polarization,
+                                     split_norm_of(symbol),
+                                     tail_norms=norms):
+                table.polarization = True
+                tables.append(filtered_table(symbol, ("pol", l, table.zeta),
+                                             table))
+            n_polarization = 0                 # the loop below has nothing left
         for offset in range(n_polarization):
             l = l_max + 1 + offset
-            shape = r_table ** (offset + 1) * np.asarray(outermost.pseudo_radial,
-                                                        dtype=float)
+            shape = r_table ** (offset + 1) * outermost
             shape = shape / np.sqrt(np.trapezoid(shape * shape * r_table ** 2,
                                                  r_table))
             for table in zeta_tables(pp.r, shape, l + 1, l, 1,

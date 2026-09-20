@@ -129,7 +129,8 @@ class TestFamilyResolution:
         assert spec.norm_conserving is True
         assert set(spec.aliases) == {"tm", "ncpp-tm"}
         assert spec.label == "NCPP"
-        assert spec.options == ("size", "split_norm", "directory", "filter")
+        assert spec.options == ("size", "split_norm", "tail_norm",
+                                "directory", "filter")
         # A norm-conserving family leaves the Fourier filter opt-in: its
         # orbitals are not built band-limited the way PAW's partial waves are.
         assert spec.default_options == {}
@@ -178,7 +179,7 @@ class TestFamilyResolution:
             resolve_pseudo_basis("per-element", {"O": "NCPP", "H": "PAW"},
                                  ["O", "H"])
         with pytest.raises(ValueError,
-                           match="only 'size', 'split_norm' and 'filter'"):
+                           match="only 'size', 'split_norm', 'energy_shift' and 'filter'"):
             resolve_pseudo_basis("per-element",
                                  {"O": {"name": "NCPP", "directory": "/x"},
                                   "H": "NCPP"}, ["O", "H"])

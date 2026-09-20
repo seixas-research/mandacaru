@@ -63,9 +63,73 @@ from ..units import to_bohr
 from ._angular import spherical_coords, spherical_harmonic
 from .base import BasisFunction
 
-#: Fraction of the orbital norm left outside the split radius, per extra zeta.
-#: The SIESTA default for double zeta is 0.15; higher zetas split what remains.
+#: SIESTA-style scheme, used when a basis writes ``split_norm``: the fraction
+#: of the orbital's **squared** norm left outside the split radius (SIESTA's
+#: ``PAO.SplitNorm`` default, 0.15), each higher zeta splitting the previous
+#: one with the fraction halved.  It is no longer the default scheme -- see
+#: :func:`resolve_split_scheme`.
 DEFAULT_SPLIT_NORM = 0.15
+
+#: GPAW's split-valence scheme (``tailnorm`` of its basis generator): the
+#: **norm** -- not the squared norm -- of the tail left outside the split radius
+#: of the second, third and fourth zeta, every one of them split from the
+#: *first* zeta.  0.16 is a squared-norm fraction of 0.0256, so it is not
+#: comparable with :data:`DEFAULT_SPLIT_NORM` digit for digit.
+GPAW_TAIL_NORMS = (0.16, 0.3, 0.6)
+
+
+def validate_tail_norm(spec):
+    """Normalize a ``tail_norm`` option to a tuple of tail **norms**.
+
+    GPAW's convention (``tailnorm``): entry ``k`` is the norm of the tail the
+    ``k + 2``-th zeta leaves outside its split radius.  A single number
+    replaces the first entry of :data:`GPAW_TAIL_NORMS` and keeps GPAW's values
+    for the higher zetas.  ``None`` returns ``None``.
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, bool):
+        raise ValueError(f"tail_norm must be a number or a sequence, got "
+                         f"{spec!r}")
+    if isinstance(spec, (int, float)):
+        values = (float(spec),) + tuple(GPAW_TAIL_NORMS[1:])
+    else:
+        try:
+            values = tuple(float(v) for v in spec)
+        except (TypeError, ValueError):
+            raise ValueError("tail_norm must be a number or a sequence of "
+                             f"numbers, got {spec!r}") from None
+    if not values or any(not 0.0 < v < 1.0 for v in values):
+        raise ValueError("every tail norm must lie in (0, 1), got "
+                         f"{values!r}")
+    return values
+
+
+def resolve_split_scheme(split_norm=None, tail_norm=None):
+    """``(split_norm, tail_norms)`` of the split-valence scheme to use.
+
+    Mandacaru follows **GPAW** by default: ``tail_norms`` =
+    :data:`GPAW_TAIL_NORMS` (or the validated ``tail_norm``) and
+    ``split_norm`` unused.  Writing ``split_norm`` selects the SIESTA-style
+    scheme instead (``tail_norms`` is then ``None``).  The two are mutually
+    exclusive: they measure the tail differently (norm against squared norm)
+    and split different functions, so there is no meaningful combination.
+    """
+    tail_norms = validate_tail_norm(tail_norm)
+    if split_norm is not None and tail_norms is not None:
+        raise ValueError(
+            "give 'tail_norm' (GPAW's scheme: every zeta split from the "
+            "first, by the tail's norm) or 'split_norm' (SIESTA-style: each "
+            "zeta split from the previous one, by the tail's squared norm), "
+            "not both")
+    if split_norm is not None:
+        if isinstance(split_norm, dict):
+            return split_norm, None
+        value = float(split_norm)
+        if not 0.0 < value < 1.0:
+            raise ValueError(f"split_norm must lie in (0, 1), got {value!r}")
+        return value, None
+    return None, (tail_norms or GPAW_TAIL_NORMS)
 
 #: Default NAO size.  Double zeta plus polarization: single zeta gives a shell
 #: no radial freedom (it cannot contract or expand) and no angular freedom (it
@@ -225,19 +289,34 @@ class TabulatedOrbital(BasisFunction):
 # --------------------------------------------------------------------------- #
 
 def zeta_tables(r: np.ndarray, radial: np.ndarray, n: int, l: int,
-                n_zeta: int, split_norm: float = DEFAULT_SPLIT_NORM
-                ) -> list[RadialTable]:
+                n_zeta: int, split_norm: float = DEFAULT_SPLIT_NORM,
+                tail_norms=None) -> list[RadialTable]:
     """First-zeta table plus ``n_zeta - 1`` split-valence refinements.
 
-    Each successive zeta splits the *previous* one at a smaller radius (the
-    split norm is halved each time), so the added functions become progressively
-    shorter-ranged and describe finer radial detail.
+    Two schemes share the split-valence polynomial and differ in *what* is
+    split and *where*:
+
+    * the SIESTA-style default -- each successive zeta splits the *previous*
+      one, at the radius leaving ``split_norm`` of its **squared norm** outside,
+      halved each time;
+    * GPAW's, selected by ``tail_norms`` (a sequence, one entry per extra
+      zeta) -- every zeta splits the **first** one, at the radius leaving a
+      tail of **norm** ``tail_norms[k]`` (so a squared-norm fraction of its
+      square) outside.
+
+    Either way the added functions become progressively shorter-ranged.
     """
-    tables = [RadialTable(r=r, values=np.asarray(radial, dtype=float),
-                          n=n, l=l, zeta=1)]
-    current = np.asarray(radial, dtype=float)
+    first = np.asarray(radial, dtype=float)
+    tables = [RadialTable(r=r, values=first, n=n, l=l, zeta=1)]
+    if tail_norms is not None and int(n_zeta) - 1 > len(tail_norms):
+        raise ValueError(
+            f"{int(n_zeta)} zetas need {int(n_zeta) - 1} tail norms, got "
+            f"{tuple(tail_norms)!r}")
+    current = first
     norm = float(split_norm)
     for zeta in range(2, int(n_zeta) + 1):
+        if tail_norms is not None:
+            current, norm = first, float(tail_norms[zeta - 2]) ** 2
         r_split = split_radius(r, current, norm)
         values = split_valence_tail(r, current, l, r_split)
         if not np.any(np.abs(values) > 1e-12):
@@ -253,8 +332,8 @@ def zeta_tables(r: np.ndarray, radial: np.ndarray, n: int, l: int,
 
 def polarization_tables(r: np.ndarray, l_max: int, n_polarization: int,
                         solver, n_zeta: int = 1,
-                        split_norm: float = DEFAULT_SPLIT_NORM
-                        ) -> list[RadialTable]:
+                        split_norm: float = DEFAULT_SPLIT_NORM,
+                        tail_norms=None) -> list[RadialTable]:
     """Polarization shells at ``l_max + 1`` (and beyond), from ``solver``.
 
     ``solver(n, l)`` returns ``(r, R)`` for a confined orbital.  The polarization
@@ -272,14 +351,16 @@ def polarization_tables(r: np.ndarray, l_max: int, n_polarization: int,
         l = int(l_max) + 1 + offset
         n = l + 1                              # lowest allowed principal number
         r_pol, radial = solver(n, l)
-        for table in zeta_tables(r_pol, radial, n, l, n_zeta, split_norm):
+        for table in zeta_tables(r_pol, radial, n, l, n_zeta, split_norm,
+                                 tail_norms=tail_norms):
             table.polarization = True
             tables.append(table)
     return tables
 
 
 def build_shells(valence, solver, n_zeta: int = 1, n_polarization: int = 0,
-                 split_norm: float = DEFAULT_SPLIT_NORM) -> list[RadialTable]:
+                 split_norm: float = DEFAULT_SPLIT_NORM,
+                 tail_norms=None) -> list[RadialTable]:
     """All radial tables of a multiple-zeta polarized basis for one atom.
 
     ``valence`` is a sequence of ``(n, l)`` subshells and ``solver(n, l)``
@@ -289,11 +370,13 @@ def build_shells(valence, solver, n_zeta: int = 1, n_polarization: int = 0,
     l_max = -1
     for (n, l) in valence:
         r, radial = solver(n, l)
-        tables.extend(zeta_tables(r, radial, n, l, n_zeta, split_norm))
+        tables.extend(zeta_tables(r, radial, n, l, n_zeta, split_norm,
+                                  tail_norms=tail_norms))
         l_max = max(l_max, l)
     if n_polarization and l_max >= 0:
         tables.extend(polarization_tables(r, l_max, n_polarization, solver,
-                                          n_zeta=1, split_norm=split_norm))
+                                          n_zeta=1, split_norm=split_norm,
+                                          tail_norms=tail_norms))
     return tables
 
 

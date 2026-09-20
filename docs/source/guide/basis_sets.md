@@ -59,8 +59,9 @@ basis={"name": "NAO", "size": "DZP", "energy_shift": 0.03}
 `energy_shift` (eV, default 0.03) sets the confinement radius
 $r_c = \pi/\sqrt{2\delta E}$ in atomic units (convert the energy shift to
 Hartree to evaluate this expression); a smaller shift means a longer-ranged, more
-diffuse orbital. `split_norm` (default 0.15) controls how much norm each extra
-zeta leaves outside its split radius.
+diffuse orbital. `tail_norm` (GPAW's scheme, the default) or `split_norm` (the
+SIESTA-style alternative) controls where each extra zeta is split off -- see
+*How the extra zetas are built* below.
 
 The cost is set by how many functions each size produces, and **every function
 becomes two spin orbitals, hence two qubits**:
@@ -80,32 +81,47 @@ to afford them.
 
 ## How the extra zetas are built
 
-They are *not* new eigenvalue problems. Mandacaru uses the SIESTA split-valence
-construction (Artacho *et al.*, 1999). Given the first-zeta radial function
-$R_1$, pick a split radius $r_s$ leaving a prescribed fraction of the norm
-outside it (`split_norm`, 0.15 by default):
+They are *not* new eigenvalue problems. Mandacaru uses the split-valence
+construction (Artacho *et al.*, 1999). Given a radial function $R$, pick a split
+radius $r_s$, replace the orbital inside it by the smooth polynomial
+$r^l(a - b r^2)$ matched in value *and* slope at $r_s$, and keep the difference:
 
 ```{math}
-\int_{r_s}^{r_c} |R_1(r)|^2 r^2\,dr = \texttt{split\_norm}.
+R_2(r) = \begin{cases} R(r) - r^{l}(a - b r^{2}), & r < r_s \\ 0, & r \ge r_s. \end{cases}
 ```
 
-Inside $r_s$, replace the orbital by the smooth polynomial $r^l(a - b r^2)$
-matched in value *and* slope at $r_s$, and keep the difference:
+$R_2$ is strictly shorter-ranged than $R$ and vanishes smoothly at $r_s$, so it
+is cheap to integrate and injects no discontinuity.
 
-```{math}
-R_2(r) = \begin{cases} R_1(r) - r^{l}(a - b r^{2}), & r < r_s \\ 0, & r \ge r_s. \end{cases}
+*Where* to split is a convention, and SIESTA and GPAW do not share it.
+Mandacaru follows **GPAW** by default and offers SIESTA's as the alternative:
+
+| | `tail_norm` -- GPAW (**default**) | `split_norm` -- SIESTA-style |
+| :--- | :--- | :--- |
+| the number is | the **norm** of the tail, $\bigl(\int_{r_s}^{r_c}\lvert R\rvert^2 r^2dr\bigr)^{1/2}$ | its **squared norm**, $\int_{r_s}^{r_c}\lvert R\rvert^2 r^2dr$ |
+| values | `(0.16, 0.3, 0.6)` for zetas 2, 3, 4 | `0.15`, halved for each further zeta |
+| each zeta splits | the **first** zeta | the **previous** zeta |
+
+```python
+basis={"name": "NAO", "size": "TZP"}                      # GPAW's scheme
+basis={"name": "NAO", "size": "TZP", "tail_norm": 0.2}    # ... a longer tail
+basis={"name": "NAO", "size": "TZP", "split_norm": 0.15}  # the SIESTA-style one
 ```
 
-$R_2$ is strictly shorter-ranged than $R_1$ and vanishes smoothly at $r_s$, so it
-is cheap to integrate and injects no discontinuity. Higher zetas repeat the
-construction on the previous one with a halved split norm. For the hydrogen 1s:
+The numbers are not comparable digit for digit: a tail norm of 0.16 is a
+squared-norm fraction of 0.0256, so GPAW's extra zetas are **longer-ranged**.
+Giving both options is refused. Where each hydrogen 1s zeta ends (a₀, default
+`energy_shift`):
 
-| Zeta | Range (a₀) | Norm |
+| Zeta | `tail_norm` (default) | `split_norm=0.15` |
 |------|-----------|------|
-| 1 | 3.99 | 1.00 |
-| 2 | 2.09 | 1.3e-1 |
-| 3 | 1.22 | 1.7e-2 |
-| 4 | 0.81 | 2.9e-3 |
+| 2 | 3.58 | 2.34 |
+| 3 | 2.71 | 1.34 |
+| 4 | 1.61 | 0.87 |
+
+The same two options, with the same default, apply to the pseudopotential
+families -- see [Pseudopotentials](pseudopotentials.md), which also compares the
+radii with the ones GPAW's own basis generator produces.
 
 Polarization shells are solved in the same confining sphere at $l_{\max}+1$,
 using the lowest principal quantum number that angular momentum allows, so they

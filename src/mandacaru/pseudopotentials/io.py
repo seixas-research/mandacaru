@@ -524,6 +524,9 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
     if str(getattr(pp, "family", "")).lower() != family:
         raise ValueError(f"{path!r} belongs to family {pp.family!r}, not "
                          f"{family!r}")
+    # Where the dataset came from: the run log's [BASIS] block names it, since
+    # a library is a directory the user links in and can point elsewhere.
+    pp.source = os.path.realpath(path)
     cache[key] = pp
     return pp
 

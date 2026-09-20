@@ -240,16 +240,29 @@ def _pseudo_basis_count(atoms, family, options):
     directory = options.get("directory")
     potentials = {s: family.get(s, directory) for s in set(symbols)}
     positions = coherent_positions(atoms)
+    # The run's own construction: a Gaussian polarization shell can have a
+    # different angular momentum (and so a different function count) than the
+    # default one.  It solves radial problems, never anything on a grid.
+    from ..pseudopotentials.families import pseudo_basis_arguments
     _fns, atom_of_orbital = pseudo_basis(
-        symbols, positions, potentials, size=options.get("size", "SZ"),
-        split_norm=options.get("split_norm"))
+        symbols, positions, potentials,
+        **pseudo_basis_arguments(family.name, options))
     counts = np.bincount(np.asarray(atom_of_orbital, dtype=int),
                          minlength=len(symbols))
     size = options.get("size", "SZ")
     size_label = ("per-element sizes " + json.dumps(size, sort_keys=True)
                   if isinstance(size, dict) else str(size))
-    parts = [size_label, filter_label(options.get("filter")),
-             "pseudopotentials"]
+    parts = [size_label, filter_label(options.get("filter"))]
+    if "energy_shift" in family.options:
+        # Named always, like the filter: "unconfined" is a statement about the
+        # basis too, and the one a GPAW comparison has to get right.
+        from ..pseudopotentials.confinement import energy_shift_label
+        parts.append(energy_shift_label(options.get("energy_shift")))
+        from ..pseudopotentials.confinement import resolve_polarization
+        parts.append(resolve_polarization(options.get("polarization"),
+                                          options.get("energy_shift"))
+                     + " polarization")
+    parts.append("pseudopotentials")
     per_atom = [(s, int(c)) for s, c in zip(symbols, counts)]
     return per_atom, f"{family.label} ({', '.join(parts)})", potentials
 

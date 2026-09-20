@@ -45,6 +45,23 @@ Hellmann-Feynman and Pulay forces for the PAW and ONCVPSP families.  See
    :undoc-members:
    :show-inheritance:
 
+Volumetric Output
+~~~~~~~~~~~~~~~~~
+
+One-particle pictures of the many-body state -- electron density, spin density,
+correlation density and natural orbitals -- on the calculation's real-space
+grid.  See :doc:`guide/visualization`.
+
+.. automodule:: mandacaru.algorithms.volumetric
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: mandacaru.utils.cube
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Quantum Phase Estimation
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -140,6 +157,17 @@ Families and Registry
 .. automodule:: mandacaru.pseudopotentials.families
    :members:
    :undoc-members:
+   :show-inheritance:
+
+Confined Orbitals
+~~~~~~~~~~~~~~~~~
+
+The ``energy_shift`` of a PAW basis: the first zeta solved in a smooth
+confining potential, its cutoff radius fixed by the eigenvalue shift.  See
+:doc:`guide/pseudopotentials`.
+
+.. automodule:: mandacaru.pseudopotentials.confinement
+   :members:
    :show-inheritance:
 
 Library Files

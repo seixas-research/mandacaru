@@ -26,6 +26,7 @@
 - **Wavefunction checkpoints.** `Mandacaru(..., checkpoint="state.json")` writes the reference, the generators, the angles and the Hamiltonian after every accepted operator; `resume="state.json"` continues an interrupted or unconverged run where it stopped.
 - **Virtual orbitals for the FAO basis.** `basis={"name": "FAO", "virtual_orbitals": 1}` appends the lowest unoccupied atomic levels (H gains 2s, C gains 3s), giving a correlated method room above the occupied orbitals; the default `0` is the minimal basis as before.
 - **Quantum phase estimation.** `QuantumPhaseEstimation(n_evaluation_qubits=10).run("state.json")` reads the exact eigenvalue off the checkpointed state, with a memory estimate checked before the 2<sup>n+t</sup> state vector is allocated.
+- **Volumetric output for VESTA and VMD.** `atoms.calc.write_cube("density.cube")` writes the converged state's one-particle reductions — electron density, spin density, correlation density `n − n_HF` and natural orbitals with their occupations — on the calculation's own real-space grid; `atoms.calc.natural_orbitals()` returns the occupations as data.
 
 ## Installation
 

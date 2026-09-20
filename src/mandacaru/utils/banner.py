@@ -33,8 +33,33 @@ from socket import gethostname
 from ..version import __version__
 
 
+#: The "MANDACARU" wordmark, in Unicode block elements (U+2580 upper half,
+#: U+2584 lower half, U+2588 full block): three rows, 57 columns.
+WORDMARK = (
+    "██▄  ▄██  ▄▄▄  ▄▄  ▄▄ ▄▄▄▄   ▄▄▄   ▄▄▄▄  ▄▄▄  ▄▄▄▄  ▄▄ ▄▄",
+    "██ ▀▀ ██ ██▀██ ███▄██ ██▀██ ██▀██ ██▀▀▀ ██▀██ ██▄█▄ ██ ██",
+    "██    ██ ██▀██ ██ ▀██ ████▀ ██▀██ ▀████ ██▀██ ██ ██ ▀███▀",
+)
+
+#: Left margin of the wordmark: it centers the 57 columns under the 65-column
+#: rule and lines up with the indented block below it.
+INDENT = "    "
+
+
 def _write(line: str = "") -> None:
-    sys.stdout.write(f"{line}\n")
+    """Write one line to standard output.
+
+    The wordmark is not ASCII, and a console is not always UTF-8 (``LANG=C``,
+    a redirected stream on an old locale).  A banner must never be the reason a
+    calculation does not start, so a stream that cannot encode a line gets it
+    with the unencodable characters replaced instead of a ``UnicodeEncodeError``.
+    """
+    text = f"{line}\n"
+    try:
+        sys.stdout.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        sys.stdout.write(text.encode(encoding, "replace").decode(encoding))
 
 
 def _dep(name: str) -> tuple[str, str]:
@@ -62,13 +87,7 @@ def lines() -> list[str]:
     standard output and the ``output.txt`` logger writes the same ones into the
     log, so the console and the file cannot drift apart.
     """
-    out = [
-        "      __  __                 _                            ",
-        "     |  \\/  |               | |                           ",
-        "     | \\  / | __ _ _ __   __| | __ _  ___ __ _ _ __ _   _ ",
-        "     | |\\/| |/ _` | '_ \\ / _` |/ _` |/ __/ _` | '__| | | |",
-        "     | |  | | (_| | | | | (_| | (_| | (_| (_| | |  | |_| |",
-        "     |_|  |_|\\__,_|_| |_|\\__,_|\\__,_|\\___\\__,_|_|   \\__,_|",
+    out = [""] + [INDENT + row for row in WORDMARK] + [
         "",
         "-----------------------------------------------------------------",
         f"    version:       {__version__}",

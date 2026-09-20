@@ -40,9 +40,11 @@ radial atomic solver (`mandacaru.basis.atomic_solver`):
 | `"UPAW"` | `"unitary-paw"` | the same, with a **unitary** transformation ($q = 0$, below) | two per channel, $2\times2$ coupling | $S$ (unaugmented) | generated on demand |
 
 Names are case-insensitive. Each family accepts the options `size`,
-`split_norm`, `directory` (an alternative library folder) and `filter`
+`tail_norm` or `split_norm` (the split-valence scheme: GPAW's by default, or
+the SIESTA-style one), `directory` (an alternative library folder) and `filter`
 (*Fourier filtering*, below); PAW and UPAW also take
-`projector_basis="raw"|"dual"`. Any other key — or an all-electron option such
+`projector_basis="raw"|"dual"`, `energy_shift`, `confinement` and
+`polarization` (*Confined orbitals*, below). Any other key — or an all-electron option such
 as `tier` — is refused before an integral is computed. A family may give an
 option a **default of its own**: PAW and UPAW declare `filter=True`, the
 norm-conserving families leave it off.
@@ -74,11 +76,11 @@ from mandacaru.pseudopotentials import (
     PSEUDO_FAMILIES, FamilySpec, family_names, lookup_family,
     register_family, resolve_family)
 
-family_names()                         # ['ncpp', 'oncvpsp', 'paw', 'ncpp-tm', 'oncv', 'tm']
+family_names()      # ['ncpp', 'oncvpsp', 'paw', 'upaw', 'ncpp-tm', 'oncv', 'tm', 'unitary-paw']
 spec = resolve_family("TM")            # -> PSEUDO_FAMILIES["ncpp"]
 spec.name, spec.aliases, spec.label    # "ncpp", ("tm", "ncpp-tm"), "NCPP"
-spec.options                           # ("size", "split_norm", "directory", "filter")
-spec.default_options                   # {} -- PAW/UPAW declare {"filter": True}
+spec.options       # ("size", "split_norm", "tail_norm", "directory", "filter")
+spec.default_options       # {} -- PAW/UPAW declare {"filter": True, "energy_shift": 0.1}
 spec.resolved_options({"size": "DZ"})  # the defaults with the user's options on top
 spec.norm_conserving                   # True
 spec.generate("O")                     # generate_pseudopotential("O")
@@ -100,8 +102,8 @@ A new family is added by registering a `FamilySpec`:
 register_family(FamilySpec(name="gth", description="...",
                            generate=..., get=..., build=...,
                            norm_conserving=True, aliases=("goedecker",),
-                           options=("size", "split_norm", "directory",
-                                    "filter"),
+                           options=("size", "split_norm", "tail_norm",
+                                    "directory", "filter"),
                            default_options={"filter": True}))
 ```
 
@@ -968,6 +970,204 @@ counts the valence functions of the family and size you ask for:
 ```console
 $ mandacaru H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run
 ```
+
+## Confined orbitals: `energy_shift`
+
+Without further instruction the first zeta of a PAW basis is the dataset's
+bound smooth partial wave: the valence orbital of the **free** atom. It has no
+range of its own -- a lithium 2s still carries 10⁻⁴ of its norm beyond 14 Bohr
+-- and it is more diffuse than the same orbital inside a molecule. LCAO codes
+(SIESTA, GPAW) use the orbital of the atom in a confining potential instead,
+and name the confinement by what it costs: the **energy shift** is how far the
+confined eigenvalue lies above the free one, and it *defines* the cutoff radius
+of each orbital. One number gives every channel of every element a radius that
+is tight for a compact orbital and generous for a diffuse one.
+
+```python
+Mandacaru(method="adapt-vqe",
+          basis={"name": "PAW", "size": "DZP", "energy_shift": 0.1},
+          h=0.20)
+```
+
+`energy_shift` is in **eV** (as in GPAW and as for [the NAO
+family](basis_sets.md)) and is accepted by `"PAW"` and `"UPAW"`. **The default
+is 0.1 eV**, GPAW's default -- so a plain `basis="PAW"` is a confined basis.
+`None`, `False` or `0` switch the confinement off and restore the free-atom
+orbitals; every PAW energy quoted in this guide outside this section was
+computed that way (it predates the default, 2026-09-20). A `{symbol: eV}`
+mapping, or the per-element basis form, confines elements differently; an
+element left out gets the 0.1 eV default.
+
+Nothing about the *operator* changes. The projectors, the couplings `D`, the
+overlap `q` and the local potential still come from the dataset, and no new
+file is needed: the confined orbital is solved at run time
+({mod}`mandacaru.pseudopotentials.confinement`, a second or two per channel,
+cached per dataset) as the lowest solution of the same generalized radial
+problem the stored wave solves, with a confining potential added,
+
+```{math}
+\Bigl(T_l + \tilde v^{scr} + v_{conf}
+      + \sum_{ij}|\tilde p_i\rangle D^{scr}_{ij}\langle\tilde p_j|\Bigr)u
+= \varepsilon\Bigl(1 + \sum_{ij}|\tilde p_i\rangle q_{ij}
+      \langle\tilde p_j|\Bigr)u, \qquad u(r_c) = 0,
+```
+
+and the radius `r_c` found by a root search on
+`ε(r_c) − ε_free = energy_shift`. The extra zetas and the polarization shell
+are then split from the confined orbital, so the whole basis of an atom shares
+its range.
+
+### The same recipe as GPAW
+
+The confining potential is the smooth one of Junquera *et al.* (PRB **64**,
+235111),
+
+```{math}
+v_{conf}(r) = \frac{A}{r_c - r}\exp\Bigl(-\frac{r_c - r_i}{r - r_i}\Bigr)
+\quad (r_i < r < r_c),
+```
+
+flat at `r_i` and divergent at `r_c`, so the orbital vanishes at its cutoff with
+every derivative -- a hard wall leaves a kink there, and a real-space grid pays
+for kinks. Mandacaru follows **GPAW's basis generator** (`BasisMaker.generate`
+in `gpaw/atom/basis.py`) wherever it has a choice, so that an ADAPT-VQE
+calculation here and a GPAW LCAO-DFT calculation can hold the basis recipe
+fixed:
+
+| | GPAW (`gpaw-basis`, `mode="lcao"`) | Mandacaru | default here |
+| :--- | :--- | :--- | :--- |
+| size | `basis="dzp"` | `"size": "DZP"` | `"SZ"` |
+| energy shift | `energysplit=0.1` (eV) | `"energy_shift": 0.1` | **GPAW's** (0.1 eV) |
+| confining potential | `vconf_args=(12.0, 0.6)` | `"confinement": (12.0, 0.6)` | **GPAW's** |
+| split-valence zetas | `tailnorm=(0.16, 0.3, 0.6)` | `"tail_norm": (0.16, 0.3, 0.6)` | **GPAW's** |
+| polarization function | quasi-Gaussian | `"polarization": "gaussian"` | **GPAW's** (when confined) |
+| PAW dataset | GPAW's own setups (LDA or PBE) | Mandacaru's own datasets (LDA) | -- |
+
+Every default is GPAW's, so the basis closest to a GPAW `dzp` basis needs only
+its size:
+
+```python
+Mandacaru(method="adapt-vqe",
+          basis={"name": "PAW", "size": "DZP"},
+          h=0.20)
+```
+
+and Mandacaru's own earlier construction -- free-atom orbitals, the
+SIESTA-style split, the `r · R_outer` polarization shell -- is
+
+```python
+Mandacaru(method="adapt-vqe",
+          basis={"name": "PAW",
+                 "size": "DZP",
+                 "energy_shift": None,
+                 "split_norm": 0.15},
+          h=0.20)
+```
+
+Only the last row cannot be made identical: each code pseudizes its own atom.
+That leaves the radii close rather than equal. For the recipe above, GPAW's
+generator (`BasisMaker.from_symbol(symbol, xc="LDA").generate(2, 1,
+energysplit=0.1)`) and Mandacaru give, in Bohr:
+
+| | GPAW | Mandacaru |
+| :--- | ---: | ---: |
+| H 1s cutoff / dz split radius | 6.64 / 3.67 | 6.68 / 3.68 |
+| O 2s cutoff / dz split radius | 4.38 / 2.30 | 4.37 / 2.37 |
+| O 2p cutoff / dz split radius | 5.34 / 2.89 | 5.35 / 2.87 |
+| H p-polarization `r_char` | 1.395 | 1.396 |
+| O d-polarization `r_char` | 1.125 | 1.128 |
+
+(pinned by `test/test_paw_energy_shift.py::TestTheGPAWRecipe`). Compare trends
+and differences between the two methods rather than absolute energies, use
+`xc="LDA"` setups on the GPAW side, and remember that Mandacaru's Hamiltonian
+has the bare Coulomb interaction -- the functional enters its datasets only.
+
+#### Split-valence zetas: GPAW's scheme, or SIESTA's
+
+The two codes share the split-valence polynomial -- inside a split radius the
+orbital is replaced by `r^l (a − b r²)` matched in value and slope, and the
+difference is the new zeta -- but **not the convention for where to split**, and
+the numbers are not comparable digit for digit:
+
+| | GPAW: `tail_norm` (**default**) | SIESTA-style: `split_norm` |
+| :--- | :--- | :--- |
+| what the number measures | the **norm** of the tail outside the split radius | the **squared norm** of that tail |
+| default | `(0.16, 0.3, 0.6)` for the 2nd, 3rd, 4th zeta | `0.15`, halved for each further zeta |
+| what each zeta splits | always the **first** zeta | the **previous** zeta |
+| H 1s second-zeta radius (0.1 eV) | 3.68 Bohr | 2.52 Bohr |
+
+A tail norm of 0.16 is a squared-norm fraction of 0.0256, so GPAW's second zeta
+is considerably **longer-ranged** than one made with `split_norm = 0.15`.
+`tail_norm` takes a number (the second zeta's; GPAW's values are kept for the
+higher ones) or the whole sequence. Writing `split_norm` selects the
+SIESTA-style scheme instead; giving both is refused. The choice applies to
+every family with a size hierarchy (`"NCPP"`, `"ONCVPSP"`, `"PAW"`, `"UPAW"`
+and the all-electron `"NAO"`), and the log's `[BASIS]` block names the scheme
+in its `zeta_split:` line.
+
+The scheme is part of the model. H₂ in PAW-DZP (h = 0.25), with free-atom
+orbitals and the `r · R_outer` shell on both sides: GPAW's split gives an
+equilibrium distance of **0.760 Å** and the SIESTA-style one **0.711 Å**
+(experiment 0.741, VASP-PBE 0.750), while the SIESTA-style basis is about
+0.5 eV lower in absolute energy -- its tighter second zeta adds more freedom
+near the nucleus. The full default basis (GPAW's split, the 0.1 eV confinement
+and the Gaussian polarization shell) lands at **0.733 Å**. Every DZ/DZP/TZP energy quoted in this guide before
+2026-09-20 was computed with `split_norm = 0.15`; pass it to reproduce them.
+
+#### The polarization function
+
+The default follows the confinement: `"gaussian"` wherever the orbital is
+confined (so, by default, everywhere), and `"orbital"` for an unconfined
+element -- the Gaussian takes its cutoff from the confined orbital, so it cannot
+exist without one. `"polarization": "orbital"` raises the outermost valence orbital
+by one unit of angular momentum, `r · R_outer(r)`, and adds one shell per
+polarization count at `l_max + 1`, `l_max + 2`, ... `"gaussian"` is GPAW's
+**quasi-Gaussian**,
+
+```{math}
+R(r) = r^{l}\Bigl[e^{-r^2/r_{char}^2} - (a - b r^2)\Bigr], \qquad r < r_{cut},
+```
+
+with `a`, `b` making the value and the slope vanish at `r_cut`. As in GPAW, the
+shell takes the **first angular momentum missing** among the valence channels
+(a 4s/3d metal is polarized with a p shell), `r_cut` is the cutoff of the
+valence orbital one unit below at the basis's own `energy_shift`, and
+`r_char = 0.25 · r_c(0.3 eV)` -- that reference cutoff always at 0.3 eV, whatever
+the basis uses. Further polarization functions (`DZ2P`) are split-valence
+refinements of the Gaussian with the *same* `l`, not shells of higher `l`. It
+needs an `energy_shift` (an unconfined orbital has no cutoff to give it) and is
+refused without one. The log's `polarization_shells` table records `l`,
+`r_cut` and `r_char` per element.
+
+What the run actually used is in the log's `[BASIS]` block: one row per orbital
+with its `r_c`, the free and the confined eigenvalue, and the shift achieved
+(see [Reading a run](run_output.md)).
+
+### What it does to the energy
+
+A mild confinement *lowers* the energy of a small basis, because it contracts
+orbitals that were too diffuse for a molecule. H₂ (0.74 Å, 8 Å cell, h = 0.25,
+ADAPT-VQE to the basis FCI), in eV:
+
+| `energy_shift` (eV) | `r_c` of H 1s (Bohr) | SZ | DZP | DZP, Gaussian polarization | DZP, `split_norm=0.15` |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| off | -- | −30.2425 | −32.8842 | -- | −33.3847 |
+| 0.01 | 8.97 | −30.3292 | −32.9375 | −33.2528 | −33.4102 |
+| 0.1 | 6.68 | −30.7093 | −33.1037 | −33.3748 | −33.4845 |
+| 0.3 | 5.59 | −31.1507 | −33.1911 | −33.4228 | −33.5108 |
+
+The gain shrinks as the basis grows: a second zeta already supplies part of the
+contraction the confinement provides. GPAW's compact Gaussian is a better
+polarization function than `r · R_outer` here (−0.27 eV at 0.1 eV). The forces
+differentiate the confined basis exactly as they do the free one (analytic
+against finite difference agree to 5 meV/Å on this system).
+
+Two limits are refused with the usable range in the message: a shift so large
+that the confinement would cut into the augmentation sphere (`r_i` must stay
+outside `r_cut`), and one so small that the radius runs past the dataset's
+radial table. The norm-conserving families do not take `energy_shift` (nor,
+therefore, the Gaussian polarization): their confined radial solve has not been
+written.
 
 ## Fourier filtering
 

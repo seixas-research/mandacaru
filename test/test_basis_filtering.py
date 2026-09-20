@@ -366,16 +366,16 @@ class TestOption:
 
 class TestDefault:
     @pytest.mark.parametrize("family, expected", [
-        ("paw", {"filter": True}), ("upaw", {"filter": True}),
-        ("ncpp", {}), ("oncvpsp", {}),
+        ("paw", True), ("upaw", True), ("ncpp", None), ("oncvpsp", None),
     ])
     def test_declared_in_the_registry(self, family, expected):
         """The default lives in one place -- the family spec -- so a new
-        family declares its own with no driver edit."""
+        family declares its own with no driver edit.  (Only the filter is
+        looked at: PAW's spec also declares its confinement.)"""
         spec = PSEUDO_FAMILIES[family]
-        assert spec.default_options == expected
-        assert spec.resolved_options() == expected
-        assert spec.resolved_options({"filter": False}) == {"filter": False}
+        assert spec.default_options.get("filter") is expected
+        assert spec.resolved_options().get("filter") is expected
+        assert spec.resolved_options({"filter": False})["filter"] is False
 
     @pytest.mark.parametrize("family", ["paw", "upaw"])
     def test_the_default_really_filters(self, family):
@@ -443,8 +443,12 @@ class TestDefault:
         comparison has independent content.
         """
         atoms = h2()
-        off = build(atoms, {"name": family, "filter": False}, 0.25)
-        on = build(atoms, family, 0.25)
+        # The filter alone is under test, so the confinement PAW also applies
+        # by default is switched off on both sides: the raw table below is the
+        # dataset's free-atom partial wave.
+        free = {"name": family, "energy_shift": None}
+        off = build(atoms, {**free, "filter": False}, 0.25)
+        on = build(atoms, free, 0.25)
         assert off[4]["filter_cutoff"] is None
         assert on[4]["filter_cutoff"] is not None
 

@@ -145,6 +145,7 @@ from scipy.integrate import simpson
 from ..basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
                                     solve_atom)
 from ..core.hamiltonian import MolecularIntegrals, projector_blocks
+from .confinement import DEFAULT_ENERGY_SHIFT
 from .generation import Channel, PseudoPotential, _valence_configuration
 from .oncv import (Q_MAX, Q_STEP, PseudoWaves, _bessel_table,
                    _bessel_transform_table, _inner_grid, _log_derivative_of_u,
@@ -903,10 +904,15 @@ SPECTRUM_SPACING = 0.005
 
 def _channel_operator(pp: PAWDataset, l: int, r_max: float, stride: int):
     """Grid, local potential, ``u``-form projectors, ``D^scr`` and ``q``."""
+    h = stride * SPECTRUM_SPACING
+    return _channel_operator_on(pp, l, np.arange(1, int(r_max / h) + 1) * h)
+
+
+def _channel_operator_on(pp: PAWDataset, l: int, r):
+    """:func:`_channel_operator` on a caller's uniform grid ``r`` (the confined
+    orbitals of :mod:`~.confinement` put a node exactly on their wall)."""
     from scipy.interpolate import CubicSpline
 
-    h = stride * SPECTRUM_SPACING
-    r = np.arange(1, int(r_max / h) + 1) * h
     v = CubicSpline(pp.r, pp.v_local_screened)(r) + l * (l + 1) / (2.0 * r * r)
     p_u = [CubicSpline(pp.r, np.asarray(p))(r) * r for p in pp.projectors[l]]
     return (r, v, p_u, np.asarray(pp.coupling_screened[l], dtype=float),
@@ -1986,12 +1992,28 @@ def from_payload(payload: dict) -> PAWDataset:
 #: it; the norm-conserving families keep it opt-in because their orbitals are
 #: not optimized that way.  ``basis={"name": "PAW", "filter": False}`` restores
 #: the unfiltered basis exactly.
-PAW_DEFAULT_OPTIONS = {"filter": True}
+#:
+#: ``energy_shift = 0.1`` eV (2026-09-20) makes the default PAW basis a
+#: **confined** one, GPAW's default recipe; the polarization shell then
+#: defaults to GPAW's quasi-Gaussian (:func:`~.confinement.
+#: resolve_polarization` -- derived from the confinement, so it is not listed
+#: here).  ``{"energy_shift": None}`` restores the free-atom orbitals and, with
+#: them, the ``"orbital"`` polarization shell.
+PAW_DEFAULT_OPTIONS = {"filter": True, "energy_shift": DEFAULT_ENERGY_SHIFT}
+
+#: What a PAW / UPAW basis dict may say beyond the family-independent options:
+#: which projector set is sampled; the ``energy_shift`` (eV) that confines the
+#: first zeta and the ``confinement`` potential's ``(amplitude, r_i / r_c)``
+#: (:mod:`~.confinement`; off, and GPAW's, by default); and the
+#: ``polarization`` shell, ``"orbital"`` (default) or GPAW's ``"gaussian"``.
+PAW_EXTRA_OPTIONS = ("projector_basis", "energy_shift", "confinement",
+                     "polarization")
 
 
 def _register():
     from .families import (COMMON_OPTIONS, FamilySpec, PSEUDO_FAMILIES,
                            register_family)
+    PAW_OPTIONS = COMMON_OPTIONS + PAW_EXTRA_OPTIONS
     if FAMILY in PSEUDO_FAMILIES:
         return PSEUDO_FAMILIES[FAMILY]
     return register_family(FamilySpec(
@@ -2003,7 +2025,7 @@ def _register():
         build=build_paw,
         norm_conserving=False,
         aliases=(),
-        options=COMMON_OPTIONS + ("projector_basis",),
+        options=PAW_OPTIONS,
         default_options=dict(PAW_DEFAULT_OPTIONS),
     ))
 
@@ -2020,6 +2042,7 @@ def _register_upaw():
     """
     from .families import (COMMON_OPTIONS, PSEUDO_FAMILIES, FamilySpec,
                            register_family)
+    PAW_OPTIONS = COMMON_OPTIONS + PAW_EXTRA_OPTIONS
     if UPAW_FAMILY in PSEUDO_FAMILIES:
         return PSEUDO_FAMILIES[UPAW_FAMILY]
     return register_family(FamilySpec(
@@ -2032,7 +2055,7 @@ def _register_upaw():
         build=build_upaw,
         norm_conserving=False,
         aliases=("unitary-paw",),
-        options=COMMON_OPTIONS + ("projector_basis",),
+        options=PAW_OPTIONS,
         # UPAW's partial waves are the harder ones (five times water's grid
         # egg-box at h = 0.25), so if the filter earns its place for PAW it
         # earns it for UPAW a fortiori.

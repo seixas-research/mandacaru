@@ -37,7 +37,8 @@ from .gaussian_families import (GaussianRecipe, gaussian_shells,
                                 parse_basis_name, shell_notation)
 from .fao import FullAtomicOrbital
 from .multizeta import (DEFAULT_NAO_SIZE, DEFAULT_SPLIT_NORM, build_shells,
-                        orbitals_from_tables, resolve_zeta)
+                        orbitals_from_tables, resolve_split_scheme,
+                        resolve_zeta)
 from .nao import (DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital,
                   energy_shift_to_rc, solve_confined_radial)
 from . import nao_ae
@@ -226,24 +227,31 @@ class NAOBasisSet(BasisSet):
         ``(n_zeta, n_polarization)`` pair.  The default is double-zeta plus
         polarization because single zeta has no radial or angular freedom at
         all; pass ``size="SZ"`` for the older, much cheaper minimal basis.
+    tail_norm : float or sequence
+        GPAW's split-valence scheme, **the default** (``(0.16, 0.3, 0.6)``):
+        the *norm* of the tail each extra zeta leaves outside its split
+        radius, every zeta split from the first one.
     split_norm : float
-        Fraction of the orbital norm left outside the split radius for each
-        extra zeta (default ``0.15``, the SIESTA convention).  Larger values
-        give longer-ranged, softer extra zetas.
+        Selects the SIESTA-style scheme instead: the fraction of the orbital's
+        *squared* norm left outside the split radius (SIESTA's default is
+        ``0.15``), each zeta split from the previous one with the fraction
+        halved.  Mutually exclusive with ``tail_norm``.
     """
 
     method = "NAO"
 
     def __init__(self, energy_shift: float = DEFAULT_ENERGY_SHIFT,
                  r_c: float | None = None, n_grid: int = 2000,
-                 size=DEFAULT_NAO_SIZE, split_norm: float = DEFAULT_SPLIT_NORM):
+                 size=DEFAULT_NAO_SIZE, split_norm: float | None = None,
+                 tail_norm=None):
         self.energy_shift = energy_shift
         self.r_c = float(r_c) if r_c is not None \
             else energy_shift_to_rc(energy_shift)
         self.n_grid = n_grid
         self.size = size
         self.n_zeta, self.n_polarization = resolve_zeta(size)
-        self.split_norm = float(split_norm)
+        self.split_norm, self.tail_norms = resolve_split_scheme(split_norm,
+                                                                tail_norm)
 
     def _solver(self, Z):
         """``(n, l) -> (r, R)`` for a confined orbital of this atom.
@@ -286,7 +294,10 @@ class NAOBasisSet(BasisSet):
         tables = build_shells(valence_subshells(Z), self._solver(Z),
                               n_zeta=self.n_zeta,
                               n_polarization=self.n_polarization,
-                              split_norm=self.split_norm)
+                              split_norm=(DEFAULT_SPLIT_NORM
+                                          if self.split_norm is None
+                                          else self.split_norm),
+                              tail_norms=self.tail_norms)
         return orbitals_from_tables(tables, center=center, units=units)
 
     def __repr__(self) -> str:

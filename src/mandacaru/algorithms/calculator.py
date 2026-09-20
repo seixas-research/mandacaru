@@ -824,12 +824,19 @@ class Mandacaru(Calculator):
             "job_id": job.job_id() if job is not None else None}
         return self.measurement
 
-    def _state_rdms(self, solver):
-        """Spin-orbital RDMs of the converged state vector."""
+    def _state_rdms(self, solver, psi=None, two_body: bool = True):
+        """Spin-orbital RDMs of a state vector (the converged one by default).
+
+        ``two_body=False`` returns ``(gamma, None)``: a one-particle picture of
+        the state (a density, a natural orbital) needs only the one-body RDM,
+        and building the two-body one costs ``M**4`` inner products it would
+        throw away.
+        """
         from .rdm import (one_rdm, pauli_expectations, rdm_qubit_operators,
                           rdms_from_expectations, two_rdm)
 
-        psi = self._converged_state(solver)
+        if psi is None:
+            psi = self._converged_state(solver)
         n_qubits = int(solver.n_qubits)
         if solver.mapping == "parity_reduced":
             # A tapered register has no ladder operators of its own: its RDM
@@ -839,11 +846,13 @@ class Mandacaru(Calculator):
                                              num_particles=solver.num_particles)
             labels = {label for op in (*ones.values(), *twos.values())
                       for label in op.terms}
-            return rdms_from_expectations(n_modes, ones, twos,
-                                          pauli_expectations(psi, labels))
+            gamma, gamma2 = rdms_from_expectations(
+                n_modes, ones, twos, pauli_expectations(psi, labels))
+            return (gamma, gamma2) if two_body else (gamma, None)
         sector = getattr(solver, "_sector", None)
         return (one_rdm(psi, n_qubits, solver.mapping, sector=sector),
-                two_rdm(psi, n_qubits, solver.mapping, sector=sector))
+                two_rdm(psi, n_qubits, solver.mapping, sector=sector)
+                if two_body else None)
 
     def _forces(self, solver, rdms=None, reference_energy=None):
         """Analytic nuclear gradient of the converged (or measured) state."""
@@ -1294,6 +1303,127 @@ class Mandacaru(Calculator):
         for label in result.operators:
             ansatz.append(labels[label])
         return ansatz.state(parameters)
+
+    # -- real-space visualization ------------------------------------------ #
+
+    def _volumetric_context(self):
+        """``(solver, integrals, frozen)`` of the last evaluation, or refuse.
+
+        A picture on a grid needs basis functions to draw.  A direct-mode
+        problem (``hamiltonian=`` / ``load_hamiltonian=``) has a qubit operator
+        and nothing else, and the plane-wave family has no atom-centered basis
+        the grid machinery uses -- both are refused here, by name, instead of
+        producing an empty or misleading file.
+        """
+        solver = self.solver
+        if getattr(solver, "result", None) is None:
+            raise RuntimeError(
+                "nothing has been solved yet: attach the calculator to an "
+                "Atoms object and ask for an energy "
+                "(atoms.get_potential_energy()) before writing a cube file")
+        context = getattr(solver, "_gradient_context", None)
+        if not context or context.get("integrals") is None:
+            raise NotImplementedError(
+                "a real-space picture needs the basis functions the "
+                "Hamiltonian was built from, and this run has none: a "
+                "direct-mode problem (hamiltonian= / load_hamiltonian=) "
+                "carries only a qubit operator, and the plane-wave ('PW') "
+                "family is not sampled on the real-space grid.  Run the same "
+                "geometry with an atom-centered basis ('FAO', 'NAO', 'GTO', "
+                "'6-31G(d)', 'PAW', ...) to get a density.")
+        return solver, context["integrals"], context.get("frozen") or ()
+
+    def _volumetric_state(self, solver, state):
+        """The state vector a picture is drawn from.
+
+        ``state`` is an integer index -- ``0`` is the converged ground state,
+        higher indices the further levels a subspace run stored -- or an
+        explicit state vector, which is how a deflation run's excited states
+        (``calc.energy_levels(3).states[1]``) are drawn.
+        """
+        if isinstance(state, bool) or not isinstance(state, (int, np.integer)):
+            return np.asarray(state, dtype=complex).ravel()
+        index = int(state)
+        if index == 0:
+            return self._converged_state(solver)
+        states = getattr(solver.result, "states", None)
+        if states is None or index >= len(states):
+            raise ValueError(
+                f"state={index} is not available: method {self.method!r} "
+                f"reports {0 if states is None else len(states)} stored state "
+                f"vectors.  Use a subspace method, or pass the state vector "
+                f"itself (calc.energy_levels(n).states[i]).")
+        return np.asarray(states[index], dtype=complex).ravel()
+
+    def volumetric_field(self, quantity: str = "density", index: int = 0, *,
+                         state=0, component: str = "auto", grid=None):
+        """One real-space quantity of the converged state, as an array.
+
+        See :mod:`mandacaru.algorithms.volumetric` for what each ``quantity``
+        means -- and for why a one-particle reduction, rather than "the
+        wavefunction", is what a volumetric file can hold.  Returns a
+        :class:`~mandacaru.algorithms.volumetric.VolumetricField`, which carries
+        the data, the grid, the nuclei, the integrated charge and a
+        :meth:`~mandacaru.algorithms.volumetric.VolumetricField.write` method.
+        """
+        from .volumetric import volumetric_field
+
+        solver, integrals, frozen = self._volumetric_context()
+        psi = self._volumetric_state(solver, state)
+        gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
+        numbers = (None if self.atoms is None
+                   else self.atoms.get_atomic_numbers())
+        return volumetric_field(
+            integrals, gamma, quantity=quantity, index=index, frozen=frozen,
+            num_particles=solver.num_particles, component=component,
+            grid=grid, numbers=numbers)
+
+    def write_cube(self, path, quantity: str = "density", index: int = 0, *,
+                   state=0, component: str = "auto", grid=None, format=None,
+                   comment=None):
+        """Write a volumetric file of the converged state and return the field.
+
+        ``path``'s extension picks the format: ``.cube`` (Gaussian cube --
+        VESTA, VMD, Avogadro) or ``.xsf`` (XCrySDen; VESTA reads it too).
+        Everything in a cube file is in Bohr, and a density is in e/Bohr^3.
+
+        .. code-block:: python
+
+            atoms.calc = Mandacaru(method="adapt-vqe",
+                                   basis={"name": "PAW", "size": "DZP"},
+                                   h=0.20)
+            atoms.get_potential_energy()
+            atoms.calc.write_cube("density.cube")
+            atoms.calc.write_cube("spin.cube", quantity="spin_density")
+            atoms.calc.write_cube("no0.cube", quantity="natural_orbital",
+                                  index=0)
+
+        The returned
+        :class:`~mandacaru.algorithms.volumetric.VolumetricField` reports the
+        integrated charge, the natural-orbital occupation and -- for PAW -- the
+        augmentation charge the smooth density on the grid does not carry.
+        """
+        volumetric = self.volumetric_field(quantity, index, state=state,
+                                           component=component, grid=grid)
+        volumetric.write(path, format=format, comment=comment)
+        return volumetric
+
+    def natural_orbitals(self, *, state=0, grid=None):
+        """Natural orbitals and occupations of the converged state.
+
+        The eigen-decomposition of the spin-summed one-particle density matrix:
+        occupations in ``[0, 2]`` summing to the electron count, with the
+        orbitals in both the atomic- and molecular-orbital bases.  Occupations
+        that are not 2 or 0 are the correlation the variational state carries
+        beyond a single determinant.
+        """
+        from .volumetric import state_natural_orbitals
+
+        solver, integrals, frozen = self._volumetric_context()
+        psi = self._volumetric_state(solver, state)
+        gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
+        return state_natural_orbitals(integrals, gamma, frozen=frozen,
+                                      grid=grid)
 
     # -- convenience ------------------------------------------------------- #
 

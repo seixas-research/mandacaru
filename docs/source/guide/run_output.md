@@ -127,7 +127,8 @@ of blocks -- energies then forces, one pair per step -- in one file:
     ADAPT-VQE (CEOPool, 12 qubits)
 ========================================================================
 [SYSTEM]                        step: 1, this geometry, the cell
-[ELECTRONS]                     basis, grid, mapping, register, Hamiltonian
+[BASIS]                         the basis that ran: options, radii, datasets
+[ELECTRONS]                     grid, reference, mapping, register, Hamiltonian
 [OPTIMIZATION SETUP]            the optimizer, the gradient, the operator pool
 [ITERATIONS]                    one row per grown operator
 [VARIATIONAL QUANTUM SUMMARY]   the converged state of *this* geometry
@@ -168,12 +169,46 @@ read off the left margin:
         a1 = [ 10.0000000000   0.0000000000   0.0000000000]
     cell_lengths: a=10.0000000000 b=10.0000000000 c=10.0000000000
 
+[BASIS]
+    name: PAW
+    family: PAW (projector augmented wave (Bloechl 1994), frozen core, ...)
+    size: SZ
+    zeta_split: tail_norm 0.16, 0.3, 0.6 (GPAW: norm of the tail, every zeta split from the first)
+    projector_basis: raw
+    energy_shift: 0.1 eV
+    confinement_potential: A exp(-(r_c - r_i)/(r - r_i)) / (r_c - r), A = 12 Ha, r_i = 0.6 r_c
+    polarization: gaussian (GPAW quasi-Gaussian: r^l [exp(-r^2/r_char^2) - (a - b r^2)], further shells split from it)
+    filter: filtered (auto: 1 x Nyquist)
+    filter_cutoff: 16.6244 Bohr^-1 (3760.30 eV)
+    local_potential: range-separated: long range on the grid, short range on atom-centered quadrature (sigma = 0.2646 Bohr)
+    dataset_xc: LDA (atomic reference only; the valence interaction is the bare Coulomb operator)
+    basis_functions: 6
+    datasets:
+        symbol  Z  Z_ion  l_max  r_cut_Bohr  source
+        -----------------------------------------------------------------
+        O       8  6      1      1.4499      /data/mandacaru-paw/O.parquet
+        H       1  1      0      1.2998      /data/mandacaru-paw/H.parquet
+    orbitals:
+        symbol  l  zetas  polarization  r_c_Bohr  r_c_Angstrom  eps_free_eV  eps_basis_eV  shift_eV
+        -------------------------------------------------------------------------------------------
+        O       0  1      0             4.3652    2.3100        -23.706920   -23.606915    0.100005
+        O       1  1      0             5.3500    2.8311        -9.205641    -9.105680     0.099961
+        H       0  1      0             6.6822    3.5361        -6.358289    -6.258289     0.100000
+    functions:
+        symbol  atoms  functions_per_atom
+        ---------------------------------
+        O       1      4
+        H       2      1
+
 [ELECTRONS]
-    basis: PAW (size: SZ)
-    grid spacing: 0.1 Angstrom
+    grid spacing: 0.1 Angstrom (requested)
+    grid points: 101 x 101 x 101 (spacing 0.1000 x 0.1000 x 0.1000 Angstrom)
     kinetic operator: finite difference
     k-points: Gamma (1x1x1 Monkhorst-Pack)
-    spin-polarized: False
+    charge: 0
+    spin-polarized: False (multiplicity 1)
+    reference state: hartree-fock
+    frozen core: none
     mapping: Jordan-Wigner
     Hamiltonian: 1079 Pauli terms
     spatial orbitals: 6
@@ -190,6 +225,13 @@ read off the left margin:
     pool: ceo
     pool_class: CEOPool
     pool_size: 92
+    reoptimize_all_parameters: True
+    state_vector_backend: sparse matrices, 2^12 amplitudes
+    device: AER_simulator
+    backend_provider: qiskit
+    circuit_execution: False
+    shots: 0 (exact expectation values)
+    circuit_profiling: True
     energy_unit: eV
     reference_energy_eV: -476.8628634829
     initial_ansatz: |HF> (0 parameters)
@@ -224,6 +266,25 @@ so nothing a relaxation computed is erased, and a run picking up a path from an
 earlier run in the same process (a notebook cell) can start a fresh file with
 {func}`mandacaru.utils.logging.reset_log`.
 
+`[BASIS]` records the single-particle basis **that ran**, which is more than
+the options that were typed: a basis here is built at run time, so the family
+defaults left alone (a PAW basis is Fourier-filtered and its local potential is
+range-separated unless told otherwise), the cutoff radius an `energy_shift`
+gave each orbital together with the eigenvalue shift actually achieved, the
+file every dataset was read from and the function count per element are all
+decided below the calculator. It is the block a comparison against another code
+is made from. Its three tables -- `datasets`, `orbitals`, `functions` -- read
+back from `parse_output(path)["basis"]` as lists of rows keyed by the column
+names. An all-electron basis gets the block too (name, options, functions); a
+direct-mode run, where no basis was built, has none.
+
+Each fact has **one owner**. The basis is in `[BASIS]` and not repeated in
+`[ELECTRONS]`; the classical optimizer is in `[OPTIMIZATION SETUP]` and not
+repeated in the variational summary; what the standard-output header alone used
+to say (the reference state, the frozen core, the charge, whether every
+parameter is re-optimized, the state-vector backend, the device and the shots)
+is in the file, because that header is off whenever the file is written.
+
 `[SYSTEM]` says *where the atoms are* and `[ELECTRONS]` *what was solved* --
 the configuration the standard-output header used to carry, which is why it is in
 the file now that the trace is routed there. `[OPTIMIZATION SETUP]` keeps what is
@@ -231,7 +292,7 @@ left: *how* it was solved.
 
 ### `[OPTIMIZATION SETUP]`: how the run was configured
 
-The block is written in four groups, each contiguous, so a fact sits next to the
+The block is written in five groups, each contiguous, so a fact sits next to the
 fact it qualifies and a diff between two runs reads as a diff between two
 settings:
 
@@ -240,6 +301,7 @@ settings:
 | classical optimizer | `classical_optimizer`, `max_iterations` |
 | screening gradient | `gradient_method`, `gradient_formula`, `gradient_tol`, `gradient_units` |
 | operator pool | `pool`, `pool_class`, `pool_size` |
+| growth and execution | `reoptimize_all_parameters`, `state_vector_backend`, `device`, `backend_provider`, `circuit_execution`, `shots`, `circuit_profiling` |
 | the loop's starting point | `energy_unit`, `reference_energy_<unit>`, `initial_ansatz` |
 
 A **resumed** run closes the block with its lineage -- `resumed_from`,

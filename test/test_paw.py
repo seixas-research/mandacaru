@@ -114,6 +114,13 @@ PAW_EXACT_LOCAL_ONLY = {
 PAW_BEFORE_BASIS_FILTER = {
     "H2": {"rhf": -1.095396, "adapt": -1.109168},
     "LiH": {"rhf": -0.773001, "adapt": -0.780800}}
+#: The family's **default basis** since 2026-09-20: the four tables above with
+#: the first zeta *confined* (``energy_shift = 0.1`` eV, GPAW's recipe; H 1s at
+#: 6.68 Bohr, Li 2s at 11.20).  A mild confinement lowers a minimal basis's
+#: energy -- free-atom orbitals are too diffuse for a molecule -- by 19.3 mHa
+#: for H2 and 1.5 mHa for LiH.  ``{"energy_shift": None}`` reproduces ``PAW``.
+PAW_DEFAULT = {"H2": {"rhf": -1.114401, "adapt": -1.128495},
+               "LiH": {"rhf": -0.773186, "adapt": -0.781824}}
 #: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
 PAW_BEFORE_COMPENSATION_ATTRACTION = {
     "H2": {"rhf": -1.053292, "adapt": -1.067402},
@@ -149,8 +156,25 @@ def _fci(hamiltonian) -> float:
     return float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
 
 
+def _unconfined(basis):
+    """``basis`` with the confinement switched off unless it says otherwise.
+
+    This file validates the PAW *machinery* -- the transformation, the
+    projections, the augmentation, the four auditable energy tables above --
+    and all of that was established, and is pinned, with the dataset's own
+    free-atom partial wave as the first zeta.  Since 2026-09-20 the family's
+    default basis is a **confined** one (``energy_shift = 0.1`` eV, GPAW's
+    recipe); `TestDefaultBasis` pins that, and `test_paw_energy_shift.py`
+    tests the confinement itself.
+    """
+    options = {"name": basis} if isinstance(basis, str) else dict(basis)
+    options.setdefault("energy_shift", None)
+    return options
+
+
 def _build(name, basis, h=None):
     factory, default_h = SYSTEMS[name]
+    basis = _unconfined(basis)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         return build_basis_hamiltonian(factory(), basis, None,
@@ -524,13 +548,20 @@ class TestResolution:
         spec = PSEUDO_FAMILIES["paw"]
         assert spec.norm_conserving is False and spec.aliases == ()
         assert spec.label == "PAW"
-        assert spec.options == ("size", "split_norm", "directory", "filter",
-                                "projector_basis")
-        # PAW filters its basis by default; writing the option wins either way.
-        assert spec.default_options == {"filter": True}
-        assert spec.resolved_options() == {"filter": True}
-        assert spec.resolved_options({"filter": False}) == {"filter": False}
-        assert spec.resolved_options({"size": "DZ"}) == {"filter": True,
+        assert spec.options == ("size", "split_norm", "tail_norm",
+                                "directory", "filter", "projector_basis",
+                                "energy_shift", "confinement", "polarization")
+        # PAW filters and confines its basis by default (the polarization
+        # shell follows the confinement, so it is derived rather than listed);
+        # writing an option wins either way.
+        defaults = {"filter": True, "energy_shift": 0.1}
+        assert spec.default_options == defaults
+        assert spec.resolved_options() == defaults
+        assert spec.resolved_options({"filter": False}) == {
+            **defaults, "filter": False}
+        assert spec.resolved_options({"energy_shift": None}) == {
+            **defaults, "energy_shift": None}
+        assert spec.resolved_options({"size": "DZ"}) == {**defaults,
                                                          "size": "DZ"}
         assert spec.get("H").family == "paw"
         assert spec.generate is not None and spec.build is paw.build_paw
@@ -770,8 +801,12 @@ class TestMolecular:
         assert atoms.calc.n_qubits == 4
         assert result.energy_unit == "eV"
         assert np.isfinite(result.optimal_energy)
-        assert energy == pytest.approx(PAW[name]["adapt"], abs=PIN_TOL)
-        assert energy <= PAW[name]["rhf"] + PIN_TOL
+        # Through the calculator with `basis="paw"`: the family's default
+        # basis, confined since 2026-09-20.
+        assert energy == pytest.approx(PAW_DEFAULT[name]["adapt"], abs=1e-5)
+        assert energy <= PAW_DEFAULT[name]["rhf"] + PIN_TOL
+        # ... and the confinement is what moved it from the unconfined pin.
+        assert energy < PAW[name]["adapt"]
         assert abs(energy - ONCV[name]["adapt"]) < FAMILY_TOL
         assert abs(energy - TM[name]["adapt"]) < FAMILY_TOL
 

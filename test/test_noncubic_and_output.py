@@ -466,7 +466,11 @@ class TestLogAppendsAcrossSteps:
         text = open(out, encoding="utf-8").read()
         # The banner is provenance of the *file*: once, before the first block.
         assert text.count("developed by:") == 1
-        assert text.startswith(banner.lines()[0])
+        # The banner opens with a blank line, so "starts with its first line"
+        # would hold for any file: ask for the wordmark itself, at the top.
+        opening = "\n".join(banner.lines()[:4])
+        assert banner.WORDMARK[0] in opening
+        assert text.startswith(opening)
         assert text.index("developed by:") < text.index("[SYSTEM]")
 
     def test_each_step_appends_a_numbered_block(self, tmp_path):
@@ -916,8 +920,10 @@ class TestElectronsBlock:
     register and Hamiltonian that came out.
     """
 
-    FIELDS = ("basis", "grid spacing", "kinetic operator", "k-points",
-              "spin-polarized", "mapping", "Hamiltonian",
+    # No "basis": the [BASIS] block owns it (TestBasisBlock below).
+    FIELDS = ("grid spacing", "grid points", "kinetic operator", "k-points",
+              "charge", "spin-polarized", "reference state", "frozen core",
+              "mapping", "Hamiltonian",
               "spatial orbitals", "electrons (alpha, beta)", "qubits")
 
     @pytest.fixture(scope="class")
@@ -941,11 +947,16 @@ class TestElectronsBlock:
     def test_the_values_describe_this_run(self, run):
         out, calc = run
         block = parse_output(out)["electrons"]
-        assert block["basis"] == "FAO"
-        assert block["grid spacing"] == "0.35 Angstrom"
+        assert "basis" not in block
+        assert block["grid spacing"] == "0.35 Angstrom (requested)"
+        # What the cell turned the request into: 6 Angstrom / 0.35 -> 17 steps.
+        assert block["grid points"].startswith("18 x 18 x 18 (spacing 0.35")
+        assert block["charge"] == "0"
+        assert block["reference state"] == "hartree-fock"
+        assert block["frozen core"] == "none"
         assert block["kinetic operator"] == "finite difference"
         assert "Monkhorst-Pack" in block["k-points"]
-        assert block["spin-polarized"] == "False"
+        assert block["spin-polarized"] == "False (multiplicity 1)"
         # The transformation's own name, not the identifier the code uses.
         assert block["mapping"] == "Jordan-Wigner"
         assert block["qubits"] == str(calc.n_qubits) == "4"
@@ -972,6 +983,189 @@ class TestElectronsBlock:
             < text.index("[OPTIMIZATION SETUP]") < text.index("[ITERATIONS]")
 
 
+class TestBasisBlock:
+    """``[BASIS]``: the basis that *ran*, not the options that were typed.
+
+    A Mandacaru basis is built at run time, so its defaults (PAW is filtered),
+    the radii an ``energy_shift`` resolves to and the dataset files are decided
+    below the calculator.  The block is where they are written down -- it is
+    what a comparison against another code is made from.
+    """
+
+    @pytest.fixture(scope="class")
+    def paw(self, tmp_path_factory):
+        from mandacaru import Mandacaru
+        from mandacaru.pseudopotentials import get_paw
+        try:
+            get_paw("H")
+        except (FileNotFoundError, ValueError):
+            pytest.skip("the PAW library is not linked")
+        out = str(tmp_path_factory.mktemp("basis") / "output.txt")
+        atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
+                      cell=[8.0, 8.0, 8.0])
+        atoms.calc = Mandacaru(method="adapt-vqe",
+                               basis={"name": "PAW", "size": "DZ",
+                                      "energy_shift": 0.1},
+                               h=0.30, pool="fermionic", max_iterations=1,
+                               output=out)
+        atoms.get_potential_energy()
+        return out, atoms.calc
+
+    def test_it_sits_between_the_system_and_the_electrons(self, paw):
+        out, _calc = paw
+        markers = [line.strip() for line in open(out)
+                   if line.startswith("[")]
+        assert markers[:3] == ["[SYSTEM]", "[BASIS]", "[ELECTRONS]"]
+
+    def test_defaults_the_user_never_typed_are_recorded(self, paw):
+        out, _calc = paw
+        block = parse_output(out)["basis"]
+        assert block["name"] == "PAW" and block["family"].startswith("PAW (")
+        assert block["size"] == "DZ"
+        # GPAW's split-valence scheme is the default, and the line names the
+        # scheme: a tail *norm* and a squared-norm fraction are not comparable.
+        assert block["zeta_split"].startswith("tail_norm 0.16, 0.3, 0.6 (GPAW")
+        # The shell follows the confinement: GPAW's Gaussian when confined.
+        assert block["polarization"].startswith("gaussian")
+        assert block["energy_shift"] == "0.1 eV"
+        assert "A = 12 Ha" in block["confinement_potential"]
+        # On by default for PAW, with the cutoff the grid resolved it to.
+        assert block["filter"].startswith("filtered")
+        assert "Bohr^-1" in block["filter_cutoff"]
+        assert block["local_potential"].startswith("range-separated")
+        assert block["dataset_xc"].startswith("LDA")
+        assert block["basis_functions"] == "4"
+
+    def test_the_tables_read_back_typed(self, paw):
+        from mandacaru.pseudopotentials import get_paw
+        from mandacaru.pseudopotentials.confinement import confined_orbital
+
+        out, _calc = paw
+        block = parse_output(out)["basis"]
+        (dataset,) = block["datasets"]
+        assert dataset["symbol"] == "H" and dataset["Z_ion"] == 1
+        assert dataset["source"].endswith(("H.parquet", "H.json"))
+        (orbital,) = block["orbitals"]
+        expected = confined_orbital(get_paw("H"), 0, 0.1)
+        assert orbital["l"] == 0 and orbital["zetas"] == 2
+        assert orbital["r_c_Bohr"] == pytest.approx(expected.r_c, abs=1e-4)
+        assert orbital["shift_eV"] == pytest.approx(0.1, abs=1e-3)
+        assert orbital["eps_basis_eV"] - orbital["eps_free_eV"] == \
+            pytest.approx(orbital["shift_eV"], abs=1e-5)
+        assert block["functions"] == [
+            {"symbol": "H", "atoms": 2, "functions_per_atom": 2}]
+
+    def test_an_unconfined_basis_says_so(self, tmp_path):
+        from mandacaru import Mandacaru
+        from mandacaru.pseudopotentials import get_paw
+        try:
+            get_paw("H")
+        except (FileNotFoundError, ValueError):
+            pytest.skip("the PAW library is not linked")
+        out = str(tmp_path / "output.txt")
+        atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
+                      cell=[8.0, 8.0, 8.0])
+        atoms.calc = Mandacaru(method="adapt-vqe",
+                               basis={"name": "PAW", "energy_shift": None},
+                               h=0.30, pool="fermionic", max_iterations=1,
+                               output=out)
+        atoms.get_potential_energy()
+        block = parse_output(out)["basis"]
+        assert block["energy_shift"] == "unconfined"
+        assert "confinement_potential" not in block
+        assert block["orbitals"][0]["r_c_Bohr"] == "unconfined"
+
+    def test_an_all_electron_basis_has_one_too(self, tmp_path):
+        from mandacaru import Mandacaru
+        out = str(tmp_path / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Mandacaru(method="adapt-vqe",
+                               basis={"name": "FAO", "virtual_orbitals": 1},
+                               h=0.35, pool="fermionic", max_iterations=1,
+                               output=out)
+        atoms.get_potential_energy()
+        block = parse_output(out)["basis"]
+        assert block["name"] == "FAO" and block["family"] == "all-electron"
+        assert "virtual_orbitals" in block["options"]
+        assert block["basis_functions"] == "4"
+        assert block["functions"] == [
+            {"symbol": "H", "atoms": 2, "functions_per_atom": 2}]
+
+    def test_direct_mode_has_none(self, tmp_path, h2_hamiltonian):
+        # No basis was built, so a block describing one would be a guess.
+        from mandacaru import Mandacaru
+        out = str(tmp_path / "output.txt")
+        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                  pool="fermionic", num_particles=(1, 1),
+                  n_spatial_orbitals=2, profile=False, max_iterations=1,
+                  output=out, trace=False).run()
+        assert "[BASIS]" not in open(out).read()
+        assert "basis" not in parse_output(out)
+
+
+class TestNothingIsSaidTwice:
+    """Each fact has one owner: a value written in two blocks can disagree
+    with itself, and a reader has to decide which one to believe."""
+
+    @pytest.fixture(scope="class")
+    def text(self, tmp_path_factory):
+        from mandacaru import Mandacaru
+        out = str(tmp_path_factory.mktemp("owners") / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
+                               pool="fermionic", max_iterations=2, output=out)
+        atoms.get_forces()
+        return out
+
+    def test_the_optimizer_belongs_to_the_setup_block(self, text):
+        parsed = parse_output(text)
+        assert parsed["setup"]["classical_optimizer"] == "COBYLA"
+        assert "classical_optimizer" not in parsed["summary"]
+        assert open(text).read().count("classical_optimizer:") == 1
+
+    def test_the_basis_belongs_to_the_basis_block(self, text):
+        parsed = parse_output(text)
+        assert "basis" not in parsed["electrons"]
+        assert parsed["basis"]["name"] == "FAO"
+
+    def test_what_only_the_terminal_used_to_say_is_in_the_setup(self, text):
+        setup = parse_output(text)["setup"]
+        assert setup["reoptimize_all_parameters"] == "True"
+        assert setup["shots"].startswith("0 (exact")
+        assert "amplitudes" in setup["state_vector_backend"] \
+            or "sector" in setup["state_vector_backend"]
+        for key in ("device", "backend_provider", "circuit_execution"):
+            assert key in setup
+
+    def test_an_unprofiled_run_says_why_its_gate_columns_are_empty(
+            self, tmp_path, h2_hamiltonian):
+        # The H2O sample log once showed 20 rows of "-" under 1q / cnot /
+        # depth with nothing in the file to explain them: the example passed
+        # profile=False.  The setup block now states it either way.
+        from mandacaru import Mandacaru
+        logs = {}
+        for profile in (True, False):
+            out = str(tmp_path / f"profile_{profile}.txt")
+            Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                      pool="fermionic", num_particles=(1, 1),
+                      n_spatial_orbitals=2, profile=profile, max_iterations=1,
+                      output=out, trace=False).run()
+            logs[profile] = parse_output(out)
+        assert logs[True]["setup"]["circuit_profiling"] == "True"
+        assert logs[True]["iterations"][0]["cnot_count"] not in (None, "-")
+        assert logs[False]["iterations"][0]["cnot_count"] == "-"
+        off = logs[False]["setup"]["circuit_profiling"]
+        assert off.startswith("False") and "profile=True" in off
+        assert "cnot_count" not in logs[False]["summary"]
+
+    def test_the_two_wall_times_are_adjacent(self, text):
+        lines = [line.strip().split(":")[0] for line in open(text)]
+        index = lines.index("wall_time_s")
+        assert lines[index + 1] == "solver_wall_time_s"
+
+
 class TestOptimizationSetupBlock:
     """``[OPTIMIZATION SETUP]`` says how the run was configured.
 
@@ -989,6 +1183,11 @@ class TestOptimizationSetupBlock:
               "gradient_method", "gradient_formula", "gradient_tol",
               "gradient_units",
               "pool", "pool_class", "pool_size",
+              # How a growth step is optimized and where it executes: the log
+              # is the only record when the standard-output header is off.
+              "reoptimize_all_parameters", "state_vector_backend", "device",
+              "backend_provider", "circuit_execution", "shots",
+              "circuit_profiling",
               "energy_unit", "reference_energy_eV", "initial_ansatz")
 
     def _log(self, hamiltonian, tmp_path, **kwargs):

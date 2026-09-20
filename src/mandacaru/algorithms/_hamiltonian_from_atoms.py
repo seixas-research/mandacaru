@@ -333,6 +333,12 @@ def pseudopotential_family(name):
     return lookup_family(name)
 
 
+#: Pseudo-basis options that describe the *construction* (one recipe for the
+#: whole basis): a per-element basis may write them on any element, but every
+#: element that does must say the same thing.
+SHARED_PSEUDO_OPTIONS = ("tail_norm", "polarization", "confinement")
+
+
 def resolve_pseudo_basis(name, options, symbols):
     """``(family, options)`` for a resolved basis spec, ``(None, options)``
     when it is all-electron.
@@ -376,22 +382,39 @@ def resolve_pseudo_basis(name, options, symbols):
             "Hamiltonian")
     family = next(iter(pseudo.values()))
     sizes, splits, merged = {}, {}, {}
+    shifts = {}
+    shared = {}
     filters = {}
     for symbol, (_sub_name, sub_options) in resolved.items():
         extra = {k: v for k, v in sub_options.items()
-                 if k not in ("size", "split_norm", "filter")}
+                 if k not in ("size", "split_norm", "filter",
+                              "energy_shift") + SHARED_PSEUDO_OPTIONS}
         if extra:
             raise ValueError(
                 f"per-element basis options {extra!r} for {symbol!r} cannot "
                 f"differ per element with the {family.label} family; only "
-                "'size', 'split_norm' and 'filter' may be written per element "
+                "'size', 'split_norm', 'energy_shift' and 'filter' may be "
+                "written per element "
                 "(give the other options in a single {'name': ..., ...} basis "
                 "dict)")
         sizes[symbol] = sub_options.get("size", "SZ")
         if "split_norm" in sub_options:
             splits[symbol] = sub_options["split_norm"]
+        if "energy_shift" in sub_options:
+            if "energy_shift" not in family.options:
+                raise ValueError(
+                    f"the {family.label} family has no 'energy_shift' option; "
+                    f"it accepts {list(family.options)}")
+            shifts[symbol] = sub_options["energy_shift"]
         if "filter" in sub_options:
             filters[symbol] = sub_options["filter"]
+        for key in SHARED_PSEUDO_OPTIONS:
+            if key in sub_options:
+                if key not in family.options:
+                    raise ValueError(
+                        f"the {family.label} family has no {key!r} option; "
+                        f"it accepts {list(family.options)}")
+                shared.setdefault(key, {})[symbol] = sub_options[key]
     if filters:
         # The filter cutoff is a property of the *grid*, which every atom
         # shares, so it may be written per element for convenience but must
@@ -405,7 +428,22 @@ def resolve_pseudo_basis(name, options, symbols):
                 "all the atoms share.  Write it once as "
                 "basis={'name': ..., 'filter': ..., 'size': {<per element>}}.")
         merged["filter"] = next(iter(filters.values()))
+    for key, values in shared.items():
+        if len({repr(v) for v in values.values()}) > 1:
+            raise ValueError(
+                f"the basis option {key!r} describes how every atom's basis is "
+                f"constructed and must agree where it is written, got "
+                f"{values!r}")
+        merged[key] = next(iter(values.values()))
     merged["size"] = sizes
+    if shifts:
+        # A confinement is a property of each atom's basis (unlike the
+        # filter's grid cutoff), so it may differ per element.  An element
+        # left out gets the family's default -- not "unconfined": leaving an
+        # option out never means turning it off.
+        default = family.default_options.get("energy_shift")
+        merged["energy_shift"] = ({**shifts} if default is None
+                                  else {"*": default, **shifts})
     if splits:
         # Keep a scalar when every element agrees; otherwise the per-element
         # mapping travels on (it used to be silently overwritten by the last

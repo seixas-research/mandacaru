@@ -967,6 +967,7 @@ class VariationalDriver(Calculator):
         """Validate a pseudopotential basis spec up front (names, options,
         option *values*, no frozen core); all-electron specs pass untouched."""
         from ..basis.filtering import validate_filter
+        from ..pseudopotentials.confinement import validate_energy_shift
         from ._hamiltonian_from_atoms import (PER_ELEMENT,
                                               pseudopotential_family,
                                               resolve_basis)
@@ -979,6 +980,8 @@ class VariationalDriver(Calculator):
             for spec in options.values():
                 if isinstance(spec, dict) and "filter" in spec:
                     validate_filter(spec["filter"])
+                if isinstance(spec, dict) and "energy_shift" in spec:
+                    validate_energy_shift(spec["energy_shift"])
             return
         family = pseudopotential_family(name)
         if family is None:
@@ -990,6 +993,27 @@ class VariationalDriver(Calculator):
                 f"it accepts {list(family.options)}")
         if "filter" in options:
             validate_filter(options["filter"])
+        if "energy_shift" in options:
+            validate_energy_shift(options["energy_shift"])
+        from ..basis.multizeta import resolve_split_scheme
+        resolve_split_scheme(options.get("split_norm"),
+                             options.get("tail_norm"))
+        if "polarization" in family.options:
+            from ..pseudopotentials.confinement import (
+                validate_confinement, validate_polarization)
+            validate_confinement(options.get("confinement"))
+            # Only an *explicit* request can conflict: left unwritten, the
+            # shell follows the confinement.  The family default counts as a
+            # confinement, so `{"polarization": "gaussian"}` alone is fine.
+            resolved = family.resolved_options(options)
+            if (validate_polarization(options.get("polarization"))
+                    == "gaussian"
+                    and validate_energy_shift(
+                        resolved.get("energy_shift")) is None):
+                raise ValueError(
+                    "polarization='gaussian' needs an energy_shift: GPAW's "
+                    "polarization function takes its cutoff from the confined "
+                    "orbital, and an unconfined orbital has none")
         if frozen_core or frozen_orbitals:
             raise ValueError(
                 f"frozen_core is redundant with the {family.label} basis -- "
@@ -1099,7 +1123,21 @@ class VariationalDriver(Calculator):
         # Kept for the nuclear gradient: the integral engine that produced this
         # Hamiltonian, and which atom each basis function belongs to.
         self._gradient_context = context
+        self._basis_symbols = list(atoms.get_chemical_symbols())
         return hamiltonian, num_particles, n_orbitals
+
+    def _basis_report(self):
+        """``(fields, tables)`` of the log's ``[BASIS]`` block, or ``None``.
+
+        ``None`` in direct mode and for a loaded Hamiltonian: there the basis
+        was never built here, and a block describing it would be a guess.
+        """
+        context = getattr(self, "_gradient_context", None)
+        symbols = getattr(self, "_basis_symbols", None)
+        if not context or not symbols or "atom_of_orbital" not in context:
+            return None
+        from .basis_report import basis_report
+        return basis_report(self.basis, context, symbols)
 
     # -- ASE calculator hook ---------------------------------------------- #
 

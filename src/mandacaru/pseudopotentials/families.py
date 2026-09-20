@@ -84,7 +84,7 @@ DEFAULT_FAMILY = "ncpp"
 #: pseudo-orbitals, the library directory and the Fourier filter
 #: (:mod:`mandacaru.basis.filtering`) that removes from each radial function
 #: the wave-vectors the real-space grid cannot represent.
-COMMON_OPTIONS = ("size", "split_norm", "directory", "filter")
+COMMON_OPTIONS = ("size", "split_norm", "tail_norm", "directory", "filter")
 
 
 @dataclass(frozen=True)
@@ -284,6 +284,37 @@ def _get_tm(symbol, directory=None):
     return pp
 
 
+def pseudo_basis_arguments(family, options, *, confinement=None,
+                           polarization=None) -> dict:
+    """Keyword arguments of :func:`~.orbitals.pseudo_basis` for ``options``.
+
+    The one place a basis dict is turned into a construction, shared by the
+    Hamiltonian builder and the dry run so the two cannot count different
+    bases.  ``confinement`` / ``polarization`` (optional dicts) receive what
+    the hooks resolve -- each orbital's cutoff radius, the polarization
+    shell's -- for the run log.
+
+    The split-valence scheme is GPAW's unless ``split_norm`` is written
+    (:func:`~mandacaru.basis.multizeta.resolve_split_scheme`).
+    """
+    from ..basis.multizeta import resolve_split_scheme
+
+    spec = resolve_family(family)
+    split_norm, tail_norms = resolve_split_scheme(options.get("split_norm"),
+                                                  options.get("tail_norm"))
+    arguments = {"size": options.get("size", "SZ"), "split_norm": split_norm,
+                 "tail_norms": tail_norms}
+    if "energy_shift" in spec.options:
+        from .confinement import first_zeta_factory, polarization_factory
+        arguments["first_zeta"] = first_zeta_factory(
+            options.get("energy_shift"), confinement,
+            options.get("confinement"))
+        arguments["polarization_shape"] = polarization_factory(
+            options.get("polarization"), options.get("energy_shift"),
+            polarization, options.get("confinement"))
+    return arguments
+
+
 def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                               family: str, load, projectors, coupling,
                               overlap=None, integrals_class=None,
@@ -329,9 +360,12 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     k_c = filter_cutoff(options.get("filter"),
                         max(g.dx, g.dy, g.dz))
 
+    confinement: dict = {}
+    polarization: dict = {}
     basis_fns, atom_of_orbital = pseudo_basis(
-        symbols, positions, potentials, size=options.get("size", "SZ"),
-        split_norm=options.get("split_norm"), filter_cutoff=k_c)
+        symbols, positions, potentials, filter_cutoff=k_c,
+        **pseudo_basis_arguments(family, options, confinement=confinement,
+                                 polarization=polarization))
     kb = projectors(symbols, positions, potentials, options)
     coupling_blocks = coupling(kb, symbols, potentials)
     overlap_blocks = (None if overlap is None
@@ -356,7 +390,8 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                "frozen": (), "n_electrons": n_el,
                "pseudopotentials": potentials, "kb_projectors": kb,
                "nonlocal_coupling": coupling_blocks, "family": family,
-               "filter_cutoff": k_c}
+               "filter_cutoff": k_c, "options": dict(options),
+               "confinement": confinement, "polarization": polarization}
     if overlap_blocks is not None:
         context["nonlocal_overlap"] = overlap_blocks
     return (hamiltonian, num_particles, len(basis_fns),

@@ -42,8 +42,8 @@ def dimer(symbols, distance, cell):
                  cell=[cell] * 3)
 
 
-def calculator(h):
-    return Mandacaru(method="adapt-vqe", basis=BASIS, h=h, pool="fermionic",
+def calculator(h, basis=BASIS):
+    return Mandacaru(method="adapt-vqe", basis=basis, h=h, pool="fermionic",
                      optimizer="L-BFGS-B", max_iterations=80,
                      gradient_tolerance=1e-5, profile=False)
 
@@ -105,10 +105,23 @@ def test_hellmann_feynman_and_pulay(h2):
     assert np.abs(pulay).max() > 0.05             # an atom-centered basis needs it
     assert np.abs(forces.sum(axis=0)).max() < 0.15      # grid egg-box only
     assert np.abs(forces[:, :2]).max() < 0.1
-    # 0.75 A is *outside* the PAW-DZP minimum, which sits at 0.712 A (measured
-    # 2026-09-17, after the compensation charge gained its electron-ion
-    # attraction; it was 0.807 A before, so this assertion used to read < -1).
-    assert bond_force(forces) > 1.0
+    # 0.75 A is just *outside* the PAW-DZP minimum, which sits at 0.733 A with
+    # the family's default basis since 2026-09-20 -- confined (0.1 eV), GPAW's
+    # split-valence scheme, GPAW's Gaussian polarization -- against 0.741
+    # (experiment) and 0.750 (VASP-PBE).  The history of this line is the
+    # history of the basis: 0.807 A before the compensation charge gained its
+    # electron-ion attraction (< -1), 0.712 A with the SIESTA-style split and
+    # free-atom orbitals (> 1.0; kept reproducible below), 0.760 A with GPAW's
+    # split alone (< 0).
+    assert 0.3 < bond_force(forces) < 1.2
+
+
+def test_the_siesta_split_is_still_available():
+    atoms = dimer("H2", 0.75, 8.0)
+    atoms.calc = calculator(h=0.25, basis={**BASIS, "split_norm": 0.15,
+                                           "energy_shift": None})
+    # Outside that basis's minimum (0.711 A): the pre-2026-09-20 behavior.
+    assert bond_force(atoms.get_forces()) > 1.0
 
 
 def test_h2_force_curve_follows_vasp():

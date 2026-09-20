@@ -47,6 +47,8 @@ from .calculator import (DEFAULT_METHOD, METHODS, STABLE_METHODS, Mandacaru,
 from .forces import ForceResult, hellmann_feynman_gradient, nuclear_gradient
 from .interaction import InteractionEnergy, interaction_energy
 from .rdm import electronic_energy, one_rdm, particle_number, two_rdm
+from .volumetric import (NaturalOrbitals, QUANTITIES, VolumetricField,
+                         state_natural_orbitals, volumetric_field)
 from .vqe import VQEResult
 from .qpe import (QPEMemoryEstimate, QPEResult, QuantumPhaseEstimation,
                   phase_estimation, qpe_memory_estimate)
@@ -106,4 +108,9 @@ __all__ = [
     "two_rdm",
     "electronic_energy",
     "particle_number",
+    "VolumetricField",
+    "NaturalOrbitals",
+    "QUANTITIES",
+    "volumetric_field",
+    "state_natural_orbitals",
 ]

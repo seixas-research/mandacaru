@@ -968,6 +968,11 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             units=self._length_unit_label(),
             title=f"ADAPT-VQE ({self.pool.__class__.__name__}, "
                   f"{self.n_qubits} qubits)")
+        # The basis that ran (defaults resolved, radii, dataset files) has a
+        # block of its own; absent in direct mode, where no basis was built.
+        report = self._basis_report()
+        if report is not None:
+            logger.write_basis(*report)
         logger.write_electrons(self._electron_fields())
         # The screening gradient is an expectation value of the Hamiltonian's
         # commutator, so it is in Hartree whatever unit the energy columns use
@@ -998,9 +1003,26 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         What the run screens *over*, next to the gradient group that says how it
         screens.  A subclass that adds a setting of its own extends this.
         """
+        shots = (f"{self.shots}" if self.shots
+                 else "0 (exact expectation values)")
         return {"pool": getattr(self.pool, "name", "?"),
                 "pool_class": self.pool.__class__.__name__,
-                "pool_size": len(self._pool_ops)}
+                "pool_size": len(self._pool_ops),
+                # How each growth step is optimized and where it executes --
+                # until now only the standard-output header said, and that
+                # header is off whenever this file is written.
+                "reoptimize_all_parameters": str(self.quenching),
+                "state_vector_backend": self._backend_description(),
+                "device": str(self.device),
+                "backend_provider": str(self.backend_provider),
+                "circuit_execution": str(self.execute_circuits),
+                "shots": shots,
+                # With profiling off the 1q / cnot / depth columns are dashes
+                # and the summary has no gate counts: the log has to say why,
+                # or an unprofiled run reads like a broken one.
+                "circuit_profiling": (
+                    "True" if self.profile else
+                    "False (no 1q / cnot / depth: pass profile=True)")}
 
     def _lineage_fields(self, restored=None) -> dict:
         """Closing ``[OPTIMIZATION SETUP]`` lines: what this run was resumed from.
@@ -1019,6 +1041,18 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             "resume_same_hamiltonian": bool(restored.get("same_problem", True)),
         }
 
+    def _spin_polarized_label(self) -> str:
+        """Whether the reference is open-shell, with its multiplicity.
+
+        Read from the particle numbers, not from the ``spin`` flag: that flag
+        is only a fallback request, and an odd electron count or the geometry's
+        magnetic moments make a doublet or a triplet with it left ``False`` --
+        which is what this line used to print for them.
+        """
+        n_alpha, n_beta = (int(n) for n in self.num_particles)
+        return (f"{n_alpha != n_beta} "
+                f"(multiplicity {abs(n_alpha - n_beta) + 1})")
+
     def _electron_fields(self) -> dict:
         """The ``[ELECTRONS]`` block: how the electronic problem was posed.
 
@@ -1030,12 +1064,30 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         orbitals = (getattr(self, "n_spatial_orbitals", None)
                     or self.pool.n_spatial_orbitals)
+        frozen = self.frozen_core if self.frozen_core else "none"
+        if self.frozen_orbitals:
+            frozen = f"orbitals {list(self.frozen_orbitals)}"
+        # The basis is not here: the [BASIS] block owns it.  The grid is -- the
+        # requested spacing and what the cell turned it into, which is the
+        # number a comparison with another real-space code needs.
+        grid = getattr((getattr(self, "_gradient_context", None) or {})
+                       .get("integrals"), "grid", None)
+        realized = None
+        if grid is not None:
+            from ..units import BOHR_TO_ANGSTROM
+            spacing = " x ".join(f"{d * BOHR_TO_ANGSTROM:.4f}"
+                                 for d in (grid.dx, grid.dy, grid.dz))
+            realized = (f"{grid.nx} x {grid.ny} x {grid.nz} "
+                        f"(spacing {spacing} Angstrom)")
         return {
-            "basis": self._basis_description(),
-            "grid spacing": f"{self.h:g} Angstrom",
+            "grid spacing": f"{self.h:g} Angstrom (requested)",
+            "grid points": realized,
             "kinetic operator": self.kinetic or "finite difference",
             "k-points": self._kpts_label(),
-            "spin-polarized": str(self.spin),
+            "charge": str(self.charge),
+            "spin-polarized": self._spin_polarized_label(),
+            "reference state": str(self.initial_state),
+            "frozen core": str(frozen),
             "mapping": MAPPING_LABELS.get(str(self.mapping), str(self.mapping)),
             "Hamiltonian": f"{len(self.hamiltonian.simplify().terms)} "
                            f"Pauli terms",
@@ -1635,7 +1687,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             ("grid spacing", f"{self.h:g} Angstrom"),
             ("kinetic operator", self.kinetic or "finite difference"),
             ("k-points", self._kpts_label()),
-            ("spin-polarized", str(self.spin)),
+            ("spin-polarized", self._spin_polarized_label()),
             ("reference state", str(self.initial_state)),
             ("frozen core", str(frozen)),
             None,
