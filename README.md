@@ -44,7 +44,8 @@ from ase import Atoms
 from mandacaru import Mandacaru
 
 atoms = Atoms("LiH",
-              positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.6]],
+              positions=[[0.0, 0.0, 0.0],
+                         [0.0, 0.0, 1.6]],
               cell=[10.0, 10.0, 10.0])
 atoms.center()                                      # the cell is the real-space box
 
@@ -77,14 +78,18 @@ import numpy as np
 from ase import Atoms
 from mandacaru import Mandacaru
 
-distances = np.linspace(1.2, 3.0, 10)               # Å
+distances = np.linspace(1.2, 3.0, 10)
 energies = []
 for d in distances:
-    atoms = Atoms("LiH", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, d]], cell=[10.0, 10.0, 10.0])
+    atoms = Atoms("LiH",
+                  positions=[[0.0, 0.0, 0.0],
+                             [0.0, 0.0, d]],
+                  cell=[10.0, 10.0, 10.0])
     atoms.center()
+
     atoms.calc = Mandacaru(method="adapt-vqe",
                            basis={"name": "PAW", "size": "DZP"},
-                           h=0.25,
+                           h=0.10,
                            pool="fermionic",
                            optimizer="L-BFGS-B")
     energies.append(atoms.get_potential_energy())
