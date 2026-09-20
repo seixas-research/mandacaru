@@ -11,9 +11,31 @@ python -m http.server 8000 --directory docs/_build/html
 ```
 
 Open `http://localhost:8000`. A build warning is treated as a failure both locally
-and on Read the Docs. Scientific figures are stored in `_static`; the build does
+and on Read the Docs (`fail_on_warning: true` in `.readthedocs.yaml`), so a single
+unresolved cross-reference fails the whole build and the site keeps serving the
+previous version. Scientific figures are stored in `_static`; the build does
 not execute simulations. See [the LiH scan](tutorial/pes_scan.md) to regenerate
 its PNG, CSV and calculation metadata.
+
+## Linking to a section
+
+`myst_heading_anchors` is **not** enabled, so MyST generates no anchors from
+headings and `[text](page.md#some-heading-slug)` resolves to nothing. Give the
+section an explicit target instead, on the line above its heading, and link to
+that name from anywhere in the manual:
+
+```markdown
+(references-bib)=
+## `references.bib`: what the run should cite
+```
+
+```markdown
+... the way a variational run does (see [`references.bib`](#references-bib)).
+```
+
+`test/test_docs_links.py` checks this without building: it fails on a link to a
+heading slug, on a `#target` nothing defines, and on a link to a page that does
+not exist.
 
 ## American English and readable source
 

@@ -112,11 +112,13 @@ class VQE(DeflationMixin, VariationalDriver):
         ``state(theta)`` and ``reference_state()`` (e.g.
         :class:`~mandacaru.circuits.ansatz.UCCSD`).  Omit in calculator mode; a
         UCCSD ansatz is then built from the geometry.
-    optimizer : str or Optimizer
-        Method name -- one of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``,
-        ``"SLSQP"`` (default), ``"Adam"``, ``"L-BFGS-B"`` -- or a pre-built
-        :class:`~mandacaru.optimizers.optim.Optimizer`, which is how the
-        iteration budget and the tolerance are set.
+    optimizer : str, dict or Optimizer
+        A method name -- one of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``,
+        ``"SLSQP"`` (default), ``"Adam"``, ``"L-BFGS-B"`` -- taking the
+        library's budget and tolerance; ``{"method": ..., "maxiter": ...,
+        "tol": ...}`` setting them without importing anything; or a pre-built
+        :class:`~mandacaru.optimizers.optim.Optimizer`, which is what the dict
+        builds.
     verbose : bool
         Print the run configuration (the qubit Hamiltonian as a term count) and
         a timing / resources summary to standard output (default ``True``).

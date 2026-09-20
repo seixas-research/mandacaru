@@ -17,7 +17,7 @@ System:
 ├── user:         leseixas
 ├── hostname:     safira
 ├── cwd:          /Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru/examples
-└── PID:          19960
+└── PID:          23887
 
 Python:
 ├── version:    3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:04:32) [Clang 20.1.8 ]
@@ -48,6 +48,8 @@ Dependencies:
         a3 = [  0.0000000000   0.0000000000   8.0000000000]
     cell_lengths: a=8.0000000000 b=8.0000000000 c=8.0000000000
     cell_angles: alpha=90.000000 beta=90.000000 gamma=90.000000
+    pbc: a=True b=True c=True (3-D, periodic along a, b, c)
+    initial_magnetic_moments: [1.0, 1.0]
 
 [BASIS]
     name: FAO
@@ -130,20 +132,20 @@ Dependencies:
 [PERFORMANCE]
     step: 1
     stages (wall-clock seconds):
-        gradient screening                          0.0022
-        parameter optimization                      0.0724
-        circuit profiling                           0.3004
-        integration: one-body integrals             0.0019
-        integration: two-body integrals (fft)       0.1651
+        gradient screening                          0.0021
+        parameter optimization                      0.0670
+        circuit profiling                           0.2743
+        integration: one-body integrals             0.0017
+        integration: two-body integrals (fft)       0.1503
         --------------------------------------------------
-        sum of timed stages                         0.5420
-    untimed_s: 0.7297
-    wall_time_s: 1.2717
-    solver_wall_time_s: 1.2715
+        sum of timed stages                         0.4954
+    untimed_s: 0.6524
+    wall_time_s: 1.1478
+    solver_wall_time_s: 1.1476
     integration_backend: C (OpenMP)
     openmp_threads: 8
     cpu_count: 8
     mpi: not used (single process, shared-memory OpenMP)
-    peak_memory_MiB: 369.9
+    peak_memory_MiB: 384.9
     resident_memory_MiB: n/a
 ========================================================================

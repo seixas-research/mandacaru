@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import shutil
 import warnings
+from collections import namedtuple
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -156,26 +157,39 @@ def _unique_frequencies(eigenvalues: np.ndarray, tol: float = 1e-7) -> np.ndarra
     return np.unique(rounded)
 
 
-def _resolve_geometry(geometry):
-    """Normalize ``geometry`` to ``(symbols, positions, cell)`` for logging.
+#: What the ``[SYSTEM]`` block needs from a geometry.  ``pbc`` and ``magmoms``
+#: are ``None`` for an input that carries neither -- a bare
+#: ``(symbols, positions)`` pair -- which the block then reports as unknown
+#: rather than inventing a default.
+LoggedGeometry = namedtuple("LoggedGeometry",
+                            "symbols positions cell pbc magmoms")
 
-    Accepts an ASE ``Atoms`` object (symbols/positions/cell read directly), a
+
+def _resolve_geometry(geometry) -> LoggedGeometry:
+    """Normalize ``geometry`` to a :class:`LoggedGeometry` for logging.
+
+    Accepts an ASE ``Atoms`` object (symbols, positions, cell, periodic
+    directions and initial magnetic moments read directly), a
     ``(symbols, positions)`` pair, or ``None``.  ``cell`` is ``None`` for a
     non-periodic input.
     """
     if geometry is None:
-        return None, None, None
+        return LoggedGeometry(None, None, None, None, None)
     # ASE Atoms: duck-typed to avoid a hard dependency here.
     if hasattr(geometry, "get_chemical_symbols") and \
             hasattr(geometry, "get_positions"):
-        symbols = list(geometry.get_chemical_symbols())
-        positions = np.asarray(geometry.get_positions(), dtype=float)
         cell = np.asarray(geometry.get_cell(), dtype=float)
-        cell = cell if np.any(cell) else None
-        return symbols, positions, cell
+        return LoggedGeometry(
+            symbols=list(geometry.get_chemical_symbols()),
+            positions=np.asarray(geometry.get_positions(), dtype=float),
+            cell=cell if np.any(cell) else None,
+            pbc=np.asarray(geometry.get_pbc(), dtype=bool),
+            magmoms=np.asarray(geometry.get_initial_magnetic_moments(),
+                               dtype=float))
     # (symbols, positions) pair.
     symbols, positions = geometry
-    return list(symbols), np.asarray(positions, dtype=float), None
+    return LoggedGeometry(list(symbols), np.asarray(positions, dtype=float),
+                          None, None, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -351,12 +365,13 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         Hartree-Fock reference.  Inferred from the pool object otherwise.
     n_spatial_orbitals : int, optional
         Number of spatial orbitals; required to build a pool from a name.
-    optimizer : str or Optimizer
-        Classical optimizer for the inner re-optimization.  Either a method name
-        -- one of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``, ``"SLSQP"``
-        (default), ``"Adam"``, ``"L-BFGS-B"`` -- or a pre-built
-        :class:`~mandacaru.optimizers.optim.Optimizer` instance, which is how
-        the iteration budget and the tolerance are set.
+    optimizer : str, dict or Optimizer
+        Classical optimizer for the inner re-optimization.  A method name --
+        one of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``, ``"SLSQP"``
+        (default), ``"Adam"``, ``"L-BFGS-B"`` -- takes the library's budget and
+        tolerance; ``{"method": ..., "maxiter": ..., "tol": ...}`` sets them
+        without importing anything; a pre-built
+        :class:`~mandacaru.optimizers.optim.Optimizer` is what the dict builds.
     mapping : str
         Fermion-to-qubit mapping -- one of ``"jordan_wigner"`` (default),
         ``"parity"``, ``"bravyi_kitaev"`` -- used when ``hamiltonian`` is a
@@ -1105,8 +1120,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             return None
         from ..utils.logging import AdaptOutputLogger
 
-        symbols, positions, geom_cell = _resolve_geometry(geometry)
-        cell = geom_cell if cell is None else cell
+        resolved = _resolve_geometry(geometry)
+        symbols, positions = resolved.symbols, resolved.positions
+        cell = resolved.cell if cell is None else cell
 
         # Geometry from ASE is in Angstrom; convert to Bohr only if requested.
         if self.atomic_units:
@@ -1118,6 +1134,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         logger = AdaptOutputLogger(output_file, n_qubits=self.n_qubits)
         logger.write_system(
             symbols=symbols, positions=positions, cell=cell,
+            pbc=resolved.pbc, magmoms=resolved.magmoms,
             units=self._length_unit_label(),
             title=f"ADAPT-VQE ({self.pool.__class__.__name__}, "
                   f"{self.n_qubits} qubits)")

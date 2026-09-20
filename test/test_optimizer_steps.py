@@ -23,7 +23,9 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.optimizers import NAMED_OPTIMIZERS, Optimizer
+from mandacaru.optimizers import (DEFAULT_OPTIMIZER, DEFAULT_TOL,
+                                  NAMED_OPTIMIZERS, Optimizer)
+from mandacaru.optimizers.optim import OPTIMIZER_KEYS, resolve_optimizer
 from mandacaru.utils.logging import AdaptOutputLogger, parse_output
 
 # The classical optimizers used below, with the iteration budget and
@@ -105,6 +107,60 @@ class TestEveryOptimizerReportsItsSteps:
         search = Optimizer(method="Nelder-Mead", maxiter=500,
                            tol=1e-10).minimize(quadratic, np.zeros(4))
         assert gradient.nit < search.nit
+
+
+class TestTheDictForm:
+    """``optimizer={"method": ..., "maxiter": ..., "tol": ...}``.
+
+    The point is that setting the budget and the tolerance should not require
+    importing :class:`~mandacaru.optimizers.Optimizer` into a script that
+    otherwise only imports :class:`~mandacaru.Mandacaru`.
+    """
+
+    def test_it_builds_the_same_optimizer_as_the_object(self):
+        spec = {"method": "COBYLA", "maxiter": 500, "tol": 1e-9}
+        built = resolve_optimizer(spec)
+        assert (built.method, built.maxiter, built.tol) == \
+            ("COBYLA", 500, 1e-9)
+
+    def test_keys_left_out_keep_their_defaults(self):
+        built = resolve_optimizer({"maxiter": 500})
+        assert built.method == DEFAULT_OPTIMIZER
+        assert (built.maxiter, built.tol) == (500, DEFAULT_TOL)
+        assert resolve_optimizer({}).method == DEFAULT_OPTIMIZER
+
+    def test_the_other_constructor_keys_work_too(self):
+        built = resolve_optimizer({"method": "SPSA", "options": {"a": 0.1},
+                                   "seed": 7})
+        assert built.seed == 7 and built.options == {"a": 0.1}
+        assert set(OPTIMIZER_KEYS) == {"method", "maxiter", "tol", "options",
+                                       "seed"}
+
+    def test_an_unknown_key_is_refused_as_the_typo_it_is(self):
+        with pytest.raises(ValueError, match="unknown optimizer option"):
+            resolve_optimizer({"maxiterations": 5})
+
+    def test_an_unknown_method_is_refused_like_the_string_form(self):
+        with pytest.raises(ValueError, match="unknown optimizer"):
+            resolve_optimizer({"method": "nope"})
+
+    def test_something_else_entirely_is_a_type_error(self):
+        with pytest.raises(TypeError, match="method name, a dict"):
+            resolve_optimizer(3)
+
+    def test_the_calculator_takes_it(self):
+        atoms = lih()
+        atoms.calc = adapt(optimizer={"method": "COBYLA", "maxiter": 500,
+                                      "tol": 1e-9})
+        atoms.get_total_energy()
+        built = atoms.calc.solver.optimizer
+        assert (built.method, built.maxiter, built.tol) == \
+            ("COBYLA", 500, 1e-9)
+        assert atoms.calc.result.optimizer_steps > 0
+
+    def test_a_bad_dict_is_refused_at_construction(self):
+        with pytest.raises(ValueError, match="unknown optimizer option"):
+            adapt(optimizer={"method": "COBYLA", "iterations": 5})
 
 
 class TestTheDriverAccumulatesThem:

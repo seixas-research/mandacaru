@@ -171,7 +171,7 @@ See `examples/31_QPE_H2_from_checkpoint.py`.
 
 Phase estimation runs from a checkpoint, outside any driver, so nothing writes
 a bibliography for it the way a variational run does (see
-[`references.bib`](run_output.md#referencesbib-what-the-run-should-cite)). Ask
+[`references.bib`](#references-bib)). Ask
 for the keys and write them yourself:
 
 ```python

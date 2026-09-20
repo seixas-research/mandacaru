@@ -71,7 +71,6 @@ from mandacaru.integrals import Grid
 from pes_utils import atomic_reference
 
 # All generated files (logs, CSV, plots) go to examples/data/.
-from mandacaru.optimizers import Optimizer
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
@@ -111,9 +110,9 @@ def solve(distance, pool, mapping):
                            basis=BASIS,
                            mapping=mapping,
                            h=GRID_SPACING,
-                           optimizer=Optimizer(method="L-BFGS-B",
-                                               maxiter=2000,
-                                               tol=1e-12),
+                           optimizer={"method": "L-BFGS-B",
+                                      "maxiter": 2000,
+                                      "tol": 1e-12},
                            profile=False,
                            max_iterations=MAX_ITERATIONS,
                            gradient_tolerance=1e-5)

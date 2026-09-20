@@ -66,7 +66,6 @@ from mandacaru.algorithms.expressivity import (active_space_dimension,
                                                sample_pqc_fidelities)
 
 # All generated files (logs, CSV, plots) go to examples/data/.
-from mandacaru.optimizers import Optimizer
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
@@ -146,9 +145,9 @@ calc = Mandacaru(method="adapt-vqe",
                  pool=POOL,
                  load_hamiltonian=HAMILTONIAN_FILE,
                  profile=False,
-                 optimizer=Optimizer(method="L-BFGS-B",
-                                     maxiter=2000,
-                                     tol=1e-12),
+                 optimizer={"method": "L-BFGS-B",
+                            "maxiter": 2000,
+                            "tol": 1e-12},
                  max_iterations=MAX_ITERATIONS,
                  gradient_tolerance=1e-6)
 result = calc.run(callback=record)

@@ -313,7 +313,24 @@ class Mandacaru(Calculator):
         heavy-atom force problem and is not the gradient of the computed energy.
         See :func:`~mandacaru.algorithms.forces.hellmann_feynman_gradient` for the
         measurements.
-    charge, frozen_core, frozen_orbitals, mapping, optimizer, pool, ... :
+    optimizer : str, dict or Optimizer
+        The classical optimizer, forwarded to the solver.  A **method name**
+        (``"SLSQP"``, the default, ``"COBYLA"``, ``"Nelder-Mead"``, ``"SPSA"``,
+        ``"Adam"``, ``"L-BFGS-B"``) takes the library's budget and tolerance; a
+        **dict** sets them without importing anything::
+
+            Mandacaru(method="adapt-vqe",
+                      basis="FAO",
+                      optimizer={"method": "SLSQP",
+                                 "maxiter": 2000,
+                                 "tol": 1e-12})
+
+        Keys left out keep their defaults, and ``options`` / ``seed`` are
+        accepted too (:data:`~mandacaru.optimizers.optim.OPTIMIZER_KEYS`); an
+        unknown key is refused as the typo it is.  A pre-built
+        :class:`~mandacaru.optimizers.Optimizer` works as well and is what the
+        dict builds.
+    charge, frozen_core, frozen_orbitals, mapping, pool, ... :
         Forwarded to the solver selected by ``method``.
     dry_run : bool
         Forwarded too: with ``dry_run=True`` every evaluation only *estimates*

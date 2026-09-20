@@ -21,7 +21,6 @@ from pathlib import Path
 import tempfile
 
 import numpy as np
-from mandacaru.optimizers import Optimizer
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "docs/source/_static/lih"
@@ -92,9 +91,9 @@ def calculate(output: Path, spacing: float, half_width: float,
                     for pool in POOLS:
                         settings = dict(
                             method="adapt-vqe", pool=pool,
-                            optimizer=Optimizer(method="L-BFGS-B",
-                                                maxiter=1000,
-                                                tol=1e-12),
+                            optimizer={"method": "L-BFGS-B",
+                                       "maxiter": 1000,
+                                       "tol": 1e-12},
                             gradient="analytic", gradient_tolerance=1e-5,
                             max_iterations=max_iterations,
                             sparse=True, sector=(pool != "qubit"),

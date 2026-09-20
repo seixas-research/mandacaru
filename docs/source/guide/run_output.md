@@ -128,7 +128,7 @@ of blocks -- energies then forces, one pair per step -- in one file:
 ========================================================================
     ADAPT-VQE (CEOPool, 12 qubits)
 ========================================================================
-[SYSTEM]                        step: 1, this geometry, the cell
+[SYSTEM]                        step: 1, this geometry, its cell and spins
 [BASIS]                         the basis that ran: options, radii, datasets
 [ELECTRONS]                     grid, reference, mapping, register, Hamiltonian
 [OPTIMIZATION SETUP]            the optimizer, the gradient, the operator pool
@@ -170,16 +170,18 @@ read off the left margin:
     cell_vectors:
         a1 = [ 10.0000000000   0.0000000000   0.0000000000]
     cell_lengths: a=10.0000000000 b=10.0000000000 c=10.0000000000
+    pbc: a=False b=False c=False (non-periodic)
+    initial_magnetic_moments: [0.0, 0.0, 0.0]
 
 [BASIS]
     name: PAW
     family: PAW (projector augmented wave (Bloechl 1994), frozen core, ...)
     size: SZ
-    zeta_split: tail_norm 0.16, 0.3, 0.6 (GPAW: norm of the tail, every zeta split from the first)
+    zeta_split: tail_norm 0.16, 0.3, 0.6 (norm of the tail, every zeta split from the first)
     projector_basis: raw
     energy_shift: 0.1 eV
     confinement_potential: A exp(-(r_c - r_i)/(r - r_i)) / (r_c - r), A = 12 Ha, r_i = 0.6 r_c
-    polarization: gaussian (GPAW quasi-Gaussian: r^l [exp(-r^2/r_char^2) - (a - b r^2)], further shells split from it)
+    polarization: gaussian (quasi-Gaussian: r^l [exp(-r^2/r_char^2) - (a - b r^2)], further shells split from it)
     filter: filtered (auto: 1 x Nyquist)
     filter_cutoff: 16.6244 Bohr^-1 (3760.30 eV)
     local_potential: range-separated: long range on the grid, short range on atom-centered quadrature (sigma = 0.2646 Bohr)
@@ -296,6 +298,13 @@ is in the file, because that header is off whenever the file is written.
 the configuration the standard-output header used to carry, which is why it is in
 the file now that the trace is routed there. `[OPTIMIZATION SETUP]` keeps what is
 left: *how* it was solved.
+
+Two of `[SYSTEM]`'s lines are easy to miss and worth naming:
+
+| Line | Meaning |
+| :--- | :--- |
+| `pbc` | Whether each lattice direction is periodic, plus what the flags add up to: `a=True b=False c=False (1-D, periodic along a)`. **Not the same fact as `cell_present`** -- Mandacaru always needs a cell, because it is the real-space box the grid is cut from, so a molecule has one and is still `(non-periodic)`. |
+| `initial_magnetic_moments` | The geometry's per-atom moments, in atom order, as the same list a caller passes to `Atoms(magmoms=...)`: `[1.0, -1.0]`. It lines up index for index with the `geometry:` rows and reads back with `ast.literal_eval`. They are what selects the spin state (a triplet comes from `Atoms(..., magmoms=[1, 1])`, not from a flag), so a run given them says so. A closed-shell geometry is `[0.0, 0.0]` rather than a word -- an all-zero list cannot be confused with nobody having looked, which is `(not provided)`. |
 
 ### `[OPTIMIZATION SETUP]`: how the run was configured
 
@@ -588,6 +597,7 @@ next run -- use `save_hamiltonian=` and `load_hamiltonian=` instead; see
 [the Hamiltonian cache](hamiltonian_cache.md).
 ```
 
+(references-bib)=
 ## `references.bib`: what the run should cite
 
 A run also writes the bibliography of the methods it used, in BibTeX, ready to

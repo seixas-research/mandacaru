@@ -21,7 +21,6 @@ from ase.optimize import BFGS
 from mandacaru import Mandacaru
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-from mandacaru.optimizers import Optimizer
 os.makedirs(DATA, exist_ok=True)
 
 atoms = Atoms("LiH",
@@ -35,9 +34,9 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        h=0.10,
                        pool="ceo",
                        mapping="jordan_wigner",
-                       optimizer=Optimizer(method="L-BFGS-B",
-                                           maxiter=2000,
-                                           tol=1e-12),
+                       optimizer={"method": "L-BFGS-B",
+                                  "maxiter": 2000,
+                                  "tol": 1e-12},
                        max_iterations=80,
                        gradient_tolerance=1e-5,
                        output='output.txt')

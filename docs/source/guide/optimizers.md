@@ -2,29 +2,50 @@
 
 Every variational run ends its inner loop in a classical minimization over the
 ansatz parameters — once for `method="vqe"`, once per growth step for
-ADAPT-VQE. The `optimizer=` argument picks the method, by name or as a
-configured {class}`~mandacaru.optimizers.Optimizer`:
+ADAPT-VQE. The `optimizer=` argument picks it, in any of three equivalent
+spellings.
+
+A **method name** takes the library's budget and tolerance:
 
 ```python
 from mandacaru import Mandacaru
+
+calc = Mandacaru(method="adapt-vqe",
+                 basis="FAO",
+                 h=0.30,
+                 pool="qubit",
+                 optimizer="L-BFGS-B")
+```
+
+A **dict** sets them, with nothing extra to import:
+
+```python
+calc = Mandacaru(method="adapt-vqe",
+                 basis="FAO",
+                 h=0.30,
+                 pool="qubit",
+                 optimizer={"method": "L-BFGS-B",
+                            "maxiter": 2000,
+                            "tol": 1e-12})
+```
+
+Keys left out keep their defaults, so `{"maxiter": 500}` is the default method
+on a shorter budget. `options` and `seed` are accepted too
+({data}`~mandacaru.optimizers.optim.OPTIMIZER_KEYS`), and an unknown key is
+refused as the typo it is.
+
+An {class}`~mandacaru.optimizers.Optimizer` is what the dict builds, and is
+worth importing when the same configuration is reused across runs:
+
+```python
 from mandacaru.optimizers import Optimizer
 
+spsa = Optimizer(method="SPSA", maxiter=500, tol=1e-6, options={"a": 0.1})
 calc = Mandacaru(method="adapt-vqe",
                  basis="FAO",
                  h=0.30,
                  pool="qubit",
-                 optimizer=Optimizer(method="L-BFGS-B",
-                                     maxiter=2000,
-                                     tol=1e-12))
-
-calc = Mandacaru(method="adapt-vqe",
-                 basis="FAO",
-                 h=0.30,
-                 pool="qubit",
-                 optimizer=Optimizer(method="SPSA",
-                                     maxiter=500,
-                                     tol=1e-6,
-                                     options={"a": 0.1}))
+                 optimizer=spsa)
 ```
 
 The names are in {data}`~mandacaru.optimizers.NAMED_OPTIMIZERS`: **SPSA**,
@@ -36,9 +57,9 @@ has no equivalent.
 
 A bare name is shorthand for the defaults
 ({data}`~mandacaru.optimizers.DEFAULT_MAXITER` = 1000 and
-{data}`~mandacaru.optimizers.DEFAULT_TOL` = `1e-8`); the examples and the test
-suite construct an `Optimizer` and write both out, because a run that pins an
-energy should say what it was optimized with.
+{data}`~mandacaru.optimizers.DEFAULT_TOL` = `1e-12`); a run that pins an energy
+should say what it was optimized with, so the examples write both out through
+the dict and the test suite through module-level `Optimizer` constants.
 
 ```{note}
 The default tolerance is **explicit and tight on purpose**. Several methods'

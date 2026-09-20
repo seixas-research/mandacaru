@@ -209,10 +209,10 @@ class AdaptOutputLogger:
     # -- metadata / initialization block ----------------------------------- #
 
     def write_system(self, symbols: Sequence[str] | None = None,
-                     positions=None, cell=None,
+                     positions=None, cell=None, pbc=None, magmoms=None,
                      units: str = "Angstrom", title: str = "ADAPT-VQE run",
                      extra: dict | None = None) -> None:
-        """Write the ``[SYSTEM]`` block: this step's geometry and its cell.
+        """Write the ``[SYSTEM]`` block: this step's geometry, cell and spins.
 
         Parameters
         ----------
@@ -223,6 +223,16 @@ class AdaptOutputLogger:
         cell : (3, 3) array_like, optional
             Lattice/cell tensor (rows are lattice vectors) in ``units``.  ``None``
             (or an all-zero matrix) means a non-periodic molecule.
+        pbc : (3,) array_like of bool, optional
+            Whether each lattice direction is periodic.  A cell and periodicity
+            are **different facts** -- Mandacaru always needs a cell, because it
+            is the real-space box the grid is cut from, while ``pbc`` says
+            whether the system repeats along each of its vectors -- so the block
+            reports both.  ``None`` when the geometry did not carry it.
+        magmoms : (N,) array_like, optional
+            Initial magnetic moments, one per atom.  They select the spin state
+            (`resolve_num_unpaired`), so a run that was given them should say
+            so; ``None`` when the geometry did not carry them.
         units : str
             Length unit label for the geometry and cell.
         title : str
@@ -267,6 +277,14 @@ class AdaptOutputLogger:
         else:
             self._emit_body("cell_present: False",
                             "cell_vectors: (non-periodic)")
+
+        # Periodicity per direction.  Not derivable from the cell: Mandacaru
+        # always has one (it is the grid's box), periodic or not.
+        self._emit_body(f"pbc: {_pbc_text(pbc)}")
+
+        # Initial magnetic moments, when the geometry carried any.  Reported
+        # per atom by 1-based index, matching the geometry rows above.
+        self._emit_body(f"initial_magnetic_moments: {_magmom_text(magmoms)}")
         self._emit("")
 
     # -- basis block ------------------------------------------------------- #
@@ -603,6 +621,43 @@ class AdaptOutputLogger:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+def _pbc_text(pbc) -> str:
+    """The ``pbc:`` value: one flag per lattice direction, plus what they mean.
+
+    ``a=True b=False c=False (1-D, periodic along a)`` reads the same way to a
+    person and to the parser, which splits on the first colon only.
+    """
+    if pbc is None:
+        return "(not provided)"
+    flags = [bool(x) for x in np.atleast_1d(pbc)]
+    if len(flags) == 1:                       # ASE accepts a scalar
+        flags = flags * 3
+    names = "abc"[:len(flags)]
+    cells = " ".join(f"{name}={flag}" for name, flag in zip(names, flags))
+    periodic = [name for name, flag in zip(names, flags) if flag]
+    if not periodic:
+        return f"{cells} (non-periodic)"
+    return (f"{cells} ({len(periodic)}-D, periodic along "
+            f"{', '.join(periodic)})")
+
+
+def _magmom_text(magmoms) -> str:
+    """The ``initial_magnetic_moments:`` value: one list, in atom order.
+
+    ``[1.0, -1.0]`` -- the same literal a caller would pass to
+    ``Atoms(magmoms=...)``, so it reads back with ``ast.literal_eval`` and
+    lines up index for index with the ``geometry:`` rows above.  A
+    closed-shell geometry is ``[0.0, 0.0]`` rather than a word: the list says
+    what was asked for either way, and an all-zero one cannot be confused with
+    nobody having looked, which is ``(not provided)``.
+    """
+    if magmoms is None:
+        return "(not provided)"
+    values = np.atleast_1d(np.asarray(magmoms, dtype=float))
+    # repr() of a float keeps the decimal point and round-trips exactly.
+    return "[" + ", ".join(repr(float(value)) for value in values) + "]"
 
 
 def _geometry_rows(symbols: Sequence[str], positions) -> list[str]:

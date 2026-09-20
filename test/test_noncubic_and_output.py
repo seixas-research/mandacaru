@@ -917,6 +917,68 @@ class TestStandardOutputIsTheASETable:
         assert parsed["performance"]["wall_time_s"] > 0
 
 
+class TestSystemBlock:
+    """``[SYSTEM]`` records the geometry the step was run on.
+
+    A cell and periodicity are different facts -- Mandacaru always needs a cell
+    (it is the box the real-space grid is cut from), while ``pbc`` says whether
+    the system repeats along each of its vectors -- so the block reports both.
+    Initial magnetic moments select the spin state, so a run given them has to
+    say so.
+    """
+
+    def _system(self, tmp_path, name, **atoms_options):
+        out = str(tmp_path / f"{name}.txt")
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
+                      cell=[6.0] * 3, **atoms_options)
+        atoms.center()
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.45,
+                               pool="fermionic", max_iterations=1,
+                               output=out, trace=False, profile=False)
+        atoms.get_potential_energy()
+        return parse_output(out)["system"]
+
+    def test_periodicity_is_reported_per_direction(self, tmp_path):
+        system = self._system(tmp_path, "full", pbc=True)
+        assert system["pbc"].startswith("a=True b=True c=True")
+        assert "3-D" in system["pbc"]
+
+    def test_a_partly_periodic_cell_names_its_directions(self, tmp_path):
+        system = self._system(tmp_path, "chain", pbc=[True, False, False])
+        assert system["pbc"].startswith("a=True b=False c=False")
+        assert "1-D" in system["pbc"] and "periodic along a" in system["pbc"]
+
+    def test_a_molecule_says_non_periodic(self, tmp_path):
+        system = self._system(tmp_path, "molecule", pbc=False)
+        assert system["pbc"] == "a=False b=False c=False (non-periodic)"
+        # ... and still has a cell, which is the point of reporting both.
+        assert system["cell_present"] == "True"
+
+    def test_initial_magnetic_moments_are_reported_as_a_list(self, tmp_path):
+        system = self._system(tmp_path, "triplet", pbc=True, magmoms=[1, -1])
+        assert system["initial_magnetic_moments"] == "[1.0, -1.0]"
+
+    def test_the_list_reads_back_as_the_literal_that_was_passed(self,
+                                                                tmp_path):
+        """It is the same list a caller hands to ``Atoms(magmoms=...)``."""
+        import ast
+        system = self._system(tmp_path, "roundtrip", pbc=True,
+                              magmoms=[0.5, -0.25])
+        assert ast.literal_eval(system["initial_magnetic_moments"]) == \
+            [0.5, -0.25]
+
+    def test_no_moments_is_a_list_of_zeros_not_silence(self, tmp_path):
+        """A reader must be able to tell nobody set them from nobody looked."""
+        system = self._system(tmp_path, "closed", pbc=True)
+        assert system["initial_magnetic_moments"] == "[0.0, 0.0]"
+
+    def test_a_geometry_without_them_reports_them_as_unknown(self):
+        """A ``(symbols, positions)`` pair carries neither fact."""
+        from mandacaru.utils.logging import _magmom_text, _pbc_text
+        assert _pbc_text(None) == "(not provided)"
+        assert _magmom_text(None) == "(not provided)"
+
+
 class TestElectronsBlock:
     """``[ELECTRONS]`` records which Hamiltonian the iterations belong to.
 

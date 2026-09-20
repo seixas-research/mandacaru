@@ -97,29 +97,62 @@ _SCIPY_METHODS = ("COBYLA", "Nelder-Mead", "SLSQP", "L-BFGS-B")
 _CUSTOM_METHODS = ("SPSA", "Adam")
 
 
+#: Keys a ``dict`` form of ``optimizer=`` may carry -- the :class:`Optimizer`
+#: constructor's own arguments.  ``method`` / ``maxiter`` / ``tol`` are the
+#: three that matter; ``options`` and ``seed`` are there so the dict form is
+#: never less capable than the object it builds.
+OPTIMIZER_KEYS = ("method", "maxiter", "tol", "options", "seed")
+
+
+def _check_method(method, allowed) -> None:
+    """Refuse a method a driver does not offer, however it was spelled."""
+    if method not in allowed:
+        raise ValueError(
+            f"unknown optimizer {method!r}; use one of {tuple(allowed)}, a "
+            f"dict of {OPTIMIZER_KEYS}, or an Optimizer instance")
+
+
 def resolve_optimizer(optimizer, allowed=NAMED_OPTIMIZERS,
                       maxiter: int = 2000,
                       tol: float | None = DEFAULT_TOL) -> "Optimizer":
     """Normalize an ``optimizer`` argument to an :class:`Optimizer`.
 
-    Accepts either a pre-built :class:`Optimizer` (returned unchanged, with its
-    own ``maxiter`` / ``tol``) or a method name from ``allowed``, which is
-    wrapped in a fresh :class:`Optimizer` with the ``maxiter`` / ``tol`` given
-    here.  Shared by the VQE and ADAPT-VQE drivers so both expose the same
-    ``optimizer=`` surface.
+    Three spellings, all equivalent:
 
-    Pass an :class:`Optimizer` to control the budget and the tolerance; the
-    name is the shorthand for the defaults.
+    * a pre-built :class:`Optimizer`, returned unchanged with its own
+      ``maxiter`` / ``tol``;
+    * a **method name** from ``allowed``, wrapped in a fresh :class:`Optimizer`
+      with the ``maxiter`` / ``tol`` given here -- the shorthand for the
+      defaults;
+    * a **dict** of :data:`OPTIMIZER_KEYS`, e.g.
+      ``{"method": "SLSQP", "maxiter": 2000, "tol": 1e-12}``, which builds the
+      same object without the caller having to import :class:`Optimizer`.  Keys
+      left out fall back to this function's arguments, so
+      ``{"maxiter": 500}`` is the default method on a shorter budget.
+
+    Shared by the VQE and ADAPT-VQE drivers, so every method exposes the same
+    ``optimizer=`` surface.
     """
     if isinstance(optimizer, Optimizer):
         return optimizer
-    if isinstance(optimizer, str):
-        if optimizer not in allowed:
+    if isinstance(optimizer, dict):
+        unknown = sorted(set(optimizer) - set(OPTIMIZER_KEYS))
+        if unknown:
             raise ValueError(
-                f"unknown optimizer {optimizer!r}; use one of {tuple(allowed)} "
-                "or an Optimizer instance")
+                f"unknown optimizer option(s) {unknown}; a dict optimizer "
+                f"takes {OPTIMIZER_KEYS}")
+        spec = {"method": DEFAULT_OPTIMIZER, "maxiter": maxiter, "tol": tol,
+                **optimizer}
+        # Same validation as the string form: the dict is a spelling of it, not
+        # a way around its checks.
+        _check_method(spec["method"], allowed)
+        return Optimizer(**spec)
+    if isinstance(optimizer, str):
+        _check_method(optimizer, allowed)
         return Optimizer(method=optimizer, maxiter=maxiter, tol=tol)
-    raise TypeError("optimizer must be a method name or an Optimizer instance")
+    raise TypeError(
+        f"optimizer must be a method name, a dict of {OPTIMIZER_KEYS} or an "
+        f"Optimizer instance, got {type(optimizer).__name__}")
 
 
 class Optimizer:

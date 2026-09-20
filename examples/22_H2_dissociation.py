@@ -46,7 +46,6 @@ from pes_utils import (GridSpec, atomic_reference, commensurate_distances,
                        molecule_positions)
 
 # All generated files (logs, CSV, plots) go to examples/data/.
-from mandacaru.optimizers import Optimizer
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
@@ -62,10 +61,9 @@ DISTANCES = commensurate_distances(0.42, 3.0, GRID_SPEC)
 METHOD_OPTIONS = {
     "adapt-vqe": {},
 }
-SOLVER = dict(pool="qeb", basis="FAO", optimizer=Optimizer(method="L-BFGS-B",
-                                                           maxiter=2000,
-                                                           tol=1e-12),
-              profile=False, max_iterations=10, gradient_tolerance=1e-5)
+SOLVER = dict(pool="qeb", basis="FAO", profile=False, max_iterations=10,
+              gradient_tolerance=1e-5,
+              optimizer={"method": "L-BFGS-B", "maxiter": 2000, "tol": 1e-12})
 
 
 def h2(distance: float) -> Atoms:

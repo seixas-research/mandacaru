@@ -12,9 +12,9 @@ Every growth step of ADAPT-VQE ends in a classical minimization over the
 ansatz parameters, and which optimizer runs it decides most of the classical
 cost of a run.  This compares all of
 :data:`~mandacaru.optimizers.NAMED_OPTIMIZERS` on the same 6-qubit LiH problem,
-each built explicitly as an
-:class:`~mandacaru.optimizers.Optimizer` so the iteration budget and the
-tolerance are the same for all of them.
+each configured through the ``optimizer={"method": ..., "maxiter": ...,
+"tol": ...}`` dict so the iteration budget and the tolerance are the same for
+all of them.
 
 Two different currencies are reported, and they are not interchangeable:
 
@@ -50,7 +50,7 @@ from ase.build import molecule
 
 from mandacaru import Mandacaru
 from mandacaru.optimizers import (DEFAULT_MAXITER, DEFAULT_TOL,
-                                  NAMED_OPTIMIZERS, Optimizer)
+                                  NAMED_OPTIMIZERS)
 from mandacaru.units import HARTREE_TO_EV, from_hartree
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -93,9 +93,9 @@ def run(method):
     atoms = geometry()
     atoms.calc = Mandacaru(method="adapt-vqe",
                            mapping="jordan_wigner",
-                           optimizer=Optimizer(method=method,
-                                               maxiter=MAXITER,
-                                               tol=TOL),
+                           optimizer={"method": method,
+                                      "maxiter": MAXITER,
+                                      "tol": TOL},
                            gradient_tolerance=1e-4,
                            trace=False,
                            **SETUPS[SYSTEM])

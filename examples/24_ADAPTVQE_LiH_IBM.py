@@ -47,7 +47,6 @@ os.makedirs(DATA, exist_ok=True)
 from mandacaru.units import HARTREE_TO_EV
 
 HARDWARE = None
-from mandacaru.optimizers import Optimizer
 SHOTS = 4096
 
 DISTANCES = [1.0, 1.3, 1.6, 1.9, 2.2, 2.6, 2.8]     # Angstrom
@@ -72,9 +71,9 @@ def calculator():
                      spin=False,
                      frozen_core=False,
                      initial_state="hartree-fock",
-                     optimizer=Optimizer(method="COBYLA",
-                                         maxiter=2000,
-                                         tol=1e-12),
+                     optimizer={"method": "COBYLA",
+                                "maxiter": 2000,
+                                "tol": 1e-12},
                      gradient="finite_difference",
                      max_iterations=14,
                      gradient_tolerance=1e-3,
