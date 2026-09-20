@@ -506,7 +506,7 @@ def load_hamiltonian(path, engine: str = "auto",
 
     return HamiltonianRecord(
         # The width comes from the metadata, not from the labels: a zero
-        # operator (or one whose terms cancelled) has no labels to infer it
+        # operator (or one whose terms canceled) has no labels to infer it
         # from and would load as a 0-qubit register.
         hamiltonian=PauliSum(terms, num_qubits=n_qubits),
         mapping=header.mapping, num_particles=header.num_particles,

@@ -368,6 +368,27 @@ class MolecularIntegrals(MeanFieldMixin):
     #: Backward-compatible alias of :meth:`kb_nonlocal`.
     nonlocal_matrix = kb_nonlocal
 
+    def short_range_local(self):
+        """Local-potential matrix evaluated *off* the grid, or ``None``.
+
+        A family may integrate part of its local potential more accurately than
+        the grid can: :meth:`external_potential` then samples only the
+        remainder and this hook supplies the missing ``(M, M)`` block, which is
+        added to ``T + V + C D C^dagger`` exactly like
+        :meth:`one_body_augmentation`.  PAW splits its local channel into the
+        long-range potential of a Gaussian ion (smooth, so it stays on the
+        grid) plus a short-range remainder of compact support, integrated on an
+        atom-centered spherical quadrature that is exactly translation invariant
+        -- see :class:`mandacaru.pseudopotentials.paw.PAWIntegrals` and
+        :mod:`mandacaru.pseudopotentials.local_split`.  A plain basis samples
+        its whole potential on the grid and returns ``None``.
+
+        Whatever returns something here must also change what
+        :meth:`external_potential` samples, or the two halves of the potential
+        would both be counted.
+        """
+        return None
+
     def one_body_augmentation(self):
         """One-body correction added to ``T + V + C D C^dagger``, or ``None``.
 
@@ -409,6 +430,11 @@ class MolecularIntegrals(MeanFieldMixin):
                                      energy_units="Ha", kinetic=self.kinetic)
         self.resolution_ratios = self._engine.resolution(T, kinetic=self.kinetic)
         one = T + V + self.kb_nonlocal()
+        short_range = self.short_range_local()
+        if short_range is not None:
+            # `V` above is then only the long-range half of the local potential
+            # (see `short_range_local`); this is the rest of it.
+            one = one + np.asarray(short_range)
         augmentation = self.one_body_augmentation()
         if augmentation is not None:
             one = one + np.asarray(augmentation)

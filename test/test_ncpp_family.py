@@ -129,7 +129,12 @@ class TestFamilyResolution:
         assert spec.norm_conserving is True
         assert set(spec.aliases) == {"tm", "ncpp-tm"}
         assert spec.label == "NCPP"
-        assert spec.options == ("size", "split_norm", "directory")
+        assert spec.options == ("size", "split_norm", "directory", "filter")
+        # A norm-conserving family leaves the Fourier filter opt-in: its
+        # orbitals are not built band-limited the way PAW's partial waves are.
+        assert spec.default_options == {}
+        assert spec.resolved_options() == {}
+        assert spec.resolved_options({"filter": True}) == {"filter": True}
         assert callable(spec.generate) and callable(spec.get) \
             and callable(spec.build)
         assert spec.get("H").symbol == "H"
@@ -172,9 +177,27 @@ class TestFamilyResolution:
         with pytest.raises(ValueError, match="one pseudopotential family"):
             resolve_pseudo_basis("per-element", {"O": "NCPP", "H": "PAW"},
                                  ["O", "H"])
-        with pytest.raises(ValueError, match="only 'size' and 'split_norm'"):
+        with pytest.raises(ValueError,
+                           match="only 'size', 'split_norm' and 'filter'"):
             resolve_pseudo_basis("per-element",
                                  {"O": {"name": "NCPP", "directory": "/x"},
+                                  "H": "NCPP"}, ["O", "H"])
+        # `filter` may be written per element for convenience, but it is set
+        # by the shared grid, so every element must agree -- and say so.
+        family, options = resolve_pseudo_basis(
+            "per-element", {"O": {"name": "NCPP", "size": "DZP",
+                                  "filter": True},
+                            "H": {"name": "NCPP", "filter": True}},
+            ["O", "H"])
+        assert options == {"size": {"O": "DZP", "H": "SZ"}, "filter": True}
+        with pytest.raises(ValueError, match="same for every element"):
+            resolve_pseudo_basis("per-element",
+                                 {"O": {"name": "NCPP", "filter": True},
+                                  "H": {"name": "NCPP", "filter": False}},
+                                 ["O", "H"])
+        with pytest.raises(ValueError, match="same for every element"):
+            resolve_pseudo_basis("per-element",
+                                 {"O": {"name": "NCPP", "filter": True},
                                   "H": "NCPP"}, ["O", "H"])
 
     def test_taken_names_cannot_be_reregistered(self):

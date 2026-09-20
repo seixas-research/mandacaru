@@ -56,7 +56,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "FAO"},
                        sparse=True,
                        mapping="jordan_wigner",
-                       gradient="parameter-shift",
+                       gradient="parameter_shift",
                        frozen_core=True,   # freeze the Be 1s core
                        h=0.10,
                        max_iterations=25,

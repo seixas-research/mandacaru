@@ -1,4 +1,4 @@
-# Basis sets: multiple zeta, polarisation, and the named Gaussian families
+# Basis sets: multiple zeta, polarization, and the named Gaussian families
 
 Every basis in Mandacaru is generated from scratch — there are no tabulated
 exponents anywhere in the package. This page covers the two ways to buy
@@ -25,13 +25,13 @@ contracts under a more positive environment and expands under a more negative
 one. Describing that needs a second function of the same symmetry but a
 different width.
 
-**Angular.** A bond pulls charge off-centre in a direction the shell's own
+**Angular.** A bond pulls charge off-center in a direction the shell's own
 angular momentum cannot express. A hydrogen 1s is spherical; the moment it bonds,
 the density is not. Fixing that requires $l+1$ character.
 
 ## The sizes
 
-| Name | Zetas | Polarisation shells |
+| Name | Zetas | Polarization shells |
 |------|-------|---------------------|
 | `SZ`   | 1 | – |
 | `SZP`  | 1 | 1 |
@@ -72,7 +72,7 @@ becomes two spin orbitals, hence two qubits**:
 | O  | 2s 2p | 4 | 8  | 13 | 17 | 21 |
 | Fe | 3d 4s | 6 | 12 | 19 | 25 | 31 |
 
-Polarisation is not a small addition: it adds a whole $l+1$ shell — 3 functions
+Polarization is not a small addition: it adds a whole $l+1$ shell — 3 functions
 for an s-valence atom, 5 for a p-valence atom, 7 for a d-valence one. On a
 state-vector simulator `DZP` water is already out of reach; the sizes exist so
 that the basis is not the limiting approximation when the system is small enough
@@ -107,7 +107,7 @@ construction on the previous one with a halved split norm. For the hydrogen 1s:
 | 3 | 1.22 | 1.7e-2 |
 | 4 | 0.81 | 2.9e-3 |
 
-Polarisation shells are solved in the same confining sphere at $l_{\max}+1$,
+Polarization shells are solved in the same confining sphere at $l_{\max}+1$,
 using the lowest principal quantum number that angular momentum allows, so they
 stay compact.
 
@@ -122,7 +122,7 @@ Hartree–Fock total energy of H₂ at 0.74 Å (eV), on a uniform real-space gri
 | TZ  | 6  | −29.723405 | −30.222108 |
 | DZP | 10 | −29.742889 | −30.239850 |
 
-Double zeta is worth ~0.76 eV, polarisation a little more. But the third zeta
+Double zeta is worth ~0.76 eV, polarization a little more. But the third zeta
 adds essentially nothing — and the reason is not that it is redundant.
 
 ```{warning}
@@ -152,7 +152,7 @@ plots the zeta hierarchy.
 The standard Gaussian basis-set names are accepted directly, and every one of
 them is **generated natively** the same way 6-31G(d) already is: the name is
 parsed into its *structure* — core contraction length, valence split,
-polarisation, diffuse and core-correlating functions — and the exponents and
+polarization, diffuse and core-correlating functions — and the exponents and
 contraction coefficients are produced for the atom at hand from the cached
 Slater-orbital fits and Slater's rules
 ({mod}`mandacaru.basis.gaussian_families`). No basis-set table is read.
@@ -184,9 +184,9 @@ parse_basis_name("6-31+G*").summary()
 ```
 
 What is *not* reproduced are the published exponents, which come from
-molecular energy optimisations. Mandacaru's are its own: a Slater-orbital fit
+molecular energy optimizations. Mandacaru's are its own: a Slater-orbital fit
 partitioned tightest-first for the contracted and split-valence functions,
-polarisation exponents `f_l · ζ_val²` spread geometrically, diffuse functions
+polarization exponents `f_l · ζ_val²` spread geometrically, diffuse functions
 at the atom's most diffuse exponent divided by 3.5, and tight
 (core-correlating) functions at three times the tightest valence exponent.
 Treat the result as a self-contained basis *of the same size and shape* as its
@@ -197,7 +197,7 @@ basis.
 Two conventions to know. Shells are **spherical** (5 `d`, 7 `f`), so `6-31G*`
 carbon has 14 functions, not the 15 of a Cartesian-`d` program. And Pople's
 `3-21G*` puts its `d` functions on second-row atoms only, exactly as
-published, while `6-31G*` and `6-311G*` polarise every atom beyond helium.
+published, while `6-31G*` and `6-311G*` polarize every atom beyond helium.
 
 
 ## Virtual levels for the FAO basis
@@ -260,7 +260,7 @@ engine's resolution check warns when a function is not represented on the grid.
 
 The `basis` argument also takes a **per-element mapping**: a dict keyed by
 chemical symbol (plus an optional `"*"` default), each entry a basis spec of
-its own. The typical use is a polarised basis on the atoms whose chemistry
+its own. The typical use is a polarized basis on the atoms whose chemistry
 matters next to a minimal one on a spectator ion — the qubit count is the sum
 over atoms, so this is how a large system is kept inside a state-vector
 budget:
@@ -276,7 +276,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
 
 Every driver, the dry run and `BasisSet.build(mapping)` accept it; an element
 without an entry and without a `"*"` default is an error rather than a silent
-fallback, and the plane-wave family, which is not atom-centred, cannot be
+fallback, and the plane-wave family, which is not atom-centered, cannot be
 assigned to one element. With a [pseudopotential family](pseudopotentials.md)
 the same mapping selects a per-element *size* — every element must use the
 same family, since the radial functions there come from each potential.

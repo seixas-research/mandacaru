@@ -7,8 +7,9 @@ FullAtomicOrbitals (FAO) basis.
 Covers the features added on top of the ADAPT-VQE driver:
 
 * selectable ``gradient`` strategies -- ``"analytic"`` (the default),
-  ``"finite_difference"`` and ``"parameter-shift"``, the latter two matching the
-  exact analytic gradient they estimate;
+  ``"finite_difference"`` and ``"parameter_shift"``, the latter two matching the
+  exact analytic gradient they estimate -- and their canonical naming, which is
+  spelling-insensitive on input and one fixed spelling everywhere out;
 * the ``ADAPTVQE`` argument surface (``pool``, ``basis``, ``mapping``,
   ``gradient``, ``device``) and its basis-driven Hamiltonian builder;
 * the ``device`` registry (AER_simulator vs the reserved ibm-quantum).
@@ -18,7 +19,8 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import Mandacaru
+from mandacaru.algorithms import (GRADIENT_METHODS, Mandacaru,
+                                  resolve_gradient_method)
 from mandacaru.circuits import AdaptAnsatz
 from mandacaru.backends import available_devices, is_simulator, normalize_device
 from mandacaru.integrals import Grid
@@ -82,7 +84,7 @@ class TestGradientStrategies:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool=pool, num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
-                          gradient="parameter-shift")
+                          gradient="parameter_shift")
         psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
             np.zeros(0))
         g_an = adapt._analytic_gradients(psi)
@@ -117,7 +119,7 @@ class TestGradientStrategies:
     def test_every_gradient_reaches_fci(self, h2_hamiltonian):
         m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).min())
-        for grad in ("analytic", "finite_difference", "parameter-shift"):
+        for grad in GRADIENT_METHODS:
             adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                               pool="ceo", num_particles=(1, 1),
                               n_spatial_orbitals=2, profile=False,
@@ -131,6 +133,81 @@ class TestGradientStrategies:
             Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                       pool="ceo", num_particles=(1, 1), n_spatial_orbitals=2,
                       gradient="nope")
+
+
+# --------------------------------------------------------------------------- #
+# Canonical gradient names: any spelling in, one spelling out.
+# --------------------------------------------------------------------------- #
+
+class TestGradientNames:
+    """The three estimators have one canonical spelling each.
+
+    The names used to disagree with each other -- ``finite_difference`` with an
+    underscore but ``parameter-shift`` with a hyphen -- so a user could not
+    guess either from the other, and the run log wrote back whichever the user
+    typed.  Input is now spelling-insensitive (the rule ``method=`` uses) and
+    everything written out is the canonical underscore form.
+    """
+
+    def test_the_canonical_names_are_underscored(self):
+        assert GRADIENT_METHODS == ("analytic", "finite_difference",
+                                    "parameter_shift")
+
+    @pytest.mark.parametrize("spelling, canonical", [
+        ("parameter-shift", "parameter_shift"),
+        ("parameter_shift", "parameter_shift"),
+        ("Parameter Shift", "parameter_shift"),
+        ("PARAMETER-SHIFT", "parameter_shift"),
+        ("finite-difference", "finite_difference"),
+        ("finite_difference", "finite_difference"),
+        ("Finite Difference", "finite_difference"),
+        ("  Analytic  ", "analytic"),
+    ])
+    def test_every_spelling_resolves(self, spelling, canonical):
+        assert resolve_gradient_method(spelling) == canonical
+
+    @pytest.mark.parametrize("spelling", ["parameter-shift", "Parameter Shift",
+                                          "finite-difference"])
+    def test_the_driver_stores_the_canonical_name(self, h2_hamiltonian,
+                                                  spelling):
+        """However it was typed, `.gradient` is what the log and tests read."""
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False,
+                          gradient=spelling)
+        assert adapt.gradient == resolve_gradient_method(spelling)
+        assert adapt.gradient in GRADIENT_METHODS
+
+    def test_an_unknown_name_names_the_canonical_ones(self, h2_hamiltonian):
+        """The refusal has to be actionable: it lists what is accepted."""
+        with pytest.raises(ValueError) as excinfo:
+            Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                      pool="ceo", num_particles=(1, 1), n_spatial_orbitals=2,
+                      gradient="parametershifted")
+        message = str(excinfo.value)
+        for name in GRADIENT_METHODS:
+            assert name in message
+
+    @pytest.mark.parametrize("gradient", GRADIENT_METHODS)
+    def test_the_formula_line_has_no_colon(self, gradient):
+        """`parse_output` splits `key: value` on the first colon."""
+        from mandacaru.algorithms.adapt_vqe import GRADIENT_FORMULAS
+        assert ":" not in GRADIENT_FORMULAS[gradient]
+
+    def test_the_finite_difference_step_is_the_one_used(self, h2_hamiltonian):
+        """The step reported in the log is the default the estimator runs at."""
+        import inspect
+
+        from mandacaru.algorithms.adapt_vqe import (FINITE_DIFFERENCE_STEP,
+                                                    GRADIENT_FORMULAS)
+        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                          pool="ceo", num_particles=(1, 1),
+                          n_spatial_orbitals=2, profile=False,
+                          gradient="finite_difference")
+        signature = inspect.signature(adapt.solver._finite_difference_gradients)
+        assert signature.parameters["eps"].default == FINITE_DIFFERENCE_STEP
+        assert f"{FINITE_DIFFERENCE_STEP:g}" in \
+            GRADIENT_FORMULAS["finite_difference"]
 
 
 # --------------------------------------------------------------------------- #

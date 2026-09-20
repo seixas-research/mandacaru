@@ -18,8 +18,9 @@ the calculator, the result types the solvers return, and the periodic
 :func:`register_method`.
 """
 
-from .adapt_vqe import ADAPTVQEResult, AdaptIteration
-from .deflation import DeflationMixin, EnergyLevels
+from .adapt_vqe import (ADAPTVQEResult, AdaptIteration, GRADIENT_METHODS,
+                        resolve_gradient_method)
+from .deflation import EnergyLevels
 from .dry_run import QubitEstimate, count_basis_functions, estimate_qubits
 from .bloch import BandStructure, BlochCalculator
 from .expressivity import (
@@ -65,6 +66,8 @@ __all__ = [
     "transform_integrals",
     "ADAPTVQEResult",
     "AdaptIteration",
+    "GRADIENT_METHODS",
+    "resolve_gradient_method",
     "BlochCalculator",
     "BandStructure",
     "EnergyLevels",

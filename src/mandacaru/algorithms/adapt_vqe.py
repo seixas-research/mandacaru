@@ -54,10 +54,59 @@ from ..circuits.pools import PoolBase, PoolOperator, _support_of, build_pool
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
 from ..units import ANGSTROM_TO_BOHR, convert_energy, to_hartree
 from .base import VariationalDriver
+from .calculator import _method_key
 from .deflation import DeflationMixin, deflation_penalty
 
 if TYPE_CHECKING:
     from ..optimizers.optim import Optimizer
+
+
+#: Canonical names of the pool-screening gradient estimators.  Everything the
+#: code writes, prints, documents and tests uses these spellings; the *input*
+#: accepts any spelling of them (:func:`resolve_gradient_method`), the same way
+#: ``method="ADAPT_VQE"`` names ``"adapt-vqe"``.
+GRADIENT_METHODS = ("analytic", "finite_difference", "parameter_shift")
+
+#: Step of the central difference used by ``gradient="finite_difference"``.  It
+#: is that estimator's truncation-error scale -- the one number that says how
+#: far its gradients can be from the exact ones -- so it is reported in the run
+#: log rather than left as a default buried in the method.
+FINITE_DIFFERENCE_STEP = 1e-4
+
+#: What each estimator actually computes, one line each.  Written to the
+#: ``[OPTIMIZATION SETUP]`` block as ``gradient_formula`` and printed in the
+#: trace header, so the name in the log is never the reader's only clue.  No
+#: value may contain a colon: the log parser splits ``key: value`` on the first
+#: one.
+GRADIENT_FORMULAS = {
+    "analytic": "exact derivative, g = 2 Re<H psi|A psi>",
+    "finite_difference": ("central difference of the energy, step = "
+                          f"{FINITE_DIFFERENCE_STEP:g}"),
+    "parameter_shift": ("parameter-shift rule, exact for the generator's "
+                        "frequency set"),
+}
+
+
+def resolve_gradient_method(name) -> str:
+    """Canonical screening-gradient name; the input spelling does not matter.
+
+    ``"parameter-shift"``, ``"parameter_shift"`` and ``"Parameter Shift"`` all
+    name the same estimator, by the same rule that makes ``method="ADAPT_VQE"``
+    name ``"adapt-vqe"`` (:func:`~mandacaru.algorithms.calculator._method_key`).
+    Only the canonical underscore form of :data:`GRADIENT_METHODS` is ever
+    written back out, so a log or a test never has two spellings of one method.
+
+    Raises
+    ------
+    ValueError
+        If ``name`` is not one of :data:`GRADIENT_METHODS` under any spelling.
+    """
+    canonical = {_method_key(method): method for method in GRADIENT_METHODS}
+    resolved = canonical.get(_method_key(name))
+    if resolved is None:
+        raise ValueError(f"unknown gradient {name!r}; use one of "
+                         f"{GRADIENT_METHODS}")
+    return resolved
 
 
 def _unique_frequencies(eigenvalues: np.ndarray, tol: float = 1e-7) -> np.ndarray:
@@ -274,13 +323,20 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     gradient : str
         How the pool screening gradients are evaluated -- ``"analytic"``
         (default; the exact derivative ``g_i = 2 Re<H psi|A_i psi>``),
-        ``"finite_difference"`` (a finite-difference estimate from shifted
-        parameters) or ``"parameter-shift"`` (the quantum parameter-shift rule).
-        All three converge to the same number; ``"analytic"`` is both the
-        cheapest -- one matrix-vector product per pool operator, against
-        ``2 x |pool|`` energy evaluations -- and the only one free of a step-size
-        truncation error, so the shift-based estimators are opt-in, for studying
-        the estimator itself.
+        ``"finite_difference"`` (a central difference of the energy at shifted
+        parameters, step :data:`FINITE_DIFFERENCE_STEP`) or
+        ``"parameter_shift"`` (the quantum parameter-shift rule).  The spelling
+        does not matter on input -- ``"parameter-shift"`` and ``"Parameter
+        Shift"`` name the same estimator -- but the canonical underscore form
+        of :data:`GRADIENT_METHODS` is what is stored, logged and printed
+        (:func:`resolve_gradient_method`).  All three converge to the same
+        number; ``"analytic"`` is both the cheapest -- one matrix-vector product
+        per pool operator, against ``2 x |pool|`` energy evaluations *plus*
+        ``|pool|`` dense diagonalizations the shift estimators need -- and the
+        only one free of a step-size truncation error, so the shift-based
+        estimators are opt-in, for studying the estimator itself.  The method
+        actually used is reported as ``gradient_method`` in the
+        ``[OPTIMIZATION SETUP]`` block of the ``output.txt`` log.
     device : str
         Execution device -- ``"AER_simulator"`` (default; ideal simulator) or
         ``"ibm-quantum"`` (reserved for real hardware, not yet runnable).  See
@@ -420,7 +476,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         are constructor arguments, not ``run`` arguments.
     """
 
-    _GRADIENTS = ("analytic", "finite_difference", "parameter-shift")
     _default_sparse = "auto"
 
     #: ADAPT's ``run()`` writes the ``output=`` log and honors checkpoints.
@@ -458,11 +513,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             raise ValueError(f"unknown sector spec {sector!r}; use True, False "
                              "or 'auto'")
         self.sector = sector
-        # Validate the enumerated gradient option up front.
-        if gradient not in self._GRADIENTS:
-            raise ValueError(
-                f"unknown gradient {gradient!r}; use one of {self._GRADIENTS}")
-        self.gradient = gradient
+        # Validate the enumerated gradient option up front, and keep it in the
+        # canonical spelling: `self.gradient` is what the log, the trace and the
+        # tests read back, so it must not depend on how the user typed it.
+        self.gradient = resolve_gradient_method(gradient)
 
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
@@ -605,12 +659,16 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         phi = V @ (np.exp(1j * theta * w) * c)
         return float(np.real(np.vdot(phi, self._h_matrix @ phi)))
 
-    def _finite_difference_gradients(self, psi: np.ndarray,
-                                     eps: float = 1e-4) -> np.ndarray:
+    def _finite_difference_gradients(
+            self, psi: np.ndarray,
+            eps: float = FINITE_DIFFERENCE_STEP) -> np.ndarray:
         r"""Classical gradient: central finite difference in each pool direction.
 
         ``g_i ~= [E_i(+eps) - E_i(-eps)] / (2 eps)`` -- a purely classical
-        estimate that evaluates the energy at *shifted parameter* values.
+        estimate that evaluates the energy at *shifted parameter* values.  The
+        step is :data:`FINITE_DIFFERENCE_STEP`, and the run log reports it
+        (``gradient_formula``) because it is this estimator's truncation-error
+        scale.
         """
         grads = np.empty(len(self._pool_matrices))
         for i in range(len(self._pool_matrices)):
@@ -664,7 +722,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         if getattr(self, "_sparse", False) or self._sector is not None:
             return self._analytic_gradients(psi)
-        if self.gradient == "parameter-shift":
+        if self.gradient == "parameter_shift":
             return self._parameter_shift_gradients(psi)
         if self.gradient == "finite_difference":
             return self._finite_difference_gradients(psi)
@@ -911,11 +969,18 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             title=f"ADAPT-VQE ({self.pool.__class__.__name__}, "
                   f"{self.n_qubits} qubits)")
         logger.write_electrons(self._electron_fields())
+        # The screening gradient is an expectation value of the Hamiltonian's
+        # commutator, so it is in Hartree whatever unit the energy columns use
+        # -- worth stating, since `gradient_tol` is compared against it.
+        gradient_method, gradient_formula = self._gradient_description()
         logger.write_optimizer_setup(
             optimizer_method=self.optimizer.method,
             reference_energy=self._to_energy_units(ref_energy),
             energy_unit=self._energy_unit_label(),
-            gradient_tol=gradient_tol, max_iterations=max_iterations,
+            gradient_method=gradient_method,
+            gradient_formula=gradient_formula,
+            gradient_tol=gradient_tol, gradient_units="Hartree",
+            max_iterations=max_iterations,
             # A resumed run does not start from |HF>: it starts from the grown
             # ansatz the checkpoint carries.
             initial_ansatz=("|HF> (0 parameters)" if restored is None else
@@ -923,31 +988,36 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                             f"{len(restored['parameters'])} parameters)"),
             # The pool's type and size, before the iteration table; the problem
             # itself is in the [ELECTRONS] block above.
-            extra=self._setup_fields(restored))
+            extra=self._setup_fields(),
+            lineage=self._lineage_fields(restored))
         return logger
 
-    def _setup_fields(self, restored=None) -> dict:
-        """Extra ``[OPTIMIZATION SETUP]`` lines: the pool, units and lineage."""
-        fields = {"pool": getattr(self.pool, "name", "?"),
-                  "pool_class": self.pool.__class__.__name__,
-                  "pool_size": len(self._pool_ops),
-                  # The screening gradient is an expectation value of the
-                  # Hamiltonian's commutator, so it is in Hartree whatever unit
-                  # the energy columns use -- worth stating, since the tolerance
-                  # is compared against it.
-                  "gradient_units": "Hartree",
-                  "screening_gradient": str(self.gradient)}
-        if restored is not None:
-            # A resumed run starts from a grown ansatz, not from |HF>: without
-            # these lines the setup block claims 0 parameters and the iteration
-            # table starts at 1 with no sign that anything preceded it.
-            fields["resumed_from"] = str(self.resume_path)
-            fields["restored_operators"] = len(restored["selected"])
-            fields["restored_energy_" + self._energy_unit_label()] = \
-                f"{self._to_energy_units(restored['energy']):.10f}"
-            fields["resume_same_hamiltonian"] = bool(
-                restored.get("same_problem", True))
-        return fields
+    def _setup_fields(self) -> dict:
+        """Driver-specific ``[OPTIMIZATION SETUP]`` lines: the operator pool.
+
+        What the run screens *over*, next to the gradient group that says how it
+        screens.  A subclass that adds a setting of its own extends this.
+        """
+        return {"pool": getattr(self.pool, "name", "?"),
+                "pool_class": self.pool.__class__.__name__,
+                "pool_size": len(self._pool_ops)}
+
+    def _lineage_fields(self, restored=None) -> dict:
+        """Closing ``[OPTIMIZATION SETUP]`` lines: what this run was resumed from.
+
+        Empty for a fresh run.  A resumed run starts from a grown ansatz, not
+        from |HF>: without these lines the setup block claims 0 parameters and
+        the iteration table starts at 1 with no sign that anything preceded it.
+        """
+        if restored is None:
+            return {}
+        return {
+            "resumed_from": str(self.resume_path),
+            "restored_operators": len(restored["selected"]),
+            "restored_energy_" + self._energy_unit_label():
+                f"{self._to_energy_units(restored['energy']):.10f}",
+            "resume_same_hamiltonian": bool(restored.get("same_problem", True)),
+        }
 
     def _electron_fields(self) -> dict:
         """The ``[ELECTRONS]`` block: how the electronic problem was posed.
@@ -1514,15 +1584,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         those paths screen analytically whatever was asked for.  The header
         reports what actually runs, and says when it differs from the request.
         """
-        formulas = {
-            "analytic": "exact, g = 2 Re<H psi|A psi>",
-            "finite_difference": "central difference of the energy",
-            "parameter-shift": "parameter-shift rule",
-        }
         overridden = (getattr(self, "_sparse", False)
                       or getattr(self, "_sector", None) is not None)
         effective = "analytic" if overridden else self.gradient
-        note = formulas.get(effective, "")
+        note = GRADIENT_FORMULAS.get(effective, "")
         if overridden and self.gradient != "analytic":
             note += f" (overrides {self.gradient}: sparse pool)"
         return effective, note
@@ -1584,8 +1649,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             ("operator pool", f"{getattr(self.pool, 'name', '?')} "
                               f"({len(self._pool_ops)} operators)"),
             ("operator selection", "largest |gradient| (greedy)"),
-            ("screening gradient", gradient),
-            ("  how", gradient_note),
+            # Same names as the log's `gradient_method` / `gradient_formula`,
+            # so a reader who saw one report recognizes the other.
+            ("gradient method", gradient),
+            ("  formula", gradient_note),
             ("state-vector backend", self._backend_description()),
             ("re-optimize all", str(self.quenching)),
             ("optimizer", str(self.optimizer.method)),

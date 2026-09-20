@@ -38,11 +38,11 @@ Each generator is a qubit `PauliSum` whose terms are $A = \sum_j i\,c_j P_j$ wit
 fermionic, qubit and QEB excitation generators in every mapping. It is
 **checked, not assumed**: a generator with two anticommuting terms is refused
 when its circuit is built, because the product below would then be a Trotter
-approximation and the circuit a different state from the one optimised. The
+approximation and the circuit a different state from the one optimized. The
 one shipped case is the `ceo` pool under the parity and Bravyi–Kitaev mappings,
 whose generators sum several excitations of one support: it runs on the
 state-vector backend, and is exportable under Jordan–Wigner, where it coincides
-with `qeb`. The exponential therefore factorises *exactly*, with no Trotter
+with `qeb`. The exponential therefore factorizes *exactly*, with no Trotter
 error:
 
 ```{math}
@@ -101,7 +101,7 @@ the same answer, so it is a verification and hardware path, not a performance
 one.
 
 Circuit *profiling* always uses the named SDK. Counts differ between providers
-because only Qiskit re-optimises during transpilation; the unitary does not.
+because only Qiskit re-optimizes during transpilation; the unitary does not.
 
 ---
 
@@ -128,7 +128,7 @@ circuit = provider.build(4, ansatz.reference_qubits(),
 print(circuit)
 ```
 
-{class}`~mandacaru.circuits.UCCSD` accepts `provider=` too, but a circuit realises
+{class}`~mandacaru.circuits.UCCSD` accepts `provider=` too, but a circuit realizes
 the **Trotter product** form, so `trotter=True` is required:
 
 ```python
@@ -140,7 +140,7 @@ UCCSD(2, (1, 1), trotter=True, provider=build_provider("braket"))
 The VQE method does this automatically when circuit execution is on.
 
 :::{note}
-A circuit can only be *initialised* in a computational basis state, so provider
+A circuit can only be *initialized* in a computational basis state, so provider
 execution accepts Slater-determinant references only — which is what the
 Hartree-Fock reference and the SSVQE reference determinants are. A superposition
 reference raises a clear `ValueError`.

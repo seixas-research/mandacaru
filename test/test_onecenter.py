@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 # file: test_onecenter.py
 
-"""The PAW one-centre two-body machinery (:mod:`mandacaru.pseudopotentials.onecenter`).
+"""The PAW one-center two-body machinery (:mod:`mandacaru.pseudopotentials.onecenter`).
 
 The module is validated machinery that is deliberately **not** wired into the
-Hamiltonian: it measured the term the linearized one-centre treatment drops
+Hamiltonian: it measured the term the linearized one-center treatment drops
 (0.08-0.33 eV on oxygen) and thereby ruled it out as the cause of the p-valence
 binding failure.  These tests pin the pieces against closed forms so the
 measurement stays reproducible.
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from mandacaru.pseudopotentials.onecenter import (angular_coupling,
-                                                  one_centre_coulomb,
+                                                  one_center_coulomb,
                                                   radial_coulomb,
                                                   reference_density_matrix)
 
@@ -74,9 +74,9 @@ class TestOnAPAWDataset:
         assert np.allclose(D0, np.diag(np.diag(D0)))          # diagonal
         assert np.trace(D0).real == pytest.approx(dataset.valence_charge)
 
-    def test_one_centre_correction_is_symmetric_and_finite(self, oxygen):
+    def test_one_center_correction_is_symmetric_and_finite(self, oxygen):
         dataset, projectors = oxygen
-        dW = one_centre_coulomb(dataset, projectors)
+        dW = one_center_coulomb(dataset, projectors)
         n = len(projectors)
         assert dW.shape == (n, n, n, n) and np.all(np.isfinite(dW))
         # (ab|cd) = (cd|ab): exchanging the two electrons.  The inner integral

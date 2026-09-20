@@ -56,7 +56,20 @@ Registered today:
     :math:`2\times2` overlap-correction block :math:`q` (``norm_conserving
     = False``), compensation multipoles in the one- and two-body terms and a
     frozen one-center constant.  Registered when :mod:`.paw` is imported
-    (the package does so).
+    (the package does so).  It and its ``"upaw"`` variant declare
+    ``default_options = {"filter": True}``: their smooth partial waves are
+    built to be band-limited, so filtering them to the grid's Nyquist
+    wave-vector is nearly free and removes most of the egg-box.
+
+Per-family defaults
+-------------------
+:attr:`FamilySpec.default_options` is where a family says what it does when
+the user does not.  :meth:`FamilySpec.resolved_options` is the single merge
+(defaults first, the user's basis dict on top), consulted by
+:func:`build_valence_hamiltonian` and by the dry run, so a default is visible
+in one place, a new family declares its own, and writing the option explicitly
+always wins -- ``basis={"name": "PAW", "filter": False}`` is exactly the
+unfiltered calculation.
 """
 
 from __future__ import annotations
@@ -68,8 +81,10 @@ from typing import Callable
 DEFAULT_FAMILY = "ncpp"
 
 #: Basis options every family accepts: the size hierarchy built on the
-#: pseudo-orbitals and the library directory.
-COMMON_OPTIONS = ("size", "split_norm", "directory")
+#: pseudo-orbitals, the library directory and the Fourier filter
+#: (:mod:`mandacaru.basis.filtering`) that removes from each radial function
+#: the wave-vectors the real-space grid cannot represent.
+COMMON_OPTIONS = ("size", "split_norm", "directory", "filter")
 
 
 @dataclass(frozen=True)
@@ -102,6 +117,15 @@ class FamilySpec:
         The keys a ``{"name": <family>, ...}`` basis dict may carry for this
         family (default :data:`COMMON_OPTIONS`); anything else is refused
         before any integral is computed.
+    default_options : dict
+        Option values this family uses when the user does not say
+        (``{"filter": True}`` for PAW / UPAW, whose smooth partial waves are
+        built to be band-limited and lose little by being filtered, while
+        NCPP / ONCVPSP leave it off).  Declaring the default **here** rather
+        than in the builder is what keeps it discoverable: one place says what
+        every family does, a new family declares its own, and
+        :meth:`resolved_options` is the only merge.  Every key must be in
+        :attr:`options`.
     """
 
     name: str
@@ -112,11 +136,32 @@ class FamilySpec:
     norm_conserving: bool = True
     aliases: tuple = field(default_factory=tuple)
     options: tuple = COMMON_OPTIONS
+    default_options: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        unknown = sorted(set(self.default_options) - set(self.options))
+        if unknown:
+            raise ValueError(
+                f"family {self.name!r} declares default(s) for option(s) "
+                f"{unknown} it does not accept; its options are "
+                f"{list(self.options)}")
 
     @property
     def label(self) -> str:
         """The family name as a basis name (upper case)."""
         return self.name.upper()
+
+    def resolved_options(self, options=None) -> dict:
+        """The family's :attr:`default_options` with the user's ``options`` on top.
+
+        Every consumer of a basis dict goes through this, so
+        ``basis="PAW"`` and ``basis={"name": "PAW", "filter": True}`` are the
+        same calculation and ``{"name": "PAW", "filter": False}`` is exactly
+        the unfiltered one.
+        """
+        merged = dict(self.default_options)
+        merged.update(options or {})
+        return merged
 
 
 #: Registry ``name -> FamilySpec`` (canonical names only; see :func:`resolve_family`).
@@ -252,24 +297,41 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     symbols, potentials)``), an optional overlap correction (``overlap``, same
     signature; PAW) and the integral class (``integrals_class``, default
     :class:`~mandacaru.core.MolecularIntegrals`; ``potentials_keyword`` names
-    its datasets argument).  The basis (with its ``size`` hierarchy), the grid,
-    the electron count, the spin state and the returned ``context`` are built
-    here once.
+    its datasets argument).  The basis (with its ``size`` hierarchy and its
+    optional ``filter``), the grid, the electron count, the spin state and the
+    returned ``context`` are built here once.
     """
     from ..algorithms._hamiltonian_from_atoms import (
         DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
         grid_from_cell, resolve_num_unpaired)
+    from ..basis.filtering import filter_cutoff
     from ..core import MolecularIntegrals
     from .orbitals import pseudo_basis, valence_electrons
+
+    # The family's own defaults, with the caller's options on top.  Doing it
+    # here (and not only in the driver's dispatcher) means a family built
+    # directly -- `build_paw(atoms, ...)` in a script or a test -- gets the
+    # same basis the calculator would give it.  Merging twice is a no-op.
+    options = resolve_family(family).resolved_options(options)
 
     directory = options.get("directory")
     symbols = atoms.get_chemical_symbols()
     positions = coherent_positions(atoms)
     potentials = {symbol: load(symbol, directory) for symbol in set(symbols)}
 
+    n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
+    # The grid comes first now: ``filter="auto"`` ties its cutoff to the
+    # *realized* spacing (the coarsest axis -- an anisotropic grid can only
+    # represent what its worst direction can), which is known only once the
+    # grid exists.  Nothing else about the grid depends on the basis.
+    g = (grid if grid is not None
+         else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
+    k_c = filter_cutoff(options.get("filter"),
+                        max(g.dx, g.dy, g.dz))
+
     basis_fns, atom_of_orbital = pseudo_basis(
         symbols, positions, potentials, size=options.get("size", "SZ"),
-        split_norm=options.get("split_norm"))
+        split_norm=options.get("split_norm"), filter_cutoff=k_c)
     kb = projectors(symbols, positions, potentials, options)
     coupling_blocks = coupling(kb, symbols, potentials)
     overlap_blocks = (None if overlap is None
@@ -277,9 +339,6 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     nuclei = [(potentials[symbol].valence_charge, position)
               for symbol, position in zip(symbols, positions)]
 
-    n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
-    g = (grid if grid is not None
-         else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
     num_particles = _num_particles(n_el, n_unpaired, family.upper())
     integrals = (integrals_class or MolecularIntegrals)(
@@ -296,7 +355,8 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
                "frozen": (), "n_electrons": n_el,
                "pseudopotentials": potentials, "kb_projectors": kb,
-               "nonlocal_coupling": coupling_blocks, "family": family}
+               "nonlocal_coupling": coupling_blocks, "family": family,
+               "filter_cutoff": k_c}
     if overlap_blocks is not None:
         context["nonlocal_overlap"] = overlap_blocks
     return (hamiltonian, num_particles, len(basis_fns),

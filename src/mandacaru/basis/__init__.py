@@ -30,11 +30,20 @@ families are generated from scratch -- no tabulated basis-set data.
 
 :mod:`mandacaru.basis.atomic_solver` is the self-consistent spherical LDA atom
 behind the NAO-AE minimal basis (and behind the pseudopotential families
-in :mod:`mandacaru.pseudopotentials`).
+in :mod:`mandacaru.pseudopotentials`), and
+:mod:`mandacaru.basis.filtering` is the radial **Fourier filter** that removes
+from a tabulated radial function the wave-vectors a real-space grid of spacing
+``h`` cannot represent -- the cure for the egg-box, opt-in through
+``basis={..., "filter": ...}`` on the pseudopotential families.
 """
 
 from .atomic_solver import AtomicResult, solve_atom, solve_radial
 from .base import BasisFunction
+from .filtering import (FILTER_METHODS, FILTER_NYQUIST_FRACTION,
+                        cutoff_energy_ev, cutoff_window, filter_cutoff,
+                        filter_label, filter_radial, filter_table,
+                        inverse_spherical_bessel_transform, residual_weight,
+                        spherical_bessel_transform, validate_filter)
 from .factory import (BasisSet, FAOBasisSet, GaussianBasisSet, GTOBasisSet,
                       NAOAEBasisSet, NAOBasisSet, PerElementBasisSet,
                       Pople631GBasisSet)
@@ -55,6 +64,18 @@ from .sto_ng import (occupied_subshells, slater_exponent, sto_ng_contraction,
 
 __all__ = [
     "BasisFunction",
+    "FILTER_METHODS",
+    "FILTER_NYQUIST_FRACTION",
+    "cutoff_energy_ev",
+    "cutoff_window",
+    "filter_cutoff",
+    "filter_label",
+    "filter_radial",
+    "filter_table",
+    "inverse_spherical_bessel_transform",
+    "residual_weight",
+    "spherical_bessel_transform",
+    "validate_filter",
     "FullAtomicOrbital",
     "NumericalAtomicOrbital",
     "GaussianOrbital",

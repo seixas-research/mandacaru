@@ -126,12 +126,12 @@ class TestInteractionEnergy:
         assert result.method == "rhf" and result.charges == [0, 0]
 
     def test_shared_grid_is_the_point(self):
-        """The same fragments in their own re-centred boxes disagree."""
+        """The same fragments in their own re-centered boxes disagree."""
         atoms = _two_h2(5.0)
         shared = interaction_energy(atoms, [[0, 1], [2, 3]], method="rhf",
                                     h=0.35)
         assert isinstance(shared.grid, Grid)
-        # Re-centred fragment: a different sampling of the same molecule.
+        # Re-centered fragment: a different sampling of the same molecule.
         from mandacaru.algorithms._hamiltonian_from_atoms import \
             build_basis_hamiltonian
         frag = atoms[[0, 1]]

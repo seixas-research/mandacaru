@@ -84,8 +84,36 @@ ONCV = {"H2": {"rhf": -1.044179, "adapt": -1.058561},
 #: every PAW energy was too high by an amount that scales with that charge.
 #: The values before that fix are kept for provenance in
 #: ``before_compensation_attraction``.
-PAW = {"H2": {"rhf": -1.095396, "adapt": -1.109168},
-       "LiH": {"rhf": -0.773001, "adapt": -0.780800}}
+#:
+#: Re-measured again 2026-09-20, when the **Fourier filter became the PAW
+#: default** (``default_options = {"filter": True}``): every basis function is
+#: now band-limited to the grid's Nyquist wave-vector before it is sampled.
+#: The shift is tiny on these s-valence systems -- H2 -1.1 meV (the filtered
+#: function is marginally *better*), LiH +14.1 meV -- because their orbitals
+#: were nearly band-limited already; the oxygen-bearing systems move by
+#: hundreds of meV.  ``basis={"name": "paw", "filter": False}`` reproduces
+#: ``PAW_BEFORE_BASIS_FILTER`` exactly.
+#:
+#: These are the values of **both** 2026-09-20 defaults together: the filtered
+#: basis *and* the atom-centered quadrature of the local potential's short-range
+#: part (``PAWIntegrals.exact_local_potential``).  Each alone is pinned below,
+#: so either change can be audited separately.
+PAW = {"H2": {"rhf": -1.095388, "adapt": -1.109147},
+       "LiH": {"rhf": -0.772498, "adapt": -0.780327}}
+#: The filter alone (``exact_local_potential = False``).
+PAW_FILTER_ONLY = {
+    "H2": {"rhf": -1.095435, "adapt": -1.109194},
+    "LiH": {"rhf": -0.772482, "adapt": -0.780311}}
+#: The exact local potential alone (``filter=False``).
+PAW_EXACT_LOCAL_ONLY = {
+    "H2": {"rhf": -1.095403, "adapt": -1.109176},
+    "LiH": {"rhf": -0.772959, "adapt": -0.780763}}
+#: Neither: ``filter=False`` and ``exact_local_potential = False`` -- the
+#: pre-2026-09-20 model.  Not wrong, just grid-sampled throughout; pinned so
+#: both flips are auditable.
+PAW_BEFORE_BASIS_FILTER = {
+    "H2": {"rhf": -1.095396, "adapt": -1.109168},
+    "LiH": {"rhf": -0.773001, "adapt": -0.780800}}
 #: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
 PAW_BEFORE_COMPENSATION_ATTRACTION = {
     "H2": {"rhf": -1.053292, "adapt": -1.067402},
@@ -496,8 +524,14 @@ class TestResolution:
         spec = PSEUDO_FAMILIES["paw"]
         assert spec.norm_conserving is False and spec.aliases == ()
         assert spec.label == "PAW"
-        assert spec.options == ("size", "split_norm", "directory",
+        assert spec.options == ("size", "split_norm", "directory", "filter",
                                 "projector_basis")
+        # PAW filters its basis by default; writing the option wins either way.
+        assert spec.default_options == {"filter": True}
+        assert spec.resolved_options() == {"filter": True}
+        assert spec.resolved_options({"filter": False}) == {"filter": False}
+        assert spec.resolved_options({"size": "DZ"}) == {"filter": True,
+                                                         "size": "DZ"}
         assert spec.get("H").family == "paw"
         assert spec.generate is not None and spec.build is paw.build_paw
         name, options = resolve_basis({"name": "PAW", "size": "DZ",
@@ -569,8 +603,15 @@ class TestOverlap:
 
     def test_on_site_projections_are_exact(self):
         """<phi~_1|p_i> = delta_i1 on the atom the function sits on, from the
-        radial tables rather than the grid; the moments then reproduce q_11."""
-        _H, _p, _n, _pr, context = _build("H2", "paw")
+        radial tables rather than the grid; the moments then reproduce q_11.
+
+        Built with ``filter=False``: the identity is the *dataset's* algebra
+        (chi_k was constructed from this exact phi~_1), so it holds only for
+        the unfiltered first zeta.  The filtered case is checked below --
+        the quadrature is still exact, it is the function that moved.
+        """
+        _H, _p, _n, _pr, context = _build("H2", {"name": "paw",
+                                                 "filter": False})
         ints = context["integrals"]
         pp = get_paw("H")
         C = ints.projections()
@@ -597,6 +638,27 @@ class TestOverlap:
         assert np.allclose(sum(moments.values()) * SQRT_4PI,
                            C @ ints.nonlocal_overlap_matrix() @ C.conj().T)
         assert ints.constant_energy == pytest.approx(2 * pp.one_center_energy)
+
+    def test_the_filtered_projections_stay_close_and_stay_real(self):
+        """The default (filtered) basis is a *different* function, so
+        <phi~_1|chi_k> is no longer exactly B_1k -- but the quadrature is
+        still an exact on-site radial integral, not a grid sample.
+
+        Measured on H2 at h = 0.25: the deviation from the dataset's algebra
+        goes 4.6e-6 (unfiltered) -> 3.1e-4 (filtered), i.e. the filter moves
+        it by two orders of magnitude and it is still 1e-4-small.  A
+        grid-sampled projection was off by 0.7-3x, which is what this number
+        has to stay clear of.
+        """
+        ints = _build("H2", "paw")[4]["integrals"]          # default: filtered
+        pp = get_paw("H")
+        B = np.asarray(pp.channels[0].vanderbilt)
+        C = ints.projections()
+        for atom in (0, 1):
+            cols = [p for p, pr in enumerate(ints.kb_projectors)
+                    if pr.atom_index == atom]
+            assert np.abs(C[atom, cols].real - B[0]).max() < 1e-3
+            assert np.abs(C[atom, cols].imag).max() < 1e-12
 
     def test_projector_basis_does_not_change_the_energy(self):
         raw = _build("H2", {"name": "paw", "projector_basis": "raw"})
@@ -652,6 +714,43 @@ class TestMolecular:
         assert abs(e_rhf - TM[name]["rhf"]) < FAMILY_TOL
         assert e_rhf == pytest.approx(PAW[name]["rhf"], abs=PIN_TOL)
         assert e_fci == pytest.approx(PAW[name]["adapt"], abs=PIN_TOL)
+
+    @pytest.mark.parametrize("filtered, exact_local, table", [
+        (False, False, "PAW_BEFORE_BASIS_FILTER"),
+        (True, False, "PAW_FILTER_ONLY"),
+        (False, True, "PAW_EXACT_LOCAL_ONLY"),
+        (True, True, "PAW"),
+    ])
+    @pytest.mark.parametrize("name", sorted(SYSTEMS))
+    def test_each_default_is_separately_auditable(self, name, filtered,
+                                                  exact_local, table,
+                                                  monkeypatch):
+        """Both 2026-09-20 defaults can be switched off, one at a time.
+
+        ``filter=False`` and ``PAWIntegrals.exact_local_potential = False``
+        together give back exactly the old numbers: the previous model is still
+        reachable, and it is still *exactly* that model.  The tolerance is
+        deliberately not ``PIN_TOL`` (2e-3 Ha, which every one of these shifts
+        fits inside on s-valence systems) but the precision the tables were
+        written at, so a switch that stopped working would fail here.
+        """
+        monkeypatch.setattr(PAWIntegrals, "exact_local_potential", exact_local)
+        H, _p, _n, _pr, context = _build(name, {"name": "paw",
+                                                "filter": filtered})
+        assert (context["filter_cutoff"] is None) == (not filtered)
+        e_rhf = _total(context["integrals"], context["n_electrons"])
+        e_fci = _fci(H)
+        expected = globals()[table][name]
+        assert e_rhf == pytest.approx(expected["rhf"], abs=1e-6)
+        assert e_fci == pytest.approx(expected["adapt"], abs=1e-6)
+
+    @pytest.mark.parametrize("name", sorted(SYSTEMS))
+    def test_the_filter_default_is_not_a_no_op(self, name):
+        """The pinned tables really differ: the filter moves the energy."""
+        old = PAW_BEFORE_BASIS_FILTER[name]
+        shift = HARTREE_TO_EV * (PAW_FILTER_ONLY[name]["rhf"] - old["rhf"])
+        print(f"\n{name}: PAW filter on - off = {1000 * shift:+.1f} meV (RHF)")
+        assert abs(shift) > 1e-4               # the default is not a no-op
 
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
     def test_adapt_vqe(self, name):
@@ -709,10 +808,38 @@ class TestMolecular:
         assert np.linalg.eigvalsh(ints.overlap()).min() > 0.0
 
     def test_first_zeta_is_the_smooth_partial_wave(self):
-        _H, _p, _n, _pr, context = _build("H2", "paw")
+        """Unfiltered, the first zeta *is* the dataset's own partial wave."""
+        _H, _p, _n, _pr, context = _build("H2", {"name": "paw",
+                                                 "filter": False})
         fn = context["integrals"].basis[0]
         pp = get_paw("H")
         r = np.linspace(0.05, 4.0, 50)
         assert np.allclose(fn.radial(r), np.interp(r, pp.r,
                                                    pp.channels[0].pseudo_radial),
                            atol=2e-4)
+
+    def test_the_default_first_zeta_is_that_wave_filtered(self):
+        """With the PAW default the first zeta is the *band-limited* partial
+        wave -- the filter of exactly that table, and nothing else.
+
+        The two checks together say what the default does: the function the
+        driver builds is reproduced by calling the filter on the dataset's
+        table (1e-4, the table-decimation floor the unfiltered case also
+        has), and it is genuinely different from the raw table (1e-2 at
+        h = 0.25), so the test cannot pass by the filter doing nothing.
+        """
+        from mandacaru.basis.filtering import filter_cutoff, filter_radial
+
+        context = _build("H2", "paw")[4]                    # default: filtered
+        fn = context["integrals"].basis[0]
+        assert context["filter_cutoff"] == pytest.approx(
+            filter_cutoff(True, max(context["integrals"].grid.dx,
+                                    context["integrals"].grid.dy,
+                                    context["integrals"].grid.dz)))
+        pp = get_paw("H")
+        want, _info = filter_radial(pp.r, pp.channels[0].pseudo_radial, 0,
+                                    context["filter_cutoff"])
+        r = np.linspace(0.05, 4.0, 50)
+        assert np.allclose(fn.radial(r), np.interp(r, pp.r, want), atol=2e-4)
+        raw = np.interp(r, pp.r, pp.channels[0].pseudo_radial)
+        assert np.abs(fn.radial(r) - raw).max() > 1e-3

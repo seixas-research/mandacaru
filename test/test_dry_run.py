@@ -95,21 +95,27 @@ class TestEstimate:
     def test_pseudopotentials_count_valence_only(self):
         est = estimate_qubits(_boxed("H2O"), basis="NCPP")
         assert est.n_electrons == 8 and est.n_frozen_orbitals == 0
-        assert est.basis == "NCPP (SZ, pseudopotentials)"
+        # The label always names the filter, so a reader need not know each
+        # family's default: NCPP leaves it off, PAW/UPAW turn it on.
+        assert est.basis == "NCPP (SZ, unfiltered, pseudopotentials)"
         assert est.per_atom == [("O", 4), ("H", 1), ("H", 1)]
         assert est.n_qubits == 12
         assert any("pseudopotentials" in n for n in est.notes)
 
     @pytest.mark.parametrize("basis, expected, per_atom, label", [
         ({"name": "PAW", "size": "DZP"}, 46, [("O", 13), ("H", 5), ("H", 5)],
-         "PAW (DZP, pseudopotentials)"),
+         "PAW (DZP, filtered (auto: 1 x Nyquist), pseudopotentials)"),
         ({"name": "PAW", "size": "DZ"}, 24, [("O", 8), ("H", 2), ("H", 2)],
-         "PAW (DZ, pseudopotentials)"),
+         "PAW (DZ, filtered (auto: 1 x Nyquist), pseudopotentials)"),
+        ({"name": "PAW", "size": "DZ", "filter": False}, 24,
+         [("O", 8), ("H", 2), ("H", 2)],
+         "PAW (DZ, unfiltered, pseudopotentials)"),
         ({"name": "ONCVPSP", "size": "DZP"}, 46, [("O", 13), ("H", 5), ("H", 5)],
-         "ONCVPSP (DZP, pseudopotentials)"),
+         "ONCVPSP (DZP, unfiltered, pseudopotentials)"),
         ({"O": {"name": "PAW", "size": "DZP"}, "H": "PAW"}, 30,
          [("O", 13), ("H", 1), ("H", 1)],
-         'PAW (per-element sizes {"H": "SZ", "O": "DZP"}, pseudopotentials)'),
+         'PAW (per-element sizes {"H": "SZ", "O": "DZP"}, '
+         'filtered (auto: 1 x Nyquist), pseudopotentials)'),
     ])
     def test_pseudopotential_size_hierarchy_is_counted(self, basis, expected,
                                                         per_atom, label):

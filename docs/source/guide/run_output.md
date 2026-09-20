@@ -39,13 +39,26 @@ ADAPT iteration, and a closing summary with the timings.
 
 ```text
 ======================================================================
-ADAPT-VQE | mapping: jordan_wigner | 6 qubits | device: AER_simulator
-pool: qeb (QEBPool) | 8 operators | optimizer: COBYLA | gradient: analytic
-k-points: Gamma (1x1x1 Monkhorst-Pack) | spin: False | reference: hartree-fock
-provider: qiskit | circuits: False | quenching: True
+ADAPT-VQE
 ======================================================================
-Qubit Hamiltonian: 118 Pauli terms
-Hartree-Fock reference energy = -154.59070457 eV
+basis                   FAO
+grid spacing            0.2 Angstrom
+...
+----------------------------------------------------------------------
+qubits                  6
+electrons (alpha, beta) (2, 2)
+mapping                 jordan_wigner
+qubit Hamiltonian       27 Pauli terms
+----------------------------------------------------------------------
+operator pool           qeb (8 operators)
+operator selection      largest |gradient| (greedy)
+gradient method         analytic
+  formula               exact derivative, g = 2 Re<H psi|A psi>
+optimizer               COBYLA
+gradient tolerance      0.001
+...
+----------------------------------------------------------------------
+Hartree-Fock reference  -154.59070457 eV
 ======================================================================
 iter   |grad|      E (eV)       dE   expr  cnot    1q depth   type operator
 -----------------------------------------------------------------------------
@@ -115,7 +128,7 @@ of blocks -- energies then forces, one pair per step -- in one file:
 ========================================================================
 [SYSTEM]                        step: 1, this geometry, the cell
 [ELECTRONS]                     basis, grid, mapping, register, Hamiltonian
-[OPTIMIZATION SETUP]            the optimizer and the operator pool
+[OPTIMIZATION SETUP]            the optimizer, the gradient, the operator pool
 [ITERATIONS]                    one row per grown operator
 [VARIATIONAL QUANTUM SUMMARY]   the converged state of *this* geometry
 [FORCES]                        step: 1, the vectors and their breakdown
@@ -167,6 +180,20 @@ read off the left margin:
     electrons (alpha, beta): (4, 4)
     qubits: 12
 
+[OPTIMIZATION SETUP]
+    classical_optimizer: COBYLA
+    max_iterations: 50
+    gradient_method: analytic
+    gradient_formula: exact derivative, g = 2 Re<H psi|A psi>
+    gradient_tol: 0.001
+    gradient_units: Hartree
+    pool: ceo
+    pool_class: CEOPool
+    pool_size: 92
+    energy_unit: eV
+    reference_energy_eV: -476.8628634829
+    initial_ansatz: |HF> (0 parameters)
+
 [ITERATIONS]
     iter        energy (eV)              type        |grad|      1q    cnot   depth operator
     ----------------------------------------------------------------------------------------
@@ -200,7 +227,67 @@ earlier run in the same process (a notebook cell) can start a fresh file with
 `[SYSTEM]` says *where the atoms are* and `[ELECTRONS]` *what was solved* --
 the configuration the standard-output header used to carry, which is why it is in
 the file now that the trace is routed there. `[OPTIMIZATION SETUP]` keeps what is
-left: the classical optimizer and the operator pool.
+left: *how* it was solved.
+
+### `[OPTIMIZATION SETUP]`: how the run was configured
+
+The block is written in four groups, each contiguous, so a fact sits next to the
+fact it qualifies and a diff between two runs reads as a diff between two
+settings:
+
+| Group | Lines |
+| :--- | :--- |
+| classical optimizer | `classical_optimizer`, `max_iterations` |
+| screening gradient | `gradient_method`, `gradient_formula`, `gradient_tol`, `gradient_units` |
+| operator pool | `pool`, `pool_class`, `pool_size` |
+| the loop's starting point | `energy_unit`, `reference_energy_<unit>`, `initial_ansatz` |
+
+A **resumed** run closes the block with its lineage -- `resumed_from`,
+`restored_operators`, `restored_energy_<unit>`, `resume_same_hamiltonian` -- and
+its `initial_ansatz` reads `resumed (N operators, N parameters)` rather than
+`|HF>`.
+
+#### The screening gradient
+
+`gradient_method` is the `gradient=` option of the driver: how the pool
+screening gradients in the `|grad|` column were computed. It sits directly above
+`gradient_tol`, which is compared against those numbers, and `gradient_formula`
+says in one line what was evaluated. `gradient_units` is `Hartree` whatever unit
+the energy columns are in -- the gradient is an expectation value of the
+Hamiltonian's commutator, not an energy in the reported unit.
+
+| `gradient_method` | What it computes | What it costs |
+| :--- | :--- | :--- |
+| `analytic` (default) | The exact derivative `g_i = 2 Re<H psi\|A_i psi>` -- what the other two estimate. | One matrix-vector product per pool operator; no step-size truncation error. |
+| `finite_difference` | A central difference of the energy at shifted parameters, step `1e-4` (`FINITE_DIFFERENCE_STEP`, reported in `gradient_formula`). | `2 x \|pool\|` energy evaluations, plus the `\|pool\|` dense diagonalizations those evaluations are read from. |
+| `parameter_shift` | The quantum parameter-shift rule, reconstructed over the generator's frequency set (exact, not an approximation). | The same shifted-energy evaluations and diagonalizations, several shifts per frequency. |
+
+The shift-based estimators are opt-in, for studying the estimator itself: they
+converge to the number `analytic` computes directly. The eigendecompositions they
+need are built lazily, so a default run never pays for them.
+
+Those three names are the **canonical spelling** and the only one written to the
+log, but the input is spelling-insensitive the way `method=` is --
+`gradient="parameter-shift"`, `"parameter_shift"` and `"Parameter Shift"` all
+select the same estimator and all log `parameter_shift`:
+
+```python
+calc = Mandacaru(method="adapt-vqe",
+                 basis="FAO",
+                 h=0.25,
+                 gradient="parameter_shift",
+                 output="output.txt")
+```
+
+The block reports **what ran**, not what was asked for. A sparse or
+sector-restricted run never forms the eigendecompositions the shift estimators
+need and screens analytically whatever was requested, so it logs
+`gradient_method: analytic` with the override named in the formula line:
+
+```text
+    gradient_method: analytic
+    gradient_formula: exact derivative, g = 2 Re<H psi|A psi> (overrides parameter_shift: sparse pool)
+```
 
 `parse_output` returns the blocks as `result["steps"]`, in order, while the
 top-level `system` / `electrons` / `setup` / `iterations` / `summary` / `forces` /

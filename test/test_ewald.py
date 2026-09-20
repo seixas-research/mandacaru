@@ -49,7 +49,7 @@ class TestMadelungConstants:
 
     def test_caesium_chloride(self):
         """Two interpenetrating simple cubic lattices, alpha = 1.762675."""
-        cell = np.eye(3) * 2.0 / np.sqrt(3.0)          # nearest neighbour = 1
+        cell = np.eye(3) * 2.0 / np.sqrt(3.0)          # nearest neighbor = 1
         energy = ewald_energy([[0, 0, 0], list(cell.sum(axis=0) / 2)],
                               [1.0, -1.0], cell)
         assert energy == pytest.approx(-1.762674773, rel=1e-8)

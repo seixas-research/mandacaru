@@ -376,18 +376,35 @@ def resolve_pseudo_basis(name, options, symbols):
             "Hamiltonian")
     family = next(iter(pseudo.values()))
     sizes, splits, merged = {}, {}, {}
+    filters = {}
     for symbol, (_sub_name, sub_options) in resolved.items():
         extra = {k: v for k, v in sub_options.items()
-                 if k not in ("size", "split_norm")}
+                 if k not in ("size", "split_norm", "filter")}
         if extra:
             raise ValueError(
                 f"per-element basis options {extra!r} for {symbol!r} cannot "
                 f"differ per element with the {family.label} family; only "
-                "'size' and 'split_norm' are per-element (give the other "
-                "options in a single {'name': ..., ...} basis dict)")
+                "'size', 'split_norm' and 'filter' may be written per element "
+                "(give the other options in a single {'name': ..., ...} basis "
+                "dict)")
         sizes[symbol] = sub_options.get("size", "SZ")
         if "split_norm" in sub_options:
             splits[symbol] = sub_options["split_norm"]
+        if "filter" in sub_options:
+            filters[symbol] = sub_options["filter"]
+    if filters:
+        # The filter cutoff is a property of the *grid*, which every atom
+        # shares, so it may be written per element for convenience but must
+        # agree -- and it must be written for all of them, since an element
+        # left out would silently keep its unrepresentable components.
+        distinct = {repr(v) for v in filters.values()}
+        if len(distinct) > 1 or len(filters) != len(resolved):
+            raise ValueError(
+                f"the basis filter must be the same for every element, got "
+                f"{filters!r}: the cutoff is set by the real-space grid, which "
+                "all the atoms share.  Write it once as "
+                "basis={'name': ..., 'filter': ..., 'size': {<per element>}}.")
+        merged["filter"] = next(iter(filters.values()))
     merged["size"] = sizes
     if splits:
         # Keep a scalar when every element agrees; otherwise the per-element

@@ -21,11 +21,11 @@ included — is re-solved as a bound state of the basis-defining potential
 v_\text{basis}(r) = v_\text{free}(r) + v_\text{cut}(r).
 ```
 
-Oxygen therefore brings its own 1s, 2s and 2p; nothing is pseudised and nothing
+Oxygen therefore brings its own 1s, 2s and 2p; nothing is pseudized and nothing
 is frozen at the basis level (the `frozen_core` approximation still applies
 afterwards, at the Hamiltonian level, exactly as for `FAO`).
 
-## Localisation by a smooth wall
+## Localization by a smooth wall
 
 Where the SIESTA-type `NAO` family confines orbitals in a hard sphere, NAO-AE
 uses an *exponential wall* that is exactly zero up to an **onset** $r_0$, rises
@@ -56,13 +56,13 @@ hydrogen-like $(n, l)$ state has mean radius
 so $z$ is chosen to give the function a prescribed extent relative to the
 valence shell's own $\langle r \rangle$
 ({func}`~mandacaru.basis.nao_ae.effective_charge_for_radius`). The functions are
-organised in tiers:
+organized in tiers:
 
 | `tier` | Added on top of the previous one |
 | :--- | :--- |
 | `0` | nothing — the all-electron minimal basis |
-| `1` (default) | one **polarisation** shell at $l_\max + 1$ (nodeless, as compact as the valence shell) and one **diffuse** function per valence channel (one more node than the valence shell, twice its extent) |
-| `2` | a second polarisation channel at $l_\max + 2$, a noded polarisation function at $l_\max + 1$, and one **contracted** function per valence channel (0.6 of the valence extent) |
+| `1` (default) | one **polarization** shell at $l_\max + 1$ (nodeless, as compact as the valence shell) and one **diffuse** function per valence channel (one more node than the valence shell, twice its extent) |
+| `2` | a second polarization channel at $l_\max + 2$, a noded polarization function at $l_\max + 1$, and one **contracted** function per valence channel (0.6 of the valence extent) |
 
 Explicit `extra=[(n, l, z), ...]` triples can be added for full control.
 
@@ -72,11 +72,11 @@ Explicit `extra=[(n, l, z), ...]` triples can be added for full control.
 | O | 5 | 14 | 30 |
 | Li | 2 | 6 | — |
 
-Within each $l$ channel the functions are **Gram–Schmidt orthonormalised**
+Within each $l$ channel the functions are **Gram–Schmidt orthonormalized**
 (minimal first, then the most compact tier functions), and a candidate whose
 norm after projection falls below `linear_dependence_tol` (`1e-4`) is dropped.
 Tier functions are also shortened until at most `tail_norm` (`1e-4`) of their
-norm lies beyond the onset — the wall is re-centred and the state re-solved —
+norm lies beyond the onset — the wall is re-centered and the state re-solved —
 so compact functions stay compact.
 
 ```python
@@ -87,7 +87,7 @@ print(bset.describe("O"))
 #   1s (atomic)                  eps =  -18.7413 Ha   <r> =  0.20 a0 ...
 #   2s (atomic)                  eps =   -0.8701 Ha   <r> =  1.15 a0 ...
 #   2p (atomic)                  eps =   -0.3378 Ha   <r> =  1.26 a0 ...
-#   3d (polarisation, z=8.31)    ...
+#   3d (polarization, z=8.31)    ...
 #   3s (diffuse, z=5.87)         ...
 #   3p (diffuse, z=4.95)         ...
 ```
@@ -97,7 +97,7 @@ print(bset.describe("O"))
 - The minimal (tier 0) functions are LDA atomic orbitals — for hydrogen
   slightly more diffuse than the exact 1s, so on H₂ tier 0 sits *above* the
   analytic `FAO` minimal basis; tier 1 recovers a chemically significant amount
-  of energy (polarisation and radial breathing) and is the sensible default.
+  of energy (polarization and radial breathing) and is the sensible default.
 - The core functions are as sharp as the atom's own core (the oxygen 1s has
   $\langle r\rangle \approx 0.2\,a_0$). The uniform real-space grid resolves them
   no better than it resolves the `FAO` core. `frozen_core=True` reduces the

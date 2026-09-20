@@ -107,6 +107,18 @@ hydrogen-like tiers sized from the atom.  See :doc:`guide/nao_ae`.
    :undoc-members:
    :show-inheritance:
 
+Fourier Filtering
+~~~~~~~~~~~~~~~~~
+
+Removing from a radial function the wave-vectors the real-space grid cannot
+represent -- the cure for the egg-box, on by default for the PAW families.
+See :doc:`guide/pseudopotentials`.
+
+.. automodule:: mandacaru.basis.filtering
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 ----
 
 Pseudopotentials
@@ -185,7 +197,7 @@ Quantum Circuits & Ansätze
 
 ----
 
-Classical Optimisers
+Classical Optimizers
 --------------------
 
 .. automodule:: mandacaru.optimizers
@@ -195,7 +207,7 @@ Classical Optimisers
 
 ----
 
-Hamiltonian Serialisation
+Hamiltonian Serialization
 -------------------------
 
 The on-disk qubit-Hamiltonian cache (Apache Parquet or JSON) that lets a run skip

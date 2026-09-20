@@ -1,7 +1,7 @@
 # LiH potential-energy curves: basis sets and operator pools
 
 A potential-energy curve repeats a molecular energy calculation at several bond
-lengths. For each Li–H distance $R$, we optimise the electronic state while
+lengths. For each Li–H distance $R$, we optimize the electronic state while
 holding the nuclei fixed:
 
 ```{math}
@@ -11,7 +11,7 @@ E_{b,p}(R) = \min_{\boldsymbol{\theta}}
 ```
 
 Here $b$ labels the basis set and $p$ labels the operator pool. In practice the
-optimiser returns an approximation to this minimum. We retain its convergence
+optimizer returns an approximation to this minimum. We retain its convergence
 information alongside every energy.
 
 ## What the comparison holds fixed
@@ -99,7 +99,7 @@ Calculated LiH energies for two basis sets and four operator pools. The upper
 panels show total energies; the lower panels show differences from the
 fermionic-pool calculation in the same basis at the same distance. Curves may
 overlap. Black crosses identify an unmet outer convergence criterion or an
-unsuccessful inner optimisation. Lines connect calculated points only.
+unsuccessful inner optimization. Lines connect calculated points only.
 ```
 
 Download the {download}`PNG <../_static/lih/basis_pool_scan.png>`,
@@ -110,7 +110,7 @@ Download the {download}`PNG <../_static/lih/basis_pool_scan.png>`,
 
 First compare pools **within one column**: the Hamiltonian is identical there.
 The lower panel makes small differences visible; its fermionic reference is a
-variational calculation, not an exact-diagonalisation benchmark. `qeb` and `ceo`
+variational calculation, not an exact-diagonalization benchmark. `qeb` and `ceo`
 are expected to coincide for the Jordan–Wigner construction used here.
 
 Then compare the two upper panels: a different basis changes the approximate
@@ -120,7 +120,7 @@ better physical accuracy when the numerical integrals are not converged.
 These are calculated results for a small teaching model, **not a converged
 spectroscopic potential**. The figure does not establish the experimental
 bond length, dissociation energy or chemical accuracy. Check the basis, grid,
-box size, frozen-core approximation, final electron number and optimisation
+box size, frozen-core approximation, final electron number and optimization
 before making those claims.
 
 The plotted quantity is the total energy. If you need a binding curve, define
@@ -142,7 +142,7 @@ Gaussian function; freezing the core does not remove that numerical issue.
 The qubit-pool searches can also exhaust the 40-step growth budget. Both are
 limitations of this demonstration. The CSV's `particle_sector_weight` should
 be close to one for the intended two-electron problem; inspect it separately
-from the energy and optimiser flags.
+from the energy and optimizer flags.
 
 ## Embed the plot in your own documentation
 

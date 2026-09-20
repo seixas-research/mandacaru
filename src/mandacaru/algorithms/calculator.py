@@ -756,6 +756,20 @@ class Mandacaru(Calculator):
 
         if not legacy:
             return
+        if getattr(integrals, "split_local_potential", False):
+            # The legacy path rebuilds `T + V_grid + C D C^dagger` itself and
+            # differentiates the local potential on the grid.  With the local
+            # channel range-separated, the grid holds only its long-range half
+            # and the short-range half is an atom-centered quadrature the legacy
+            # kernels know nothing about -- it would differentiate an energy
+            # several Hartree away from the reported one.
+            raise NotImplementedError(
+                "force_method='scf-response' cannot differentiate a "
+                "range-separated local potential: this family integrates the "
+                "short-range half of it on atom-centered spheres "
+                "(`short_range_local`).  Use the default force_method='rdm', "
+                "or set `exact_local_potential = False` on the integrals class "
+                "to put the whole potential back on the grid.")
         # The legacy path differentiates a real-arithmetic closed-shell replica
         # of the SCF -- see `algorithms/_jax_energy.py`.
         particles = getattr(solver, "num_particles", None)
@@ -1077,7 +1091,7 @@ class Mandacaru(Calculator):
             Write even for a single geometry.
         status : str, optional
             The footer verbatim -- for a workflow that knows the completion
-            reason (interrupted, cancelled, budget exhausted).  The
+            reason (interrupted, canceled, budget exhausted).  The
             interpreter-exit hook uses it to say that completion was *not*
             signaled, since reaching exit does not establish it.
 

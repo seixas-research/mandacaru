@@ -6,13 +6,12 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent / "_ext"))
 
 project = "Mandacaru"
 author = "Leandro Seixas Rocha"
 copyright = "2026, Leandro Seixas Rocha"
 release = runpy.run_path(str(ROOT / "src/mandacaru/version.py"))["__version__"]
-language = "en_GB"
+language = "en"
 
 extensions = [
     "sphinx.ext.autodoc",
@@ -20,7 +19,6 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
     "myst_parser",
-    "british_english",
 ]
 source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
 myst_enable_extensions = ["dollarmath", "amsmath", "colon_fence"]
@@ -35,7 +33,7 @@ html_title = project
 html_theme = "furo"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
-# As in Poraquê, Furo selects colours for light, dark and automatic mode.
+# As in Poraquê, Furo selects colors for light, dark and automatic mode.
 # It sets data-theme on <body>, not on <html>.
 html_theme_options = {"light_logo": "icon.png", "dark_logo": "icon.png"}
 html_favicon = "_static/favicon.png"

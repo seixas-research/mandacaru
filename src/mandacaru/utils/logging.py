@@ -20,8 +20,9 @@ optimization live.  The file has these kinds of section:
 * an **electrons** block with how the electronic problem was posed -- basis,
   grid, kinetic operator, k-points, spin, the fermion-to-qubit mapping and the
   size of the register and Hamiltonian it produced;
-* an **optimization setup** block naming the classical optimizer and the
-  reference (Hartree-Fock) energy the VQE starts from;
+* an **optimization setup** block naming the classical optimizer, how the pool
+  screening gradient is computed and against which tolerance, the operator pool,
+  and the reference (Hartree-Fock) energy the VQE starts from;
 * one **iteration** block per accepted ADAPT operator, giving the pool's
   *size*, the operator selected to join the ansatz (with its screening
   gradient and Pauli expansion), the energy, the circuit metrics and the
@@ -297,26 +298,56 @@ class AdaptOutputLogger:
                               gradient_tol: float | None = None,
                               max_iterations: int | None = None,
                               initial_ansatz: str = "|HF> (0 parameters)",
-                              extra: dict | None = None) -> None:
+                              extra: dict | None = None,
+                              gradient_method: str | None = None,
+                              gradient_formula: str | None = None,
+                              gradient_units: str | None = None,
+                              lineage: dict | None = None) -> None:
         """Write the classical optimizer and the pre-loop (reference) results.
 
         The *final classical ansatz optimization result leading into the VQE
         runtime* is, before the first operator is added, the Hartree-Fock
         reference energy of the empty ansatz -- logged here as the loop's
         starting point.
+
+        The block is written in four groups, each contiguous so that a reader
+        (and a diff between two runs) finds a fact where the fact it qualifies
+        is: the **classical optimizer** and its budget, the **screening
+        gradient** -- how it is computed, against which tolerance and in which
+        unit -- then the driver's own settings (``extra``; for ADAPT-VQE the
+        operator pool), the **loop's starting point**, and last the run's
+        **lineage** (``lineage``; what a resumed run was restored from).
         """
         self._emit("[OPTIMIZATION SETUP]")
-        self._emit_body(f"classical_optimizer: {optimizer_method}",
-                        f"energy_unit: {energy_unit}")
+        self._emit_body(f"classical_optimizer: {optimizer_method}")
         if max_iterations is not None:
             self._emit_body(f"max_iterations: {max_iterations}")
+
+        # The gradient group.  `gradient_method` says how the number in the
+        # `|grad|` column was obtained, and it sits next to the tolerance it is
+        # compared against -- the two are one fact read together.
+        if gradient_method is not None:
+            self._emit_body(f"gradient_method: {gradient_method}")
+        if gradient_formula is not None:
+            self._emit_body(f"gradient_formula: {gradient_formula}")
         if gradient_tol is not None:
             self._emit_body(f"gradient_tol: {gradient_tol:g}")
-        self._emit_body(
-            f"reference_energy_{energy_unit}: {reference_energy:.10f}",
-            f"initial_ansatz: {initial_ansatz}")
+        if gradient_units is not None:
+            self._emit_body(f"gradient_units: {gradient_units}")
+
         if extra:
             for key, value in extra.items():
+                self._emit_body(f"{key}: {value}")
+
+        # Where the loop starts: the unit the energies below are in, the
+        # reference energy in it, and the ansatz that energy belongs to.
+        self._emit_body(
+            f"energy_unit: {energy_unit}",
+            f"reference_energy_{energy_unit}: {reference_energy:.10f}",
+            f"initial_ansatz: {initial_ansatz}")
+
+        if lineage:
+            for key, value in lineage.items():
                 self._emit_body(f"{key}: {value}")
         self._emit("")
 
@@ -687,7 +718,7 @@ def append_optimization_summary(path: str, history, symbols=None,
     history : sequence of dict
         One entry per geometry step, with ``energy`` (in ``energy_unit``),
         ``max_force`` and ``net_force`` (eV/Angstrom); optional ``wall_time_s``
-        and ``com`` (centre of mass) are used when present.
+        and ``com`` (center of mass) are used when present.
     symbols, positions : optional
         The relaxed geometry, written as the ``[SYSTEM]`` block writes one.
     fmax : float, optional
@@ -912,6 +943,14 @@ _SECTIONS = {"[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
              "[GEOMETRY OPTIMIZATION SUMMARY]": "optimization",
              "[RELAXATION COMPLETE]": "completion"}
 
+#: Retired ``[OPTIMIZATION SETUP]`` keys, mapped to the key that replaced them.
+#: The writer emits only the canonical name -- a replacement is carried through,
+#: not aliased -- but the reader stays tolerant of files written before it, so a
+#: log kept from an earlier version answers the same question through the same
+#: key.  ``screening_gradient`` named the *quantity*; ``gradient_method`` names
+#: what the block actually reports, which is how that quantity was computed.
+_SETUP_ALIASES = {"screening_gradient": "gradient_method"}
+
 
 def parse_output(path: str) -> dict:
     """Reference parser for an ADAPT ``output.txt`` (used by the tests).
@@ -926,6 +965,10 @@ def parse_output(path: str) -> dict:
     in order; the top-level ``system`` / ``electrons`` / ``setup`` /
     ``iterations`` / ``summary`` / ``forces`` / ``performance`` keys describe the
     **last** step, so reading a single-point log is unchanged.
+
+    Setup keys that have been renamed are read back under their current name
+    (:data:`_SETUP_ALIASES`), so a log written by an earlier version answers the
+    same question through the same key as a log written today.
     """
     steps: list[dict[str, Any]] = []
     step: dict[str, Any] | None = None
@@ -1035,6 +1078,8 @@ def parse_output(path: str) -> dict:
                     and ":" in stripped:
                 key, _, value = stripped.partition(":")
                 key, value = key.strip(), value.strip()
+                if section == "setup":
+                    key = _SETUP_ALIASES.get(key, key)
                 # `geometry:` and `cell_vectors:` open their own tables above;
                 # keeping the empty string would overwrite the parsed rows.
                 if not (key in ("geometry", "cell_vectors") and not value):

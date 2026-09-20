@@ -183,7 +183,7 @@ class TestSectorLeakage:
         with pytest.raises(ValueError, match="qubits"):
             sector.conserves(PauliSum({"XX": 1.0}))
 
-    def test_cancelling_terms_still_count_as_conserving(self):
+    def test_canceling_terms_still_count_as_conserving(self):
         sector = ParticleSector(4, (1, 1))
         leaking = PauliSum({"XIII": 1j})
         assert not sector.conserves(leaking)

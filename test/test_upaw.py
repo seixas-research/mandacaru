@@ -28,12 +28,12 @@ from mandacaru.pseudopotentials.paw import (UPAW_FAMILY, build_upaw_library,
                                             generate_paw, generate_upaw, get_upaw)
 
 CELL = 10.0
-CENTRE = CELL / 2 + 0.011
+CENTER = CELL / 2 + 0.011
 
 
 def h2(distance=0.74):
-    return Atoms("H2", positions=[[CENTRE, CENTRE, CENTRE - distance / 2],
-                                  [CENTRE, CENTRE, CENTRE + distance / 2]],
+    return Atoms("H2", positions=[[CENTER, CENTER, CENTER - distance / 2],
+                                  [CENTER, CENTER, CENTER + distance / 2]],
                  cell=[CELL] * 3)
 
 
@@ -82,7 +82,7 @@ class TestUnitarity:
             build_basis_hamiltonian
         from mandacaru.integrals import Grid
 
-        grid = Grid(center=[CENTRE] * 3, box_size=8.0, h=0.3, units="angstrom")
+        grid = Grid(center=[CENTER] * 3, box_size=8.0, h=0.3, units="angstrom")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             context = build_basis_hamiltonian(h2(), "UPAW", grid, 0.3, 0, None)[4]
@@ -149,9 +149,9 @@ class TestCalculatorPath:
         assert estimate.n_qubits == 20
 
     def test_it_cannot_be_mixed_with_another_family(self):
-        water = Atoms("OH2", positions=[[CENTRE, CENTRE, CENTRE],
-                                        [CENTRE, CENTRE + 0.77, CENTRE + 0.59],
-                                        [CENTRE, CENTRE - 0.77, CENTRE + 0.59]],
+        water = Atoms("OH2", positions=[[CENTER, CENTER, CENTER],
+                                        [CENTER, CENTER + 0.77, CENTER + 0.59],
+                                        [CENTER, CENTER - 0.77, CENTER + 0.59]],
                       cell=[CELL] * 3)
         for spec in ({"H": "UPAW", "O": "PAW"}, {"H": "UPAW", "O": "FAO"}):
             with pytest.raises(ValueError, match="per-element basis"):
@@ -186,11 +186,11 @@ class TestWhyItIsNotTheDefault:
             build_basis_hamiltonian
         from mandacaru.integrals import Grid
 
-        water = Atoms("OH2", positions=[[CENTRE, CENTRE, CENTRE],
-                                        [CENTRE, CENTRE + 0.77, CENTRE + 0.59],
-                                        [CENTRE, CENTRE - 0.77, CENTRE + 0.59]],
+        water = Atoms("OH2", positions=[[CENTER, CENTER, CENTER],
+                                        [CENTER, CENTER + 0.77, CENTER + 0.59],
+                                        [CENTER, CENTER - 0.77, CENTER + 0.59]],
                       cell=[CELL] * 3)
-        grid = Grid(center=[CENTRE] * 3, box_size=8.0, h=0.3, units="angstrom")
+        grid = Grid(center=[CENTER] * 3, box_size=8.0, h=0.3, units="angstrom")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             integrals = build_basis_hamiltonian(water, "UPAW", grid, 0.3, 0,

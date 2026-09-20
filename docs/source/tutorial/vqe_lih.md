@@ -13,7 +13,7 @@ blocks, in order, as `lih_vqe.py`, then run `python lih_vqe.py`.
 ```python
 from ase import Atoms
 
-bond_length = 1.6  # Å; a starting geometry, not an optimised bond length
+bond_length = 1.6  # Å; a starting geometry, not an optimized bond length
 atoms = Atoms(
     "LiH",
     positions=[
@@ -85,7 +85,7 @@ result = atoms.calc.result
 print(f"Total energy: {energy_ev:.6f} eV")
 print(f"Reference energy: {result.reference_energy:.6f} eV")
 print(f"Energy change from the reference: {result.correlation_energy:.6f} eV")
-print(f"Optimiser succeeded: {result.success}")
+print(f"Optimizer succeeded: {result.success}")
 print(f"Variational parameters: {result.num_parameters}")
 ```
 
@@ -95,7 +95,7 @@ For a fixed molecular geometry, the returned energy includes electronic
 energy and nuclear repulsion; it excludes nuclear kinetic energy.
 
 With `method="vqe"`, Mandacaru constructs a fixed UCCSD ansatz automatically.
-The classical optimiser varies its circuit parameters to minimise
+The classical optimizer varies its circuit parameters to minimize
 
 ```{math}
 E(\boldsymbol{\theta}; R)
@@ -110,12 +110,12 @@ this example does not submit quantum hardware jobs.
 ## 4. Interpret the output
 
 `reference_energy` is the starting reference determinant's energy.
-`correlation_energy` is the difference between the optimised and reference
+`correlation_energy` is the difference between the optimized and reference
 energies for this model. Neither quantity is a molecular binding energy.
 
-An optimiser success flag reports its stopping criterion. It does not prove
+An optimizer success flag reports its stopping criterion. It does not prove
 that the ansatz reaches the exact ground state or that the grid and basis are
-converged. If the optimisation fails, examine the energy history and increase
+converged. If the optimization fails, examine the energy history and increase
 `maxiter` before changing the physical model.
 
 Continue with [ADAPT-VQE](adapt_vqe_lih.md) to let the calculation choose its

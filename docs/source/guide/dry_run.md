@@ -72,7 +72,7 @@ water.calc.dry_run_result.summary()
 estimate_qubits(water, basis={"name": "NAO-AE", "tier": 1}, device="braket-iqm-garnet")
 ```
 
-Constructing the calculator never materialises anything: the options are
+Constructing the calculator never materializes anything: the options are
 validated at once, but the solver — and with it the pool and the $2^n$ matrix of
 an explicit `hamiltonian=` — is only built on first use. So the one-off
 `calc.dry_run()` is safe on a problem too large to run. A cached Hamiltonian is
@@ -80,7 +80,7 @@ estimated from its **header**: a Parquet cache keeps it in the file footer and
 its Pauli table is never decoded (`read_hamiltonian_header`); a JSON cache is one
 document and has to be parsed to reach it.
 
-`dry_run=True` is honoured by every driver: the ASE hook stores the
+`dry_run=True` is honored by every driver: the ASE hook stores the
 {class}`~mandacaru.algorithms.dry_run.QubitEstimate` on `dry_run_result` and
 reports `NaN`, and a direct-mode `run()` returns the estimate instead of a
 result. Nothing expensive is touched — the test suite pins this by making the
@@ -93,7 +93,7 @@ N_\text{qubits} = 2\,(M_\text{basis} - M_\text{frozen}),
 ```
 
 one qubit per active **spin-orbital**: the basis family is instantiated exactly
-as a run would (so `size`, polarisation and cutoff options are honoured) and
+as a run would (so `size`, polarization and cutoff options are honored) and
 its functions are *counted* rather than integrated; the frozen core removes
 doubly occupied spatial orbitals; the plane-wave family counts plane waves
 below the cutoff.

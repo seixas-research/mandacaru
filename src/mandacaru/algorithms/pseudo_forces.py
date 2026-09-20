@@ -85,6 +85,17 @@ How the pieces are evaluated
   the Hellmann-Feynman part (projector moving) is :math:`-G`, so the total is
   exactly translation invariant.  ONCVPSP keeps grid projections, whose
   derivatives are sampled on the grid like everything else.
+* PAW's **local potential** is range-separated
+  (:meth:`~mandacaru.pseudopotentials.paw.PAWIntegrals.short_range_local`): the
+  grid samples only the long-range Gaussian-ion half, and the short-range half
+  is an atom-centered sphere integral :math:`I^A_{pq}`.  It is differentiated
+  exactly like the projections, through one array
+  :math:`G^A_{pqk} = \int(\partial\phi_p/\partial R_{p,k})^*\phi_q v^{sr}_A`:
+  Pulay for atom :math:`B` is
+  :math:`\sum_A([p\in B]\,G^A_{pqk} + [q\in B]\,\overline{G^A_{qpk}})` and
+  Hellmann-Feynman for atom :math:`A` is
+  :math:`-(G^A_{pqk} + \overline{G^A_{qpk}})` over its own sphere, so a rigid
+  translation of everything cancels identically.
 * The contraction with :math:`\partial E/\partial(S,h,g)` is the
   **directional derivative** of the small algebraic energy
   :math:`E(S, h, g)` along :math:`(dS, dh, dg)`, by a central difference
@@ -226,34 +237,34 @@ def _moved_radial(radial, center, grid, k: int, delta: float) -> np.ndarray:
     return (out[0] - out[1]) / (2.0 * delta)
 
 
-def _ionic_shift(integrals, centres, atom, k, step):
+def _ionic_shift(integrals, centers, atom, k, step):
     """``{channel: dV}`` -- how the compensation-ion integrals change when
     ``atom`` moves along ``k``.
 
     Both roles matter: the moving atom carries its own compensation shape
-    through its neighbours' potentials, and carries its ionic potential under
+    through its neighbors' potentials, and carries its ionic potential under
     everyone else's shapes.  Differentiating the quadrature directly would mean
     two derivative kernels, so the integral is simply re-evaluated at displaced
-    centres -- it is smooth and deterministic, so a central difference is
+    centers -- it is smooth and deterministic, so a central difference is
     clean.
     """
-    plus_centres = [np.array(c, dtype=float) for c in centres]
-    minus_centres = [np.array(c, dtype=float) for c in centres]
-    plus_centres[atom][k] += float(step)
-    minus_centres[atom][k] -= float(step)
-    plus = integrals.compensation_ionic_at(plus_centres)
-    minus = integrals.compensation_ionic_at(minus_centres)
+    plus_centers = [np.array(c, dtype=float) for c in centers]
+    minus_centers = [np.array(c, dtype=float) for c in centers]
+    plus_centers[atom][k] += float(step)
+    minus_centers[atom][k] -= float(step)
+    plus = integrals.compensation_ionic_at(plus_centers)
+    minus = integrals.compensation_ionic_at(minus_centers)
     return {c: (plus[c] - minus[c]) / (2.0 * float(step)) for c in plus}
 
 
-def _sampled_multipole(dataset, centre, grid, L, M):
-    """``v_L(|r - centre|) Y_LM`` of a compensation multipole, on the grid."""
+def _sampled_multipole(dataset, center, grid, L, M):
+    """``v_L(|r - center|) Y_LM`` of a compensation multipole, on the grid."""
     from ..basis._angular import spherical_harmonic
     from ..pseudopotentials.multipoles import shape_potential
 
-    dx = grid.X.ravel() - centre[0]
-    dy = grid.Y.ravel() - centre[1]
-    dz = grid.Z.ravel() - centre[2]
+    dx = grid.X.ravel() - center[0]
+    dy = grid.Y.ravel() - center[1]
+    dz = grid.Z.ravel() - center[2]
     radius = np.sqrt(dx * dx + dy * dy + dz * dz)
     value = shape_potential(radius, float(dataset.compensation_radius), int(L))
     if int(L) == 0:
@@ -264,12 +275,12 @@ def _sampled_multipole(dataset, centre, grid, L, M):
     return value * spherical_harmonic(int(L), int(M), theta, phi)
 
 
-def _moved_multipole(dataset, centre, grid, L, M, k, delta):
-    """Derivative of :func:`_sampled_multipole` as its centre moves along ``k``."""
+def _moved_multipole(dataset, center, grid, L, M, k, delta):
+    """Derivative of :func:`_sampled_multipole` as its center moves along ``k``."""
     step = np.zeros(3)
     step[k] = float(delta)
-    return ((_sampled_multipole(dataset, centre + step, grid, L, M)
-             - _sampled_multipole(dataset, centre - step, grid, L, M))
+    return ((_sampled_multipole(dataset, center + step, grid, L, M)
+             - _sampled_multipole(dataset, center - step, grid, L, M))
             / (2.0 * float(delta)))
 
 
@@ -285,7 +296,16 @@ def _atom_potentials(integrals):
     :meth:`~mandacaru.integrals.potentials.Potentials.nuclear_potential` samples,
     so the Hellmann-Feynman term differentiates the same operator the energy
     was built from.
+
+    The engine may sample only *part* of its local potential on the grid -- PAW
+    keeps the long-range Gaussian-ion half there and integrates the rest on
+    atom-centered spheres (``short_range_local``).  It then says so through
+    ``local_potential_functions``, and that is what this returns: the grid half
+    of the derivative has to differentiate the grid half of the operator.
     """
+    named = getattr(integrals, "local_potential_functions", None)
+    if named is not None:
+        return list(named())
     datasets = getattr(integrals, "pseudopotentials", None)
     if datasets:
         return [dataset.local_potential for dataset in datasets]
@@ -384,6 +404,12 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     D_nl = integrals.nonlocal_coupling_matrix() if P else None
     Q_nl = integrals.nonlocal_overlap_matrix()
     one = T + V_loc + (C @ D_nl @ C.conj().T if P else 0.0)
+    # With the local potential range-separated, `V_loc` above is only its
+    # long-range half (what the grid sampled); the short-range half is an
+    # atom-centered quadrature and is differentiated analytically below.
+    split_local = bool(getattr(integrals, "split_local_potential", False))
+    if split_local:
+        one = one + np.asarray(integrals.short_range_local())
     one_body_aug = integrals.one_body_augmentation()
     if one_body_aug is not None:
         # The compensation charges' electron-ion attraction is part of the
@@ -424,6 +450,30 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
             basis, projectors, delta)
     orbital_atoms = np.asarray(atom_of_orbital)
 
+    # `sr_gradients[A][p, q, k]` = the integral of phi_p^* phi_q v^sr_A with
+    # phi_p's *own* center displaced along k.  The same array serves both
+    # halves of the derivative, because the integral depends only on the
+    # separations: moving a basis function contributes +G, moving the sphere
+    # (with its potential) -G.  Their sum over a rigid translation is zero.
+    sr_gradients = (integrals.short_range_local_matrices(gradients=True,
+                                                         delta=delta)[1]
+                    if split_local else None)
+
+    def short_range_pulay(atom, k):
+        """``dV^sr`` when the basis functions of ``atom`` move along ``k``."""
+        own = orbital_atoms == atom
+        out = np.zeros((M, M), dtype=complex)
+        for G in sr_gradients.values():
+            Gk = G[:, :, k]
+            out[own, :] += Gk[own, :]                       # p on this atom
+            out[:, own] += Gk.conj().T[:, own]              # q on this atom
+        return out
+
+    def short_range_hellmann_feynman(atom, k):
+        """``dV^sr`` when ``atom``'s sphere and potential move along ``k``."""
+        Gk = sr_gradients[atom][:, :, k]
+        return -(Gk + Gk.conj().T)
+
     def nonlocal_terms(dC):
         dh = dC @ D_nl @ C.conj().T + C @ D_nl @ dC.conj().T
         dS = (dC @ Q_nl @ C.conj().T + C @ Q_nl @ dC.conj().T
@@ -458,7 +508,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
 
         ``sum_{A,LM} Q^{A,LM} V^{A,LM}`` is a one-body operator, so both its
         pieces -- the moments moving with the projections and the shape sliding
-        through the neighbours' ionic potentials -- land in ``dh``.
+        through the neighbors' ionic potentials -- land in ``dh``.
         """
         out = np.zeros((M, M), dtype=complex)
         for channel in channels:
@@ -488,6 +538,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     np.ascontiguousarray(np.vstack([psi, dpsi])), vext, grid)
                 cross_h = (T_full + V_full)[M:, :M]
                 dh = cross_h + cross_h.conj().T
+                if split_local:
+                    dh = dh + short_range_pulay(atom, k)
                 if P:
                     if exact_projections:
                         dC = np.zeros((M, P), dtype=complex)
@@ -529,6 +581,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
             w_loc = _moved_radial(atom_potentials[atom], centers[atom],
                                   grid, k, delta)
             dh = ((psi.conj() * w_loc) @ psi.T) * dV
+            if split_local:
+                dh = dh + short_range_hellmann_feynman(atom, k)
             dS = None
             dg = None
             if P:
@@ -556,7 +610,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                         dW[channel] = ((psi.conj() * w_comp) @ psi.T) * dV
 
                     # Multipole-multipole Coulomb depends on the *direction*
-                    # between the centres, not only the distance as the
+                    # between the centers, not only the distance as the
                     # monopole did, so the derivative is taken with respect to
                     # the displacement vector itself.
                     dU = np.zeros_like(U)
@@ -599,6 +653,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     details = {"method": "pseudopotential", "energy_hartree": float(total),
                "electronic_energy_hartree": float(electronic),
                "exact_projections": exact_projections,
+               "split_local_potential": split_local,
                "include_pulay": bool(include_pulay),
                "n_orbitals": M}
     if orbital_gradient:

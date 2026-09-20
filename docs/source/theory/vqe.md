@@ -1,8 +1,8 @@
 # Variational quantum eigensolver
 
-VQE estimates a ground-state energy by minimising the expectation value of a
-Hamiltonian in a parameterised trial state. A quantum circuit prepares the state;
-a classical optimiser updates the parameters. A local simulator can perform the
+VQE estimates a ground-state energy by minimizing the expectation value of a
+Hamiltonian in a parameterized trial state. A quantum circuit prepares the state;
+a classical optimizer updates the parameters. A local simulator can perform the
 same workflow, as in [the LiH tutorial](../tutorial/vqe_lih.md).
 
 ## The variational principle
@@ -18,7 +18,7 @@ E(\boldsymbol{\theta}) =
 \geq E_0.
 ```
 
-A unitary circuit $U(\boldsymbol{\theta})$ acting on a normalised reference state
+A unitary circuit $U(\boldsymbol{\theta})$ acting on a normalized reference state
 preserves its norm. The denominator is then one:
 
 ```{math}
@@ -31,8 +31,8 @@ E(\boldsymbol{\theta})
 ```
 
 The exact minimum within the ansatz is an upper bound to the ground-state energy
-of that Hamiltonian. A practical optimiser may find a local minimum. Measurement
-noise can also obscure the bound. Neither optimisation nor a flexible ansatz
+of that Hamiltonian. A practical optimizer may find a local minimum. Measurement
+noise can also obscure the bound. Neither optimization nor a flexible ansatz
 corrects an inaccurate basis or numerical integration grid.
 
 ## Electronic Hamiltonian
@@ -122,6 +122,6 @@ T_2=\sum_{i<j,\,a<b}\theta_{ij}^{ab}a_a^\dagger a_b^\dagger a_j a_i.
 A circuit usually implements an ordered product of individual excitation
 unitaries. This generally approximates the exponential of their sum because
 different excitations need not commute. Within an individual generator whose
-Pauli terms commute, the factorisation into Pauli rotations is exact. These are
+Pauli terms commute, the factorization into Pauli rotations is exact. These are
 two distinct statements; exact compilation of each factor does not remove the
 ansatz approximation.

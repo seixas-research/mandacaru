@@ -33,7 +33,7 @@ atoms.get_potential_energy()
 
 ADAPT-VQE writes the file after every `checkpoint_every` accepted operators;
 VQE after every `checkpoint_every` cost evaluations, always with the **best
-point seen so far** rather than the optimiser's current trial step.  Both
+point seen so far** rather than the optimizer's current trial step.  Both
 write it once more when the run ends, with `status.complete = True`.  Writes
 are atomic (a temporary file renamed into place), so an interruption in the
 middle of a write can never leave a torn file behind.
@@ -58,7 +58,7 @@ contain is applied exactly as stored — restores the iteration history and the
 evaluation count, and keeps growing.  `max_iterations` counts the *total*
 number of operators, so a run that stopped on that limit continues only when
 it is raised.  VQE checks that the stored generators are its own ansatz's and
-starts the optimisation from the stored angles.
+starts the optimization from the stored angles.
 
 A checkpoint resumes only into the register it was written for: the qubit
 count, the mapping and the reference determinant must
@@ -93,7 +93,7 @@ combined**, so the file records it as `preparation`:
 
 The two coincide only when the generators commute (on a three-angle H₂ example
 their fidelity is 0.94), so a reader must not guess. `state_vector()`,
-`expectation()` and QPE honour either form. A circuit is an ordered product, so
+`expectation()` and QPE honor either form. A circuit is an ordered product, so
 `circuit()` and `problem()` refuse a `"sum"` checkpoint, and so does resuming it
 into a run that prepares a product; run the ansatz with `trotter=True` when the
 state is meant for hardware. Files written before this field existed held
@@ -102,7 +102,7 @@ products only and load as such.
 A checkpoint also needs an ansatz that can be *described* — generators and a
 reference determinant (`SerializableAnsatz`). A custom ansatz implementing only
 the state-vector `Ansatz` protocol runs through `method="vqe"` unchanged; asking
-for `checkpoint=` or `resume=` with it is refused before the optimisation starts.
+for `checkpoint=` or `resume=` with it is refused before the optimization starts.
 
 ## Quantum phase estimation
 

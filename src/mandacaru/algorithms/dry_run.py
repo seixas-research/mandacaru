@@ -216,10 +216,26 @@ def _basis_key(name: str) -> str:
 
 def _pseudo_basis_count(atoms, family, options):
     """Per-atom valence function counts, a label and the loaded potentials
-    for a pseudopotential family (nothing sampled on a grid)."""
+    for a pseudopotential family (nothing sampled on a grid).
+
+    The Fourier filter (``basis={..., "filter": ...}``) cannot change a
+    *count* -- it reshapes each radial function and adds none -- so the basis
+    is built unfiltered here, which also keeps the estimate free of the
+    spherical Bessel transforms.  The option is still **validated** and named
+    in the label: a dry run that quietly accepted a mistyped filter would
+    report the qubit count of a calculation that will not start.
+
+    The label names the filter **always**, filtered or not, and reads the
+    family's own default (``filter`` is on for PAW / UPAW, off for the
+    norm-conserving families).  Printing it only when it differs from the
+    default would make the reader work out each family's default before they
+    could tell what basis the estimate describes.
+    """
+    from ..basis.filtering import filter_label
     from ..pseudopotentials.orbitals import pseudo_basis
     from ._hamiltonian_from_atoms import coherent_positions
 
+    options = family.resolved_options(options)
     symbols = list(atoms.get_chemical_symbols())
     directory = options.get("directory")
     potentials = {s: family.get(s, directory) for s in set(symbols)}
@@ -232,8 +248,10 @@ def _pseudo_basis_count(atoms, family, options):
     size = options.get("size", "SZ")
     size_label = ("per-element sizes " + json.dumps(size, sort_keys=True)
                   if isinstance(size, dict) else str(size))
+    parts = [size_label, filter_label(options.get("filter")),
+             "pseudopotentials"]
     per_atom = [(s, int(c)) for s, c in zip(symbols, counts)]
-    return per_atom, f"{family.label} ({size_label}, pseudopotentials)", potentials
+    return per_atom, f"{family.label} ({', '.join(parts)})", potentials
 
 
 def count_basis_functions(atoms, basis="FAO"):

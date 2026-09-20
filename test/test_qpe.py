@@ -207,7 +207,7 @@ class TestMemoryCheck:
             result = qpe.run(h2_checkpoint)
         assert result.probabilities.sum() == pytest.approx(1.0)
 
-    def test_prompt_asks_and_honours_the_answer(self, h2_checkpoint,
+    def test_prompt_asks_and_honors_the_answer(self, h2_checkpoint,
                                                 monkeypatch):
         monkeypatch.setattr(qpe_module, "available_memory", lambda: 1024)
         monkeypatch.setattr(qpe_module.sys.stdin, "isatty", lambda: True,

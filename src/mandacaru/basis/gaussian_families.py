@@ -115,10 +115,10 @@ class GaussianRecipe:
     valence : tuple of int
         Contraction pattern of every valence shell, e.g. ``(3, 1)``.
     polarization : tuple of tuple of int
-        Polarisation shells as ``(l, count)`` pairs on heavy atoms
+        Polarization shells as ``(l, count)`` pairs on heavy atoms
         (``Z >= polarization_min_z``).
     polarization_h : tuple of tuple of int
-        Polarisation shells as ``(l, count)`` pairs on hydrogen and helium.
+        Polarization shells as ``(l, count)`` pairs on hydrogen and helium.
     diffuse : tuple of int
         Angular momenta receiving one diffuse function on heavy atoms.
     diffuse_h : tuple of int

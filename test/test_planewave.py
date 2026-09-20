@@ -184,7 +184,7 @@ class TestRealOrbitals:
 
     @pytest.fixture
     def pw(self):
-        # Off-centre nuclei: a complex structure factor, the case that exposes it.
+        # Off-center nuclei: a complex structure factor, the case that exposes it.
         nuclei = [(1.0, np.array([1.5, 1.5, 1.13])),
                   (1.0, np.array([1.5, 1.5, 1.87]))]
         return PlaneWaveIntegrals(nuclei, 3.0 * np.eye(3), energy_cutoff=20)

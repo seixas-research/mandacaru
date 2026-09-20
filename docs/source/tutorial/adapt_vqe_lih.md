@@ -1,7 +1,7 @@
 # LiH with ADAPT-VQE: choosing an operator pool
 
 In [the VQE tutorial](vqe_lih.md), the circuit structure was fixed before the
-optimisation began. ADAPT-VQE builds its circuit gradually, selecting generators
+optimization began. ADAPT-VQE builds its circuit gradually, selecting generators
 from an **operator pool**. We keep the LiH geometry, frozen core and basis the
 same so that the change in algorithm is easy to follow.
 
@@ -43,7 +43,7 @@ result = atoms.calc.result
 print(f"Total energy: {energy_ev:.6f} eV")
 print(f"Pool-gradient criterion satisfied: {result.converged}")
 print(f"Selected operators: {result.num_operators}")
-print(f"Unsuccessful inner optimisations: {result.optimizer_failures}")
+print(f"Unsuccessful inner optimizations: {result.optimizer_failures}")
 ```
 
 This calculation starts with the Hartree–Fock reference. At each growth step,
@@ -58,13 +58,13 @@ g_i = \left.\frac{\mathrm{d}}{\mathrm{d}\theta}
 ```
 
 The largest gradient magnitude identifies the next generator. Mandacaru adds it
-and reoptimises all circuit parameters. The loop stops when the largest pool
+and reoptimizes all circuit parameters. The loop stops when the largest pool
 gradient is below `gradient_tolerance`, or when it reaches `max_iterations`.
 The screening threshold uses the internal Hamiltonian's **Hartree** units,
 although the returned energies use eV.
 
-There are two optimisation loops: `max_iterations` limits circuit growth;
-`Optimizer(..., maxiter=1000)` limits each classical parameter optimisation.
+There are two optimization loops: `max_iterations` limits circuit growth;
+`Optimizer(..., maxiter=1000)` limits each classical parameter optimization.
 Check both the outer convergence flag and `optimizer_failures`.
 
 ## 2. Understand the available pools
@@ -78,7 +78,7 @@ Check both the outer convergence flag and `optimizer_failures`.
 
 These are implementation descriptions, not universal rankings. Gate counts
 depend on the mapping, selected operators, compiler and device connectivity.
-Mandacaru does not implement the specialised CEO synthesis required for the gate
+Mandacaru does not implement the specialized CEO synthesis required for the gate
 savings reported for that method in the literature.
 
 ## 3. Compare pools using one Hamiltonian

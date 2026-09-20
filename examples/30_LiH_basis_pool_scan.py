@@ -65,7 +65,7 @@ def calculate(output: Path, spacing: float, half_width: float,
         "requested_spacing_A": spacing, "actual_spacing_A": actual_spacing,
         "distances_A": distances.tolist(),
         "gradient_tolerance_Ha": 1e-5, "max_iterations": max_iterations,
-        "optimiser": "L-BFGS-B", "optimiser_maxiter": 1000,
+        "optimizer": "L-BFGS-B", "optimizer_maxiter": 1000,
         "execute_circuits": False, "profile": False,
         "sparse": True, "sector": "fixed particle numbers except for the qubit pool",
         "energy_unit": "eV",
@@ -147,7 +147,7 @@ def plot(output: Path) -> None:
     if len(rows) != expected:
         raise ValueError(f"Incomplete scan: expected {expected} rows, found {len(rows)}.")
 
-    colours = ("#0072B2", "#D55E00", "#009E73", "#882255")
+    colors = ("#0072B2", "#D55E00", "#009E73", "#882255")
     markers = ("o", "s", "^", "D")
     fig, axes = plt.subplots(2, len(BASES), figsize=(10.5, 7.2), sharex=True,
                              layout="constrained")
@@ -157,7 +157,7 @@ def plot(output: Path) -> None:
             key=lambda r: float(r["distance_A"]),
         )
         reference = np.array([float(r["energy_eV"]) for r in reference_rows])
-        for pool, colour, marker in zip(POOLS, colours, markers):
+        for pool, color, marker in zip(POOLS, colors, markers):
             series = sorted(
                 (r for r in rows if r["basis"] == basis and r["pool"] == pool),
                 key=lambda r: float(r["distance_A"]),
@@ -168,7 +168,7 @@ def plot(output: Path) -> None:
                              for r in series])
             for ax, values in ((axes[0, column], energies),
                                (axes[1, column], 1000 * (energies - reference))):
-                ax.plot(distances, values, color=colour, marker=marker,
+                ax.plot(distances, values, color=color, marker=marker,
                         markersize=6, markerfacecolor="none", linewidth=1.2,
                         label=pool)
                 if not good.all():

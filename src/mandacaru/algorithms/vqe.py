@@ -161,7 +161,7 @@ class VQE(DeflationMixin, VariationalDriver):
         Dynamic parametrization (default ``True``).  ``True`` optimizes all
         parameters jointly.  ``False`` sweeps them one at a time -- parameter
         ``k`` alone, with ``0..k-1`` frozen at their optimized values -- the
-        fixed-ansatz analogue of ADAPT-VQE's frozen-parameter growth.
+        fixed-ansatz analog of ADAPT-VQE's frozen-parameter growth.
     """
 
     _default_sparse = False

@@ -222,7 +222,7 @@ COUPLING_ASYMMETRY_TOLERANCE = 1e-4
 #: restricted to the channel (``1 + lambda_min(q G_p)``, ``G_p`` the projector
 #: Gram matrix): below it the PAW transformation is (nearly) singular.
 OVERLAP_MINIMUM = 0.1
-#: Radial points of the compensation charge's atom-centred quadrature.
+#: Radial points of the compensation charge's atom-centered quadrature.
 COMPENSATION_RADIAL_POINTS = 48
 #: Points of the radial quadrature grids used for the compensation charge.
 COMPENSATION_POINTS = 2001
@@ -1164,7 +1164,7 @@ def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
 
 
 def _multipole_grid_potential(radius, dx, dy, dz, r_g, L, M):
-    """``v_L(r) Y_LM`` sampled on grid offsets from one centre."""
+    """``v_L(r) Y_LM`` sampled on grid offsets from one center."""
     from .multipoles import shape_potential
     from ..basis._angular import spherical_harmonic
 
@@ -1320,10 +1320,124 @@ class PAWIntegrals(MolecularIntegrals):
         self._W = None
         self._U = None
         self._Vion = None
+        self._Vsr = None
 
     #: The projections are exact atom-centered integrals (:meth:`projections`),
     #: which the force code differentiates accordingly.
     exact_projections = True
+
+    #: Integrate the local potential's short-range part on atom-centered
+    #: spheres instead of the grid (:meth:`short_range_local`).  A pure
+    #: quadrature-accuracy improvement, on by default; set ``False`` on an
+    #: instance or a subclass to put the whole local potential back on the
+    #: grid, which is what the comparison tests do.
+    exact_local_potential = True
+
+    # -- the range-separated local potential ------------------------------- #
+
+    @property
+    def split_local_potential(self) -> bool:
+        """Whether the local potential is range-separated on this instance.
+
+        :attr:`exact_local_potential` and at least one dataset to separate.
+        """
+        return bool(self.exact_local_potential) and bool(self.datasets)
+
+    def local_split_width(self) -> float:
+        """Gaussian width ``sigma`` (Bohr) of the range separation on this grid."""
+        from .local_split import split_width
+        return split_width(self.grid)
+
+    def external_potential(self):
+        r"""The callable the engine samples.
+
+        With :attr:`exact_local_potential` on this is only the **long-range**
+        half of the local channel, :math:`-Z^{ion}_A\,
+        \mathrm{erf}(r/\sqrt2\sigma)/r` per atom: the potential of a Gaussian
+        ion wide enough for the grid to resolve
+        (:data:`~.local_split.SIGMA_FACTOR`).  The rest arrives through
+        :meth:`short_range_local`.  Off, it is the full local channel as
+        :class:`~mandacaru.core.hamiltonian.MolecularIntegrals` samples it.
+        """
+        if not self.split_local_potential:
+            return super().external_potential()
+        from .local_split import long_range_sampler
+        return long_range_sampler(self._potentials.nuclei, self.datasets,
+                                  self.local_split_width())
+
+    def short_range_local_matrices(self, *, gradients: bool = False,
+                                   delta=None):
+        """``({atom: I_A}, {atom: G_A})`` of the short-range local term.
+
+        ``I_A`` is atom ``A``'s sphere integral and ``G_A[p, q, k]`` the same
+        integral with :math:`\\phi_p`'s own center displaced -- what the force
+        needs for both of its halves (see
+        :func:`~.local_split.short_range_matrices`).  ``G`` is ``None`` unless
+        ``gradients`` is set; the matrices themselves are **not** cached here
+        (:meth:`short_range_local` caches the assembled sum).
+        """
+        from .local_split import DEFAULT_DELTA, short_range_matrices
+
+        if not self.split_local_potential:
+            return {}, (None if not gradients else {})
+        centers = [np.asarray(center, dtype=float)
+                   for _z, center in self._potentials.nuclei]
+        return short_range_matrices(
+            self.basis, centers, self.datasets, self.local_split_width(),
+            gradients=gradients,
+            delta=DEFAULT_DELTA if delta is None else float(delta))
+
+    def short_range_local(self):
+        r"""``sum_A int phi_p^* phi_q v^{sr}_A``, by atom-centered quadrature.
+
+        The local potential decays as :math:`-Z^{ion}/r` and so cannot be
+        integrated in a finite sphere; it is split into the potential of a
+        Gaussian ion (long ranged but smooth -- kept on the grid, see
+        :meth:`external_potential`) and the remainder, which vanishes beyond a
+        few Gaussian widths and is integrated here on a spherical product
+        quadrature centered on each atom, exactly as the projections are
+        (:meth:`projections`).  The result depends only on the separations of
+        the basis functions from the sphere's center, so it is **exactly
+        translation invariant** -- a rigid shift moves it by 3e-16.
+
+        The two halves sum to the potential the un-split calculation used, so
+        the difference is quadrature accuracy alone: ~3e-7 Hartree on the
+        hardest case measured (water PAW-DZ) and better than 1e-9 on H2.
+
+        **What this is not:** a cure for the egg-box.  The *long-range* half
+        stays on the grid and keeps a ripple of its own, comparable to (and at
+        h >= 0.25 Angstrom larger than) the un-split potential's, because the
+        artifact is dominated by the sampling of the pair density rather than
+        of the potential.  :mod:`.local_split` carries the measured per-term
+        table and the width scan behind that statement.
+        """
+        if not self.split_local_potential:
+            return None
+        if self._Vsr is None:
+            matrices, _ = self.short_range_local_matrices()
+            total = np.zeros((self.n_orbitals, self.n_orbitals), dtype=complex)
+            for matrix in matrices.values():
+                total = total + matrix
+            self._Vsr = total
+        return self._Vsr
+
+    def local_potential_functions(self):
+        """Per-atom radial callables of whatever :meth:`external_potential` samples.
+
+        The long-range Gaussian-ion potentials when the split is active, else
+        the datasets' own local channels.  The nuclear gradient's
+        Hellmann-Feynman term differentiates the potential *on the grid*, so it
+        has to be handed the same half the grid was given -- see
+        :func:`mandacaru.algorithms.pseudo_forces._atom_potentials`.
+        """
+        if not self.split_local_potential:
+            return [dataset.local_potential for dataset in self.datasets]
+        from .local_split import long_range_potential
+
+        sigma = self.local_split_width()
+        return [(lambda radius, Z=float(dataset.valence_charge), s=sigma:
+                 long_range_potential(Z, s, radius))
+                for dataset in self.datasets]
 
     def projections(self) -> np.ndarray:
         r"""``C[mu, p] = <phi_mu|p_p>``, integrated over each projector's sphere.
@@ -1416,7 +1530,7 @@ class PAWIntegrals(MolecularIntegrals):
         the unit compensation multipoles.
 
         Unlike the monopole case this depends on the *direction* between the
-        centres, not only their separation, which is exactly the physics the
+        centers, not only their separation, which is exactly the physics the
         dipole terms carry.
         """
         from .multipoles import multipole_coulomb_matrix
@@ -1442,18 +1556,18 @@ class PAWIntegrals(MolecularIntegrals):
             self._U = U
         return self._U
 
-    def compensation_ionic_at(self, centres) -> dict:
+    def compensation_ionic_at(self, centers) -> dict:
         r"""``{(atom, L, M): int ghat_{A,LM} sum_{B != A} v^ion_B}`` (Hartree)
-        for atoms at ``centres`` (Bohr).
+        for atoms at ``centers`` (Bohr).
 
-        Integrated on an **atom-centred** spherical quadrature, not the grid:
+        Integrated on an **atom-centered** spherical quadrature, not the grid:
         the shape spans only a few grid points at h = 0.20 Angstrom, so a grid
         sum would be inaccurate and would put an egg-box straight into the
         force.  The on-site term (``B = A``) is left out -- the isolated atom's
         own compensation-ion interaction is already inside the dataset, which
         is calibrated to reproduce the reference atom's energy.
 
-        Taking ``centres`` as an argument is what lets the force re-evaluate it
+        Taking ``centers`` as an argument is what lets the force re-evaluate it
         at displaced positions (:func:`~mandacaru.algorithms.pseudo_forces._ionic_shift`).
         """
         from .multipoles import shape_function
@@ -1478,17 +1592,17 @@ class PAWIntegrals(MolecularIntegrals):
             r_g = float(dataset.compensation_radius)
             radius = 0.5 * r_g * (x + 1.0)
             weight = 0.5 * r_g * wx * radius * radius
-            points = (np.asarray(centres[atom], dtype=float)[None, None, :]
+            points = (np.asarray(centers[atom], dtype=float)[None, None, :]
                       + radius[:, None, None] * direction[None, :, :])
             shape = shape_function(radius, r_g, L)
             harmonic = spherical_harmonic(int(L), int(M), theta, phi)
             total = 0.0 + 0.0j
-            for other, neighbour in enumerate(self.datasets):
+            for other, neighbor in enumerate(self.datasets):
                 if other == atom:
                     continue
-                centre = np.asarray(centres[other], dtype=float)
-                distance = np.linalg.norm(points - centre[None, None, :], axis=2)
-                v = neighbour.local_potential(distance)
+                center = np.asarray(centers[other], dtype=float)
+                distance = np.linalg.norm(points - center[None, None, :], axis=2)
+                v = neighbor.local_potential(distance)
                 total += complex(np.sum(weight[:, None] * w_ang[None, :]
                                         * shape[:, None] * harmonic[None, :] * v))
             out[(atom, L, M)] = total
@@ -1497,9 +1611,9 @@ class PAWIntegrals(MolecularIntegrals):
     def compensation_ionic(self) -> dict:
         """:meth:`compensation_ionic_at` at the actual nuclear positions."""
         if self._Vion is None:
-            centres = [np.asarray(self._potentials.nuclei[a][1], dtype=float)
+            centers = [np.asarray(self._potentials.nuclei[a][1], dtype=float)
                        for a in range(len(self.datasets))]
-            self._Vion = self.compensation_ionic_at(centres)
+            self._Vion = self.compensation_ionic_at(centers)
         return self._Vion
 
     def one_body_augmentation(self):
@@ -1684,13 +1798,19 @@ def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
 
 
 def build_upaw(atoms, grid, h, charge, spin, options, kinetic=None):
-    """Valence-only Hamiltonian from UPAW datasets (see :func:`build_paw`)."""
+    """Valence-only Hamiltonian from UPAW datasets (see :func:`build_paw`).
+
+    The whole molecular path is PAW's; only the loader and the recorded
+    family name differ.  The name matters because the family registry is
+    where per-family option defaults live (``default_options``), so a UPAW
+    run must resolve *its own* spec, not PAW's.
+    """
     return build_paw(atoms, grid, h, charge, spin, options, kinetic=kinetic,
-                     loader=get_upaw)
+                     loader=get_upaw, family=UPAW_FAMILY)
 
 
 def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
-              loader=None):
+              loader=None, family=None):
     r"""Valence-only Hamiltonian from PAW datasets.
 
     Same 5-tuple as the other families: the basis is the bound smooth
@@ -1704,7 +1824,8 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
     from .families import build_valence_hamiltonian
 
     return build_valence_hamiltonian(
-        atoms, grid, h, charge, spin, options, kinetic, family=FAMILY,
+        atoms, grid, h, charge, spin, options, kinetic,
+        family=FAMILY if family is None else family,
         load=get_paw if loader is None else loader,
         projectors=lambda symbols, positions, datasets, opts: paw_projectors(
             symbols, positions, datasets,
@@ -1857,6 +1978,17 @@ def from_payload(payload: dict) -> PAWDataset:
 # Registration.
 # --------------------------------------------------------------------------- #
 
+#: Both PAW families filter their basis by default (see
+#: :mod:`mandacaru.basis.filtering`).  A PAW smooth partial wave is already
+#: *built* to be band-limited -- :func:`~.oncv.optimize_pseudo_waves` minimizes
+#: the kinetic energy beyond ``q_cut`` -- so removing what is left above the
+#: grid's Nyquist wave-vector costs little and takes most of the egg-box with
+#: it; the norm-conserving families keep it opt-in because their orbitals are
+#: not optimized that way.  ``basis={"name": "PAW", "filter": False}`` restores
+#: the unfiltered basis exactly.
+PAW_DEFAULT_OPTIONS = {"filter": True}
+
+
 def _register():
     from .families import (COMMON_OPTIONS, FamilySpec, PSEUDO_FAMILIES,
                            register_family)
@@ -1872,6 +2004,7 @@ def _register():
         norm_conserving=False,
         aliases=(),
         options=COMMON_OPTIONS + ("projector_basis",),
+        default_options=dict(PAW_DEFAULT_OPTIONS),
     ))
 
 
@@ -1900,6 +2033,10 @@ def _register_upaw():
         norm_conserving=False,
         aliases=("unitary-paw",),
         options=COMMON_OPTIONS + ("projector_basis",),
+        # UPAW's partial waves are the harder ones (five times water's grid
+        # egg-box at h = 0.25), so if the filter earns its place for PAW it
+        # earns it for UPAW a fortiori.
+        default_options=dict(PAW_DEFAULT_OPTIONS),
     ))
 
 

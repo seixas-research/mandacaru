@@ -2,14 +2,14 @@
 
 The {doc}`energy_levels` tutorial found excited states **one at a time** with
 deflation. **Subspace-search VQE** (SSVQE) instead finds the ground state and the
-first few excited states **all at once**, in a single optimisation — select it on
+first few excited states **all at once**, in a single optimization — select it on
 {class}`~mandacaru.algorithms.Mandacaru` with `method="subspace-vqe"`
 (fixed ansatz) or `method="subspace-adapt-vqe"` (adaptively grown ansatz).
 
 ## The idea
 
 Pick $k$ mutually orthogonal reference determinants $\{|\varphi_j\rangle\}$, send
-them all through the **same** parameterised unitary $U(\vec\theta)$, and minimise
+them all through the **same** parameterized unitary $U(\vec\theta)$, and minimize
 the *weighted* energy sum
 
 ```{math}
@@ -71,7 +71,7 @@ result exposes `energies` (ascending, eV -- like every Mandacaru result),
 `method="subspace-adapt-vqe"` grows **one shared adaptive ansatz**
 for all the states: its pool-screening gradient is the weighted sum of the
 per-reference gradients $\sum_j w_j\,\langle\psi_j|[H, A_i]|\psi_j\rangle$, and the
-inner re-optimisation minimises the weighted energy. It records how many operators
+inner re-optimization minimizes the weighted energy. It records how many operators
 were grown.
 
 ```python
@@ -93,14 +93,14 @@ print(result.num_operators)                # operators in the shared ansatz
 
 ## What the levels mean
 
-Each returned energy is an expectation value for a normalised trial state,
+Each returned energy is an expectation value for a normalized trial state,
 and therefore lies above the Hamiltonian's ground-state energy. Orthogonality
 alone does **not** make the sorted expectation values separate upper bounds to
 the corresponding excited-state eigenvalues.
 
 For example, equal mixtures of two exact eigenstates are orthogonal but both
 have their mean energy. The higher sorted expectation is then below the exact
-excited-state energy. To obtain the usual Rayleigh–Ritz bounds, diagonalise the
+excited-state energy. To obtain the usual Rayleigh–Ritz bounds, diagonalize the
 Hamiltonian projected onto the trial subspace:
 
 ```{math}
@@ -111,12 +111,12 @@ H^{\mathrm{sub}}_{ij}=\langle\psi_i|\hat H|\psi_j\rangle,
 Here $E_i^{\mathrm{Ritz}}$ are the ordered projected eigenvalues and
 $\lambda_i$ are the ordered exact eigenvalues in the chosen sector. The
 reported SSVQE expectations coincide with these eigenvalues only when the
-trial states diagonalise the projected Hamiltonian.
+trial states diagonalize the projected Hamiltonian.
 
-A larger ansatz and successful joint optimisation can improve the estimates.
-Neither a ground-state weight nor a small optimisation tolerance guarantees an
+A larger ansatz and successful joint optimization can improve the estimates.
+Neither a ground-state weight nor a small optimization tolerance guarantees an
 exact spectrum. Compare the resulting states and energies with a small exact
 calculation where possible.
 
-A complete, runnable script (both methods, compared to exact diagonalisation) is
+A complete, runnable script (both methods, compared to exact diagonalization) is
 `examples/09_SubspaceVQE_H2.py`.

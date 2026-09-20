@@ -928,7 +928,7 @@ class VariationalDriver(Calculator):
         parameter.  ``quenching=False`` sweeps the parameters one at a time in
         order -- parameter ``k`` is optimized alone with ``0..k-1`` frozen at their
         already-optimized values and ``k+1..`` held at their starting values --
-        the fixed-ansatz analogue of freezing previous growth steps.
+        the fixed-ansatz analog of freezing previous growth steps.
         """
         x0 = np.asarray(x0, dtype=float).ravel()
         if self.quenching or x0.size <= 1:
@@ -965,13 +965,21 @@ class VariationalDriver(Calculator):
     @staticmethod
     def _check_pseudo_basis(basis, frozen_core, frozen_orbitals):
         """Validate a pseudopotential basis spec up front (names, options,
-        no frozen core); all-electron specs pass untouched."""
+        option *values*, no frozen core); all-electron specs pass untouched."""
+        from ..basis.filtering import validate_filter
         from ._hamiltonian_from_atoms import (PER_ELEMENT,
                                               pseudopotential_family,
                                               resolve_basis)
         name, options = resolve_basis(basis)
         if name == PER_ELEMENT:
-            return                      # validated per element at build time
+            # Which element gets which family is only checkable against a
+            # geometry (at build time), but an option *value* is not: a
+            # mistyped filter is a mistyped filter whatever the atoms are, and
+            # finding out after the integrals is finding out too late.
+            for spec in options.values():
+                if isinstance(spec, dict) and "filter" in spec:
+                    validate_filter(spec["filter"])
+            return
         family = pseudopotential_family(name)
         if family is None:
             return
@@ -980,6 +988,8 @@ class VariationalDriver(Calculator):
             raise ValueError(
                 f"unknown option(s) {unknown} for the {family.label} basis; "
                 f"it accepts {list(family.options)}")
+        if "filter" in options:
+            validate_filter(options["filter"])
         if frozen_core or frozen_orbitals:
             raise ValueError(
                 f"frozen_core is redundant with the {family.label} basis -- "

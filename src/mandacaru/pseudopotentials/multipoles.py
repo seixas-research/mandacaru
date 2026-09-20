@@ -41,7 +41,7 @@ What is here
   \tilde R_i\tilde R_j)\,r^{L+2}\,dr` between any two partial waves of a
   dataset, reconstructed from what the dataset already stores;
 * :func:`multipole_coulomb_matrix` -- the interaction of every pair of
-  compensation multipoles on two centres, in one vectorized quadrature.
+  compensation multipoles on two centers, in one vectorized quadrature.
 
 Conventions are fixed so that the :math:`L = 0` term reproduces the previous
 monopole-only code exactly: :math:`g_L` is normalized to
@@ -64,7 +64,7 @@ GAUNT_POLAR_POINTS = 24
 GAUNT_AZIMUTHAL_POINTS = 48
 #: Radial points of the compensation-overlap quadrature.
 MULTIPOLE_RADIAL_POINTS = 400
-#: Below this the two centres are treated as coincident.
+#: Below this the two centers are treated as coincident.
 COINCIDENT_TOLERANCE = 1e-10
 
 

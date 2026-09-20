@@ -51,7 +51,7 @@ for mapping in ("jordan_wigner", "parity", "parity_reduced",
                            pool="fermionic",
                            basis={"name": "FAO"},
                            mapping=mapping,
-                           gradient="parameter-shift",
+                           gradient="parameter_shift",
                            h=0.10,
                            max_iterations=25,
                            gradient_tolerance=1e-3)                    # keep the loop output compact

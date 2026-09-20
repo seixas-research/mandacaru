@@ -2,12 +2,12 @@
 
 ADAPT-VQE grows an ansatz from a pool of anti-Hermitian generators
 $\{A_i\}$, with $A_i^\dagger=-A_i$. It alternates between selecting a generator
-and optimising circuit parameters. The [LiH tutorial](../tutorial/adapt_vqe_lih.md)
+and optimizing circuit parameters. The [LiH tutorial](../tutorial/adapt_vqe_lih.md)
 shows the corresponding Python interface.
 
 ## Screen candidate generators
 
-Suppose the current normalised state is $|\psi^{(n)}\rangle$. Appending a
+Suppose the current normalized state is $|\psi^{(n)}\rangle$. Appending a
 candidate unitary gives $e^{\theta A_i}|\psi^{(n)}\rangle$. Its energy derivative
 at zero parameter is
 
@@ -23,7 +23,7 @@ g_i &={\left.\frac{\partial}{\partial\theta}
 The commutator is Hermitian, so this derivative is real. Mandacaru's local
 `gradient="analytic"` option evaluates it directly from the state vector.
 
-## Grow and optimise
+## Grow and optimize
 
 Choose the index with largest gradient magnitude and add that generator:
 
@@ -36,7 +36,7 @@ i_* = \operatorname*{arg\,max}_i |g_i|,
 ```
 
 Initially, the new parameter is zero and the old parameters keep their previous
-values. With the default `quenching=True`, all parameters are then reoptimised.
+values. With the default `quenching=True`, all parameters are then reoptimized.
 The [quenching guide](../guide/quenching.md) describes the alternative sequential
 policy.
 
@@ -48,11 +48,11 @@ The outer loop stops when
 
 or when the growth budget is exhausted. `gradient_tolerance` specifies
 $\varepsilon$ in the internal Hartree convention. `max_iterations` limits the
-number of growth steps; it is distinct from the inner optimiser's `maxiter`.
+number of growth steps; it is distinct from the inner optimizer's `maxiter`.
 
 A small gradient means the state is locally stationary along the available pool
 directions. It does not prove global optimality, sufficient pool expressivity
-or convergence of the basis and grid. Inspect unsuccessful inner optimisations
+or convergence of the basis and grid. Inspect unsuccessful inner optimizations
 as well as the outer convergence flag.
 
 ## Why use Hartree–Fock molecular orbitals?
@@ -77,7 +77,7 @@ non-zero.
 ## Pool choice and conserved quantities
 
 Mandacaru provides `fermionic`, `qubit`, `qeb` and `ceo` pools. Their constructions
-and implementation limits are summarised in the
+and implementation limits are summarized in the
 [LiH pool comparison](../tutorial/adapt_vqe_lih.md).
 
 Fermionic excitation generators preserve the specified electron counts. A
@@ -88,4 +88,4 @@ different sector is not a better solution of the original molecular problem.
 
 In Mandacaru's Jordan–Wigner construction, `ceo` reduces to `qeb`. Other mappings
 can produce larger groups, but the published CEO gate savings also depend on
-specialised circuit synthesis that is not implemented here.
+specialized circuit synthesis that is not implemented here.

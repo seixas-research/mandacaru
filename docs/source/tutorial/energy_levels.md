@@ -7,7 +7,7 @@ built on **variational quantum deflation** (VQD), available for every `method=`
 (in particular `"vqe"` and `"adapt-vqe"`).
 
 After the $m$ lowest states $\{|\psi_j\rangle\}_{j<m}$ are found, the next one is
-obtained by minimising the *deflated* cost
+obtained by minimizing the *deflated* cost
 
 ```{math}
 L_m(\vec\theta) = \langle\psi(\vec\theta)|H|\psi(\vec\theta)\rangle
@@ -16,7 +16,7 @@ L_m(\vec\theta) = \langle\psi(\vec\theta)|H|\psi(\vec\theta)\rangle
 
 If the earlier states are exact, the ansatz is sufficiently expressive and
 $\beta$ exceeds the relevant energy gaps, the global minimum targets the next
-eigenstate. In practice the states and optimisation are approximate. The
+eigenstate. In practice the states and optimization are approximate. The
 reported energy excludes the penalty; it is an energy expectation value, not
 a guarantee of an exact eigenvalue.
 
@@ -51,7 +51,7 @@ the optimal state vectors, and convenience views: `ground_state_energy`,
 `excitation_energies`, `gaps`, and `in_units("Ha")`.
 
 `beta` defaults to a robust value derived from the Hamiltonian's coefficient
-1-norm; pass it explicitly to tune. `restarts` runs the optimiser several times
+1-norm; pass it explicitly to tune. `restarts` runs the optimizer several times
 per level (seeded random starts) and keeps the best, which helps the
 excited-state searches escape local minima.
 
@@ -61,7 +61,7 @@ excited-state searches escape local minima.
 
 The same call works with `method="adapt-vqe"`, which **grows a fresh deflated
 ansatz for each level** — both the pool-screening gradient and the inner
-re-optimisation carry the penalty term, so the adaptive ansatz builds itself
+re-optimization carry the penalty term, so the adaptive ansatz builds itself
 towards the next excited state:
 
 ```python
@@ -82,11 +82,11 @@ print(levels.num_operators)                  # operators grown per level
 
 The returned levels are variational estimates within the states reachable by
 the ansatz. Approximate deflation can leave residual overlap with earlier states,
-and a local optimiser can miss the intended excited state. Check convergence,
-state overlaps and, for small problems, exact diagonalisation in the same
+and a local optimizer can miss the intended excited state. Check convergence,
+state overlaps and, for small problems, exact diagonalization in the same
 particle-number sector.
 
-A repeated level can indicate a restricted ansatz or failed optimisation; it
+A repeated level can indicate a restricted ansatz or failed optimization; it
 does not by itself prove that all accessible states have been found. Increasing
 the number of starts or changing the ansatz can help diagnose the limitation.
 

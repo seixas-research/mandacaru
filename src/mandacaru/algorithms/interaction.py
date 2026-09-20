@@ -17,7 +17,7 @@ The interaction energy of a complex is the energy difference
 and on a real-space grid the one thing that decides whether that difference
 means anything is that **all three energies are evaluated on the same grid,
 with every atom at the same position relative to the grid nodes**.  The
-calculator normally re-centres its box on whatever geometry it is given, so a
+calculator normally re-centers its box on whatever geometry it is given, so a
 fragment computed on its own sits differently on the grid than it does inside
 the complex; for an atom with a sharp core that alone can shift the energy by
 electronvolts (hundreds, for a sodium ion at a 0.3 Angstrom spacing), and the

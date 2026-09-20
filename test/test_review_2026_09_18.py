@@ -316,9 +316,9 @@ class TestF09ZeroHamiltonianWidth:
 
     def test_terms_that_cancel_keep_their_register(self, tmp_path):
         path = str(tmp_path / "cancel.json")
-        # A term whose coefficient cancelled to zero is dropped on simplify();
+        # A term whose coefficient canceled to zero is dropped on simplify();
         # the register width must survive it.  (A dict literal cannot repeat a
-        # key, so the cancelled term is written as the zero it sums to.)
+        # key, so the canceled term is written as the zero it sums to.)
         save_hamiltonian(path, PauliSum({"ZIII": 0.0}),
                          num_particles=(1, 1), n_spatial_orbitals=2)
         assert load_hamiltonian(path).hamiltonian.num_qubits == 4

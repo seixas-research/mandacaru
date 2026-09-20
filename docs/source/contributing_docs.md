@@ -15,15 +15,13 @@ and on Read the Docs. Scientific figures are stored in `_static`; the build does
 not execute simulations. See [the LiH scan](tutorial/pes_scan.md) to regenerate
 its PNG, CSV and calculation metadata.
 
-## British English and readable source
+## American English and readable source
 
-Write prose, headings, captions, alternative text and code comments in British
-English: *behaviour*, *colour*, *optimise*, *normalise*, *centre* and *licence*.
-The build also applies a prose-only British spelling glossary to imported API
-docstrings. It leaves code, signatures, maths and reference targets unchanged.
+Write prose, headings, captions, alternative text and code comments in American
+English: *behavior*, *color*, *optimize*, *normalize*, *center* and *license*.
 
-Keep Python identifiers, dependency names and API arguments unchanged; for
-example, the valid argument is `optimizer`, not `optimiser`.
+Python identifiers, API arguments, dictionary keys and test names follow the same
+rule: `optimizer`, `centers`, `neighbor`.
 
 Use four spaces for Python indentation. Surround block directives and lists with
 blank lines. In reStructuredText, indent directive options and content by three
@@ -60,10 +58,10 @@ their contents as code rather than as an admonition.
 
 ## Theme and diagrams
 
-Keep Furo's colour variables and link rules. The former custom stylesheet
+Keep Furo's color variables and link rules. The former custom stylesheet
 forced dark blue links and targeted `html[data-theme="dark"]`; Furo places
 `data-theme` on `body`. Automatic mode also follows `prefers-color-scheme`.
-Removing those overrides restores the same native theme behaviour used by
+Removing those overrides restores the same native theme behavior used by
 Poraquê, including nested, current-page and hovered links.
 
 The homepage workflow is a semantic ordered list styled with theme variables.

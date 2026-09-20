@@ -74,13 +74,21 @@ class PseudoAtomicOrbital(_RadialTabulated):
         Angular momentum and magnetic quantum number.
     center : array_like
         Cartesian center in ``units``.
+    radial : array_like, optional
+        Replaces the channel's tabulated radial function (on the same radial
+        grid).  The one caller is the Fourier filter
+        (:mod:`mandacaru.basis.filtering`), which hands over the band-limited
+        version of exactly this function; everything else -- the quantum
+        numbers, the reference eigenvalue, the class -- is unchanged, so the
+        filter is a change of *basis function*, never of pseudopotential.
     """
 
     def __init__(self, pseudopotential, l: int, m: int, center=None,
-                 units: str = "angstrom"):
+                 units: str = "angstrom", radial=None):
         channel = pseudopotential.channels[int(l)]
-        super().__init__(pseudopotential.r, channel.pseudo_radial, l, m,
-                         center, units)
+        super().__init__(pseudopotential.r,
+                         channel.pseudo_radial if radial is None else radial,
+                         l, m, center, units)
         self.symbol = pseudopotential.symbol
         self.n = int(channel.n)
         self.eigenvalue = float(channel.eigenvalue)
@@ -148,7 +156,7 @@ class KBProjector(_RadialTabulated):
 # --------------------------------------------------------------------------- #
 
 def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
-                 size="SZ", split_norm=None):
+                 size="SZ", split_norm=None, filter_cutoff=None):
     """Valence pseudo-atomic basis for a molecule.
 
     Returns ``(functions, atom_of_orbital)``: the orbitals and which atom each
@@ -165,9 +173,56 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     split-valence refinements *of* that pseudo-orbital, and the polarization
     shell is split from the highest occupied channel, so everything stays
     matched to the potential it came from.
+
+    ``filter_cutoff`` (a wave-vector in Bohr\\ :sup:`-1`, ``None`` = off) runs
+    every radial table through the Fourier filter of
+    :mod:`mandacaru.basis.filtering` before it becomes a basis function, so the
+    grid sampling, the PAW atom-centered projection quadrature and the displaced
+    sampling the forces are built from all see one band-limited function.  The
+    filter is applied **after** the split-valence construction: the split is
+    defined on the pseudopotential's own orbital, and it is each *final* basis
+    function that has to be representable on the grid.
+
+    This does soften the first zeta -- the very function the Kleinman-Bylander
+    projectors were built from -- and that is legitimate but not free.  The
+    operator is untouched (the projectors, their energies and the local channel
+    all come from the dataset); only the trial space changes, and the filter
+    tends to the identity as the cutoff grows.  What is lost is that the
+    *exact* pseudo-orbital is an eigenstate of the pseudo-Hamiltonian at the
+    reference energy, so the atomic reference is no longer reproduced exactly.
+    That is a variational price, measured in
+    ``docs/source/guide/pseudopotentials.md``, and it is why the norm-conserving
+    families (NCPP, ONCVPSP) leave the filter **off** by default while PAW and
+    UPAW turn it on -- a PAW partial wave is already built band-limited, so
+    the filter barely moves it.
     """
+    from ..basis.filtering import filter_radial, filter_table
     from ..basis.multizeta import (DEFAULT_SPLIT_NORM, orbitals_from_tables,
                                    resolve_zeta, zeta_tables)
+
+    k_c = None if filter_cutoff is None else float(filter_cutoff)
+    # One filter evaluation per (element, radial function), not per atom and
+    # not per m: water's two hydrogens are the same element, and a p shell is
+    # three functions off one table.
+    cache: dict = {}
+
+    def filtered(symbol, key, r, values, l):
+        if k_c is None:
+            return values
+        memo = cache.get((symbol, key))
+        if memo is None:
+            memo, _info = filter_radial(r, values, l, k_c)
+            cache[(symbol, key)] = memo
+        return memo
+
+    def filtered_table(symbol, key, table):
+        if k_c is None:
+            return table
+        memo = cache.get((symbol, key))
+        if memo is None:
+            memo, _info = filter_table(table, k_c)
+            cache[(symbol, key)] = memo
+        return memo
 
     def split_norm_of(symbol):
         """``split_norm`` may be one value or ``{symbol: value}`` (with ``*``)."""
@@ -199,9 +254,12 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         if n_zeta == 1 and n_polarization == 0:
             # Minimal valence set: the original path, unchanged.
             for l in sorted(pp.channels):
+                radial = (None if k_c is None else
+                          filtered(symbol, ("sz", l), pp.r,
+                                   pp.channels[l].pseudo_radial, l))
                 for m in range(-l, l + 1):
                     functions.append(PseudoAtomicOrbital(
-                        pp, l, m, center=position, units=units))
+                        pp, l, m, center=position, units=units, radial=radial))
                     owners.append(index)
             continue
 
@@ -209,9 +267,11 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         l_max = max(pp.channels)
         for l in sorted(pp.channels):
             channel = pp.channels[l]
-            tables.extend(zeta_tables(pp.r, channel.pseudo_radial,
-                                      int(channel.n), l, n_zeta,
-                                      split_norm_of(symbol)))
+            for table in zeta_tables(pp.r, channel.pseudo_radial,
+                                     int(channel.n), l, n_zeta,
+                                     split_norm_of(symbol)):
+                tables.append(filtered_table(symbol, ("z", l, table.zeta),
+                                             table))
         # Polarization: raise the outermost channel to l+1.  Solving a new
         # confined orbital is not an option here -- there is no pseudopotential
         # channel for an unoccupied l -- so the shape is r^k R_outer(r),
@@ -230,7 +290,9 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             for table in zeta_tables(pp.r, shape, l + 1, l, 1,
                                      split_norm_of(symbol)):
                 table.polarization = True
-                tables.append(table)
+                # `filter_table` copies the record, `polarization` included.
+                tables.append(filtered_table(symbol, ("pol", l, table.zeta),
+                                             table))
 
         atom_functions = orbitals_from_tables(tables, center=position,
                                               units=units)

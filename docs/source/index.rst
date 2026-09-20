@@ -13,7 +13,7 @@
 
 **Mandacaru** is a Python framework for simulating fermionic systems with variational
 quantum algorithms. Starting from an atomic geometry, it builds a molecular
-Hamiltonian, maps it to qubits and optimises a quantum circuit to estimate its
+Hamiltonian, maps it to qubits and optimizes a quantum circuit to estimate its
 energy. The Atomic Simulation Environment (ASE) provides the geometry and
 calculator interface.
 
@@ -41,7 +41,7 @@ How a calculation works
      <li><strong>Basis and integration grid</strong><span>Spatial orbitals sampled on a real-space grid</span></li>
      <li><strong>Molecular Hamiltonian</strong><span>Integrals, Hartree–Fock orbitals and optional frozen core</span></li>
      <li><strong>Qubit Hamiltonian</strong><span>Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev mapping; optional cache</span></li>
-     <li><strong>Variational calculation</strong><span>VQE or ADAPT-VQE; circuit evaluation and classical optimisation</span></li>
+     <li><strong>Variational calculation</strong><span>VQE or ADAPT-VQE; circuit evaluation and classical optimization</span></li>
      <li><strong>Results</strong><span>Energy, convergence information and circuit parameters</span></li>
    </ol>
 
@@ -91,7 +91,7 @@ ASE examples.
 
 The molecular total energy includes nuclear repulsion. It is different from a
 binding energy, which requires a separately defined fragment reference.
-Converging a variational optimiser does not establish convergence with respect
+Converging a variational optimizer does not establish convergence with respect
 to the basis or integration grid.
 
 Mandacaru generates its Gaussian basis functions internally. Named families
@@ -108,7 +108,7 @@ the tutorials, and the :doc:`api` documents the Python interfaces.
 Source code and issue reports are hosted on
 `GitHub <https://github.com/seixas-research/mandacaru>`_. Releases are available
 from `PyPI <https://pypi.org/project/mandacaru/>`_. Mandacaru is distributed under
-the `MIT licence <https://github.com/seixas-research/mandacaru/blob/main/LICENSE>`_.
+the `MIT license <https://github.com/seixas-research/mandacaru/blob/main/LICENSE>`_.
 
 .. toctree::
    :maxdepth: 2

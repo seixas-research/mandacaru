@@ -31,18 +31,18 @@ atoms.calc = Mandacaru(
     execute_circuits=False)
 energy_ev = atoms.get_potential_energy()
 print(f"Molecular total energy: {energy_ev:.6f} eV")
-print(f"Optimiser succeeded: {atoms.calc.result.success}")
+print(f"Optimizer succeeded: {atoms.calc.result.success}")
 ```
 
 The calculator evaluates integrals, constructs Hartree–Fock molecular orbitals,
-maps the Hamiltonian and optimises the UCCSD circuit. As with LiH, the energy
+maps the Hamiltonian and optimizes the UCCSD circuit. As with LiH, the energy
 includes nuclear repulsion. The integration box spans −4 to +4 Å on each axis.
 
 ## Compare with LiH
 
 Hydrogen has no lithium 1s core, so its basis functions are easier to sample on
 a modest grid. Nevertheless, the result depends on the grid spacing and box
-size. Tight optimiser convergence does not establish numerical convergence of
+size. Tight optimizer convergence does not establish numerical convergence of
 the integrals.
 
 The molecular Hamiltonian depends on the bond length $R$, while VQE varies the

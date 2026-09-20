@@ -971,6 +971,151 @@ class TestElectronsBlock:
         assert text.index("[SYSTEM]") < text.index("[ELECTRONS]") \
             < text.index("[OPTIMIZATION SETUP]") < text.index("[ITERATIONS]")
 
+
+class TestOptimizationSetupBlock:
+    """``[OPTIMIZATION SETUP]`` says how the run was configured.
+
+    The ADAPT screening gradient can be computed three ways and the choice
+    changes both the cost and the truncation error of the ``|grad|`` column, so
+    it is a first-class line of the block -- ``gradient_method``, next to the
+    ``gradient_tol`` it is compared against -- and not, as it was, the last of
+    the pool lines under the name ``screening_gradient``.
+    """
+
+    #: The block's lines, in the order they are written: the classical
+    #: optimizer and its budget, the gradient group, the pool, the loop's
+    #: starting point.  Lineage (a resumed run) closes it.
+    FIELDS = ("classical_optimizer", "max_iterations",
+              "gradient_method", "gradient_formula", "gradient_tol",
+              "gradient_units",
+              "pool", "pool_class", "pool_size",
+              "energy_unit", "reference_energy_eV", "initial_ansatz")
+
+    def _log(self, hamiltonian, tmp_path, **kwargs):
+        out = str(tmp_path / "output.txt")
+        Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
+                  pool="fermionic", num_particles=(1, 1),
+                  n_spatial_orbitals=2, profile=False, max_iterations=2,
+                  gradient_tolerance=1e-3, output=out, trace=False,
+                  **kwargs).run()
+        return out
+
+    def test_the_groups_are_written_in_order(self, h2_hamiltonian, tmp_path):
+        parsed = parse_output(self._log(h2_hamiltonian, tmp_path))
+        setup = parsed["setup"]
+        assert tuple(setup) == self.FIELDS
+        # The top level is the last step, so every step carries the block.
+        assert parsed["steps"][-1]["setup"] == setup
+
+    @pytest.mark.parametrize("gradient", ["analytic", "finite_difference",
+                                          "parameter_shift"])
+    def test_every_method_is_named_in_its_canonical_spelling(
+            self, h2_hamiltonian, tmp_path, gradient):
+        out = self._log(h2_hamiltonian, tmp_path, gradient=gradient)
+        setup = parse_output(out)["setup"]
+        assert setup["gradient_method"] == gradient
+        # And in the file itself, at one level of indentation like every other
+        # keyed line of a block.
+        assert f"\n    gradient_method: {gradient}\n" in \
+            open(out, encoding="utf-8").read()
+
+    def test_a_hyphenated_request_is_logged_canonically(self, h2_hamiltonian,
+                                                        tmp_path):
+        """The log records the method, not how the user spelled it."""
+        out = self._log(h2_hamiltonian, tmp_path, gradient="parameter-shift")
+        assert parse_output(out)["setup"]["gradient_method"] == \
+            "parameter_shift"
+
+    def test_the_method_precedes_the_tolerance_it_qualifies(
+            self, h2_hamiltonian, tmp_path):
+        text = open(self._log(h2_hamiltonian, tmp_path),
+                    encoding="utf-8").read()
+        assert text.index("gradient_method:") < text.index("gradient_formula:") \
+            < text.index("gradient_tol:") < text.index("gradient_units:")
+
+    @pytest.mark.parametrize("gradient", ["analytic", "finite_difference",
+                                          "parameter_shift"])
+    def test_the_formula_says_what_the_method_computes(self, h2_hamiltonian,
+                                                       tmp_path, gradient):
+        """A name alone does not tell a reader what was evaluated."""
+        from mandacaru.algorithms.adapt_vqe import GRADIENT_FORMULAS
+
+        out = self._log(h2_hamiltonian, tmp_path, gradient=gradient)
+        setup = parse_output(out)["setup"]
+        # Parseable although the value contains "=" and ","; the parser splits
+        # on the first colon, and no formula contains one.
+        assert setup["gradient_formula"] == GRADIENT_FORMULAS[gradient]
+
+    def test_the_retired_key_is_gone_from_what_is_written(self, h2_hamiltonian,
+                                                          tmp_path):
+        """A mandated replacement is carried through -- no leftover alias."""
+        text = open(self._log(h2_hamiltonian, tmp_path),
+                    encoding="utf-8").read()
+        assert "screening_gradient" not in text
+
+    def test_an_old_log_still_reads_back(self, tmp_path):
+        """Writers stop producing a retired key; readers stay tolerant of it."""
+        old = tmp_path / "old_output.txt"
+        old.write_text("[OPTIMIZATION SETUP]\n"
+                       "    classical_optimizer: COBYLA\n"
+                       "    gradient_tol: 0.001\n"
+                       "    gradient_units: Hartree\n"
+                       "    screening_gradient: parameter-shift\n",
+                       encoding="utf-8")
+        setup = parse_output(str(old))["setup"]
+        assert setup["gradient_method"] == "parameter-shift"
+        assert setup["classical_optimizer"] == "COBYLA"
+
+    def test_a_sparse_run_logs_what_it_actually_screened_with(
+            self, h2_hamiltonian, tmp_path):
+        """The sparse pool never forms the shift estimators' eigendecompositions.
+
+        It screens analytically whatever was asked for, and the block has to
+        report what ran -- with the request named, so the override is visible.
+        """
+        out = self._log(h2_hamiltonian, tmp_path, gradient="parameter_shift",
+                        sparse=True)
+        setup = parse_output(out)["setup"]
+        assert setup["gradient_method"] == "analytic"
+        assert "parameter_shift" in setup["gradient_formula"]
+
+    def test_a_resumed_run_states_it_too(self, h2_hamiltonian, tmp_path):
+        """Lineage closes the block; the gradient group is unaffected by it."""
+        from mandacaru.utils.logging import reset_log
+
+        checkpoint = str(tmp_path / "state.json")
+        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                  pool="fermionic", num_particles=(1, 1), n_spatial_orbitals=2,
+                  profile=False, max_iterations=1, checkpoint=checkpoint,
+                  trace=False).run()
+        out = str(tmp_path / "resumed.txt")
+        reset_log(out)
+        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                  pool="fermionic", num_particles=(1, 1), n_spatial_orbitals=2,
+                  profile=False, max_iterations=3, gradient="finite-difference",
+                  resume=checkpoint, output=out, trace=False).run()
+
+        setup = parse_output(out)["setup"]
+        assert setup["gradient_method"] == "finite_difference"
+        assert setup["initial_ansatz"].startswith("resumed")
+        keys = list(setup)
+        # The four groups stay contiguous and lineage stays last.
+        assert keys[:len(self.FIELDS)] == list(self.FIELDS)
+        assert keys[len(self.FIELDS):] == [
+            "resumed_from", "restored_operators", "restored_energy_eV",
+            "resume_same_hamiltonian"]
+
+    def test_the_trace_uses_the_same_vocabulary(self, h2_hamiltonian, capsys):
+        """A reader who saw the terminal recognizes the file, and vice versa."""
+        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                  pool="fermionic", num_particles=(1, 1), n_spatial_orbitals=2,
+                  profile=False, max_iterations=1, gradient="parameter_shift",
+                  trace=True).run()
+        printed = capsys.readouterr().out
+        assert "gradient method" in printed and "parameter_shift" in printed
+        assert "parameter-shift" not in printed.split("formula")[0]
+
+
 class TestGeometryOptimizationSummary:
     """A relaxation closes its log with the trajectory seen as one thing.
 

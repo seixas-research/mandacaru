@@ -52,7 +52,7 @@ swap `method="adapt-vqe"` (the default) for `method="vqe"`.
 
 ## Band structure
 
-The band structure is the generalised Bloch eigenproblem
+The band structure is the generalized Bloch eigenproblem
 
 ```{math}
 H(\mathbf{k})\,c = \varepsilon(\mathbf{k})\,S(\mathbf{k})\,c , \qquad
@@ -72,7 +72,7 @@ energies = bloch.bands([[0.0, 0, 0], [0.25, 0, 0], [0.5, 0, 0]])   # (3, n_bands
 bs = bloch.band_structure("GX", npoints=201)
 print(bs.energies.shape, bs.labels)        # (201, n_bands), ['G', 'X']
 
-# A Monkhorst-Pack mesh (via ASE), Gamma-centred.
+# A Monkhorst-Pack mesh (via ASE), Gamma-centered.
 mesh = bloch.monkhorst_pack((10, 1, 1))
 band_mp = bloch.bands(mesh)[:, 0]
 ```

@@ -49,7 +49,7 @@ tabulating :math:`z` per element, the value is derived from the atom: a
 hydrogen-like :math:`(n, l)` state has mean radius
 :math:`\langle r\rangle = [3n^2 - l(l+1)]/(2z)`, so :math:`z` is chosen to give
 the function a prescribed extent relative to the atom's valence shell
-(:func:`effective_charge_for_radius`).  The functions are organised in
+(:func:`effective_charge_for_radius`).  The functions are organized in
 **tiers** (:func:`tier_specification`):
 
 * *tier 1* -- one **polarization** function at :math:`l_\max + 1` (nodeless,
@@ -66,7 +66,7 @@ each** :math:`l` **channel** by Gram-Schmidt, minimal functions first, and a
 candidate whose norm after projection falls below ``linear_dependence_tol`` is
 dropped as linearly dependent.  Tier functions are additionally shortened so
 that at most ``tail_norm`` of their norm lies beyond the onset (the wall is
-re-centred and the state re-solved).
+re-centered and the state re-solved).
 
 The result goes through the same :class:`~mandacaru.basis.multizeta.TabulatedOrbital`
 as the multiple-zeta NAOs, so the integral engine sees nothing new.  Lengths
@@ -225,7 +225,7 @@ def hydrogenic_function(r, n: int, l: int, z: float, onset: float,
 
     With ``tail_norm`` set, the onset is pulled inward to the radius outside
     which the function carries ``tail_norm`` of its norm (if that is shorter
-    than ``onset``) and the state is re-solved with the wall re-centred there,
+    than ``onset``) and the state is re-solved with the wall re-centered there,
     so compact functions stay compact instead of inheriting the species-wide
     range.
     """

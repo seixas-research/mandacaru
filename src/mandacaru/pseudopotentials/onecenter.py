@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""The PAW one-centre electron-electron term.
+r"""The PAW one-center electron-electron term.
 
 Blöchl's total energy splits the Hartree energy into a smooth part evaluated
 everywhere and a correction confined to each augmentation sphere,
@@ -17,12 +17,12 @@ everywhere and a correction confined to each augmentation sphere,
            + \sum_A \Big( E_H[n^1_A] - E_H[\tilde n^1_A + \hat n_A] \Big),
 
 where :math:`n^1_A = \sum_{ij} D_{ij}\,\phi_i^*\phi_j` is the all-electron
-one-centre density and :math:`\tilde n^1_A` its smooth counterpart.  The first
+one-center density and :math:`\tilde n^1_A` its smooth counterpart.  The first
 term is what the grid and the compensation charges already compute
 (:meth:`~mandacaru.pseudopotentials.paw.PAWIntegrals.two_body_augmentation`);
 this module supplies the second.
 
-It is **quadratic** in the one-centre density matrix :math:`D`, and that is the
+It is **quadratic** in the one-center density matrix :math:`D`, and that is the
 point.  Mandacaru previously linearized it about the isolated atom -- a fixed
 :math:`D^{ion}` plus a per-species constant -- which is exact only while
 :math:`D` stays at its atomic reference :math:`D^0`.  Forming a bond is
@@ -35,7 +35,7 @@ Writing :math:`E(D) = \tfrac12 D D \Delta W` and expanding about :math:`D^0`,
          + \underbrace{\tfrac12 (D-D^0)(D-D^0)\,\Delta W}_{\text{what was missing}},
 
 so the omission is exactly the second-order term -- and because the Hartree
-energy is exactly quadratic, adding it makes the one-centre treatment *exact*
+energy is exactly quadratic, adding it makes the one-center treatment *exact*
 rather than merely better.  It costs no self-consistency: expanding the square
 gives a two-body operator (folded into the ERI), a one-body operator (folded
 into the nonlocal coupling) and a constant.
@@ -55,8 +55,8 @@ from scipy.integrate import cumulative_trapezoid, simpson
 
 from .multipoles import gaunt, multipole_range, partial_waves, shape_function
 
-#: Radial points of the one-centre quadrature (uniform, inside the sphere).
-ONE_CENTRE_POINTS = 600
+#: Radial points of the one-center quadrature (uniform, inside the sphere).
+ONE_CENTER_POINTS = 600
 
 
 def radial_coulomb(r: np.ndarray, rho_1: np.ndarray, rho_2: np.ndarray,
@@ -103,7 +103,7 @@ def _radial_tables(dataset, basis: str):
     """``(r, {l: (ae, ps)}, r_cut)`` on a uniform sphere grid."""
     channels = sorted(dataset.channels)
     r_cut = max(float(dataset.channels[l].r_cut) for l in channels)
-    r = np.linspace(0.0, r_cut, ONE_CENTRE_POINTS)
+    r = np.linspace(0.0, r_cut, ONE_CENTER_POINTS)
     source = np.asarray(dataset.r, dtype=float)
     tables = {}
     for l in channels:
@@ -123,7 +123,7 @@ def _radial_tables(dataset, basis: str):
     return r, tables, r_cut
 
 
-def one_centre_coulomb(dataset, projectors, basis: str = "raw") -> np.ndarray:
+def one_center_coulomb(dataset, projectors, basis: str = "raw") -> np.ndarray:
     r"""``DeltaW[a, b, c, d]`` for one atom, over its own ``projectors``.
 
     :math:`\Delta W = (\phi^*_a\phi_b|\phi^*_c\phi_d) -
@@ -183,7 +183,7 @@ def one_centre_coulomb(dataset, projectors, basis: str = "raw") -> np.ndarray:
 
 
 def reference_density_matrix(dataset, projectors) -> np.ndarray:
-    r"""``D^0`` -- the one-centre density matrix of the isolated reference atom.
+    r"""``D^0`` -- the one-center density matrix of the isolated reference atom.
 
     The reference atom's smooth orbitals *are* the first (bound) partial wave of
     each channel, and the projectors are dual to them, so

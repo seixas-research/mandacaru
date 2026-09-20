@@ -122,10 +122,10 @@ QiskitProvider(device="ibm_kingston,ibm_fez,ibm_marrakesh", shots=4096)  # least
 Credentials come from `QiskitRuntimeService.save_account(...)` run once, or
 from `QiskitProvider(instance=..., token=..., channel=...)`.
 
-**Optimise locally, measure once.** QPU time is scarce (the open plan gives
-ten minutes a month), and a variational optimisation needs hundreds of energy
-evaluations. So run the optimisation on the local state vector and measure
-only the optimised states on hardware:
+**Optimize locally, measure once.** QPU time is scarce (the open plan gives
+ten minutes a month), and a variational optimization needs hundreds of energy
+evaluations. So run the optimization on the local state vector and measure
+only the optimized states on hardware:
 
 ```python
 from mandacaru.algorithms.base import measure_energies
@@ -152,9 +152,9 @@ Mandacaru(method="adapt-vqe",
 ```
 
 A driver with `shots > 0` and an IBM device (`Mandacaru(..., device="ibm_kingston",
-shots=4096)`) runs the whole optimisation through the Estimator instead, one
+shots=4096)`) runs the whole optimization through the Estimator instead, one
 job per energy evaluation; do that on a fake backend, not on a budget.
-Example `24_ADAPTVQE_LiH_IBM.py` follows the optimise-locally pattern.
+Example `24_ADAPTVQE_LiH_IBM.py` follows the optimize-locally pattern.
 
 ## Registered devices
 
@@ -246,7 +246,7 @@ adaptive loop would have to measure each pool gradient as well; that is not
 implemented yet.
 
 For a fixed ansatz, `method="vqe"` is fully hardware-native
-today — every cost evaluation in the optimisation is measured on the device.
+today — every cost evaluation in the optimization is measured on the device.
 :::
 
 ---
