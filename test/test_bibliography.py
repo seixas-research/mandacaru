@@ -257,7 +257,7 @@ class TestARunWritesIt:
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis="FAO",
                                h=0.35,
-                               output=str(tmp_path / "output.txt"),
+                               txt=str(tmp_path / "output.txt"),
                                trace=False)
         atoms.get_total_energy()
         text = (tmp_path / "references.bib").read_text()
@@ -307,7 +307,7 @@ class TestARunWritesIt:
     def test_a_collision_with_the_log_is_refused(self, tmp_path):
         path = str(tmp_path / "same.bib")
         with pytest.raises(ValueError, match="both resolve to"):
-            Mandacaru(method="adapt-vqe", basis="FAO", output=path,
+            Mandacaru(method="adapt-vqe", basis="FAO", txt=path,
                       references=path)
 
     def test_a_dry_run_writes_nothing(self, tmp_path, monkeypatch):

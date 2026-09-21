@@ -67,6 +67,7 @@ from __future__ import annotations
 import atexit
 import sys
 import warnings
+from contextlib import contextmanager
 from time import perf_counter as _perf
 
 import numpy as np
@@ -179,6 +180,81 @@ def _spin_moment(gamma, n_spatial_orbitals: int, frozen=()) -> float:
     return float(np.real(np.trace(D_alpha) - np.trace(D_beta)))
 
 
+class MeasurementFailed(RuntimeError):
+    """A measurement submission failed; the optimized state is still on the calculator."""
+
+
+#: Largest imaginary part still treated as round-off in the reality test.
+REAL_TOLERANCE = 1e-12
+
+
+def _is_real_operator(operator) -> bool:
+    r"""Whether a :class:`PauliSum` is a **real matrix**.
+
+    A Pauli string with ``n`` letters ``Y`` is :math:`i^{n}` times a real
+    matrix, because ``Y`` is ``i`` times a real antisymmetric one.  So the term
+    ``c P`` is real exactly when ``c i^n`` is: an **even** number of ``Y``
+    needs a real coefficient, an **odd** number an imaginary one.
+    """
+    for label, coeff in getattr(operator, "terms", {}).items():
+        value = complex(coeff)
+        part = value.imag if label.count("Y") % 2 == 0 else value.real
+        if abs(part) > REAL_TOLERANCE:
+            return False
+    return True
+
+
+def _real_problem(solver, hamiltonian) -> bool:
+    r"""Whether every odd-``Y`` Pauli expectation of this state is exactly zero.
+
+    The reference determinant is a computational-basis state, hence real, and
+    :math:`e^{\theta A}` keeps it real when every generator ``A`` is a real
+    matrix.  For a real :math:`\psi` and a string ``P`` with an odd number of
+    ``Y``, :math:`P = i^{\mathrm{odd}} R` with ``R`` real *antisymmetric*, so
+    :math:`\langle\psi|P|\psi\rangle = i^{\mathrm{odd}}\,\psi^T R \psi
+    = 0` **exactly** -- not approximately.
+
+    Both halves are checked rather than assumed: a complex basis (``l > 0``
+    harmonics at low symmetry) makes the Hamiltonian complex, and a foreign
+    ansatz may carry generators that are not real.  The test costs a pass over
+    operators that are already in memory.
+    """
+    if not _is_real_operator(hamiltonian):
+        return False
+    ansatz = getattr(solver, "ansatz", None)
+    # `pauli_generators` is the qubit form every ansatz exposes for the circuit
+    # backends; a driver whose ansatz has none cannot be shown to be real.
+    generators = getattr(ansatz, "pauli_generators", None)
+    if generators is None:
+        return False
+    for generator in (generators() if callable(generators) else generators):
+        if not _is_real_operator(generator):
+            return False
+    return True
+
+
+def _planned_jobs(provider, labels) -> int:
+    """How many jobs the submission will be split into (see ``max_bases_per_job``)."""
+    from ..backends.measurement import planned_jobs
+
+    return planned_jobs(labels, getattr(provider, "max_bases_per_job", None))
+
+
+def _job_id(provider):
+    """Identifier of ``provider``'s most recent job, or ``None``.
+
+    Read defensively: a local primitive has no job, and a provider that cannot
+    answer must not fail a measurement that has already returned its numbers.
+    """
+    job = getattr(provider, "last_job", None)
+    if job is None:
+        return None
+    try:
+        return str(job.job_id())
+    except Exception:
+        return None
+
+
 def _watchable_stdout() -> None:
     """Make a **redirected** standard output show each line as it is written.
 
@@ -276,16 +352,22 @@ class Mandacaru(Calculator):
         extended-XYZ ``Lattice``), or a ``ValueError`` is raised.
     grid : Grid, optional
         An explicit grid, used verbatim (and frozen) for every evaluation.
+    txt : str, optional
+        Path of the structured run log -- ``[SYSTEM]``, ``[BASIS]``,
+        ``[ELECTRONS]``, ``[OPTIMIZATION SETUP]``, ``[ITERATIONS]``, the
+        summary, the forces and the performance block.  ``None`` (the default)
+        writes no file, and the **same blocks** are printed to standard output
+        instead; they are one document rendered once, so the screen and the
+        file never drift apart.  Forwarded to the solver.
     trace : bool, optional
-        Whether the solver prints its full run trace (configuration header,
-        per-iteration table, timings) to **standard output**.  ``None`` (the
-        default) decides automatically: **off** when ``output=<path>`` gives the
-        detail a destination, **on** when it does not.  With it off, standard
-        output carries only the evolution of energies and forces an ASE
-        optimizer prints there (``Step Time Energy fmax``) -- the same split
-        GPAW makes with ``txt=``.  ``True`` / ``False`` force it either way; a
-        single-point run with the trace off reports nothing to the terminal (the
-        energy is the return value, and the log file has the rest).
+        Whether that report also goes to **standard output**.  ``None`` (the
+        default) decides automatically: **off** when ``txt=<path>`` gives it a
+        destination, **on** when it does not.  With it off, standard output
+        carries only the evolution of energies and forces an ASE optimizer
+        prints there (``Step Time Energy fmax``) -- the same split GPAW makes
+        with ``txt=``.  ``True`` with a ``txt=`` file writes both; ``False``
+        without one makes a single-point run report nothing to the terminal
+        (the energy is still the return value).
     measurement_provider : CircuitProvider, optional
         Measure the optimized state instead of reading the local state vector:
         the ansatz is still optimized locally, then every Pauli string of the
@@ -377,7 +459,7 @@ class Mandacaru(Calculator):
     most recent evaluation is available on :attr:`result`, the solver instance
     on :attr:`solver`, and the force breakdown on :attr:`force_result`.
 
-    With ``output=<path>`` (forwarded to the solver) every step **appends** its
+    With ``txt=<path>`` (forwarded to the solver) every step **appends** its
     own block to that one file -- the iteration table, then the forces of that
     geometry -- so the whole trajectory is in one log rather than the last step
     overwriting the rest; see :mod:`mandacaru.utils.logging`.
@@ -392,7 +474,9 @@ class Mandacaru(Calculator):
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
                  scf_iterations: int = 40,
-                 measurement_provider=None, trace: bool | None = None,
+                 measurement_provider=None, measurement_budget=None,
+                 measurement_scheme: str = "qwc",
+                 trace: bool | None = None,
                  population=None, **solver_kwargs):
         Calculator.__init__(self)
         self.method, self._solver_class = resolve_method(method)
@@ -425,10 +509,10 @@ class Mandacaru(Calculator):
             # detail rather than discarding it.
             raise TypeError(
                 "Mandacaru() does not take `verbose`: use `trace=` to control the "
-                "standard-output trace (None = automatic: off when `output=` "
-                "routes the detail to a file, on otherwise; True / False force "
+                "standard-output trace (None = automatic: off when `txt=` "
+                "routes the report to a file, on otherwise; True / False force "
                 "it).  The structured per-iteration log is written with "
-                "`output=<path>`, and the operator pool and Hamiltonian with "
+                "`txt=<path>`, and the operator pool and Hamiltonian with "
                 "`verbose_operators=` / `verbose_hamiltonian=`.")
         if trace is not None and not isinstance(trace, bool):
             raise TypeError(f"trace must be True, False or None, got {trace!r}")
@@ -436,8 +520,23 @@ class Mandacaru(Calculator):
         self.solver_kwargs = dict(solver_kwargs)
         self._check_solver_options()
         self.measurement_provider = measurement_provider
+        # Validated here so a misspelled ceiling fails at construction rather
+        # than being discovered when it does not stop the job it was meant to.
+        from ..backends.measurement import (MEASUREMENT_SCHEMES,
+                                            resolve_measurement_budget)
+        resolve_measurement_budget(measurement_budget)
+        self.measurement_budget = measurement_budget
+        scheme = str(measurement_scheme).strip().lower().replace("_", "-")
+        if scheme not in MEASUREMENT_SCHEMES:
+            raise ValueError(
+                f"unknown measurement_scheme {measurement_scheme!r}; use one "
+                f"of {MEASUREMENT_SCHEMES}")
+        self.measurement_scheme = scheme
         #: Energy, RDMs and expectation values of the last measured state.
         self.measurement = None
+        #: :class:`~mandacaru.backends.measurement.MeasurementPlan` of the last
+        #: submission -- kept even when the job failed, so a retry can be sized.
+        self.measurement_plan = None
 
         # An explicit grid is frozen from the start; otherwise the grid is only
         # frozen once forces are requested (see the module docstring).
@@ -555,7 +654,7 @@ class Mandacaru(Calculator):
 
     #: Options whose whole purpose is to write a file, mapped to the capability
     #: a solver has to declare for them to do anything.
-    REPORTING_OPTIONS = {"output": "writes_output_log",
+    REPORTING_OPTIONS = {"txt": "writes_output_log",
                          "checkpoint": "supports_checkpoints",
                          "resume": "supports_checkpoints"}
 
@@ -564,11 +663,11 @@ class Mandacaru(Calculator):
 
         Two ways an option can go nowhere.  It may not be a parameter of the
         solver at all -- ASE's ``Calculator`` keeps unknown keywords as
-        *parameters*, so ``Mandacaru(method="vqe", output=...)`` used to compute an
+        *parameters*, so ``Mandacaru(method="vqe", txt=...)`` used to compute an
         energy, write no file, and (because a path had been given) print no trace
         either: a run that reported nothing anywhere.  Or the solver may accept
         it and not act on it, which is the subspace methods' ``run()`` and the
-        ``output`` / ``checkpoint`` / ``resume`` options it never reaches.
+        ``txt`` / ``checkpoint`` / ``resume`` options it never reaches.
         """
         import inspect
 
@@ -599,17 +698,18 @@ class Mandacaru(Calculator):
         """Whether the solver prints its full trace to standard output.
 
         Automatic by default, on the same principle as GPAW's ``txt=``: with
-        ``output=<path>`` the detail has a destination, so standard output is
+        ``txt=<path>`` the report has a destination, so standard output is
         left to the **evolution of energies and forces** -- which is what an ASE
         optimizer prints there, in ASE's own ``Step Time Energy fmax`` format.
-        Without ``output=`` the trace is the only report there is, so it is
-        printed.  ``trace=True`` / ``False`` overrides either way.
+        Without ``txt=`` standard output is the only destination there is, so
+        the blocks go there.  ``trace=True`` / ``False`` overrides either way;
+        ``True`` alongside a ``txt=`` file writes the report to both.
         """
         if self.trace is not None:
             return self.trace
-        # Routed away from the terminal only when the detail really lands in a
+        # Routed away from the terminal only when the report really lands in a
         # file: a solver that does not write one must not be silenced.
-        return not (self.solver_kwargs.get("output") is not None
+        return not (self.solver_kwargs.get("txt") is not None
                     and getattr(self._solver_class, "writes_output_log", False))
 
     def _make_solver(self, grid, **overrides):
@@ -738,7 +838,12 @@ class Mandacaru(Calculator):
         measured = None
         if self.measurement_provider is not None and not solver.dry_run:
             t0 = _perf()
-            measured = self._measure(solver)
+            # RDMs are measured only when the forces need them: they are an
+            # O(M^4) set of extra observables (LiH/PAW-TZP: 97,980 Pauli
+            # strings against the Hamiltonian's 12,736) that an energy-only
+            # evaluation would throw away, and the job that carries them is
+            # what exhausts the Runtime program's memory.
+            measured = self._measure(solver, rdms=want_forces)
             stages["measurement (provider)"] = _perf() - t0
             energy_ev = measured["energy_eV"]
 
@@ -847,16 +952,45 @@ class Mandacaru(Calculator):
                 "force_method='rdm' is complex-safe.",
                 RuntimeWarning, stacklevel=3)
 
-    def _measure(self, solver):
-        """Energy and RDMs of the optimized state, from ``measurement_provider``.
+    def _measure(self, solver, rdms: bool = True):
+        """Energy (and RDMs) of the optimized state, from ``measurement_provider``.
 
-        Every Pauli string the qubit Hamiltonian and the spin-conserving RDM
-        operators need is measured in **one** PUB (one job); the energy and the
-        RDMs are assembled from the same expectation values, so the energy the
-        forces are checked against is the measured one.
+        With ``rdms=True`` every Pauli string the qubit Hamiltonian and the
+        spin-conserving RDM operators need is measured in **one** PUB, and the
+        energy and the RDMs are assembled from the same expectation values --
+        so the energy the forces are checked against is the measured one.
+
+        With ``rdms=False`` -- an energy-only evaluation, which is every
+        ``get_potential_energy()`` that is not part of a force request -- the
+        Hamiltonian goes to the provider as a **single weighted observable**
+        and nothing else is measured.  The RDM operators are an ``O(M^4)`` set
+        that would be built (34 s at 24 qubits) and submitted only to be
+        discarded: on LiH/PAW-TZP that is 97,980 Pauli strings instead of
+        12,736, and the Runtime Estimator returns one result array *per
+        observable*, which under ZNE is what runs it out of memory.
         """
         from ..units import HARTREE_TO_EV
         from .rdm import rdm_qubit_operators, rdms_from_expectations
+
+        provider = self.measurement_provider
+        if not rdms:
+            hamiltonian = solver.hamiltonian
+            identity = "I" * int(solver.n_qubits)
+            factorized = self._factorized_scheme(solver)
+            if factorized is not None:
+                return self._measure_factorized(solver, factorized)
+            self._plan_measurement(
+                solver, [l for l in hamiltonian.terms if l != identity],
+                hamiltonian=hamiltonian, includes_rdms=False)
+            with self._measurement_failure(solver):
+                energy = float(provider.energy(*solver.ansatz_problem()[:4],
+                                               hamiltonian))
+            self.measurement = {
+                "energy_hartree": energy,
+                "energy_eV": energy * HARTREE_TO_EV,
+                "rdms": None, "expectation_values": None, "stds": None,
+                "observables": 1, "job_id": _job_id(provider)}
+            return self.measurement
 
         reduced = solver.mapping == "parity_reduced"
         n_qubits = int(solver.n_qubits)
@@ -868,19 +1002,254 @@ class Mandacaru(Calculator):
         labels = sorted({label for op in (hamiltonian, *ones.values(),
                                           *twos.values())
                          for label in op.terms} - {identity})
-        provider = self.measurement_provider
-        values, stds = provider.expectation_values(*solver.ansatz_problem()[:4],
-                                                   labels)
+        # A real Hamiltonian acting on a real state gives every Pauli string
+        # with an odd number of Y a vanishing expectation value: <Y> is the
+        # imaginary part of an amplitude product, and an odd count leaves the
+        # whole string anti-Hermitian under complex conjugation.  Half the RDM
+        # labels are of that kind (measured: 472 of 981 on LiH/PAW-DZ), so
+        # leaving them out is an exact halving of the job, not an
+        # approximation -- provided the premise holds, which is checked.
+        assumed_zero: set[str] = set()
+        if _real_problem(solver, hamiltonian):
+            assumed_zero = {l for l in labels if l.count("Y") % 2}
+            labels = [l for l in labels if l not in assumed_zero]
+
+        self._plan_measurement(solver, labels, hamiltonian=hamiltonian,
+                               includes_rdms=True)
+        with self._measurement_failure(solver):
+            values, stds = provider.expectation_values(
+                *solver.ansatz_problem()[:4], labels)
+        for label in assumed_zero:
+            values[label], stds[label] = 0.0, 0.0
         values[identity], stds[identity] = 1.0, 0.0
         energy = float(np.real(sum(complex(c) * values[label]
                                    for label, c in hamiltonian.terms.items())))
-        job = getattr(provider, "last_job", None)
         self.measurement = {
             "energy_hartree": energy, "energy_eV": energy * HARTREE_TO_EV,
             "rdms": rdms_from_expectations(n_modes, ones, twos, values),
             "expectation_values": values, "stds": stds,
-            "job_id": job.job_id() if job is not None else None}
+            "observables": len(labels),
+            "assumed_zero": len(assumed_zero), "job_id": _job_id(provider)}
         return self.measurement
+
+    def _factorized_scheme(self, solver):
+        """The factorization to measure through, or ``None`` for the QWC path.
+
+        ``measurement_scheme="double-factorized"`` is refused rather than
+        silently ignored when the run cannot support it -- a direct-mode
+        problem has no integrals, and a tapered register has no occupation
+        picture to read.
+        """
+        if self.measurement_scheme != "double-factorized":
+            return None
+        if solver.mapping != "jordan_wigner":
+            raise NotImplementedError(
+                f"measurement_scheme='double-factorized' reads occupations off "
+                f"the computational basis, which is the Jordan-Wigner picture; "
+                f"mapping={solver.mapping!r} does not have one.")
+        factorized = self.factorization(solver)
+        if factorized is None:
+            raise NotImplementedError(
+                "measurement_scheme='double-factorized' needs the molecular "
+                "integrals the Hamiltonian was built from, and this run has "
+                "none (a direct-mode problem or a loaded Hamiltonian carries "
+                "only the qubit operator).")
+        return factorized
+
+    def _measure_factorized(self, solver, factorized):
+        """Energy through the Givens-rotation scheme: ``L + 1`` PUBs, one job."""
+        from ..backends.factorization import (factorized_energy,
+                                              measurement_problems)
+        from ..units import HARTREE_TO_EV
+
+        provider = self.measurement_provider
+        problem = solver.ansatz_problem()[:4]
+        problems = measurement_problems(factorized, *problem,
+                                        mapping=solver.mapping)
+        self._plan_measurement(solver, [], hamiltonian=solver.hamiltonian,
+                               includes_rdms=False, problems=problems,
+                               factorization=factorized)
+        with self._measurement_failure(solver):
+            energy = float(factorized_energy(provider, problem, factorized,
+                                             mapping=solver.mapping))
+        self.measurement = {
+            "energy_hartree": energy, "energy_eV": energy * HARTREE_TO_EV,
+            "rdms": None, "expectation_values": None, "stds": None,
+            "observables": len(problems), "scheme": "double-factorized",
+            "job_id": _job_id(provider)}
+        return self.measurement
+
+    # -- pre-flight and failure ------------------------------------------- #
+
+    def _plan_measurement(self, solver, labels, hamiltonian=None,
+                          includes_rdms: bool = False, problems=None,
+                          factorization=None):
+        """Size the submission, log it as ``[MEASUREMENT PLAN]``, enforce the budget.
+
+        Everything the plan reports is computed locally -- the grouping, the
+        transpilation, the estimator's own resilience multipliers -- so a job
+        that cannot succeed is refused *before* it is queued.  The one that
+        motivated this spent 37 minutes in a queue and then died with "Program
+        runtime ran out of memory", discarding a converged optimization.
+        """
+        from ..backends.measurement import measurement_plan
+
+        provider = self.measurement_provider
+        # The circuit that is actually submitted: for the factorized scheme
+        # that is the ansatz *plus* the longest Givens network, which is what
+        # the fidelity estimate has to be made against.
+        widest = (max(problems, key=lambda p: len(p[2])) if problems
+                  else solver.ansatz_problem()[:4])
+        isa = None
+        try:
+            isa = provider._transpiled(provider.build(*widest[:4]),
+                                       int(solver.n_qubits))[0]
+        except Exception:
+            # A provider without a transpiler, or a backend that cannot be
+            # reached: the plan is still worth having without the gate counts.
+            isa = None
+        if problems is not None:
+            plan = measurement_plan(
+                provider, int(solver.n_qubits), [], hamiltonian=hamiltonian,
+                includes_rdms=includes_rdms, isa_circuit=isa, jobs=1,
+                scheme="double-factorized", bases=len(problems),
+                observables=len(problems),
+                one_norm=factorization.one_norm,
+                factorized_bases=factorization.measurement_bases)
+        else:
+            plan = measurement_plan(
+                provider, int(solver.n_qubits), labels,
+                hamiltonian=hamiltonian, includes_rdms=includes_rdms,
+                isa_circuit=isa, jobs=_planned_jobs(provider, labels),
+                factorized_bases=self._factorized_bases(solver))
+        self.measurement_plan = plan
+        self._log_plan(solver, plan)
+        for note in plan.warnings():
+            warnings.warn(note, RuntimeWarning, stacklevel=3)
+        plan.check(self.measurement_budget)
+        return plan
+
+    def factorization(self, solver=None):
+        """The double-factorized form of this run's Hamiltonian, or ``None``.
+
+        Needs the molecular integrals, so it exists exactly when the run built
+        a basis (not in direct mode, not for a loaded Hamiltonian).  Cheap --
+        an ``eigh`` of an ``M^2 x M^2`` matrix, 0.1 s at 24 spin orbitals.
+
+        The **constant** is whatever the driver's qubit Hamiltonian carries
+        beyond the electronic operator (the nuclear repulsion): a scalar, read
+        off rather than recomputed, so the factorized energy is on the same
+        zero as every other energy the run reports.
+        """
+        solver = self.solver if solver is None else solver
+        context = getattr(solver, "_gradient_context", None)
+        if not context or context.get("integrals") is None:
+            return None
+        from ..backends.factorization import double_factorization
+        from ..core.hamiltonian import (molecular_orbital_integrals,
+                                        spin_block_integrals)
+        from ..core.mapping import Fermion
+
+        h_mo, eri_mo, _orbitals = molecular_orbital_integrals(
+            context["integrals"], context["n_electrons"])
+        h_so, g_so = spin_block_integrals(h_mo, eri_mo)
+        electronic = Fermion.from_integrals(h_so, g_so).map_to_qubits(
+            solver.mapping)
+        offset = (solver.hamiltonian + (-1.0) * electronic).simplify()
+        identity = "I" * int(solver.n_qubits)
+        constant = float(np.real(offset.terms.get(identity, 0.0)))
+        residue = {label: c for label, c in offset.terms.items()
+                   if label != identity and abs(complex(c)) > 1e-10}
+        if residue:
+            # The factorization describes the electronic operator; anything
+            # else in the driver's Hamiltonian would be silently dropped.
+            return None
+        return double_factorization(h_so, g_so, constant=constant)
+
+    def _factorized_bases(self, solver):
+        """Bases a double-factorized measurement would need, if computable."""
+        try:
+            factorized = self.factorization(solver)
+        except Exception:
+            # A diagnostic line is never worth failing a measurement for.
+            return None
+        return None if factorized is None else factorized.measurement_bases
+
+    def _log_plan(self, solver, plan) -> None:
+        """Write the ``[MEASUREMENT PLAN]`` block, when the run has a log."""
+        path = solver.log_targets
+        if not path:
+            return
+        from ..utils.logging import append_block
+
+        append_block(path, "MEASUREMENT PLAN", plan.fields())
+
+    @contextmanager
+    def _measurement_failure(self, solver):
+        """Re-raise a failed submission without discarding the optimization.
+
+        A ``RuntimeJobFailureError`` used to propagate out of ``calculate()``
+        with nothing kept: the converged ansatz, which had cost minutes, went
+        with it.  :attr:`solver` and :attr:`measurement_plan` are already set
+        by the time anything is submitted, so the state survives and
+        :meth:`remeasure` can retry it with other options.
+        """
+        try:
+            yield
+        except Exception as exc:
+            plan = self.measurement_plan
+            detail = "" if plan is None else (
+                f" The submission was {plan.observables:,} observables in "
+                f"{plan.bases:,} measurement bases, {plan.circuit_instances:,} "
+                f"circuit instances, {plan.total_shots:,} shots on "
+                f"{plan.device}.")
+            raise MeasurementFailed(
+                f"the measurement job failed ({type(exc).__name__}: {exc})."
+                f"{detail} The optimized state is kept: calc.solver and "
+                f"calc.measurement_plan are intact, and calc.remeasure() "
+                f"retries without re-optimizing.") from exc
+
+    def remeasure(self, provider=None, rdms: bool | None = None, **overrides):
+        """Measure the **already optimized** state again, without re-running it.
+
+        The point of keeping the solver when a job fails: a measurement can be
+        retried with fewer observables, a lower resilience level or a different
+        device, at no cost in optimization time.
+
+        Parameters
+        ----------
+        provider : CircuitProvider, optional
+            Measure on this provider instead of ``measurement_provider``; it
+            becomes the calculator's provider, so a later step uses it too.
+        rdms : bool, optional
+            Measure the RDM operators as well.  The default repeats whatever
+            the last measurement did, which for an energy-only run is one
+            weighted observable.
+        **overrides
+            Attributes set on the provider before submitting (``shots``,
+            ``estimator_options``, ``device``...), so a retry does not need a
+            new provider object.
+        """
+        solver = self.solver
+        if solver is None or getattr(solver, "result", None) is None:
+            raise RuntimeError(
+                "nothing has been optimized yet: ask for an energy "
+                "(atoms.get_potential_energy()) before remeasuring")
+        if provider is not None:
+            self.measurement_provider = provider
+        if self.measurement_provider is None:
+            raise RuntimeError(
+                "remeasure() needs a provider: pass one, or construct the "
+                "calculator with measurement_provider=")
+        for name, value in overrides.items():
+            setattr(self.measurement_provider, name, value)
+        if rdms is None:
+            rdms = (self.measurement or {}).get("rdms") is not None
+        measured = self._measure(solver, rdms=rdms)
+        self.results["energy"] = measured["energy_eV"]
+        self.results["free_energy"] = measured["energy_eV"]
+        self._log_measurement(solver, measured)
+        return measured
 
     def _state_rdms(self, solver, psi=None, two_body: bool = True):
         """Spin-orbital RDMs of a state vector (the converged one by default).
@@ -997,7 +1366,7 @@ class Mandacaru(Calculator):
         return legacy
 
     def _log_forces(self, solver, atoms) -> None:
-        """Append the step's forces to the run's ``output.txt``, when there is one.
+        """Append the step's forces to the run's report, wherever it goes.
 
         The solver logs the geometry's energies and closes its own log before
         the gradient is even computed, so the forces are appended afterwards --
@@ -1006,8 +1375,8 @@ class Mandacaru(Calculator):
         geometry, which is what makes the convergence followable in the file
         rather than only in the terminal.
         """
-        path = getattr(solver, "output", None)
-        if path is None or self.force_result is None:
+        path = solver.log_targets
+        if not path or self.force_result is None:
             return
         from ..utils.logging import append_forces
 
@@ -1042,8 +1411,8 @@ class Mandacaru(Calculator):
         value, with nothing in the file to say which was which.  Both numbers are
         meaningful, so the block names them both and says which one ASE reported.
         """
-        path = getattr(solver, "output", None)
-        if path is None:
+        path = solver.log_targets
+        if not path:
             return
         from ..backends.providers import qpu_usage
         from ..utils.logging import append_block
@@ -1051,6 +1420,8 @@ class Mandacaru(Calculator):
         provider = self.measurement_provider
         stds = measured.get("stds") or {}
         largest = max((abs(float(v)) for v in stds.values()), default=None)
+        # An energy-only measurement has no RDMs and no per-string values; the
+        # block says so rather than reporting an empty expectation set.
         result = getattr(solver, "result", None)
         fields = {
             "reported_by": "ASE get_potential_energy()",
@@ -1061,7 +1432,11 @@ class Mandacaru(Calculator):
             # was optimized on the local state vector, then measured.
             "variational_energy_eV": None if result is None else
                 f"{solver._from_energy_units(result.optimal_energy, 'eV'):.10f}",
-            "pauli_expectations": len(measured.get("expectation_values") or {}),
+            "observables_submitted": measured.get("observables"),
+            "measured": "energy and RDMs" if measured.get("rdms") is not None
+                        else "energy only (no forces requested)",
+            "pauli_expectations": len(measured.get("expectation_values") or {})
+                                  or None,
             "largest_std": None if largest is None else f"{largest:.6e}",
         }
         fields.update(qpu_usage(provider))
@@ -1098,7 +1473,7 @@ class Mandacaru(Calculator):
         (in a notebook, or before doing something else with the same file); this
         hook then finds it already written and does nothing.
         """
-        if self._exit_hook or self._log_path() is None:
+        if self._exit_hook or not self._log_targets():
             return
         self._exit_hook = True
         atexit.register(self._write_summary_at_exit)
@@ -1129,9 +1504,20 @@ class Mandacaru(Calculator):
             # reported as having failed because its log could not be closed.
             pass
 
-    def _log_path(self):
-        """The ``output=`` log the steps are being written to, or ``None``."""
-        return self.solver_kwargs.get("output")
+    def _log_targets(self):
+        """Every destination the steps are being reported to (possibly none).
+
+        The ``txt=`` file and, when the trace is on, standard output -- the
+        same pair the solver's
+        :meth:`~mandacaru.algorithms.base.VariationalDriver.log_targets` names,
+        resolved here because the blocks this class appends are written after
+        the solver has closed its own logger.
+        """
+        from ..utils.logging import STDOUT
+
+        path = self.solver_kwargs.get("txt")
+        targets = () if path is None else (path,)
+        return targets + ((STDOUT,) if self._show_trace() else ())
 
     def write_optimization_summary(self, atoms=None, fmax: float | None = None,
                                    optimizer=None, force: bool = False,
@@ -1139,8 +1525,8 @@ class Mandacaru(Calculator):
         """Close the log with the relaxation's summary and completion blocks.
 
         Returns whether anything was written.  Nothing is written for a single
-        geometry (there is no trajectory to summarize), when no ``output=`` log
-        was given, or when the summary is already there -- so calling it twice,
+        geometry (there is no trajectory to summarize), when the run reports
+        nowhere at all, or when the summary is already there -- so calling it twice,
         or calling it *and* letting the exit hook run, writes one summary.
 
         Parameters
@@ -1180,8 +1566,8 @@ class Mandacaru(Calculator):
                 converged = None
         from ..utils.logging import append_optimization_summary
 
-        path = self._log_path()
-        if path is None or self._summary_written:
+        path = self._log_targets()
+        if not path or self._summary_written:
             return False
         # An empty trajectory has nothing to summarize -- not even under
         # `force`, which is about a *single* geometry, not about none.
@@ -1201,7 +1587,7 @@ class Mandacaru(Calculator):
         return True
 
     def _log_performance(self, solver, stages, wall_time_s) -> None:
-        """Append this step's ``[PERFORMANCE]`` block to the run's ``output.txt``.
+        """Append this step's ``[PERFORMANCE]`` block to the run's report.
 
         The block covers the **whole** step, which is why the calculator writes
         it and not the solver: on a real relaxation the nuclear gradient is the
@@ -1212,8 +1598,8 @@ class Mandacaru(Calculator):
         this method's caller timed -- the gradient, and the provider measurement
         when there was one -- on top of the solver's own.
         """
-        path = getattr(solver, "output", None)
-        if path is None:
+        path = solver.log_targets
+        if not path:
             return
         from ..utils.logging import append_performance
         from ..utils.profiling import Timings, backend_cores

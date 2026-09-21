@@ -1,20 +1,25 @@
 # Reading a run
 
-A variational run reports itself in four places, each with a different job:
-**standard output** while it runs, the structured **`output.txt`** log, two
+A variational run reports itself in three ways: **one structured report**, two
 optional **JSON dumps** for the objects that are too large to print, and a
 **`references.bib`** of the methods it used.
 
 ## What goes where
 
-`output=<path>` decides the split, on the same principle as GPAW's `txt=`: when
-the detail has a destination, standard output is left to the **evolution of
-energies and forces**, which is what an ASE optimizer prints there.
+There is one report -- the blocks described below -- and `txt=` decides *where*
+it goes, on the same principle as GPAW's `txt=`:
 
-| | standard output | `output.txt` |
+| | standard output | the `txt=` file |
 | :--- | :--- | :--- |
-| with `output=<path>` | ASE's `Step Time Energy fmax` table | banner, system, electrons, setup, iterations, summary, forces, performance |
-| without it | the full trace (header, iteration table, timings) | — |
+| with `txt=<path>` | ASE's `Step Time Energy fmax` table | banner, system, basis, electrons, setup, iterations, summary, forces, performance |
+| without it | **the same blocks**, printed | — |
+| `txt=<path>`, `trace=True` | the same blocks, printed | the same blocks, written |
+
+It is rendered **once**, by {mod}`mandacaru.utils.logging`, and written to every
+destination the driver's `log_targets` names. So the terminal and the file never
+disagree: what you read while a run goes by is what a collaborator reads in the
+log afterwards, key for key, and
+{func}`mandacaru.utils.logging.parse_output` reads either one back.
 
 ```text
       Step     Time          Energy          fmax
@@ -27,52 +32,42 @@ That is the whole terminal output of a relaxation that writes a log — the
 energies and the largest force per step, in ASE's own format, with the 85 lines
 per step of configuration, iterations and timings going to the file instead.
 
-`trace=True` prints the trace anyway (a log file *and* a running commentary),
-and `trace=False` suppresses it even without a log file. A single-point run with
-the trace off prints nothing: the energy is the return value and the file has
-the rest. There is no `verbose` argument on `Mandacaru` — it is refused with a
-message pointing at `trace=`.
+`trace=True` prints the blocks anyway (a log file *and* a running commentary),
+and `trace=False` suppresses them even without a log file. A single-point run
+with the trace off reports nothing: the energy is the return value and the file,
+if there is one, has the rest. There is no `verbose` argument on `Mandacaru` —
+it is refused with a message pointing at `trace=`.
 
-## The standard-output trace
+```{note}
+`txt=` is accepted only by a method whose `run()` goes through this protocol —
+`"adapt-vqe"` today — and refused with a message by the others rather than
+leaving an empty file. `"vqe"`, `"subspace-vqe"` and `"subspace-adapt-vqe"`
+still print a header of their own, which is not this one.
 
-Printed when no log file is given (or with `trace=True`): a header, one row per
-ADAPT iteration, and a closing summary with the timings.
-
-```text
-======================================================================
-ADAPT-VQE
-======================================================================
-basis                   FAO
-grid spacing            0.2 Angstrom
-...
-----------------------------------------------------------------------
-qubits                  6
-electrons (alpha, beta) (2, 2)
-mapping                 jordan_wigner
-qubit Hamiltonian       27 Pauli terms
-----------------------------------------------------------------------
-operator pool           qeb (8 operators)
-operator selection      largest |gradient| (greedy)
-gradient method         analytic
-  formula               exact derivative, g = 2 Re<H psi|A psi>
-optimizer               SLSQP
-gradient tolerance      0.001
-...
-----------------------------------------------------------------------
-Hartree-Fock reference  -154.59070457 eV
-======================================================================
-iter   |grad|      E (eV)       dE   expr  steps  cnot    1q depth   type operator
-------------------------------------------------------------------------------------
-   1 2.72e-01 -154.730899 -1.4e-01   6.21      4    48    40    65 double QD(0,3->2,5)
-   2 8.31e-02 -154.765242 -3.4e-02   2.91      6    96    74   129 double QD(1,4->2,5)
-   3 5.54e-02 -154.776105 -1.1e-02   2.05      7   144   108   193 double QD(1,3->2,5)
+There is one standard output per process, so consecutive printed runs number
+their blocks `step: 1`, `step: 2`, … just as consecutive runs sharing one
+`txt=` file do. {func}`~mandacaru.utils.logging.reset_log` with
+{data}`~mandacaru.utils.logging.STDOUT` restarts the count.
 ```
 
-The **pool's type and size** and the Hamiltonian's **term count** appear in the
-header, before the iterations. Neither the pool's operators nor the
-Hamiltonian's Pauli strings are printed: a realistic pool grows with the fourth
-power of the number of orbitals and a realistic Hamiltonian runs to thousands of
-terms, so printing either buries the run.
+## The iteration table
+
+The block every run is read through, whichever destination it went to:
+
+```text
+[ITERATIONS]
+    iter        energy (eV)              type        |grad|   steps      1q    cnot   depth operator
+    ------------------------------------------------------------------------------------------------
+       1  -154.7308990000        qeb-double  2.720000e-01       4      40      48      65 QD(0,3->2,5)
+       2  -154.7652420000        qeb-double  8.310000e-02       6      74      96     129 QD(1,4->2,5)
+       3  -154.7761050000        qeb-double  5.540000e-02       7     108     144     193 QD(1,3->2,5)
+```
+
+The **pool's type and size** and the Hamiltonian's **term count** are in the
+`[OPTIMIZATION SETUP]` and `[ELECTRONS]` blocks above it. Neither the pool's
+operators nor the Hamiltonian's Pauli strings are printed: a realistic pool
+grows with the fourth power of the number of orbitals and a realistic
+Hamiltonian runs to thousands of terms, so printing either buries the run.
 
 Each iteration is one row, one column per property computed at that step:
 
@@ -80,42 +75,38 @@ Each iteration is one row, one column per property computed at that step:
 | :--- | :--- |
 | `iter` | Growth step (1-based). |
 | `\|grad\|` | Largest pool gradient; the operator with this gradient is the one selected. Convergence is when it falls below `gradient_tolerance`. |
-| `E (eV)` | Energy after the inner re-optimization (Hartree with `atomic_units=True`). |
-| `dE` | Change from the previous step. |
+| `energy (eV)` | Energy after the inner re-optimization (Hartree with `atomic_units=True`). |
 | `expr` | Expressivity of the grown ansatz: KL divergence from the Haar distribution over the number-conserving sector. It falls as the ansatz specializes. **Off by default** and the column is then absent rather than blank; `run(log_expressivity=True)` adds it. It is a diagnostic, not a result, and not cheap: `2 x 400` state preparations per iteration, each applying every operator in the ansatz, so the cost is linear in the ansatz and quadratic over a run (0.010 / 0.031 / 0.059 / 0.125 s at 1 / 4 / 8 / 16 operators, 6 qubits). |
 | `steps` | **Steps the classical optimizer took** to re-optimize the grown ansatz — parameter updates, not cost evaluations. The two differ by the method: L-BFGS-B spends several evaluations per step on a finite-difference gradient and a line search, Adam spends `2N + 1`, SPSA two or three, while COBYLA evaluates once per trial point. `-` when a method reports neither a count nor a per-iteration callback. |
 | `cnot` | CNOT gates after compiling to the native gate set. |
 | `1q` | Single-qubit gates in the same compilation. |
 | `depth` | Circuit depth in the same compilation. |
-| `type` | Kind of the selected operator (`double`, `single`, `ceo`, ...), with the pool's name stripped — the header already carries it. |
+| `type` | Kind of the selected operator, as the pool names it (`qeb-double`, `fermionic-single`, `ceo`, ...). |
 | `operator` | Its label, e.g. `QD(0,3->2,5)`. |
 
-**One iteration is always one line.** The row is sized to the terminal
-(`shutil.get_terminal_size()`, falling back to 80 columns when the output is
-piped): if the full set will not fit, columns are dropped in the order `dE`,
-`1q`, `depth`, `steps`, `cnot` — the derivable ones first — rather than
-letting rows wrap. `expr` is absent unless it was asked for, so it is never
-dropped: having asked for it, you get it. `iter`, the gradient, the energy, the operator type and its
-label are never dropped. Set the `COLUMNS` environment variable to override the
-detected width.
+**The table does not depend on the terminal.** It is the same width whether it
+is printed or written, because it is the same table: no column is dropped and no
+operator label is abbreviated, so a narrow terminal wraps a row rather than
+quietly losing a number. `expr` is the one optional column — absent unless
+`run(log_expressivity=True)` asked for it, rather than present and blank.
 
 The circuit columns need `profile=True` (the default); with `profile=False`
 they read `-`.
 
 ## The `output.txt` log
 
-`output=` writes the machine-readable protocol of
+`txt=` writes the machine-readable protocol of
 {mod}`mandacaru.utils.logging`: the start-up banner, metadata, optimizer setup,
 one row per iteration, a summary, and -- when forces were computed -- the
 forces. Each iteration row names the **selected operator** and the setup block
-the **pool's size** -- not the pool's contents, for the same reason the trace
+the **pool's size** -- not the pool's contents, for the same reason the table
 does not. {func}`mandacaru.utils.logging.parse_output` reads it back.
 
 ```python
 calc = Mandacaru(method="adapt-vqe",
                  basis="FAO",
                  h=0.25,
-                 output="output.txt")
+                 txt="output.txt")
 ```
 
 ### A geometry optimization writes one log
@@ -255,9 +246,9 @@ read off the left margin:
     circuit_depth: 65
 ```
 
-The log's table keeps full precision and the pool's own operator *kind*
-(`fermionic-double`, not the trace's stripped `double`), and its circuit columns
-run cheapest gate first -- `1q`, `cnot`, `depth`. The summary closes the two
+The table keeps full precision and the pool's own operator *kind*
+(`fermionic-double`), and its circuit columns run cheapest gate first --
+`1q`, `cnot`, `depth`. The summary closes the two
 classical-effort counters the `steps` column opens: `optimizer_steps` is that
 column summed over the run and `cost_evaluations` the energy evaluations those
 steps spent -- the number a QPU would be billed for. The summary does **not**
@@ -289,15 +280,13 @@ direct-mode run, where no basis was built, has none.
 
 Each fact has **one owner**. The basis is in `[BASIS]` and not repeated in
 `[ELECTRONS]`; the classical optimizer is in `[OPTIMIZATION SETUP]` and not
-repeated in the variational summary; what the standard-output header alone used
-to say (the reference state, the frozen core, the charge, whether every
-parameter is re-optimized, the state-vector backend, the device and the shots)
-is in the file, because that header is off whenever the file is written.
+repeated in the variational summary. A value written in two blocks can disagree
+with itself, which is worth more than the convenience of not scrolling.
 
-`[SYSTEM]` says *where the atoms are* and `[ELECTRONS]` *what was solved* --
-the configuration the standard-output header used to carry, which is why it is in
-the file now that the trace is routed there. `[OPTIMIZATION SETUP]` keeps what is
-left: *how* it was solved.
+`[SYSTEM]` says *where the atoms are*, `[ELECTRONS]` *what was solved* (the
+reference state, the frozen core, the charge, the mapping, the register width)
+and `[OPTIMIZATION SETUP]` *how* it was solved (the optimizer, the gradient, the
+pool, the growth rule, the backend, the device and the shots).
 
 Two of `[SYSTEM]`'s lines are easy to miss and worth naming:
 
@@ -354,7 +343,7 @@ calc = Mandacaru(method="adapt-vqe",
                  basis="FAO",
                  h=0.25,
                  gradient="parameter_shift",
-                 output="output.txt")
+                 txt="output.txt")
 ```
 
 The block reports **what ran**, not what was asked for. A sparse or
@@ -552,7 +541,7 @@ whole block back as `result["performance"]`, with the stages as
 
 ## `verbose_operators` and `verbose_hamiltonian`
 
-Two options write what the trace leaves out, as JSON, once per run:
+Two options write what the blocks leave out, as JSON, once per run:
 
 ```python
 calc = Mandacaru(method="adapt-vqe",
@@ -649,7 +638,7 @@ happen, and the file already on disk is rewritten so it does not go stale.
 
 | value | effect |
 | --- | --- |
-| `"auto"` (default) | `references.bib` beside the `output=` log, and nothing when there is no log |
+| `"auto"` (default) | `references.bib` beside the `txt=` log, and nothing when there is no log |
 | `True` | `references.bib` in the working directory |
 | `"papers.bib"` | that file |
 | `False` / `None` | nothing |
@@ -659,13 +648,13 @@ calc = Mandacaru(method="adapt-vqe",
                  basis="PAW",
                  h=0.20,
                  pool="qubit",
-                 output="run/output.txt")      # -> run/references.bib
+                 txt="run/output.txt")      # -> run/references.bib
 ```
 
 On the command line:
 
 ```bash
-mandacaru H2O --cell 10 --output run/output.txt        # run/references.bib
+mandacaru H2O --cell 10 --txt run/output.txt        # run/references.bib
 mandacaru H2O --cell 10 --references papers.bib
 ```
 

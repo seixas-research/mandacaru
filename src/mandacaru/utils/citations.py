@@ -65,6 +65,11 @@ _OPTIMIZER_KEYS = {
     "slsqp": ("Kraft1988",),
     "adam": ("Kingma2015",),
     "l-bfgs-b": ("Byrd1995",),
+    # L-BFGS is Liu & Nocedal; the bound-constrained extension Mandacaru
+    # actually calls into (with no bounds) is Byrd et al.
+    "l-bfgs": ("Liu1989", "Byrd1995"),
+    "bfgs": ("Fletcher1970",),
+    "nlcg-pr": ("Polak1969",),
 }
 
 #: Pseudopotential family -> the papers its datasets are generated from.
@@ -182,11 +187,11 @@ def _dashed(value):
     return None if key is None else key.replace("_", "-")
 
 
-def resolve_references_path(references, output=None) -> str | None:
+def resolve_references_path(references, txt=None) -> str | None:
     """The path ``references=`` asks for, or ``None`` when nothing is written.
 
-    ``"auto"`` (the default) writes ``references.bib`` **beside the run log**
-    when one is written and nothing otherwise, so a run that produces no files
+    ``"auto"`` (the default) writes ``references.bib`` **beside the ``txt=``
+    run log** when one is written and nothing otherwise, so a run that produces no files
     still produces none.  ``True`` writes ``references.bib`` in the working
     directory, a string names the file, and ``False`` / ``None`` switch it off.
     """
@@ -200,9 +205,9 @@ def resolve_references_path(references, output=None) -> str | None:
         raise ValueError(
             f"references={references!r} is not a path or one of "
             f"{REFERENCES_CHOICES}")
-    if not output:
+    if not txt:
         return None
-    return os.path.join(os.path.dirname(os.fspath(output)),
+    return os.path.join(os.path.dirname(os.fspath(txt)),
                         DEFAULT_REFERENCES_FILE)
 
 

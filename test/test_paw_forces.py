@@ -176,7 +176,7 @@ def test_two_qubit_register_forces_exact_and_measured(tmp_path):
 
     jw, e_jw, _ = run(mapping="jordan_wigner")
     tapered, _, _ = run(mapping="parity_reduced",
-                        output=str(tmp_path / "output.txt"))
+                        txt=str(tmp_path / "output.txt"))
     measured, e_measured, calc = run(
         mapping="parity_reduced",
         measurement_provider=QiskitProvider(device="statevector", shots=0))

@@ -39,7 +39,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                                   "tol": 1e-12},
                        max_iterations=80,
                        gradient_tolerance=1e-5,
-                       output='output.txt')
+                       txt='output.txt')
 
 opt = BFGS(atoms, trajectory=os.path.join(DATA, "relax.traj"))
 opt.attach(lambda: print(f"    Li-H distance {atoms.get_distance(0, 1):.4f} A"))

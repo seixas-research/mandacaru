@@ -192,12 +192,12 @@ class TestCalculator:
 def _column(out, name):
     """Values of one column of the iteration table, read via its heading.
 
-    Which optional columns fit depends on the terminal width
-    (``ADAPTVQE._iteration_layout``), so a fixed field index would drift.
+    The optional ``expr`` column exists only when the expressivity was asked
+    for, so a fixed field index would drift.
     """
     lines = out.splitlines()
     heading = next(line for line in lines if line.split()[:1] == ["iter"])
-    columns = heading.replace("E (eV)", "energy").split()
+    columns = heading.replace("energy (eV)", "energy").split()
     index = lines.index(heading)
     rows = [line.split() for line in lines[index + 2:]
             if line.strip() and line.split()[0].isdigit()]

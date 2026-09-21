@@ -61,7 +61,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        h=0.10,
                        max_iterations=25,
                        gradient_tolerance=1e-3,
-                       output=os.path.join(DATA, "output_BeH2.txt"))
+                       txt=os.path.join(DATA, "output_BeH2.txt"))
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.
 energy_ev = atoms.get_total_energy()               # eV (ASE convention)

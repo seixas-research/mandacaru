@@ -101,7 +101,7 @@ class TestOptions:
                           cell=[6.0] * 3)
             atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
                                    pool="fermionic", max_iterations=2,
-                                   output=out, trace=False, profile=False,
+                                   txt=out, trace=False, profile=False,
                                    **options)
             atoms.get_potential_energy()
             setup = parse_output(out)["setup"]

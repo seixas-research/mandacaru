@@ -102,9 +102,11 @@ class TestF01ResumeEnergyIdentity:
 class TestF02ReportingOptionsAreHonest:
     """An option that writes a file either writes it or is refused."""
 
-    def test_vqe_refuses_an_output_it_would_ignore(self):
-        with pytest.raises(TypeError, match="does not take 'output'"):
-            Mandacaru(method="vqe", basis="FAO", output="x.txt")
+    def test_vqe_refuses_a_log_it_would_ignore(self):
+        # `txt=` is a driver-wide option now (every driver has to know where it
+        # reports), so the refusal is about the *capability*, not the keyword.
+        with pytest.raises(NotImplementedError, match="does not write 'txt'"):
+            Mandacaru(method="vqe", basis="FAO", txt="x.txt")
 
     def test_a_subspace_method_refuses_checkpoints(self):
         with pytest.raises(NotImplementedError, match="does not write"):
@@ -146,7 +148,7 @@ class TestF04MeasuredEnergyIsRecorded:
         atoms = h2()
         atoms.calc = Mandacaru(
             method="adapt-vqe", basis="FAO", h=0.45, pool="fermionic",
-            max_iterations=2, gradient_tolerance=1e-3, output=out, profile=False,
+            max_iterations=2, gradient_tolerance=1e-3, txt=out, profile=False,
             measurement_provider=QiskitProvider(device="statevector", shots=0))
         energy = atoms.get_potential_energy()
         block = parse_output(out)["measurement"]
@@ -162,7 +164,7 @@ class TestF05CompletionIsNotAssumed:
         atoms = h2()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
-                               gradient_tolerance=1e-3, output=out)
+                               gradient_tolerance=1e-3, txt=out)
         atoms.get_forces()
         atoms.positions[1, 2] += 0.03
         atoms.get_forces()
@@ -177,7 +179,7 @@ class TestF05CompletionIsNotAssumed:
 
     def test_an_empty_trajectory_is_not_forced(self, tmp_path):
         calc = Mandacaru(method="adapt-vqe", basis="FAO",
-                         output=str(tmp_path / "output.txt"))
+                         txt=str(tmp_path / "output.txt"))
         # Used to raise IndexError.
         assert calc.write_optimization_summary(force=True) is False
 
@@ -186,7 +188,7 @@ class TestF05CompletionIsNotAssumed:
         atoms = h2()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
-                               gradient_tolerance=1e-3, output=out)
+                               gradient_tolerance=1e-3, txt=out)
         atoms.get_forces()
         atoms.positions[1, 2] += 0.03
         atoms.get_forces()
@@ -336,7 +338,7 @@ class TestF10ProjectedForcesAreQualified:
         # documented pandas/pyarrow interaction).  The forces need no circuits.
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.45, charge=1,
                                pool="fermionic", max_iterations=3, profile=False,
-                               gradient_tolerance=1e-3, output=out)
+                               gradient_tolerance=1e-3, txt=out)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             atoms.get_forces()
@@ -367,7 +369,7 @@ class TestF11Provenance:
         out = str(tmp_path / "output.txt")
         Mandacaru(method="adapt-vqe",
                   hamiltonian=PauliSum({"ZIII": 1.0, "XXII": 0.2}),
-                  pool="fermionic", output=out, max_iterations=1, **DIRECT).run()
+                  pool="fermionic", txt=out, max_iterations=1, **DIRECT).run()
         assert parse_output(out)["setup"]["gradient_units"] == "Hartree"
 
     def test_a_resumed_run_records_its_lineage(self, tmp_path):
@@ -378,7 +380,7 @@ class TestF11Provenance:
                   pool="fermionic", checkpoint=state, max_iterations=1,
                   **DIRECT).run()
         Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
-                  pool="fermionic", resume=state, output=out, max_iterations=2,
+                  pool="fermionic", resume=state, txt=out, max_iterations=2,
                   **DIRECT).run()
         setup = parse_output(out)["setup"]
         assert setup["resumed_from"] == state

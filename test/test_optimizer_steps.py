@@ -207,7 +207,7 @@ class TestTheIterationsTable:
     def test_the_table_has_a_steps_column(self, tmp_path):
         atoms = lih()
         atoms.calc = adapt(optimizer=LBFGSB,
-                           output=str(tmp_path / "output.txt"))
+                           txt=str(tmp_path / "output.txt"))
         atoms.get_total_energy()
         parsed = parse_output(str(tmp_path / "output.txt"))
         assert parsed["iterations"]
@@ -219,7 +219,7 @@ class TestTheIterationsTable:
     def test_the_summary_reports_the_run_total(self, tmp_path):
         atoms = lih()
         atoms.calc = adapt(optimizer=COBYLA_OPT,
-                           output=str(tmp_path / "output.txt"))
+                           txt=str(tmp_path / "output.txt"))
         atoms.get_total_energy()
         parsed = parse_output(str(tmp_path / "output.txt"))
         summary = parsed["summary"]

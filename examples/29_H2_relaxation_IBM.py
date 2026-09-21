@@ -74,7 +74,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        max_iterations=10,
                        gradient_tolerance=1e-5,
                        measurement_provider=provider,
-                       output=os.path.join(DATA, "h2_relax_ibm_output.txt"))
+                       txt=os.path.join(DATA, "h2_relax_ibm_output.txt"))
 
 
 def report():

@@ -147,7 +147,7 @@ class VariationalDriver(Calculator):
         the method, the pool and its growth strategy, the fermion-to-qubit
         mapping, the basis family and the options that actually built it, the
         optimizer and the codes (see :mod:`mandacaru.utils.citations`).
-        ``"auto"`` (default) writes ``references.bib`` beside the ``output=``
+        ``"auto"`` (default) writes ``references.bib`` beside the ``txt=``
         log and nothing when there is no log, ``True`` writes it in the working
         directory, a string names the file, ``False`` switches it off.
     load_hamiltonian : str, optional
@@ -204,7 +204,7 @@ class VariationalDriver(Calculator):
 
     implemented_properties = ["energy", "free_energy"]
 
-    #: Whether ``run()`` writes the structured ``output=`` log.
+    #: Whether ``run()`` writes the structured ``txt=`` log.
     writes_output_log = False
 
     #: Whether ``run()`` honors ``checkpoint=`` / ``resume=``.
@@ -235,14 +235,31 @@ class VariationalDriver(Calculator):
                  atomic_units: bool = False,
                  checkpoint: str | None = None, checkpoint_every: int = 1,
                  resume: str | None = None, references="auto",
+                 txt: str | None = None,
                  **calc_kwargs):
         if "two_qubit_reduction" in calc_kwargs:
             raise TypeError(
                 "two_qubit_reduction is no longer a constructor option; "
                 "use mapping='parity_reduced'")
+        if "output" in calc_kwargs:
+            raise TypeError(
+                "output= is now txt= (GPAW's spelling for the same thing): "
+                "the run log is written with `txt='output.txt'`, and with no "
+                "`txt=` the same blocks go to standard output.")
         Calculator.__init__(self, **calc_kwargs)
 
         self.verbose = bool(verbose)
+        if txt is not None and not self.writes_output_log:
+            # Every driver has a `txt`, because `log_targets` is where *any* of
+            # them reports; only the ones whose run() goes through the block
+            # protocol can fill a file, and silently accepting the path would
+            # leave an empty log.
+            raise NotImplementedError(
+                f"{type(self).__name__} does not write 'txt': its run() does "
+                f"not go through the block protocol, so the file would stay "
+                f"empty.  Use method='adapt-vqe' for the structured log.")
+        #: Path of the run log, or ``None`` for standard output only.
+        self.txt = None if txt is None else os.fspath(txt)
         # Output-unit convention: eV / Angstrom unless atomic units are asked
         # for.  Internally everything stays in Hartree / Bohr; the conversion
         # happens once, where a result object or a printout is built.
@@ -699,18 +716,40 @@ class VariationalDriver(Calculator):
                 f"which {type(self).__name__} does not support (its reference "
                 "determinants are not tapered)")
 
+    # -- where the run reports itself ------------------------------------- #
+
+    @property
+    def log_targets(self) -> tuple[str, ...]:
+        """Every destination this run writes its blocks to.
+
+        There is **one** report -- ``[SYSTEM]``, ``[BASIS]``, ``[ELECTRONS]``,
+        ``[OPTIMIZATION SETUP]``, ``[ITERATIONS]``, the summary and what the
+        calculator appends after it -- and this says where it goes:
+
+        * ``txt=<path>`` adds that file;
+        * a **verbose** run adds standard output
+          (:data:`~mandacaru.utils.logging.STDOUT`).
+
+        So a run with no ``txt=`` prints the report, a run with one writes it,
+        and asking for both (``txt=<path>`` with ``trace=True``) gets the same
+        blocks in both places.  An empty tuple means the run reports nothing.
+        """
+        from ..utils.logging import STDOUT
+
+        targets = () if self.txt is None else (self.txt,)
+        return targets + ((STDOUT,) if self.verbose else ())
+
     # -- bibliography ----------------------------------------------------- #
 
     @property
     def references_path(self) -> str | None:
         """Where this run writes its ``references.bib``, or ``None``.
 
-        Resolved on demand rather than stored, so it follows ``output`` even
-        when a subclass sets that after the base constructor has run.
+        Resolved on demand rather than stored, so it follows ``txt`` even when
+        a subclass sets that after the base constructor has run.
         """
         from ..utils.citations import resolve_references_path
-        return resolve_references_path(self.references,
-                                       getattr(self, "output", None))
+        return resolve_references_path(self.references, self.txt)
 
     #: Method name this driver cites (``None`` = cite no specific algorithm).
     citation_method: str | None = None
@@ -841,7 +880,7 @@ class VariationalDriver(Calculator):
                  "verbose_operators": self._pool_dump_path,
                  "verbose_hamiltonian": self._hamiltonian_dump_path,
                  "checkpoint": getattr(self, "checkpoint_path", None),
-                 "output": getattr(self, "output", None),
+                 "txt": self.txt,
                  "references": self.references_path}
         seen: dict[str, str] = {}
         for option, path in named.items():
@@ -1385,15 +1424,15 @@ class VariationalDriver(Calculator):
         return qpu_usage(provider, wall_time_s)
 
     def write_performance(self, timings, extra: dict | None = None) -> None:
-        """Append this run's ``[PERFORMANCE]`` block to the ``output.txt`` log.
+        """Append this run's ``[PERFORMANCE]`` block to the run report.
 
-        Skipped when there is no log, and when
+        Skipped when there is nowhere to write it, and when
         :attr:`defer_performance` says the caller will write the block itself
         (:class:`~mandacaru.algorithms.calculator.Mandacaru` does, so the nuclear
         gradient's time lands in the same block as the solver's stages).
         """
-        path = getattr(self, "output", None)
-        if path is None or self.defer_performance:
+        path = self.log_targets
+        if not path or self.defer_performance:
             return
         from ..utils.logging import append_performance
 

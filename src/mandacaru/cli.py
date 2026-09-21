@@ -227,11 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ADAPT convergence threshold on max|grad|")
     solver.add_argument("--num-states", type=int, default=None,
                         help="number of states for the subspace methods")
-    solver.add_argument("--output", metavar="PATH", default=None,
-                        help="ADAPT output.txt log path")
+    solver.add_argument("--txt", metavar="PATH", default=None,
+                        help="run log path (e.g. output.txt); without it the "
+                             "same blocks go to standard output")
     solver.add_argument("--references", metavar="PATH", default=None,
                         help="BibTeX of the methods and codes the run used "
-                             "(default: references.bib beside --output)")
+                             "(default: references.bib beside --txt)")
     return parser
 
 
@@ -316,8 +317,8 @@ def solver_options(args) -> dict:
     # Whatever the user typed is forwarded, for *every* method: an option the
     # selected solver does not take is then refused by `Mandacaru` (and turned
     # into a parser error by `main`) instead of vanishing here -- `--method vqe
-    # --output run.txt` used to run and write nothing.
-    for name in ("pool", "max_iterations", "gradient_tolerance", "output",
+    # --txt run.txt` used to run and write nothing.
+    for name in ("pool", "max_iterations", "gradient_tolerance", "txt",
                  "num_states", "references"):
         value = getattr(args, name)
         if value is not None:
@@ -505,9 +506,11 @@ def main(argv=None) -> int:
         atoms = load_geometry(args.geometry, args.cell, args.magmoms)
     try:
         calc = Mandacaru(**solver_options(args))
-    except TypeError as exc:
-        # An option the selected method does not take (or accepts and would
-        # ignore): a usage error, reported the way argparse reports one.
+    except (TypeError, NotImplementedError) as exc:
+        # An option the selected method does not take (TypeError) or accepts
+        # and would ignore (NotImplementedError, e.g. `--txt` on a method that
+        # writes no log): a usage error either way, reported the way argparse
+        # reports one.
         parser.error(str(exc))
     if args.dry_run:
         return run_dry(calc, atoms, args)

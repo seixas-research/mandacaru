@@ -544,6 +544,41 @@ _OPTIMIZERS = [
   eprint    = {1412.6980},
   archivePrefix = {arXiv}
 }""", "the Adam optimizer", verified=False, topics=("optimizer", "adam")),
+    # BFGS was published independently in 1970 by all four of its initials;
+    # Fletcher's is the one usually cited for the update formula itself.
+    _ref("Fletcher1970", """
+@article{Fletcher1970,
+  author  = {Fletcher, R.},
+  title   = {A new approach to variable metric algorithms},
+  journal = {Comput. J.},
+  volume  = {13},
+  pages   = {317--322},
+  year    = {1970},
+  doi     = {10.1093/comjnl/13.3.317}
+}""", "the BFGS optimizer", verified=False, topics=("optimizer", "bfgs")),
+    _ref("Liu1989", """
+@article{Liu1989,
+  author  = {Liu, Dong C. and Nocedal, Jorge},
+  title   = {On the limited memory {BFGS} method for large scale optimization},
+  journal = {Math. Program.},
+  volume  = {45},
+  pages   = {503--528},
+  year    = {1989},
+  doi     = {10.1007/BF01589116}
+}""", "the L-BFGS optimizer", verified=False,
+         topics=("optimizer", "l-bfgs")),
+    _ref("Polak1969", """
+@article{Polak1969,
+  author  = {Polak, E. and Ribi{\\`e}re, G.},
+  title   = {Note sur la convergence de m{\\'e}thodes de directions
+             conjugu{\\'e}es},
+  journal = {Rev. Fr. Inform. Rech. Oper.},
+  volume  = {3},
+  pages   = {35--43},
+  year    = {1969},
+  doi     = {10.1051/m2an/196903R100351}
+}""", "the Polak-Ribiere nonlinear conjugate gradient", verified=False,
+         topics=("optimizer", "nlcg-pr")),
 ]
 
 # --------------------------------------------------------------------------- #

@@ -218,7 +218,7 @@ class TestAdaptOutputProtocol:
                      cell=[[6, 0, 0], [1, 7, 0], [0, 0, 5]], pbc=True)
         out = str(tmp_path / "output.txt")
         adapt = _h2_adapt(h2_hamiltonian, max_iterations=6,
-                          gradient_tolerance=1e-4, output=out)
+                          gradient_tolerance=1e-4, txt=out)
         result = adapt.run(geometry=geom, log_expressivity=True)
 
         parsed = parse_output(out)
@@ -256,7 +256,7 @@ class TestAdaptOutputProtocol:
         # `verbose_operators=True` writes that to pool.json instead.
         out = str(tmp_path / "output.txt")
         adapt = _h2_adapt(h2_hamiltonian, max_iterations=4,
-                          gradient_tolerance=1e-4, output=out)
+                          gradient_tolerance=1e-4, txt=out)
         result = adapt.run()
         text = open(out, encoding="utf-8").read()
         setup, table = text.split("[ITERATIONS]", 1)
@@ -299,7 +299,7 @@ class TestAdaptOutputProtocol:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="fermionic", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=True, max_iterations=4,
-                          gradient_tolerance=1e-4, output=out)
+                          gradient_tolerance=1e-4, txt=out)
         result = adapt.run(log_expressivity=True)  # the expressivity is opt-in
         summary = parse_output(out)["summary"]
         for key in ("optimal_energy_eV", "reference_energy_eV", "num_operators",
@@ -318,7 +318,7 @@ class TestAdaptOutputProtocol:
         out = str(tmp_path / "output.txt")
         geom = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         adapt = _h2_adapt(h2_hamiltonian, atomic_units=True, max_iterations=4,
-                          gradient_tolerance=1e-4, output=out)
+                          gradient_tolerance=1e-4, txt=out)
         adapt.run(geometry=geom)
         parsed = parse_output(out)
         assert parsed["system"]["units"] == "Bohr"
@@ -329,7 +329,7 @@ class TestAdaptOutputProtocol:
         # The protocol must still write cleanly when no geometry is supplied.
         out = str(tmp_path / "output.txt")
         _h2_adapt(h2_hamiltonian, max_iterations=4, gradient_tolerance=1e-4,
-                  output=out).run()
+                  txt=out).run()
         parsed = parse_output(out)
         assert parsed["system"]["cell_present"] == "False"
         assert parsed["system"]["geometry"] == "(not provided)"
@@ -676,7 +676,7 @@ class TestRelaxationLog:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
                                pool="fermionic", max_iterations=4,
-                               gradient_tolerance=1e-3, output=out)
+                               gradient_tolerance=1e-3, txt=out)
         opt = BFGS(atoms, logfile=None)
         opt.run(fmax=0.05, steps=2)
         return out, atoms, opt
@@ -735,7 +735,7 @@ class TestPerformanceBlock:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
                                pool="fermionic", max_iterations=4,
-                               gradient_tolerance=1e-3, output=out)
+                               gradient_tolerance=1e-3, txt=out)
         BFGS(atoms, logfile=None).run(fmax=0.05, steps=1)
         return out
 
@@ -790,7 +790,7 @@ class TestPerformanceBlock:
         # With no calculator to defer to, the solver writes the block itself.
         out = str(tmp_path / "output.txt")
         _h2_adapt(h2_hamiltonian, max_iterations=2, gradient_tolerance=1e-4,
-                  output=out).run()
+                  txt=out).run()
         performance = parse_output(out)["performance"]
         assert "parameter optimization" in performance["stages_s"]
         assert performance["wall_time_s"] > 0
@@ -859,10 +859,10 @@ class TestQPUAccounting:
 class TestStandardOutputIsTheASETable:
     """stdout carries the evolution of energies and forces, nothing else.
 
-    The detail has a destination -- ``output=<path>`` -- so standard output is
+    The report has a destination -- ``txt=<path>`` -- so standard output is
     left to what an ASE optimizer prints there, the same split GPAW makes with
-    ``txt=``.  Without a log file the trace is the only report there is, so it
-    is printed.
+    ``txt=``.  Without a log file standard output is the only destination there
+    is, so **the same blocks** are printed to it.
     """
 
     @staticmethod
@@ -878,20 +878,55 @@ class TestStandardOutputIsTheASETable:
         return capsys.readouterr().out
 
     def test_a_log_file_silences_the_trace(self, tmp_path, capsys):
-        out = self._run(tmp_path, capsys, output=str(tmp_path / "output.txt"))
+        out = self._run(tmp_path, capsys, txt=str(tmp_path / "output.txt"))
         for noise in ("ADAPT-VQE", "operator pool", "Timings", "iter"):
             assert noise not in out, noise
         assert out.strip() == ""
 
     def test_without_a_log_file_the_trace_is_printed(self, tmp_path, capsys):
         out = self._run(tmp_path, capsys)
-        # The only report there is, so it must not be silent.
-        assert "ADAPT-VQE" in out and "Timings" in out
-        assert "Hartree-Fock reference" in out
+        # The only report there is, so it must not be silent -- and it is the
+        # *same* report, block for block, that `txt=` would have written.
+        for block in ("[SYSTEM]", "[BASIS]", "[ELECTRONS]",
+                      "[OPTIMIZATION SETUP]", "[ITERATIONS]",
+                      "[VARIATIONAL QUANTUM SUMMARY]", "[PERFORMANCE]"):
+            assert block in out, block
+        assert "reference_energy_eV" in out
+
+    def test_the_screen_and_the_file_carry_the_same_report(self, tmp_path,
+                                                           capsys):
+        """One renderer, two destinations: the blocks must be identical.
+
+        They used to be two renderers -- an older key/value header and a
+        width-adaptive table on the terminal against the block protocol in the
+        file -- which drifted apart option by option.  Reproduced here by
+        running the same problem twice and diffing everything that is not
+        machine- or clock-dependent.
+        """
+        import re
+
+        from mandacaru.utils.logging import STDOUT, reset_log
+
+        reset_log(STDOUT)
+        printed = self._run(tmp_path, capsys)
+        log = tmp_path / "same.txt"
+        self._run(tmp_path, capsys, txt=str(log))
+        written = log.read_text()
+        reset_log(STDOUT)
+
+        def blocks(text):
+            # Drop the banner (stdout gets it from `_show_banner`, the file
+            # from the logger) and every timing / memory number.
+            body = text[text.index("[SYSTEM]"):]
+            body = re.sub(r"^.*(?:_s|_MiB|seconds\)|\d\.\d{4})\s*$", "",
+                          body, flags=re.M)
+            return [line.rstrip() for line in body.splitlines() if line.strip()]
+
+        assert blocks(printed) == blocks(written)
 
     def test_trace_overrides_the_automatic_choice(self, tmp_path, capsys):
         printed = self._run(tmp_path, capsys, trace=True,
-                            output=str(tmp_path / "with_trace.txt"))
+                            txt=str(tmp_path / "with_trace.txt"))
         assert "ADAPT-VQE" in printed
         quiet = self._run(tmp_path, capsys, trace=False)
         assert quiet.strip() == ""
@@ -911,7 +946,7 @@ class TestStandardOutputIsTheASETable:
     def test_the_log_still_has_everything(self, tmp_path, capsys):
         """Silencing stdout must route the detail, not discard it."""
         out = str(tmp_path / "output.txt")
-        self._run(tmp_path, capsys, output=out)
+        self._run(tmp_path, capsys, txt=out)
         parsed = parse_output(out)
         assert parsed["iterations"] and parsed["summary"]["converged"]
         assert parsed["performance"]["wall_time_s"] > 0
@@ -934,7 +969,7 @@ class TestSystemBlock:
         atoms.center()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.45,
                                pool="fermionic", max_iterations=1,
-                               output=out, trace=False, profile=False)
+                               txt=out, trace=False, profile=False)
         atoms.get_potential_energy()
         return parse_output(out)["system"]
 
@@ -1003,7 +1038,7 @@ class TestElectronsBlock:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
                                pool="fermionic", max_iterations=2,
-                               gradient_tolerance=1e-3, output=out)
+                               gradient_tolerance=1e-3, txt=out)
         atoms.get_potential_energy()
         return out, atoms.calc
 
@@ -1075,7 +1110,7 @@ class TestBasisBlock:
                                basis={"name": "PAW", "size": "DZ",
                                       "energy_shift": 0.1},
                                h=0.30, pool="fermionic", max_iterations=1,
-                               output=out)
+                               txt=out)
         atoms.get_potential_energy()
         return out, atoms.calc
 
@@ -1138,7 +1173,7 @@ class TestBasisBlock:
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis={"name": "PAW", "energy_shift": None},
                                h=0.30, pool="fermionic", max_iterations=1,
-                               output=out)
+                               txt=out)
         atoms.get_potential_energy()
         block = parse_output(out)["basis"]
         assert block["energy_shift"] == "unconfined"
@@ -1153,7 +1188,7 @@ class TestBasisBlock:
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis={"name": "FAO", "virtual_orbitals": 1},
                                h=0.35, pool="fermionic", max_iterations=1,
-                               output=out)
+                               txt=out)
         atoms.get_potential_energy()
         block = parse_output(out)["basis"]
         assert block["name"] == "FAO" and block["family"] == "all-electron"
@@ -1169,7 +1204,7 @@ class TestBasisBlock:
         Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                   pool="fermionic", num_particles=(1, 1),
                   n_spatial_orbitals=2, profile=False, max_iterations=1,
-                  output=out, trace=False).run()
+                  txt=out, trace=False).run()
         assert "[BASIS]" not in open(out).read()
         assert "basis" not in parse_output(out)
 
@@ -1185,7 +1220,7 @@ class TestNothingIsSaidTwice:
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
-                               pool="fermionic", max_iterations=2, output=out)
+                               pool="fermionic", max_iterations=2, txt=out)
         atoms.get_forces()
         return out
 
@@ -1221,7 +1256,7 @@ class TestNothingIsSaidTwice:
             Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                       pool="fermionic", num_particles=(1, 1),
                       n_spatial_orbitals=2, profile=profile, max_iterations=1,
-                      output=out, trace=False).run()
+                      txt=out, trace=False).run()
             logs[profile] = parse_output(out)
         assert logs[True]["setup"]["circuit_profiling"] == "True"
         assert logs[True]["iterations"][0]["cnot_count"] not in (None, "-")
@@ -1267,7 +1302,7 @@ class TestOptimizationSetupBlock:
         Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
                   pool="fermionic", num_particles=(1, 1),
                   n_spatial_orbitals=2, profile=False, max_iterations=2,
-                  gradient_tolerance=1e-3, output=out, trace=False,
+                  gradient_tolerance=1e-3, txt=out, trace=False,
                   **kwargs).run()
         return out
 
@@ -1366,7 +1401,7 @@ class TestOptimizationSetupBlock:
         Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                   pool="fermionic", num_particles=(1, 1), n_spatial_orbitals=2,
                   profile=False, max_iterations=3, gradient="finite-difference",
-                  resume=checkpoint, output=out, trace=False).run()
+                  resume=checkpoint, txt=out, trace=False).run()
 
         setup = parse_output(out)["setup"]
         assert setup["gradient_method"] == "finite_difference"
@@ -1379,13 +1414,18 @@ class TestOptimizationSetupBlock:
             "resume_same_hamiltonian"]
 
     def test_the_trace_uses_the_same_vocabulary(self, h2_hamiltonian, capsys):
-        """A reader who saw the terminal recognizes the file, and vice versa."""
+        """A reader who saw the terminal recognizes the file, and vice versa.
+
+        Literally the same keys now -- the terminal *is* the block protocol,
+        written to standard output instead of to a file.
+        """
         Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                   pool="fermionic", num_particles=(1, 1), n_spatial_orbitals=2,
                   profile=False, max_iterations=1, gradient="parameter_shift",
                   trace=True).run()
         printed = capsys.readouterr().out
-        assert "gradient method" in printed and "parameter_shift" in printed
+        assert "[OPTIMIZATION SETUP]" in printed
+        assert "gradient_method: parameter_shift" in printed
         assert "parameter-shift" not in printed.split("formula")[0]
 
 
@@ -1409,7 +1449,7 @@ class TestGeometryOptimizationSummary:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
                                pool="fermionic", max_iterations=4,
-                               gradient_tolerance=1e-3, output=out)
+                               gradient_tolerance=1e-3, txt=out)
         opt = BFGS(atoms, logfile=None)
         opt.run(fmax=0.05, steps=2)
         assert atoms.calc.write_optimization_summary(optimizer=opt) is True
@@ -1479,7 +1519,7 @@ class TestGeometryOptimizationSummary:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="FAO", h=0.35,
                                pool="fermionic", max_iterations=2,
-                               gradient_tolerance=1e-3, output=out)
+                               gradient_tolerance=1e-3, txt=out)
         atoms.get_forces()
         # One geometry is not a trajectory; there is nothing to summarize.
         assert atoms.calc.write_optimization_summary() is False

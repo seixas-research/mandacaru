@@ -228,6 +228,7 @@ class TestDriverAcrossProviders:
                   trace=True, max_iterations=1, backend_provider=name,
                   execute_circuits=True).run()
         out = capsys.readouterr().out
-        # The run-configuration block is one option per line: label then value.
-        assert re.search(rf"^backend provider\s+{name}$", out, re.M)
-        assert re.search(r"^circuit execution\s+True$", out, re.M)
+        # `[OPTIMIZATION SETUP]` is one option per line, `key: value`, and it
+        # is the same block whether the run prints it or writes it to `txt=`.
+        assert re.search(rf"^\s+backend_provider: {name}$", out, re.M)
+        assert re.search(r"^\s+circuit_execution: True$", out, re.M)

@@ -367,7 +367,8 @@ class QiskitProvider(CircuitProvider):
                  instance: str | None = None, token: str | None = None,
                  channel: str | None = None, optimization_level: int = 3,
                  estimator_options: dict | None = None,
-                 physical_qubits=None, seed: int | None = None):
+                 physical_qubits=None, seed: int | None = None,
+                 max_bases_per_job: int | None = None):
         self.device_spec = str(device).strip()
         self.physical_qubits = (None if physical_qubits is None
                                 else [int(q) for q in physical_qubits])
@@ -384,10 +385,20 @@ class QiskitProvider(CircuitProvider):
         #: whose difference should not be shot noise.  Hardware and the fake
         #: backends ignore it -- their randomness is not ours to fix.
         self.seed = None if seed is None else int(seed)
+        #: Largest number of qubit-wise-commuting measurement bases in one
+        #: submission (``None`` = no limit).  One PUB carrying ~10^5
+        #: observables is what exhausted the Runtime program's memory; with a
+        #: limit the observables are split into several bounded jobs that
+        #: share one transpiled circuit, and a late failure costs only the
+        #: chunk it happened in.
+        self.max_bases_per_job = (None if max_bases_per_job is None
+                                  else int(max_bases_per_job))
         self._backend = None
         self._estimator = None
         #: The Runtime job of the last hardware submission (``None`` locally).
         self.last_job = None
+        #: Every job of the last multi-chunk submission, oldest first.
+        self.jobs: list = []
         #: The ``PrimitiveResult`` of the last ``energies`` call.
         self.last_result = None
 
@@ -591,25 +602,48 @@ class QiskitProvider(CircuitProvider):
                 for i in range(len(pubs))]
 
     def expectation_values(self, n_qubits: int, occupied, generators, thetas,
-                           labels):
-        """``<P>`` of one state for several Pauli strings, as **one** PUB.
+                           labels, max_bases_per_job: int | None = None):
+        """``<P>`` of one state for several Pauli strings.
 
-        Returns ``({label: value}, {label: standard error})``.  One circuit, an
-        array of observables, one job: what measuring the RDMs of an optimized
-        state on a processor costs.
+        Returns ``({label: value}, {label: standard error})``.  One circuit and
+        an array of observables: what measuring the RDMs of an optimized state
+        on a processor costs.
+
+        With ``max_bases_per_job`` (or the constructor's
+        :attr:`max_bases_per_job`) the observables are split into several
+        submissions of at most that many **qubit-wise commuting measurement
+        bases**, never cutting a basis in half.  The ansatz is transpiled once
+        and shared by every chunk, so the split costs nothing but job
+        overhead, and it bounds what any single Runtime program has to hold --
+        the unsplit form submitted 97,980 observables in one PUB and died with
+        "Program runtime ran out of memory".  Partial results are kept: each
+        chunk's values are in the returned dicts as soon as its job returns,
+        and every job is on :attr:`jobs`.
         """
         from qiskit.quantum_info import SparsePauliOp
 
-        labels = list(labels)
+        from .measurement import chunk_labels_by_basis
+
+        labels = [str(label) for label in labels]
+        limit = (self.max_bases_per_job if max_bases_per_job is None
+                 else max_bases_per_job)
         qc, layout = self._transpiled(
             self.build(n_qubits, occupied, generators, thetas), n_qubits)
-        observables = [SparsePauliOp(label) for label in labels]
-        if layout is not None:
-            observables = [o.apply_layout(layout) for o in observables]
-        result = self._run_pubs([(qc, observables)])
-        values = np.asarray(result[0].data.evs, dtype=float).reshape(-1)
-        stds = np.asarray(result[0].data.stds, dtype=float).reshape(-1)
-        return dict(zip(labels, values)), dict(zip(labels, stds))
+        values: dict[str, float] = {}
+        stds: dict[str, float] = {}
+        self.jobs = []
+        for chunk in chunk_labels_by_basis(labels, limit):
+            observables = [SparsePauliOp(label) for label in chunk]
+            if layout is not None:
+                observables = [o.apply_layout(layout) for o in observables]
+            result = self._run_pubs([(qc, observables)])
+            if self.last_job is not None:
+                self.jobs.append(self.last_job)
+            values.update(zip(chunk, np.asarray(result[0].data.evs,
+                                                dtype=float).reshape(-1)))
+            stds.update(zip(chunk, np.asarray(result[0].data.stds,
+                                              dtype=float).reshape(-1)))
+        return values, stds
 
     def energy(self, n_qubits: int, occupied, generators, thetas,
                hamiltonian) -> float:
@@ -919,25 +953,38 @@ def qpu_usage(provider, wall_time_s: float | None = None) -> dict:
     if wall_time_s is not None:
         usage["qpu_wall_time_s"] = round(float(wall_time_s), 4)
 
-    job = getattr(provider, "last_job", None)
-    if job is None:
+    # A chunked submission is several jobs (`max_bases_per_job`); accounting
+    # that reported only the last one would under-report the whole cost by the
+    # chunk factor, which is exactly the number the chunking makes large.
+    jobs = list(getattr(provider, "jobs", None) or ())
+    if not jobs:
+        job = getattr(provider, "last_job", None)
+        jobs = [] if job is None else [job]
+    if not jobs:
         return usage
-    usage["qpu_jobs"] = 1
-    try:
-        usage["qpu_job_ids"] = str(job.job_id())
-    except Exception:
-        pass
-    try:
-        metrics = job.metrics() or {}
-        reported = metrics.get("usage") or {}
-        for key, name in (("quantum_seconds", "qpu_seconds"),
-                          ("seconds", "qpu_billed_seconds")):
-            if reported.get(key) is not None:
-                usage[name] = round(float(reported[key]), 4)
-    except Exception:
-        # Not a Runtime job, or the service could not be reached: the wall time
-        # above stands on its own.
-        pass
+    usage["qpu_jobs"] = len(jobs)
+    ids = []
+    seconds: dict[str, float] = {}
+    for job in jobs:
+        try:
+            ids.append(str(job.job_id()))
+        except Exception:
+            pass
+        try:
+            metrics = job.metrics() or {}
+            reported = metrics.get("usage") or {}
+            for key, name in (("quantum_seconds", "qpu_seconds"),
+                              ("seconds", "qpu_billed_seconds")):
+                if reported.get(key) is not None:
+                    seconds[name] = seconds.get(name, 0.0) + float(reported[key])
+        except Exception:
+            # Not a Runtime job, or the service could not be reached: the wall
+            # time above stands on its own.
+            pass
+    if ids:
+        usage["qpu_job_ids"] = ", ".join(ids)
+    for name, total in seconds.items():
+        usage[name] = round(total, 4)
     return usage
 
 

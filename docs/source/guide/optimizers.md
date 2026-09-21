@@ -48,12 +48,35 @@ calc = Mandacaru(method="adapt-vqe",
                  optimizer=spsa)
 ```
 
-The names are in {data}`~mandacaru.optimizers.NAMED_OPTIMIZERS`: **SPSA**,
-**COBYLA**, **Nelder-Mead**, **SLSQP** (the default,
-{data}`~mandacaru.optimizers.DEFAULT_OPTIMIZER`), **Adam** and **L-BFGS-B**.
-COBYLA, Nelder-Mead, SLSQP and L-BFGS-B are dispatched to
-`scipy.optimize.minimize`; SPSA and Adam are implemented natively, since SciPy
-has no equivalent.
+The names are in {data}`~mandacaru.optimizers.NAMED_OPTIMIZERS`, in three
+families:
+
+| family | methods |
+| :--- | :--- |
+| derivative-free | `"COBYLA"`, `"Nelder-Mead"` |
+| quasi-Newton / gradient | `"SLSQP"` (the default, {data}`~mandacaru.optimizers.DEFAULT_OPTIMIZER`), `"BFGS"`, `"L-BFGS"`, `"L-BFGS-B"`, `"NLCG-PR"` |
+| stochastic | `"SPSA"`, `"Adam"` |
+
+Everything but SPSA and Adam is dispatched to `scipy.optimize.minimize`; those
+two are implemented natively, since SciPy has no equivalent.
+
+Two of the names need a word about what they map onto. **`"L-BFGS"`** is
+limited-memory BFGS without bounds, which is exactly what SciPy's `"L-BFGS-B"`
+reduces to when no bounds are given — a variational ansatz's parameters are
+unbounded angles, so the driver never passes any and the two names run the same
+code. **`"NLCG-PR"`** is the nonlinear conjugate gradient in its Polak–Ribière
+variant, which is what SciPy implements under the bare name `"CG"`.
+
+```{note}
+For `"BFGS"` and `"NLCG-PR"`, SciPy reads `tol` as a **gradient norm**, not as a
+function-value change. Handing those two the default `1e-12` asks for something
+a finite-difference gradient cannot deliver — its own accuracy is about `1e-8`
+— so every line search ends in "precision loss" and the run reports
+non-convergence at every growth step while sitting exactly on the minimum.
+Mandacaru therefore passes them `sqrt(tol)`, the gradient criterion of equal
+strength (near a minimum, `f − f* ~ |g|²/2λ`). An explicit
+`options={"gtol": ...}` is left alone.
+```
 
 A bare name is shorthand for the defaults
 ({data}`~mandacaru.optimizers.DEFAULT_MAXITER` = 1000 and
@@ -107,15 +130,23 @@ and `tol=1e-12` (`examples/33_optimizer_comparison.py`; FCI = −162.953987 eV):
 | COBYLA | 4247 | 5470 | 12 | 4.8e-06 | 66 | 2.8 | yes |
 | Nelder-Mead | 3270 | 5935 | 10 | 7.2e-07 | 60 | 0.5 | yes |
 | **SLSQP** | **76** | **632** | **10** | **7.2e-07** | **60** | **0.1** | **yes** |
-| Adam | 9427 | 118291 | 10 | 7.2e-07 | 60 | 6.4 | yes |
-| L-BFGS-B | 85 | 844 | 10 | 7.2e-07 | 60 | 0.2 | yes |
+| Adam | 9427 | 118291 | 10 | 7.2e-07 | 60 | 6.6 | yes |
+| L-BFGS-B | 85 | 844 | 10 | 7.2e-07 | 60 | 0.1 | yes |
+| BFGS | 80 | 1066 | 10 | 7.2e-07 | 60 | 0.2 | yes |
+| L-BFGS | 85 | 844 | 10 | 7.2e-07 | 60 | 0.1 | yes |
+| NLCG-PR | 137 | 2339 | 10 | 7.2e-07 | 60 | 0.3 | yes |
 
 **SLSQP wins on every axis**: the exact ground state of the qubit Hamiltonian,
 the shortest circuit anyone found, and it gets there in 76 parameter updates and
 632 energy evaluations — an order of magnitude below the direct searches and two
 below Adam. L-BFGS-B is the same answer at slightly more of everything.
 
-**Read the rest this way.** **Nelder-Mead** and **Adam** reach the same energy
+**Read the rest this way.** The whole quasi-Newton family lands on the same
+answer and the same 60-CNOT circuit within a factor of four of each other:
+`L-BFGS` is `L-BFGS-B` to the evaluation (they are the same code), **BFGS**
+costs a few hundred more evaluations for its dense Hessian approximation, and
+**NLCG-PR** about three times SLSQP's — a conjugate gradient stores no curvature,
+so it needs more directions. **Nelder-Mead** and **Adam** reach the same energy
 and the same circuit, Nelder-Mead on 9× and Adam on 190× the evaluations —
 Adam's gradient is a finite difference, so it spends `2N + 1` evaluations per
 step. **COBYLA** stops two operators short of the best circuit. **SPSA** never
@@ -182,11 +213,12 @@ return is the tight `tol` — see the warning above.
 
 ## A rule of thumb
 
-* **State-vector simulation** — the `"SLSQP"` default, or `"L-BFGS-B"`: one to
+* **State-vector simulation** — the `"SLSQP"` default, or any of the
+  quasi-Newton family (`"L-BFGS"` / `"L-BFGS-B"`, `"BFGS"`, `"NLCG-PR"`): one to
   two orders of magnitude fewer steps and evaluations than anything else, and
-  the only two methods that certified convergence at every growth step of the
-  water run. Keep `tol` tight; that is what turns them from the worst circuit
-  in the LiH table into the best.
+  the only ones that certified convergence at every growth step of the water
+  run. Keep `tol` tight; that is what turns them from the worst circuit in the
+  LiH table into the best.
 * **A starting point that is already stationary** — a gradient method cannot
   leave one, and correctly reports convergence there. ADAPT never hits this
   (its screening only ever selects an operator with a non-zero gradient), but a

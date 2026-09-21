@@ -89,7 +89,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        h=0.30,
                        max_iterations=20,
                        gradient_tolerance=1e-3,
-                       output=os.path.join(DATA, "output_H2O.txt"))
+                       txt=os.path.join(DATA, "output_H2O.txt"))
 # (expressibility sampling is off by default -- it is a diagnostic whose cost
 #  grows quadratically over a run.  Pass run_options={"log_expressivity": True}
 #  to add the `expr` column.)

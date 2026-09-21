@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""The six classical optimizers on one problem: LiH, qubit pool, ADAPT-VQE.
+"""Every classical optimizer on one problem: LiH, qubit pool, ADAPT-VQE.
 
 Every growth step of ADAPT-VQE ends in a classical minimization over the
 ansatz parameters, and which optimizer runs it decides most of the classical
@@ -57,7 +57,7 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
 # "LiH" runs in seconds and is the default; "H2O" is the realistic check --
-# 12 qubits, a 640-operator pool, ~20 minutes for the six methods -- and it
+# 12 qubits, a 640-operator pool, ~30 minutes for every method -- and it
 # reverses the ranking (see docs/source/guide/optimizers.md).
 SYSTEM = "LiH"
 

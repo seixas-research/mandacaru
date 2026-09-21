@@ -263,7 +263,7 @@ class TestArgumentSurface:
                           pool="fermionic", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
                           max_iterations=4, gradient_tolerance=1e-3,
-                          output=out)
+                          txt=out)
         adapt.run()                             # output taken from constructor
         parsed = parse_output(out)
         assert parsed["setup"]["classical_optimizer"] == DEFAULT_OPTIMIZER
@@ -328,7 +328,7 @@ class TestVerbosePauliOutput:
         out = capsys.readouterr().out
         # The Hamiltonian is summarized by size only -- its Pauli expansion runs
         # to thousands of lines for a realistic active space.
-        assert "qubit Hamiltonian" in out and "15 Pauli terms" in out
+        assert "Hamiltonian: 15 Pauli terms" in out
         assert "* ZIII" not in out
         # Nor is the selected operator's generator dumped per iteration.
         assert "ansatz operator (Pauli strings)" not in out
@@ -336,13 +336,12 @@ class TestVerbosePauliOutput:
         # The operator is still reachable programmatically.
         assert "ZIII" in adapt.hamiltonian.simplify().terms
         # Nor is the pool listed: its name and size are all the trace carries.
-        assert "operator pool" in out
-        assert f"ceo ({len(adapt._pool_ops)} operators)" in out
+        assert "pool: ceo" in out
+        assert f"pool_size: {len(adapt._pool_ops)}" in out
         assert "operator_pool" not in out
 
-    def test_iterations_are_single_aligned_lines(self, h2_hamiltonian, capsys,
-                                                monkeypatch):
-        monkeypatch.setenv("COLUMNS", "100")
+    def test_iterations_are_single_aligned_lines(self, h2_hamiltonian,
+                                                capsys):
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=True, trace=True,
@@ -352,12 +351,12 @@ class TestVerbosePauliOutput:
 
         # A column heading precedes the per-iteration rows: one column per
         # property computed at that step.  The headings are read off the table
-        # rather than hard-coded, because which optional columns fit depends on
-        # the terminal width (see _iteration_layout).
+        # rather than hard-coded, because the optional `expr` column exists
+        # only when the expressivity was asked for.
         lines = out.splitlines()
         heading = next(line for line in lines if line.split()[:1] == ["iter"])
-        # "E (eV)" is one column but two whitespace-separated tokens.
-        columns = heading.replace("E (eV)", "energy").split()
+        # "energy (eV)" is one column but two whitespace-separated tokens.
+        columns = heading.replace("energy (eV)", "energy").split()
         for column in ("iter", "|grad|", "expr", "cnot", "1q", "depth",
                        "type", "operator"):
             assert column in columns
@@ -371,24 +370,15 @@ class TestVerbosePauliOutput:
             fields = row.split()
             assert int(fields[0]) == index
             assert len(fields) == len(columns)
-            # A long label is elided (MAX_LABEL_WIDTH) so it cannot cost the
-            # data columns; match its stem against the grown operators.
-            stem = fields[-1].rstrip("\u2026")
-            assert any(op.startswith(stem) for op in result.operators)
+            # The label is written in full: this is the log protocol, which
+            # never abbreviates what a reader would have to guess at.
+            assert fields[-1] in result.operators
             cell = dict(zip(columns, fields))
-            # The `type` cell drops the pool-name prefix
-            # ("fermionic-double" -> "double").  A pool whose kind *is* the
-            # pool name (CEO tags everything "ceo") would make the column a
-            # constant copy of the header, so there it is read off the label.
+            # The `type` cell is the pool's own kind, verbatim: the log
+            # protocol does not strip the prefix the way the old terminal
+            # table did, because the column is wide enough for it.
             step = result.iterations[index - 1]
-            shown = cell["type"]
-            if step.operator_kind.endswith(shown):
-                pass                                   # prefix stripped
-            else:
-                assert shown in ("single", "double")
-                double = "{D(" in step.operator_label \
-                    or step.operator_label.startswith("D(")
-                assert double == (shown == "double")
+            assert cell["type"] == step.operator_kind
             assert float(cell["expr"]) >= 0.0
             assert int(cell["1q"]) > 0
             assert int(cell["cnot"]) > 0 and int(cell["depth"]) > 0
@@ -396,42 +386,32 @@ class TestVerbosePauliOutput:
         starts = {row.index(row.split()[-1]) for row in rows}
         assert len(starts) == 1
 
-    def test_every_line_fits_the_terminal(self, h2_hamiltonian, capsys,
-                                          monkeypatch):
-        """One iteration is one *line*: a wrapped row is not a row.
+    def test_the_table_does_not_depend_on_the_terminal(self, h2_hamiltonian,
+                                                       capsys, monkeypatch):
+        """Every column, at every terminal width.
 
-        The table was 126 characters wide in an 80-column terminal, so every
-        iteration spilled onto two visual lines -- the columns were right and
-        the output was still unreadable.  ``_iteration_layout`` now drops the
-        derivable columns (``npar``, then ``dE``) until the row fits.
+        The trace used to be a second, width-adaptive renderer that dropped
+        columns to fit (``dE``, then ``1q``, ``depth``, ``steps``, ``cnot``)
+        and elided long operator labels.  It is now the log protocol itself,
+        printed rather than written, so a narrow terminal wraps the row instead
+        of silently losing a column -- and the screen can be compared with the
+        file line for line, which is the point.
         """
-        monkeypatch.setenv("COLUMNS", "80")
-        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                          pool="ceo", num_particles=(1, 1),
-                          n_spatial_orbitals=2, profile=True, trace=True,
-                          max_iterations=3, gradient_tolerance=1e-6)
-        adapt.run()
-        lines = capsys.readouterr().out.splitlines()
-        # From the run banner onward: the start-up banner prints the working
-        # directory, whose length is the user's path, not ours.
-        start = next(i for i, line in enumerate(lines)
-                     if line.startswith("=" * 70))
-        for line in lines[start:]:
-            assert len(line) <= 80, f"{len(line)} chars: {line!r}"
-
-    def test_a_wide_terminal_keeps_every_column(self, h2_hamiltonian, capsys,
-                                                monkeypatch):
-        monkeypatch.setenv("COLUMNS", "200")
-        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                          pool="ceo", num_particles=(1, 1),
-                          n_spatial_orbitals=2, profile=True, trace=True,
-                          max_iterations=2, gradient_tolerance=1e-6)
-        adapt.run(log_expressivity=True)            # the `expr` column is opt-in
-        out = capsys.readouterr().out
-        heading = next(line for line in out.splitlines()
-                       if line.split()[:1] == ["iter"])
-        assert set(heading.replace("E (eV)", "energy").split()) == {
-            "iter", "|grad|", "energy", "dE", "expr", "steps", "cnot", "1q",
+        headings = {}
+        for columns in ("80", "200"):
+            monkeypatch.setenv("COLUMNS", columns)
+            adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                              pool="ceo", num_particles=(1, 1),
+                              n_spatial_orbitals=2, profile=True, trace=True,
+                              max_iterations=2, gradient_tolerance=1e-6)
+            adapt.run(log_expressivity=True)     # the `expr` column is opt-in
+            out = capsys.readouterr().out
+            headings[columns] = next(line.split() for line in out.splitlines()
+                                     if line.split()[:1] == ["iter"])
+        assert headings["80"] == headings["200"]
+        assert set(" ".join(headings["80"]).replace("energy (eV)",
+                                                    "energy").split()) == {
+            "iter", "|grad|", "energy", "expr", "steps", "cnot", "1q",
             "depth", "type", "operator"}
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
@@ -468,11 +448,11 @@ class TestADAPTProfiling:
                           max_iterations=3, gradient_tolerance=1e-6)
         adapt.run()
         out = capsys.readouterr().out
-        assert "Timings (wall-clock)" in out
+        assert "[PERFORMANCE]" in out
         assert "gradient screening" in out
         assert "parameter optimization" in out
-        assert "cores (OpenMP threads)" in out
-        assert "peak memory" in out
+        assert "openmp_threads" in out
+        assert "peak_memory_MiB" in out
 
     def test_calculator_summary_includes_integration(self, capsys):
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],

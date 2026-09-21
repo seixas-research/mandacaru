@@ -62,7 +62,7 @@ class TestBannerInRun:
         Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian, pool="ceo",
                   num_particles=(1, 1), n_spatial_orbitals=2, profile=False,
                   trace=True, max_iterations=2, gradient_tolerance=1e-6,
-                  output=out_file).run()
+                  txt=out_file).run()
         assert "Dependencies:" in capsys.readouterr().out
 
     def test_silent_when_not_verbose(self, h2_hamiltonian, capsys):

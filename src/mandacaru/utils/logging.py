@@ -63,7 +63,9 @@ used by the tests).
 
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
 from typing import Any, Iterable, Sequence
 
 import numpy as np
@@ -78,15 +80,73 @@ INDENT = "    "
 #: Widest register whose log lists the operator pool and the selected operator.
 DETAILED_LOG_MAX_QUBITS = 20
 
-#: Geometry steps already written to each log path in this process, keyed by
-#: absolute path.  The first logger of a path truncates the file and writes the
-#: banner; every later one appends a further step (see :func:`log_steps`).
+#: The destination meaning **standard output** wherever this module takes a
+#: path.  A run without a ``txt=`` file still has a report to make, and it is
+#: the same report: writing it here routes every block through the one renderer
+#: instead of a second, drifting one (see
+#: :meth:`~mandacaru.algorithms.base.VariationalDriver.log_targets`).
+STDOUT = "<stdout>"
+
+
+def _is_stdout(target) -> bool:
+    """Whether ``target`` names standard output rather than a file."""
+    return str(target) == STDOUT
+
+
+def _targets(path) -> tuple[str, ...]:
+    """Normalize one destination, several, or none into a tuple.
+
+    A destination is a file path or :data:`STDOUT`; ``None`` is "nowhere", and
+    a sequence writes the same block to each -- which is how ``txt=<path>``
+    together with ``trace=True`` puts one report in two places.
+    """
+    if path is None:
+        return ()
+    if isinstance(path, (str, os.PathLike)):
+        return (os.fspath(path),)
+    return tuple(os.fspath(p) for p in path)
+
+
+def _key(target) -> str:
+    """Registry key of a destination: its real path, or the stdout sentinel."""
+    return target if _is_stdout(target) else os.path.abspath(str(target))
+
+
+@contextlib.contextmanager
+def _open_target(target, mode: str = "a"):
+    """Yield a writable handle for ``target``; only a file is closed again."""
+    if _is_stdout(target):
+        yield sys.stdout
+        sys.stdout.flush()
+    else:
+        with open(target, mode, encoding="utf-8") as fh:
+            yield fh
+
+
+def _write_lines(path, lines: Iterable[str]) -> None:
+    """Append ``lines`` to every destination in ``path``."""
+    lines = list(lines)
+    for target in _targets(path):
+        with _open_target(target) as fh:
+            for line in lines:
+                fh.write(line + "\n")
+
+
+#: Geometry steps already written to each log destination in this process,
+#: keyed by absolute path (or by :data:`STDOUT`).  The first logger of a
+#: destination truncates the file and writes the banner; every later one
+#: appends a further step (see :func:`log_steps`).
 _LOG_STEPS: dict[str, int] = {}
 
 
-def log_steps(path: str) -> int:
-    """How many blocks this process has written to ``path`` (0 = none yet)."""
-    return int(_LOG_STEPS.get(os.path.abspath(str(path)), 0))
+def log_steps(path) -> int:
+    """How many blocks this process has written to ``path`` (0 = none yet).
+
+    ``path`` is one destination or several; several report the largest count,
+    which is the step they were last written together at.
+    """
+    return max((int(_LOG_STEPS.get(_key(t), 0)) for t in _targets(path)),
+               default=0)
 
 
 def reset_log(path: str | None = None) -> None:
@@ -100,7 +160,8 @@ def reset_log(path: str | None = None) -> None:
     if path is None:
         _LOG_STEPS.clear()
     else:
-        _LOG_STEPS.pop(os.path.abspath(str(path)), None)
+        for target in _targets(path):
+            _LOG_STEPS.pop(_key(target), None)
 
 
 def _indent(lines: Iterable[str], level: int = 1) -> list[str]:
@@ -118,11 +179,13 @@ class AdaptOutputLogger:
 
     Parameters
     ----------
-    path : str
-        Destination file (``"output.txt"`` by convention).  The **first** logger
-        of a path in a process truncates it and writes the banner; every later
-        one appends its block, so the steps of a geometry optimization
-        concatenate instead of erasing each other.
+    path : str or sequence of str
+        Where the blocks go: a file (``"output.txt"`` by convention),
+        :data:`STDOUT`, or several destinations, which each receive the same
+        blocks.  The **first** logger of a file in a process truncates it and
+        writes the banner; every later one appends its block, so the steps of a
+        geometry optimization concatenate instead of erasing each other.
+        Standard output is only ever appended to.
     n_qubits : int, optional
         Register width.  Above :data:`DETAILED_LOG_MAX_QUBITS` the selected
         operator's expansion is left out of the log.
@@ -151,7 +214,6 @@ class AdaptOutputLogger:
     def __init__(self, path: str = "output.txt", n_qubits: int | None = None,
                  log_pool: bool = False, append: bool | None = None,
                  banner: bool = True):
-        self.path = path
         self.n_qubits = None if n_qubits is None else int(n_qubits)
         #: Whether iteration blocks expand the selected operator in Pauli strings.
         self.detailed = (self.n_qubits is None
@@ -163,44 +225,78 @@ class AdaptOutputLogger:
         #: Columns of this run's table, fixed when the first row is written.
         self._columns = None
 
+        targets = _targets(path)
+        if not targets:
+            raise ValueError("AdaptOutputLogger needs a destination: a file "
+                             "path, logging.STDOUT, or several of them")
+        # Every destination this logger writes to, in order, and the first of
+        # them -- which is what `path` meant when there could only be one.
+        self.targets = targets
+        self.path = targets[0]
+
         # One geometry step is one block; the first block of a process opens the
         # file for writing (truncating a previous run's log), every later one
-        # appends so a relaxation's steps accumulate.
-        key = os.path.abspath(str(path))
-        step = _LOG_STEPS.get(key, 0) + 1
+        # appends so a relaxation's steps accumulate.  With several
+        # destinations they advance together, so the file and the terminal
+        # never disagree about which geometry step this is.
+        keys = [_key(target) for target in targets]
+        step = max(_LOG_STEPS.get(key, 0) for key in keys) + 1
         if append is None:
             append = step > 1
-        parent = os.path.dirname(key)
-        if parent:
-            # Other writers (checkpoints, dumps) create their parents; a log
-            # named under a missing directory used to raise *after* the step
-            # counter had advanced, so a retry started at step 2.
-            os.makedirs(parent, exist_ok=True)
-        self._fh = open(path, "a" if append else "w", encoding="utf-8")
-        # Only now: the counter records blocks in the file, so a failed open
-        # must not consume a step number.
+        for key in keys:
+            parent = "" if _is_stdout(key) else os.path.dirname(key)
+            if parent:
+                # Other writers (checkpoints, dumps) create their parents; a log
+                # named under a missing directory used to raise *after* the step
+                # counter had advanced, so a retry started at step 2.
+                os.makedirs(parent, exist_ok=True)
+
+        #: ``(handle, owned)`` per destination; only an owned handle is closed.
+        self._sinks: list[tuple[Any, bool]] = []
+        fresh = []
+        for target in targets:
+            if _is_stdout(target):
+                # Standard output is never truncated and never closed, and the
+                # banner has already gone there once per process
+                # (`VariationalDriver._show_banner`), so it is never "fresh".
+                self._sinks.append((sys.stdout, False))
+                continue
+            fh = open(target, "a" if append else "w", encoding="utf-8")
+            self._sinks.append((fh, True))
+            if fh.tell() == 0:
+                fresh.append(fh)
+        # Only now: the counter records blocks written, so a failed open must
+        # not consume a step number.
         self.step = step
-        _LOG_STEPS[key] = step
-        if self._fh.tell() == 0:
+        for key in keys:
+            _LOG_STEPS[key] = step
+        wrote_banner = bool(fresh) and banner
+        if wrote_banner:
             # The banner belongs to the file, not to the block: it is written
             # only when the file starts empty, so appending never repeats it
             # (and an explicit append= to a file that does not exist yet still
             # gets it).
-            if banner:
-                from . import banner as _banner
-                self._emit(*_banner.lines())
-        else:
+            from . import banner as _banner
+            self._write(fresh, _banner.lines())
+        elif step > 1:
             # Appending under an earlier block, which closed with a rule: one
             # blank line separates the two instead of stacking the rules.
             self._emit("")
 
     # -- low-level helpers ------------------------------------------------- #
 
+    @staticmethod
+    def _write(handles, lines: Iterable[str]) -> None:
+        """Write ``lines`` to each of ``handles`` and flush them."""
+        lines = list(lines)
+        for fh in handles:
+            for line in lines:
+                fh.write(line + "\n")
+            fh.flush()
+
     def _emit(self, *lines: str) -> None:
         """Write lines verbatim: the banner, the rules and the section markers."""
-        for line in lines:
-            self._fh.write(line + "\n")
-        self._fh.flush()
+        self._write([fh for fh, _owned in self._sinks], lines)
 
     def _emit_body(self, *lines: str, level: int = 1) -> None:
         """Write lines as a block's *contents*, indented (see :data:`INDENT`)."""
@@ -613,8 +709,10 @@ class AdaptOutputLogger:
     # -- footer / teardown ------------------------------------------------- #
 
     def close(self) -> None:
-        if not self._fh.closed:
-            self._fh.close()
+        """Close the files this logger opened; standard output is left alone."""
+        for fh, owned in self._sinks:
+            if owned and not fh.closed:
+                fh.close()
 
     def __enter__(self) -> "AdaptOutputLogger":
         return self
@@ -915,9 +1013,7 @@ def append_optimization_summary(path: str, history, symbols=None,
     lines += ["", "[RELAXATION COMPLETE]"] + _indent([f"status: {status}"])
     lines.append(_BANNER)
 
-    with open(path, "a", encoding="utf-8") as fh:
-        for line in lines:
-            fh.write(line + "\n")
+    _write_lines(path, lines)
 
 
 def append_block(path: str, section: str, fields: dict,
@@ -934,9 +1030,7 @@ def append_block(path: str, section: str, fields: dict,
     lines += _indent([f"{key}: {value}" for key, value in fields.items()
                       if value is not None])
     lines.append(_BANNER)
-    with open(path, "a", encoding="utf-8") as fh:
-        for line in lines:
-            fh.write(line + "\n")
+    _write_lines(path, lines)
 
 
 def append_performance(path: str, stages=None, wall_time_s=None,
@@ -971,9 +1065,7 @@ def append_performance(path: str, stages=None, wall_time_s=None,
     lines = _performance_block_lines(stages=stages, wall_time_s=wall_time_s,
                                      resources=resources, step=step,
                                      extra=extra)
-    with open(path, "a", encoding="utf-8") as fh:
-        for line in lines:
-            fh.write(line + "\n")
+    _write_lines(path, lines)
 
 
 def append_forces(path: str, symbols: Sequence[str], forces,
@@ -1017,9 +1109,7 @@ def append_forces(path: str, symbols: Sequence[str], forces,
                                hellmann_feynman=hellmann_feynman, pulay=pulay,
                                units=units, extra=extra,
                                unprojected=unprojected, step=step)
-    with open(path, "a", encoding="utf-8") as fh:
-        for line in lines:
-            fh.write(line + "\n")
+    _write_lines(path, lines)
 
 
 def _cell_parameters(cell: np.ndarray):

@@ -58,7 +58,8 @@ class OptimizeResult:
 
 # The optimization methods exposed by name to the variational drivers
 # (VQE, ADAPTVQE).
-NAMED_OPTIMIZERS = ("SPSA", "COBYLA", "Nelder-Mead", "SLSQP", "Adam", "L-BFGS-B")
+NAMED_OPTIMIZERS = ("SPSA", "COBYLA", "Nelder-Mead", "SLSQP", "Adam",
+                    "L-BFGS-B", "BFGS", "L-BFGS", "NLCG-PR")
 
 #: Default method everywhere (drivers included).  Measured on H2O/PAW-SZ with
 #: the qubit pool, where it reaches the same energy on the same circuit as
@@ -93,8 +94,39 @@ DEFAULT_MAXITER = 1000
 DEFAULT_TOL = 1e-12
 
 # Methods routed to scipy.optimize.minimize vs. implemented natively below.
-_SCIPY_METHODS = ("COBYLA", "Nelder-Mead", "SLSQP", "L-BFGS-B")
+_SCIPY_METHODS = ("COBYLA", "Nelder-Mead", "SLSQP", "L-BFGS-B", "BFGS",
+                  "L-BFGS", "NLCG-PR")
 _CUSTOM_METHODS = ("SPSA", "Adam")
+
+#: Mandacaru name -> the name ``scipy.optimize.minimize`` knows it by, for the
+#: methods whose usual name in the quantum-chemistry literature is not SciPy's.
+#:
+#: ``"L-BFGS"`` is limited-memory BFGS *without* bounds, which is exactly what
+#: SciPy's ``"L-BFGS-B"`` reduces to when no bounds are given -- the driver
+#: never passes any, so the two names run the same code and differ only in what
+#: the log calls them.  Both are offered because a variational ansatz's
+#: parameters are unbounded angles, and ``"L-BFGS"`` is what that is called.
+#:
+#: ``"NLCG-PR"`` is the nonlinear conjugate gradient in its Polak-Ribiere
+#: variant, which is what SciPy implements under the bare name ``"CG"``
+#: (with the ``max(0, beta)`` restart of Polak-Ribiere+).
+_SCIPY_ALIASES = {"L-BFGS": "L-BFGS-B", "NLCG-PR": "CG"}
+
+#: Methods for which SciPy reads ``tol`` as a **gradient norm** (``gtol``)
+#: rather than a function-value change.
+#:
+#: :data:`DEFAULT_TOL` is chosen as a function-value criterion, and handing the
+#: same number to a gradient test asks for something a finite-difference
+#: gradient cannot deliver: its own accuracy is about ``1e-8``, so ``gtol =
+#: 1e-12`` ends every line search in "precision loss" and the run reports
+#: non-convergence at every growth step while sitting exactly on the minimum.
+#: Near one, ``f - f* ~ |g|^2 / (2 lambda)``, so the gradient criterion of
+#: equal strength is **the square root** of the function-value one, and that is
+#: what is passed.  Measured on LiH/FAO with the qubit pool: at ``gtol =
+#: sqrt(1e-12) = 1e-6`` BFGS and NLCG-PR certify every step and reach the same
+#: energy as SLSQP to 1e-6 eV in a third of the cost evaluations.  An explicit
+#: ``options={"gtol": ...}`` is left alone.
+_GRADIENT_NORM_METHODS = ("BFGS", "NLCG-PR")
 
 
 #: Keys a ``dict`` form of ``optimizer=`` may carry -- the :class:`Optimizer`
@@ -161,17 +193,25 @@ class Optimizer:
     Parameters
     ----------
     method : str
-        Optimization method (default :data:`DEFAULT_OPTIMIZER`, ``"SLSQP"``).
-        One of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``, ``"SLSQP"``,
-        ``"Adam"``, ``"L-BFGS-B"``.  COBYLA, Nelder-Mead, SLSQP and L-BFGS-B go
-        through ``scipy.optimize.minimize``; SPSA and Adam are implemented
-        natively.
+        Optimization method (default :data:`DEFAULT_OPTIMIZER`, ``"SLSQP"``),
+        one of :data:`NAMED_OPTIMIZERS`:
+
+        * **derivative-free** -- ``"COBYLA"``, ``"Nelder-Mead"``;
+        * **quasi-Newton / gradient** -- ``"SLSQP"``, ``"BFGS"``, ``"L-BFGS"``,
+          ``"L-BFGS-B"``, ``"NLCG-PR"`` (nonlinear conjugate gradient,
+          Polak-Ribiere variant).  None is given an analytic gradient, so each
+          builds its own by finite differences;
+        * **stochastic** -- ``"SPSA"``, ``"Adam"``.
+
+        Every method but SPSA and Adam goes through
+        ``scipy.optimize.minimize``, under the name :data:`_SCIPY_ALIASES`
+        gives it; SPSA and Adam are implemented natively below.
     maxiter : int
         Maximum iterations (default :data:`DEFAULT_MAXITER`).  For the SciPy
         methods this is the ``maxiter`` option; for SPSA and Adam it is the
         number of update steps.
     tol : float, optional
-        Convergence tolerance (default :data:`DEFAULT_TOL`, ``1e-8``).  Passed
+        Convergence tolerance (default :data:`DEFAULT_TOL`, ``1e-12``).  Passed
         to SciPy for the SciPy methods; used as the step/cost-change stopping
         threshold for SPSA and Adam, which cannot certify convergence without
         one.  ``None`` restores each method's own default -- Nelder-Mead's is
@@ -259,8 +299,15 @@ class Optimizer:
             steps += 1
 
         options = {"maxiter": self.maxiter, **self.options}
-        res = minimize(wrapped, x0, method=self.method, tol=self.tol,
-                       options=options, callback=count_step)
+        tol = self.tol
+        if (tol is not None and self.method in _GRADIENT_NORM_METHODS
+                and "gtol" not in options):
+            # A gradient-norm test of the same strength as a function-value
+            # one of `tol`; see _GRADIENT_NORM_METHODS.
+            tol = float(np.sqrt(tol))
+        res = minimize(wrapped, x0, method=_SCIPY_ALIASES.get(self.method,
+                                                              self.method),
+                       tol=tol, options=options, callback=count_step)
         reported = getattr(res, "nit", None)
         return OptimizeResult(
             x=np.asarray(res.x, dtype=float), fun=float(res.fun),

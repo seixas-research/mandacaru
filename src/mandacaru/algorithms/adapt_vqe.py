@@ -313,8 +313,9 @@ MIN_LABEL_WIDTH = 3
 #: Longest an operator label is allowed to push the row before it is elided.
 #: A CEO label such as ``CEO[q0,q2,q3,q5]{D(0,3->2,5)}`` is 29 characters and
 #: would otherwise cost four of the columns the table exists to show; the
-#: elided label still identifies the excitation, and the full one is in the
-#: ``output=`` log.
+#: elided label still identifies the excitation, and the full one is on
+#: ``result.operators``.  Only the VQE / subspace trace elides: ADAPT's table
+#: is the log protocol's, which never abbreviates.
 MAX_LABEL_WIDTH = 22
 
 #: Random parameter samples per expressivity estimate (two states each).
@@ -403,10 +404,12 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     gradient_tolerance : float
         Convergence threshold on the largest pool gradient (default ``1e-3``).
         Used as the default for :meth:`run` / the ASE-calculator evaluation.
-    output : str, optional
-        Path of the structured ``output.txt`` runtime log (default ``None`` --
-        no file).  Used as the default for :meth:`run` / the ASE-calculator
-        evaluation.
+    txt : str, optional
+        Path of the structured runtime log (``txt="output.txt"`` by
+        convention).  The default, ``None``, writes no file -- a verbose run
+        then prints **the same blocks** to standard output instead, so the
+        screen and the file never disagree about what a run reported.  See
+        :meth:`~mandacaru.algorithms.base.VariationalDriver.log_targets`.
     profile : bool
         Compile and profile the ansatz each iteration (default ``True``).
     verbose : bool
@@ -528,14 +531,14 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         Extra keyword arguments forwarded to :meth:`run` on each calculator
         evaluation (e.g. ``{"log_expressivity": False}``).  Only arguments that
         :meth:`run` accepts are valid here -- the stopping controls
-        (``max_iterations`` / ``gradient_tolerance``), ``output`` and ``verbose``
+        (``max_iterations`` / ``gradient_tolerance``), ``txt`` and ``verbose``
         are constructor arguments, not ``run`` arguments.
     """
 
     _default_sparse = "auto"
 
     citation_method = "adapt-vqe"
-    #: ADAPT's ``run()`` writes the ``output=`` log and honors checkpoints.
+    #: ADAPT's ``run()`` writes the ``txt=`` log and honors checkpoints.
     writes_output_log = True
 
     def __init__(self,
@@ -550,7 +553,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  device: str = "AER_simulator",
                  max_iterations: int = 50,
                  gradient_tolerance: float = 1e-3,
-                 output: str | None = None,
                  profile: bool = True,
                  verbose: bool = True,
                  sparse: bool | str = "auto",
@@ -586,12 +588,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
         self.gradient_tolerance = float(gradient_tolerance)
-        self.output = output
-        # Re-run now that `output` exists: the base check ran before it was set.
-        self._check_output_paths()
 
         self._pool_spec = pool
-        # Seeded RNG for reproducible expressivity logging (output.txt).
+        # Seeded RNG for reproducible expressivity logging (the run log).
         self._expr_rng = np.random.default_rng(0)
 
         # A cached Hamiltonian is a complete problem specification (operator plus
@@ -1105,18 +1104,21 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     def reference_energy(self) -> float:
         return self.energy(self._new_ansatz().reference_state())
 
-    # -- output.txt logging ---------------------------------------------- #
+    # -- the run log ------------------------------------------------------ #
 
-    def _make_logger(self, output_file, geometry, cell, ref_energy,
+    def _make_logger(self, targets, geometry, cell, ref_energy,
                      max_iterations, gradient_tol, restored=None):
         """Create an :class:`AdaptOutputLogger` and write the header blocks.
 
-        Returns ``None`` when ``output_file`` is not given (logging disabled).
+        ``targets`` is what
+        :meth:`~mandacaru.algorithms.base.VariationalDriver.log_targets`
+        returned -- the ``txt=`` file, standard output, or both.  Returns
+        ``None`` when it is empty, which is the only way a run reports nothing.
         Resolves the geometry/cell from an ASE ``Atoms`` object or a
         ``(symbols, positions)`` pair, and converts geometry/energy into the
         configured output units (**eV / Angstrom** by default).
         """
-        if output_file is None:
+        if not targets:
             return None
         from ..utils.logging import AdaptOutputLogger
 
@@ -1131,7 +1133,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             if cell is not None:
                 cell = np.asarray(cell, float) * ANGSTROM_TO_BOHR
 
-        logger = AdaptOutputLogger(output_file, n_qubits=self.n_qubits)
+        logger = AdaptOutputLogger(targets, n_qubits=self.n_qubits)
         logger.write_system(
             symbols=symbols, positions=positions, cell=cell,
             pbc=resolved.pbc, magmoms=resolved.magmoms,
@@ -1359,8 +1361,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # Stopping / logging controls come straight from the constructor.
         max_iterations = self.max_iterations
         gradient_tol = self.gradient_tolerance
-        output_file = self.output
-        verbose = self.verbose
+        # One report, written to every destination `log_targets` names: the
+        # `txt=` file, standard output, or both.  There is no second renderer.
+        targets = self.log_targets
         # Resolved once, before the heading: whether this run computes the
         # expressivity at all decides whether the column exists.
         self._expressivity_on = self._expressivity_wanted(log_expressivity)
@@ -1387,25 +1390,13 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                                  "not both")
             params = restored["parameters"]
 
-        # Banner to standard output *before* any data is written to output.txt.
-        if verbose:
-            self._show_banner()
+        # Banner to standard output *before* any data is written to the log.
+        self._show_banner()
 
-        logger = self._make_logger(output_file, geometry, cell, ref_energy,
+        logger = self._make_logger(targets, geometry, cell, ref_energy,
                                    max_iterations, gradient_tol,
                                    restored=restored)
         e_unit = self._energy_unit_label()
-
-        if verbose:
-            self._print_header(ref_energy, e_unit, max_iterations, gradient_tol)
-            if restored is not None:
-                # Before the heading: a line between the rule and the first row
-                # is a line inside the table that is not an iteration.
-                print(f"resumed from {self.resume_path!r}: "
-                      f"{len(restored['selected'])} operators, "
-                      f"E = {self._to_energy_units(restored['energy']):+.8f} "
-                      f"{e_unit}")
-            self._print_iteration_heading(e_unit)
 
         iterations: list[AdaptIteration] = []
         selected: list[str] = []
@@ -1476,7 +1467,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 # Warm start: reuse previous optimum, new parameters set to 0.
                 # `quenching` decides whether the previous angles are re-optimized
                 # alongside the new ones or frozen at their prior values.
-                previous_energy = energy
                 with timings.time("parameter optimization"):
                     result = self._optimize_grown(
                         lambda t: self.ansatz_energy(ansatz, t), params,
@@ -1519,11 +1509,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 # run, which is worse than reporting nothing.
                 final_expr = expr
 
-                if verbose:
-                    self._print_iteration(len(iterations) + 1, op, max_grad,
-                                          energy, energy - previous_energy,
-                                          metrics, e_unit, expressivity=expr,
-                                          optimizer_steps=result.nit)
                 iterations.append(AdaptIteration(
                     operator_label=op.label, operator_kind=op.kind,
                     max_gradient=max_grad,
@@ -1621,8 +1606,6 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             integration_profile=self._integration_profile,
             energy_unit=e_unit)
 
-        if verbose:
-            self._print_summary(result, e_unit, timings)
         return result
 
     # -- excited states / energy levels (DeflationMixin hook) ------------- #

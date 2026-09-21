@@ -219,24 +219,30 @@ class VASQE(ADAPTVQE):
                            initial_temperature=self.initial_temperature,
                            final_temperature=self.final_temperature)
 
-    # -- verbose header extra -------------------------------------------- #
+    # -- run report ------------------------------------------------------- #
 
-    def _extra_header_lines(self) -> list[str]:
-        """Report the stochastic-selection temperature schedule in the header."""
+    def _setup_fields(self) -> dict:
+        """Add the stochastic selection rule to ``[OPTIMIZATION SETUP]``.
+
+        The temperature schedule and the seed are the only things that make a
+        VASQE run reproducible, so they belong in the block that says how the
+        ansatz grew -- next to ``growth``, whose value they qualify.
+        """
         horizon = (self.annealing_steps if self.annealing_steps is not None
                    else self.max_iterations)
         if self.schedule == "constant":
-            temp = f"tau = {self.initial_temperature:g} (constant)"
+            temperature = f"{self.initial_temperature:g} (constant)"
         else:
-            temp = (f"tau: {self.initial_temperature:g} -> "
-                    f"{self.final_temperature:g} ({self.schedule}, "
-                    f"{horizon} steps)")
-        width = self.HEADER_LABEL_WIDTH
-        return [*super()._extra_header_lines(),
-                "-" * 70,
-                f"{'operator selection':<{width}}stochastic (VASQE)",
-                f"{'temperature':<{width}}{temp}",
-                f"{'seed':<{width}}{self.seed}"]
+            temperature = (f"{self.initial_temperature:g} -> "
+                           f"{self.final_temperature:g} ({self.schedule}, "
+                           f"{horizon} steps)")
+        fields = super()._setup_fields()
+        # Overwrite rather than append: `growth` is the selection rule, and a
+        # VASQE run does not select the largest gradient.
+        fields["growth"] = "stochastic (Boltzmann over |gradient|)"
+        fields["selection_temperature"] = temperature
+        fields["selection_seed"] = str(self.seed)
+        return fields
 
 
 # --------------------------------------------------------------------------- #
