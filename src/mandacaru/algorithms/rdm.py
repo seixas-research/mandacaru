@@ -220,7 +220,7 @@ def particle_number(gamma: np.ndarray) -> float:
 
 #: Largest register whose RDMs are assembled from Pauli expectation values:
 #: every spin-conserving RDM element is mapped to qubits separately, O(n^4).
-MAX_PAULI_RDM_MODES = 12
+MAX_PAULI_RDM_MODES = 25
 
 
 def rdm_qubit_operators(n_modes: int, mapping: str = "jordan_wigner",

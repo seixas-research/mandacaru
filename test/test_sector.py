@@ -88,6 +88,76 @@ def test_restrict_batches_without_changing_the_result():
         assert np.allclose(restricted, reference, atol=1e-12), batch
 
 
+class TestFlipMaskGrouping:
+    """``restrict`` pays its search once per flip mask, not once per term.
+
+    A Pauli string sends ``|x>`` to a phase times ``|x ^ f>``, so terms sharing
+    ``f`` share every image.  The grouping is what makes a 20-qubit sector
+    Hamiltonian minutes instead of an hour, and it is structural rather than
+    lucky: ``X`` and ``Y`` both set a flip bit, so all eight strings of a
+    Jordan-Wigner double excitation carry the same mask.
+    """
+
+    def molecular(self, M, seed=0):
+        from mandacaru.core.mapping import Fermion
+
+        rng = np.random.default_rng(seed)
+        n = 2 * M
+        h = rng.normal(size=(n, n))
+        h = 0.5 * (h + h.T)
+        g = rng.normal(size=(n,) * 4) * 0.1
+        g = 0.25 * (g + g.transpose(1, 0, 3, 2)
+                    + g.transpose(2, 3, 0, 1) + g.transpose(3, 2, 1, 0))
+        return Fermion.from_integrals(h, g).map_to_qubits("jordan_wigner",
+                                                          n_modes=n)
+
+    def test_a_molecular_hamiltonian_has_far_fewer_masks_than_terms(self):
+        from mandacaru.core.sector import flip_groups
+
+        for M in (4, 6, 8):
+            H = self.molecular(M)
+            ratio = len(H.terms) / len(flip_groups(H))
+            assert ratio > 5.0, (M, ratio)
+
+    def test_the_groups_account_for_every_nonzero_term(self):
+        from mandacaru.core.sector import flip_groups
+
+        H = self.molecular(4)
+        H.terms["I" * H.num_qubits] = 0.0            # dropped, not counted
+        grouped = sum(len(v) for v in flip_groups(H).values())
+        assert grouped == sum(1 for c in H.terms.values() if c != 0)
+
+    def test_every_string_of_a_double_excitation_shares_one_mask(self):
+        """Why the ratio is ~8 and not a coincidence."""
+        from mandacaru.core.mapping import Fermion
+        from mandacaru.core.sector import flip_groups
+
+        double = Fermion({((0, True), (1, True), (3, False), (2, False)): 1.0},
+                         n_modes=8)
+        excitation = double.map_to_qubits("jordan_wigner", n_modes=8)
+        assert len(excitation.terms) > 1
+        assert len(flip_groups(excitation)) == 1
+
+    def test_it_agrees_with_the_dense_restriction(self):
+        """The grouping is an optimization, so the answer may not move."""
+        H = self.molecular(5, seed=3)
+        sector = ParticleSector(10, (2, 2), "jordan_wigner")
+        dense = H.to_sparse_matrix()[sector.indices][:, sector.indices]
+        assert np.allclose(sector.restrict(H).toarray(), dense.toarray(),
+                           atol=1e-11)
+
+    def test_a_leaking_operator_still_drops_what_leaves(self):
+        """The ``inside.all()`` fast path must not change a leaking case."""
+        rng = np.random.default_rng(7)
+        labels = {"".join(rng.choice(list("IXYZ"), 8)): complex(rng.normal())
+                  for _ in range(120)}
+        operator = PauliSum(labels, num_qubits=8)
+        sector = ParticleSector(8, (2, 2), "jordan_wigner")
+        dense = operator.to_sparse_matrix()[sector.indices][:, sector.indices]
+        assert np.allclose(sector.restrict(operator).toarray(),
+                           dense.toarray(), atol=1e-12)
+
+
 def test_restrict_of_nothing_is_empty():
     sector = ParticleSector(4, (1, 1), "jordan_wigner")
     empty = sector.restrict(PauliSum({}, num_qubits=4))

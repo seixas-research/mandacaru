@@ -57,6 +57,11 @@ grid.  See :doc:`guide/visualization`.
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: mandacaru.algorithms.charges
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: mandacaru.utils.cube
    :members:
    :undoc-members:

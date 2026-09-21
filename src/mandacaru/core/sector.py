@@ -80,6 +80,25 @@ def _term_action(label: str, coeff, states: np.ndarray):
     return images, values
 
 
+def flip_groups(operator: PauliSum) -> dict:
+    r"""``{flip mask: [(phase mask, coefficient * i**n_y), ...]}``.
+
+    The grouping :meth:`ParticleSector.restrict` is built on: a Pauli string
+    acts as :math:`|x\rangle \mapsto s(x)\,|x \oplus f\rangle`, so terms
+    sharing :math:`f` share every image and differ only in the sign
+    :math:`s(x)`, which is cheap.  Zero coefficients are dropped -- they
+    contribute nothing and would cost a pass over the sector.
+    """
+    groups: dict = {}
+    for label, coeff in operator.terms.items():
+        if coeff == 0:
+            continue
+        flip, phase, n_y = pauli_masks(label)
+        groups.setdefault(flip, []).append(
+            (phase, complex(coeff) * (1j ** n_y)))
+    return groups
+
+
 def apply_pauli_sum(operator: PauliSum, indices, amplitudes):
     r"""Apply ``operator`` to the sparse state ``sum_x a_x |x>``.
 
@@ -224,16 +243,28 @@ class ParticleSector:
     # -- operators -------------------------------------------------------- #
 
     def restrict(self, operator: PauliSum, max_entries: int | None = None):
-        """``operator`` restricted to the sector, as a ``(dim, dim)`` CSR matrix.
+        r"""``operator`` restricted to the sector, as a ``(dim, dim)`` CSR matrix.
 
         Exact for an operator that conserves ``(n_alpha, n_beta)``; the
         components of a non-conserving one that leave the sector are dropped.
 
-        Every Pauli term contributes one entry per sector state, so holding all
-        of them before de-duplicating costs ``len(terms) * dim`` entries -- for
-        OH in PAW-DZ (14,707 terms, 25,200 states) that is 3.7e8 entries, about
-        12 GB, while the summed result needs a small fraction of it.  The terms
-        are therefore folded into the running CSR in batches of at most
+        **Terms are grouped by their flip mask.**  A Pauli string sends
+        :math:`|x\rangle` to a phase times :math:`|x \oplus f\rangle`, so every
+        term with the same :math:`f` sends column ``j`` to the *same* row --
+        and the search that finds those rows, which dominates the cost, is
+        paid once per group instead of once per term.  The grouping is not a
+        lucky coincidence: ``X`` and ``Y`` both set a flip bit, so all eight
+        Pauli strings of a Jordan-Wigner double excitation share one mask, the
+        two of a single share one, and every number-conserving (Z-only) term
+        lands in :math:`f = 0`.  A molecular Hamiltonian therefore has ~9x
+        fewer masks than terms, and the ratio is flat in the basis size.
+
+        The group's terms are summed into **one** value array before anything
+        is emitted, which shrinks the staged entries by the same factor.  That
+        matters because every term used to contribute one entry per sector
+        state: for OH in PAW-DZ (14,707 terms, 25,200 states) that was 3.7e8
+        entries, about 12 GB, for a result needing a small fraction of it.
+        What is left is folded into the running CSR in batches of at most
         ``max_entries`` (default :data:`RESTRICT_BATCH_ENTRIES`), which bounds
         the peak at the batch plus the result and leaves the answer unchanged
         -- the sum is linear in the terms.
@@ -259,19 +290,34 @@ class ParticleSector:
             rows_all.clear(), cols_all.clear(), data_all.clear()
             return batch if total is None else total + batch
 
-        for label, coeff in operator.terms.items():
-            if coeff == 0:
-                continue
-            images, values = _term_action(label, coeff, self.indices)
-            rows = self.positions(images)
+        for flip, members in flip_groups(operator).items():
+            rows = self.positions(self.indices ^ np.int64(flip))
             inside = rows >= 0
-            kept = int(np.count_nonzero(inside))
-            if not kept:
+            if not inside.any():
                 continue
-            rows_all.append(rows[inside])
-            cols_all.append(columns[inside])
-            data_all.append(values[inside])
-            pending += kept
+            if inside.all():
+                # The common case for a number-conserving operator: nothing
+                # leaves the sector, so no array has to be compacted.
+                kept_rows, kept_cols, states = rows, columns, self.indices
+            else:
+                kept_rows = rows[inside]
+                kept_cols = columns[inside]
+                states = self.indices[inside]
+            values = np.zeros(states.size, dtype=complex)
+            counts = np.empty(states.size, dtype=np.uint8)
+            scratch = np.empty(states.size, dtype=np.int64)
+            for phase, factor in members:
+                if not phase:
+                    # No Y and no Z: the sign is +1 on every state.
+                    values += factor
+                    continue
+                np.bitwise_and(states, phase, out=scratch)
+                np.bitwise_count(scratch, out=counts)
+                values += factor * (1 - 2 * (counts & 1).astype(np.int8))
+            rows_all.append(kept_rows)
+            cols_all.append(kept_cols)
+            data_all.append(values)
+            pending += values.size
             if pending >= budget:
                 total, pending = fold(total), 0
         total = fold(total)

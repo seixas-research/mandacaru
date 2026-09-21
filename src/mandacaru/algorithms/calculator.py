@@ -147,6 +147,38 @@ def resolve_method(name: str):
 _STDOUT_LINE_BUFFERED = False
 
 
+def _resolve_population(spec):
+    """Normalize the ``population=`` option to a method name or ``None``.
+
+    ``True`` means the default partition, a string names one, and
+    ``None`` / ``False`` switch the analysis off.
+    """
+    from .charges import PARTITION_METHODS
+
+    if spec is None or spec is False:
+        return None
+    name = PARTITION_METHODS[0] if spec is True else str(spec).strip().lower()
+    if name not in PARTITION_METHODS:
+        raise ValueError(f"unknown population analysis {spec!r}; use one of "
+                         f"{PARTITION_METHODS}, True or None")
+    return name
+
+
+def _spin_moment(gamma, n_spatial_orbitals: int, frozen=()) -> float:
+    """``N_alpha - N_beta`` of an active spin-orbital RDM.
+
+    ``n_spatial_orbitals`` is the **total** count (the basis size), not the
+    active one: :func:`~mandacaru.algorithms.volumetric.spin_resolved_rdm`
+    refills the frozen core into both channels.  The core is doubly occupied
+    so it contributes exactly nothing to the difference; refilling it anyway
+    is cheaper than asserting the cancellation.
+    """
+    from .volumetric import spin_resolved_rdm
+
+    D_alpha, D_beta = spin_resolved_rdm(gamma, int(n_spatial_orbitals), frozen)
+    return float(np.real(np.trace(D_alpha) - np.trace(D_beta)))
+
+
 def _watchable_stdout() -> None:
     """Make a **redirected** standard output show each line as it is written.
 
@@ -351,7 +383,8 @@ class Mandacaru(Calculator):
     overwriting the rest; see :mod:`mandacaru.utils.logging`.
     """
 
-    implemented_properties = ["energy", "free_energy", "forces"]
+    implemented_properties = ["energy", "free_energy", "forces",
+                              "charges", "magmoms", "magmom"]
 
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="FAO",
                  h: float = DEFAULT_GRID_SPACING, grid=None,
@@ -360,7 +393,7 @@ class Mandacaru(Calculator):
                  hellmann_feynman: str = "analytic", orbital_delta=None,
                  scf_iterations: int = 40,
                  measurement_provider=None, trace: bool | None = None,
-                 **solver_kwargs):
+                 population=None, **solver_kwargs):
         Calculator.__init__(self)
         self.method, self._solver_class = resolve_method(method)
         self.basis = basis
@@ -378,6 +411,10 @@ class Mandacaru(Calculator):
             raise ValueError(f"force_method must be 'rdm' or 'scf-response', "
                              f"got {force_method!r}")
         self.force_method = str(force_method)
+        # Population analysis on every evaluation, so a written file carries
+        # it.  Off by default: the partition costs a grid pass (and a basin
+        # search, for Bader) that a relaxation has no use for.
+        self.population = _resolve_population(population)
         self.hellmann_feynman = str(hellmann_feynman)
         self.orbital_delta = orbital_delta
         self.scf_iterations = int(scf_iterations)
@@ -726,6 +763,10 @@ class Mandacaru(Calculator):
             stages["nuclear gradient (forces)"] = _perf() - t0
             self.results["forces"] = self.force_result.forces
             self._log_forces(solver, atoms)
+        if self.population is not None and not solver.dry_run:
+            t0 = _perf()
+            self._store_population()
+            stages["population analysis"] = _perf() - t0
         step_seconds = _perf() - step_t0
         self._log_performance(solver, stages, step_seconds)
         if want_forces and not solver.dry_run:
@@ -1441,6 +1482,131 @@ class Mandacaru(Calculator):
         gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
         return state_natural_orbitals(integrals, gamma, frozen=frozen,
                                       grid=grid)
+
+    # -- population analysis ----------------------------------------------- #
+
+    def _population_method(self, method) -> str:
+        """The partition a getter should use: the one asked for, else the one
+        ``population=`` configured, else the default."""
+        from .charges import PARTITION_METHODS
+
+        if method is not None:
+            return method
+        return self.population or PARTITION_METHODS[0]
+
+    def atomic_partition(self, method: str = "hirshfeld", *, state=0,
+                         grid=None):
+        """Split the converged density between the atoms.
+
+        Returns an
+        :class:`~mandacaru.algorithms.charges.AtomicPartition` carrying the
+        per-atom populations, charges and magnetic moments of one partition,
+        plus a :meth:`~mandacaru.algorithms.charges.AtomicPartition.summary`
+        to print.  :meth:`get_charges` and :meth:`get_magnetic_moments` are
+        the ASE-facing views of it; this is the whole thing, computed once.
+
+        Parameters
+        ----------
+        method : {"hirshfeld", "voronoi", "bader"}
+            The partition.  **An atom in a molecule has no boundary**, so
+            which one is chosen is a convention and the three disagree by
+            design -- see :mod:`mandacaru.algorithms.charges`.
+        state : int or ndarray
+            Which state to analyze, for a subspace run (0 = ground), or an
+            explicit state vector.
+        grid : Grid, optional
+            Partition on this grid rather than the calculation's own.  A Bader
+            basin boundary is resolved to one grid spacing, so it is the
+            partition that most repays a finer one.
+        """
+        from .charges import partition_state
+
+        solver, integrals, frozen = self._volumetric_context()
+        psi = self._volumetric_state(solver, state)
+        gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
+        numbers = (None if self.atoms is None
+                   else self.atoms.get_atomic_numbers())
+        return partition_state(integrals, gamma, method=method, frozen=frozen,
+                               numbers=numbers, grid=grid)
+
+    def _store_population(self) -> None:
+        """Put ``charges`` / ``magmoms`` / ``magmom`` in ``results``.
+
+        What makes them land in a written file: ASE's extxyz writer turns the
+        per-atom entries of ``calc.results`` into **columns** and the scalars
+        into **header** keys, so with ``population=`` set,
+        ``ase.io.write("out.extxyz", atoms)`` carries the charges and the
+        local moments beside the positions and the total moment beside the
+        energy -- no extra call at write time.
+
+        A failure here must not lose the energy the step just computed, so it
+        is a warning: the analysis is a report, the energy is the result.
+        """
+        try:
+            partition = self.atomic_partition(self.population)
+        except Exception as error:                       # noqa: BLE001
+            warnings.warn(
+                f"the {self.population} population analysis failed, so the "
+                f"charges and magnetic moments are not in the results (the "
+                f"energy and forces are unaffected): {error}",
+                RuntimeWarning, stacklevel=2)
+            return
+        self.results["charges"] = partition.charges
+        self.results["magmoms"] = partition.magnetic_moments
+        self.results["magmom"] = partition.total_magnetic_moment
+
+    def get_charges(self, atoms=None, method: str | None = None):
+        """Partial charges (e), one per atom -- the ASE property ``charges``.
+
+        ``q_A = Z_A - N_A`` with ``Z_A`` the charge the Hamiltonian carries
+        (the *valence* charge for a pseudopotential run, so ``q_A`` is the
+        physical partial charge either way) and ``N_A`` the electrons
+        ``method`` assigns to the atom.  They sum to the system's total charge
+        whichever partition is used; only the split between atoms is a
+        convention.  See :meth:`atomic_partition`.
+        """
+        if atoms is not None:
+            self.atoms = atoms.copy()
+        partition = self.atomic_partition(self._population_method(method))
+        self.results["charges"] = partition.charges
+        return partition.charges
+
+    def get_magnetic_moments(self, atoms=None, method: str | None = None):
+        """Local magnetic moments (Bohr magnetons), one per atom.
+
+        The spin density ``n_alpha - n_beta`` integrated over each atom's
+        share, with the same weights :meth:`get_charges` uses -- so a
+        closed-shell state gives zeros and the moments of an open-shell one
+        sum to :meth:`get_total_magnetic_moment` whatever the partition.
+        """
+        if atoms is not None:
+            self.atoms = atoms.copy()
+        partition = self.atomic_partition(self._population_method(method))
+        self.results["magmoms"] = partition.magnetic_moments
+        return partition.magnetic_moments
+
+    def get_total_magnetic_moment(self, atoms=None):
+        """Total magnetic moment (Bohr magnetons) of the converged state.
+
+        ``N_alpha - N_beta``, read off the traces of the two spin blocks of
+        the one-particle density matrix.  **It takes no partition**: the
+        integral of the spin density over all space is fixed by the state, and
+        only its division between atoms is a convention.  It is the *measured*
+        value, not the ``magmoms`` the geometry was given -- they agree
+        because the ansatz conserves ``S_z``, and a disagreement would mean
+        the run did not solve the sector it was asked for.
+        """
+        if atoms is not None:
+            self.atoms = atoms.copy()
+        solver, integrals, frozen = self._volumetric_context()
+        gamma, _ = self._state_rdms(solver, two_body=False)
+        moment = _spin_moment(gamma, len(integrals.basis), frozen)
+        self.results["magmom"] = moment
+        return moment
+
+    def get_magnetic_moment(self, atoms=None):
+        """ASE's name for :meth:`get_total_magnetic_moment`."""
+        return self.get_total_magnetic_moment(atoms)
 
     # -- convenience ------------------------------------------------------- #
 

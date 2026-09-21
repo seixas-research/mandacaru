@@ -19,8 +19,6 @@ dependencies = [
     'ase',                # geometries + the Calculator interface the drivers use
     'matplotlib',         # expressivity / band-structure plotting helpers
     # -- Hamiltonian cache (Apache Parquet) ------------------------------ #
-    # fastparquet is the default engine and pandas is its table interface; see
-    # mandacaru.core.serialization for why pyarrow is only an optional engine.
     'fastparquet',
     'pandas',
     # -- quantum SDKs (backend_provider / device registry) ---------------- #
@@ -30,6 +28,8 @@ dependencies = [
     'cirq',               # Google Cirq
     # -- test suite -------------------------------------------------------- #
     'pytest',             # `python -m pytest test/` ships with the package
+    # -- for PERFORMANCE block --------------------------------------------- #
+    'psutil'
 ]
 
 classifiers = [
@@ -42,13 +42,6 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# Alternative Parquet engine.  Not a default: on some platforms pyarrow's
-# Parquet writer crashes in a process that has also run Qiskit's transpiler
-# (see the warning in mandacaru.core.serialization).
-pyarrow = ['pyarrow']
-# Current-RSS and available-memory readings (the [PERFORMANCE] block, the QPE
-# memory check); both fall back to the standard library without it.
-memory = ['psutil']
 # The legacy differentiated-SCF force path, force_method="scf-response": JAX
 # differentiates its Loewdin / SCF / integral-transform layer.  The default
 # force_method="rdm" needs none of it (see mandacaru.algorithms.forces).
@@ -91,7 +84,7 @@ path = "src/mandacaru/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mandacaru"]
-# The ONCVPSP and PAW libraries (~300 MB) live in the mandacaru-oncvpsp and
+# The ONCVPSP and PAW libraries (~600 MB) live in the mandacaru-oncvpsp and
 # mandacaru-paw repositories and are linked into library/ locally; PyPI caps a
 # release at 100 MB, so only the 11 MB NCPP library ships in the wheel.
 exclude = [
