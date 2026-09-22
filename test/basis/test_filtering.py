@@ -14,7 +14,7 @@ Four things are pinned here, in this order:
    an already band-limited function is left alone, a filtered one really has
    no weight above :math:`k_c`, the norm is preserved and the :math:`r^l`
    behavior at the origin survives (the property whose loss broke the forces
-   once already, see ``CLAUDE.md`` on the polarization shell);
+   once already in the polarization shell);
 2. **the option** -- ``True`` / ``"auto"`` / a number in eV / ``False``
    accepted, everything else refused with a clear message, in the single-family
    and the per-element form and in the dry run;
@@ -186,7 +186,7 @@ class TestTransform:
         channel and ``j_l(kr) ~ (kr)^l``, so the reconstruction cannot help
         behaving this way.  A radial function that does not vanish as r^l at
         its own nucleus blew up the displaced-sampling derivative once
-        already (the polarization-shell bug in CLAUDE.md), so it is asserted:
+        already (the polarization-shell bug), so it is asserted:
         ``R/r^l`` is flat over the first points, and the first two points are
         in the ratio ``(r_1/r_0)^l``.
         """

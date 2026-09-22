@@ -28,7 +28,7 @@ structure to lose.  It is not exact for anything with p or d valence: an
 creates, since an isolated atom has no s-p mixing to speak of.  On oxygen the
 missing dipole is 28 % of the monopole's weight at the O-H distance, acting on
 an augmentation term worth ~100 eV -- which is why O-H and C-H bonds did not
-bind at all before this module existed (see ``CLAUDE.md``).
+bind at all before this module existed.
 
 What is here
 ------------

@@ -53,8 +53,8 @@ Two properties of doing this **per angular-momentum channel** matter here:
 * the reconstruction automatically behaves as :math:`r^l` at the origin,
   because :math:`j_l(kr)\sim (kr)^l/(2l+1)!!`.  That is not a detail -- a
   radial function that does not vanish as :math:`r^l` at its own nucleus broke
-  the forces badly once already (the polarization-shell bug recorded in
-  ``CLAUDE.md``), so it is asserted by the test suite;
+  the forces badly once already (the polarization-shell bug), so it is
+  asserted by the test suite;
 * the filter commutes with the angular part, so a filtered table drops into
   :class:`~mandacaru.basis.multizeta.TabulatedOrbital` unchanged and everything
   downstream -- grid sampling, the PAW atom-centered projection quadrature, the

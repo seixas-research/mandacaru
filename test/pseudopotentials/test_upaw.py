@@ -175,7 +175,7 @@ class TestCalculatorPath:
 class TestWhyItIsNotTheDefault:
     """The measurements behind the choice, so a future reader has them pinned.
 
-    Full comparison in CLAUDE.md; these are the two that matter and are cheap.
+    These are the two that matter and are cheap.
     """
 
     def test_the_constraint_only_fixes_the_monopole(self):

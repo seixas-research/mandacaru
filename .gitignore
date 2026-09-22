@@ -175,6 +175,9 @@ __marimo__/
 # Claude
 .claude/
 latex/
+CLAUDE.md
+HISTORY.md
+VERSION_DESCRIPTION.md
 
 # CODEX
 codex/
@@ -189,8 +192,6 @@ test/.resource_report.txt
 # (python -m mandacaru.pseudopotentials.link_library).
 src/mandacaru/pseudopotentials/library/oncvpsp
 src/mandacaru/pseudopotentials/library/paw
-
-# UPAW datasets are generated on demand (build_upaw_library), not shipped.
 src/mandacaru/pseudopotentials/library/upaw
 
 # CMake build trees for the C integral backend: generated, never loaded
