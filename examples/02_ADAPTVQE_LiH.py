@@ -11,7 +11,7 @@
 LiH is defined as an ASE :class:`ase.Atoms` object and
 :class:`~mandacaru.algorithms.Mandacaru` is attached as its *calculator*
 (``atoms.calc = Mandacaru(method="adapt-vqe", ...)``); with
-``basis={"name": "FAO"}`` the Full Atomic Orbitals of
+``basis={"name": "HAO"}`` the Hydrogenic Atomic Orbitals of
 each atom (Li {1s, 2s} + H {1s} = 3 spatial orbitals -> 6 qubits) are generated
 from the geometry, and ``atoms.get_total_energy()`` drives ADAPT-VQE with the CEO
 pool, returning the energy in **eV**; the full run result is on
@@ -52,7 +52,7 @@ atoms = Atoms("LiH",
 
 atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="ceo",
-                       basis={"name": "FAO"},
+                       basis={"name": "HAO"},
                        mapping="jordan_wigner",
                        gradient="parameter_shift",
                        device="AER_simulator",

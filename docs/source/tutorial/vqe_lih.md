@@ -75,7 +75,7 @@ atoms.calc = Mandacaru(
     frozen_core=True,
     mapping="jordan_wigner",
     grid=grid,
-    optimizer=Optimizer(method="L-BFGS-B", maxiter=500, tol=1e-12),
+    optimizer=Optimizer(method="L-BFGS", maxiter=500, tol=1e-12),
     execute_circuits=False)
 
 print(atoms.calc.dry_run(atoms))

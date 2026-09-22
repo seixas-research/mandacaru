@@ -8,7 +8,7 @@
 
 """Classical optimizers for the variational (hybrid) loop.
 
-:class:`Optimizer` is a thin wrapper exposing the six methods used to drive the
+:class:`Optimizer` is a thin wrapper exposing the methods used to drive the
 VQE / ADAPT-VQE parameter minimization behind one interface, recording the cost
 history so a convergence trace is always available:
 
@@ -17,14 +17,12 @@ history so a convergence trace is always available:
 * **COBYLA** (Constrained Optimization BY Linear Approximation) -- SciPy;
 * **Nelder-Mead** -- SciPy simplex;
 * **SLSQP** (Sequential Least Squares Programming) -- SciPy, **the default**;
-* **Adam** (Adaptive Moment Estimation) -- a finite-difference-gradient adaptive
-  first-order method, implemented natively here;
-* **L-BFGS-B** -- SciPy quasi-Newton.
+* **BFGS**, **L-BFGS** -- SciPy quasi-Newton;
+* **NLCG-PR** -- SciPy nonlinear conjugate gradient, Polak-Ribiere.
 
-COBYLA, Nelder-Mead, SLSQP and L-BFGS-B are dispatched to
-``scipy.optimize.minimize``; SPSA and Adam are implemented natively (SciPy has no
-equivalent) but share the same :meth:`Optimizer.minimize` interface and
-:class:`OptimizeResult` output.
+Everything but SPSA is dispatched to ``scipy.optimize.minimize``; SPSA is
+implemented natively (SciPy has no equivalent) but shares the same
+:meth:`Optimizer.minimize` interface and :class:`OptimizeResult` output.
 """
 
 from __future__ import annotations
@@ -47,9 +45,9 @@ class OptimizeResult:
     success: bool = True
     message: str = ""
     #: Optimizer **steps** -- parameter updates, not cost evaluations.  The two
-    #: differ by the method: L-BFGS-B spends several evaluations per step on a
-    #: finite-difference gradient and a line search, Adam spends ``2N + 1``,
-    #: SPSA two or three, while COBYLA evaluates once per trial point.  It is
+    #: differ by the method: L-BFGS spends several evaluations per step on a
+    #: finite-difference gradient and a line search, SPSA two or three, while
+    #: COBYLA evaluates once per trial point.  It is
     #: the honest measure of "how many moves did this optimizer make", which
     #: ``nfev`` is not.  ``None`` only when a method reports neither a count
     #: nor a per-iteration callback.
@@ -58,8 +56,8 @@ class OptimizeResult:
 
 # The optimization methods exposed by name to the variational drivers
 # (VQE, ADAPTVQE).
-NAMED_OPTIMIZERS = ("SPSA", "COBYLA", "Nelder-Mead", "SLSQP", "Adam",
-                    "L-BFGS-B", "BFGS", "L-BFGS", "NLCG-PR")
+NAMED_OPTIMIZERS = ("SPSA", "COBYLA", "Nelder-Mead", "SLSQP",
+                    "BFGS", "L-BFGS", "NLCG-PR")
 
 #: Default method everywhere (drivers included).  Measured on H2O/PAW-SZ with
 #: the qubit pool, where it reaches the same energy on the same circuit as
@@ -82,30 +80,31 @@ DEFAULT_OPTIMIZER = "SLSQP"
 #: method: for SLSQP and COBYLA it is a **function-value** criterion, so it has
 #: to be tighter than a gradient method's ``tol`` to leave an equally small
 #: gradient behind.  That matters because **ADAPT-VQE's own convergence test
-#: reads that residual gradient**: at ``1e-8`` SLSQP reaches the H2/FAO ground
+#: reads that residual gradient**: at ``1e-8`` SLSQP reaches the H2/HAO ground
 #: state to 1e-10 eV but leaves ``max|g| = 4.6e-06``, just above a
 #: ``gradient_tolerance`` of ``1e-6``, so the growth loop never stops and piles
 #: up 50 redundant operators.  At ``1e-12`` the same run converges after one
 #: operator in 4 steps and 9 evaluations.
 #:
-#: It also gives the native SPSA / Adam a criterion to certify convergence
-#: against, which ``None`` does not.
+#: It also gives the native SPSA a criterion to certify convergence against,
+#: which ``None`` does not.
 DEFAULT_MAXITER = 1000
 DEFAULT_TOL = 1e-12
 
 # Methods routed to scipy.optimize.minimize vs. implemented natively below.
-_SCIPY_METHODS = ("COBYLA", "Nelder-Mead", "SLSQP", "L-BFGS-B", "BFGS",
-                  "L-BFGS", "NLCG-PR")
-_CUSTOM_METHODS = ("SPSA", "Adam")
+_SCIPY_METHODS = ("COBYLA", "Nelder-Mead", "SLSQP", "BFGS", "L-BFGS",
+                  "NLCG-PR")
+_CUSTOM_METHODS = ("SPSA",)
 
 #: Mandacaru name -> the name ``scipy.optimize.minimize`` knows it by, for the
 #: methods whose usual name in the quantum-chemistry literature is not SciPy's.
 #:
 #: ``"L-BFGS"`` is limited-memory BFGS *without* bounds, which is exactly what
-#: SciPy's ``"L-BFGS-B"`` reduces to when no bounds are given -- the driver
-#: never passes any, so the two names run the same code and differ only in what
-#: the log calls them.  Both are offered because a variational ansatz's
-#: parameters are unbounded angles, and ``"L-BFGS"`` is what that is called.
+#: SciPy's ``"L-BFGS-B"`` reduces to when no bounds are given -- and a
+#: variational ansatz's parameters are unbounded angles, so the driver never
+#: passes any.  SciPy's bounded spelling is **not** offered as a separate
+#: method: it was, and it ran the same code for the same cost (LiH: 85 steps
+#: and 844 evaluations either way), which is a second name for one thing.
 #:
 #: ``"NLCG-PR"`` is the nonlinear conjugate gradient in its Polak-Ribiere
 #: variant, which is what SciPy implements under the bare name ``"CG"``
@@ -122,7 +121,7 @@ _SCIPY_ALIASES = {"L-BFGS": "L-BFGS-B", "NLCG-PR": "CG"}
 #: non-convergence at every growth step while sitting exactly on the minimum.
 #: Near one, ``f - f* ~ |g|^2 / (2 lambda)``, so the gradient criterion of
 #: equal strength is **the square root** of the function-value one, and that is
-#: what is passed.  Measured on LiH/FAO with the qubit pool: at ``gtol =
+#: what is passed.  Measured on LiH/HAO with the qubit pool: at ``gtol =
 #: sqrt(1e-12) = 1e-6`` BFGS and NLCG-PR certify every step and reach the same
 #: energy as SLSQP to 1e-6 eV in a third of the cost evaluations.  An explicit
 #: ``options={"gtol": ...}`` is left alone.
@@ -198,28 +197,27 @@ class Optimizer:
 
         * **derivative-free** -- ``"COBYLA"``, ``"Nelder-Mead"``;
         * **quasi-Newton / gradient** -- ``"SLSQP"``, ``"BFGS"``, ``"L-BFGS"``,
-          ``"L-BFGS-B"``, ``"NLCG-PR"`` (nonlinear conjugate gradient,
+          ``"NLCG-PR"`` (nonlinear conjugate gradient,
           Polak-Ribiere variant).  None is given an analytic gradient, so each
           builds its own by finite differences;
-        * **stochastic** -- ``"SPSA"``, ``"Adam"``.
+        * **stochastic** -- ``"SPSA"``.
 
-        Every method but SPSA and Adam goes through
-        ``scipy.optimize.minimize``, under the name :data:`_SCIPY_ALIASES`
-        gives it; SPSA and Adam are implemented natively below.
+        Every method but SPSA goes through ``scipy.optimize.minimize``, under
+        the name :data:`_SCIPY_ALIASES` gives it; SPSA is implemented natively
+        below.
     maxiter : int
         Maximum iterations (default :data:`DEFAULT_MAXITER`).  For the SciPy
-        methods this is the ``maxiter`` option; for SPSA and Adam it is the
-        number of update steps.
+        methods this is the ``maxiter`` option; for SPSA it is the number of
+        update steps.
     tol : float, optional
         Convergence tolerance (default :data:`DEFAULT_TOL`, ``1e-12``).  Passed
         to SciPy for the SciPy methods; used as the step/cost-change stopping
-        threshold for SPSA and Adam, which cannot certify convergence without
-        one.  ``None`` restores each method's own default -- Nelder-Mead's is
+        threshold for SPSA, which cannot certify convergence without one.  ``None`` restores each method's own default -- Nelder-Mead's is
         ``1e-4``, far too loose for a cost in Hartree.
     options : dict, optional
         Extra options.  Forwarded to ``scipy.optimize.minimize`` for the SciPy
-        methods; the SPSA / Adam hyperparameters (see :meth:`_minimize_spsa` /
-        :meth:`_minimize_adam`) are read from here for the native methods.
+        methods; the SPSA hyperparameters (see :meth:`_minimize_spsa`) are
+        read from here for the native method.
     seed : int, optional
         Seed for the SPSA perturbation RNG (default ``0``); makes runs
         reproducible.  Ignored by the deterministic methods.
@@ -272,10 +270,7 @@ class Optimizer:
                                   nit=0)
 
         if self.method in _CUSTOM_METHODS:
-            if self.method == "SPSA":
-                x, fun, converged, steps = self._minimize_spsa(wrapped, x0)
-            else:                                    # "Adam"
-                x, fun, converged, steps = self._minimize_adam(wrapped, x0)
+            x, fun, converged, steps = self._minimize_spsa(wrapped, x0)
             # `success` means a convergence test was met, not that the loop ran:
             # the native methods stop on their own step criterion, which needs
             # `tol`.  Without one there is nothing to certify.
@@ -373,50 +368,3 @@ class Optimizer:
             best_x, best_f = x, cost(x)
         return best_x, best_f, converged, steps
 
-    def _minimize_adam(self, cost, x0):
-        """Adam -- adaptive moment estimation on a finite-difference gradient.
-
-        The cost is a black box, so the gradient is estimated by central finite
-        differences (``2N`` evaluations per step).  Hyperparameters are tunable
-        through ``options``: ``lr`` (0.05), ``beta1`` (0.9), ``beta2`` (0.999),
-        ``eps`` (1e-8) and the finite-difference step ``fd_eps`` (1e-4).
-
-        Returns ``(x, f, converged, steps)``, where ``steps`` is the number of
-        parameter updates taken -- ``2N + 1`` cost evaluations each.
-        """
-        o = self.options
-        lr = float(o.get("lr", 0.05))
-        beta1 = float(o.get("beta1", 0.9))
-        beta2 = float(o.get("beta2", 0.999))
-        eps = float(o.get("eps", 1e-8))
-        fd_eps = float(o.get("fd_eps", 1e-4))
-        tol = self.tol if self.tol is not None else 0.0
-
-        x = np.array(x0, dtype=float)
-        m = np.zeros_like(x)
-        v = np.zeros_like(x)
-        best_x, best_f = x.copy(), cost(x)
-        for k in range(1, self.maxiter + 1):
-            g = self._finite_difference_gradient(cost, x, fd_eps)
-            m = beta1 * m + (1.0 - beta1) * g
-            v = beta2 * v + (1.0 - beta2) * (g * g)
-            mhat = m / (1.0 - beta1 ** k)
-            vhat = v / (1.0 - beta2 ** k)
-            step = lr * mhat / (np.sqrt(vhat) + eps)
-            x = x - step
-            f = cost(x)
-            if f < best_f:
-                best_x, best_f = x.copy(), f
-            if tol and np.linalg.norm(step) < tol:
-                return best_x, best_f, True, k
-        return best_x, best_f, False, self.maxiter
-
-    @staticmethod
-    def _finite_difference_gradient(cost, x, eps):
-        """Central-difference gradient of ``cost`` at ``x`` (``2N`` evaluations)."""
-        g = np.zeros_like(x)
-        for i in range(x.size):
-            step = np.zeros_like(x)
-            step[i] = eps
-            g[i] = (cost(x + step) - cost(x - step)) / (2.0 * eps)
-        return g

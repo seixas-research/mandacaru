@@ -53,7 +53,7 @@ Dependencies:
     initial_magnetic_moments: [0.0, 0.0, 0.0]
 
 [BASIS]
-    name: FAO
+    name: HAO
     family: all-electron
     nuclear_cusp_softening: 0.2835 Bohr
     basis_functions: 7

@@ -90,7 +90,7 @@ print("2. H2: all-electron vs the three pseudopotential families")
 print(RULE)
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
-FAMILIES = (("all-electron FAO", "FAO"),
+FAMILIES = (("all-electron HAO", "HAO"),
             ("NCPP (Troullier-Martins)", "NCPP"),
             ("ONCVPSP (Hamann)", "ONCVPSP"),
             ("PAW (Bloechl)", "PAW"))
@@ -127,7 +127,7 @@ def isolated_force(spacing, use_pseudopotentials):
     shift = 0.37 * box.dx * BOHR_TO_ANGSTROM
     atoms = Atoms("O", positions=[[shift, 0.0, 0.0]])
     atoms.calc = Mandacaru(method="adapt-vqe",
-                           basis="NCPP" if use_pseudopotentials else "FAO",
+                           basis="NCPP" if use_pseudopotentials else "HAO",
                            grid=box,
                            frozen_core=not use_pseudopotentials,
                            pool="qeb",

@@ -75,7 +75,7 @@ atoms = Atoms("LiH",
 t0 = time.perf_counter()
 atoms.calc = Mandacaru(method="adapt-vqe",
                        pool=POOL,
-                       basis={"name": "FAO"},
+                       basis={"name": "HAO"},
                        h=0.25,
                        mapping="jordan_wigner",
                        max_iterations=MAX_ITERATIONS,

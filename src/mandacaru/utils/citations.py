@@ -63,7 +63,6 @@ _OPTIMIZER_KEYS = {
     "cobyla": ("Powell1994",),
     "nelder-mead": ("Nelder1965",),
     "slsqp": ("Kraft1988",),
-    "adam": ("Kingma2015",),
     "l-bfgs-b": ("Byrd1995",),
     # L-BFGS is Liu & Nocedal; the bound-constrained extension Mandacaru
     # actually calls into (with no bounds) is Byrd et al.

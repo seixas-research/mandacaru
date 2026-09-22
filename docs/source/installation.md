@@ -56,7 +56,7 @@ a new path moves the link, so the data repository can be relocated freely; a
 real, non-empty `library/paw/` directory is refused rather than deleted.
 
 Without this, `basis="PAW"` and `basis="ONCVPSP"` raise a `FileNotFoundError`
-that repeats these commands. `basis="NCPP"` and the all-electron bases (`FAO`,
+that repeats these commands. `basis="NCPP"` and the all-electron bases (`HAO`,
 `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. Set
 `MANDACARU_PSEUDO_PATH` to serve the library from somewhere else entirely.
 

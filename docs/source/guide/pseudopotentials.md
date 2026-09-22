@@ -2,7 +2,7 @@
 
 A pseudopotential replaces an atom's core electrons and the singular $-Z/r$
 potential by a smooth, valence-only problem. In Mandacaru a pseudopotential
-**family is a basis name**, selected exactly like `"FAO"` or `"cc-pVTZ"`:
+**family is a basis name**, selected exactly like `"HAO"` or `"cc-pVTZ"`:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
@@ -86,7 +86,7 @@ spec.norm_conserving                   # True
 spec.generate("O")                     # generate_pseudopotential("O")
 spec.get("O")                          # the (cached) library loader
 spec.build(atoms, grid, h, charge, spin, options, kinetic)
-lookup_family("FAO")                   # None -- an all-electron basis name
+lookup_family("HAO")                   # None -- an all-electron basis name
 ```
 
 `build` returns exactly the 5-tuple the all-electron path returns —
@@ -199,7 +199,7 @@ would halve $\|D\|$ but degrades the log-derivative match between the
 references (O midpoint 8e-7 → 3e-4) while moving the H₂/LiH energies by only
 4e-5 Ha, so $\Delta = 1$ stays.
 
-### Validation (pinned by `test/test_oncvpsp.py`)
+### Validation (pinned by `test/pseudopotentials/test_oncv.py`)
 
 Atomic, on the radial grid (freshly generated potentials; `check_oncv_channel`,
 `radial_spectrum` = 3-point Laplacian on a 0.01/0.02 Bohr resampled grid,
@@ -568,9 +568,9 @@ energy to 1e-4 eV/Å. Against VASP (PBE, plane waves, PAW) the force curves
 agree qualitatively: the H₂ minimum is near 0.81 Å instead of 0.750 Å — mostly
 from the H augmentation radius, 1.30 bohr, which two atoms 0.75 Å apart overlap
 almost entirely — while the LiH bond forces from 2.1 to 3.2 Å match within
-0.15 eV/Å. Pinned by `test/test_paw_forces.py` and `test/test_sector.py`.
+0.15 eV/Å. Pinned by `test/algorithms/test_paw_forces.py` and `test/core/test_sector.py`.
 
-### Validation (pinned by `test/test_paw.py`, 70 tests, 11.5 s, peak RSS 0.77 GB)
+### Validation (pinned by `test/pseudopotentials/test_paw.py`, 70 tests, 11.5 s, peak RSS 0.77 GB)
 
 Atomic, freshly generated (`check_paw_channel`: `paw_spectrum` = the
 generalized problem with the 3-point Laplacian on 0.01/0.02 Bohr grids,
@@ -1077,7 +1077,7 @@ energysplit=0.1)`) and Mandacaru give, in Bohr:
 | H p-polarization `r_char` | 1.395 | 1.396 |
 | O d-polarization `r_char` | 1.125 | 1.128 |
 
-(pinned by `test/test_paw_energy_shift.py::TestTheGPAWRecipe`). Compare trends
+(pinned by `test/pseudopotentials/test_paw_energy_shift.py::TestTheGPAWRecipe`). Compare trends
 and differences between the two methods rather than absolute energies, use
 `xc="LDA"` setups on the GPAW side, and remember that Mandacaru's Hamiltonian
 has the bare Coulomb interaction -- the functional enters its datasets only.
@@ -1352,14 +1352,14 @@ tests is printed at the end of the session (the complete table is written to
 `test/.resource_report.txt`). The budget — set for the pseudopotential tests,
 the heaviest in the suite — is one test < 3 min, the whole run < 10 min, peak
 RSS < 3 GB; shrink a test's grid or cell rather than the limits.
-`test_ncpp_family.py` pins the NCPP energies of H₂ (0.74 Å, h = 0.25 Å) and
+`pseudopotentials/test_ncpp_family.py` pins the NCPP energies of H₂ (0.74 Å, h = 0.25 Å) and
 LiH (1.6 Å, h = 0.30 Å) measured before the nonlocal generalization and
-exercises the general form with synthetic projectors; `test_oncvpsp.py`
+exercises the general form with synthetic projectors; `pseudopotentials/test_oncv.py`
 validates the ONCVPSP family atomically (H, Li, O) and on the same two
-molecules (50 tests, ~11 s, peak RSS 0.6 GB); `test_paw.py` does the same for
+molecules (50 tests, ~11 s, peak RSS 0.6 GB); `pseudopotentials/test_paw.py` does the same for
 the PAW family, adding the overlap, on-site-projection, compensation and
 grid-stability checks (70 tests, 11.5 s, peak RSS 0.77 GB);
-`test_pseudopotential_engine.py` covers the engine, the basis-name selector
+`pseudopotentials/test_engine.py` covers the engine, the basis-name selector
 and the per-element sizes.
 
 See `examples/26_pseudopotential_generation.py` and

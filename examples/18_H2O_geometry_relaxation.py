@@ -84,7 +84,7 @@ print("1. Force validation: analytic gradient vs finite difference (H2)")
 print(RULE)
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
-options = dict(method="vqe", basis="FAO", grid=grid)
+options = dict(method="vqe", basis="HAO", grid=grid)
 
 atoms = h2(0.74)
 atoms.calc = Mandacaru(**options)
@@ -124,7 +124,7 @@ assert worst < 1e-2, "analytic forces disagree with the energy derivative"
 # --------------------------------------------------------------------------- #
 
 print(f"\n{RULE}")
-print("2. Hellmann-Feynman vs Pulay (H2, FAO basis)")
+print("2. Hellmann-Feynman vs Pulay (H2, HAO basis)")
 print(RULE)
 
 hellmann_feynman, pulay = atoms.calc.get_force_breakdown()
@@ -155,14 +155,14 @@ start = 0.65
 fine_grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.10)
 relaxing = h2(start)
 relaxing.calc = Mandacaru(method="vqe",
-                          basis="FAO",
+                          basis="HAO",
                           grid=fine_grid)
 BFGS(relaxing, logfile=os.path.join(DATA, "h2_relaxation.log")).run(
     fmax=0.15, steps=40)
 
 initial = h2(start)
 initial.calc = Mandacaru(method="vqe",
-                         basis="FAO",
+                         basis="HAO",
                          grid=fine_grid)
 initial_force = float(np.max(np.linalg.norm(initial.get_forces(), axis=1)))
 
@@ -175,7 +175,7 @@ print("The optimizer genuinely converges the forces to ~0.1 eV/A, which is the")
 print("mechanical check that energy and gradient are consistent.  The geometry")
 print("it lands on is still model-limited: a scan of this same fixed grid puts")
 print("the energy minimum near 0.90 A, and the experimental H2 bond length is")
-print("0.741 A.  Both gaps come from the minimal FAO basis and the grid, not")
+print("0.741 A.  Both gaps come from the minimal HAO basis and the grid, not")
 print("from the optimizer or the gradient.")
 assert residual < 0.5, "the relaxation did not reduce the forces"
 assert final > start, "the relaxation did not move away from the compressed start"
@@ -192,7 +192,7 @@ water = molecule("H2O")
 water_grid = Grid(center=water.get_positions().mean(axis=0), box_size=6.0,
                   h=0.30)
 water.calc = Mandacaru(method="adapt-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        grid=water_grid,
                        frozen_core=True,
                        pool="qeb",
@@ -230,7 +230,7 @@ for shift in shifts:
     probe = molecule("H2O")
     probe.set_positions(probe.get_positions() + np.array([0.0, 0.0, shift]))
     probe.calc = Mandacaru(method="adapt-vqe",
-                           basis="FAO",
+                           basis="HAO",
                            grid=water_grid,
                            frozen_core=True,
                            pool="qeb",

@@ -82,7 +82,7 @@ class IntegralEngine:
     Parameters
     ----------
     basis : sequence of BasisFunction
-        The orbitals (FAO, Wannier, ...) spanning the active space.
+        The orbitals (HAO, Wannier, ...) spanning the active space.
     grid : Grid
         The shared integration grid.  All functions are sampled on it.
     """

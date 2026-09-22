@@ -222,7 +222,7 @@ def lookup_family(name) -> FamilySpec | None:
     """The :class:`FamilySpec` registered under ``name``, or ``None``.
 
     Case-insensitive, aliases accepted (``"PAW"``, ``"oncv"``, ``"NCPP-TM"``);
-    anything that is not a registered family name -- ``"FAO"``, ``"cc-pVTZ"``,
+    anything that is not a registered family name -- ``"HAO"``, ``"cc-pVTZ"``,
     a per-element mapping -- gives ``None``.  This is how
     :func:`~mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis` tells a
     pseudopotential basis from an all-electron one.

@@ -26,7 +26,7 @@ come from a quantum variational eigensolver:
     water = molecule("H2O")
     water.center(vacuum=3.0)          # the cell is the real-space box
     water.calc = Mandacaru(method="adapt-vqe",
-                           basis="FAO",
+                           basis="HAO",
                            h=0.30,
                            frozen_core=True)
     BFGS(water).run(fmax=0.05)
@@ -338,7 +338,7 @@ class Mandacaru(Calculator):
         ansatz becomes very slow past ~8 qubits.  A method registered through
         :func:`register_method` is accepted by name as well.
     basis : str or dict
-        Basis family, as for the solvers (default ``"FAO"``); accepts a
+        Basis family, as for the solvers (default ``"HAO"``); accepts a
         ``{"name": ..., <options>}`` dict, including the periodic plane-wave
         family (energy only -- plane waves carry no forces) and the
         pseudopotential families ``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW"``
@@ -430,11 +430,11 @@ class Mandacaru(Calculator):
     optimizer : str, dict or Optimizer
         The classical optimizer, forwarded to the solver.  A **method name**
         (``"SLSQP"``, the default, ``"COBYLA"``, ``"Nelder-Mead"``, ``"SPSA"``,
-        ``"Adam"``, ``"L-BFGS-B"``) takes the library's budget and tolerance; a
+        ``"L-BFGS"``, ``"BFGS"``) takes the library's budget and tolerance; a
         **dict** sets them without importing anything::
 
             Mandacaru(method="adapt-vqe",
-                      basis="FAO",
+                      basis="HAO",
                       optimizer={"method": "SLSQP",
                                  "maxiter": 2000,
                                  "tol": 1e-12})
@@ -468,7 +468,7 @@ class Mandacaru(Calculator):
     implemented_properties = ["energy", "free_energy", "forces",
                               "charges", "magmoms", "magmom"]
 
-    def __init__(self, method: str = DEFAULT_METHOD, *, basis="FAO",
+    def __init__(self, method: str = DEFAULT_METHOD, *, basis="HAO",
                  h: float = DEFAULT_GRID_SPACING, grid=None,
                  include_pulay: bool = True, force_method: str = "rdm",
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
@@ -797,7 +797,7 @@ class Mandacaru(Calculator):
             raise NotImplementedError(
                 "nuclear forces need an atom-centered basis whose orbitals move "
                 "with the nuclei; the plane-wave ('PW') family does not "
-                "qualify. Use 'FAO', 'NAO', 'GTO', '6-31G(d)' or a "
+                "qualify. Use 'HAO', 'NAO', 'GTO', '6-31G(d)' or a "
                 "pseudopotential family ('NCPP', 'ONCVPSP', 'PAW').")
 
     # -- ASE hook ---------------------------------------------------------- #
@@ -1290,7 +1290,7 @@ class Mandacaru(Calculator):
             raise NotImplementedError(
                 "nuclear forces need an atom-centered basis whose integrals are "
                 "available; the plane-wave ('PW') family does not qualify. Use "
-                "an atom-centered basis such as 'FAO', 'GTO' or '6-31G(d)'.")
+                "an atom-centered basis such as 'HAO', 'GTO' or '6-31G(d)'.")
 
         gamma, gamma2 = self._state_rdms(solver) if rdms is None else rdms
         frozen = context.get("frozen") or ()
@@ -1693,7 +1693,7 @@ class Mandacaru(Calculator):
         residual is recorded on ``details["translational_residual"]`` either
         way, so it can be checked without catching a warning.
 
-        A sharp all-electron core is where this matters: LiH in the ``FAO``
+        A sharp all-electron core is where this matters: LiH in the ``HAO``
         basis at ``h = 0.25`` reports ~480 eV/Angstrom of net force -- larger
         than any real force in the problem -- while its energy, its RDMs and
         its orbital-response residual all look healthy.
@@ -1773,7 +1773,7 @@ class Mandacaru(Calculator):
                 "direct-mode problem (hamiltonian= / load_hamiltonian=) "
                 "carries only a qubit operator, and the plane-wave ('PW') "
                 "family is not sampled on the real-space grid.  Run the same "
-                "geometry with an atom-centered basis ('FAO', 'NAO', 'GTO', "
+                "geometry with an atom-centered basis ('HAO', 'NAO', 'GTO', "
                 "'6-31G(d)', 'PAW', ...) to get a density.")
         return solver, context["integrals"], context.get("frozen") or ()
 

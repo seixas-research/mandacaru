@@ -47,7 +47,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",                   # "vqe" | "adapt-vq
                        h=0.10,                               # grid spacing (Å)
                        pool="fermionic",                     # "fermionic" | "qubit" | "qeb" | "ceo" | "ceo-ovp"
                        mapping="jordan_wigner",              # "jordan_wigner" | "parity" | "parity_reduced" | "bravyi_kitaev"
-                       optimizer={"method": "SLSQP",         # "SLSQP" | "BFGS" | "L-BFGS" | "L-BFGS-B" | "NLCG-PR" | "COBYLA" | "Nelder-Mead" | "SPSA" | "Adam"
+                       optimizer={"method": "SLSQP",         # "SLSQP" | "BFGS" | "L-BFGS" | "NLCG-PR" | "COBYLA" | "Nelder-Mead" | "SPSA"
                                   "maxiter": 2000,
                                   "tol": 1e-12},
                        max_iterations=300,                   # at most 300 operators
@@ -108,7 +108,7 @@ df.to_csv("lih_dissociation.csv", index=False)
 
 **Operator pools.** The pool is the set of anti-Hermitian generators ADAPT-VQE chooses from, and it sets the trade-off between circuit depth and the number of iterations. `fermionic` holds spin-adapted single and double excitations; `qubit` splits them into individual Pauli strings (the shallowest gates, more iterations); `qeb` uses qubit excitations — the same occupation moves without the fermionic sign; `ceo` couples the qubit excitations that act on the same spin-orbitals, and `ceo-ovp` keeps that coupling to one parameter per step, roughly halving the two-qubit gate count of `qeb`. Every pool is built in the encoding you ask for (Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev) and reaches the same ground state. The fermionic and qubit-excitation pools conserve the particle number; the individual Pauli strings of `qubit` do not, by design.
 
-**Classical optimization.** The parameters are updated by the optimizer in `optimizer=` — a method name, a dict `{"method": ..., "maxiter": ..., "tol": ...}`. SLSQP (the default) and L-BFGS-B use gradients and stop in one to two orders of magnitude fewer steps on exact simulators; Nelder–Mead and COBYLA are gradient-free and more robust on a small, nearly-converged problem; SPSA (two energy evaluations per step, whatever the number of parameters) and Adam tolerate the statistical noise of shot-based hardware. Both costs of a run — optimizer steps and energy evaluations — are reported per growth step and in total; see [the guide](https://mandacaru.readthedocs.io/en/latest/guide/optimizers.html).
+**Classical optimization.** The parameters are updated by the optimizer in `optimizer=` — a method name, a dict `{"method": ..., "maxiter": ..., "tol": ...}`. SLSQP (the default), BFGS, L-BFGS and NLCG-PR use gradients and stop in one to two orders of magnitude fewer steps on exact simulators; Nelder–Mead and COBYLA are gradient-free and more robust on a small, nearly-converged problem; SPSA (two energy evaluations per step, whatever the number of parameters) tolerates the statistical noise of shot-based hardware. Both costs of a run — optimizer steps and energy evaluations — are reported per growth step and in total; see [the guide](https://mandacaru.readthedocs.io/en/latest/guide/optimizers.html).
 
 ## License
 

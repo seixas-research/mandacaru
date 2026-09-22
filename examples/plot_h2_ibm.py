@@ -45,7 +45,7 @@ for path, color, marker in zip(files, ("#D55E00", "#009E73", "#CC79A7"), "s^D"):
                 label=f"{rows[0]['backend']} ({rows[0]['shots']} shots)")
 ax.set_xlabel("H-H distance (Angstrom)")
 ax.set_ylabel("energy (eV)")
-ax.set_title("H2 (FAO), ADAPT-VQE, parity mapping, 2 qubits, resilience level 2")
+ax.set_title("H2 (HAO), ADAPT-VQE, parity mapping, 2 qubits, resilience level 2")
 ax.legend(fontsize=8)
 fig.tight_layout()
 fig.savefig(PNG_PATH, dpi=150)

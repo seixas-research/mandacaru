@@ -535,15 +535,6 @@ _OPTIMIZERS = [
   number      = {DFVLR-FB 88-28},
   year        = {1988}
 }""", "the SLSQP optimizer", verified=False, topics=("optimizer", "slsqp")),
-    _ref("Kingma2015", """
-@inproceedings{Kingma2015,
-  author    = {Kingma, Diederik P. and Ba, Jimmy},
-  title     = {Adam: A method for stochastic optimization},
-  booktitle = {Proc. 3rd Int. Conf. Learn. Represent. (ICLR)},
-  year      = {2015},
-  eprint    = {1412.6980},
-  archivePrefix = {arXiv}
-}""", "the Adam optimizer", verified=False, topics=("optimizer", "adam")),
     # BFGS was published independently in 1970 by all four of its initials;
     # Fletcher's is the one usually cited for the update formula itself.
     _ref("Fletcher1970", """

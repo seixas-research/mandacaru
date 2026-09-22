@@ -25,7 +25,7 @@ Without it the full variational run is performed:
 
 .. code-block:: console
 
-    $ mandacaru water.xyz --method adapt-vqe --basis FAO --h 0.25 --frozen-core
+    $ mandacaru water.xyz --method adapt-vqe --basis HAO --h 0.25 --frozen-core
     $ mandacaru LiH --cell 10 --basis PAW --h 0.25
 
 The geometry is any file :func:`ase.io.read` understands (``.xyz``, ``.cif``,
@@ -170,8 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "the file's.")
 
     basis = parser.add_argument_group("basis and Hamiltonian")
-    basis.add_argument("--basis", default="FAO",
-                       help="basis family: FAO (default), NAO, NAO-AE, GTO, "
+    basis.add_argument("--basis", default="HAO",
+                       help="basis family: HAO (default), NAO, NAO-AE, GTO, "
                             "PW, a named Gaussian set -- STO-nG, Pople "
                             "(6-31+G*, 6-311+G(2df,2p), ...), Dunning "
                             "(cc-pVDZ, aug-cc-pVTZ, cc-pCVDZ) or Karlsruhe "

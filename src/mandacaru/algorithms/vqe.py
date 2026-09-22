@@ -68,6 +68,13 @@ class VQEResult:
     optimal_parameters: np.ndarray        # optimal ansatz parameters
     reference_energy: float               # energy of the ansatz reference state
     num_evaluations: int = 0              # cost-function evaluations
+    #: Parameter updates the classical optimizer made -- its *steps*, which are
+    #: not its evaluations (a gradient method spends several of the latter on
+    #: each of the former).  ``None`` when the method reports neither a count
+    #: nor a per-iteration callback.  The same figure
+    #: :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQEResult` reports, so the
+    #: two results can be compared on classical cost.
+    optimizer_steps: int | None = None
     history: list[float] = field(default_factory=list)   # cost per evaluation
     success: bool = True
     timings: dict | None = None           # per-stage wall time / cores / memory
@@ -114,7 +121,7 @@ class VQE(DeflationMixin, VariationalDriver):
         UCCSD ansatz is then built from the geometry.
     optimizer : str, dict or Optimizer
         A method name -- one of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``,
-        ``"SLSQP"`` (default), ``"Adam"``, ``"L-BFGS-B"`` -- taking the
+        ``"SLSQP"`` (default), ``"L-BFGS"``, ``"BFGS"`` -- taking the
         library's budget and tolerance; ``{"method": ..., "maxiter": ...,
         "tol": ...}`` setting them without importing anything; or a pre-built
         :class:`~mandacaru.optimizers.optim.Optimizer`, which is what the dict
@@ -345,6 +352,7 @@ class VQE(DeflationMixin, VariationalDriver):
             optimal_parameters=result.x,
             reference_energy=self._to_energy_units(ref_energy),
             num_evaluations=result.nfev,
+            optimizer_steps=result.nit,
             history=[self._to_energy_units(e) for e in result.history],
             success=result.success,
             timings=timings.as_dict(),

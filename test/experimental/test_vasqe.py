@@ -27,7 +27,7 @@ from mandacaru.experimental import (
     annealed_temperature,
     softmax_selection_probabilities,
 )
-from mandacaru.core import MolecularIntegrals, minimal_fao_basis
+from mandacaru.core import MolecularIntegrals, minimal_hao_basis
 from mandacaru.integrals import Grid
 from mandacaru.optimizers import Optimizer
 from mandacaru.units import HARTREE_TO_EV
@@ -44,7 +44,7 @@ def h2_hamiltonian():
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.25)
-    mints = MolecularIntegrals(nuclei, minimal_fao_basis(nuclei), grid)
+    mints = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
     return mints.molecular_hamiltonian(mo_basis=True, n_electrons=2)
 
 
@@ -63,7 +63,7 @@ TOL_1E8 = 1e-8 * HARTREE_TO_EV
 
 
 def _vasqe(h2_hamiltonian, **kwargs):
-    kwargs.setdefault("optimizer", Optimizer("L-BFGS-B", maxiter=2000))
+    kwargs.setdefault("optimizer", Optimizer("L-BFGS", maxiter=2000))
     return Mandacaru(method="vasqe", hamiltonian=h2_hamiltonian,
                      pool="fermionic", num_particles=(1, 1),
                      n_spatial_orbitals=2, trace=False, profile=False,
@@ -193,7 +193,7 @@ class TestVASQE:
         from ase import Atoms
         atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
                       cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
-        atoms.calc = Mandacaru(method="vasqe", basis="FAO", h=0.30,
+        atoms.calc = Mandacaru(method="vasqe", basis="HAO", h=0.30,
                                temperature=1e-3, trace=False, profile=False,
                                gradient_tolerance=1e-4, max_iterations=10)
         atoms.get_potential_energy()
@@ -218,7 +218,7 @@ class TestVASQEExcitedStates:
         sv = Mandacaru(method="subspace-vasqe", hamiltonian=h2_hamiltonian,
                        pool="fermionic", num_states=2, num_particles=(1, 1),
                        n_spatial_orbitals=2, temperature=0.5,
-                       optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+                       optimizer=Optimizer("L-BFGS", maxiter=2000),
                        trace=False, profile=False, gradient_tolerance=1e-6,
                        max_iterations=20, seed=1)
         result = sv.run()
@@ -307,7 +307,7 @@ def lih_cache(tmp_path_factory):
     from ase import Atoms
     path = str(tmp_path_factory.mktemp("cache") / "lih.json")
     atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7.0] * 3)
-    atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="FAO", h=0.4,
+    atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO", h=0.4,
                            trace=False, profile=False, max_iterations=1,
                            save_hamiltonian=path, hamiltonian_format="json")
     atoms.get_potential_energy()
@@ -355,10 +355,10 @@ class TestBloch:
         atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                       cell=[[1.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
                       pbc=[True, False, False])
-        driver = BlochCalculator(atoms, method="vasqe", basis="FAO",
+        driver = BlochCalculator(atoms, method="vasqe", basis="HAO",
                                  n_cells=3, n_images=5, h=0.30)
         e_cell, result = driver.total_energy(
-            (2, 1, 1), h=0.40, optimizer=Optimizer("L-BFGS-B", maxiter=2000),
+            (2, 1, 1), h=0.40, optimizer=Optimizer("L-BFGS", maxiter=2000),
             temperature=1.0, max_iterations=6, gradient_tolerance=1e-3,
             profile=False)
         assert isinstance(result, VASQEResult) and np.isfinite(e_cell)

@@ -47,7 +47,7 @@ from mandacaru.basis import BasisSet
 from mandacaru.basis._config import valence_subshells
 from mandacaru.basis.multizeta import zeta_tables
 from mandacaru.basis.nao import solve_confined_radial
-from mandacaru.basis.fao import FullAtomicOrbital
+from mandacaru.basis.hao import HydrogenicAtomicOrbital
 from mandacaru.core import MolecularIntegrals
 from mandacaru.integrals import Grid
 from mandacaru.units import BOHR_TO_ANGSTROM, from_hartree
@@ -84,7 +84,7 @@ print(f"\n{RULE}")
 print("2. The split-valence hierarchy for the hydrogen 1s")
 print(RULE)
 
-z_eff = FullAtomicOrbital.slater_effective_charge(1, 1, 0)
+z_eff = HydrogenicAtomicOrbital.slater_effective_charge(1, 1, 0)
 radius, radial, _energy = solve_confined_radial(1, 0, z_eff, 4.0, 800)
 tables = zeta_tables(radius, radial, 1, 0, 4)
 

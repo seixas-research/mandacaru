@@ -34,7 +34,7 @@ def make(method, **kwargs):
                   pbc=[True, False, False])
     return BlochCalculator(atoms,
                            method=method,
-                           basis="FAO",
+                           basis="HAO",
                            mapping="jordan_wigner",
                            n_cells=4,
                            n_images=7,
@@ -51,7 +51,7 @@ print("1s band along Gamma->X (eV):", np.round(bands[:, 0], 3))
 print("(the band structure is solver-independent -- identical for all methods)\n")
 
 # --- Correlated total energy per cell (Born-von Karman supercell) ------------
-opt = {"method": "L-BFGS-B", "maxiter": 2000, "tol": 1e-12}
+opt = {"method": "L-BFGS", "maxiter": 2000, "tol": 1e-12}
 mesh = (4, 1, 1)
 
 e_vqe, _ = make("vqe").total_energy(mesh, optimizer=opt)

@@ -216,7 +216,7 @@ class VariationalDriver(Calculator):
 
     def __init__(self, *, optimizer=DEFAULT_OPTIMIZER,
                  mapping: str = "jordan_wigner",
-                 basis="FAO", device: str = "AER_simulator", grid=None,
+                 basis="HAO", device: str = "AER_simulator", grid=None,
                  h: float = DEFAULT_GRID_SPACING, kpts=None, spin: bool = False,
                  initial_state: str | None = "hartree-fock", charge: int = 0,
                  n_electrons=None, frozen_core=False, frozen_orbitals=None,

@@ -23,7 +23,7 @@ What this script shows
 1. the radial functions of H and O per tier, with their sizes;
 2. the confining wall and how the tier functions sit inside it;
 3. the variational payoff at Hartree-Fock on H2 -- tier 0 (the bare LDA 1s)
-   versus tier 1 (polarized, radially flexible) -- against the analytic FAO;
+   versus tier 1 (polarized, radially flexible) -- against the analytic HAO;
 4. the qubit count each choice implies, via the dry-run estimator.
 
 Output: ``examples/data/nao_ae_basis.png``.
@@ -96,7 +96,7 @@ def rhf_energy(basis):
 
 
 energies = {}
-for label, basis in (("FAO (analytic 1s)", BasisSet.build("FAO")),
+for label, basis in (("HAO (analytic 1s)", BasisSet.build("HAO")),
                      ("NAO-AE tier 0", BasisSet.build("NAO-AE", tier=0,
                                                        onset=ONSET, width=WIDTH)),
                      ("NAO-AE tier 1", bset)):

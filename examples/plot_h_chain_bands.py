@@ -77,7 +77,7 @@ def main():
     ax.set_xticklabels([r"$-X$", r"$\Gamma$", r"$X$"])
     ax.set_xlabel(r"crystal momentum $k_x$")
     ax.set_ylabel("energy (eV)")
-    ax.set_title("Periodic H chain (1.0 A) - FAO 1s Bloch band, Jordan-Wigner")
+    ax.set_title("Periodic H chain (1.0 A) - HAO 1s Bloch band, Jordan-Wigner")
     ax.legend(loc="upper center", fontsize=8, framealpha=0.9)
     ax.grid(alpha=0.2)
     fig.tight_layout()

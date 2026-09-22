@@ -219,7 +219,7 @@ At the 24-qubit case that started all this, the factorized measurement is a
 
 The plan reports the factorized 1-norm under its own name so the shot cost is
 never understated, and the Givens gates show up in `isa_two_qubit_gates`
-(LiH/FAO: 192 → 244, a 27 % longer circuit for 4.3× fewer bases).
+(LiH/HAO: 192 → 244, a 27 % longer circuit for 4.3× fewer bases).
 
 ```{note}
 Jordan-Wigner only — the scheme reads occupations off the computational basis,

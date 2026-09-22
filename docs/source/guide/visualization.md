@@ -11,7 +11,7 @@ from mandacaru import Mandacaru
 atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7, 7, 7])
 atoms.center()
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.30)
 atoms.get_potential_energy()
 
@@ -84,7 +84,7 @@ print(orbitals.coefficients)    # column i: orbital i in the atomic-orbital basi
 print(orbitals.mo_coefficients) # the same, in the molecular-orbital basis
 ```
 
-Occupations that are not 2 or 0 *are* the correlation. H₂ in the minimal FAO
+Occupations that are not 2 or 0 *are* the correlation. H₂ in the minimal HAO
 basis gives `(1.97, 0.03)` at 0.74 Å and `(1.76, 0.24)` at 1.60 Å: the
 stretched bond is half broken, and a single determinant — which would report
 `(2, 0)` at both — cannot say so.
@@ -131,7 +131,7 @@ and the state vector is passed directly:
 
 ```python
 atoms.calc = Mandacaru(method="subspace-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.30,
                        num_states=2)
 atoms.get_potential_energy()

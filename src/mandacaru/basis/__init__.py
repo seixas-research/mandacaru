@@ -11,7 +11,7 @@
 Every basis function implements the :class:`BasisFunction` contract (sample on a
 grid), so any of them drops straight into the integral engine.  Built-ins:
 
-* :class:`FullAtomicOrbital` -- analytic hydrogen-like orbitals (with Slater
+* :class:`HydrogenicAtomicOrbital` -- analytic hydrogen-like orbitals (with Slater
   effective charges);
 * :class:`NumericalAtomicOrbital` -- confined Sankey/SIESTA-type numerical
   orbitals on a radial grid;
@@ -44,7 +44,7 @@ from .filtering import (FILTER_METHODS, FILTER_NYQUIST_FRACTION,
                         filter_label, filter_radial, filter_table,
                         inverse_spherical_bessel_transform, residual_weight,
                         spherical_bessel_transform, validate_filter)
-from .factory import (BasisSet, FAOBasisSet, GaussianBasisSet, GTOBasisSet,
+from .factory import (BasisSet, HAOBasisSet, GaussianBasisSet, GTOBasisSet,
                       NAOAEBasisSet, NAOBasisSet, PerElementBasisSet,
                       Pople631GBasisSet)
 from .gaussian_families import (NAMED_BASIS_SETS, GaussianRecipe,
@@ -52,7 +52,7 @@ from .gaussian_families import (NAMED_BASIS_SETS, GaussianRecipe,
                                 gaussian_shells, parse_basis_name,
                                 shell_notation)
 from .gaussian import GaussianOrbital
-from .fao import FullAtomicOrbital
+from .hao import HydrogenicAtomicOrbital
 from .nao import (DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital,
                   energy_shift_to_rc)
 from .nao_ae import (RadialFunction, build_species, confinement_potential,
@@ -76,11 +76,11 @@ __all__ = [
     "residual_weight",
     "spherical_bessel_transform",
     "validate_filter",
-    "FullAtomicOrbital",
+    "HydrogenicAtomicOrbital",
     "NumericalAtomicOrbital",
     "GaussianOrbital",
     "BasisSet",
-    "FAOBasisSet",
+    "HAOBasisSet",
     "NAOBasisSet",
     "NAOAEBasisSet",
     "GTOBasisSet",

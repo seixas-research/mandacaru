@@ -24,7 +24,7 @@ from mandacaru import Mandacaru
 atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
 atoms.center()
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.25,
                        checkpoint="examples/data/h2_wavefunction.json",
                        checkpoint_every=1)
@@ -45,7 +45,7 @@ The record is also kept on the driver as `calc.solver.checkpoint` (or
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.25,
                        resume="examples/data/h2_wavefunction.json",
                        checkpoint="examples/data/h2_wavefunction.json",

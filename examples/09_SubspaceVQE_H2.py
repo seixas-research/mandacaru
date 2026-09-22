@@ -53,7 +53,7 @@ def report(name, result, exact):
 
 # --- Subspace-search VQE (fixed UCCSD ansatz) --------------------------------
 atoms.calc = Mandacaru(method="subspace-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.20,
                        mapping="jordan_wigner",
                        num_states=2,
@@ -70,7 +70,7 @@ report("Subspace-VQE", ssvqe, exact)
 
 # --- Subspace-search ADAPT-VQE (one shared, adaptively grown ansatz) ---------
 atoms.calc = Mandacaru(method="subspace-adapt-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.20,
                        pool="fermionic",
                        num_states=2,

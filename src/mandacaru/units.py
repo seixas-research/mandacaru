@@ -10,11 +10,11 @@
 
 Mandacaru computes in **atomic units** internally -- lengths in Bohr, energies in
 Hartree -- because that is what the real-space integral kernels, the
-finite-difference Laplacian and the FAO (Full Atomic Orbital) orbitals are written in.  Users,
+finite-difference Laplacian and the HAO (Hydrogenic Atomic Orbital) orbitals are written in.  Users,
 however, usually think in **Angstrom** and **electronvolts**.
 
 This module is the single source of truth for the conversion factors and small
-helpers.  The user-facing classes (``Grid``, ``FullAtomicOrbital``,
+helpers.  The user-facing classes (``Grid``, ``HydrogenicAtomicOrbital``,
 ``Potentials``, ``IntegralEngine``) accept lengths in Angstrom and return
 energies in eV *by default*, converting to/from atomic units at their boundary,
 while the numerical core (the integral engine, the C backend) works throughout

@@ -116,7 +116,7 @@ class QubitEstimate:
     n_basis_functions: int = 0
     n_frozen_orbitals: int = 0
     per_atom: list[tuple[str, int]] = field(default_factory=list)
-    basis: str = "FAO"
+    basis: str = "HAO"
     mapping: str = "jordan_wigner"
     method: str = "adapt-vqe"
     device: str = "AER_simulator"
@@ -267,7 +267,7 @@ def _pseudo_basis_count(atoms, family, options):
     return per_atom, f"{family.label} ({', '.join(parts)})", potentials
 
 
-def count_basis_functions(atoms, basis="FAO"):
+def count_basis_functions(atoms, basis="HAO"):
     """Spatial basis functions per atom, ``[(symbol, count), ...]``, plus a label.
 
     Instantiates the basis family exactly as a run would (so every option that
@@ -334,7 +334,7 @@ def _device_fields(device, notes):
     return canon, capacity
 
 
-def estimate_qubits(atoms=None, *, basis="FAO", mapping: str = "jordan_wigner",
+def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                     charge: int = 0, n_electrons=None, spin: bool = False,
                     frozen_core=False, frozen_orbitals=None,
                     load_hamiltonian=None,

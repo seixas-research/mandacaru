@@ -13,13 +13,13 @@ circuits — and, with `execute_circuits=True`, which SDK **runs** them.
 from mandacaru.algorithms import Mandacaru
 
 Mandacaru(method="adapt-vqe",
-          basis="FAO",
+          basis="HAO",
           backend_provider="qiskit")   # default
 Mandacaru(method="adapt-vqe",
-          basis="FAO",
+          basis="HAO",
           backend_provider="braket")   # amazon-braket-sdk
 Mandacaru(method="adapt-vqe",
-          basis="FAO",
+          basis="HAO",
           backend_provider="cirq")     # cirq
 ```
 

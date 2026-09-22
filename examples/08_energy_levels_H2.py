@@ -36,7 +36,7 @@ atoms = Atoms("H2",
               pbc=True)
 
 atoms.calc = Mandacaru(method="vqe",
-                       basis="FAO",
+                       basis="HAO",
                        mapping="jordan_wigner",
                        h=0.20)
 

@@ -19,7 +19,7 @@ atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
 # 1. Build once and save.
 atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="qeb",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.25,
                        save_hamiltonian="lih.parquet")
 atoms.get_total_energy()
@@ -61,7 +61,7 @@ Two interchangeable formats are selected with `hamiltonian_format`:
 
 ```python
 Mandacaru(method="adapt-vqe",
-          basis="FAO",
+          basis="HAO",
           save_hamiltonian="lih",
           hamiltonian_format="json")
 # -> writes lih.json
@@ -173,7 +173,7 @@ from mandacaru.algorithms import Mandacaru
 
 # Build once ...
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.25,
                        save_hamiltonian="lih.parquet",
                        max_iterations=1)

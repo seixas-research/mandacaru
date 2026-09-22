@@ -24,10 +24,10 @@ atoms = Atoms(
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.0, h=0.1)
 atoms.calc = Mandacaru(
     method="vqe",
-    basis="FAO",
+    basis="HAO",
     grid=grid,
     mapping="jordan_wigner",
-    optimizer=Optimizer(method="L-BFGS-B", maxiter=500, tol=1e-12),
+    optimizer=Optimizer(method="L-BFGS", maxiter=500, tol=1e-12),
     execute_circuits=False)
 energy_ev = atoms.get_potential_energy()
 print(f"Molecular total energy: {energy_ev:.6f} eV")

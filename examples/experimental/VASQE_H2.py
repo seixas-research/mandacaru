@@ -39,10 +39,10 @@ atoms = Atoms("H2",
 
 def run(label, **vasqe_kwargs):
     atoms.calc = Mandacaru(method="vasqe",
-                           basis="FAO",
+                           basis="HAO",
                            h=0.20,
                            mapping="jordan_wigner",
-                           optimizer="L-BFGS-B",
+                           optimizer="L-BFGS",
                            profile=False,
                            max_iterations=12,
                            gradient_tolerance=1e-5,
@@ -57,7 +57,7 @@ def run(label, **vasqe_kwargs):
 
 # Exact FCI reference (lowest eigenvalue of the qubit Hamiltonian).
 atoms.calc = Mandacaru(method="vasqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.20,
                        temperature=1e-3,
                        profile=False,

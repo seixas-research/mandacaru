@@ -11,7 +11,7 @@
 A **linear chain of hydrogen atoms 1.0 Angstrom apart**, periodic along *x* with a
 10 Angstrom vacuum gap in *y* and *z*.  The geometry is an ASE ``Atoms`` object with
 the **one-atom primitive cell** of the chain (one H per cell -> one 1s band); basis
-**FAO**, fermion-to-qubit map **Jordan-Wigner**.
+**HAO**, fermion-to-qubit map **Jordan-Wigner**.
 
 The calculation uses the periodic :class:`~mandacaru.algorithms.BlochCalculator`,
 whose ``method`` argument selects the variational eigensolver:
@@ -58,7 +58,7 @@ CSV_PATH = os.path.join(DATA, "h_chain_bands.csv")
 atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
               cell=[[SPACING, 0.0, 0.0], [0.0, VACUUM, 0.0], [0.0, 0.0, VACUUM]],
               pbc=[True, False, False])
-settings = dict(basis="FAO", mapping="jordan_wigner", n_cells=4, n_images=7, h=0.20)
+settings = dict(basis="HAO", mapping="jordan_wigner", n_cells=4, n_images=7, h=0.20)
 
 # Correlated total energy -> adaptive method; single-particle bands -> fixed-ansatz
 # method (bands are solver-independent, so method="vqe" is the cheapest choice).

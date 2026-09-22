@@ -31,7 +31,7 @@ complex_.center(vacuum=4.0)
 
 result = interaction_energy(complex_, fragments=[[0, 1, 2], [3]],
                             charges=[0, 1], charge=1,
-                            method="adapt-vqe", basis="FAO",
+                            method="adapt-vqe", basis="HAO",
                             frozen_core=True, h=0.25)
 result.energy              # eV (every Mandacaru result is eV)
 result.in_units("Ha")      # the atomic-unit view
@@ -52,7 +52,7 @@ basis and options:
 
 ```python
 calc = Mandacaru(method="adapt-vqe",
-                 basis="FAO",
+                 basis="HAO",
                  frozen_core=True,
                  h=0.25)
 calc.interaction_energy(complex_, [[0, 1, 2], [3]], charges=[0, 1], charge=1)

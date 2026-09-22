@@ -147,8 +147,8 @@ def _is_plane_wave(name) -> bool:
 def resolve_basis(basis):
     """Normalize a ``basis`` spec to ``(name, options)``.
 
-    Accepts a plain method name (``"FAO"``) or a dict giving the name plus that
-    family's options: ``{"name": "FAO"}``, ``{"name": "NAO", "energy_shift": 0.03}``,
+    Accepts a plain method name (``"HAO"``) or a dict giving the name plus that
+    family's options: ``{"name": "HAO"}``, ``{"name": "NAO", "energy_shift": 0.03}``,
     ``{"name": "NAO", "size": "DZP"}`` (multiple-zeta and polarized -- see
     :mod:`mandacaru.basis.multizeta`), ``{"name": "NAO-AE", "tier": 1,
     "onset": 3.0}`` (all-electron NAOs, :mod:`mandacaru.basis.nao_ae`),
@@ -162,7 +162,7 @@ def resolve_basis(basis):
 
     A **per-element mapping** -- a dict keyed by chemical symbols (plus an
     optional ``"*"`` default), each value itself a basis spec, e.g.
-    ``{"O": {"name": "NAO", "size": "DZP"}, "H": "6-31G", "*": "FAO"}`` --
+    ``{"O": {"name": "NAO", "size": "DZP"}, "H": "6-31G", "*": "HAO"}`` --
     returns ``(PER_ELEMENT, mapping)``; see :func:`per_element_basis`.
     """
     if isinstance(basis, str):
@@ -175,14 +175,14 @@ def resolve_basis(basis):
         name = options.pop("name", None)
         if name is None:
             raise ValueError(
-                "a basis dict must include a 'name' key, e.g. {'name': 'FAO'} "
+                "a basis dict must include a 'name' key, e.g. {'name': 'HAO'} "
                 "or {'name': 'PW', 'energy_cutoff': 300}, or be a per-element "
-                "mapping such as {'O': 'FAO', 'H': '6-31G'}")
+                "mapping such as {'O': 'HAO', 'H': '6-31G'}")
         _check_retired_basis_name(name)
         return name, options
     raise TypeError(
-        "basis must be a name string, a dict like {'name': 'FAO', ...}, or a "
-        "per-element mapping like {'O': 'FAO', 'H': '6-31G'}")
+        "basis must be a name string, a dict like {'name': 'HAO', ...}, or a "
+        "per-element mapping like {'O': 'HAO', 'H': '6-31G'}")
 
 
 # Noble-gas core: (highest Z of the row, core electrons of that row's atoms).
@@ -632,7 +632,7 @@ def _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
         raise NotImplementedError(
             "the frozen-core approximation is not supported for the plane-wave "
             "(PW) basis: plane waves are delocalized and have no localized core "
-            "to freeze.  Use a localized basis (FAO / GTO / 6-31G(d) / NAO).")
+            "to freeze.  Use a localized basis (HAO / GTO / 6-31G(d) / NAO).")
 
     cell = np.asarray(atoms.get_cell(), dtype=float)
     if not np.any(cell):

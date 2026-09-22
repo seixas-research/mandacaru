@@ -83,7 +83,7 @@ DISTANCES = np.array([1.0, 1.3, 1.6, 1.9, 2.2, 2.6, 2.8])
 POOLS = ("fermionic", "qubit", "qeb", "ceo")
 MAPPINGS = ("jordan_wigner", "parity", "parity_reduced", "bravyi_kitaev")
 
-#: Contracted Gaussians (STO-3G-like): smoother on a grid than the bare-Z FAO
+#: Contracted Gaussians (STO-3G-like): smoother on a grid than the bare-Z HAO
 #: cusp, which matters for a geometry scan.
 BASIS = {"name": "GTO", "n_gaussians": 3}
 CELL = 15.0                 # cubic cell edge (Angstrom)
@@ -110,7 +110,7 @@ def solve(distance, pool, mapping):
                            basis=BASIS,
                            mapping=mapping,
                            h=GRID_SPACING,
-                           optimizer={"method": "L-BFGS-B",
+                           optimizer={"method": "L-BFGS",
                                       "maxiter": 2000,
                                       "tol": 1e-12},
                            profile=False,

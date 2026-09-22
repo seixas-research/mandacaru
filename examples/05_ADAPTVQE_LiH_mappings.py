@@ -49,7 +49,7 @@ for mapping in ("jordan_wigner", "parity", "parity_reduced",
                 "bravyi_kitaev"):
     atoms.calc = Mandacaru(method="adapt-vqe",
                            pool="fermionic",
-                           basis={"name": "FAO"},
+                           basis={"name": "HAO"},
                            mapping=mapping,
                            gradient="parameter_shift",
                            h=0.10,

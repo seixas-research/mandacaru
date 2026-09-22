@@ -61,9 +61,9 @@ DISTANCES = commensurate_distances(0.42, 3.0, GRID_SPEC)
 METHOD_OPTIONS = {
     "adapt-vqe": {},
 }
-SOLVER = dict(pool="qeb", basis="FAO", profile=False, max_iterations=10,
+SOLVER = dict(pool="qeb", basis="HAO", profile=False, max_iterations=10,
               gradient_tolerance=1e-5,
-              optimizer={"method": "L-BFGS-B", "maxiter": 2000, "tol": 1e-12})
+              optimizer={"method": "L-BFGS", "maxiter": 2000, "tol": 1e-12})
 
 
 def h2(distance: float) -> Atoms:
@@ -76,7 +76,7 @@ def h2(distance: float) -> Atoms:
 # --------------------------------------------------------------------------- #
 
 grid = GRID_SPEC.build()
-e_atoms = atomic_reference(["H", "H"], BasisSet.build("FAO"), grid,
+e_atoms = atomic_reference(["H", "H"], BasisSet.build("HAO"), grid,
                            molecule_positions(float(DISTANCES[0])))
 print(f"reference: E(2 x H, UHF) = {e_atoms:+.4f} eV")
 
@@ -111,7 +111,7 @@ for method, rel in binding.items():
     r_eq = float(DISTANCES[i_min])
     print(f"\n{method}: minimum {rel[i_min]:+.3f} eV at d = {r_eq:.2f} A "
           f"(experimental H2: 0.741 A, -4.75 eV)")
-    # A bound minimum in the interior of the scan.  The fixed-zeta minimal FAO
+    # A bound minimum in the interior of the scan.  The fixed-zeta minimal HAO
     # basis overstretches the bond (the 1s exponent cannot contract on bonding),
     # so the minimum lands near ~1 A rather than at the experimental 0.741 A.
     assert 0 < i_min < len(DISTANCES) - 1, f"{method}: no interior minimum"

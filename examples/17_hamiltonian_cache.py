@@ -75,7 +75,7 @@ for fmt in ("parquet", "json"):
     atoms = lih()
     atoms.calc = Mandacaru(method="adapt-vqe",
                            pool=POOL,
-                           basis={"name": "FAO"},
+                           basis={"name": "HAO"},
                            h=0.25,
                            profile=False,
                            max_iterations=MAX_ITERATIONS,

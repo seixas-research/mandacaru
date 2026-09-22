@@ -14,7 +14,7 @@ End-to-end demonstration wiring the pieces together through the ASE interface:
   :class:`~mandacaru.algorithms.Mandacaru` is attached to it as an ASE
   *calculator* (``atoms.calc = Mandacaru(method="adapt-vqe", ...)``);
 * the calculator builds the Hamiltonian from the current geometry using the
-  chosen ``basis`` (here ``"FAO"`` -- Full Atomic Orbitals), so no manual
+  chosen ``basis`` (here ``"HAO"`` -- Hydrogenic Atomic Orbitals), so no manual
   integral wiring is needed;
 * calling ``atoms.get_total_energy()`` runs ADAPT-VQE with the qubit pool and
   returns the ground-state energy in **eV** (the ASE convention); the full run
@@ -46,7 +46,7 @@ atoms = Atoms("H2",
 
 atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="qubit",
-                       basis={"name": "FAO"},
+                       basis={"name": "HAO"},
                        mapping="jordan_wigner",
                        optimizer={"method": "SLSQP",  # the default
                                   "maxiter": 2000,

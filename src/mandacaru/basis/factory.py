@@ -35,7 +35,7 @@ from .base import BasisFunction
 from .gaussian import GaussianOrbital
 from .gaussian_families import (GaussianRecipe, gaussian_shells,
                                 parse_basis_name, shell_notation)
-from .fao import FullAtomicOrbital
+from .hao import HydrogenicAtomicOrbital
 from .multizeta import (DEFAULT_NAO_SIZE, DEFAULT_SPLIT_NORM, build_shells,
                         orbitals_from_tables, resolve_split_scheme,
                         resolve_zeta)
@@ -72,9 +72,9 @@ class BasisSet:
         ``{"name": ..., <options>}`` dict -- giving a
         :class:`PerElementBasisSet` that uses a different family on different
         elements: ``BasisSet.build({"O": {"name": "NAO", "size": "DZP"}, "H":
-        "6-31G", "*": "FAO"})``.
+        "6-31G", "*": "HAO"})``.
 
-        Supported methods: ``"FAO"`` (Full Atomic Orbitals -- the minimal
+        Supported methods: ``"HAO"`` (Hydrogenic Atomic Orbitals -- the minimal
         analytic single-zeta atomic family),
         ``"NAO"`` (confined numerical atomic orbitals), ``"NAO-AE"``
         (all-electron numerical atomic orbitals with hydrogen-like tiers, see
@@ -92,8 +92,8 @@ class BasisSet:
                 raise TypeError("a per-element mapping takes no extra options")
             return PerElementBasisSet(method)
         key = method.upper().replace(" ", "")
-        if key in ("FAO", "FULLATOMICORBITALS"):
-            return FAOBasisSet(**kwargs)
+        if key in ("HAO", "FULLATOMICORBITALS"):
+            return HAOBasisSet(**kwargs)
         if key == "NAO":
             return NAOBasisSet(**kwargs)
         if key in ("NAO-AE", "NAO_AE", "AE-NAO"):
@@ -117,7 +117,7 @@ class BasisSet:
                 # message explains the namespace and must not be replaced.
                 raise
             raise ValueError(
-                f"unknown basis method {method!r}; use 'FAO', 'NAO', 'NAO-AE', "
+                f"unknown basis method {method!r}; use 'HAO', 'NAO', 'NAO-AE', "
                 f"'GTO', an STO-nG name, or a named Gaussian family such as "
                 f"'6-31+G*', '6-311+G(2df,2p)', 'cc-pVTZ', 'aug-cc-pVDZ' or "
                 f"'def2-TZVP'") from error
@@ -147,7 +147,7 @@ class PerElementBasisSet(BasisSet):
     elements not listed.  Each element's functions come from that family's own
     :class:`BasisSet`, so a polarized double-zeta water next to a minimal
     sodium ion is ``{"O": {"name": "NAO", "size": "DZP"}, "H": {"name": "NAO",
-    "size": "DZP"}, "Na": "FAO"}``.  Plane waves, which are not atom-centered,
+    "size": "DZP"}, "Na": "HAO"}``.  Plane waves, which are not atom-centered,
     are refused.
     """
 
@@ -159,7 +159,7 @@ class PerElementBasisSet(BasisSet):
         if not is_per_element_basis(mapping):
             raise ValueError(
                 "expected a mapping of chemical symbols (or '*') to basis "
-                "specs, e.g. {'O': 'FAO', 'H': '6-31G'}")
+                "specs, e.g. {'O': 'HAO', 'H': '6-31G'}")
         self.mapping = {(k if k == DEFAULT_ELEMENT_KEY else k.capitalize()): v
                         for k, v in mapping.items()}
         self._default_key = DEFAULT_ELEMENT_KEY
@@ -265,11 +265,11 @@ class NAOBasisSet(BasisSet):
         """
         valence = valence_subshells(Z)
         fallback_state = max(valence)               # outermost occupied (n, l)
-        fallback = FullAtomicOrbital.slater_effective_charge(Z, *fallback_state)
+        fallback = HydrogenicAtomicOrbital.slater_effective_charge(Z, *fallback_state)
 
         def solve(n, l):
             try:
-                z_eff = FullAtomicOrbital.slater_effective_charge(Z, n, l)
+                z_eff = HydrogenicAtomicOrbital.slater_effective_charge(Z, n, l)
             except ValueError:
                 z_eff = fallback                    # unoccupied: polarization
             r, radial, _energy = solve_confined_radial(n, l, z_eff, self.r_c,
@@ -284,7 +284,7 @@ class NAOBasisSet(BasisSet):
             # Single zeta, no polarization: the original path, unchanged.
             orbitals: list[BasisFunction] = []
             for (n, l) in valence_subshells(Z):
-                z_eff = FullAtomicOrbital.slater_effective_charge(Z, n, l)
+                z_eff = HydrogenicAtomicOrbital.slater_effective_charge(Z, n, l)
                 for m in range(-l, l + 1):
                     orbitals.append(NumericalAtomicOrbital(
                         n, l, m, Z=z_eff, r_c=self.r_c, center=center,
@@ -452,11 +452,11 @@ class GTOBasisSet(BasisSet):
                 f"provenance={self.provenance!r})")
 
 
-class FAOBasisSet(BasisSet):
-    r"""Analytic Full Atomic Orbitals: one orbital per occupied subshell.
+class HAOBasisSet(BasisSet):
+    r"""Analytic Hydrogenic Atomic Orbitals: one orbital per occupied subshell.
 
     For each occupied ``(n, l)`` subshell of the atom, builds the ``2l + 1``
-    :class:`~mandacaru.basis.FullAtomicOrbital` functions with the **actual atomic
+    :class:`~mandacaru.basis.HydrogenicAtomicOrbital` functions with the **actual atomic
     number** ``Z`` as the orbital's nuclear charge (the bare hydrogenic orbital of
     the element -- no Slater screening).  A cheap, fully analytic reference basis
     (e.g. H -> 1s; Li -> 1s, 2s; C -> 1s, 2s, 2p).
@@ -477,7 +477,7 @@ class FAOBasisSet(BasisSet):
 
     Why it matters: the minimal basis has no room above the occupied orbitals,
     so a correlated method has almost nothing to correlate *into* -- on H2 the
-    occupied-only FAO basis gives 2 spatial orbitals (4 qubits) and a single
+    occupied-only HAO basis gives 2 spatial orbitals (4 qubits) and a single
     double excitation.  Each virtual level widens that active space, lowering
     the variational energy at the cost of more qubits.
 
@@ -494,8 +494,8 @@ class FAOBasisSet(BasisSet):
         Number of unoccupied subshells to append per atom (default ``0``).
     """
 
-    method = "FAO"
-    name = "FAO"
+    method = "HAO"
+    name = "HAO"
 
     def __init__(self, virtual_orbitals: int = 0):
         if isinstance(virtual_orbitals, bool):
@@ -537,12 +537,12 @@ class FAOBasisSet(BasisSet):
         orbitals: list[BasisFunction] = []
         for (n, l) in self.subshells(element):
             for m in range(-l, l + 1):
-                orbitals.append(FullAtomicOrbital(n, l, m, Z=float(Z),
+                orbitals.append(HydrogenicAtomicOrbital(n, l, m, Z=float(Z),
                                                   center=center, units=units))
         return orbitals
 
     def __repr__(self) -> str:
-        return f"FAOBasisSet(virtual_orbitals={self.virtual_orbitals})"
+        return f"HAOBasisSet(virtual_orbitals={self.virtual_orbitals})"
 
 
 

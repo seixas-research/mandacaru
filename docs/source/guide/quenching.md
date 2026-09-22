@@ -5,10 +5,10 @@ parameters the classical optimizer varies at each step**.
 
 ```python
 Mandacaru(method="adapt-vqe",
-          basis="FAO",
+          basis="HAO",
           quenching=True)    # default: re-optimize everything
 Mandacaru(method="adapt-vqe",
-          basis="FAO",
+          basis="HAO",
           quenching=False)   # freeze the past, tune only the newest
 ```
 

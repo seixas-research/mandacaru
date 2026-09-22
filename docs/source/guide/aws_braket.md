@@ -38,7 +38,7 @@ atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
 
 # Local Braket simulator, shot-based (identical protocol to a QPU).
 atoms.calc = Mandacaru(method="vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.35,
                        device="braket-local",
                        shots=8192)
@@ -46,14 +46,14 @@ atoms.get_total_energy()
 
 # The AWS managed simulator.
 atoms.calc = Mandacaru(method="vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.35,
                        device="braket-sv1",
                        shots=8192)
 
 # A real trapped-ion QPU.
 atoms.calc = Mandacaru(method="vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.35,
                        device="braket-ionq-aria",
                        shots=8192)
@@ -148,7 +148,7 @@ reduction removes two qubits and their gates at no cost in physics:
 Mandacaru(method="adapt-vqe",
           pool="fermionic",
           mapping="parity_reduced",
-          basis="FAO")     # H2 on 2 qubits
+          basis="HAO")     # H2 on 2 qubits
 ```
 
 A driver with `shots > 0` and an IBM device (`Mandacaru(..., device="ibm_kingston",
@@ -181,7 +181,7 @@ be named:
 
 ```python
 Mandacaru(method="vqe",
-          basis="FAO",
+          basis="HAO",
           device="arn:aws:braket:eu-west-2::device/qpu/vendor/New-1",
           shots=4096)
 ```

@@ -18,7 +18,7 @@ it and builds the reference with ``n_alpha - n_beta = 2`` (see
 grown ansatz then conserves ``S_z``, so the whole simulation stays in the triplet
 sector.
 
-O2 with Full Atomic Orbitals is 10 spatial orbitals / 16 electrons; to keep the
+O2 with Hydrogenic Atomic Orbitals is 10 spatial orbitals / 16 electrons; to keep the
 exact state-vector simulation tractable it is run in a compact active space
 (``frozen_orbitals`` removes the lowest molecular orbitals, leaving a 5-orbital /
 10-qubit ``(4, 2)`` triplet with 6 active electrons).
@@ -69,7 +69,7 @@ atoms = Atoms("O2",
 
 atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="fermionic",
-                       basis={"name": "FAO"},
+                       basis={"name": "HAO"},
                        mapping="jordan_wigner",
                        frozen_orbitals=[0, 1, 2, 3, 4],   # compact active space (tractable)
                        h=0.25,

@@ -45,7 +45,7 @@ atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
 
 atoms.calc = Mandacaru(method="subspace-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.20,
                        num_states=2,
                        weights=[2.0, 1.0])
@@ -76,7 +76,7 @@ were grown.
 
 ```python
 atoms.calc = Mandacaru(method="subspace-adapt-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.20,
                        pool="fermionic",
                        num_states=2,

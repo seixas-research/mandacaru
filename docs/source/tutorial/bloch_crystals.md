@@ -36,7 +36,7 @@ atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
 
 bloch = BlochCalculator(atoms,
                         method="vqe",
-                        basis="FAO",
+                        basis="HAO",
                         mapping="jordan_wigner",
                         n_cells=4,
                         n_images=7,
@@ -108,7 +108,7 @@ e_cell, res = BlochCalculator(atoms,
                               method="vqe",
                               h=0.20).total_energy(
                                   (4, 1, 1),
-                                  optimizer=Optimizer(method="L-BFGS-B",
+                                  optimizer=Optimizer(method="L-BFGS",
                                                       maxiter=2000,
                                                       tol=1e-12))
 
@@ -141,7 +141,7 @@ square = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                pbc=[True, True, False])
 bloch2d = BlochCalculator(square,
                           method="vqe",
-                          basis="FAO",
+                          basis="HAO",
                           n_cells=2,
                           n_images=3,
                           h=0.35)

@@ -162,7 +162,7 @@ def plot_slices(density, difference, path: str) -> None:
 def main() -> None:
     atoms = stretched_h2()
     atoms.calc = Mandacaru(method="adapt-vqe",
-                           basis="FAO",
+                           basis="HAO",
                            h=SPACING,
                            pool="fermionic")
     energy = atoms.get_potential_energy()

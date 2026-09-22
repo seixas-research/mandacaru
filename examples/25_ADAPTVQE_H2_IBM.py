@@ -62,7 +62,7 @@ def calculator():
     return Mandacaru(method="adapt-vqe",
                      pool="fermionic",
                      mapping="parity_reduced",  # H2 on 2 qubits instead of 4
-                     basis="FAO",
+                     basis="HAO",
                      h=0.10,
                      charge=0,
                      spin=False,
@@ -131,6 +131,6 @@ with open(os.path.join(DATA, "h2_dissociation_ibm.csv"), "w", newline="") as fh:
 
 plt.xlabel("H-H distance (Angstrom)")
 plt.ylabel("energy (eV)")
-plt.title("H2 (FAO), ADAPT-VQE, parity mapping, 2 qubits")
+plt.title("H2 (HAO), ADAPT-VQE, parity mapping, 2 qubits")
 plt.legend()
 plt.savefig(os.path.join(DATA, "h2_dissociation_ibm.png"), dpi=150)

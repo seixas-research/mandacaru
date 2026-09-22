@@ -1,0 +1,170 @@
+# -*- coding: utf-8 -*-
+# file: test_energy_levels.py
+
+"""Molecular energy levels (ground + excited states) via variational deflation.
+
+Both :class:`VQE` and :class:`ADAPTVQE` expose ``energy_levels``, which computes
+the low-lying spectrum with variational quantum deflation (VQD).  On H2 (MO
+basis) every level it returns must coincide with a true eigenvalue of the qubit
+Hamiltonian; the ground level must match exact diagonalization.
+"""
+
+import numpy as np
+import pytest
+
+from mandacaru.algorithms import EnergyLevels, Mandacaru
+from mandacaru.algorithms.deflation import spectral_width_beta
+from mandacaru.circuits import UCCSD
+from mandacaru.core import MolecularIntegrals, minimal_hao_basis
+from mandacaru.integrals import Grid
+from mandacaru.optimizers import Optimizer
+from mandacaru.units import HARTREE_TO_EV
+
+# The classical optimizers used below, with the iteration budget and
+# the convergence tolerance written out rather than left to the
+# library default: a test that pins an energy should say what it was
+# optimized with.
+LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-12)
+
+
+# --------------------------------------------------------------------------- #
+# Shared H2 fixtures (MO basis) -- mirrors test_adapt_vqe.py.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture(scope="module")
+def h2_hamiltonian():
+    R = 0.74
+    nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
+              (1.0, np.array([0.0, 0.0, +R / 2]))]
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.25)
+    mints = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
+    return mints.molecular_hamiltonian(mo_basis=True, n_electrons=2)
+
+
+@pytest.fixture(scope="module")
+def h2_spectrum(h2_hamiltonian):
+    """Exact spectrum in eV (the Hamiltonian is Hartree; the levels are eV)."""
+    m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
+    return np.sort(np.linalg.eigvalsh(0.5 * (m + m.conj().T)).real) * HARTREE_TO_EV
+
+
+def _is_eigenvalue(energy, spectrum, tol=1e-5 * HARTREE_TO_EV):
+    return float(np.min(np.abs(spectrum - energy))) < tol
+
+
+# --------------------------------------------------------------------------- #
+# VQE.energy_levels
+# --------------------------------------------------------------------------- #
+
+class TestVQEEnergyLevels:
+    def _vqe(self, h2_hamiltonian):
+        ansatz = UCCSD(2, (1, 1), mapping="jordan_wigner")
+        return Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                         ansatz=ansatz,
+                         optimizer=LBFGS,
+                         trace=False)
+
+    def test_ground_level_matches_exact(self, h2_hamiltonian, h2_spectrum):
+        levels = self._vqe(h2_hamiltonian).energy_levels(1)
+        assert levels.num_states == 1
+        assert levels.energy_unit == "eV"
+        assert levels.ground_state_energy == pytest.approx(
+            h2_spectrum[0], abs=1e-6 * HARTREE_TO_EV)
+
+    def test_levels_are_true_eigenvalues(self, h2_hamiltonian, h2_spectrum):
+        levels = self._vqe(h2_hamiltonian).energy_levels(2, restarts=4)
+        for e in levels.energies:
+            assert _is_eigenvalue(e, h2_spectrum)
+
+    def test_levels_ascending_and_distinct(self, h2_hamiltonian):
+        levels = self._vqe(h2_hamiltonian).energy_levels(2, restarts=4)
+        assert np.all(np.diff(levels.energies) > 1e-6 * HARTREE_TO_EV)
+
+    def test_excitation_energies(self, h2_hamiltonian):
+        levels = self._vqe(h2_hamiltonian).energy_levels(2, restarts=4)
+        assert levels.excitation_energies[0] == pytest.approx(0.0, abs=1e-12)
+        assert levels.excitation_energies[1] > 0.0
+        # The stored gap is eV; the Hartree view divides by the conversion factor.
+        ha = levels.excitation_energies_in_units("Ha")
+        assert ha[1] == pytest.approx(levels.excitation_energies[1] / 27.211386,
+                                      rel=1e-4)
+        np.testing.assert_allclose(levels.excitation_energies_in_units("eV"),
+                                   levels.excitation_energies)
+
+    def test_states_stored_and_orthogonal(self, h2_hamiltonian):
+        levels = self._vqe(h2_hamiltonian).energy_levels(2, restarts=4)
+        assert len(levels.states) == 2
+        overlap = abs(np.vdot(levels.states[0], levels.states[1]))
+        assert overlap < 1e-4        # deflation makes the levels orthogonal
+
+
+# --------------------------------------------------------------------------- #
+# ADAPTVQE.energy_levels
+# --------------------------------------------------------------------------- #
+
+class TestADAPTEnergyLevels:
+    def _adapt(self, h2_hamiltonian):
+        return Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                         pool="fermionic", num_particles=(1, 1),
+                         n_spatial_orbitals=2,
+                         optimizer=LBFGS,
+                         trace=False, profile=False, gradient_tolerance=1e-6)
+
+    def test_ground_level_matches_exact(self, h2_hamiltonian, h2_spectrum):
+        levels = self._adapt(h2_hamiltonian).energy_levels(1)
+        assert levels.ground_state_energy == pytest.approx(
+            h2_spectrum[0], abs=1e-6 * HARTREE_TO_EV)
+
+    def test_levels_are_true_eigenvalues(self, h2_hamiltonian, h2_spectrum):
+        levels = self._adapt(h2_hamiltonian).energy_levels(2)
+        for e in levels.energies:
+            assert _is_eigenvalue(e, h2_spectrum)
+
+    def test_excited_state_lifts_above_ground(self, h2_hamiltonian, h2_spectrum):
+        levels = self._adapt(h2_hamiltonian).energy_levels(2)
+        assert levels.energies[1] > levels.energies[0] + 1e-6 * HARTREE_TO_EV
+        # ADAPT records how many operators were grown for each level.
+        assert levels.num_operators is not None
+        assert len(levels.num_operators) == 2
+
+    def test_reference_energy_populated(self, h2_hamiltonian):
+        levels = self._adapt(h2_hamiltonian).energy_levels(1)
+        assert levels.reference_energy is not None
+
+
+# --------------------------------------------------------------------------- #
+# Shared helpers / result container.
+# --------------------------------------------------------------------------- #
+
+class TestEnergyLevelsHelpers:
+    def test_num_states_validated(self, h2_hamiltonian):
+        ansatz = UCCSD(2, (1, 1), mapping="jordan_wigner")
+        vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
+                        ansatz=ansatz, trace=False)
+        with pytest.raises(ValueError):
+            vqe.energy_levels(0)
+
+    def test_requires_configuration(self):
+        vqe = Mandacaru(method="vqe", basis="HAO", trace=False)          # calculator mode, unconfigured
+        with pytest.raises(RuntimeError):
+            vqe.energy_levels(2)
+
+    def test_spectral_width_beta_positive(self, h2_hamiltonian):
+        qh = h2_hamiltonian.map_to_qubits("jordan_wigner")
+        assert spectral_width_beta(qh) > 0.0
+
+    def test_container_views(self):
+        lv = EnergyLevels(energies=np.array([-1.0, -0.5, 0.25]))
+        assert lv.num_states == 3
+        assert lv.ground_state_energy == -1.0
+        np.testing.assert_allclose(lv.excitation_energies, [0.0, 0.5, 1.25])
+        np.testing.assert_allclose(lv.gaps, [0.5, 0.75])
+        # Stored in eV by default: the Hartree view divides by the factor ...
+        np.testing.assert_allclose(lv.in_units("Ha"),
+                                   np.array([-1.0, -0.5, 0.25]) / HARTREE_TO_EV)
+        np.testing.assert_allclose(lv.in_units("eV"), [-1.0, -0.5, 0.25])
+        # ... and a Hartree container (atomic_units=True) converts the other way.
+        lv_ha = EnergyLevels(energies=np.array([-1.0, -0.5]), energy_unit="Ha")
+        np.testing.assert_allclose(lv_ha.in_units("eV"),
+                                   np.array([-1.0, -0.5]) * HARTREE_TO_EV)
+        np.testing.assert_allclose(lv_ha.in_units("Ha"), [-1.0, -0.5])

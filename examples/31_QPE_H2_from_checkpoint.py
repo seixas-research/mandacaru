@@ -10,7 +10,7 @@
 
 Three steps, each reading the previous one's file:
 
-1. ADAPT-VQE on H2 (FAO, 4 qubits) writes a **wavefunction checkpoint** after
+1. ADAPT-VQE on H2 (HAO, 4 qubits) writes a **wavefunction checkpoint** after
    every accepted operator -- the reference determinant, the generators, the
    angles, the qubit Hamiltonian and the solver's progress.  Interrupt the
    run and ``resume=`` the same file to continue it.
@@ -46,10 +46,10 @@ atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]],
               cell=[6.0, 6.0, 6.0])
 atoms.center()
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.25,
                        pool="fermionic",
-                       optimizer={"method": "L-BFGS-B",
+                       optimizer={"method": "L-BFGS",
                                   "maxiter": 2000,
                                   "tol": 1e-12},
                        gradient_tolerance=1e-6,

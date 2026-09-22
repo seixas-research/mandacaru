@@ -9,7 +9,7 @@
 r"""Electronic-structure integrals and the molecular Hamiltonian.
 
 :class:`MolecularIntegrals` computes the one- and two-body integrals over a
-localized Full Atomic Orbitals (FAO) basis by driving the real-space
+localized Hydrogenic Atomic Orbitals (HAO) basis by driving the real-space
 :class:`~mandacaru.integrals.IntegralEngine`, and assembles the second-quantized
 molecular Hamiltonian as a :class:`~mandacaru.core.mapping.Fermion`.
 
@@ -39,7 +39,7 @@ import warnings
 
 import numpy as np
 
-from ..basis import FullAtomicOrbital
+from ..basis import HydrogenicAtomicOrbital
 from ..integrals import Grid, IntegralEngine, Potentials
 from ..units import to_bohr
 from .mapping import Fermion
@@ -98,7 +98,7 @@ class MolecularIntegrals(MeanFieldMixin):
         Nuclear charges and Cartesian positions (in ``units``) defining the
         electron-nuclear potential.
     basis : sequence of BasisFunction
-        Spatial orbitals spanning the active space (e.g. ``FullAtomicOrbital``).
+        Spatial orbitals spanning the active space (e.g. ``HydrogenicAtomicOrbital``).
     grid : Grid
         Real-space integration grid.
     units : {"angstrom", "bohr"}
@@ -885,17 +885,17 @@ def freeze_core_integrals(h_mo: np.ndarray, eri_mo: np.ndarray,
     return h_eff, eri_active, float(np.real(core_energy))
 
 
-def minimal_fao_basis(nuclei, grid_units: str = "angstrom"):
-    """Build one Slater-screened FAO (Full Atomic Orbital) 1s orbital per atom (minimal basis).
+def minimal_hao_basis(nuclei, grid_units: str = "angstrom"):
+    """Build one Slater-screened HAO (Hydrogenic Atomic Orbital) 1s orbital per atom (minimal basis).
 
     ``nuclei`` is a sequence of ``(Z, position)``; returns a list of
-    :class:`~mandacaru.basis.FullAtomicOrbital`, one 1s per center with the Slater
+    :class:`~mandacaru.basis.HydrogenicAtomicOrbital`, one 1s per center with the Slater
     effective charge for that atom's 1s.
     """
     basis = []
     for Z, R in nuclei:
-        z_eff = FullAtomicOrbital.slater_effective_charge(int(round(Z)), 1, 0)
-        basis.append(FullAtomicOrbital(1, 0, 0, Z=z_eff, center=R,
+        z_eff = HydrogenicAtomicOrbital.slater_effective_charge(int(round(Z)), 1, 0)
+        basis.append(HydrogenicAtomicOrbital(1, 0, 0, Z=z_eff, center=R,
                                        units=grid_units))
     return basis
 

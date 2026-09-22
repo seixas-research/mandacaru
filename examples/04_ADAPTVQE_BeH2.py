@@ -10,7 +10,7 @@
 
 Linear (D∞h) BeH2 is built as an ASE :class:`ase.Atoms` object with the two
 hydrogens symmetric about the central beryllium along ``z``.  With
-``basis={"name": "FAO"}`` each atom contributes its Full Atomic Orbitals
+``basis={"name": "HAO"}`` each atom contributes its Hydrogenic Atomic Orbitals
 (Be {1s, 2s} + 2 H {1s} = 4 spatial orbitals), and ``frozen_core=True`` freezes
 the Be ``1s`` core -- leaving a 3-orbital / 6-qubit active space with 4 active
 electrons (a ``(2, 2)`` closed shell).  The solver is attached through
@@ -53,7 +53,7 @@ atoms = Atoms("BeH2",
 
 atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="ceo",
-                       basis={"name": "FAO"},
+                       basis={"name": "HAO"},
                        sparse=True,
                        mapping="jordan_wigner",
                        gradient="parameter_shift",

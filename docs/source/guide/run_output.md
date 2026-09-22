@@ -77,7 +77,7 @@ Each iteration is one row, one column per property computed at that step:
 | `\|grad\|` | Largest pool gradient; the operator with this gradient is the one selected. Convergence is when it falls below `gradient_tolerance`. |
 | `energy (eV)` | Energy after the inner re-optimization (Hartree with `atomic_units=True`). |
 | `expr` | Expressivity of the grown ansatz: KL divergence from the Haar distribution over the number-conserving sector. It falls as the ansatz specializes. **Off by default** and the column is then absent rather than blank; `run(log_expressivity=True)` adds it. It is a diagnostic, not a result, and not cheap: `2 x 400` state preparations per iteration, each applying every operator in the ansatz, so the cost is linear in the ansatz and quadratic over a run (0.010 / 0.031 / 0.059 / 0.125 s at 1 / 4 / 8 / 16 operators, 6 qubits). |
-| `steps` | **Steps the classical optimizer took** to re-optimize the grown ansatz — parameter updates, not cost evaluations. The two differ by the method: L-BFGS-B spends several evaluations per step on a finite-difference gradient and a line search, Adam spends `2N + 1`, SPSA two or three, while COBYLA evaluates once per trial point. `-` when a method reports neither a count nor a per-iteration callback. |
+| `steps` | **Steps the classical optimizer took** to re-optimize the grown ansatz — parameter updates, not cost evaluations. The two differ by the method: L-BFGS spends several evaluations per step on a finite-difference gradient and a line search, SPSA two or three, while COBYLA evaluates once per trial point. `-` when a method reports neither a count nor a per-iteration callback. |
 | `cnot` | CNOT gates after compiling to the native gate set. |
 | `1q` | Single-qubit gates in the same compilation. |
 | `depth` | Circuit depth in the same compilation. |
@@ -104,7 +104,7 @@ does not. {func}`mandacaru.utils.logging.parse_output` reads it back.
 
 ```python
 calc = Mandacaru(method="adapt-vqe",
-                 basis="FAO",
+                 basis="HAO",
                  h=0.25,
                  txt="output.txt")
 ```
@@ -340,7 +340,7 @@ select the same estimator and all log `parameter_shift`:
 
 ```python
 calc = Mandacaru(method="adapt-vqe",
-                 basis="FAO",
+                 basis="HAO",
                  h=0.25,
                  gradient="parameter_shift",
                  txt="output.txt")
@@ -545,7 +545,7 @@ Two options write what the blocks leave out, as JSON, once per run:
 
 ```python
 calc = Mandacaru(method="adapt-vqe",
-                 basis="FAO",
+                 basis="HAO",
                  h=0.25,
                  verbose_operators=True,      # -> pool.json
                  verbose_hamiltonian=True)    # -> hamiltonian.inspect.json
@@ -562,7 +562,7 @@ own file:
 
 ```python
 calc = Mandacaru(method="adapt-vqe",
-                 basis="FAO",
+                 basis="HAO",
                  h=0.25,
                  verbose_operators=f"data/pool_{distance:.2f}.json",
                  verbose_hamiltonian=f"data/hamiltonian_{distance:.2f}.json")

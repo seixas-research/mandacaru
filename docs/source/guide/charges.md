@@ -58,7 +58,7 @@ $N_A = \int w_A n\, d^3r$ and $q_A = Z_A - N_A$.
   354, 2006). It follows the density rather than a reference and gives the
   largest charges of the three.
 
-LiH at 1.6 Å, FAO, `h=0.20` — same state, three answers:
+LiH at 1.6 Å, HAO, `h=0.20` — same state, three answers:
 
 | method | q(Li) | q(H) |
 | --- | --- | --- |
@@ -124,7 +124,7 @@ evaluation:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="FAO",
+                       basis="HAO",
                        h=0.20,
                        population="hirshfeld")
 

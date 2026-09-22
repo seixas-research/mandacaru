@@ -19,7 +19,7 @@
   mapping entirely; the format is auto-detected on load.
 """
 
-from .hamiltonian import MolecularIntegrals, minimal_fao_basis
+from .hamiltonian import MolecularIntegrals, minimal_hao_basis
 from .mapping import (Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity,
                       parity_reduced)
 from .planewave import PlaneWaveIntegrals, plane_wave_vectors
@@ -32,7 +32,7 @@ from .checkpoint import (WavefunctionCheckpoint, load_checkpoint,
 
 __all__ = [
     "MolecularIntegrals",
-    "minimal_fao_basis",
+    "minimal_hao_basis",
     "PlaneWaveIntegrals",
     "plane_wave_vectors",
     "Fermion",

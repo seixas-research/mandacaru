@@ -216,19 +216,19 @@ carbon has 14 functions, not the 15 of a Cartesian-`d` program. And Pople's
 published, while `6-31G*` and `6-311G*` polarize every atom beyond helium.
 
 
-## Virtual levels for the FAO basis
+## Virtual levels for the HAO basis
 
-`FAO` is the cheapest basis in Mandacaru: one analytic hydrogenic orbital per
+`HAO` is the cheapest basis in Mandacaru: one analytic hydrogenic orbital per
 **occupied** subshell, carrying the atom's bare nuclear charge (H → 1s; Li →
 1s, 2s; C → 1s, 2s, 2p). That minimality is also its limit — a correlated
-method has almost nothing to correlate *into*. H₂ in the occupied-only FAO
+method has almost nothing to correlate *into*. H₂ in the occupied-only HAO
 basis is 2 spatial orbitals, 4 qubits, and a single double excitation.
 
 `virtual_orbitals` buys room above the occupied set:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis={"name": "FAO", "virtual_orbitals": 1},
+                       basis={"name": "HAO", "virtual_orbitals": 1},
                        h=0.30)
 ```
 
@@ -251,7 +251,7 @@ its `m` components. What that costs on hydrogen:
 | `2` | 2s, 2p | 5 | 20 |
 | `3` | 2s, 2p, 3s | 6 | 24 |
 
-`BasisSet.build("FAO", virtual_orbitals=k).function_count("H")` reports it for
+`BasisSet.build("HAO", virtual_orbitals=k).function_count("H")` reports it for
 any element, and the [dry run](dry_run.md) reports the qubit total before
 anything is integrated.
 
@@ -268,7 +268,7 @@ ADAPT-VQE to its basis FCI):
 ```{note}
 A virtual hydrogenic orbital is **diffuse** — H `2s` has ⟨r⟩ = 6 a₀ ≈ 3.2 Å —
 so the cell has to be large enough to contain it or the grid clips its tail,
-and the energies above move with the box like every other FAO number. The
+and the energies above move with the box like every other HAO number. The
 engine's resolution check warns when a function is not represented on the grid.
 ```
 
@@ -284,7 +284,7 @@ budget:
 ```python
 basis = {"O": {"name": "NAO", "size": "DZP"},
          "H": {"name": "NAO", "size": "DZP"},
-         "*": "FAO"}                              # every other element
+         "*": "HAO"}                              # every other element
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis=basis,
                        frozen_core=True)

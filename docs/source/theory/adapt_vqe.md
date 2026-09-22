@@ -103,7 +103,7 @@ measured against them rather than being absolute. The parameters are not
 re-optimized, since the removed operator was by construction doing almost
 nothing.
 
-Measured on BeH₂ (FAO, *h* = 0.35, `qeb`, L-BFGS-B, gradient tolerance 10⁻⁵),
+Measured on BeH₂ (HAO, *h* = 0.35, `qeb`, L-BFGS, gradient tolerance 10⁻⁵),
 all four variants reaching the same energy:
 
 | | operators | growth steps | CNOTs | depth | cost evaluations |

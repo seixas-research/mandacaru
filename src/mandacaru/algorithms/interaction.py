@@ -38,7 +38,7 @@ to check the setup before the variational runs.
 
     result = interaction_energy(complex_atoms, fragments=[[0, 1, 2], [3]],
                                 charges=[0, 1], method="adapt-vqe",
-                                basis="FAO", frozen_core=True, h=0.25)
+                                basis="HAO", frozen_core=True, h=0.25)
     result.energy            # eV (Hartree with atomic_units=True)
     result.in_units("Ha")
 """
@@ -140,7 +140,7 @@ def _rhf_energy(atoms, charge, grid, h, basis, frozen_core, frozen_orbitals,
 
 
 def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
-                       method: str = "adapt-vqe", basis="FAO",
+                       method: str = "adapt-vqe", basis="HAO",
                        h: float = DEFAULT_GRID_SPACING, grid=None,
                        **solver_kwargs) -> InteractionEnergy:
     """``E(complex) - sum_i E(fragment_i)`` with every energy on one grid.

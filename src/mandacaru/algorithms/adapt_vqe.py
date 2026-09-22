@@ -355,7 +355,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         direct mode; in calculator mode the builder supplies them).
     basis : str or dict
         Basis set used to build the molecular Hamiltonian from an ASE geometry in
-        calculator mode.  Either a name -- ``"FAO"`` (default; Full Atomic
+        calculator mode.  Either a name -- ``"HAO"`` (default; Full Atomic
         Orbitals), ``"NAO"``, ``"GTO"``/``"STO-3G"``, ``"6-31G(d)"`` (localized
         real-space families) or ``"PW"`` (periodic plane waves) -- or a
         ``{"name": ..., <options>}`` dict passing that family's options, e.g.
@@ -369,7 +369,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     optimizer : str, dict or Optimizer
         Classical optimizer for the inner re-optimization.  A method name --
         one of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``, ``"SLSQP"``
-        (default), ``"Adam"``, ``"L-BFGS-B"`` -- takes the library's budget and
+        (default), ``"L-BFGS"``, ``"BFGS"`` -- takes the library's budget and
         tolerance; ``{"method": ..., "maxiter": ..., "tol": ...}`` sets them
         without importing anything; a pre-built
         :class:`~mandacaru.optimizers.optim.Optimizer` is what the dict builds.
@@ -544,7 +544,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     def __init__(self,
                  hamiltonian=None,
                  pool="fermionic",
-                 basis="FAO",
+                 basis="HAO",
                  num_particles=None,
                  n_spatial_orbitals=None,
                  optimizer: str | Optimizer = DEFAULT_OPTIMIZER,

@@ -32,7 +32,7 @@ Why Pulay terms are **not** optional here
 Mandacaru's orbitals are atom-centered: when a nucleus moves, its basis functions
 move with it, so the basis itself depends on :math:`\mathbf R`.  The
 Hellmann-Feynman theorem assumes a fixed basis and is therefore *incomplete*.
-The size of the omission is not academic -- for H\ :sub:`2` in the FAO basis the
+The size of the omission is not academic -- for H\ :sub:`2` in the HAO basis the
 Hellmann-Feynman force is only ~40 % of the true gradient and never crosses zero,
 so a relaxation driven by it alone would not find an equilibrium at all.  Both
 contributions are computed here, and :func:`nuclear_gradient` returns them

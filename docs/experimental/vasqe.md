@@ -42,7 +42,7 @@ atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
 
 atoms.calc = Mandacaru(method="vasqe",
-                       basis="FAO",
+                       basis="HAO",
                        pool="fermionic",
                        temperature=1.0,
                        h=0.20,
@@ -77,7 +77,7 @@ iterations. Four schedules are available via `schedule`:
 ```python
 # Anneal from a hot, exploratory tau=2.0 down to a greedy tau=0.01.
 atoms.calc = Mandacaru(method="vasqe",
-                       basis="FAO",
+                       basis="HAO",
                        temperature=2.0,
                        final_temperature=0.01,
                        schedule="exponential",
@@ -117,7 +117,7 @@ print(levels.energies)                # eV
 
 # Subspace search: ground + excited states simultaneously.
 atoms.calc = Mandacaru(method="subspace-vasqe",
-                       basis="FAO",
+                       basis="HAO",
                        pool="fermionic",
                        num_states=2,
                        temperature=0.5,

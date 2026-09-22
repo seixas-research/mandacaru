@@ -106,7 +106,7 @@ class BlochCalculator:
         :class:`~mandacaru.algorithms.calculator.Mandacaru`).
     basis : str or dict
         Localized basis passed to :class:`~mandacaru.basis.BasisSet` and to the
-        molecular calculator (default ``"FAO"``).
+        molecular calculator (default ``"HAO"``).
     mapping : str
         Fermion-to-qubit mapping (default ``"jordan_wigner"``).
     n_cells : int
@@ -122,7 +122,7 @@ class BlochCalculator:
         (default ``0.20``).
     """
 
-    def __init__(self, atoms, method: str = "adapt-vqe", basis="FAO",
+    def __init__(self, atoms, method: str = "adapt-vqe", basis="HAO",
                  mapping: str = "jordan_wigner",
                  n_cells: int = 4, n_images: int = 7,
                  h: float = DEFAULT_GRID_SPACING):

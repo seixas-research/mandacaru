@@ -12,7 +12,7 @@ $ mandacaru water.xyz --frozen-core --dry-run
 Dry run -- no integrals computed, no circuits executed.
 
   method            : adapt-vqe
-  basis             : FAO
+  basis             : HAO
   mapping           : jordan_wigner
   source            : geometry
   basis functions   : 7  (O:5, H:1, H:1)
