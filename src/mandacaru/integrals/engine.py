@@ -26,7 +26,7 @@ from ..basis.base import BasisFunction
 from ..units import from_hartree
 from . import _backend
 from .grid import Grid
-from .poisson import PoissonFFTSolver
+from .poisson import PeriodicPoissonSolver, PoissonFFTSolver
 
 #: Default memory budget (MB) of the FFT two-body working set; override per
 #: call with ``two_body(max_memory_mb=...)`` or globally with the environment
@@ -87,7 +87,14 @@ class IntegralEngine:
         The shared integration grid.  All functions are sampled on it.
     """
 
-    def __init__(self, basis: Sequence[BasisFunction], grid: Grid):
+    def __init__(self, basis: Sequence[BasisFunction], grid: Grid,
+                 periodic: bool = False):
+        """``periodic`` selects the Coulomb boundary condition of the two-body
+        tensor: the zero-padded isolated kernel (default, correct for a
+        molecule) or the reciprocal-space periodic one, where the grid *is* the
+        cell and the density really is repeated on every lattice translation.
+        """
+        self.periodic = bool(periodic)
         # Resolve the integral backend *before* any integration: prefer the C
         # library, compile it on the spot when it is missing, and only fall
         # back to the NumPy reference kernels when that compile fails (the
@@ -98,8 +105,10 @@ class IntegralEngine:
         self.grid = grid
         # Sample every function once; reuse the (M, ngrid) stack for all
         # integrals.  This is the data actually shipped to C.
+        sample = (self._sample_periodic if self.periodic
+                  else (lambda function: function.sample(grid)))
         self._psi = np.ascontiguousarray(
-            np.stack([b.sample(grid) for b in self.basis]), dtype=np.complex128)
+            np.stack([sample(b) for b in self.basis]), dtype=np.complex128)
 
         # Profiling: wall-time per integral stage, plus the backend / core count
         # so the driver summary can report how the integration ran.
@@ -107,6 +116,69 @@ class IntegralEngine:
         self.timings = Timings(
             n_cores=self.backend_status.n_threads,
             backend=self.backend_status.label)
+
+    #: Lattice-image shells tried when sampling a periodic basis function.
+    IMAGE_SHELLS = 6
+    #: A shell is negligible once it adds less than this, relative to the peak.
+    IMAGE_TOLERANCE = 1e-10
+
+    def _sample_periodic(self, function) -> np.ndarray:
+        r"""Sample ``phi^per(r) = sum_R phi(r - R)`` on the cell grid.
+
+        A localized orbital truncated at the cell boundary is not the orbital a
+        periodic Hamiltonian acts on: its tail belongs to the neighboring
+        cell.  The Coulomb kernel and the external potential are both summed
+        over the lattice here, so the basis has to be as well, or the two
+        halves of the Hamiltonian describe different systems.
+
+        Shells of lattice translations are added until one contributes less
+        than :attr:`IMAGE_TOLERANCE` of the peak amplitude.  How many that
+        takes is a property of the cell against the orbital's decay length: a
+        wide cell needs one, a cell of the order of the orbital needs several.
+        """
+        import warnings
+
+        grid = self.grid
+        if grid.cell is None:
+            raise ValueError(
+                "a periodic basis needs the cell it is periodic in; build the "
+                "Grid with cell=... so the lattice translations are defined.")
+        # grid.cell is in the Grid's *user* units while X/Y/Z are in Bohr.
+        # Translating by the raw cell puts the images 1.89x too close and drops
+        # several copies of every orbital inside the cell.
+        from ..units import to_bohr
+        cell = np.asarray(
+            to_bohr(np.asarray(grid.cell, dtype=float).reshape(3, 3),
+                    grid.units), dtype=float)
+        total = np.array(
+            np.broadcast_to(function.evaluate(grid.X, grid.Y, grid.Z),
+                            grid.shape), dtype=np.complex128)
+        for shell in range(1, self.IMAGE_SHELLS + 1):
+            added = np.zeros_like(total)
+            span = range(-shell, shell + 1)
+            for i in span:
+                for j in span:
+                    for k in span:
+                        if max(abs(i), abs(j), abs(k)) != shell:
+                            continue          # only the new outer layer
+                        offset = np.array([i, j, k], dtype=float) @ cell
+                        added += np.broadcast_to(
+                            function.evaluate(grid.X - offset[0],
+                                              grid.Y - offset[1],
+                                              grid.Z - offset[2]), grid.shape)
+            total += added
+            peak = float(np.abs(total).max())
+            if float(np.abs(added).max()) <= self.IMAGE_TOLERANCE * max(peak,
+                                                                        1e-300):
+                break
+        else:
+            warnings.warn(
+                f"the periodic image sum for {type(function).__name__} had not "
+                f"converged after {self.IMAGE_SHELLS} shells: the cell is small "
+                "against the orbital's range, so the basis tail is truncated.  "
+                "Use a larger cell or a more compact basis.",
+                RuntimeWarning, stacklevel=2)
+        return total.reshape(-1)
 
     @property
     def uses_c_backend(self) -> bool:
@@ -175,16 +247,18 @@ class IntegralEngine:
         from scipy import fft as sfft
 
         grid = self.grid
-        if not grid.is_orthogonal:
-            raise NotImplementedError(
-                "the spectral kinetic operator needs an orthogonal grid; use "
-                "kinetic='fd' for a non-orthogonal cell")
         nx, ny, nz = grid.shape
-        kx = 2.0 * np.pi * sfft.fftfreq(nx, d=grid.dx)
-        ky = 2.0 * np.pi * sfft.fftfreq(ny, d=grid.dy)
-        kz = 2.0 * np.pi * sfft.fftfreq(nz, d=grid.dz)
-        k2 = (kx[:, None, None] ** 2 + ky[None, :, None] ** 2
-              + kz[None, None, :] ** 2)
+        # |G|^2 on the FFT mesh for a *general* voxel basis, from the reciprocal
+        # lattice of the grid's own cell -- the same construction the periodic
+        # Poisson kernel uses, Nyquist plane included.  For a diagonal step it
+        # reduces term by term to the separable `2 pi fftfreq(n, d=dx)` form
+        # (G_x = 2 pi m1 / (nx dx)), so an orthogonal grid is unaffected, while
+        # a hexagonal, rhombohedral or triclinic cell gets the cross terms
+        # b_i . b_j it needs instead of being refused.
+        from .poisson import fft_g_squared
+
+        cell = np.asarray(grid.step, dtype=float) @ np.diag([nx, ny, nz])
+        k2 = fft_g_squared((nx, ny, nz), cell)
         M = self._psi.shape[0]
         T = np.zeros((M, M), dtype=np.complex128)
         for b in range(M):
@@ -225,7 +299,8 @@ class IntegralEngine:
     # -- two body ---------------------------------------------------------- #
 
     def two_body(self, method: str = "fft", softening: float = 0.0,
-                 energy_units: str = "eV", max_memory_mb: float | None = None):
+                 energy_units: str = "eV", max_memory_mb: float | None = None,
+                 solver=None):
         r"""Electron-repulsion tensor over the basis, physicists' notation.
 
         Returns ``eri[a, b, c, d] = <ab|cd>``,
@@ -259,10 +334,18 @@ class IntegralEngine:
             Memory budget of the ``"fft"`` path's working set (pair densities
             and potentials are processed in blocks that fit it); default
             :func:`eri_memory_budget_mb`.
+        solver : object, optional
+            A Coulomb solver to use instead of the one this engine would pick.
+            It must expose ``solve_stack``, ``L`` and ``dV``.  This is how a
+            *second* tensor over the same orbitals is built with a different
+            kernel -- the Wigner-Seitz-truncated bare ``1/r`` of
+            :class:`~mandacaru.core.mpc.TruncatedCoulombSolver`, for the
+            exchange-correlation hole -- so the two can be subtracted term by
+            term.  ``method="direct"`` ignores it.
         """
         if method == "fft":
             with self.timings.time("two-body integrals (fft)"):
-                eri = self._two_body_fft(max_memory_mb)
+                eri = self._two_body_fft(max_memory_mb, solver=solver)
         elif method == "direct":
             from .poisson import voxel_self_potential
 
@@ -280,7 +363,7 @@ class IntegralEngine:
             raise ValueError(f"unknown two-body method {method!r}")
         return from_hartree(eri, energy_units)
 
-    def _two_body_fft(self, max_memory_mb: float | None = None):
+    def _two_body_fft(self, max_memory_mb: float | None = None, solver=None):
         r"""FFT-Poisson electron-repulsion tensor ``<ab|cd>`` (physicists').
 
         For every pair build the density ``rho_ij = conj(psi_i) psi_j``; solve
@@ -306,7 +389,10 @@ class IntegralEngine:
         ngrid = self.grid.size
         psi = self._psi                                          # (M, ngrid)
         dV = self.grid.dV
-        solver = PoissonFFTSolver(self.grid.shape, step=self.grid.step)
+        if solver is None:
+            solver = (PeriodicPoissonSolver(self.grid.shape, step=self.grid.step)
+                      if getattr(self, "periodic", False)
+                      else PoissonFFTSolver(self.grid.shape, step=self.grid.step))
 
         # Unique pairs u = (i, j) with i <= j, and the lookup for any (a, c).
         iu, ju = np.triu_indices(M)

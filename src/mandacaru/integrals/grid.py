@@ -110,6 +110,25 @@ class Grid:
     dy: float = field(init=False)
     dz: float = field(init=False)
     step: np.ndarray = field(init=False, repr=False)
+    #: Build the grid as a **period** rather than a box: ``n`` nodes spanning the
+    #: cell with no repeated endpoint, so ``shape @ step == cell`` exactly.  An
+    #: FFT over this grid has the cell as its period, which is what a periodic
+    #: Coulomb kernel, a lattice image sum and a spectral kinetic operator all
+    #: assume.  The default (``False``) keeps the inclusive-endpoint box every
+    #: molecular path uses.
+    periodic: bool = False
+    #: Round the periodic node count **up to a multiple** of these divisors, one
+    #: per lattice vector.  A Born-von Karman supercell of an ``(n1, n2, n3)``
+    #: mesh is ``n_i`` primitive cells long, and Bloch's theorem rests on the
+    #: grid being invariant under a *primitive* translation -- which it is only
+    #: when that translation is a whole number of grid steps.  With 15 nodes
+    #: across a 2-cell supercell the primitive translation is 7.5 steps, the
+    #: repeated atoms sample the grid differently, and the one-body matrix loses
+    #: its translation symmetry: measured on a 2x2x1 square lattice, the four
+    #: equivalent sites' on-site energies spread by 0.10 Ha and a degenerate
+    #: band pair split by 0.087 Ha.  With 16 nodes both are zero to 1e-14.
+    #: ``None`` (the default) leaves the node count alone.
+    commensurate: tuple | None = None
 
     def __post_init__(self):
         # Convert the user-facing lengths to the atomic units the backend uses.
@@ -136,10 +155,61 @@ class Grid:
             self.Z = Zr + center_bohr[2]
             return
 
-        if self.cell is not None and self.skew:
+        if self.periodic:
+            self._build_periodic(center_bohr, h_axes)
+        elif self.cell is not None and self.skew:
             self._build_skewed(center_bohr, h_axes)
         else:
             self._build_orthorhombic(center_bohr, h_axes, box)
+
+    # -- periodic (the cell is the period, endpoints not repeated) --------- #
+
+    def _build_periodic(self, center_bohr, h_axes):
+        """``n_m`` nodes per lattice vector, ``step_m = a_m / n_m``.
+
+        The distinction from :meth:`_build_skewed` is one node: there the step
+        is ``a / (n - 1)`` so the first and last node both sit on the cell
+        boundary, which double-counts it under periodicity and makes the FFT
+        period one step longer than the cell.  Here node ``n`` *is* node ``0``
+        of the next cell, so ``shape @ step`` reproduces the cell exactly.
+        """
+        if self.cell is None:
+            raise ValueError("a periodic grid needs the cell it is periodic in")
+        cell = np.asarray(self.cell, dtype=float)
+        if cell.shape != (3, 3):
+            raise ValueError(f"cell must be a (3, 3) tensor, got {cell.shape}")
+        cell_bohr = np.asarray(to_bohr(cell, self.units), dtype=float)
+        lengths = np.linalg.norm(cell_bohr, axis=1)
+        counts = [max(1, int(round(L / h))) for L, h in zip(lengths, h_axes)]
+        if self.commensurate is not None:
+            divisors = [max(1, int(d)) for d in self.commensurate]
+            if len(divisors) != 3:
+                raise ValueError(
+                    "commensurate must be three positive integers, one per "
+                    f"lattice vector; got {self.commensurate!r}")
+            # Round *up*, never down: the requested spacing is an upper bound on
+            # how coarse the grid may be, so refining it is safe and coarsening
+            # it is not.
+            counts = [n + (-n) % d for n, d in zip(counts, divisors)]
+        self.nx, self.ny, self.nz = (int(counts[0]), int(counts[1]),
+                                     int(counts[2]))
+        step = np.empty((3, 3))
+        for m in range(3):
+            step[:, m] = cell_bohr[m] / counts[m]
+        self.step = step
+        self.dx = float(np.linalg.norm(step[:, 0]))
+        self.dy = float(np.linalg.norm(step[:, 1]))
+        self.dz = float(np.linalg.norm(step[:, 2]))
+        self.points = self.nx
+
+        index = np.stack(np.meshgrid(np.arange(self.nx), np.arange(self.ny),
+                                     np.arange(self.nz), indexing="ij"), axis=-1)
+        positions = index @ step.T
+        middle = 0.5 * (np.array([self.nx, self.ny, self.nz]) @ step.T)
+        positions = positions - middle + center_bohr
+        self.X = np.ascontiguousarray(positions[..., 0])
+        self.Y = np.ascontiguousarray(positions[..., 1])
+        self.Z = np.ascontiguousarray(positions[..., 2])
 
     # -- orthorhombic (bounding box; possibly per-axis spacing) ----------- #
 

@@ -281,3 +281,167 @@ class PoissonFFTSolver:
             phi = sfft.ifftn(spec * self._Gk, workers=self.workers)
             out[p] = phi[:nx, :ny, :nz].reshape(-1) * dV
         return out
+
+
+def fft_g_squared(shape, cell):
+    r"""``|G|^2`` on the FFT mesh, with the Nyquist plane symmetrized.
+
+    ``cell`` holds the lattice vectors as **columns** (``step @ diag(shape)``),
+    so the matrix whose columns are the ``b_j`` is ``2 pi inv(cell).T`` and
+    ``G = reciprocal @ m``.
+
+    Why the symmetrization
+    ----------------------
+
+    ``fftfreq`` enumerates ``m`` over ``{0, ..., n/2 - 1, -n/2, ..., -1}``.  For
+    **even** ``n`` that set contains ``-n/2`` but not ``+n/2``, which are the
+    *same* discrete mode -- they differ by ``n``.  Writing
+    :math:`|G|^2 = \sum_{ab} Q_{ab} m_a m_b` with
+    :math:`Q = B^{\mathsf T} B`, the two aliases differ by the terms **linear**
+    in the Nyquist index, :math:`\pm 2 (n/2) \sum_{b \neq a} Q_{ab} m_b`.  Those
+    vanish for an orthogonal cell, where :math:`Q_{ab} = 0` off the diagonal --
+    and do **not** vanish for a sheared one.
+
+    The consequence is that the multiset of :math:`|G|^2` is not invariant when
+    a shear changes sign: measured at ``0.22`` (``n = 10``) and ``0.32``
+    (``n = 12``) for a 1e-3 shear, and exactly ``0`` for odd ``n``.  A quantity
+    that symmetry forces to be even in the strain -- the shear stress of a
+    cubic crystal -- then comes out nonzero, at 6.4e-4 eV/Angstrom^3 on a
+    ``10x10x10`` grid.
+
+    Averaging the aliases is the fix: because :math:`|G|^2` is quadratic, the
+    mean over the independent sign choices of the Nyquist components cancels
+    exactly the cross terms that involve them and keeps the diagonal
+    :math:`(n/2)^2 Q_{aa}`.  **For an orthogonal cell this changes nothing**,
+    which is why no existing energy moves.
+    """
+    shape = tuple(int(n) for n in shape)
+    cell = np.asarray(cell, dtype=float)
+    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
+    Q = reciprocal.T @ reciprocal
+
+    axes = [sfft.fftfreq(n) * n for n in shape]
+    m = np.meshgrid(*axes, indexing="ij")
+    # A node is "Nyquist along axis a" when n_a is even and m_a = -n_a/2; odd
+    # axes have no such mode and are never masked.
+    nyquist = [np.isclose(m[a], -(n // 2)) if n % 2 == 0
+               else np.zeros(shape, dtype=bool)
+               for a, n in enumerate(shape)]
+
+    g_squared = np.zeros(shape, dtype=float)
+    for a in range(3):
+        g_squared += Q[a, a] * m[a] * m[a]
+        for b in range(3):
+            if b == a:
+                continue
+            # Dropped wherever either index sits on its Nyquist plane: that is
+            # precisely the average over the two aliases.
+            keep = ~(nyquist[a] | nyquist[b])
+            g_squared += Q[a, b] * np.where(keep, m[a] * m[b], 0.0)
+    return g_squared
+
+
+class PeriodicPoissonSolver:
+    r"""Solve the Coulomb convolution under **periodic** boundary conditions.
+
+    :class:`PoissonFFTSolver` zero-pads precisely so the Coulomb tail cannot
+    wrap the box: that is what makes it the potential of an *isolated* density,
+    which is right for a molecule.  A crystal needs the opposite.  Here the
+    wrap is the physics -- the density really is repeated on every lattice
+    translation -- so the convolution is circular and is done in reciprocal
+    space, where the periodic kernel is diagonal:
+
+    .. math::
+
+        \Phi(\mathbf G) = rac{4\pi}{|\mathbf G|^2}\,
+ho(\mathbf G), \qquad
+        \Phi(\mathbf G = 0) \equiv 0 .
+
+    Dropping :math:`\mathbf G = 0` is not an approximation but a choice of
+    reference: the term diverges for a charged cell, and for a neutral one it
+    cancels exactly against the electron-ion and ion-ion :math:`\mathbf G = 0`
+    terms.  Setting all three to zero -- a uniform neutralizing background, the
+    jellium convention -- is consistent as long as **every** electrostatic term
+    of the total energy uses it.  ``PlaneWaveIntegrals`` makes the same choice.
+
+    There is no self-term to regularize: the real-space kernel's :math:`1/0`
+    never appears, because the sum runs over reciprocal-lattice vectors.
+
+    Parameters
+    ----------
+    shape : int or (int, int, int)
+        Nodes per axis of the grid.  The grid **is** the periodic cell here:
+        node ``n`` and node ``n + shape`` are the same point.
+    step : (3, 3) array_like
+        Voxel basis (step vectors as columns, i.e. ``Grid.step``), in Bohr.
+        The cell is ``step @ diag(shape)``.
+    spacing : float or (float, float, float), optional
+        Used only when ``step`` is not given: an orthogonal voxel of these
+        lengths.
+    workers : int, optional
+        Threads for the FFTs (``-1`` uses all cores).
+    """
+
+    def __init__(self, shape, step=None, spacing=None, workers: int = -1):
+        if np.isscalar(shape):
+            self.shape = (int(shape),) * 3
+        else:
+            self.shape = tuple(int(s) for s in shape)
+        if step is not None:
+            self.step = np.asarray(step, dtype=float)
+            if self.step.shape != (3, 3):
+                raise ValueError(f"step must be a 3x3 matrix, got "
+                                 f"{self.step.shape}")
+        elif spacing is not None:
+            values = ((float(spacing),) * 3 if np.isscalar(spacing)
+                      else tuple(float(v) for v in spacing))
+            if len(values) != 3 or min(values) <= 0.0:
+                raise ValueError(f"spacing must be three positive lengths, got "
+                                 f"{spacing!r}")
+            self.step = np.diag(np.asarray(values, dtype=float))
+        else:
+            raise ValueError("give either a spacing or a step matrix")
+        self.dV = abs(float(np.linalg.det(self.step)))
+        if self.dV <= 0.0:
+            raise ValueError("the voxel has zero volume (degenerate step)")
+        self.cell = self.step @ np.diag(self.shape)
+        self.volume = abs(float(np.linalg.det(self.cell)))
+        #: FFT transform shape, the name the engine sizes its blocks from.  No
+        #: padding here -- the wraparound the isolated solver pads against is
+        #: the periodicity -- so the transform is the grid itself.
+        self.L = self.shape
+        self.workers = workers
+        self._kernel = self._build_kernel()
+
+    def _build_kernel(self) -> np.ndarray:
+        """``4 pi / G^2`` on the FFT grid, with ``G = 0`` set to zero.
+
+        ``|G|^2`` comes from :func:`fft_g_squared`, whose Nyquist plane is
+        symmetrized; for an orthogonal cell that is identical to the plain
+        quadratic form, so no existing energy changes.
+        """
+        g_squared = fft_g_squared(self.shape, self.cell)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            kernel = np.where(g_squared > 0.0, 4.0 * np.pi / g_squared, 0.0)
+        return kernel
+
+    def solve(self, rho_flat: np.ndarray) -> np.ndarray:
+        """Periodic Coulomb potential of one density on the grid (flattened)."""
+        return self.solve_stack(rho_flat[None, :])[0]
+
+    def solve_stack(self, rho_stack: np.ndarray) -> np.ndarray:
+        """Periodic Coulomb potentials of a stack of ``P`` densities.
+
+        The FFT normalization works out so that no volume factor is needed: with
+        ``rho(G) = fftn(rho)/N`` and ``Phi(r) = sum_G Phi(G) e^{iGr}``, the
+        forward and inverse ``1/N`` cancel.
+        """
+        nx, ny, nz = self.shape
+        rho_stack = np.ascontiguousarray(rho_stack, dtype=np.complex128)
+        out = np.empty((rho_stack.shape[0], nx * ny * nz), dtype=np.complex128)
+        for index in range(rho_stack.shape[0]):
+            spectrum = sfft.fftn(rho_stack[index].reshape(nx, ny, nz),
+                                 workers=self.workers)
+            phi = sfft.ifftn(spectrum * self._kernel, workers=self.workers)
+            out[index] = phi.reshape(-1)
+        return out

@@ -27,6 +27,7 @@ Contents (VASQE only -- the pseudopotentials graduated to
   unknown, by design.
 """
 
+from ..algorithms.bloch import _BlochMixin
 from ..algorithms.calculator import register_method
 from .vasqe import (
     SubspaceVASQE,
@@ -37,11 +38,25 @@ from .vasqe import (
     softmax_selection_probabilities,
 )
 
+
+
+class BlochVASQE(_BlochMixin, VASQE):
+    """VASQE over the Born-von Karman supercell (``method="bloch-vasqe"``).
+
+    The periodic layer is composed over the solver exactly as the stable
+    ``"bloch-vqe"`` / ``"bloch-adapt-vqe"`` are, so this method takes the same
+    ``kpts`` and provides the same ``bands`` / ``get_spectral_function`` /
+    ``get_fermi_level``.
+    """
+
+
 register_method("vasqe", VASQE)
 register_method("subspace-vasqe", SubspaceVASQE)
+register_method("bloch-vasqe", BlochVASQE)
 
 __all__ = [
     "VASQE",
+    "BlochVASQE",
     "VASQEResult",
     "SubspaceVASQE",
     "TEMPERATURE_SCHEDULES",

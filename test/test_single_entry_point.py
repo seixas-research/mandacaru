@@ -20,15 +20,25 @@ import mandacaru.algorithms as algorithms
 from mandacaru import Mandacaru
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-SOLVER_CLASSES = ("VQE", "ADAPTVQE", "SubspaceVQE", "SubspaceADAPTVQE")
+# ``BlochCalculator`` was public until the periodic driver moved behind the
+# entry point; it is listed here so the sweep fails if it ever comes back.
+SOLVER_CLASSES = ("VQE", "ADAPTVQE", "SubspaceVQE", "SubspaceADAPTVQE",
+                  "BlochCalculator")
 METHODS = {"vqe": "VQE", "adapt-vqe": "ADAPTVQE", "subspace-vqe": "SubspaceVQE",
-           "subspace-adapt-vqe": "SubspaceADAPTVQE"}
+           "subspace-adapt-vqe": "SubspaceADAPTVQE",
+           "bloch-vqe": "BlochVQE", "bloch-adapt-vqe": "BlochADAPTVQE"}
+
+
+#: Options a method cannot be built without (the periodic ones need a mesh).
+METHOD_OPTIONS = {"bloch-vqe": {"kpts": {"size": (1, 1, 1), "gamma": True}},
+                  "bloch-adapt-vqe": {"kpts": {"size": (1, 1, 1), "gamma": True}}}
 
 
 class TestTheCalculatorIsTheEntryPoint:
     @pytest.mark.parametrize("method, solver", sorted(METHODS.items()))
     def test_every_method_builds_its_solver(self, method, solver):
-        assert type(Mandacaru(method=method).solver).__name__ == solver
+        options = METHOD_OPTIONS.get(method, {})
+        assert type(Mandacaru(method=method, **options).solver).__name__ == solver
 
     @pytest.mark.parametrize("spelling", ["adapt-vqe", "adaptvqe", "ADAPT_VQE",
                                           "Adapt VQE", " adapt-vqe "])

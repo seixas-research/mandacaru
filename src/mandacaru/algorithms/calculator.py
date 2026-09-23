@@ -73,13 +73,17 @@ from time import perf_counter as _perf
 import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
 
+from .bloch import BLOCH_METHODS
 from ..units import DEFAULT_GRID_SPACING
 
 #: The default method: ADAPT-VQE, everywhere a ``method`` is not given.
 DEFAULT_METHOD = "adapt-vqe"
 
 #: Stable method names accepted by ``method=``.
-STABLE_METHODS = ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe")
+#: The periodic names are declared by the module that implements them, so
+#: there is one place to change them.
+STABLE_METHODS = ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe",
+                  *BLOCH_METHODS)
 
 #: Kept as the historical name of the stable list.
 METHODS = STABLE_METHODS
@@ -133,11 +137,16 @@ def resolve_method(name: str):
         # The solver classes are the internal layer: this is the one place
         # they are reached from, and ``Mandacaru(method=...)`` the one way in.
         from .adapt_vqe import ADAPTVQE
+        from .bloch import _bloch_drivers
         from .subspace import SubspaceADAPTVQE, SubspaceVQE
         from .vqe import VQE
-        return canonical, {"vqe": VQE, "adapt-vqe": ADAPTVQE,
-                           "subspace-vqe": SubspaceVQE,
-                           "subspace-adapt-vqe": SubspaceADAPTVQE}[canonical]
+        classes = {"vqe": VQE, "adapt-vqe": ADAPTVQE,
+                   "subspace-vqe": SubspaceVQE,
+                   "subspace-adapt-vqe": SubspaceADAPTVQE}
+        # The periodic drivers are these same solvers over the Born-von Karman
+        # supercell, so they are built from them rather than duplicated.
+        classes.update(_bloch_drivers())
+        return canonical, classes[canonical]
     if canonical is not None:
         return canonical, _REGISTERED[canonical]
     raise ValueError(
@@ -658,6 +667,21 @@ class Mandacaru(Calculator):
                          "checkpoint": "supports_checkpoints",
                          "resume": "supports_checkpoints"}
 
+    def band_structure(self, *args, **kwargs):
+        """The solver's band structure when it defines one, else ASE's.
+
+        ASE's ``Calculator`` already defines ``band_structure``, so it shadows
+        the solver's and ``__getattr__`` never fires for it; the periodic
+        drivers are reached explicitly here.  Every other solver attribute is
+        delegated by ``__getattr__`` as usual.
+        """
+        from ase.calculators.calculator import Calculator as _ASECalculator
+
+        own = getattr(type(self.solver), "band_structure", None)
+        if own is not None and own is not _ASECalculator.band_structure:
+            return own(self.solver, *args, **kwargs)
+        return _ASECalculator.band_structure(self, *args, **kwargs)
+
     def _check_solver_options(self) -> None:
         """Refuse options the selected method would accept and ignore.
 
@@ -712,10 +736,42 @@ class Mandacaru(Calculator):
         return not (self.solver_kwargs.get("txt") is not None
                     and getattr(self._solver_class, "writes_output_log", False))
 
+    def set_atoms(self, atoms):
+        """ASE calls this on ``atoms.calc = calc``; remember the geometry.
+
+        Kept in a private attribute, deliberately **not** in ``self.atoms``.
+        ASE decides whether a result may be reused by comparing ``self.atoms``
+        with the geometry it is asked about, so filling it in at attach time
+        would announce a result that has not been computed: the next
+        ``get_potential_energy()`` would read back the previous geometry's
+        energy.  Reattaching one calculator to a displaced copy is exactly how
+        a finite-difference force is taken, so that would be silent and wrong.
+
+        It exists so a periodic driver can answer ``calc.bands(...)`` before
+        anything is evaluated -- the bands need the primitive cell, not a
+        completed run.  ``ase.Atoms.calc``'s setter calls this when the
+        calculator defines it (verified against ASE 3.29); nothing depends on
+        that, since a driver that never receives the geometry raises a message
+        naming the explicit ``atoms=`` argument instead.
+        """
+        self._attached_atoms = atoms.copy()
+
     def _make_solver(self, grid, **overrides):
         options = {**self.solver_kwargs, **overrides}
-        return self._solver_class(basis=self.basis, grid=grid, h=self.h,
-                                  verbose=self._show_trace(), **options)
+        solver = self._solver_class(basis=self.basis, grid=grid, h=self.h,
+                                    verbose=self._show_trace(), **options)
+        # A periodic driver keeps the primitive cell aside (its own `atoms`
+        # becomes the supercell once it runs); hand over the attached geometry
+        # so the band structure is available without a calculation.
+        # Read through __dict__, not getattr: an attribute this class does not
+        # define reaches __getattr__, which delegates to `self.solver` -- and
+        # building that solver lands back here, recursing forever.
+        attached = self.__dict__.get("_attached_atoms")
+        if attached is None:
+            attached = self.__dict__.get("atoms")
+        if attached is not None and hasattr(solver, "_primitive"):
+            solver._primitive = attached.copy()
+        return solver
 
     def run(self, **run_kwargs):
         """Run the solver in **direct mode** (no geometry) and return its result.
@@ -771,6 +827,11 @@ class Mandacaru(Calculator):
         The box is the geometry's own ``atoms.cell`` (centered on the
         molecule), exactly the grid a single-point energy would use -- there
         is no extra padding; a geometry without a cell raises ``ValueError``.
+
+        Not used by the periodic methods: there the grid **is** the cell, built
+        with ``periodic=True`` and commensurate with the k-point mesh, so it is
+        already frozen across geometries and this bounding-box grid would fail
+        the commensurability check.
         """
         if self._grid is not None:
             return self._grid
@@ -819,6 +880,16 @@ class Mandacaru(Calculator):
             _watchable_stdout()
 
         want_forces = "forces" in properties
+        if want_forces and not getattr(self._solver_class,
+                                       "supports_forces", True):
+            # Refused here, before the energy is computed: a force that is not
+            # the derivative of the reported energy is worse than none.
+            raise NotImplementedError(
+                f"method {self.method!r} does not implement forces.  The "
+                "energy is a Born-von Karman supercell estimate and there is "
+                "no periodic Hellmann-Feynman/Pulay gradient for it, so no "
+                "array returned here would be its derivative.  Use a "
+                "molecular method for forces and relaxation.")
         # A previous step's breakdown must never survive a new geometry.
         self.force_result = None
         if want_forces:
@@ -826,7 +897,13 @@ class Mandacaru(Calculator):
 
         # Forces need one common grid along the whole trajectory; a plain
         # energy uses the solver's own per-geometry grid unless one was given.
-        grid = self._frozen_grid(atoms) if want_forces else self._grid
+        # A *periodic* method needs no freezing: its grid is the cell itself,
+        # built commensurate with it, so it is already the same at every
+        # geometry as long as the cell does not change -- and the molecular
+        # bounding-box grid would not even span the cell.
+        periodic = getattr(self._solver_class, "periodic_hamiltonian", False)
+        grid = (self._frozen_grid(atoms)
+                if want_forces and not periodic else self._grid)
         solver = self._make_solver(grid=grid)
         # This step's performance block is written here, once the gradient and
         # any measurement have been timed too (see :meth:`_log_performance`).
@@ -902,8 +979,17 @@ class Mandacaru(Calculator):
         integrals = context.get("integrals")
         legacy = self.force_method == "scf-response"
 
+        periodic = getattr(solver, "periodic_hamiltonian", False)
         kinetic = getattr(integrals, "kinetic", "fd")
-        if kinetic != "fd":
+        if kinetic != "fd" and not (periodic and not legacy):
+            # The rdm gradient rebuilds T with `integrals.kinetic`, so it
+            # differentiates whatever operator the energy used.  The periodic
+            # path *requires* the spectral operator -- the finite-difference
+            # stencil has a wall at the box edge and is not periodic -- so
+            # refusing it there would refuse periodic forces outright.  The
+            # gate stays for the legacy differentiated-SCF path, which builds
+            # its own stencil, and for molecules, where lifting it has not
+            # been validated against a finite difference.
             raise NotImplementedError(
                 f"forces differentiate the finite-difference Laplacian, but "
                 f"the integrals use kinetic={kinetic!r}; rebuild the "
@@ -1281,6 +1367,68 @@ class Mandacaru(Calculator):
                 two_rdm(psi, n_qubits, solver.mapping, sector=sector)
                 if two_body else None)
 
+    @staticmethod
+    def _fold_to_primitive(solver, result):
+        r"""Bring a supercell gradient back to the primitive cell.
+
+        The periodic gradient is computed on the Born-von Karman supercell, so
+        it has one row per *supercell* atom, while the calculator is attached
+        to the primitive cell and ASE expects ``len(atoms)`` rows.  The two are
+        related by what the driver already does to the energy: it reports
+        :math:`E_{\text{cell}} = E_{\text{super}}/N_c`, and moving one
+        primitive atom moves **all** :math:`N_c` of its images together, so
+
+        .. math::
+
+            \frac{\partial E_{\text{cell}}}{\partial \mathbf R_\nu}
+              = \frac{1}{N_c} \sum_{\text{images } i \text{ of } \nu}
+                \frac{\partial E_{\text{super}}}{\partial \mathbf R_i} ,
+
+        the **mean** over the images.  For a perfect repetition every image
+        carries the same gradient and the mean is that common value; the mean
+        is the right answer in general, and its spread is a useful diagnostic
+        of how well the supercell respects its own translation symmetry.
+
+        ``atoms.repeat`` lays the supercell out cell by cell, so image ``c`` of
+        primitive atom ``nu`` is supercell atom ``c * n_primitive + nu`` -- the
+        same indexing :meth:`_BlochMixin._bloch_creation` uses for the orbitals.
+        """
+        cells = int(getattr(solver, "n_supercells", 1))
+        if cells <= 1:
+            return result
+
+        def fold(array):
+            array = np.asarray(array)
+            per_cell = array.shape[0] // cells
+            return array.reshape(cells, per_cell, 3).mean(axis=0)
+
+        spread = None
+        raw = np.asarray(result.forces)
+        per_cell = raw.shape[0] // cells
+        if per_cell:
+            stacked = raw.reshape(cells, per_cell, 3)
+            spread = float(np.abs(stacked - stacked.mean(axis=0)).max())
+
+        details = dict(result.details)
+        details.update({
+            "supercell_forces": raw,
+            "image_spread": spread,
+            "n_cells": cells,
+            "forces_unprojected": fold(details.get("forces_unprojected", raw)),
+        })
+        if "ion_gradient" in details:
+            details["ion_gradient"] = fold(details["ion_gradient"])
+        folded = fold(raw)
+        details["translational_residual"] = float(
+            np.abs(folded.sum(axis=0)).max())
+        return type(result)(
+            forces=folded,
+            hellmann_feynman=fold(result.hellmann_feynman),
+            pulay=fold(result.pulay),
+            gradient=fold(result.gradient),
+            n_electrons=result.n_electrons,
+            details=details)
+
     def _forces(self, solver, rdms=None, reference_energy=None):
         """Analytic nuclear gradient of the converged (or measured) state."""
         from .forces import nuclear_gradient
@@ -1301,6 +1449,46 @@ class Mandacaru(Calculator):
 
             gamma, gamma2 = expand_frozen_core(
                 gamma, gamma2, frozen, len(context["integrals"].basis))
+
+        if getattr(solver, "periodic_hamiltonian", False):
+            # A crystal: the electron feels the Ewald potential of the whole
+            # ion lattice and the ion-ion term is the Ewald energy, so the
+            # molecular gradient would differentiate two different operators.
+            from .periodic_forces import periodic_nuclear_gradient
+            from .pseudo_forces import ENERGY_CHECK_TOLERANCE
+
+            if self.force_method != "rdm":
+                raise NotImplementedError(
+                    f"force_method={self.force_method!r} has no periodic "
+                    "implementation; the legacy differentiated-SCF path "
+                    "rebuilds -Z/r potentials of its own, which is not what a "
+                    "lattice-summed Hamiltonian was built from.  Use "
+                    "force_method='rdm'.")
+            result = periodic_nuclear_gradient(
+                context["integrals"], gamma, gamma2,
+                atom_of_orbital=context["atom_of_orbital"],
+                orbital_delta=self.orbital_delta,
+                include_pulay=self.include_pulay)
+            if reference_energy is None and not getattr(solver, "shots", 0):
+                reference_energy = float(solver._from_energy_units(
+                    solver.result.optimal_energy, "Ha"))
+            if reference_energy is not None:
+                rebuilt = result.details["energy_hartree"]
+                if abs(reference_energy - rebuilt) > ENERGY_CHECK_TOLERANCE:
+                    raise RuntimeError(
+                        "the energy rebuilt from the RDMs and molecular "
+                        f"orbitals ({rebuilt:.10f} Ha) differs from the "
+                        f"solver's ({reference_energy:.10f} Ha); the force "
+                        "would not be the gradient of the reported energy")
+            residual = float(result.details.get("orbital_gradient", 0.0) or 0.0)
+            if residual > ORBITAL_RESPONSE_TOLERANCE:
+                warnings.warn(
+                    "the state is not stationary with respect to orbital "
+                    f"rotations (max |dE/dkappa| = {residual:.1e} Ha); the "
+                    "neglected orbital-response term is first order in that "
+                    "residual.  A larger pool usually reduces it.",
+                    RuntimeWarning, stacklevel=2)
+            return self._fold_to_primitive(solver, result)
 
         if self.force_method == "rdm":
             # The complex-safe RDM gradient: projector coupling, augmented
@@ -1879,6 +2067,249 @@ class Mandacaru(Calculator):
         if method is not None:
             return method
         return self.population or PARTITION_METHODS[0]
+
+    def get_stress(self, atoms=None, *, voigt: bool = True,
+                   strain: float = None):
+        r"""Stress tensor of a periodic calculation, in eV/Angstrom^3.
+
+        :math:`\sigma_{\alpha\beta} = \frac{1}{\Omega}\,
+        \partial E / \partial \varepsilon_{\alpha\beta}` by a symmetric
+        strain applied to the **cell, the atoms and the grid together** --
+        twelve full Hamiltonian rebuilds, six components either side of zero.
+
+        The state is held fixed, exactly as the force does: the RDMs and the
+        molecular orbitals are the converged ones, and the orbital-response
+        residual reported by :attr:`force_result` covers both.  Straining the
+        grid with the cell is deliberate; holding the grid fixed would fold the
+        change in discretization into the answer, and the two are not
+        separable.
+
+        Parameters
+        ----------
+        atoms : Atoms, optional
+            Geometry; defaults to the attached one.
+        voigt : bool
+            Return ASE's 6-vector ``(xx, yy, zz, yz, xz, xy)`` (the default)
+            rather than the 3x3 tensor.
+        strain : float, optional
+            Half-amplitude of the symmetric strain; default
+            :data:`~mandacaru.algorithms.periodic_forces.DEFAULT_STRAIN`.
+
+        Raises
+        ------
+        NotImplementedError
+            For a molecular method, which has no cell to strain.
+        """
+        from ..units import from_hartree
+        from .periodic_forces import (DEFAULT_STRAIN, VOIGT, periodic_stress,
+                                      strained_energy)
+        from .pseudo_forces import spatial_rdms
+
+        solver = self.solver
+        if not getattr(solver, "periodic_hamiltonian", False):
+            raise NotImplementedError(
+                f"method {self.method!r} is not periodic, so there is no cell "
+                "to strain and no stress to report.")
+        if atoms is not None:
+            self.calculate(atoms, properties=("energy",))
+        context = getattr(solver, "_gradient_context", None) or {}
+        integrals = context.get("integrals")
+        if integrals is None:
+            raise ValueError(
+                "the stress needs the integrals the Hamiltonian was built "
+                "from; run a geometry first (atoms.get_potential_energy()).")
+
+        gamma, gamma2 = self._state_rdms(solver, two_body=True)
+        frozen = context.get("frozen") or ()
+        if frozen:
+            from .rdm import expand_frozen_core
+            gamma, gamma2 = expand_frozen_core(
+                gamma, gamma2, frozen, len(integrals.basis))
+        D, Gamma = spatial_rdms(gamma, gamma2, len(integrals.basis))
+        n_electrons = context.get("n_electrons")
+
+        def build(strain_matrix):
+            return strained_energy(integrals, D, Gamma,
+                                   integrals.mo_coefficients, strain_matrix,
+                                   n_electrons=n_electrons)
+
+        tensor = periodic_stress(
+            build, integrals.cell,
+            strain=DEFAULT_STRAIN if strain is None else float(strain))
+        # Hartree/Bohr^3 -> eV/Angstrom^3.
+        tensor = tensor * from_hartree(1.0, "eV") / 0.52917721092 ** 3
+        self.results["stress"] = (np.array([tensor[a, b] for a, b in VOIGT])
+                                  if voigt else tensor)
+        return self.results["stress"]
+
+    def finite_size_correction(self, scheme: str = "mpc", *, state=None,
+                               shells=None):
+        r"""What the exchange-correlation hole's periodic images cost.
+
+        A Born-von Karman supercell makes every electron's exchange-correlation
+        hole interact with ``N_c - 1`` copies of itself.  That is the leading
+        finite-size error of a neutral cell once the Madelung term is
+        accounted for, and it decays only as ``1/Omega``.  This evaluates it
+        directly from the converged state, by contracting the **hole**
+        ``Gamma - D (x) D`` against the difference between the periodic kernel
+        the run used and the Wigner-Seitz minimum-image bare ``1/r``:
+
+        .. math::
+
+            \Delta E = \tfrac{1}{2} \sum_{pqrs}
+              (f - g^{\text{E}})_{pqrs}\,(\Gamma - D \otimes D)_{pqrs} .
+
+        Returns a
+        :class:`~mandacaru.core.mpc.FiniteSizeCorrection`; **add** its
+        ``correction`` to the reported energy to get the model-periodic-Coulomb
+        (MPC) energy, which it also carries as ``mpc_energy``.
+
+        This is a *diagnostic*: the variational energy is untouched, and
+        nothing that was pinned moves.  To minimize the MPC energy instead,
+        build the Hamiltonian with the MPC kernel -- see the ``interaction``
+        option of :class:`~mandacaru.core.periodic.PeriodicIntegrals`.
+
+        Two schemes are available and **neither is the default answer** --
+        they measure different things and the choice is still open:
+
+        ``"mpc"``
+            Model periodic Coulomb.  Contracts the hole against the difference
+            between the periodic kernel and the Wigner-Seitz minimum-image bare
+            ``1/r``.  **Measured to overlap with the Madelung term this code
+            already subtracts**: 86 % of it on a 1x1x1 simple-cubic hydrogen
+            cell and 92 % on 2x2x2, scaling as ``Omega^(-1/3)`` rather than
+            ``1/Omega``.  Read it as a diagnostic of that overlap, not as a
+            correction to add on top of ``constant_energy``.
+        ``"ccmh"``
+            Chiesa-Ceperley-Martin-Holzmann.  The term the discrete k-sum omits
+            at ``k = 0``, taken from the computed structure factor.  Additive
+            and orthogonal to the Madelung constant, but it assumes the
+            small-``k`` quadratic regime is resolved; it warns when it is not,
+            which a cell surrounded by vacuum generally is not.
+        ``"kzk"``
+            Kwee-Zhang-Krakauer.  The difference between the infinite-size and
+            size-dependent LDA exchange-correlation energies on the run's own
+            density.  A functional of the density alone, so it leaves every
+            two-electron integral -- and every Pulay term -- untouched.  Its
+            jellium fit assumes a cubic cell and a density the fit has seen;
+            :class:`~mandacaru.core.kzk.KZKCorrection` records the cell's
+            deviation from cubic and the ``r_s`` range that contributed.
+
+        Parameters
+        ----------
+        scheme : {"mpc", "ccmh"}
+            Which correction to evaluate.
+        state : array_like, optional
+            A state vector to analyze instead of the converged one.
+        shells : int, optional
+            For ``"mpc"``, lattice shells searched for the minimum image
+            (default :data:`~mandacaru.core.mpc.MINIMUM_IMAGE_SHELLS`); for
+            ``"ccmh"``, reciprocal-lattice shells extrapolated to ``k = 0``
+            (default :data:`~mandacaru.core.ccmh.DEFAULT_SHELLS`).
+
+        Raises
+        ------
+        ValueError
+            If the method is not periodic.  The correction is defined against
+            a periodic kernel, so for a molecule there is nothing to remove.
+        """
+        from ..core.mpc import (MINIMUM_IMAGE_SHELLS, TruncatedCoulombSolver,
+                                exchange_correlation_hole_energy)
+        from .pseudo_forces import spatial_rdms
+
+        scheme = str(scheme).strip().lower()
+        if scheme not in ("mpc", "ccmh", "kzk"):
+            raise ValueError(
+                f"unknown finite-size scheme {scheme!r}; choose 'mpc' (model "
+                "periodic Coulomb), 'ccmh' (Chiesa-Ceperley-Martin-Holzmann) "
+                "or 'kzk' (Kwee-Zhang-Krakauer).")
+        solver = self.solver
+        if not getattr(solver, "periodic_hamiltonian", False):
+            raise ValueError(
+                f"method {self.method!r} is not periodic, so its electrons "
+                "have no images and there is no exchange-correlation hole "
+                "self-interaction to remove.  The correction is defined "
+                "against the periodic Coulomb kernel; a molecule is already "
+                "computed with the isolated one.")
+
+        context = getattr(solver, "_gradient_context", None) or {}
+        integrals = context.get("integrals")
+        if integrals is None:
+            raise ValueError(
+                "the correction needs the integrals the Hamiltonian was built "
+                "from; run a geometry first (atoms.get_potential_energy()).")
+        if context.get("frozen") and scheme in ("mpc", "ccmh"):
+            raise NotImplementedError(
+                f"a frozen core is not supported by scheme {scheme!r}: the "
+                "pair density would be contracted over the active orbitals "
+                "only, while the core electrons carry a hole of their own.  "
+                "Use scheme='kzk', which reads the density and refills the "
+                "core.")
+
+        # Cited at use: which correction a run reaches for is not knowable
+        # when the driver is built.
+        solver._cite(*{"mpc": ("Fraser1996", "Williamson1997"),
+                       "ccmh": ("Chiesa2006",),
+                       "kzk": ("Kwee2008",)}[scheme])
+
+        two_body = scheme in ("mpc", "ccmh")
+        gamma, gamma2 = self._state_rdms(solver, psi=state, two_body=two_body)
+        D = Gamma = None
+        if two_body:
+            D, Gamma = spatial_rdms(gamma, gamma2, len(integrals.basis))
+
+        # result.optimal_energy is the SUPERCELL energy in the result's own
+        # unit (eV), while the driver reports per primitive cell.  Convert
+        # once, here, rather than letting either scope leak into the record.
+        from ..units import to_hartree
+
+        n_cells = int(getattr(solver, "n_supercells", 1))
+        result = getattr(solver, "result", None)
+        energy_per_cell = None
+        if result is not None:
+            total = getattr(result, "optimal_energy", None)
+            if total is not None:
+                unit = getattr(result, "energy_unit", "eV")
+                energy_per_cell = float(to_hartree(total, unit)) / n_cells
+        volume = abs(float(np.linalg.det(integrals.cell)))
+
+        if scheme == "kzk":
+            from ..core.kzk import kzk_correction
+            from .volumetric import volumetric_field
+
+            # The same density path the cube writer uses, so a frozen core, a
+            # tapered register and the PAW augmentation are all handled once.
+            field = volumetric_field(
+                integrals, gamma, quantity="density",
+                frozen=context.get("frozen") or (),
+                num_particles=getattr(solver, "num_particles", None),
+                n_spatial_orbitals=getattr(solver, "n_spatial_orbitals", None))
+            return kzk_correction(
+                field.data, integrals.grid.dV, integrals.cell,
+                n_cells=n_cells, energy_per_cell=energy_per_cell)
+
+        if scheme == "ccmh":
+            from ..core.ccmh import (DEFAULT_SHELLS, ccmh_correction,
+                                     structure_factor)
+
+            structure = structure_factor(integrals, D, Gamma)
+            return ccmh_correction(
+                structure, volume=volume, n_cells=n_cells,
+                shells=DEFAULT_SHELLS if shells is None else int(shells),
+                energy_per_cell=energy_per_cell)
+
+        grid = integrals.grid
+        truncated = TruncatedCoulombSolver(
+            grid.shape, step=grid.step,
+            shells=MINIMUM_IMAGE_SHELLS if shells is None else int(shells))
+        # The same orbitals, the same grid, the same Loewdin/MO rotation --
+        # only the kernel differs, so the two tensors subtract term by term.
+        eri_periodic = integrals.two_body_with_kernel(None)
+        eri_truncated = integrals.two_body_with_kernel(truncated)
+
+        return exchange_correlation_hole_energy(
+            eri_periodic, eri_truncated, D, Gamma, volume=volume,
+            n_cells=n_cells, energy_per_cell=energy_per_cell)
 
     def atomic_partition(self, method: str = "hirshfeld", *, state=0,
                          grid=None):

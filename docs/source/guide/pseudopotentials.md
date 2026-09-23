@@ -21,7 +21,7 @@ electrons are removed (oxygen keeps 6 of its 8), the basis becomes the family's
 smooth pseudo-atomic orbitals — with the same `size` hierarchy as the
 [NAO family](basis_sets.md) as its options — and the singular $-Z/r$ external
 potential is replaced by a bounded local channel plus the family's projectors.
-Every driver, `interaction_energy`, `BlochCalculator`, the dry run and the
+Every driver, `interaction_energy`, the periodic methods, the dry run and the
 command line (`mandacaru H2O --cell 8 --basis PAW --basis-option size=DZP`)
 accept the names; `frozen_core` is refused with them as redundant. There is no
 separate switch: the family is the basis, and the retired `"PP"` basis name

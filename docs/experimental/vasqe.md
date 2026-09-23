@@ -137,19 +137,28 @@ A complete, runnable script comparing the temperature schedules on H\ :sub:`2` i
 
 ---
 
-## Periodic systems: VASQE through the Bloch calculator
+## Periodic systems: VASQE on the Born-von Karman supercell
 
-`method="vasqe"` runs the crystal supercell through VASQE, so the ansatz grows by
-**stochastic softmax selection** with an optional temperature **annealing**
-schedule — useful for exploring the operator space on a larger supercell before
-settling on the greedy (ADAPT) choice:
+`method="bloch-vasqe"` runs the crystal supercell through VASQE, so the ansatz
+grows by **stochastic softmax selection** with an optional temperature
+**annealing** schedule — useful for exploring the operator space on a larger
+supercell before settling on the greedy (ADAPT) choice. Like the stable
+periodic methods (`"bloch-vqe"` / `"bloch-adapt-vqe"`), it is reached through
+`Mandacaru` with a Gamma-centered `kpts` mesh — this package just registers the
+extra name:
 
 ```python
-e_cell, res = BlochCalculator(atoms,
-                              method="vasqe",
-                              h=0.20).total_energy(
-    (4, 1, 1), temperature=2.0, final_temperature=0.02, schedule="exponential",
-    max_iterations=10, gradient_tolerance=1e-3, seed=1)
+atoms.calc = Mandacaru(method="bloch-vasqe",
+                       kpts={"size": (4, 1, 1), "gamma": True},
+                       h=0.20, temperature=2.0, final_temperature=0.02,
+                       schedule="exponential", max_iterations=10,
+                       gradient_tolerance=1e-3, seed=1)
+e_cell = atoms.get_potential_energy()      # eV, per primitive cell
+res = atoms.calc.result
 print(res.temperatures)          # the selection temperature at each growth step
 ```
+
+As with the other periodic methods, `atoms` is the **primitive cell**,
+`kpts` must be Gamma-centered, and `atoms.get_forces()` raises
+`NotImplementedError` — there is no periodic force here.
 

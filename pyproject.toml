@@ -16,8 +16,9 @@ dependencies = [
     # -- numerical core -------------------------------------------------- #
     'numpy>=2.0.0',
     'scipy',
-    'ase',                # geometries + the Calculator interface the drivers use
-    'matplotlib',         # expressivity / band-structure plotting helpers
+    'ase',
+    'spglib',
+    'matplotlib',
     # -- Hamiltonian cache (Apache Parquet) ------------------------------ #
     'fastparquet',
     'pandas',

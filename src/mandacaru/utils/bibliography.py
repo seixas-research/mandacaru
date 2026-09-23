@@ -439,6 +439,101 @@ _BASES = [
   year    = {2005},
   doi     = {10.1039/B508541A}
 }""", "the def2 shell structure", verified=False, topics=("def2",)),
+    _ref("Kwee2008", """
+@article{Kwee2008,
+  author  = {Kwee, Hendra and Zhang, Shiwei and Krakauer, Henry},
+  title   = {Finite-Size Correction in Many-Body Electronic Structure
+             Calculations},
+  journal = {Phys. Rev. Lett.},
+  volume  = {100},
+  pages   = {126404},
+  year    = {2008},
+  doi     = {10.1103/PhysRevLett.100.126404}
+}""", "the size-dependent LDA of the KZK finite-size correction",
+         topics=("periodic", "finite-size")),
+    _ref("Fraser1996", """
+@article{Fraser1996,
+  author  = {Fraser, Louisa M. and Foulkes, W. M. C. and Rajagopal, G. and
+             Needs, R. J. and Kenny, S. D. and Williamson, A. J.},
+  title   = {Finite-size effects and {C}oulomb interactions in quantum {M}onte
+             {C}arlo calculations for homogeneous systems with periodic
+             boundary conditions},
+  journal = {Phys. Rev. B},
+  volume  = {53},
+  pages   = {1814--1832},
+  year    = {1996},
+  doi     = {10.1103/PhysRevB.53.1814}
+}""", "the model periodic Coulomb interaction", verified=False,
+         topics=("periodic", "finite-size")),
+    _ref("Williamson1997", """
+@article{Williamson1997,
+  author  = {Williamson, A. J. and Rajagopal, G. and Needs, R. J. and
+             Fraser, L. M. and Foulkes, W. M. C. and Wang, Y. and
+             Chou, M.-Y.},
+  title   = {Elimination of {C}oulomb finite-size effects in quantum many-body
+             simulations},
+  journal = {Phys. Rev. B},
+  volume  = {55},
+  pages   = {R4851--R4854},
+  year    = {1997},
+  doi     = {10.1103/PhysRevB.55.R4851}
+}""", "the MPC separation of Hartree and exchange-correlation kernels",
+         verified=False, topics=("periodic", "finite-size")),
+    _ref("Chiesa2006", """
+@article{Chiesa2006,
+  author  = {Chiesa, Simone and Ceperley, David M. and Martin, Richard M. and
+             Holzmann, Markus},
+  title   = {Finite-Size Error in Many-Body Simulations with Long-Range
+             Interactions},
+  journal = {Phys. Rev. Lett.},
+  volume  = {97},
+  pages   = {076404},
+  year    = {2006},
+  doi     = {10.1103/PhysRevLett.97.076404}
+}""", "the structure-factor finite-size correction", verified=False,
+         topics=("periodic", "finite-size")),
+    _ref("BornKarman1912", """
+@article{BornKarman1912,
+  author  = {Born, Max and von K{\\'a}rm{\\'a}n, Theodore},
+  title   = {{\\"U}ber {S}chwingungen in {R}aumgittern},
+  journal = {Phys. Z.},
+  volume  = {13},
+  pages   = {297--309},
+  year    = {1912}
+}""", "the periodic boundary conditions a k-point mesh realizes as a supercell",
+         verified=False, topics=("periodic",)),
+    _ref("MonkhorstPack1976", """
+@article{MonkhorstPack1976,
+  author  = {Monkhorst, Hendrik J. and Pack, James D.},
+  title   = {Special points for {B}rillouin-zone integrations},
+  journal = {Phys. Rev. B},
+  volume  = {13},
+  pages   = {5188--5192},
+  year    = {1976},
+  doi     = {10.1103/PhysRevB.13.5188}
+}""", "the Brillouin-zone sampling `kpts` resolves", verified=False,
+         topics=("periodic",)),
+    _ref("Lehmann1954", """
+@article{Lehmann1954,
+  author  = {Lehmann, Harry},
+  title   = {{\\"U}ber {E}igenschaften von {A}usbreitungsfunktionen und
+             {R}enormierungskonstanten quantisierter {F}elder},
+  journal = {Nuovo Cimento},
+  volume  = {11},
+  pages   = {342--357},
+  year    = {1954},
+  doi     = {10.1007/BF02783624}
+}""", "the spectral representation `get_spectral_function` evaluates",
+         verified=False, topics=("periodic", "spectral")),
+    _ref("Togo2018", """
+@article{Togo2018,
+  author  = {Togo, Atsushi and Tanaka, Isao},
+  title   = {Spglib: a software library for crystal symmetry search},
+  journal = {arXiv:1808.01590},
+  year    = {2018},
+  doi     = {10.48550/arXiv.1808.01590}
+}""", "the space-group search behind the irreducible Brillouin zone",
+         verified=False, topics=("periodic", "symmetry")),
     _ref("Ewald1921", """
 @article{Ewald1921,
   author  = {Ewald, P. P.},

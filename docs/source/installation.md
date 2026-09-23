@@ -15,8 +15,9 @@ python -c "import mandacaru; print(mandacaru.__version__)"
 
 On Windows, activate the environment with `.venv\Scripts\activate` instead.
 
-The package installs NumPy, SciPy, ASE, Matplotlib, Hamiltonian-cache dependencies,
-quantum SDKs and the supporting numerical packages listed in `pyproject.toml`.
+The package installs NumPy, SciPy, ASE, Matplotlib, spglib (crystal symmetry for
+the periodic methods), Hamiltonian-cache dependencies, quantum SDKs and the
+supporting numerical packages listed in `pyproject.toml`.
 Installing a provider's SDK does not require an account on its service. The
 introductory LiH examples run locally without credentials.
 

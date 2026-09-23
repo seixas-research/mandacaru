@@ -6,16 +6,17 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""The Bloch crystal calculator: vqe / adapt-vqe methods on a chain.
+"""Bloch crystals: the periodic methods on a hydrogen chain.
 
-A single :class:`~mandacaru.algorithms.BlochCalculator` covers periodic systems;
-its ``method`` argument selects the variational eigensolver.  The
-single-particle **band structure** is solver-independent (identical across the
-two methods), while the correlated **total energy per cell** is computed on
-the Born-von Karman supercell by the selected molecular solver:
+Periodic systems go through the same entry point as everything else --
+``Mandacaru(method="bloch-vqe" | "bloch-adapt-vqe", kpts=...)`` -- with
+``kpts`` the Gamma-centered Monkhorst-Pack sampling.  Both the **bands** --
+the quasiparticle peaks of the interacting spectral function -- and the
+correlated **total energy per cell** come from the state the selected solver
+found on the Born-von Karman supercell, so both depend on the method:
 
-* ``method="vqe"``       -- fixed UCCSD ansatz,
-* ``method="adapt-vqe"`` -- adaptive ansatz growth,
+* ``method="bloch-vqe"``       -- fixed UCCSD ansatz,
+* ``method="bloch-adapt-vqe"`` -- adaptive ansatz growth,
 
 A 1-D hydrogen chain (one atom per cell, 1.0 A spacing) is used throughout.
 """
@@ -25,42 +26,52 @@ from __future__ import annotations
 import numpy as np
 from ase import Atoms
 
-from mandacaru.algorithms import BlochCalculator
+from mandacaru.algorithms import Mandacaru
 
 
-def make(method, **kwargs):
+def make(method, mesh=(4, 1, 1), **kwargs):
+    """A 1-D H chain with the periodic calculator attached."""
     atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                   cell=[[1.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
                   pbc=[True, False, False])
-    return BlochCalculator(atoms,
-                           method=method,
+    atoms.calc = Mandacaru(method=method,
+                           kpts={"size": mesh, "gamma": True},
                            basis="HAO",
                            mapping="jordan_wigner",
-                           n_cells=4,
-                           n_images=7,
                            h=0.25,
                            **kwargs)
+    return atoms
 
 
-# --- Band structure (single-particle; the same for every method) -------------
-bloch = make("vqe")
-kline = np.linspace(0.0, 0.5, 6)                       # Gamma -> X (fractional)
-bands = bloch.bands(np.column_stack([kline, np.zeros_like(kline), np.zeros_like(kline)]))
-print(f"{bloch.dimension}-D crystal, {bloch.n_bands} band(s)")
-print("1s band along Gamma->X (eV):", np.round(bands[:, 0], 3))
-print("(the band structure is solver-independent -- identical for all methods)\n")
+opt = {"method": "L-BFGS", "maxiter": 2000, "tol": 1e-12}
+
+# --- Quasiparticle bands, from the interacting spectral function -------------
+# They live on the mesh the supercell realizes, and nowhere between: the Bloch
+# operators only exist at those k-points.
+chain = make("bloch-vqe", optimizer=opt)
+chain.get_potential_energy()                           # the bands need the state
+spectral = chain.calc.get_spectral_function()
+bands = chain.calc.bands(spectral=spectral)
+weights = chain.calc.band_weights(spectral=spectral)
+print(f"{chain.calc.dimension}-D crystal, {chain.calc.n_bands} band(s), "
+      f"{len(chain.calc.kpoints)} k-points")
+order = np.argsort(chain.calc.kpoints[:, 0])
+for index in order:
+    print(f"  k = {chain.calc.kpoints[index][0]:+.3f}: "
+          f"E - E0 = {bands[index, 0]:+8.3f} eV, "
+          f"quasiparticle weight {weights[index, 0]:.3f}")
+print(f"chemical potential: {spectral.chemical_potential:+.3f} eV")
+print(f"sum rule deviation: {spectral.sum_rule:.1e}  (exact identity: 1)\n")
 
 # --- Correlated total energy per cell (Born-von Karman supercell) ------------
-opt = {"method": "L-BFGS", "maxiter": 2000, "tol": 1e-12}
-mesh = (4, 1, 1)
+e_vqe = make("bloch-vqe", optimizer=opt).get_potential_energy()
+print(f"bloch-vqe        E/cell = {e_vqe:+.4f} eV   (fixed UCCSD)")
 
-e_vqe, _ = make("vqe").total_energy(mesh, optimizer=opt)
-print(f"vqe        E/cell = {e_vqe:+.4f} eV   (fixed UCCSD)")
-
-e_adapt, r_adapt = make("adapt-vqe").total_energy(
-    mesh, optimizer=opt, max_iterations=10, gradient_tolerance=1e-3)
-print(f"adapt-vqe  E/cell = {e_adapt:+.4f} eV   "
-      f"({r_adapt.num_operators} operators grown)")
+adapt = make("bloch-adapt-vqe", optimizer=opt, max_iterations=10,
+             gradient_tolerance=1e-3)
+e_adapt = adapt.get_potential_energy()
+print(f"bloch-adapt-vqe  E/cell = {e_adapt:+.4f} eV   "
+      f"({adapt.calc.result.num_operators} operators grown)")
 
 
 spread = max(e_vqe, e_adapt) - min(e_vqe, e_adapt)

@@ -278,14 +278,9 @@ class TestExperimentalPackaging:
             assert "vasqe" not in path.read_text().lower(), path
 
     def test_calculators_default_to_adapt_vqe(self):
-        from ase import Atoms
-        from mandacaru.algorithms import BlochCalculator
         calc = Mandacaru()
         assert calc.method == "adapt-vqe"
         assert type(calc.solver).__name__ == "ADAPTVQE"
-        chain = Atoms("H", positions=[[0, 0, 0]], cell=[1.0, 10.0, 10.0],
-                      pbc=[True, False, False])
-        assert BlochCalculator(chain).method == "adapt-vqe"
 
     def test_calculator_and_dry_run_accept_the_method(self):
         from ase import Atoms
@@ -349,17 +344,26 @@ class TestHamiltonianCache:
 
 
 class TestBloch:
-    def test_total_energy_through_the_bloch_calculator(self):
+    def test_total_energy_through_the_periodic_method(self):
+        """The periodic layer composes over a *registered* method too.
+
+        ``bloch-vasqe`` is registered by this package, not by the stable
+        resolver, so this is what keeps ``register_method`` decoupled from
+        which methods the periodic driver knows about.
+        """
         from ase import Atoms
-        from mandacaru.algorithms import BlochCalculator
+        from mandacaru.algorithms import Mandacaru
         atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                       cell=[[1.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
                       pbc=[True, False, False])
-        driver = BlochCalculator(atoms, method="vasqe", basis="HAO",
-                                 n_cells=3, n_images=5, h=0.30)
-        e_cell, result = driver.total_energy(
-            (2, 1, 1), h=0.40, optimizer=Optimizer("L-BFGS", maxiter=2000),
-            temperature=1.0, max_iterations=6, gradient_tolerance=1e-3,
-            profile=False)
+        atoms.calc = Mandacaru(method="bloch-vasqe",
+                               kpts={"size": (2, 1, 1), "gamma": True},
+                               basis="HAO", h=0.40,
+                               optimizer=Optimizer("L-BFGS", maxiter=2000),
+                               temperature=1.0, max_iterations=6,
+                               gradient_tolerance=1e-3, profile=False,
+                               trace=False)
+        e_cell = atoms.get_potential_energy()
+        result = atoms.calc.result
         assert isinstance(result, VASQEResult) and np.isfinite(e_cell)
         assert len(result.temperatures) == result.num_operators

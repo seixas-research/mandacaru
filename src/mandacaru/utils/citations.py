@@ -56,6 +56,13 @@ _METHOD_KEYS = {
     "subspace-vqe": ("Peruzzo2014", "Romero2019", "Nakanishi2019"),
     "subspace-adapt-vqe": ("Peruzzo2014", "Grimsley2019", "Nakanishi2019"),
     "qpe": ("Kitaev1995", "AspuruGuzik2005"),
+    # The periodic pair cite their variational method plus the machinery that
+    # makes it a crystal: the Born-von Karman supercell the mesh realizes, the
+    # Monkhorst-Pack sampling, and the Ewald sum the electrostatics use.
+    "bloch-vqe": ("Peruzzo2014", "Romero2019", "BornKarman1912",
+                  "MonkhorstPack1976", "Ewald1921"),
+    "bloch-adapt-vqe": ("Peruzzo2014", "Grimsley2019", "BornKarman1912",
+                        "MonkhorstPack1976", "Ewald1921"),
 }
 
 _OPTIMIZER_KEYS = {

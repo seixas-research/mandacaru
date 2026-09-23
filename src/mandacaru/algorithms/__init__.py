@@ -13,8 +13,9 @@ their subspace-search variants -- are reached **only** through
 :class:`Mandacaru`: ``Mandacaru(method="vqe")``, ``Mandacaru(method="adapt-vqe")``,
 ``"subspace-vqe"``, ``"subspace-adapt-vqe"``.  The solver classes themselves are
 the internal layer and are deliberately **not exported**; what is exported is
-the calculator, the result types the solvers return, and the periodic
-:class:`BlochCalculator`.  Solvers outside the stable API plug in through
+the calculator and the result types the solvers return.  The periodic
+methods ``"bloch-vqe"`` and ``"bloch-adapt-vqe"`` are reached the same way, with
+``kpts``.  Solvers outside the stable API plug in through
 :func:`register_method`.
 """
 
@@ -22,7 +23,7 @@ from .adapt_vqe import (ADAPTVQEResult, AdaptIteration, GRADIENT_METHODS,
                         resolve_gradient_method)
 from .deflation import EnergyLevels
 from .dry_run import QubitEstimate, count_basis_functions, estimate_qubits
-from .bloch import BandStructure, BlochCalculator
+from .bloch import BLOCH_METHODS, SpectralFunction
 from .expressivity import (
     ADAPTExpressivityTracker,
     ExpressibilityResult,
@@ -70,8 +71,8 @@ __all__ = [
     "AdaptIteration",
     "GRADIENT_METHODS",
     "resolve_gradient_method",
-    "BlochCalculator",
-    "BandStructure",
+    "BLOCH_METHODS",
+    "SpectralFunction",
     "EnergyLevels",
     "SubspaceVQEResult",
     "SubspaceADAPTVQEResult",
@@ -114,3 +115,11 @@ __all__ = [
     "volumetric_field",
     "state_natural_orbitals",
 ]
+
+
+def __getattr__(name):
+    """Refuse the retired public name instead of letting it look missing."""
+    if name == "BlochCalculator":
+        from .bloch import RETIRED_BLOCH_CLASS
+        raise AttributeError(RETIRED_BLOCH_CLASS)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

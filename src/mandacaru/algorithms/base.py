@@ -206,6 +206,20 @@ class VariationalDriver(Calculator):
 
     #: Whether ``run()`` writes the structured ``txt=`` log.
     writes_output_log = False
+    #: Whether the geometry is a periodic cell whose Hamiltonian needs
+    #: lattice-summed electrostatics rather than an isolated one.  Set by the
+    #: periodic drivers; every molecular method leaves it False.
+    periodic_hamiltonian = False
+
+    def _grid_commensurate(self):
+        """Node-count divisors the periodic grid must respect, or ``None``.
+
+        Molecular paths have none.  The periodic drivers return their k-point
+        mesh, because the supercell is that many primitive cells long and a
+        primitive translation has to be a whole number of grid steps for
+        Bloch's theorem to hold on the grid.
+        """
+        return None
 
     #: Whether ``run()`` honors ``checkpoint=`` / ``resume=``.
     supports_checkpoints = True
@@ -1321,7 +1335,9 @@ class VariationalDriver(Calculator):
          context) = build_basis_hamiltonian(
             atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons,
             spin=self.spin, frozen_core=self.frozen_core,
-            frozen_orbitals=self.frozen_orbitals, kinetic=self.kinetic)
+            frozen_orbitals=self.frozen_orbitals, kinetic=self.kinetic,
+            periodic=self.periodic_hamiltonian,
+            commensurate=self._grid_commensurate())
         self._integration_profile = profile
         # Kept for the nuclear gradient: the integral engine that produced this
         # Hamiltonian, and which atom each basis function belongs to.

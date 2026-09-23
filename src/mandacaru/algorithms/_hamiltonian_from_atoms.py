@@ -513,7 +513,8 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
 def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                             n_electrons, spin: bool = False,
                             frozen_core=False, frozen_orbitals=None,
-                            kinetic=None):
+                            kinetic=None, periodic: bool = False,
+                            commensurate=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
@@ -556,6 +557,18 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     symbols = atoms.get_chemical_symbols()
     family, options = resolve_pseudo_basis(name, options, symbols)
     if family is not None:
+        if periodic:
+            # The pseudopotential path builds its own integrals and never sees
+            # the `periodic` flag, so without this it would return an isolated
+            # cluster energy for a periodic method -- silently, which is worse
+            # than failing.  `PeriodicIntegrals.external_potential` refuses the
+            # same combination, but is never reached from here.
+            raise NotImplementedError(
+                f"the {family.label} basis has no periodic lattice sum yet, so "
+                "a periodic method would solve an isolated cluster on the "
+                "supercell instead of a crystal.  Use an all-electron basis "
+                "(HAO, NAO, GTO, a named Gaussian family) for a periodic "
+                "calculation, or a molecular method for this basis.")
         if frozen_core or frozen_orbitals:
             raise ValueError(
                 f"frozen_core is redundant with the {family.label} basis -- "
@@ -595,8 +608,21 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         atom_of_orbital += [atom_index] * len(functions)
         nuclei.append((float(Z), pos))
 
-    g = (grid if grid is not None
-         else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
+    from ..integrals import Grid
+
+    cell = np.asarray(atoms.get_cell(), dtype=float)
+    if periodic:
+        # The grid is the period, not a bounding box, and it is centered on the
+        # cell rather than on the atoms: every electrostatic term is a lattice
+        # sum, so where the atoms sit inside the cell does not matter, but the
+        # grid reproducing the cell exactly does.
+        g = (grid if grid is not None
+             else Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, h=h,
+                       units="angstrom", cell=cell, periodic=True,
+                       commensurate=commensurate))
+    else:
+        g = (grid if grid is not None
+             else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
 
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
     n_alpha, n_beta = _num_particles(n_el, n_unpaired, name)
@@ -610,9 +636,19 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     # core integral.  Half a step keeps the well-resolved region untouched while
     # bounding the on-node case, so heavier-atom cores stay finite on a coarse grid.
     softening = 0.5 * float(min(g.dx, g.dy, g.dz))
-    integrals = MolecularIntegrals(
-        nuclei, basis_fns, g, softening=softening,
-        kinetic=kinetic or DEFAULT_KINETIC["all-electron"])
+    if periodic:
+        from ..core.periodic import PeriodicIntegrals
+
+        # A crystal, not a molecule in a box: the Coulomb kernel, the external
+        # potential and the ion-ion energy are all lattice sums, and the basis
+        # functions are their own periodic images.
+        integrals = PeriodicIntegrals(
+            nuclei, basis_fns, g, cell, n_electrons=n_el, softening=softening,
+            kinetic=kinetic or "spectral")
+    else:
+        integrals = MolecularIntegrals(
+            nuclei, basis_fns, g, softening=softening,
+            kinetic=kinetic or DEFAULT_KINETIC["all-electron"])
     hamiltonian = integrals.molecular_hamiltonian(
         mo_basis=True, n_electrons=n_el, num_particles=(n_alpha, n_beta),
         frozen_orbitals=frozen if frozen else None)

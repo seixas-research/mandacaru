@@ -138,11 +138,14 @@ class MolecularIntegrals(MeanFieldMixin):
                  orthogonalize: bool = True, softening: float = 1e-12,
                  pseudos=None, kb_projectors=None,
                  kinetic: str = "fd", nonlocal_coupling=None,
-                 nonlocal_overlap=None):
+                 nonlocal_overlap=None, periodic: bool = False):
         if kinetic not in ("fd", "spectral"):
             raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
                              "'fd' or 'spectral'")
         self.kinetic = kinetic
+        #: Whether the Coulomb kernel and the external potential are
+        #: periodic (see :class:`~mandacaru.core.periodic.PeriodicIntegrals`).
+        self.periodic = bool(periodic)
         #: ``T_grid / T_exact`` per basis function, filled by the integrals.
         self.resolution_ratios: np.ndarray | None = None
         #: ``<chi|chi>_grid / <chi|chi>_radial`` per KB projector, likewise.
@@ -152,7 +155,7 @@ class MolecularIntegrals(MeanFieldMixin):
         self.grid = grid
         self.units = units
         self.orthogonalize = orthogonalize
-        self._engine = IntegralEngine(self.basis, grid)
+        self._engine = IntegralEngine(self.basis, grid, periodic=periodic)
         # With pseudopotentials the "nuclei" carry the *ionic* charges Z_ion, so
         # the nuclear repulsion below is already the ion-ion term.
         self.pseudopotentials = (list(pseudos)
@@ -203,8 +206,15 @@ class MolecularIntegrals(MeanFieldMixin):
     def bare_overlap(self) -> np.ndarray:
         r"""Grid overlap ``S_pq = <p|q>`` of the (generally non-orthogonal) basis."""
         if self._S_bare is None:
-            psi = np.stack([b.evaluate(self.grid.X, self.grid.Y, self.grid.Z).ravel()
-                            for b in self.basis])
+            if self.periodic:
+                # The periodic basis is the image sum the engine sampled; the
+                # bare functions are a different set, and an overlap taken over
+                # them would not match the T, V and g built from the stack.
+                psi = self._engine._psi
+            else:
+                psi = np.stack(
+                    [b.evaluate(self.grid.X, self.grid.Y, self.grid.Z).ravel()
+                     for b in self.basis])
             S = (np.conj(psi) @ psi.T) * self.grid.dV
             self._S_bare = 0.5 * (S + S.conj().T)
         return self._S_bare
@@ -465,6 +475,56 @@ class MolecularIntegrals(MeanFieldMixin):
             eri = np.einsum("ap,bq,cr,ds,abcd->pqrs",
                             X.conj(), X.conj(), X, X, eri, optimize=True)
         self._eri = eri
+
+    def two_body_with_kernel(self, solver, *, mo: bool = True) -> np.ndarray:
+        r"""The two-body tensor rebuilt with a **different** Coulomb kernel.
+
+        Everything but the kernel is held fixed -- the same sampled orbitals,
+        the same augmentation, the same Loewdin ``X`` and the same molecular
+        orbitals ``mo_coefficients`` -- so the result can be subtracted from
+        :meth:`two_body` term by term.  That is what the
+        exchange-correlation-hole correction of
+        :mod:`mandacaru.core.mpc` needs: two tensors that differ only in the
+        physics being tested.
+
+        Parameters
+        ----------
+        solver : object
+            A Coulomb solver with ``solve_stack``, ``L`` and ``dV`` -- e.g.
+            :class:`~mandacaru.core.mpc.TruncatedCoulombSolver`.
+        mo : bool
+            Rotate into the molecular-orbital basis the Hamiltonian uses
+            (the default).  ``False`` stops after the Loewdin step, which is
+            what a caller comparing raw orbital-basis tensors wants.
+
+        Raises
+        ------
+        ValueError
+            With ``mo=True`` before :meth:`molecular_hamiltonian` has run, so
+            there is no rotation to reuse.  Asking for a tensor in a basis that
+            does not exist yet would otherwise silently return the Loewdin one.
+        """
+        eri = self._engine.two_body(method="fft", energy_units="Ha",
+                                    solver=solver)
+        augmentation = self.two_body_augmentation()
+        if augmentation is not None:
+            eri = eri + np.asarray(augmentation)
+        if self.orthogonalize:
+            X = self._lowdin_x()
+            # The same conjugation pattern as _compute_two_body: bra indices
+            # (p, q) take X*, ket indices (r, s) take X.
+            eri = np.einsum("ap,bq,cr,ds,abcd->pqrs",
+                            X.conj(), X.conj(), X, X, eri, optimize=True)
+        if not mo:
+            return eri
+        V = self.mo_coefficients
+        if V is None:
+            raise ValueError(
+                "no molecular-orbital rotation is available yet: call "
+                "molecular_hamiltonian() first, or pass mo=False to get the "
+                "tensor in the Loewdin-orthonormalized basis.")
+        return np.einsum("ap,bq,cr,ds,abcd->pqrs",
+                         V.conj(), V.conj(), V, V, eri, optimize=True)
 
     def unresolved(self, tolerance: float = RESOLUTION_TOLERANCE):
         """Indices of basis functions and projectors the grid does not resolve.
