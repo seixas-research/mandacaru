@@ -261,7 +261,7 @@ class TabulatedOrbital(BasisFunction):
         ``R(r_0) (r / r_0)^l``.  Without that, a table starting at ``r_0 > 0``
         made every s function vanish within ``r_0`` of its center, and a nucleus
         sitting exactly on a grid node lost the orbital's peak sample (LiH
-        PAW-DZP moved by 3 eV).
+        PAW-LCAO-DZP moved by 3 eV).
         """
         r = np.asarray(r, dtype=float)
         r0 = float(self.table.r[0])

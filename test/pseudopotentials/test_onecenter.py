@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # file: test_onecenter.py
 
-"""The PAW one-center two-body machinery (:mod:`mandacaru.pseudopotentials.onecenter`).
+"""The PAW-LCAO one-center two-body machinery (:mod:`mandacaru.pseudopotentials.onecenter`).
 
 The module is validated machinery that is deliberately **not** wired into the
 Hamiltonian: it measured the term the linearized one-center treatment drops
@@ -64,7 +64,7 @@ class TestOnAPAWDataset:
         try:
             dataset = get_paw("O")
         except FileNotFoundError:
-            pytest.skip("the PAW library is not linked")
+            pytest.skip("the PAW-LCAO library is not linked")
         projectors = paw_projectors(["O"], np.zeros((1, 3)), {"O": dataset})
         return dataset, projectors
 

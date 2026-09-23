@@ -152,7 +152,7 @@ class TestOrbitalResponseResidual:
     determinant is orbital-stationary, and the exact ground state of an orbital
     space is invariant under any rotation of those orbitals.  So a nonzero value
     does not report an unconverged optimizer -- it reports an ansatz that
-    stopped short of that exact state.  Measured on H2O / PAW-SZ: 1.2e-9 Ha for
+    stopped short of that exact state.  Measured on H2O / PAW-LCAO-SZ: 1.2e-9 Ha for
     the HF determinant, 1.8e-9 for the sector FCI, 1.0e-2 for an ADAPT state
     5.4e-4 Ha above it, where tightening ``gradient_tolerance`` tenfold moved
     the energy by 1e-6 eV and the residual by 0.6 %.

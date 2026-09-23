@@ -6,9 +6,9 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Hellmann-Feynman + Pulay forces with PAW pseudopotentials and a DZP basis.
+"""Hellmann-Feynman + Pulay forces with PAW-LCAO pseudopotentials and a DZP basis.
 
-H2 and LiH in ``basis={"name": "PAW", "size": "DZP"}`` have 10 basis
+H2 and LiH in ``basis={"name": "PAW-LCAO", "size": "DZP"}`` have 10 basis
 functions, i.e. 20 qubits, solved exactly in the (1, 1) particle-number sector.
 
 The VASP numbers are a *qualitative* guide only: VASP is PBE-DFT in plane
@@ -32,9 +32,9 @@ from mandacaru.optimizers import Optimizer
 # and 1e-12 costs 15x the wall time here for no change in what is measured.
 LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-8)
 
-BASIS = {"name": "PAW", "size": "DZP"}
+BASIS = {"name": "PAW-LCAO", "size": "DZP"}
 
-# VASP 6, PBE PAW (H 15Jun2001, Li 17Jan2003), ENCUT 520 eV, 10 A box, Gamma:
+# VASP 6, PBE PAW-LCAO (H 15Jun2001, Li 17Jan2003), ENCUT 520 eV, 10 A box, Gamma:
 # bond-projected force on atom 0 (eV/A, + = attractive) at the ionic steps of
 # the dimer relaxations.
 VASP_H2 = {0.59263: -9.65602, 0.72042: -1.13367, 0.87607: 2.96966,
@@ -113,7 +113,7 @@ def test_hellmann_feynman_and_pulay(h2):
     assert np.abs(pulay).max() > 0.05             # an atom-centered basis needs it
     assert np.abs(forces.sum(axis=0)).max() < 0.15      # grid egg-box only
     assert np.abs(forces[:, :2]).max() < 0.1
-    # 0.75 A is just *outside* the PAW-DZP minimum, which sits at 0.733 A with
+    # 0.75 A is just *outside* the PAW-LCAO-DZP minimum, which sits at 0.733 A with
     # the family's default basis since 2026-09-20 -- confined (0.1 eV), GPAW's
     # split-valence scheme, GPAW's Gaussian polarization -- against 0.741
     # (experiment) and 0.750 (VASP-PBE).  The history of this line is the
@@ -168,7 +168,7 @@ def test_two_qubit_register_forces_exact_and_measured(tmp_path):
 
     def run(**options):
         atoms = dimer("H2", 1.0, 8.0)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW", h=0.25,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", h=0.25,
                                pool="fermionic", optimizer=LBFGS,
                                max_iterations=10, gradient_tolerance=1e-6,
                                profile=False, **options)
@@ -207,7 +207,7 @@ def water(cell=8.0):
 
 
 def water_calculator(h=0.25):
-    return Mandacaru(method="adapt-vqe", basis={"name": "PAW", "size": "SZ"},
+    return Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "SZ"},
                      h=h, pool="fermionic", optimizer=LBFGS,
                      max_iterations=60, gradient_tolerance=1e-4, profile=False)
 
@@ -241,7 +241,7 @@ def test_compensation_potentials_are_hermitian_only_for_m_zero():
 
     atoms = water()
     grid = grid_from_cell(atoms, 0.25)
-    integrals = build_basis_hamiltonian(atoms, {"name": "PAW", "size": "SZ"},
+    integrals = build_basis_hamiltonian(atoms, {"name": "PAW-LCAO", "size": "SZ"},
                                         grid, 0.25, 0, None, False, False,
                                         None)[4]["integrals"]
     potentials = integrals.compensation_potentials()

@@ -28,7 +28,7 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms.periodic_forces import (_function_centres,
+from mandacaru.algorithms.periodic_forces import (_function_centers,
                                                   _ion_potential, _matrices,
                                                   _sample_stack,
                                                   periodic_nuclear_gradient)
@@ -129,10 +129,11 @@ class TestTheEwaldGradients:
 def solved_chain():
     """A periodic H2 chain, solved once: 4 qubits, an asymmetric geometry."""
     atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.8, 0.15, 0.0]],
-                  cell=np.diag([3.0, 7.0, 7.0]), pbc=[True, False, False])
-    # h = 0.35 rather than 0.30: the comparison is analytic-against-finite-
-    # difference of the *same* energy on the *same* grid, so a coarser grid
-    # does not weaken it, and every one of the twelve rebuilds gets cheaper.
+                  cell=np.diag([3.0, 5.0, 5.0]), pbc=[True, False, False])
+    # h = 0.35 and a 5 Angstrom transverse cell rather than 0.30 and 7: the
+    # comparison is analytic-against-finite-difference of the *same* energy on
+    # the *same* grid, so neither a coarser grid nor a tighter box weakens it,
+    # and every one of the twelve displaced rebuilds gets cheaper.
     atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                            kpts={"size": (1, 1, 1), "gamma": True},
                            basis="HAO", h=0.35, trace=False, optimizer=SLSQP)
@@ -170,12 +171,12 @@ class TestThePeriodicGradient:
         sites = np.array([to_bohr(p, integrals.units)
                           for _z, p in integrals.nuclei])
         charges = np.array([float(z) for z, _p in integrals.nuclei])
-        centres = _function_centres(integrals)
+        centers = _function_centers(integrals)
         atom_of = np.asarray(context["atom_of_orbital"])
 
-        def total(sites_now, centres_now):
+        def total(sites_now, centers_now):
             S, h, g = _matrices(integrals,
-                                _sample_stack(integrals, centres_now),
+                                _sample_stack(integrals, centers_now),
                                 _ion_potential(integrals, sites_now))
             return (float(np.real(energy(S, h, g)))
                     + float(ewald_energy(sites_now, charges, integrals.cell))
@@ -189,14 +190,14 @@ class TestThePeriodicGradient:
                 shift[k] = step
                 plus_sites = sites.copy()
                 plus_sites[atom] += shift
-                plus_centres = centres.copy()
-                plus_centres[atom_of == atom] += shift
+                plus_centers = centers.copy()
+                plus_centers[atom_of == atom] += shift
                 minus_sites = sites.copy()
                 minus_sites[atom] -= shift
-                minus_centres = centres.copy()
-                minus_centres[atom_of == atom] -= shift
-                numeric[atom, k] = -(total(plus_sites, plus_centres)
-                                     - total(minus_sites, minus_centres)
+                minus_centers = centers.copy()
+                minus_centers[atom_of == atom] -= shift
+                numeric[atom, k] = -(total(plus_sites, plus_centers)
+                                     - total(minus_sites, minus_centers)
                                      ) / (2 * step)
         assert result.forces == pytest.approx(numeric * FORCE_CONVERSION,
                                               abs=5e-4)
@@ -229,11 +230,15 @@ class TestThePeriodicGradient:
 
 
 class TestForcesThroughASE:
-    def test_the_periodic_driver_supports_forces(self):
+    def test_the_periodic_driver_routes_to_the_periodic_gradient(self):
+        """``periodic_hamiltonian`` is what sends ``_forces`` down the Ewald
+        branch, so a driver that lost it would silently get the molecular
+        gradient -- which differentiates -Z/r potentials this Hamiltonian was
+        never built from."""
         from mandacaru.algorithms.bloch import _bloch_drivers
 
         for cls in _bloch_drivers().values():
-            assert cls.supports_forces is True
+            assert cls.periodic_hamiltonian is True
 
     def test_the_gradient_has_a_row_per_atom(self, chain_gradient):
         """The ASE round trip itself is pinned in

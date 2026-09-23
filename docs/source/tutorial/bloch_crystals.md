@@ -36,12 +36,12 @@ The exact check is the sum rule: removal and addition weights add to 1 for every
 k, spin and orbital, since `{c, c†} = 1`.
 ```
 
-```{admonition} Forces are not implemented
-:class: warning
-`atoms.get_forces()` raises `NotImplementedError` for the periodic methods. There is
-no Born-von Karman equivalent of the Hellmann-Feynman and Pulay terms here, and an
-array that is not the derivative of the reported energy would be worse than none, so
-periodic relaxation is not available.
+```{admonition} Forces and stress are supported
+:class: note
+`atoms.get_forces()` and `calc.get_stress()` both work for the periodic methods —
+see [Periodic forces and stress](#periodic-forces-and-stress) below for the Ewald
+and Pulay terms behind them and for how a supercell gradient folds back onto the
+primitive cell.
 ```
 
 ---
@@ -165,10 +165,160 @@ heavy for exact state-vector simulation.
 
 ---
 
+## Finite-size corrections
+
+The Brillouin-zone mesh above is not the only finite-size error a crystal
+calculation carries. Once the Madelung constant folded into the energy has
+removed each electron's interaction with its own periodic images, a second,
+smaller effect is left: the *pair* of electrons in the exchange-correlation
+hole also interacts with `n_cells - 1` copies of itself, and that decays only
+as `1/Omega`. `calc.finite_size_correction(scheme=...)` measures it directly
+from the converged state — a **diagnostic**, so it never changes what
+`atoms.get_potential_energy()` reports:
+
+```python
+mpc = atoms.calc.finite_size_correction(scheme="mpc")
+print(mpc.summary())
+```
+
+Three schemes are available, and none of them is "the" answer to add on top of
+the reported energy:
+
+`"mpc"` (model periodic Coulomb)
+: Contracts the exchange-correlation hole against the difference between the
+  periodic Coulomb kernel the run used and the Wigner-Seitz minimum-image bare
+  `1/r`. **Measured to overlap with the Madelung term the code already
+  subtracts** — 86% of it on a 1x1x1 simple-cubic hydrogen cell and 92% on
+  2x2x2, scaling as `Omega^(-1/3)` rather than `1/Omega`. Read it as a
+  diagnostic of that overlap, not as a correction to add on top of the
+  reported energy.
+
+`"ccmh"` (Chiesa-Ceperley-Martin-Holzmann)
+: The long-wavelength term the discrete k-sum omits at `k = 0`, taken from the
+  computed structure factor `S(k)`. Additive and orthogonal to the Madelung
+  constant — but it assumes the small-`k` quadratic regime of `S(k)` is
+  resolved, and it warns (`RuntimeWarning`) rather than reporting a trustworthy
+  number when it is not, which every cell size an exact state-vector
+  calculation can reach fails to resolve.
+
+`"kzk"` (Kwee-Zhang-Krakauer, *Phys. Rev. Lett.* 100, 126404, 2008)
+: A size-dependent LDA exchange-correlation correction: a functional of the
+  density alone, so it leaves every two-electron integral, and every Pulay
+  force term, untouched. Its jellium fit assumes a cubic cell and a density
+  range the fit has seen, so the result also carries `cubic_deviation` (how
+  far the cell is from cubic) and `rs_range` (the Wigner-Seitz radii sampled),
+  to say when that assumption is being stretched.
+
+```{admonition} A diagnostic, not a correction to the reported energy
+:class: important
+Every scheme above evaluates a *post hoc* estimate of what the finite
+supercell cost the exchange-correlation hole; nothing that was pinned during
+the VQE or ADAPT-VQE optimization moves, and `atoms.get_potential_energy()`
+is unchanged by calling any of them.
+```
+
+---
+
+(periodic-forces-and-stress)=
+## Periodic forces and stress
+
+Both periodic methods support `atoms.get_forces()` and `calc.get_stress()`:
+
+```python
+atoms.get_potential_energy()          # converge the state first
+forces = atoms.get_forces()           # eV/Angstrom, one row per primitive atom
+stress = atoms.calc.get_stress()      # ASE's Voigt 6-vector, eV/Angstrom^3
+```
+
+The energy a crystal reports is
+
+```{math}
+E = \sum_{pq} D_{pq} h^{\text{MO}}_{pq}
+  + \tfrac12 \sum_{pqrs} \Gamma_{pqrs} g^{\text{MO}}_{pqrs}
+  + E_{\text{Ewald}} + \tfrac12 N_e v_{\text{M}} ,
+```
+
+and the force and the stress are its derivatives with respect to the atomic
+positions and to a strain of the cell. The contraction against `(S, h, g)`, the
+displaced-sampling derivatives and the orbital-response residual are the same
+machinery the molecular gradient uses; only two terms are different objects in
+a crystal: the electron feels the **Ewald potential of the whole ion lattice**
+rather than a sum of `-Z/r`, and the ion-ion energy is the **Ewald energy**
+rather than a finite pair sum.
+
+**Hellmann-Feynman** rebuilds that ion-lattice Ewald potential with one ion
+displaced and adds the analytic Ewald ion-ion force. **Pulay** re-samples the
+displaced atom's basis functions *including their periodic images* — moving
+one atom moves every image of it — and rebuilds `S`, `T`, `V` and the
+two-electron tensor from the displaced stack.
+
+```{admonition} The Madelung constant carries no force, and reappears in the stress
+:class: note
+$\tfrac12 N_e v_M$ depends on the cell alone, so it drops out of a fixed-cell
+derivative. `get_stress` is where it shows up, since the cell is what is
+varied there.
+```
+
+Validated against a central difference of the same fixed-state energy: the
+analytic Ewald forces and stress agree with a numerical derivative of the
+Ewald energy to round-off (forces to about `1e-10`, stress to `2.6e-10`
+relative, and the forces sum to zero to `1e-14`, which is exact translational
+invariance of a lattice sum); the full periodic gradient — Hellmann-Feynman
+plus Pulay together — agrees with a central difference of the same
+fixed-state total energy to about `1e-4` eV/Angstrom on forces of order
+10 eV/Angstrom (`test/algorithms/test_periodic_forces.py`).
+
+`get_stress(atoms=None, voigt=True, strain=None)` strains the cell, the atoms
+and the grid *together* — twelve full Hamiltonian rebuilds, six independent
+strain components either side of zero — and holds the grid's node *counts*
+fixed so the strained grid stays commensurate with the strained cell. Straining
+the grid along with the cell is deliberate: freezing the grid over a varying
+cell would fold a change in discretization into the answer, and the two are
+not separable.
+
+```{admonition} The shear no longer depends on the grid's parity
+:class: note
+A single hydrogen atom in a cubic cell has an isotropic, shear-free stress by
+symmetry. Before `mandacaru.integrals.poisson.fft_g_squared` symmetrized the
+Nyquist plane of the FFT mesh, an *even* node count picked up a spurious shear
+of a few times `1e-4` eV/Angstrom^3 while an odd one stayed at round-off; the
+cause was the Nyquist mode shared by the spectral kinetic operator and the
+periodic Coulomb kernel, not the real-space sampling. Every grid now gives a
+shear at round-off, on an orthogonal or a skewed cell alike, and because the
+symmetrization is a no-op for an orthogonal cell, no previously computed
+energy moved.
+```
+
+### A supercell gradient, folded to the primitive cell
+
+The gradient is computed on the Born-von Kármán supercell — one row per
+*supercell* atom — while `atoms` is the primitive cell and ASE expects
+`len(atoms)` rows. The driver reconciles the two by the logic it already
+applies to the energy: it reports `E_cell = E_super / n_cells`, and moving one
+primitive atom moves *all* `n_cells` of its images together, so the
+primitive-cell force is the **mean**, over a primitive atom's images, of the
+supercell force on each of them. The raw, unfolded array survives on
+`atoms.calc.force_result.details["supercell_forces"]`, and how far the images
+disagree — ideally zero, for a supercell that respects its own translation
+symmetry — is `details["image_spread"]`.
+
+No example script accompanies this section: the force needs six displaced
+Hamiltonian rebuilds per atom and the stress twelve more, on top of the state
+already converged for `examples/11_Bloch_crystals.py`, which would multiply
+that script's cost for what is, computationally, a classical contraction with
+no new circuit evaluation. `test/algorithms/test_periodic_forces.py` is the
+runnable, validated reference.
+
+---
+
 ## Higher dimensions
 
-The same interface handles 2-D and 3-D crystals — only `atoms.pbc` and the
-k-points change. A square lattice of hydrogen:
+The same interface handles 2-D and 3-D crystals, and the cell need not be
+orthogonal — hexagonal, monoclinic, FCC, BCC and triclinic lattices all reach
+an energy the same way a cubic one does, only `atoms.pbc`, the cell and the
+k-points change. (A skewed cell used to be refused outright, with
+`ValueError: not commensurate`, before the grid-vs-cell commensurability check
+was fixed to compare the two consistently.) A square lattice of hydrogen:
 
 ```python
 square = Atoms("H", positions=[[0.0, 0.0, 0.0]],

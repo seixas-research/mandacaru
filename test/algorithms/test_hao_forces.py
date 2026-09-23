@@ -22,7 +22,7 @@ net force reaches hundreds of eV/Angstrom -- larger than every real force in the
 problem -- while the energy, the RDMs and the orbital-response residual all look
 healthy.  ``Mandacaru`` warns about exactly that
 (:data:`~mandacaru.algorithms.calculator.TRANSLATIONAL_RESIDUAL_TOLERANCE`), and
-the same geometry in the PAW basis, which removes the core instead of sampling
+the same geometry in the PAW-LCAO basis, which removes the core instead of sampling
 it, gives a net force of ~0.03 eV/Angstrom and a bond force that matches VASP.
 """
 
@@ -48,7 +48,7 @@ LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-8)
 VASP_LIH_2_19 = 1.35493
 VASP_H2_1_00 = 4.22206
 
-PAW = {"name": "PAW", "size": "DZP"}
+PAW = {"name": "PAW-LCAO", "size": "DZP"}
 
 
 def dimer(symbols, distance, cell=10.0):
@@ -180,7 +180,7 @@ class TestLiHCoreArtifact:
 
     @pytest.fixture(scope="class")
     def paw(self):
-        """The PAW-DZP run of the same geometry, done once (it is the
+        """The PAW-LCAO-DZP run of the same geometry, done once (it is the
         heaviest calculation in this file)."""
         atoms = dimer("LiH", 2.19265)
         atoms.calc = Mandacaru(method="adapt-vqe", basis=PAW, h=0.25,

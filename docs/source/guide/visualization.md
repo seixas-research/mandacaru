@@ -144,12 +144,12 @@ atoms.calc.write_cube("second.cube", state=levels.states[2])
 
 ## Pseudopotentials: the smooth valence density
 
-With a PAW, UPAW, ONCVPSP or NCPP basis the orbitals are the **smooth pseudo**
+With a PAW-LCAO, UPAW-LCAO, ONCVPSP or NCPP basis the orbitals are the **smooth pseudo**
 valence orbitals, so what is written is the *pseudo valence density*. The core
 is absent by construction, and inside the augmentation spheres the smooth
 density is not the physical one.
 
-For PAW the overlap itself is augmented, $S = \tilde S + C q C^\dagger$, so the
+For PAW-LCAO the overlap itself is augmented, $S = \tilde S + C q C^\dagger$, so the
 smooth density does not integrate to the valence electron count:
 
 $$ \int\tilde n\,d^3r \;+\; \underbrace{\textstyle\sum_{pq}\gamma_{pq}
@@ -160,13 +160,13 @@ Both numbers come back on the field, and the file's comment line says which one
 it holds:
 
 ```python
-field = atoms.calc.write_cube("paw.cube")     # basis="PAW"
+field = atoms.calc.write_cube("paw.cube")     # basis="PAW-LCAO"
 print(field.integral)              # what is on the grid
 print(field.augmentation_charge)   # what is not
 print(field.n_electrons)           # their sum: the valence electron count
 ```
 
-For H₂ in a single-zeta PAW basis the augmentation holds a few per cent of the
+For H₂ in a single-zeta PAW-LCAO basis the augmentation holds a few per cent of the
 two valence electrons; for oxygen, whose augmentation charge is an order of
 magnitude larger, it is far more. The third number is exact whatever the
 basis — it is the trace of the density matrix — so it is the one to check

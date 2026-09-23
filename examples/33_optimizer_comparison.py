@@ -69,7 +69,7 @@ TOL = DEFAULT_TOL               # inner-optimizer tolerance (1e-12)
 
 SETUPS = {
     "LiH": dict(basis="HAO", h=0.30, pool="qubit", max_iterations=12),
-    "H2O": dict(basis={"name": "PAW", "size": "SZ"}, h=0.25, pool="qubit",
+    "H2O": dict(basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.25, pool="qubit",
                 max_iterations=40),
 }
 

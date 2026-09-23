@@ -12,7 +12,7 @@
 pool and its growth strategy, the fermion-to-qubit mapping, the basis family
 and the options that changed how it was built, the classical optimizer, the
 SDK the circuits went through -- and returns the keys of the entries in
-:mod:`mandacaru.utils.bibliography` that apply.  It cites what *ran*: a PAW
+:mod:`mandacaru.utils.bibliography` that apply.  It cites what *ran*: a PAW-LCAO
 basis with an ``energy_shift`` pulls in the confinement papers, a plain one
 does not; ``tetris=True`` pulls in TETRIS-ADAPT-VQE, the default does not.
 
@@ -82,8 +82,8 @@ _OPTIMIZER_KEYS = {
 _FAMILY_KEYS = {
     "ncpp": ("Troullier1991", "Kleinman1982"),
     "oncvpsp": ("Hamann2013", "Kleinman1982"),
-    "paw": ("Bloechl1994",),
-    "upaw": ("Bloechl1994", "Ivanov2024"),
+    "paw-lcao": ("Bloechl1994",),
+    "upaw-lcao": ("Bloechl1994", "Ivanov2024"),
 }
 
 
@@ -109,6 +109,37 @@ def _basis_keys(name, options) -> list:
     return keys
 
 
+#: What a dataset's recorded provenance cites.  These describe how the
+#: *reference atom* was solved, not how the molecule is, so they are keyed off
+#: the dataset rather than off the basis options -- a run that loads a
+#: scalar-relativistic library cites Koelling and Harmon whether or not it
+#: asked for one.
+_PROVENANCE_KEYS = {
+    ("xc", "pbe"): ["PBE1996", "PerdewWang1992"],
+    ("relativity", "scalar"): ["KoellingHarmon1977"],
+    ("relativity", "dirac"): ["KoellingHarmon1977", "Kleinman1980"],
+    ("nlcc", True): ["Louie1982"],
+}
+
+
+def provenance_keys(datasets) -> list:
+    """Keys for how the pseudopotential datasets of a run were generated.
+
+    ``datasets`` is whatever the integrals carry -- each needs only ``xc``,
+    ``relativity`` and ``nlcc``.  A dataset that records none of them predates
+    the options and is the non-relativistic LDA construction, which the family
+    key already covers.
+    """
+    keys: list = []
+    for dataset in datasets or ():
+        for field in ("xc", "relativity"):
+            value = str(getattr(dataset, field, "") or "").lower()
+            keys += _PROVENANCE_KEYS.get((field, value), [])
+        if (getattr(dataset, "nlcc", None) or {}).get("applied"):
+            keys += _PROVENANCE_KEYS[("nlcc", True)]
+    return keys
+
+
 def _pseudo_keys(family, options) -> list:
     """References for a pseudopotential family and the options that built it."""
     keys = list(_FAMILY_KEYS.get(family, ()))
@@ -128,7 +159,8 @@ def citation_keys(*, method=None, pool=None, mapping=None, basis=None,
                   family=None, basis_options=None, optimizer=None,
                   backend_provider=None, shots=0, execute_circuits=False,
                   profile=False, tetris=False, prune=False,
-                  has_geometry=True, built_basis=True, extras=()) -> list:
+                  has_geometry=True, built_basis=True, extras=(),
+                  datasets=()) -> list:
     """The bibliography keys a run with this configuration should cite.
 
     Every argument is optional: what is not known is not cited.  ``family`` and
@@ -157,6 +189,7 @@ def citation_keys(*, method=None, pool=None, mapping=None, basis=None,
     options = dict(basis_options or {})
     if family:
         keys += _pseudo_keys(_key(family), options)
+        keys += provenance_keys(datasets)
     elif basis is not None:
         keys += _basis_keys(basis, options)
 

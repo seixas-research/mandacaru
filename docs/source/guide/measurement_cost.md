@@ -5,7 +5,7 @@ returns bit-strings, so every Pauli string of the Hamiltonian has to be measured
 in its own basis, and the number of those grows fast. This guide is about that
 growth — what it costs, what Mandacaru does about it, and where the wall is.
 
-It exists because of one job. LiH at 1.60 Å in PAW-TZP, 24 qubits, submitted to
+It exists because of one job. LiH at 1.60 Å in PAW-LCAO-TZP, 24 qubits, submitted to
 `ibm_fez` at `resilience_level=2`: 37 minutes in the queue, then
 
 ```text
@@ -16,7 +16,7 @@ and a converged 75-operator optimization thrown away with it.
 
 ## The three walls, in the order you hit them
 
-Measured on LiH/PAW at `h = 0.25`, `pool="ceo-ovp"`, Jordan-Wigner:
+Measured on LiH/PAW-LCAO at `h = 0.25`, `pool="ceo-ovp"`, Jordan-Wigner:
 
 | basis | qubits | H Pauli strings | submitted with RDMs | QWC bases | ADAPT ops | 2q gates | fidelity |
 |---|---|---|---|---|---|---|---|
@@ -52,7 +52,7 @@ so they are measured when forces are asked for and not otherwise:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis={"name": "PAW", "size": "DZ"},
+                       basis={"name": "PAW-LCAO", "size": "DZ"},
                        h=0.25,
                        pool="ceo-ovp",
                        measurement_provider=QiskitProvider(device="ibm_fez",
@@ -150,7 +150,7 @@ $$\langle\psi|P|\psi\rangle = i^{\text{odd}}\,\psi^{T} R\, \psi = 0$$
 **exactly** — an identity, not an approximation. Mandacaru checks the premise
 rather than assuming it (the Hamiltonian must be a real matrix, and so must
 every ansatz generator; a complex basis would break it) and then sets those
-expectations to zero without measuring them. On LiH/PAW-DZ that is 472 of 981
+expectations to zero without measuring them. On LiH/PAW-LCAO-DZ that is 472 of 981
 labels: the RDM job halves, and the energy, the RDMs and the forces come out
 bit-for-bit identical.
 
@@ -177,7 +177,7 @@ Turn it on with `measurement_scheme`:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis={"name": "PAW", "size": "DZ"},
+                       basis={"name": "PAW-LCAO", "size": "DZ"},
                        h=0.25,
                        pool="ceo-ovp",
                        measurement_scheme="double-factorized",
@@ -200,7 +200,7 @@ to machine zero.
 ### What it actually trades
 
 Fewer bases, but a **larger 1-norm** — the squares expand — and a Givens network
-on top of the ansatz. On the LiH/PAW series, with the naive shot model
+on top of the ansatz. On the LiH/PAW-LCAO series, with the naive shot model
 (total shots $\propto$ bases $\times \lambda^2$):
 
 | spin orbitals | QWC bases | DF bases | λ(Pauli) → λ(DF) | total shots |

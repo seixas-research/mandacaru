@@ -262,7 +262,7 @@ class ParticleSector:
         The group's terms are summed into **one** value array before anything
         is emitted, which shrinks the staged entries by the same factor.  That
         matters because every term used to contribute one entry per sector
-        state: for OH in PAW-DZ (14,707 terms, 25,200 states) that was 3.7e8
+        state: for OH in PAW-LCAO-DZ (14,707 terms, 25,200 states) that was 3.7e8
         entries, about 12 GB, for a result needing a small fraction of it.
         What is left is folded into the running CSR in batches of at most
         ``max_entries`` (default :data:`RESTRICT_BATCH_ENTRIES`), which bounds

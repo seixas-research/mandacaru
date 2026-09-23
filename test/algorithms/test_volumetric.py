@@ -54,7 +54,7 @@ def _paw_available() -> bool:
 
 
 needs_paw = pytest.mark.skipif(not _paw_available(),
-                               reason="the PAW dataset library is not linked")
+                               reason="the PAW-LCAO dataset library is not linked")
 
 
 def _molecule(symbols, positions, cell, center=True, **info):
@@ -507,7 +507,7 @@ class TestPseudoValenceDensity:
 
     def test_augmentation_completes_the_electron_count(self):
         atoms = _molecule("H2", [[0, 0, 0], [0, 0, 0.74]], [6, 6, 6])
-        calc = _solved(atoms, basis="PAW")
+        calc = _solved(atoms, basis="PAW-LCAO")
         field = calc.volumetric_field("density")
         # The grid holds the *smooth* density; the augmentation charge is the
         # rest, and the two must add up to the valence electron count.
@@ -519,7 +519,7 @@ class TestPseudoValenceDensity:
 
     def test_the_file_says_it_is_a_pseudo_density(self, tmp_path):
         atoms = _molecule("H2", [[0, 0, 0], [0, 0, 0.74]], [6, 6, 6])
-        calc = _solved(atoms, basis="PAW")
+        calc = _solved(atoms, basis="PAW-LCAO")
         calc.write_cube(tmp_path / "paw.cube")
         comment = open(tmp_path / "paw.cube").readline()
         assert "augmentation" in comment
@@ -528,7 +528,7 @@ class TestPseudoValenceDensity:
     def test_real_atomic_numbers_are_written_not_valence_charges(self,
                                                                  tmp_path):
         atoms = _molecule("LiH", [[0, 0, 0], [0, 0, 1.6]], [8, 8, 8])
-        calc = _solved(atoms, basis="PAW")
+        calc = _solved(atoms, basis="PAW-LCAO")
         field = calc.write_cube(tmp_path / "lih.cube")
         assert list(field.numbers) == [3, 1]        # lithium, not its ion
         with open(tmp_path / "lih.cube") as handle:

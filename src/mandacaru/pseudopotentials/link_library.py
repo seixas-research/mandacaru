@@ -8,23 +8,24 @@
 
 """Link externally stored pseudopotential libraries into ``library/``.
 
-The ONCVPSP and PAW datasets are too large for this repository (about 100 MB
+The ONCVPSP and PAW-LCAO datasets are too large for this repository (about 100 MB
 and 200 MB for Z <= 92), so they live in repositories of their own --
 ``mandacaru-oncvpsp`` and ``mandacaru-paw`` -- as flat directories of
 ``<Symbol>.parquet`` files.  The loaders look for them under
-``library/oncvpsp/`` and ``library/paw/`` (see :func:`.io.library_root`), and
-this module puts symbolic links there so a checkout of the data repositories
-anywhere on disk is enough::
+``library/oncvpsp/`` and ``library/paw-lcao/`` (see :func:`.io.library_root`),
+and this module puts symbolic links there so a checkout of the data
+repositories anywhere on disk is enough::
 
     python -m mandacaru.pseudopotentials.link_library \\
-        --oncvpsp ~/Repositories/mandacaru-oncvpsp --paw ~/Repositories/mandacaru-paw
+        --oncvpsp ~/Repositories/mandacaru-oncvpsp \\
+        --paw-lcao ~/Repositories/mandacaru-paw
 
 or, from Python::
 
     from mandacaru.pseudopotentials.link_library import link_library
-    link_library("paw", "~/Repositories/mandacaru-paw")
+    link_library("paw-lcao", "~/Repositories/mandacaru-paw")
 
-By default one link per family (``library/paw -> <repo>``); ``files=True`` /
+By default one link per family (``library/paw-lcao -> <repo>``); ``files=True`` /
 ``--files`` links each ``*.parquet`` / ``*.json`` file individually instead,
 which is what you want when the target directory must stay a real directory
 (some sync tools do not follow directory links).  The links are ignored by
@@ -38,10 +39,10 @@ import os
 import sys
 
 #: Family name -> subdirectory of the library it is served from.
-FAMILY_SUBDIRS = {"ncpp": "ncpp", "oncvpsp": "oncvpsp", "paw": "paw",
-                  "upaw": "upaw"}
+FAMILY_SUBDIRS = {"ncpp": "ncpp", "oncvpsp": "oncvpsp",
+                  "paw-lcao": "paw-lcao", "upaw-lcao": "upaw-lcao"}
 #: Families with no shipped library: an empty folder is their normal state.
-GENERATED_ON_DEMAND = ("upaw",)
+GENERATED_ON_DEMAND = ("upaw-lcao",)
 _DATA_EXTENSIONS = (".parquet", ".pq", ".json")
 
 
@@ -79,7 +80,7 @@ def link_library(family: str, source, *, root=None, files: bool = False,
     Parameters
     ----------
     family : str
-        ``"ncpp"`` (``"tm"``), ``"oncvpsp"`` (``"oncv"``) or ``"paw"``.
+        ``"ncpp"`` (``"tm"``), ``"oncvpsp"`` (``"oncv"``) or ``"paw-lcao"``.
     source : path
         Directory holding the ``<Symbol>.parquet`` files (a checkout of the
         data repository).  ``~`` is expanded.
@@ -183,7 +184,7 @@ def status_lines(root=None) -> list[str]:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m mandacaru.pseudopotentials.link_library",
-        description="Link the external ONCVPSP / PAW (and optionally NCPP) "
+        description="Link the external ONCVPSP / PAW-LCAO (and optionally NCPP) "
                     "pseudopotential repositories into Mandacaru's library.")
     for family in FAMILY_SUBDIRS:
         parser.add_argument(f"--{family}", metavar="DIR",
@@ -196,10 +197,14 @@ def main(argv=None) -> int:
                         help="only report what the library currently serves")
     args = parser.parse_args(argv)
 
-    requested = {f: getattr(args, f) for f in FAMILY_SUBDIRS if getattr(args, f)}
+    # argparse turns `--paw-lcao` into the attribute `paw_lcao`, so the family
+    # key and the destination differ once a family name carries a hyphen.
+    requested = {f: getattr(args, f.replace("-", "_"))
+                 for f in FAMILY_SUBDIRS if getattr(args, f.replace("-", "_"))}
     if not requested and not args.status:
-        parser.error("give at least one of --oncvpsp / --paw / --upaw / --ncpp, "
-                     "or --status")
+        parser.error("give at least one of "
+                     + " / ".join(f"--{f}" for f in FAMILY_SUBDIRS)
+                     + ", or --status")
     for family, source in requested.items():
         link_library(family, source, files=args.files, force=args.force)
     for line in status_lines():

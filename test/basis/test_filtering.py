@@ -18,10 +18,10 @@ Four things are pinned here, in this order:
 2. **the option** -- ``True`` / ``"auto"`` / a number in eV / ``False``
    accepted, everything else refused with a clear message, in the single-family
    and the per-element form and in the dry run;
-3. **the default** -- on for PAW and UPAW, off for NCPP and ONCVPSP, declared
+3. **the default** -- on for PAW-LCAO and UPAW-LCAO, off for NCPP and ONCVPSP, declared
    in the registry, and ``filter=False`` reproducing the unfiltered basis
    **byte for byte** (this is what keeps every pinned NCPP/ONCVPSP number
-   still valid and makes the PAW flip auditable);
+   still valid and makes the PAW-LCAO flip auditable);
 4. **what it buys** -- the rigid-shift energy ripple shrinks, and the analytic
    force is still the derivative of the calculator's own energy.
 
@@ -171,7 +171,7 @@ class TestTransform:
 
     def test_normalization_is_preserved(self):
         """Rescaled to the table's *own* norm, not to 1: the tables do not all
-        arrive normalized (PAW hydrogen 1s carries 0.979) and forcing them to
+        arrive normalized (PAW-LCAO hydrogen 1s carries 0.979) and forcing them to
         1 would make the filter change a function even as k_c -> infinity."""
         for table in paw_tables("O"):
             out, _info = filter_radial(table.r, table.values, table.l, 7.5)
@@ -239,7 +239,7 @@ class TestTransform:
         documented caveat, measured.  ``"switch"`` matches ``"plain"`` on a
         long-ranged function and keeps a compact one compact.
 
-        Measured on the PAW hydrogen 1s at k_c = 7.5: 1.20e-6 of the norm
+        Measured on the PAW-LCAO hydrogen 1s at k_c = 7.5: 1.20e-6 of the norm
         above the cutoff to begin with, 4.89e-7 after ``"plain"`` or
         ``"switch"`` (they coincide -- the switch-off lands where the function
         is already 1e-7 of its peak) and **5.28e-5 after ``"mask"``**, 44x
@@ -308,7 +308,7 @@ class TestOption:
         chose it is tabulated on the constant."""
         assert FILTER_NYQUIST_FRACTION == 1.0
 
-    @pytest.mark.parametrize("family", ["PAW", "UPAW", "NCPP", "ONCVPSP"])
+    @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO", "NCPP", "ONCVPSP"])
     def test_every_family_accepts_the_option(self, family):
         spec = PSEUDO_FAMILIES[family.lower()]
         assert "filter" in spec.options
@@ -318,12 +318,12 @@ class TestOption:
     def test_an_unknown_option_is_still_refused(self):
         with pytest.raises(ValueError, match="unknown option"):
             Mandacaru(method="adapt-vqe",
-                      basis={"name": "PAW", "filtre": True})
+                      basis={"name": "PAW-LCAO", "filtre": True})
 
     @pytest.mark.parametrize("bad", ["yes", -1.0, 0.0, [1]])
     def test_a_bad_value_is_refused_at_construction(self, bad):
         with pytest.raises(ValueError, match="filter"):
-            Mandacaru(method="adapt-vqe", basis={"name": "PAW",
+            Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO",
                                                  "filter": bad})
 
     @pytest.mark.parametrize("bad", ["yes", -1.0])
@@ -332,21 +332,21 @@ class TestOption:
         *value* does not, so it is checked in the constructor either way."""
         with pytest.raises(ValueError, match="filter"):
             Mandacaru(method="adapt-vqe",
-                      basis={"O": {"name": "PAW", "filter": bad},
-                             "H": {"name": "PAW", "filter": bad}})
+                      basis={"O": {"name": "PAW-LCAO", "filter": bad},
+                             "H": {"name": "PAW-LCAO", "filter": bad}})
 
     def test_the_per_element_form_merges_one_shared_filter(self):
         family, options = resolve_pseudo_basis(
-            "per-element", {"O": {"name": "PAW", "size": "DZ", "filter": 700.0},
-                            "H": {"name": "PAW", "filter": 700.0}},
+            "per-element", {"O": {"name": "PAW-LCAO", "size": "DZ", "filter": 700.0},
+                            "H": {"name": "PAW-LCAO", "filter": 700.0}},
             ["O", "H", "H"])
-        assert family is PSEUDO_FAMILIES["paw"]
+        assert family is PSEUDO_FAMILIES["paw-lcao"]
         assert options == {"size": {"O": "DZ", "H": "SZ"}, "filter": 700.0}
 
     @pytest.mark.parametrize("mapping", [
-        {"O": {"name": "PAW", "filter": True},
-         "H": {"name": "PAW", "filter": False}},
-        {"O": {"name": "PAW", "filter": True}, "H": "PAW"},
+        {"O": {"name": "PAW-LCAO", "filter": True},
+         "H": {"name": "PAW-LCAO", "filter": False}},
+        {"O": {"name": "PAW-LCAO", "filter": True}, "H": "PAW-LCAO"},
     ])
     def test_a_per_element_filter_must_agree(self, mapping):
         """The cutoff is a property of the grid, which every atom shares."""
@@ -366,18 +366,18 @@ class TestOption:
 
 class TestDefault:
     @pytest.mark.parametrize("family, expected", [
-        ("paw", True), ("upaw", True), ("ncpp", None), ("oncvpsp", None),
+        ("paw-lcao", True), ("upaw-lcao", True), ("ncpp", None), ("oncvpsp", None),
     ])
     def test_declared_in_the_registry(self, family, expected):
         """The default lives in one place -- the family spec -- so a new
         family declares its own with no driver edit.  (Only the filter is
-        looked at: PAW's spec also declares its confinement.)"""
+        looked at: PAW-LCAO's spec also declares its confinement.)"""
         spec = PSEUDO_FAMILIES[family]
         assert spec.default_options.get("filter") is expected
         assert spec.resolved_options().get("filter") is expected
         assert spec.resolved_options({"filter": False})["filter"] is False
 
-    @pytest.mark.parametrize("family", ["paw", "upaw"])
+    @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao"])
     def test_the_default_really_filters(self, family):
         context = build(h2(), family, 0.25)[4]
         assert context["filter_cutoff"] is not None
@@ -391,7 +391,7 @@ class TestDefault:
         assert build(h2(), {"name": family, "filter": True},
                      0.25)[4]["filter_cutoff"] is not None
 
-    @pytest.mark.parametrize("family", ["paw", "upaw", "ncpp", "oncvpsp"])
+    @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao", "ncpp", "oncvpsp"])
     def test_filter_off_is_byte_identical_to_an_unfiltered_basis(self, family):
         """``filter=False`` must reproduce the historical basis **exactly**.
 
@@ -400,7 +400,7 @@ class TestDefault:
         existed: the SZ first zeta is the dataset's own ``pseudo_radial``, and
         the DZP tables are exactly what ``zeta_tables`` returns from it.  This
         is what keeps every pinned NCPP / ONCVPSP number valid and makes the
-        PAW flip a decision rather than a drift.
+        PAW-LCAO flip a decision rather than a drift.
         """
         spec = PSEUDO_FAMILIES[family]
         symbols, positions = ["H", "H"], np.array([[0.0, 0.0, 0.0],
@@ -433,7 +433,7 @@ class TestDefault:
             assert np.array_equal(np.asarray(got.values),
                                   np.asarray(want.values))
 
-    @pytest.mark.parametrize("family", ["paw", "upaw"])
+    @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao"])
     def test_filter_false_restores_the_unfiltered_hamiltonian(self, family):
         """End to end: ``filter=False`` builds the Hamiltonian from the raw
         tables, and the default builds a different one.
@@ -443,7 +443,7 @@ class TestDefault:
         comparison has independent content.
         """
         atoms = h2()
-        # The filter alone is under test, so the confinement PAW also applies
+        # The filter alone is under test, so the confinement PAW-LCAO also applies
         # by default is switched off on both sides: the raw table below is the
         # dataset's free-atom partial wave.
         free = {"name": family, "energy_shift": None}
@@ -462,7 +462,7 @@ class TestDefault:
         assert np.abs(filtered - raw).max() > 1e-3
 
         # The Hamiltonians differ, and by little on H2: max|dH| = 2.4e-3 Ha
-        # (PAW) / 3.9e-3 (UPAW), a ground-state shift of -2.5e-5 / +8.8e-4 Ha.
+        # (PAW-LCAO) / 3.9e-3 (UPAW-LCAO), a ground-state shift of -2.5e-5 / +8.8e-4 Ha.
         h_off = off[0].map_to_qubits("jordan_wigner").to_matrix()
         h_on = on[0].map_to_qubits("jordan_wigner").to_matrix()
         assert not np.allclose(h_off, h_on)         # the default does something
@@ -470,19 +470,19 @@ class TestDefault:
 
     def test_the_dry_run_names_the_filter_and_counts_the_same(self):
         """Filtering reshapes functions; it never adds or removes one."""
-        on = estimate_qubits(water(), basis="PAW")
-        off = estimate_qubits(water(), basis={"name": "PAW", "filter": False})
+        on = estimate_qubits(water(), basis="PAW-LCAO")
+        off = estimate_qubits(water(), basis={"name": "PAW-LCAO", "filter": False})
         assert on.n_qubits == off.n_qubits and on.per_atom == off.per_atom
         assert "filtered (auto: 1 x Nyquist)" in on.basis
         assert "unfiltered" in off.basis
         assert "unfiltered" in estimate_qubits(water(), basis="NCPP").basis
         explicit = count_basis_functions(water(),
-                                         {"name": "PAW", "filter": 700.0})[1]
+                                         {"name": "PAW-LCAO", "filter": 700.0})[1]
         assert "filtered (700 eV)" in explicit
 
     def test_the_dry_run_refuses_a_bad_value(self):
         with pytest.raises(ValueError, match="filter"):
-            count_basis_functions(water(), {"name": "PAW", "filter": "yes"})
+            count_basis_functions(water(), {"name": "PAW-LCAO", "filter": "yes"})
 
     @pytest.mark.parametrize("spec, text", [
         (False, "unfiltered"), (True, "auto"), (500.0, "500 eV")])
@@ -520,12 +520,12 @@ def rigid_shift_ripple(basis, h, fractions=(0.0, 0.25, 0.5, 0.75)):
 
 class TestWhatItBuys:
     def test_the_rigid_shift_ripple_shrinks(self):
-        """Water / PAW-SZ at h = 0.25: 268.7 meV of ripple unfiltered against
+        """Water / PAW-LCAO-SZ at h = 0.25: 268.7 meV of ripple unfiltered against
         27.1 meV with the default, a factor 9.9 (22x at h = 0.20).  The margin
         asked for here is a factor 3 -- well inside what was measured, and
         loose enough to survive a change in the compensation quadrature."""
-        off = rigid_shift_ripple({"name": "PAW", "filter": False}, 0.25)
-        on = rigid_shift_ripple("PAW", 0.25)
+        off = rigid_shift_ripple({"name": "PAW-LCAO", "filter": False}, 0.25)
+        on = rigid_shift_ripple("PAW-LCAO", 0.25)
         assert off > 2e-3                       # there is an egg-box to fix
         assert on < off / 3.0
 
@@ -559,8 +559,8 @@ class TestWhatItBuys:
                 traces.append(float(np.trace(T).real))
             return max(traces) - min(traces)
 
-        off = kinetic_ripple({"name": "PAW", "filter": False})
-        on = kinetic_ripple("PAW")
+        off = kinetic_ripple({"name": "PAW-LCAO", "filter": False})
+        on = kinetic_ripple("PAW-LCAO")
         assert off > 1e-3                       # ~7 mHa of aliasing to remove
         assert on < off / 100.0
 
@@ -576,7 +576,7 @@ class TestWhatItBuys:
         has had that component projected out.
         """
         atoms = h2(0.75)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW", h=0.25,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", h=0.25,
                                pool="fermionic", profile=False, trace=False,
                                project_translation=False)
         step = 0.005
@@ -595,15 +595,15 @@ class TestWhatItBuys:
 
     def test_the_geometry_barely_moves(self):
         """The variational shift is nearly a constant offset, so it cancels in
-        the differences that matter.  Measured on LiH / PAW-SZ: d_eq 1.6536 ->
+        the differences that matter.  Measured on LiH / PAW-LCAO-SZ: d_eq 1.6536 ->
         1.6538 Angstrom and D_e 1.8794 -> 1.8764 eV; on OH the total energy
         moves 379 meV while d_eq moves 0.0018 Angstrom.  Here the cheap
         version: the H2 bond force at a fixed distance keeps its sign and its
         magnitude.
         """
         forces = {}
-        for label, basis in (("off", {"name": "PAW", "filter": False}),
-                             ("on", "PAW")):
+        for label, basis in (("off", {"name": "PAW-LCAO", "filter": False}),
+                             ("on", "PAW-LCAO")):
             atoms = h2(0.90)
             atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, h=0.25,
                                    pool="fermionic", profile=False,

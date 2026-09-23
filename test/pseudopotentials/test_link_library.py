@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""``link_library`` puts the external ONCVPSP / PAW repositories into
+"""``link_library`` puts the external ONCVPSP / PAW-LCAO repositories into
 ``library/`` as symbolic links, directory-wise or file by file, and the family
 loaders read through them.  Everything runs in a temporary library root."""
 
@@ -29,21 +29,21 @@ def fake_repo(tmp_path):
 class TestDirectoryLink:
     def test_links_the_directory(self, fake_repo, tmp_path):
         root = tmp_path / "library"
-        target = ll.link_library("paw", fake_repo, root=root, verbose=False)
+        target = ll.link_library("paw-lcao", fake_repo, root=root, verbose=False)
         assert os.path.islink(target)
         assert os.path.realpath(target) == str(fake_repo)
-        assert ll.status(root)["paw"][2] == 2          # datasets only, not README
+        assert ll.status(root)["paw-lcao"][2] == 2          # datasets only, not README
         assert ll.status(root)["ncpp"][1] is None      # nothing linked there
 
     def test_relinking_the_same_source_is_a_no_op(self, fake_repo, tmp_path):
         root = tmp_path / "library"
-        ll.link_library("paw", fake_repo, root=root, verbose=False)
-        ll.link_library("paw", fake_repo, root=root, verbose=False)   # no error
+        ll.link_library("paw-lcao", fake_repo, root=root, verbose=False)
+        ll.link_library("paw-lcao", fake_repo, root=root, verbose=False)   # no error
         other = tmp_path / "other"
         other.mkdir(); (other / "H.parquet").write_bytes(b"y")
         with pytest.raises(FileExistsError, match="force"):
-            ll.link_library("paw", other, root=root, verbose=False)
-        target = ll.link_library("paw", other, root=root, force=True, verbose=False)
+            ll.link_library("paw-lcao", other, root=root, verbose=False)
+        target = ll.link_library("paw-lcao", other, root=root, force=True, verbose=False)
         assert os.path.realpath(target) == str(other)
 
     def test_aliases_and_errors(self, fake_repo, tmp_path):
@@ -53,37 +53,40 @@ class TestDirectoryLink:
         with pytest.raises(ValueError, match="unknown family"):
             ll.link_library("uspp", fake_repo, root=root)
         with pytest.raises(FileNotFoundError):
-            ll.link_library("paw", tmp_path / "missing", root=root)
+            ll.link_library("paw-lcao", tmp_path / "missing", root=root)
         empty = tmp_path / "empty"; empty.mkdir()
         with pytest.raises(FileNotFoundError, match="datasets"):
-            ll.link_library("paw", empty, root=root)
+            ll.link_library("paw-lcao", empty, root=root)
 
 
 class TestFileLinks:
     def test_links_each_dataset(self, fake_repo, tmp_path):
         root = tmp_path / "library"
-        target = ll.link_library("paw", fake_repo, root=root, files=True, verbose=False)
+        target = ll.link_library("paw-lcao", fake_repo, root=root, files=True, verbose=False)
         assert os.path.isdir(target) and not os.path.islink(target)
         assert sorted(os.listdir(target)) == ["H.parquet", "O.parquet"]
         assert all(os.path.islink(os.path.join(target, n)) for n in os.listdir(target))
-        ll.link_library("paw", fake_repo, root=root, files=True, verbose=False)  # idempotent
+        ll.link_library("paw-lcao", fake_repo, root=root, files=True, verbose=False)  # idempotent
 
     def test_switching_modes_needs_force(self, fake_repo, tmp_path):
         root = tmp_path / "library"
-        ll.link_library("paw", fake_repo, root=root, verbose=False)
+        ll.link_library("paw-lcao", fake_repo, root=root, verbose=False)
         with pytest.raises(FileExistsError):
-            ll.link_library("paw", fake_repo, root=root, files=True, verbose=False)
-        ll.link_library("paw", fake_repo, root=root, files=True, force=True, verbose=False)
-        assert not os.path.islink(os.path.join(root, "paw"))
+            ll.link_library("paw-lcao", fake_repo, root=root, files=True, verbose=False)
+        ll.link_library("paw-lcao", fake_repo, root=root, files=True, force=True, verbose=False)
+        assert not os.path.islink(os.path.join(root, "paw-lcao"))
 
 
 class TestCLI:
     def test_cli_links_and_reports(self, fake_repo, tmp_path, monkeypatch, capsys):
         root = tmp_path / "library"
         monkeypatch.setenv("MANDACARU_PSEUDO_PATH", str(root))
-        assert ll.main(["--paw", str(fake_repo)]) == 0
+        # The full flag, not the "--paw" argparse accepts by
+        # abbreviation: an abbreviation stops being unambiguous the
+        # moment a second family starts with the same letters.
+        assert ll.main(["--paw-lcao", str(fake_repo)]) == 0
         out = capsys.readouterr().out
-        assert "paw" in out and "2 datasets" in out and "MISSING" in out   # ncpp/oncvpsp absent
+        assert "paw-lcao" in out and "2 datasets" in out and "MISSING" in out   # ncpp/oncvpsp absent
         assert ll.main(["--status"]) == 0
 
     def test_cli_requires_an_argument(self):
@@ -92,7 +95,7 @@ class TestCLI:
 
 
 class TestMandacaruCommand:
-    """``mandacaru --link-paw DIR`` -- the same thing from the main console script.
+    """``mandacaru --link-paw-lcao DIR`` -- the same thing from the main console script.
 
     The datasets are too large to ship, so setting them up is the first thing a
     user does after cloning; it should not require knowing that
@@ -107,40 +110,40 @@ class TestMandacaruCommand:
         # The fake datasets are not loadable, so the command links them and
         # then reports that the *verification* failed -- which is the point:
         # a link is only useful if a dataset actually loads through it.
-        assert cli.main(["--link-paw", str(fake_repo)]) == 1
+        assert cli.main(["--link-paw-lcao", str(fake_repo)]) == 1
         out = capsys.readouterr().out
         assert "2 datasets" in out
         assert "loading a dataset failed" in out
-        assert os.path.islink(tmp_path / "library" / "paw")
+        assert os.path.islink(tmp_path / "library" / "paw-lcao")
 
     def test_link_paw_needs_no_geometry(self, fake_repo, tmp_path, monkeypatch):
         """It must not trip the 'a geometry is required' guard."""
         from mandacaru import cli
 
         monkeypatch.setenv("MANDACARU_PSEUDO_PATH", str(tmp_path / "library"))
-        cli.main(["--link-paw", str(fake_repo)])      # no SystemExit
+        cli.main(["--link-paw-lcao", str(fake_repo)])      # no SystemExit
 
     def test_a_missing_directory_is_reported_not_raised(self, tmp_path,
                                                         monkeypatch, capsys):
         from mandacaru import cli
 
         monkeypatch.setenv("MANDACARU_PSEUDO_PATH", str(tmp_path / "library"))
-        assert cli.main(["--link-paw", str(tmp_path / "nope")]) == 1
+        assert cli.main(["--link-paw-lcao", str(tmp_path / "nope")]) == 1
         assert "is not a directory" in capsys.readouterr().out
 
     def test_a_populated_directory_is_refused_and_kept(self, fake_repo,
                                                        tmp_path, monkeypatch,
                                                        capsys):
-        """--link-paw replaces a link, never someone's real directory."""
+        """--link-paw-lcao replaces a link, never someone's real directory."""
         from mandacaru import cli
 
         root = tmp_path / "library"
-        (root / "paw").mkdir(parents=True)
-        (root / "paw" / "mine.txt").write_text("keep me")
+        (root / "paw-lcao").mkdir(parents=True)
+        (root / "paw-lcao" / "mine.txt").write_text("keep me")
         monkeypatch.setenv("MANDACARU_PSEUDO_PATH", str(root))
-        assert cli.main(["--link-paw", str(fake_repo)]) == 1
+        assert cli.main(["--link-paw-lcao", str(fake_repo)]) == 1
         assert "non-empty directory" in capsys.readouterr().out
-        assert (root / "paw" / "mine.txt").read_text() == "keep me"
+        assert (root / "paw-lcao" / "mine.txt").read_text() == "keep me"
 
     def test_relinking_to_a_new_path_succeeds(self, fake_repo, tmp_path,
                                               monkeypatch):
@@ -149,12 +152,12 @@ class TestMandacaruCommand:
 
         root = tmp_path / "library"
         monkeypatch.setenv("MANDACARU_PSEUDO_PATH", str(root))
-        cli.main(["--link-paw", str(fake_repo)])
+        cli.main(["--link-paw-lcao", str(fake_repo)])
         moved = tmp_path / "mandacaru-paw-moved"
         moved.mkdir()
         (moved / "H.parquet").write_bytes(b"x")
-        cli.main(["--link-paw", str(moved)])
-        assert os.path.realpath(root / "paw") == str(moved)
+        cli.main(["--link-paw-lcao", str(moved)])
+        assert os.path.realpath(root / "paw-lcao") == str(moved)
 
     def test_status_reports_without_linking(self, tmp_path, monkeypatch, capsys):
         from mandacaru import cli
@@ -167,7 +170,7 @@ class TestMandacaruCommand:
 
 
 class TestLoadersThroughTheRealLinks:
-    """The shipped library: NCPP is bundled; ONCVPSP/PAW are links when set up."""
+    """The shipped library: NCPP is bundled; ONCVPSP/PAW-LCAO are links when set up."""
 
     def test_families_resolve_through_links(self):
         from mandacaru.pseudopotentials.io import library_root
@@ -175,24 +178,24 @@ class TestLoadersThroughTheRealLinks:
         from mandacaru.pseudopotentials.paw import get_paw
         st = ll.status(library_root())
         assert st["ncpp"][2] >= 89
-        if st["oncvpsp"][2] == 0 or st["paw"][2] == 0:
-            pytest.skip("external ONCVPSP/PAW repositories not linked on this machine")
+        if st["oncvpsp"][2] == 0 or st["paw-lcao"][2] == 0:
+            pytest.skip("external ONCVPSP/PAW-LCAO repositories not linked on this machine")
         assert get_oncv("H").family == "oncvpsp"
-        assert get_paw("H").family == "paw"
+        assert get_paw("H").family == "paw-lcao"
 
     def test_mandacaru_link_paw_verifies_a_real_repository(self, tmp_path,
                                                            monkeypatch, capsys):
-        """The success path of ``mandacaru --link-paw``, end to end."""
+        """The success path of ``mandacaru --link-paw-lcao``, end to end."""
         from mandacaru import cli
         from mandacaru.pseudopotentials.io import library_root
 
         st = ll.status(library_root())
-        if st["paw"][2] == 0:
-            pytest.skip("the PAW repository is not linked on this machine")
-        source = st["paw"][1]
+        if st["paw-lcao"][2] == 0:
+            pytest.skip("the PAW-LCAO repository is not linked on this machine")
+        source = st["paw-lcao"][1]
         monkeypatch.setenv("MANDACARU_PSEUDO_PATH", str(tmp_path / "library"))
         # The dataset cache is keyed by folder, so a fresh root really reloads.
-        assert cli.main(["--link-paw", source]) == 0
+        assert cli.main(["--link-paw-lcao", source]) == 0
         assert "loaded H successfully" in capsys.readouterr().out
 
 
@@ -220,7 +223,7 @@ class TestMissingLibraryMessage:
         with pytest.raises(FileNotFoundError) as excinfo:
             get_paw("O")
         message = str(excinfo.value)
-        assert "mandacaru --link-paw" in message
+        assert "mandacaru --link-paw-lcao" in message
         assert "mandacaru-paw" in message
         assert "mandacaru --pseudo-status" in message
 
@@ -238,7 +241,7 @@ class TestMissingLibraryMessage:
         """With datasets present, the message is about the element, not setup."""
         from mandacaru.pseudopotentials import paw
 
-        folder = tmp_path / "library" / "paw"
+        folder = tmp_path / "library" / "paw-lcao"
         folder.mkdir(parents=True)
         (folder / "H.parquet").write_bytes(b"x")
         monkeypatch.setenv("MANDACARU_PSEUDO_PATH", str(tmp_path / "library"))
@@ -249,4 +252,4 @@ class TestMissingLibraryMessage:
         message = str(excinfo.value)
         assert "Available: H" in message
         assert "build_paw_library" in message
-        assert "--link-paw" not in message      # the library is not the problem
+        assert "--link-paw-lcao" not in message      # the library is not the problem

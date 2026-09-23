@@ -165,8 +165,8 @@ read off the left margin:
     initial_magnetic_moments: [0.0, 0.0, 0.0]
 
 [BASIS]
-    name: PAW
-    family: PAW (projector augmented wave (Bloechl 1994), frozen core, ...)
+    name: PAW-LCAO
+    family: PAW-LCAO (projector augmented wave (Bloechl 1994), frozen core, ...)
     size: SZ
     zeta_split: tail_norm 0.16, 0.3, 0.6 (norm of the tail, every zeta split from the first)
     projector_basis: raw
@@ -268,7 +268,7 @@ earlier run in the same process (a notebook cell) can start a fresh file with
 
 `[BASIS]` records the single-particle basis **that ran**, which is more than
 the options that were typed: a basis here is built at run time, so the family
-defaults left alone (a PAW basis is Fourier-filtered and its local potential is
+defaults left alone (a PAW-LCAO basis is Fourier-filtered and its local potential is
 range-separated unless told otherwise), the cutoff radius an `energy_shift`
 gave each orbital together with the eigenvalue shift actually achieved, the
 file every dataset was read from and the function count per element are all
@@ -505,7 +505,7 @@ Every evaluation closes with where its time and memory went:
 
 The **calculator** writes this block, not the solver, and that is why it comes
 after `[FORCES]`: on a real relaxation the nuclear gradient is the largest single
-stage. A six-step water relaxation in PAW-SZ at `h = 0.10` spends **62 %** of its
+stage. A six-step water relaxation in PAW-LCAO-SZ at `h = 0.10` spends **62 %** of its
 325 s on forces and **19 %** on the variational optimization, so a block closed
 when the solver finished would account for the smaller part of the step.
 
@@ -610,12 +610,12 @@ the run pulled it in.
 ### It cites what ran, not what was typed
 
 The selection comes from the run's actual configuration, which is not the same
-as the options a user wrote. A PAW basis is Fourier-filtered and confined by
+as the options a user wrote. A PAW-LCAO basis is Fourier-filtered and confined by
 default, so
 
 ```python
 calc = Mandacaru(method="adapt-vqe",
-                 basis={"name": "PAW", "size": "SZ"},
+                 basis={"name": "PAW-LCAO", "size": "SZ"},
                  h=0.25,
                  pool="ceo")
 ```
@@ -645,7 +645,7 @@ happen, and the file already on disk is rewritten so it does not go stale.
 
 ```python
 calc = Mandacaru(method="adapt-vqe",
-                 basis="PAW",
+                 basis="PAW-LCAO",
                  h=0.20,
                  pool="qubit",
                  txt="run/output.txt")      # -> run/references.bib

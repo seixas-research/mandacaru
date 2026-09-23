@@ -10,7 +10,7 @@ r"""Range separation of the local pseudopotential, so its matrix leaves the grid
 
 Every integral of the real-space engine is a grid sum, so rigidly translating a
 molecule by a fraction of the spacing :math:`h` changes the energy -- the
-"egg-box" -- and the forces faithfully differentiate that artifact.  PAW's
+"egg-box" -- and the forces faithfully differentiate that artifact.  PAW-LCAO's
 *nonlocal* integrals were cured by integrating them on atom-centered spherical
 quadratures instead (:func:`~.paw.atom_centered_projections`), which depend only
 on the separation of the two functions and are therefore exactly translation
@@ -51,7 +51,7 @@ order and the truncation at :data:`RADIUS_SIGMAS`.
 
 What it is worth, measured
 --------------------------
-Water in PAW-SZ (10 Angstrom cell), shifted rigidly by fractions of :math:`h`
+Water in PAW-LCAO-SZ (10 Angstrom cell), shifted rigidly by fractions of :math:`h`
 along :math:`(1,1,1)/\sqrt3` with the molecular orbitals and the density
 frozen, one term at a time (peak-to-peak, meV).  ``h`` is the grid spacing in
 Angstrom, ``V_grid`` / ``V_split`` the local-potential term with
@@ -119,12 +119,12 @@ RADIUS_SIGMAS = 6.5
 #: converges algebraically instead of exponentially.
 #:
 #: The orders below are what a convergence study on the *energy* asked for --
-#: water PAW-DZ at h = 0.25 Angstrom (12 orbitals, the oxygen sphere holding
+#: water PAW-LCAO-DZ at h = 0.25 Angstrom (12 orbitals, the oxygen sphere holding
 #: both hydrogens), ``tr(D V^sr)`` against a 240x64x128 reference:
 #: ``20x16x32`` +2.2e-6, ``32x24x48`` +7.9e-7, ``40x32x64`` +1.8e-7,
 #: ``64x32x64`` ~3e-7, ``80x40x80`` -9.5e-8 Hartree.  Below ~32 angular points
 #: the error is angular (a neighbor's orbital seen off-center); above it the
-#: radial rule dominates.  PAW-SZ water converges to ~1e-7 and H2 PAW-DZP to
+#: radial rule dominates.  PAW-LCAO-SZ water converges to ~1e-7 and H2 PAW-LCAO-DZP to
 #: better than 1e-9, so these are sized by the hardest case tested.
 RADIAL_POINTS = 64
 #: Gauss-Legendre points in ``cos(theta)``.
@@ -216,7 +216,7 @@ def short_range_potential(dataset, sigma: float, radius) -> np.ndarray:
 def local_cutoff(dataset) -> float:
     """Radius (Bohr) beyond which the dataset's local potential is the ionic tail.
 
-    The generation's ``r_cut_local`` when it is recorded (PAW, ONCVPSP), else
+    The generation's ``r_cut_local`` when it is recorded (PAW-LCAO, ONCVPSP), else
     the largest channel cutoff -- only a panel boundary for the radial rule, so
     a loose value costs accuracy, never correctness.
     """

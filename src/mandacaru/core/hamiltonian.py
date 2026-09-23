@@ -129,7 +129,7 @@ class MolecularIntegrals(MeanFieldMixin):
     nonlocal_overlap : dict, optional
         Blocks of an overlap correction :math:`Q` in the same layout.  When
         given, the basis overlap used for the Loewdin orthogonalization becomes
-        :math:`S + C Q C^\dagger` (PAW-type augmented overlap).  ``None`` (the
+        :math:`S + C Q C^\dagger` (PAW-LCAO-type augmented overlap).  ``None`` (the
         norm-conserving case) leaves :math:`S` alone.
     """
 
@@ -138,7 +138,8 @@ class MolecularIntegrals(MeanFieldMixin):
                  orthogonalize: bool = True, softening: float = 1e-12,
                  pseudos=None, kb_projectors=None,
                  kinetic: str = "fd", nonlocal_coupling=None,
-                 nonlocal_overlap=None, periodic: bool = False):
+                 nonlocal_overlap=None, periodic: bool = False,
+                 spin_orbit_coupling=None):
         if kinetic not in ("fd", "spectral"):
             raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
                              "'fd' or 'spectral'")
@@ -167,14 +168,21 @@ class MolecularIntegrals(MeanFieldMixin):
         #: Blocks of the overlap correction ``Q`` (``None``: norm-conserving).
         self.nonlocal_overlap = (dict(nonlocal_overlap)
                                  if nonlocal_overlap is not None else None)
+        #: Blocks of the spin-orbit coupling, ``{(atom, l): D_SO}``.  Empty
+        #: unless the pseudopotentials were generated with
+        #: ``relativity="dirac"`` -- see :mod:`mandacaru.core.spin_orbit`.
+        self.spin_orbit_coupling = (dict(spin_orbit_coupling)
+                                    if spin_orbit_coupling else {})
         if self.nonlocal_overlap is not None and not self.kb_projectors:
             raise ValueError("nonlocal_overlap needs projectors to act on")
+        if self.spin_orbit_coupling and not self.kb_projectors:
+            raise ValueError("spin_orbit_coupling needs projectors to act on")
         self._potentials = Potentials(self.nuclei, softening=softening,
                                       units=units,
                                       pseudos=self.pseudopotentials)
         #: Additive constant (Hartree) carried into every Hamiltonian this
         #: object assembles, next to the nuclear repulsion -- e.g. the frozen
-        #: one-center energies of a PAW dataset.  Zero for a plain basis.
+        #: one-center energies of a PAW-LCAO dataset.  Zero for a plain basis.
         self.constant_energy: float = 0.0
         self._S: np.ndarray | None = None
         self._S_bare: np.ndarray | None = None
@@ -223,7 +231,7 @@ class MolecularIntegrals(MeanFieldMixin):
         r"""The overlap the orthonormalization uses.
 
         The bare grid overlap :meth:`bare_overlap` for a norm-conserving basis;
-        with an overlap correction (``nonlocal_overlap``, the PAW-type
+        with an overlap correction (``nonlocal_overlap``, the PAW-LCAO-type
         :math:`Q` blocks) it is the augmented :math:`S + C Q C^\dagger`, where
         :math:`C` are the projections of :meth:`projections`.
         """
@@ -346,6 +354,49 @@ class MolecularIntegrals(MeanFieldMixin):
             self.kb_projectors, self.nonlocal_coupling,
             diagonal=[p.kb_energy for p in self.kb_projectors])
 
+    @property
+    def has_spin_orbit(self) -> bool:
+        """Whether a spin-orbit term will be added to the Hamiltonian."""
+        return bool(self.spin_orbit_coupling)
+
+    def spin_orbit_matrix(self) -> np.ndarray:
+        r"""The ``(2M, 2M)`` spin-orbital matrix of the spin-orbit term.
+
+        Zero (and still ``(2M, 2M)``) when no channel carries one.  See
+        :func:`mandacaru.core.spin_orbit.spin_orbit_one_body`; the result is
+        complex Hermitian and, unlike every other one-body term here, is
+        **not** block-diagonal in spin.
+        """
+        from .spin_orbit import spin_orbit_one_body
+
+        M = len(self.basis)
+        if not self.spin_orbit_coupling:
+            return np.zeros((2 * M, 2 * M), dtype=complex)
+        return spin_orbit_one_body(self.projections(), self.kb_projectors,
+                                   self.spin_orbit_coupling)
+
+    def _spin_orbit_in_mo_basis(self) -> np.ndarray:
+        r"""The spin-orbit matrix rotated into the molecular-orbital basis.
+
+        The rotation is spin-independent -- the same spatial
+        :attr:`mo_coefficients` for both spins -- so each of the four spin
+        quadrants transforms on its own as :math:`C^\dagger h C`.  The
+        molecular orbitals themselves come from a Hartree-Fock solution of the
+        **scalar** Hamiltonian; that is the usual and correct order, since the
+        reference determinant only has to span the space, not diagonalize the
+        operator that is about to be added to it.
+        """
+        C = np.asarray(self.mo_coefficients)
+        M = C.shape[0]
+        h = self.spin_orbit_matrix()
+        out = np.zeros_like(h)
+        for sigma in (0, 1):
+            for tau in (0, 1):
+                block = h[sigma * M:(sigma + 1) * M, tau * M:(tau + 1) * M]
+                out[sigma * M:(sigma + 1) * M,
+                    tau * M:(tau + 1) * M] = C.conj().T @ block @ C
+        return out
+
     def nonlocal_overlap_matrix(self):
         """The ``(P, P)`` overlap-correction matrix ``Q``, or ``None``."""
         if self.nonlocal_overlap is None:
@@ -385,7 +436,7 @@ class MolecularIntegrals(MeanFieldMixin):
         the grid can: :meth:`external_potential` then samples only the
         remainder and this hook supplies the missing ``(M, M)`` block, which is
         added to ``T + V + C D C^dagger`` exactly like
-        :meth:`one_body_augmentation`.  PAW splits its local channel into the
+        :meth:`one_body_augmentation`.  PAW-LCAO splits its local channel into the
         long-range potential of a Gaussian ion (smooth, so it stays on the
         grid) plus a short-range remainder of compact support, integrated on an
         atom-centered spherical quadrature that is exactly translation invariant
@@ -403,7 +454,7 @@ class MolecularIntegrals(MeanFieldMixin):
         """One-body correction added to ``T + V + C D C^dagger``, or ``None``.
 
         The counterpart of :meth:`two_body_augmentation` for terms that are
-        linear in the density.  A plain basis has none; PAW uses it for the
+        linear in the density.  A plain basis has none; PAW-LCAO uses it for the
         electron-ion attraction of its compensation charges, which the grid
         integral of the external potential cannot see (that integral weights
         only the smooth pair density, and the compensation charge is an extra
@@ -415,7 +466,7 @@ class MolecularIntegrals(MeanFieldMixin):
         r"""Correction added to the grid two-body tensor, or ``None``.
 
         A hook for families whose pair densities carry more than the product
-        of two basis functions -- the PAW compensation charges
+        of two basis functions -- the PAW-LCAO compensation charges
         (:class:`mandacaru.pseudopotentials.paw.PAWIntegrals`)
         return the ``(M, M, M, M)`` tensor of the extra Coulomb terms in the
         same physicists' layout as :meth:`two_body`.  The plain basis has
@@ -574,7 +625,8 @@ class MolecularIntegrals(MeanFieldMixin):
 
     # -- spin-orbital integrals ------------------------------------------- #
 
-    def spin_orbital_integrals(self) -> tuple[np.ndarray, np.ndarray]:
+    def spin_orbital_integrals(self, spin_orbit: bool = True
+                               ) -> tuple[np.ndarray, np.ndarray]:
         r"""Spin-orbital ``(h_so, g_so)`` for the Hamiltonian (spin-blocked).
 
         Spin-orbital ``P = p + sigma * M`` (``M`` spatial orbitals; ``sigma = 0``
@@ -583,9 +635,13 @@ class MolecularIntegrals(MeanFieldMixin):
         when ``spin(P) == spin(R)`` (electron 1) and ``spin(Q) == spin(S)``
         (electron 2).  The returned tensors feed :meth:`Fermion.from_integrals`
         directly and yield a Hermitian, spin- and particle-number-conserving
-        Hamiltonian.
+        Hamiltonian -- unless a spin-orbit term is present and ``spin_orbit``
+        is left on, in which case it conserves particle number and
+        :math:`J_z` but not :math:`S_z`.
         """
-        return spin_block_integrals(self.one_body(), self.two_body())
+        h_spin = (self.spin_orbit_matrix()
+                  if spin_orbit and self.spin_orbit_coupling else None)
+        return spin_block_integrals(self.one_body(), self.two_body(), h_spin)
 
     # -- molecular Hamiltonian -------------------------------------------- #
 
@@ -630,7 +686,11 @@ class MolecularIntegrals(MeanFieldMixin):
                 active = [p for p in range(self.n_orbitals) if p not in frozen]
                 h_mo, eri_mo, core_energy = freeze_core_integrals(
                     h_mo, eri_mo, frozen, active)
-            h_so, g_so = spin_block_integrals(h_mo, eri_mo)
+            h_spin = None
+            if self.spin_orbit_coupling:
+                _refuse_spin_orbit_without_sz(num_particles, frozen)
+                h_spin = self._spin_orbit_in_mo_basis()
+            h_so, g_so = spin_block_integrals(h_mo, eri_mo, h_spin)
         else:
             if frozen:
                 raise ValueError(
@@ -678,6 +738,38 @@ class MolecularIntegrals(MeanFieldMixin):
         if abs(const) > 1e-14:
             H = H + Fermion({(): const}, n_modes=n_so)
         return H
+
+
+def _refuse_spin_orbit_without_sz(num_particles, frozen_orbitals) -> None:
+    r"""Refuse the machinery that assumes ``S_z`` is a good quantum number.
+
+    Spin-orbit coupling gives the one-body matrix an alpha-beta block, so the
+    Hamiltonian conserves :math:`J_z` and particle number but **not**
+    :math:`S_z`.  Everything downstream that was written against a fixed
+    ``(n_alpha, n_beta)`` -- the particle-number sector reduction
+    (:mod:`mandacaru.core.sector`), the parity mapping's two-qubit taper, and
+    every excitation pool that pairs an alpha excitation with a beta one --
+    would then be reducing or exciting in a space the Hamiltonian does not
+    preserve, and would return a number that looks plausible.
+
+    Nothing ships a Dirac dataset today, so no ordinary run reaches this.  It
+    is here so that the day one does, it fails instead of being believed.
+    """
+    if num_particles is not None:
+        raise NotImplementedError(
+            "spin-orbit coupling and an explicit num_particles are "
+            "incompatible: the alpha-beta block of the one-body matrix means "
+            "S_z is not conserved, so there is no (n_alpha, n_beta) sector "
+            "for the Hamiltonian to act within -- only a total particle "
+            "number.  Drop num_particles, or generate the pseudopotential "
+            "with relativity='scalar', which carries the mass-velocity and "
+            "Darwin terms without the spin-orbit one.")
+    if frozen_orbitals:
+        raise NotImplementedError(
+            "a frozen core and spin-orbit coupling are incompatible: "
+            "freezing replaces doubly occupied spatial orbitals by a mean "
+            "field, and the spin-orbit term is what stops the two spins of "
+            "an orbital from being occupied together.")
 
 
 def projector_blocks(projectors) -> dict:
@@ -784,7 +876,7 @@ def molecular_orbital_integrals(integrals, n_electrons, num_particles=None,
     Complex orbitals (``l > 0`` harmonics, plane waves) leave the SCF with
     arbitrary phases and degenerate-pair mixing, which makes the MO Hamiltonian
     complex while every operator pool is real: ADAPT then stalls above the
-    ground state (62 meV on H2 PAW-DZP, 39 meV on H2 in plane waves).  The
+    ground state (62 meV on H2 PAW-LCAO-DZP, 39 meV on H2 in plane waves).  The
     orbitals are therefore rotated to conjugation-real form inside the
     occupied / virtual blocks -- same determinant, real Hamiltonian.
     """
@@ -860,14 +952,21 @@ def conjugation_real_orbitals(orbitals, conjugation, boundaries=(),
     return real
 
 
-def spin_block_integrals(h: np.ndarray,
-                         eri: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def spin_block_integrals(h: np.ndarray, eri: np.ndarray,
+                         h_spin: np.ndarray | None = None
+                         ) -> tuple[np.ndarray, np.ndarray]:
     r"""Expand spatial integrals ``(h, <pq|rs>)`` to spin-orbitals (spin-blocked).
 
     Spin-orbital ``P = p + sigma * M`` (``sigma = 0`` alpha for the first ``M``,
     ``1`` beta for the second).  The one-body block is diagonal in spin; the
     physicists'-notation two-body tensor is non-zero only when
     ``spin(P) == spin(R)`` (electron 1) and ``spin(Q) == spin(S)`` (electron 2).
+
+    ``h_spin`` is an already-spin-orbital ``(2M, 2M)`` term **added after** the
+    spin-blocking, for an operator that does not commute with :math:`S_z` --
+    which in this code means spin-orbit coupling and nothing else
+    (:meth:`MolecularIntegrals.spin_orbit_matrix`).  It is the one way the
+    one-body matrix acquires an alpha-beta block.
     """
     h = np.asarray(h)
     eri = np.asarray(eri)
@@ -893,6 +992,13 @@ def spin_block_integrals(h: np.ndarray,
                 for S in range(n_so):
                     if spin(P) == spin(R) and spin(Q) == spin(S):
                         g_so[P, Q, R, S] = eri[orb(P), orb(Q), orb(R), orb(S)]
+    if h_spin is not None:
+        h_spin = np.asarray(h_spin)
+        if h_spin.shape != (n_so, n_so):
+            raise ValueError(
+                f"h_spin must be ({n_so}, {n_so}) for {M} spatial orbitals, "
+                f"got {h_spin.shape}")
+        h_so = h_so + h_spin
     return h_so, g_so
 
 

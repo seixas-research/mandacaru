@@ -57,7 +57,7 @@ Pseudopotentials
 ----------------
 ``Z_A`` is the charge the *Hamiltonian* carries, which for a pseudopotential
 run is the valence charge (O is 6, not 8), so ``q_A`` is still the physical
-partial charge.  For PAW the grid holds the *smooth* density, and the charge
+partial charge.  For PAW-LCAO the grid holds the *smooth* density, and the charge
 inside the augmentation spheres is added back per atom from
 :math:`C_A q_A C_A^\dagger` -- the same on-site correction the overlap carries,
 which is block-diagonal per atom, so the decomposition is exact rather than a

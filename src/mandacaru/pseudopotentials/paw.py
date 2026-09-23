@@ -6,13 +6,13 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Projector augmented-wave datasets (PAW).
+r"""Projector augmented-wave datasets (PAW-LCAO).
 
-The family ``"paw"`` implements P. E. Blöchl's projector augmented-wave method,
+The family ``"paw-lcao"`` implements P. E. Blöchl's projector augmented-wave method,
 Phys. Rev. B **50**, 17953 (1994), in its frozen-core, one-center-expansion
 form, with the one-center energies **linearized around the reference atom**
 (a fixed coupling matrix :math:`D^0` per species, the "frozen augmentation"
-that makes a PAW dataset behave like an ultrasoft pseudopotential).  Written
+that makes a PAW-LCAO dataset behave like an ultrasoft pseudopotential).  Written
 from scratch on the same LDA radial atom as the Troullier-Martins and ONCVPSP
 families (:mod:`mandacaru.basis.atomic_solver`), reusing the Numerov partial
 waves, the spherical-Bessel machinery and the polynomial local potential of
@@ -60,7 +60,7 @@ Construction (per species, :func:`generate_paw`)
    derivatives to the all-electron wave (:func:`~.oncv.matching_targets`) and,
    in the four remaining degrees of freedom, with the residual kinetic energy
    beyond :math:`q_c` = 5 Bohr⁻¹ minimized (:func:`smooth_partial_waves`).
-   **No norm condition is imposed** -- that is the point of PAW; the norm
+   **No norm condition is imposed** -- that is the point of PAW-LCAO; the norm
    deficit becomes :math:`q_{ij}`.
 3. **Local potential.**  The even-polynomial continuation of the screened
    all-electron potential inside :math:`r_{cl}` (:func:`~.oncv.polynomial_local_potential`,
@@ -142,6 +142,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from scipy.integrate import simpson
 
+from ..basis.xc import xc_potential
 from ..basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
                                     solve_atom)
 from ..core.hamiltonian import MolecularIntegrals, projector_blocks
@@ -152,19 +153,24 @@ from .oncv import (Q_MAX, Q_STEP, PseudoWaves, _bessel_table,
                    _pseudo_waves_record, _radial_f, _resample, _snap,
                    _spectrum_extent, _tail_transform, _with_origin,
                    bessel_derivatives, bessel_wavevectors, generation_points,
-                   log_derivative_errors, matching_targets, numerov_outward,
-                   optimize_pseudo_waves, polynomial_local_potential,
-                   reference_waves)
+                   DEFAULT_EXTRA_L, DEFAULT_NLCC, DEFAULT_RELATIVITY,
+                   DEFAULT_XC, log_derivative_errors, matching_targets,
+                   numerov_outward, optimize_pseudo_waves,
+                   polynomial_local_potential, reference_waves)
 
-#: Registry name of the family (no aliases).
-FAMILY = "paw"
-#: Subdirectory of the pseudopotential library holding the PAW datasets.
-LIBRARY_SUBDIR = "paw"
+#: Registry name of the family (no aliases).  The **-LCAO** is not decoration:
+#: this is Bloechl's projector-augmented-wave transformation carried on a
+#: *localized* basis -- the bound smooth partial waves and their multiple-zeta
+#: hierarchy -- rather than on plane waves, which is what the name of a basis
+#: set has to say.  The method it implements is still PAW-LCAO.
+FAMILY = "paw-lcao"
+#: Subdirectory of the library holding the PAW-LCAO datasets.
+LIBRARY_SUBDIR = "paw-lcao"
 
-#: Registry name of the **unitary** PAW family (``basis="UPAW"``).
-UPAW_FAMILY = "upaw"
-#: Subdirectory holding UPAW datasets, when one has been built.
-UPAW_LIBRARY_SUBDIR = "upaw"
+#: Registry name of the **unitary** variant (``basis="UPAW-LCAO"``).
+UPAW_FAMILY = "upaw-lcao"
+#: Subdirectory holding UPAW-LCAO datasets, when one has been built.
+UPAW_LIBRARY_SUBDIR = "upaw-lcao"
 
 #: Spherical Bessel functions per smooth partial wave.
 DEFAULT_N_BESSEL = 8
@@ -175,7 +181,7 @@ DEFAULT_ENERGY_OFFSET = 1.0
 #: Fraction of the all-electron inner norm the smooth partial waves give up:
 #: ``<phi~_i|phi~_j>_rc = (1 - DEFAULT_NORM_DEFICIT) <phi_i|phi_j>_rc``, so the
 #: overlap correction ``q = deficit * <phi_i|phi_j>_rc`` is positive definite
-#: and the PAW overlap operator ``1 + sum |p> q <p|`` is bounded below by 1.
+#: and the PAW-LCAO overlap operator ``1 + sum |p> q <p|`` is bounded below by 1.
 #: ``None`` drops the norm conditions altogether (free minimization of the
 #: residual kinetic energy), which leaves the sign of ``q`` uncontrolled.
 #: The value an element without an entry in :data:`DEFAULT_NORM_DEFICITS`
@@ -211,7 +217,7 @@ DEFAULT_CUTOFFS = {
 #: ``dvloc0``).  The polynomial continuation of the screened all-electron
 #: potential is deep enough (O: -5.8 Ha at the origin) to bind a spurious
 #: 1s-like state of its own in the s channel of the first row; unlike the
-#: near-singular ONCVPSP coupling, the PAW projector term does not push it
+#: near-singular ONCVPSP coupling, the PAW-LCAO projector term does not push it
 #: away, so the local potential is raised until the s spectrum has nothing
 #: between the bound state and the box states.
 DEFAULT_LOCAL_SHIFTS = {"C": 12.0, "N": 10.0, "O": 6.0, "F": 8.0}
@@ -219,6 +225,16 @@ DEFAULT_LOCAL_SHIFTS = {"C": 12.0, "N": 10.0, "O": 6.0, "F": 8.0}
 DUALITY_TOLERANCE = 1e-8
 #: Largest tolerated asymmetry of the screened coupling matrix (Hartree).
 COUPLING_ASYMMETRY_TOLERANCE = 1e-4
+#: A reference energy below this cannot be divided out when recovering the
+#: norm correction of a dataset written before that correction was stored.
+NORM_RECOVERY_FLOOR = 1e-6
+#: Below this, a dataset's stored overlap correction and its recovered norm
+#: correction are the *same array* rather than two O(c^-2)-separated matrices,
+#: which is how a file written before the two were distinguished is detected.
+#: It sits between the two scales involved and is not delicate: the recovery
+#: carries about 1e-9 of symmetrization noise, while a relativistic dataset
+#: that really does keep the two apart separates them by about 2e-4.
+NORM_SPLIT_FLOOR = 1e-6
 #: Smallest tolerated eigenvalue of the overlap operator ``1 + sum |p> q <p|``
 #: restricted to the channel (``1 + lambda_min(q G_p)``, ``G_p`` the projector
 #: Gram matrix): below it the PAW transformation is (nearly) singular.
@@ -244,7 +260,9 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
                          energies: list, r_cut: float,
                          q_cut: float = DEFAULT_Q_CUT,
                          n_bessel: int = DEFAULT_N_BESSEL,
-                         norm_deficit=DEFAULT_NORM_DEFICIT) -> PseudoWaves:
+                         norm_deficit=DEFAULT_NORM_DEFICIT,
+                         treatment: str = "none", kappa: int | None = None,
+                         z_eff: float = 0.0) -> PseudoWaves:
     r"""Bessel expansions of the smooth partial waves of one channel.
 
     Each wave is matched in value and first three derivatives at ``r_cut``
@@ -254,7 +272,7 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
     the inner-norm matrix is set to :math:`(1-s)` times the all-electron one
     (:func:`~.oncv.optimize_pseudo_waves` with ``norm_factor = 1 - s``), so
     the overlap correction :math:`q_{ij} = s\,\langle\varphi_i|\varphi_j
-    \rangle_{r<r_c}` is positive definite and the PAW overlap operator is
+    \rangle_{r<r_c}` is positive definite and the PAW-LCAO overlap operator is
     bounded below by one -- a dataset built with free (unconstrained) waves,
     ``norm_deficit=None``, has no such guarantee: the two reference waves
     are nearly proportional in the core, their dual projectors are large,
@@ -263,7 +281,7 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
     :attr:`~.oncv.PseudoWaves.achieved` inner norms differ from the
     all-electron :attr:`~.oncv.PseudoWaves.norms` by exactly :math:`q`.
 
-    ``norm_deficit=0`` is the **unitary PAW** (UPAW) of Ivanov *et al.*
+    ``norm_deficit=0`` is the **unitary PAW-LCAO** (UPAW-LCAO) of Ivanov *et al.*
     (arXiv:2408.03159): :math:`q \equiv 0` makes :math:`T^\dagger T = I`, so the
     pseudo states are orthonormal and the overlap operator is the identity.  It
     is a working option -- datasets for H, Li, C and O build with
@@ -272,7 +290,7 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
     for three measured reasons.  (1) Mandacaru does not need it: the augmented
     overlap is Löwdin-orthogonalized (:func:`~mandacaru.core.hamiltonian._lowdin_x`)
     before the many-body Hamiltonian is built, so the second-quantized problem is
-    already in an orthonormal basis -- the non-orthogonality UPAW exists to cure
+    already in an orthonormal basis -- the non-orthogonality UPAW-LCAO exists to cure
     is a plane-wave-basis problem.  (2) It does not remove the augmentation:
     the constraint fixes only the **norm**, i.e. the :math:`L = 0` moment, so the
     higher compensation multipoles survive and on oxygen :math:`L = 2` *grows*
@@ -281,14 +299,20 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
     real-space grid is most sensitive to: water's net force (the egg-box) is
     **5x larger** at h = 0.25 and 0.20 (0.38 -> 1.92 and 0.042 -> 0.223 eV/A),
     and the energy converges ~19 % more slowly in h -- the same ordering the
-    paper reports (PAW converged at 400 eV, UPAW at 600).  The physics agrees
+    paper reports (PAW-LCAO converged at 400 eV, UPAW-LCAO at 600).  The physics agrees
     where it should: LiH's bond length differs by 0.002 A and its binding energy
     by 0.098 eV.
     """
     if norm_deficit is not None:
+        # The deficit scales whatever the correct norm target is, so a
+        # relativistic reference atom needs nothing extra here: the Wronskian
+        # form is already what `optimize_pseudo_waves` conserves
+        # (:func:`~.oncv.norm_targets`), and `norm_factor` multiplies it.
         return optimize_pseudo_waves(r, v_ae, l, waves, energies, r_cut,
                                      q_cut=q_cut, n_bessel=n_bessel,
-                                     norm_factor=1.0 - float(norm_deficit))
+                                     norm_factor=1.0 - float(norm_deficit),
+                                     treatment=treatment, kappa=kappa,
+                                     z_eff=z_eff)
     r_cut = _snap(r, r_cut)
     r_in = _inner_grid(r_cut)
     q_grid = np.arange(0.0, Q_MAX + 0.5 * Q_STEP, Q_STEP)
@@ -314,7 +338,8 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
 
     coefficients, wavevectors, pseudo_in, residuals = [], [], [], []
     for wave, energy in zip(waves, energies):
-        target = matching_targets(r, wave * r, v_ae, l, energy, r_cut)
+        target = matching_targets(r, wave * r, v_ae, l, energy, r_cut,
+                                  treatment, kappa, z_eff)
         c0, *_ = np.linalg.lstsq(A, target, rcond=None)
         bound = energy < 0 and abs(wave[-1] * r[-1]) < 1e-6
         tail = _tail_transform(l, r, wave, r_cut, bound, q_grid)
@@ -338,7 +363,7 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
 
 @dataclass
 class PAWChannel(Channel):
-    """One PAW channel: the TM :class:`Channel` plus the partial-wave sets.
+    """One PAW-LCAO channel: the TM :class:`Channel` plus the partial-wave sets.
 
     ``pseudo_radial``/``eigenvalue``/``coefficients`` describe the first
     (bound) smooth partial wave, which is also the first-zeta basis function.
@@ -352,7 +377,8 @@ class PAWChannel(Channel):
     pseudo_waves: list = field(default_factory=list)         # per wave: phi~(r)
     projectors: list = field(default_factory=list)           # per wave: p~(r), dual
     raw_projectors: list = field(default_factory=list)       # per wave: chi(r)
-    overlap_correction: np.ndarray = None                    # q_ij
+    overlap_correction: np.ndarray = None                    # q_ij (charge)
+    norm_correction: np.ndarray = None                       # q^norm_ij (energy)
     kinetic_difference: np.ndarray = None                    # Delta T_ij
     potential_difference: np.ndarray = None                  # Delta V^scr_ij
     coupling_screened: np.ndarray = None                     # D^scr_ij
@@ -421,37 +447,71 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
     duality_error = float(np.max(np.abs(duality - np.eye(n_waves))))
     if strict and duality_error > DUALITY_TOLERANCE:
         raise RuntimeError(
-            f"PAW projectors of l={l} are not dual to the smooth partial "
+            f"PAW-LCAO projectors of l={l} are not dual to the smooth partial "
             f"waves (error {duality_error:.2e}); B is ill-conditioned")
 
+    # `q` is the charge the smooth density is missing, and it has exactly one
+    # job to do in three places: the overlap operator
+    # `S = 1 + sum |p~> q <p~|`, whose expectation is the electron count; the
+    # compensation multipoles, whose L = 0 moment *is* that charge; and the
+    # augmented density.  All three are statements about how many electrons
+    # there are, so all three take the plain inner product.
     q = pw.norms - pw.achieved
+    # The *coupling* is a different question -- it is an energy -- and it
+    # takes the norm the Vanderbilt condition actually conserved.  The two
+    # matrices are identical non-relativistically and differ at O(c^-2) once
+    # the all-electron waves are relativistic; using `q` here instead leaves
+    # D^scr asymmetric by 1.3e-4 Ha, and using `q_norm` in S instead leaves
+    # the compensated density 4.8e-4 electrons short.
+    targets = pw.norms if pw.targets is None else pw.targets
+    q_norm = targets - pw.achieved
+    # `q_norm` has to be *stored*, not just used here.  D^scr is defined as
+    # `B + q_norm eps`, so anything that later runs the definition backwards --
+    # the energy-dependent coupling `D(E) = D^scr - E q` of the log-derivative
+    # diagnostic -- has to divide by the same matrix it was multiplied by.
+    # Reconstructing with the charge `q` instead returns `B + eps (q_norm - q)`
+    # rather than `B` at the reference energy: zero non-relativistically, 2.3e-4
+    # under the scalar-relativistic default, and amplified about a hundredfold
+    # where the reference energy sits near a node of the wave.
     # The overlap operator 1 + sum |p_i> q_ij <p_j| restricted to the channel
     # has the eigenvalues 1 + eig(q G_p); it must stay positive definite.
     gram = np.array([[inner(a, b) for b in projectors_in] for a in projectors_in])
     overlap_minimum = float(1.0 + np.linalg.eigvals(q @ gram).real.min())
     if strict and overlap_minimum < OVERLAP_MINIMUM:
         raise RuntimeError(
-            f"the PAW overlap operator of l={l} has an eigenvalue "
+            f"the PAW-LCAO overlap operator of l={l} has an eigenvalue "
             f"{overlap_minimum:.3f} (the smooth partial waves carry too little "
             "or too much norm for their projectors); change r_cut, n_bessel "
             "or energy_offset")
-    # Kinetic energies inside r_c: all-electron from the radial equation
-    # T phi_j = (eps_j - v_AE) phi_j, smooth side analytic.
-    T_ae = np.array([[inner(ae_in[i], (energies[j] - v_ae_in) * ae_in[j])
+    # Kinetic energies inside r_c.  The all-electron side is *defined* by the
+    # radial equation rather than differentiated: `T phi_j = (eps_j - v_AE)
+    # phi_j`.  That is what makes D^scr = dT + dV an identity rather than a
+    # measurement, and it holds for a relativistic partial wave too, because
+    # the relativistic kinetic operator is exactly what is left when V is
+    # moved to the other side.  The norm paired with `eps_j` here is
+    # `targets` -- the one the radial equation puts on its right-hand side --
+    # which is why `D^scr` below is built from `q_norm` and not from the
+    # charge `q`.
+    # <phi_i|T|phi_j> = eps_j <phi_i|phi_j> - <phi_i|V|phi_j>, with the *same*
+    # norm the condition conserves.  That is not a bookkeeping convenience: it
+    # is the relativistic kinetic matrix element, because `targets` is the
+    # M-weighted norm the relativistic radial equation puts on the right-hand
+    # side.  With M = 1 it is the old arithmetic exactly.
+    V_ae = np.array([[inner(ae_in[i], v_ae_in * ae_in[j])
                       for j in range(n_waves)] for i in range(n_waves)])
+    T_ae = energies[None, :] * targets - V_ae
     T_ps = np.array([[inner(pseudo_in[i], kin_in[j]) for j in range(n_waves)]
                      for i in range(n_waves)])
     dT = T_ae - T_ps
     dT = 0.5 * (dT + dT.T)
-    dV = np.array([[inner(ae_in[i], v_ae_in * ae_in[j])
-                    - inner(pseudo_in[i], v_loc_in * pseudo_in[j])
-                    for j in range(n_waves)] for i in range(n_waves)])
+    dV = V_ae - np.array([[inner(pseudo_in[i], v_loc_in * pseudo_in[j])
+                           for j in range(n_waves)] for i in range(n_waves)])
     dV = 0.5 * (dV + dV.T)
-    D_raw = B + q * energies[None, :]
+    D_raw = B + q_norm * energies[None, :]
     asymmetry = float(np.max(np.abs(D_raw - D_raw.T)))
     if strict and asymmetry > COUPLING_ASYMMETRY_TOLERANCE:
         raise RuntimeError(
-            f"the screened PAW coupling of l={l} is asymmetric by "
+            f"the screened PAW-LCAO coupling of l={l} is asymmetric by "
             f"{asymmetry:.2e} Ha (the partial waves do not satisfy the "
             "radial equation or the matching failed)")
     D_scr = 0.5 * (D_raw + D_raw.T)
@@ -480,7 +540,7 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
         wavevectors=list(pw.wavevectors), wave_coefficients=list(pw.coefficients),
         ae_waves=list(pw.waves), pseudo_waves=pseudo_waves,
         projectors=projectors, raw_projectors=chi_full,
-        overlap_correction=q, kinetic_difference=dT,
+        overlap_correction=q, norm_correction=q_norm, kinetic_difference=dT,
         potential_difference=dV, coupling_screened=D_scr, coupling=None,
         vanderbilt=B, duality_error=duality_error,
         overlap_minimum=overlap_minimum, asymmetry=asymmetry,
@@ -590,7 +650,7 @@ def _local_spline(dataset):
 
 @dataclass
 class PAWDataset(PseudoPotential):
-    r"""A PAW dataset: local potential, projectors, one-center matrices.
+    r"""A PAW-LCAO dataset: local potential, projectors, one-center matrices.
 
     Inherits the :class:`~.generation.PseudoPotential` layout so the valence
     basis (:func:`~.orbitals.pseudo_basis`, first zeta = the bound smooth
@@ -604,7 +664,8 @@ class PAWDataset(PseudoPotential):
 
     coupling: dict = field(default_factory=dict)             # l -> D^ion (n, n)
     coupling_screened: dict = field(default_factory=dict)    # l -> D^scr
-    overlap_correction: dict = field(default_factory=dict)   # l -> q
+    overlap_correction: dict = field(default_factory=dict)   # l -> q (charge)
+    norm_correction: dict = field(default_factory=dict)      # l -> q^norm
     kinetic_difference: dict = field(default_factory=dict)   # l -> Delta T
     v_local_screened: np.ndarray = None
     core_density: np.ndarray = None                          # n_c(r)
@@ -619,11 +680,31 @@ class PAWDataset(PseudoPotential):
     q_cut: float = DEFAULT_Q_CUT
     energy_offset: float = DEFAULT_ENERGY_OFFSET
     norm_deficit: float | None = DEFAULT_NORM_DEFICIT
+    #: How the reference atom was solved.  Defaults describe the *pre-
+    #: relativistic* construction, so a dataset that does not say carries no
+    #: false provenance; :func:`generate_paw` always passes the real values.
+    xc: str = "lda"
+    relativity: str = "none"
+    #: Record of the nonlinear core correction, and channels added above the
+    #: highest valence l.
+    nlcc: dict = field(default_factory=dict)
+    extra_l: int = 0
+    #: ``l -> D_SO``, the one-center spin-orbit difference of the channel.
+    #: Empty unless the dataset was generated with ``relativity="dirac"``.
+    #: Unlike the ONCVPSP family, these multiply the dataset's **own**
+    #: projectors -- there is one set per l, not one per j -- so the overlap
+    #: operator is untouched and stays diagonal in spin.
+    spin_orbit: dict = field(default_factory=dict)
+
+    @property
+    def has_spin_orbit(self) -> bool:
+        """Whether this dataset carries a spin-orbit term."""
+        return bool(self.spin_orbit)
 
     def local_potential(self, radius) -> np.ndarray:
         r"""The ionic local potential at arbitrary radii (Bohr), **C\ :sup:`2`**.
 
-        Interpolated with a cubic spline rather than linearly: the PAW force is
+        Interpolated with a cubic spline rather than linearly: the PAW-LCAO force is
         the derivative of the energy, and a piecewise-linear potential puts a
         kink at every table point, which left the analytic and finite-difference
         forces depending on their step at the 1e-2 eV/Angstrom level.  Beyond
@@ -660,7 +741,7 @@ class PAWDataset(PseudoPotential):
         r"""``(functions, D, q)`` of channel ``l`` in one of the two
         equivalent projector bases.
 
-        ``"dual"``: the PAW projectors :math:`\tilde p_i` with the blocks
+        ``"dual"``: the PAW-LCAO projectors :math:`\tilde p_i` with the blocks
         :math:`D^{ion}` and :math:`q` as stored.  ``"raw"``: the smooth
         :math:`\chi_k = (\varepsilon_k - T - \tilde v^{scr})\tilde\varphi_k`
         they were built from, with the transformed blocks
@@ -735,6 +816,57 @@ class PAWDataset(PseudoPotential):
 # Generation.
 # --------------------------------------------------------------------------- #
 
+def spin_orbit_blocks(r, channels, v_ae, v_smooth, atomic_number,
+                      mass_corrected: bool = True):
+    r"""``{l: D_SO}`` -- the one-center spin-orbit difference of each channel.
+
+    Spin-orbit coupling enters a PAW-LCAO dataset exactly the way every other
+    one-center term does: as the difference between what the all-electron
+    system has inside the augmentation sphere and what the smooth system has
+    there,
+
+    .. math::
+
+        D^{SO}_{ij} = \int_0^{r_c}\Big[\xi(r)\varphi_i\varphi_j
+            - \tilde\xi(r)\tilde\varphi_i\tilde\varphi_j\Big] r^2\,dr ,
+
+    with :math:`\xi = \frac{1}{2c^2M^2 r}\frac{dV}{dr}` from the respective
+    potentials (:func:`~mandacaru.basis.relativity.spin_orbit_radial`).  The
+    operator it multiplies is :math:`\mathbf{L}\cdot\mathbf{S}`, so an
+    ``l = 0`` channel has none.
+
+    The smooth term is not a rounding detail to be dropped: without it the
+    correction would double-count whatever spin-orbit coupling the smooth
+    Hamiltonian already carries through :math:`\tilde V`.  It is small,
+    because :math:`dV/dr` is where the nucleus is and the smooth potential has
+    no nucleus -- but "small" is measured, not assumed.
+    """
+    from ..basis.relativity import spin_orbit_radial
+
+    r = np.asarray(r, dtype=float)
+    xi_ae = spin_orbit_radial(r, v_ae, atomic_number=float(atomic_number),
+                              mass_corrected=mass_corrected)
+    xi_ps = spin_orbit_radial(r, v_smooth, atomic_number=0.0,
+                              mass_corrected=mass_corrected)
+    blocks = {}
+    for l, channel in channels.items():
+        if int(l) == 0:
+            continue
+        inside = r <= channel.r_cut
+        n = len(channel.ae_waves)
+        D = np.zeros((n, n), dtype=float)
+        weight = r * r
+        for i in range(n):
+            for j in range(n):
+                ae = (xi_ae * channel.ae_waves[i] * channel.ae_waves[j]
+                      * weight)[inside]
+                ps = (xi_ps * channel.pseudo_waves[i] * channel.pseudo_waves[j]
+                      * weight)[inside]
+                D[i, j] = float(np.trapezoid(ae - ps, r[inside]))
+        blocks[int(l)] = 0.5 * (D + D.T)
+    return blocks
+
+
 def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTOR,
                  r_cut_local: float | None = None,
                  local_factor: float = DEFAULT_LOCAL_FACTOR,
@@ -744,8 +876,12 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                  n_bessel: int = DEFAULT_N_BESSEL,
                  norm_deficit="default",
                  points: int | None = None, r_max: float = 30.0,
-                 atom: AtomicResult | None = None) -> PAWDataset:
-    r"""Generate a PAW dataset for ``symbol`` (see the module docstring).
+                 atom: AtomicResult | None = None,
+                 xc: str = DEFAULT_XC,
+                 relativity: str = DEFAULT_RELATIVITY,
+                 nlcc: bool | float = DEFAULT_NLCC,
+                 extra_l: int = DEFAULT_EXTRA_L) -> PAWDataset:
+    r"""Generate a PAW-LCAO dataset for ``symbol`` (see the module docstring).
 
     Parameters
     ----------
@@ -775,12 +911,28 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     """
     from ase.data import atomic_numbers
 
+    from ..basis.relativity import _resolve as _resolve_relativity
+    from .core_correction import partial_core_density
+
     atomic_number = int(atomic_numbers[symbol])
+    relativity = _resolve_relativity(relativity)
+    # A Dirac PAW-LCAO dataset is **scalar-relativistic plus a spin-orbit term**,
+    # not a j-resolved augmentation sphere.  The distinction matters and is
+    # not a shortcut: the PAW-LCAO overlap operator is 1 + sum |p~> q <p~|, so a
+    # j-dependent q would give the *metric* of the generalized eigenproblem an
+    # L.S structure, and every consumer of S -- the Loewdin orthogonalization
+    # above all -- would have to learn about spin.  Keeping one set of partial
+    # waves per l (the j average, which is what the Koelling-Harmon equation
+    # solves) leaves q, Delta T and the compensation charges exactly as they
+    # are, and carries spin-orbit coupling where it belongs: as a one-center
+    # difference in the *Hamiltonian*, built the same way D and q are.
+    partial_wave_treatment = "scalar" if relativity == "dirac" else relativity
     if atom is None:
         atom = solve_atom(atomic_number,
                           points=(generation_points(atomic_number)
                                   if points is None else int(points)),
-                          r_max=r_max, tolerance=1e-7, mixing=0.25)
+                          r_max=r_max, tolerance=1e-7, mixing=0.25,
+                          xc=xc, relativity=relativity)
     valence_config, core_config = _valence_configuration(atomic_number)
     if not valence_config:
         raise ValueError(f"{symbol} has no valence subshells to pseudize")
@@ -795,15 +947,28 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
 
     per_l, cutoffs, references = reference_waves(
         symbol, atom, valence_config, z_eff, r_cut, rc_factor, energy_offset,
-        defaults=DEFAULT_CUTOFFS)
+        defaults=DEFAULT_CUTOFFS, treatment=partial_wave_treatment,
+        extra_l=extra_l)
     r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
                     else float(local_factor * min(cutoffs.values())))
     r_g = float(min(cutoffs.values()))
 
+    # An `extra_l` channel has no bound state: both its references are
+    # scattering waves, normalized inside r_c by convention rather than by
+    # physics.  Asking such a channel to *also* give up a fraction of that
+    # norm over-constrains the Bessel expansion -- the matching conditions
+    # alone already require more norm than (1 - s) allows, and the
+    # minimization has no feasible point.  It is conserved exactly instead,
+    # which makes its overlap correction q identically zero: the channel
+    # holds no charge, so it has nothing to correct.
+    bound_ls = {l for _n, l in valence_config}
     waves = {
         l: smooth_partial_waves(r, v_ae, l, ae, energies, cutoffs[l],
+                                treatment=partial_wave_treatment,
+                                z_eff=z_eff,
                                 q_cut=q_cut, n_bessel=n_bessel,
-                                norm_deficit=norm_deficit)
+                                norm_deficit=(norm_deficit if l in bound_ls
+                                              else 0.0))
         for l, (ae, energies) in references.items()}
 
     shift = float(DEFAULT_LOCAL_SHIFTS.get(symbol, 0.0) if local_shift is None
@@ -836,12 +1001,39 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     g = compensation_shape(r, r_g)
     augmented = smooth_valence + compensation_charge * g
 
-    # Unscreening: Hartree of the neutral smooth density, LDA xc of the
-    # smooth valence density (as the norm-conserving families do).
+    # Unscreening: Hartree of the neutral smooth density, xc of the smooth
+    # valence density -- plus the smooth core when the nonlinear core
+    # correction is on.  PAW-LCAO already carries `smooth_core`, the pseudized
+    # frozen core it needs for its one-center energies, so the correction
+    # here is a matter of *including* that density in v_xc rather than
+    # building a second one: what the Louie-Froyen-Cohen sin(Br)/r form does
+    # for a norm-conserving family, `pseudize_density` has already done.
+    nlcc_details = {"applied": False, "r_nlcc": None,
+                    "reason": ("not requested" if nlcc is False
+                               else "the atom has no core to correct for")}
+    xc_core = np.zeros_like(r)
+    if nlcc is not False and core_config:
+        xc_core = smooth_core
+        if nlcc is not True:
+            # An explicit radius re-pseudizes the true core at that radius
+            # instead of at the compensation radius r_g.
+            xc_core, nlcc_details = partial_core_density(
+                r, core_density, smooth_valence, r_nlcc=float(nlcc))
+        else:
+            nlcc_details = {
+                "applied": True, "r_nlcc": float(r_g), "source": "smooth_core",
+                "core_electrons": float(np.trapezoid(core_density * shell, r)),
+                "partial_core_electrons": float(
+                    np.trapezoid(smooth_core * shell, r))}
     v_hartree = hartree_potential(r, augmented)
-    _e_xc, v_xc = lda_xc(smooth_valence)
+    _e_xc, v_xc = xc_potential(r, smooth_valence + xc_core, xc)
     v_local_ionic = v_loc - v_hartree - v_xc
     hartree_screening = float(np.trapezoid(v_hartree * g * shell, r))
+    # Spin-orbit coupling, when asked for: a one-center difference like every
+    # other PAW-LCAO matrix.  `v_loc` is the *screened* smooth potential, which is
+    # what the smooth Hamiltonian actually carries inside the sphere.
+    spin_orbit = (spin_orbit_blocks(r, channels, v_ae, v_loc, atomic_number)
+                  if relativity == "dirac" else {})
     for channel in channels.values():
         channel.v_ionic = v_local_ionic
         channel.coupling = (channel.coupling_screened
@@ -883,6 +1075,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                            for l, c in channels.items()},
         overlap_correction={l: np.array(c.overlap_correction)
                             for l, c in channels.items()},
+        norm_correction={l: np.array(c.norm_correction)
+                         for l, c in channels.items()},
         kinetic_difference={l: np.array(c.kinetic_difference)
                             for l, c in channels.items()},
         v_local_screened=v_loc, core_density=core_density,
@@ -891,7 +1085,9 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         hartree_screening=hartree_screening, one_center_energy=float(one_center),
         energies=energies, q_cut=float(q_cut),
         energy_offset=float(energy_offset),
-        norm_deficit=None if norm_deficit is None else float(norm_deficit))
+        norm_deficit=None if norm_deficit is None else float(norm_deficit),
+        xc=str(xc), relativity=relativity, nlcc=dict(nlcc_details),
+        extra_l=int(extra_l), spin_orbit=spin_orbit)
 
 
 # --------------------------------------------------------------------------- #
@@ -1016,7 +1212,7 @@ def log_derivative_paw(pp: PAWDataset, l: int, energy: float,
     f = _radial_f(r0, v0, l, energy)
     p_u = [np.concatenate([[0.0], np.asarray(p) * r]) for p in pp.projectors[l]]
     D = (np.asarray(pp.coupling_screened[l], dtype=float)
-         - float(energy) * np.asarray(pp.overlap_correction[l], dtype=float))
+         - float(energy) * np.asarray(pp.norm_correction[l], dtype=float))
     seed = (r0[1] ** (l + 1), r0[2] ** (l + 1))
     u0 = numerov_outward(r0, f, np.zeros_like(r0), seed, start=1)
     uj = [numerov_outward(r0, f, 2.0 * p, (0.0, 0.0), start=1) for p in p_u]
@@ -1163,6 +1359,26 @@ def _blocks(projectors, symbols, datasets, which) -> dict:
     return blocks
 
 
+def paw_spin_orbit_blocks(projectors, symbols, datasets) -> dict:
+    """``{(atom, l): D_SO}`` -- the spin-orbit blocks, empty without them.
+
+    Keyed by ``(atom, l)`` and not ``(atom, l, m)``: the spin-orbit term is
+    the one part of the nonlocal potential that couples different ``m``, so it
+    cannot be a block of the same block-diagonal matrix
+    (:func:`mandacaru.core.spin_orbit.spin_orbit_one_body` consumes it).
+    """
+    blocks: dict = {}
+    for projector in projectors:
+        dataset = datasets[symbols[projector.atom_index]]
+        table = getattr(dataset, "spin_orbit", None)
+        if not table or projector.l not in table:
+            continue
+        key = (projector.atom_index, projector.l)
+        if key not in blocks:
+            blocks[key] = np.asarray(table[projector.l], dtype=complex)
+    return blocks
+
+
 def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
     """``{(atom, l, m): D_l}`` for ``nonlocal_coupling`` (in the
     projectors' basis)."""
@@ -1295,7 +1511,7 @@ def atom_centered_projection_gradients(basis, projectors,
 
 
 class PAWIntegrals(MolecularIntegrals):
-    r"""Molecular integrals with PAW compensation charges.
+    r"""Molecular integrals with PAW-LCAO compensation charges.
 
     A :class:`~mandacaru.core.hamiltonian.MolecularIntegrals` whose
     two-body tensor is built from the augmented pair densities
@@ -1408,7 +1624,7 @@ class PAWIntegrals(MolecularIntegrals):
 
         The two halves sum to the potential the un-split calculation used, so
         the difference is quadrature accuracy alone: ~3e-7 Hartree on the
-        hardest case measured (water PAW-DZ) and better than 1e-9 on H2.
+        hardest case measured (water PAW-LCAO-DZ) and better than 1e-9 on H2.
 
         **What this is not:** a cure for the egg-box.  The *long-range* half
         stays on the grid and keeps a ripple of its own, comparable to (and at
@@ -1660,7 +1876,7 @@ class PAWIntegrals(MolecularIntegrals):
 
 
 def paw_library_path(directory=None) -> str:
-    """The PAW library directory (``library/paw`` by default)."""
+    """The PAW-LCAO library directory (``library/paw-lcao`` by default)."""
     from .io import library_root
     if directory is not None:
         return os.fspath(directory)
@@ -1671,13 +1887,13 @@ _CACHE: dict = {}
 
 
 def get_paw(symbol: str, directory=None) -> PAWDataset:
-    """Load ``symbol`` from the PAW library (cached)."""
+    """Load ``symbol`` from the PAW-LCAO library (cached)."""
     from .io import load_library_dataset
 
     return load_library_dataset(
         symbol, paw_library_path(directory), FAMILY, _CACHE,
-        label="PAW", noun="dataset",
-        repository="mandacaru-paw", link_flag="--link-paw",
+        label="PAW-LCAO", noun="dataset",
+        repository="mandacaru-paw", link_flag="--link-paw-lcao",
         builder="build_paw_library")
 
 
@@ -1685,7 +1901,7 @@ def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
                       directory=None, *, verbose: bool = True,
                       format: str | None = None, stride: int | None = None,
                       **generation_options):
-    """Generate and save PAW datasets for ``elements``; returns the paths."""
+    """Generate and save PAW-LCAO datasets for ``elements``; returns the paths."""
     from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
 
     folder = paw_library_path(directory)
@@ -1709,7 +1925,7 @@ def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
 
 
 def generate_upaw(symbol: str, **options) -> PAWDataset:
-    r"""Generate a **unitary** PAW (UPAW) dataset: the ``norm_deficit = 0`` PAW.
+    r"""Generate a **unitary** PAW-LCAO (UPAW-LCAO) dataset: the ``norm_deficit = 0`` PAW-LCAO.
 
     The smooth partial waves carry the full all-electron inner norm, so
     :math:`q_{ij} = 0`, the transformation satisfies :math:`T^\dagger T = I` and
@@ -1717,19 +1933,19 @@ def generate_upaw(symbol: str, **options) -> PAWDataset:
     (arXiv:2408.03159).  Everything else is :func:`generate_paw`.
 
     ``norm_deficit`` is not accepted: it *is* what distinguishes the two
-    families, and a UPAW dataset with a nonzero deficit would be a PAW dataset
+    families, and a UPAW-LCAO dataset with a nonzero deficit would be a PAW-LCAO dataset
     wearing the wrong name.
     """
     if "norm_deficit" in options:
         raise TypeError(
-            "generate_upaw does not take `norm_deficit`: UPAW is defined by "
+            "generate_upaw does not take `norm_deficit`: UPAW-LCAO is defined by "
             "norm_deficit = 0 (use generate_paw for any other value)")
     dataset = generate_paw(symbol, norm_deficit=0.0, **options)
     return replace(dataset, family=UPAW_FAMILY)
 
 
 def upaw_library_path(directory=None) -> str:
-    """The UPAW library directory (``library/upaw`` by default)."""
+    """The UPAW-LCAO library directory (``library/upaw-lcao`` by default)."""
     from .io import library_root
     if directory is not None:
         return os.fspath(directory)
@@ -1737,9 +1953,9 @@ def upaw_library_path(directory=None) -> str:
 
 
 def get_upaw(symbol: str, directory=None) -> PAWDataset:
-    """Load ``symbol`` from the UPAW library, **or generate it** (cached).
+    """Load ``symbol`` from the UPAW-LCAO library, **or generate it** (cached).
 
-    Unlike the other families, UPAW has no shipped library: there is no
+    Unlike the other families, UPAW-LCAO has no shipped library: there is no
     sibling data repository for it, and requiring a 92-element build before the
     option can be tried at all would make it unusable.  Generation is a few
     seconds per element (H 0.4 s, O 2.2 s, measured) and the result is cached
@@ -1763,10 +1979,10 @@ def get_upaw(symbol: str, directory=None) -> PAWDataset:
     else:
         if directory is not None:
             raise FileNotFoundError(
-                f"no UPAW dataset for {symbol!r} at {path!r}; build one with "
+                f"no UPAW-LCAO dataset for {symbol!r} at {path!r}; build one with "
                 f"build_upaw_library([{symbol!r}], directory={directory!r})")
         warnings.warn(
-            f"generating a UPAW dataset for {symbol} (no library at "
+            f"generating a UPAW-LCAO dataset for {symbol} (no library at "
             f"{folder!r}); it is cached for this process.  Build one once with "
             f"mandacaru.pseudopotentials.paw.build_upaw_library([...]) to skip "
             f"this.", RuntimeWarning, stacklevel=2)
@@ -1779,7 +1995,7 @@ def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
                        directory=None, *, verbose: bool = True,
                        format: str | None = None, stride: int | None = None,
                        **generation_options):
-    """Generate and save UPAW datasets for ``elements``; returns the paths."""
+    """Generate and save UPAW-LCAO datasets for ``elements``; returns the paths."""
     from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
 
     folder = upaw_library_path(directory)
@@ -1804,12 +2020,12 @@ def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
 
 
 def build_upaw(atoms, grid, h, charge, spin, options, kinetic=None):
-    """Valence-only Hamiltonian from UPAW datasets (see :func:`build_paw`).
+    """Valence-only Hamiltonian from UPAW-LCAO datasets (see :func:`build_paw`).
 
-    The whole molecular path is PAW's; only the loader and the recorded
+    The whole molecular path is PAW-LCAO's; only the loader and the recorded
     family name differ.  The name matters because the family registry is
-    where per-family option defaults live (``default_options``), so a UPAW
-    run must resolve *its own* spec, not PAW's.
+    where per-family option defaults live (``default_options``), so a UPAW-LCAO
+    run must resolve *its own* spec, not PAW-LCAO's.
     """
     return build_paw(atoms, grid, h, charge, spin, options, kinetic=kinetic,
                      loader=get_upaw, family=UPAW_FAMILY)
@@ -1817,7 +2033,7 @@ def build_upaw(atoms, grid, h, charge, spin, options, kinetic=None):
 
 def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
               loader=None, family=None):
-    r"""Valence-only Hamiltonian from PAW datasets.
+    r"""Valence-only Hamiltonian from PAW-LCAO datasets.
 
     Same 5-tuple as the other families: the basis is the bound smooth
     partial waves (with the ``size`` hierarchy), the external potential the
@@ -1838,11 +2054,12 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
             projector_basis=opts.get("projector_basis",
                                      DEFAULT_PROJECTOR_BASIS)),
         coupling=paw_coupling_blocks, overlap=paw_overlap_blocks,
+        spin_orbit=paw_spin_orbit_blocks,
         integrals_class=PAWIntegrals, potentials_keyword="datasets")
 
 
 # --------------------------------------------------------------------------- #
-# On-disk payload (used by io.py for family "paw").
+# On-disk payload (used by io.py for family "paw-lcao").
 # --------------------------------------------------------------------------- #
 
 def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
@@ -1879,6 +2096,8 @@ def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
                                             dtype=float).tolist(),
             "overlap_correction": np.asarray(channel.overlap_correction,
                                              dtype=float).tolist(),
+            "norm_correction": np.asarray(channel.norm_correction,
+                                          dtype=float).tolist(),
             "kinetic_difference": np.asarray(channel.kinetic_difference,
                                              dtype=float).tolist(),
             "potential_difference": np.asarray(channel.potential_difference,
@@ -1902,6 +2121,10 @@ def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
             "energies": {k: float(v) for k, v in pp.energies.items()},
             "q_cut": float(pp.q_cut), "energy_offset": float(pp.energy_offset),
             "norm_deficit": pp.norm_deficit,
+            "xc": str(pp.xc), "relativity": str(pp.relativity),
+            "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
+            "spin_orbit": {str(l): np.asarray(D).real.tolist()
+                           for l, D in (pp.spin_orbit or {}).items()},
             "channels": channels, "radial_tables": tables}
 
 
@@ -1913,6 +2136,7 @@ def from_payload(payload: dict) -> PAWDataset:
     v_screened = np.asarray(tables["v_local_screened"], dtype=float)
     channels, projectors = {}, {}
     coupling, coupling_screened, overlap, kinetic = {}, {}, {}, {}
+    norm = {}
     for key, entry in payload["channels"].items():
         l = int(key)
         ae, ps, ps_p, raw = [], [], [], []
@@ -1926,6 +2150,50 @@ def from_payload(payload: dict) -> PAWDataset:
         D = np.asarray(entry["coupling"], dtype=float)
         D_scr = np.asarray(entry["coupling_screened"], dtype=float)
         q = np.asarray(entry["overlap_correction"], dtype=float)
+        # `norm_correction` post-dates the relativistic partial waves, but a
+        # file written without it is not lost: D^scr is *defined* as
+        # `sym(B + q_norm eps)`, and B and the reference energies are both on
+        # disk, so the definition inverts.  The only inexactness is the
+        # symmetrization, and the generator refuses to write a channel whose
+        # D_raw is asymmetric beyond COUPLING_ASYMMETRY_TOLERANCE -- on the
+        # shipped datasets the recovery is good to 6e-11, against the 6e-5 the
+        # charge `q` would be wrong by.  Non-relativistically it is exact
+        # anyway, since `targets` is unset and q_norm is q by construction.
+        if "norm_correction" in entry:
+            q_norm = np.asarray(entry["norm_correction"], dtype=float)
+        else:
+            eps_ref = np.asarray(entry["reference_energies"], dtype=float)
+            B_ref = np.asarray(entry["vanderbilt"], dtype=float)
+            if np.min(np.abs(eps_ref)) < NORM_RECOVERY_FLOOR:
+                raise ValueError(
+                    f"the PAW-LCAO dataset for {payload['symbol']} predates "
+                    "the stored norm correction and has a reference energy at "
+                    "zero, so the correction cannot be recovered from its "
+                    "coupling; regenerate it with the current code")
+            q_norm = (D_scr - B_ref) / eps_ref[None, :]
+            # Recovering the norm exposes something worse in these files.  A
+            # dataset written before the split had only *one* matrix, and it
+            # was the M-weighted norm -- so the field named
+            # `overlap_correction` holds the metric where the **charge**
+            # belongs.  That field is not a diagnostic: `compensation_charge`,
+            # `multipole_moments` and the ionic screening all read it, so the
+            # augmented charge of such a dataset is wrong by the O(c^-2) gap
+            # (2.3e-4 for oxygen, 2.1e-4 for nitrogen).  It cannot be repaired
+            # on load -- the plain overlap is not a function of anything
+            # stored -- so it is reported rather than hidden.  The test is
+            # exact, not heuristic: only a pre-split file can have these two
+            # agree to machine precision while the atom is relativistic.
+            if (str(payload.get("relativity", "none")) != "none"
+                    and np.max(np.abs(q - q_norm)) < NORM_SPLIT_FLOOR):
+                warnings.warn(
+                    f"the PAW-LCAO dataset for {payload['symbol']} stores the "
+                    "M-weighted norm in its overlap correction, where the "
+                    "charge belongs: it was generated before the two were "
+                    "distinguished, so its compensation charge and multipole "
+                    "moments are off by order 1e-4 electrons.  Energies from "
+                    "it are usable but not converged in that respect; "
+                    f"regenerate it with build_paw_library((\"{payload['symbol']}\",)).",
+                    RuntimeWarning, stacklevel=2)
         dT = np.asarray(entry["kinetic_difference"], dtype=float)
         channels[l] = PAWChannel(
             l=l, n=int(entry["n"]),
@@ -1940,7 +2208,8 @@ def from_payload(payload: dict) -> PAWDataset:
             wave_coefficients=[np.asarray(c, float)
                                for c in entry["wave_coefficients"]],
             ae_waves=ae, pseudo_waves=ps, projectors=ps_p, raw_projectors=raw,
-            overlap_correction=q, kinetic_difference=dT,
+            overlap_correction=q, norm_correction=q_norm,
+            kinetic_difference=dT,
             potential_difference=np.asarray(entry["potential_difference"],
                                             dtype=float),
             coupling_screened=D_scr, coupling=D,
@@ -1953,17 +2222,18 @@ def from_payload(payload: dict) -> PAWDataset:
             q_cut=float(entry.get("q_cut", payload.get("q_cut", DEFAULT_Q_CUT))))
         projectors[l] = ps_p
         coupling[l], coupling_screened[l] = D, D_scr
-        overlap[l], kinetic[l] = q, dT
+        overlap[l], kinetic[l], norm[l] = q, dT, q_norm
     return PAWDataset(
         symbol=payload["symbol"], atomic_number=int(payload["atomic_number"]),
         valence_charge=float(payload["valence_charge"]), r=r,
         channels=channels, v_local=v_local, local_l=-1, projectors=projectors,
         kb_energies={},
         valence_density=np.asarray(tables["valence_density"], dtype=float),
-        # The layout is shared with UPAW, so the family is read, not assumed.
+        # The layout is shared with UPAW-LCAO, so the family is read, not assumed.
         atom=None, family=str(payload.get("family", FAMILY)), coupling=coupling,
         coupling_screened=coupling_screened, overlap_correction=overlap,
-        kinetic_difference=kinetic, v_local_screened=v_screened,
+        norm_correction=norm, kinetic_difference=kinetic,
+        v_local_screened=v_screened,
         core_density=np.asarray(tables["core_density"], dtype=float),
         smooth_core_density=np.asarray(tables["smooth_core_density"],
                                        dtype=float),
@@ -1977,23 +2247,35 @@ def from_payload(payload: dict) -> PAWDataset:
         q_cut=float(payload.get("q_cut", DEFAULT_Q_CUT)),
         energy_offset=float(payload.get("energy_offset",
                                         DEFAULT_ENERGY_OFFSET)),
-        norm_deficit=payload.get("norm_deficit", DEFAULT_NORM_DEFICIT))
+        norm_deficit=payload.get("norm_deficit", DEFAULT_NORM_DEFICIT),
+        # A payload without these keys predates them, and a dataset written
+        # before relativity was an option is non-relativistic with no core
+        # correction.  Defaulting to the *current* defaults would label every
+        # file already in the library as something it is not.
+        xc=str(payload.get("xc", "lda")),
+        relativity=str(payload.get("relativity", "none")),
+        extra_l=int(payload.get("extra_l", 0)),
+        nlcc=dict(payload.get("nlcc") or {"applied": False, "r_nlcc": None,
+                                          "reason": "written before the "
+                                                    "core correction"}),
+        spin_orbit={int(l): np.asarray(D, dtype=float)
+                    for l, D in (payload.get("spin_orbit") or {}).items()})
 
 
 # --------------------------------------------------------------------------- #
 # Registration.
 # --------------------------------------------------------------------------- #
 
-#: Both PAW families filter their basis by default (see
-#: :mod:`mandacaru.basis.filtering`).  A PAW smooth partial wave is already
+#: Both PAW-LCAO families filter their basis by default (see
+#: :mod:`mandacaru.basis.filtering`).  A PAW-LCAO smooth partial wave is already
 #: *built* to be band-limited -- :func:`~.oncv.optimize_pseudo_waves` minimizes
 #: the kinetic energy beyond ``q_cut`` -- so removing what is left above the
 #: grid's Nyquist wave-vector costs little and takes most of the egg-box with
 #: it; the norm-conserving families keep it opt-in because their orbitals are
-#: not optimized that way.  ``basis={"name": "PAW", "filter": False}`` restores
+#: not optimized that way.  ``basis={"name": "PAW-LCAO", "filter": False}`` restores
 #: the unfiltered basis exactly.
 #:
-#: ``energy_shift = 0.1`` eV (2026-09-20) makes the default PAW basis a
+#: ``energy_shift = 0.1`` eV makes the default PAW-LCAO basis a
 #: **confined** one, GPAW's default recipe; the polarization shell then
 #: defaults to GPAW's quasi-Gaussian (:func:`~.confinement.
 #: resolve_polarization` -- derived from the confinement, so it is not listed
@@ -2001,7 +2283,7 @@ def from_payload(payload: dict) -> PAWDataset:
 #: them, the ``"orbital"`` polarization shell.
 PAW_DEFAULT_OPTIONS = {"filter": True, "energy_shift": DEFAULT_ENERGY_SHIFT}
 
-#: What a PAW / UPAW basis dict may say beyond the family-independent options:
+#: What a PAW-LCAO / UPAW-LCAO basis dict may say beyond the family-independent options:
 #: which projector set is sampled; the ``energy_shift`` (eV) that confines the
 #: first zeta and the ``confinement`` potential's ``(amplitude, r_i / r_c)``
 #: (:mod:`~.confinement`; off, and GPAW's, by default); and the
@@ -2031,9 +2313,9 @@ def _register():
 
 
 def _register_upaw():
-    """Register the **unitary** PAW family (``basis="UPAW"``).
+    """Register the **unitary** PAW-LCAO family (``basis="UPAW-LCAO"``).
 
-    Same machinery as PAW with :math:`q = 0`, so the transformation is unitary
+    Same machinery as PAW-LCAO with :math:`q = 0`, so the transformation is unitary
     and the overlap operator is the identity.  Kept as an option rather than the
     default: Mandacaru orthogonalizes the augmented overlap anyway, the constraint
     fixes only the monopole (the higher compensation multipoles survive), and the
@@ -2048,17 +2330,17 @@ def _register_upaw():
     return register_family(FamilySpec(
         name=UPAW_FAMILY,
         description="unitary projector augmented wave (Ivanov 2024, "
-                    "arXiv:2408.03159): PAW with q = 0, so T is unitary and "
+                    "arXiv:2408.03159): PAW-LCAO with q = 0, so T is unitary and "
                     "the pseudo states are orthonormal",
         generate=lambda symbol, **options: generate_upaw(symbol, **options),
         get=get_upaw,
         build=build_upaw,
         norm_conserving=False,
-        aliases=("unitary-paw",),
+        aliases=("unitary-paw-lcao",),
         options=PAW_OPTIONS,
-        # UPAW's partial waves are the harder ones (five times water's grid
-        # egg-box at h = 0.25), so if the filter earns its place for PAW it
-        # earns it for UPAW a fortiori.
+        # UPAW-LCAO's partial waves are the harder ones (five times water's grid
+        # egg-box at h = 0.25), so if the filter earns its place for PAW-LCAO it
+        # earns it for UPAW-LCAO a fortiori.
         default_options=dict(PAW_DEFAULT_OPTIONS),
     ))
 

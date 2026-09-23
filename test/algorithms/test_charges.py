@@ -227,14 +227,14 @@ class TestElectronsAreAllAccountedFor:
     def test_the_paw_augmentation_is_added_per_atom(self):
         """The smooth grid density does not integrate to N; the spheres hold
         the rest, and they are on-site so the split is exact."""
-        calc = solved(h2(), basis={"name": "PAW", "size": "SZ"}, h=0.20)
+        calc = solved(h2(), basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.20)
         partition = calc.atomic_partition("hirshfeld")
         assert np.all(partition.augmentation > 0.0)
         assert partition.grid_electrons == pytest.approx(2.0, abs=1e-8)
         assert any("augmentation" in note for note in partition.notes)
 
     def test_a_pseudopotential_run_is_measured_against_its_valence(self):
-        calc = solved(lih(), basis={"name": "PAW", "size": "DZP"}, h=0.20)
+        calc = solved(lih(), basis={"name": "PAW-LCAO", "size": "DZP"}, h=0.20)
         partition = calc.atomic_partition("hirshfeld")
         # Li contributes one valence electron, H one.
         assert np.allclose(partition.reference_charges, [1.0, 1.0])

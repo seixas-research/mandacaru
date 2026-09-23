@@ -31,7 +31,9 @@ from mandacaru.utils import bibliography as bib
 from mandacaru.utils.citations import (DEFAULT_REFERENCES_FILE, _FAMILY_KEYS,
                                        _MAPPING_KEYS, _METHOD_KEYS,
                                        _OPTIMIZER_KEYS, _POOL_KEYS,
-                                       citation_keys, resolve_references_path,
+                                       _PROVENANCE_KEYS, citation_keys,
+                                       provenance_keys,
+                                       resolve_references_path,
                                        write_references)
 
 
@@ -130,10 +132,68 @@ class TestEveryRegisteredChoiceIsCitable:
 
     def test_every_key_in_every_table_exists(self):
         tables = (_POOL_KEYS, _MAPPING_KEYS, _METHOD_KEYS, _OPTIMIZER_KEYS,
-                  _FAMILY_KEYS)
+                  _FAMILY_KEYS, _PROVENANCE_KEYS)
         for table in tables:
             for name, keys in table.items():
                 bib.resolve(keys)             # raises on an unknown key
+
+
+class TestHowTheDatasetsWereGenerated:
+    """``provenance_keys`` -- the generation options cite their own physics.
+
+    The family key says which construction was used; these say what the
+    reference atom was, which is a different question and a different paper.
+    """
+
+    class _Dataset:
+        """The three fields `provenance_keys` reads, and nothing else."""
+
+        def __init__(self, xc="lda", relativity="none", nlcc=False):
+            self.xc = xc
+            self.relativity = relativity
+            self.nlcc = {"applied": bool(nlcc)}
+
+    def test_the_plain_lda_atom_adds_nothing(self):
+        """It is the construction the family key already covers."""
+        assert provenance_keys([self._Dataset()]) == []
+
+    def test_a_dataset_predating_the_options_adds_nothing(self):
+        """An older dataset carries none of the three fields; reading it must
+        not raise, and must not invent a citation for it."""
+        assert provenance_keys([object()]) == []
+
+    def test_none_and_empty_are_accepted(self):
+        assert provenance_keys(None) == [] and provenance_keys([]) == []
+
+    @pytest.mark.parametrize("kwargs,expected", [
+        ({"xc": "pbe"}, {"PBE1996", "PerdewWang1992"}),
+        ({"relativity": "scalar"}, {"KoellingHarmon1977"}),
+        ({"relativity": "dirac"}, {"KoellingHarmon1977", "Kleinman1980"}),
+        ({"nlcc": True}, {"Louie1982"}),
+    ])
+    def test_each_option_cites_its_paper(self, kwargs, expected):
+        assert set(provenance_keys([self._Dataset(**kwargs)])) == expected
+
+    def test_the_shipped_defaults_cite_relativity_and_the_core_correction(self):
+        """`relativity="scalar"` and `nlcc=True` are the generation defaults,
+        so an ordinary run must carry their references."""
+        keys = set(provenance_keys([self._Dataset(relativity="scalar",
+                                                  nlcc=True)]))
+        assert keys == {"KoellingHarmon1977", "Louie1982"}
+
+    def test_every_key_it_can_emit_resolves(self):
+        for kwargs in ({"xc": "pbe"}, {"relativity": "scalar"},
+                       {"relativity": "dirac"}, {"nlcc": True}):
+            bib.resolve(provenance_keys([self._Dataset(**kwargs)]))
+
+    def test_a_real_generated_dataset_is_read_correctly(self):
+        """The duck-typing above is only trustworthy if the real object has
+        the same three fields with the same spellings."""
+        from mandacaru.pseudopotentials.paw import get_paw
+        dataset = get_paw("H")
+        for field in ("xc", "relativity", "nlcc"):
+            assert hasattr(dataset, field), field
+        bib.resolve(provenance_keys([dataset]))
 
 
 class TestTheSelector:
@@ -173,17 +233,17 @@ class TestTheSelector:
         assert "Bravyi2017" in tapered
 
     def test_a_pseudopotential_family_cites_its_generator(self):
-        assert "Bloechl1994" in citation_keys(family="paw")
-        assert "Ivanov2024" in citation_keys(family="upaw")
-        assert "Ivanov2024" not in citation_keys(family="paw")
+        assert "Bloechl1994" in citation_keys(family="paw-lcao")
+        assert "Ivanov2024" in citation_keys(family="upaw-lcao")
+        assert "Ivanov2024" not in citation_keys(family="paw-lcao")
         assert "Hamann2013" in citation_keys(family="oncvpsp")
         assert "Troullier1991" in citation_keys(family="ncpp")
 
     def test_basis_options_are_cited_only_when_they_did_something(self):
-        plain = citation_keys(family="paw", basis_options={"size": "SZ"})
+        plain = citation_keys(family="paw-lcao", basis_options={"size": "SZ"})
         assert "Junquera2001" not in plain and "Anglada2006" not in plain
         assert "Artacho1999" not in plain
-        rich = citation_keys(family="paw",
+        rich = citation_keys(family="paw-lcao",
                              basis_options={"size": "DZP", "filter": True,
                                             "energy_shift": 0.1})
         assert {"Junquera2001", "Sankey1989", "Anglada2006",
@@ -290,10 +350,10 @@ class TestARunWritesIt:
         assert (tmp_path / "papers.bib").is_file()
 
     def test_the_file_describes_the_basis_that_ran_not_the_one_asked_for(self):
-        """A PAW basis is filtered and confined by default; both are cited."""
+        """A PAW-LCAO basis is filtered and confined by default; both are cited."""
         atoms = h2()
         atoms.calc = Mandacaru(method="vqe",
-                               basis={"name": "PAW", "size": "SZ"},
+                               basis={"name": "PAW-LCAO", "size": "SZ"},
                                h=0.35,
                                trace=False)
         atoms.get_total_energy()

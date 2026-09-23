@@ -20,15 +20,15 @@ potential, the projectors and, in the general separable form of
     H^{NL} = C\,D\,C^\dagger, \qquad C_{\mu p} = \langle\phi_\mu|\chi_p\rangle ,
 
 the block-diagonal coupling matrix :math:`D` (one block per ``(atom, l, m)``)
-and, for families whose projectors also carry an overlap correction (PAW), the
+and, for families whose projectors also carry an overlap correction (PAW-LCAO), the
 block matrix :math:`Q` that turns the basis overlap into
 :math:`S + C\,Q\,C^\dagger`.
 
 The registry :data:`PSEUDO_FAMILIES` maps a family name to its
 :class:`FamilySpec`.  **A family is selected through the** ``basis``
 **argument of any driver**, exactly like an all-electron family:
-``basis="PAW"``, ``basis={"name": "NCPP", "size": "DZP"}``, or a per-element
-mapping ``{"O": {"name": "PAW", "size": "DZP"}, "H": "PAW"}``.  The drivers
+``basis="PAW-LCAO"``, ``basis={"name": "NCPP", "size": "DZP"}``, or a per-element
+mapping ``{"O": {"name": "PAW-LCAO", "size": "DZP"}, "H": "PAW-LCAO"}``.  The drivers
 only ever see the spec: :func:`mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis`
 recognizes a registered family name (:func:`lookup_family`) and
 :func:`~mandacaru.algorithms._hamiltonian_from_atoms._pseudopotential_hamiltonian`
@@ -50,13 +50,13 @@ Registered today:
     polynomial local potential that is not a channel, no overlap correction.
     Registered when :mod:`.oncv` is imported (the package does so).
 
-``"paw"`` (:mod:`.paw`)
+``"paw-lcao"`` (:mod:`.paw`)
     Bloechl's **projector augmented-wave** datasets -- two partial waves and
     projectors per channel, a :math:`2\times2` coupling block **and** a
     :math:`2\times2` overlap-correction block :math:`q` (``norm_conserving
     = False``), compensation multipoles in the one- and two-body terms and a
     frozen one-center constant.  Registered when :mod:`.paw` is imported
-    (the package does so).  It and its ``"upaw"`` variant declare
+    (the package does so).  It and its ``"upaw-lcao"`` variant declare
     ``default_options = {"filter": True}``: their smooth partial waves are
     built to be band-limited, so filtering them to the grid's Nyquist
     wave-vector is nearly free and removes most of the egg-box.
@@ -68,7 +68,7 @@ the user does not.  :meth:`FamilySpec.resolved_options` is the single merge
 (defaults first, the user's basis dict on top), consulted by
 :func:`build_valence_hamiltonian` and by the dry run, so a default is visible
 in one place, a new family declares its own, and writing the option explicitly
-always wins -- ``basis={"name": "PAW", "filter": False}`` is exactly the
+always wins -- ``basis={"name": "PAW-LCAO", "filter": False}`` is exactly the
 unfiltered calculation.
 """
 
@@ -110,7 +110,7 @@ class FamilySpec:
         returns for the all-electron path.
     norm_conserving : bool
         Whether the family's projectors leave the basis overlap untouched
-        (``True`` for TM/ONCVPSP; PAW carries an overlap correction).
+        (``True`` for TM/ONCVPSP; PAW-LCAO carries an overlap correction).
     aliases : tuple of str
         Alternative names resolving to this family.
     options : tuple of str
@@ -119,7 +119,7 @@ class FamilySpec:
         before any integral is computed.
     default_options : dict
         Option values this family uses when the user does not say
-        (``{"filter": True}`` for PAW / UPAW, whose smooth partial waves are
+        (``{"filter": True}`` for PAW-LCAO / UPAW-LCAO, whose smooth partial waves are
         built to be band-limited and lose little by being filtered, while
         NCPP / ONCVPSP leave it off).  Declaring the default **here** rather
         than in the builder is what keeps it discoverable: one place says what
@@ -155,8 +155,8 @@ class FamilySpec:
         """The family's :attr:`default_options` with the user's ``options`` on top.
 
         Every consumer of a basis dict goes through this, so
-        ``basis="PAW"`` and ``basis={"name": "PAW", "filter": True}`` are the
-        same calculation and ``{"name": "PAW", "filter": False}`` is exactly
+        ``basis="PAW-LCAO"`` and ``basis={"name": "PAW-LCAO", "filter": True}`` are the
+        same calculation and ``{"name": "PAW-LCAO", "filter": False}`` is exactly
         the unfiltered one.
         """
         merged = dict(self.default_options)
@@ -221,7 +221,7 @@ def family_listing() -> str:
 def lookup_family(name) -> FamilySpec | None:
     """The :class:`FamilySpec` registered under ``name``, or ``None``.
 
-    Case-insensitive, aliases accepted (``"PAW"``, ``"oncv"``, ``"NCPP-TM"``);
+    Case-insensitive, aliases accepted (``"PAW-LCAO"``, ``"oncv"``, ``"NCPP-TM"``);
     anything that is not a registered family name -- ``"HAO"``, ``"cc-pVTZ"``,
     a per-element mapping -- gives ``None``.  This is how
     :func:`~mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis` tells a
@@ -317,7 +317,8 @@ def pseudo_basis_arguments(family, options, *, confinement=None,
 
 def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                               family: str, load, projectors, coupling,
-                              overlap=None, integrals_class=None,
+                              overlap=None, spin_orbit=None,
+                              integrals_class=None,
                               potentials_keyword: str = "pseudos"):
     """The driver 5-tuple of a pseudopotential family -- the part every family
     shares.
@@ -326,7 +327,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     directory)``), which projectors it samples (``projectors(symbols, positions,
     potentials, options)``), their coupling blocks (``coupling(projectors,
     symbols, potentials)``), an optional overlap correction (``overlap``, same
-    signature; PAW) and the integral class (``integrals_class``, default
+    signature; PAW-LCAO) and the integral class (``integrals_class``, default
     :class:`~mandacaru.core.MolecularIntegrals`; ``potentials_keyword`` names
     its datasets argument).  The basis (with its ``size`` hierarchy and its
     optional ``filter``), the grid, the electron count, the spin state and the
@@ -370,6 +371,10 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     coupling_blocks = coupling(kb, symbols, potentials)
     overlap_blocks = (None if overlap is None
                       else overlap(kb, symbols, potentials))
+    # Spin-orbit blocks, keyed by (atom, l) rather than (atom, l, m): the
+    # term couples different m, so it is not part of the block-diagonal D.
+    spin_orbit_blocks = (None if spin_orbit is None
+                         else spin_orbit(kb, symbols, potentials))
     nuclei = [(potentials[symbol].valence_charge, position)
               for symbol, position in zip(symbols, positions)]
 
@@ -379,6 +384,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
         nuclei, basis_fns, g, softening=0.0,
         kb_projectors=kb, nonlocal_coupling=coupling_blocks,
         nonlocal_overlap=overlap_blocks,
+        spin_orbit_coupling=spin_orbit_blocks,
         kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"],
         **{potentials_keyword: [potentials[s] for s in symbols]})
     hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,

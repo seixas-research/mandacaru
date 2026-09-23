@@ -287,7 +287,7 @@ _BASES = [
   pages   = {17953--17979},
   year    = {1994},
   doi     = {10.1103/PhysRevB.50.17953}
-}""", "the PAW / UPAW basis", verified=False, topics=("paw", "upaw")),
+}""", "the PAW-LCAO / UPAW-LCAO basis", verified=False, topics=("paw-lcao", "upaw-lcao")),
     _ref("Ivanov2024", """
 @misc{Ivanov2024,
   author        = {Ivanov, Aleksei V. and S{\"u}nderhauf, Christoph and
@@ -300,7 +300,7 @@ _BASES = [
   archivePrefix = {arXiv},
   primaryClass  = {quant-ph},
   doi           = {10.48550/arXiv.2408.03159}
-}""", "unitary PAW (basis='UPAW')", verified=False, topics=("upaw",)),
+}""", "unitary PAW-LCAO (basis='UPAW-LCAO')", verified=False, topics=("upaw-lcao",)),
     _ref("Troullier1991", """
 @article{Troullier1991,
   author  = {Troullier, N. and Martins, Jos{\\'e} Lu{\\'i}s},
@@ -439,6 +439,63 @@ _BASES = [
   year    = {2005},
   doi     = {10.1039/B508541A}
 }""", "the def2 shell structure", verified=False, topics=("def2",)),
+    _ref("PBE1996", """
+@article{PBE1996,
+  author  = {Perdew, John P. and Burke, Kieron and Ernzerhof, Matthias},
+  title   = {Generalized Gradient Approximation Made Simple},
+  journal = {Phys. Rev. Lett.},
+  volume  = {77},
+  pages   = {3865--3868},
+  year    = {1996},
+  doi     = {10.1103/PhysRevLett.77.3865}
+}""", "the GGA reference atom (xc='pbe')", verified=False,
+         topics=("xc", "gga", "pseudopotential")),
+    _ref("PerdewWang1992", """
+@article{PerdewWang1992,
+  author  = {Perdew, John P. and Wang, Yue},
+  title   = {Accurate and simple analytic representation of the
+             electron-gas correlation energy},
+  journal = {Phys. Rev. B},
+  volume  = {45},
+  pages   = {13244--13249},
+  year    = {1992},
+  doi     = {10.1103/PhysRevB.45.13244}
+}""", "the uniform-gas correlation PBE is built on", verified=False,
+         topics=("xc", "gga")),
+    _ref("KoellingHarmon1977", """
+@article{KoellingHarmon1977,
+  author  = {Koelling, D. D. and Harmon, B. N.},
+  title   = {A technique for relativistic spin-polarised calculations},
+  journal = {J. Phys. C},
+  volume  = {10},
+  pages   = {3107--3114},
+  year    = {1977},
+  doi     = {10.1088/0022-3719/10/16/019}
+}""", "the scalar-relativistic radial equation (relativity='scalar')",
+         verified=False, topics=("relativity", "pseudopotential")),
+    _ref("Louie1982", """
+@article{Louie1982,
+  author  = {Louie, Steven G. and Froyen, Sverre and Cohen, Marvin L.},
+  title   = {Nonlinear ionic pseudopotentials in spin-density-functional
+             calculations},
+  journal = {Phys. Rev. B},
+  volume  = {26},
+  pages   = {1738--1742},
+  year    = {1982},
+  doi     = {10.1103/PhysRevB.26.1738}
+}""", "the nonlinear core correction and its partial core density",
+         verified=False, topics=("pseudopotential", "nlcc")),
+    _ref("Kleinman1980", """
+@article{Kleinman1980,
+  author  = {Kleinman, Leonard},
+  title   = {Relativistic norm-conserving pseudopotential},
+  journal = {Phys. Rev. B},
+  volume  = {21},
+  pages   = {2630--2631},
+  year    = {1980},
+  doi     = {10.1103/PhysRevB.21.2630}
+}""", "splitting a j-resolved pseudopotential into an average and an L.S term",
+         verified=False, topics=("relativity", "spin-orbit")),
     _ref("Kwee2008", """
 @article{Kwee2008,
   author  = {Kwee, Hendra and Zhang, Shiwei and Krakauer, Henry},

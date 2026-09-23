@@ -68,10 +68,20 @@ SYSTEMS = {"H2": (h2, H2_H), "LiH": (lih, LIH_H)}
 #: Troullier-Martins energies (Hartree) pinned in test_ncpp_family.py.
 TM = {"H2": {"rhf": -1.061096245397, "adapt": -1.075333384673},
       "LiH": {"rhf": -0.729555411706, "adapt": -0.740838985744}}
-#: ONCVPSP energies measured 2026-09-14 with the shipped library
+#: ONCVPSP energies measured 2026-09-23 with the shipped library
 #: (H rc = 1.30, Li rc = 2.60 Bohr, Delta = 1 Ha, q_c = 5 Bohr^-1).
-ONCV = {"H2": {"rhf": -1.044179, "adapt": -1.058561},
-        "LiH": {"rhf": -0.774343, "adapt": -0.782341}}
+#:
+#: Re-pinned when scalar-relativistic reference atoms and the nonlinear core
+#: correction became the generation defaults:
+#:
+#:   H2  rhf  -1.044179 -> -1.043772   adapt  -1.058561 -> -1.058151
+#:   LiH rhf  -0.774343 -> -0.764921   adapt  -0.782341 -> -0.772577
+#:
+#: Hydrogen moves by under a milliHartree -- it has no core for the
+#: correction to act on, and its relativistic shift is 6.7e-6 Ha.  Lithium
+#: moves by 0.010 Ha (0.27 eV), which is the 1s core it does have.
+ONCV = {"H2": {"rhf": -1.043772, "adapt": -1.058151},
+        "LiH": {"rhf": -0.764921, "adapt": -0.772577}}
 PIN_TOL = 2e-3
 TM_TOL = 0.05
 
@@ -104,6 +114,7 @@ def _build(name, basis):
 CHANNELS = [("H", 0), ("Li", 0), ("O", 0), ("O", 1)]
 
 
+@pytest.mark.slow
 class TestAtomic:
     @pytest.mark.parametrize("symbol, l", CHANNELS)
     def test_channel_reproduces_the_reference(self, symbol, l):
@@ -153,7 +164,8 @@ class TestAtomic:
         pp = generated("H")
         e1 = pp.channels[0].eigenvalue
         l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, 0, e1,
-                                 pp.channels[0].r_cut, 1.0)
+                                 pp.channels[0].r_cut, 1.0,
+                                 pp.relativity)
         assert abs(log_derivative_ps(pp, 0, e1) - l_ae) < 1e-5
 
     def test_projectors_vanish_beyond_rc_and_are_two_per_channel(self):

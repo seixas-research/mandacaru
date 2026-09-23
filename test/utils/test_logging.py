@@ -507,7 +507,7 @@ class TestElectronsBlock:
 class TestBasisBlock:
     """``[BASIS]``: the basis that *ran*, not the options that were typed.
 
-    A Mandacaru basis is built at run time, so its defaults (PAW is filtered),
+    A Mandacaru basis is built at run time, so its defaults (PAW-LCAO is filtered),
     the radii an ``energy_shift`` resolves to and the dataset files are decided
     below the calculator.  The block is where they are written down -- it is
     what a comparison against another code is made from.
@@ -520,12 +520,12 @@ class TestBasisBlock:
         try:
             get_paw("H")
         except (FileNotFoundError, ValueError):
-            pytest.skip("the PAW library is not linked")
+            pytest.skip("the PAW-LCAO library is not linked")
         out = str(tmp_path_factory.mktemp("basis") / "output.txt")
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0, 8.0, 8.0])
         atoms.calc = Mandacaru(method="adapt-vqe",
-                               basis={"name": "PAW", "size": "DZ",
+                               basis={"name": "PAW-LCAO", "size": "DZ",
                                       "energy_shift": 0.1},
                                h=0.30, pool="fermionic", max_iterations=1,
                                txt=out)
@@ -541,7 +541,7 @@ class TestBasisBlock:
     def test_defaults_the_user_never_typed_are_recorded(self, paw):
         out, _calc = paw
         block = parse_output(out)["basis"]
-        assert block["name"] == "PAW" and block["family"].startswith("PAW (")
+        assert block["name"] == "PAW-LCAO" and block["family"].startswith("PAW-LCAO (")
         assert block["size"] == "DZ"
         # The tail-norm scheme is the default, and the line names it rather
         # than printing a bare number: a tail *norm* and a squared-norm
@@ -552,7 +552,7 @@ class TestBasisBlock:
         assert block["polarization"].startswith("gaussian")
         assert block["energy_shift"] == "0.1 eV"
         assert "A = 12 Ha" in block["confinement_potential"]
-        # On by default for PAW, with the cutoff the grid resolved it to.
+        # On by default for PAW-LCAO, with the cutoff the grid resolved it to.
         assert block["filter"].startswith("filtered")
         assert "Bohr^-1" in block["filter_cutoff"]
         assert block["local_potential"].startswith("range-separated")
@@ -584,12 +584,12 @@ class TestBasisBlock:
         try:
             get_paw("H")
         except (FileNotFoundError, ValueError):
-            pytest.skip("the PAW library is not linked")
+            pytest.skip("the PAW-LCAO library is not linked")
         out = str(tmp_path / "output.txt")
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0, 8.0, 8.0])
         atoms.calc = Mandacaru(method="adapt-vqe",
-                               basis={"name": "PAW", "energy_shift": None},
+                               basis={"name": "PAW-LCAO", "energy_shift": None},
                                h=0.30, pool="fermionic", max_iterations=1,
                                txt=out)
         atoms.get_potential_energy()

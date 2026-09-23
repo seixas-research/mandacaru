@@ -156,8 +156,8 @@ def resolve_basis(basis):
     ``{"name": "6-31G(d)"}``, the plane-wave basis
     ``{"name": "PW", "energy_cutoff": 300}``, or a **pseudopotential family**
     -- ``"NCPP"`` (aliases ``"TM"``, ``"NCPP-TM"``), ``"ONCVPSP"`` (alias
-    ``"ONCV"``), ``"PAW"`` -- with the same size hierarchy as its options,
-    ``{"name": "PAW", "size": "DZP"}`` (see :func:`pseudopotential_family`).
+    ``"ONCV"``), ``"PAW-LCAO"`` -- with the same size hierarchy as its options,
+    ``{"name": "PAW-LCAO", "size": "DZP"}`` (see :func:`pseudopotential_family`).
     Returns the name string and a dict of the remaining keyword options.
 
     A **per-element mapping** -- a dict keyed by chemical symbols (plus an
@@ -312,8 +312,8 @@ def _check_retired_basis_name(name):
             f"basis {name!r} is no longer a basis name: the pseudopotential "
             "family is now selected through the basis itself -- "
             "basis='NCPP' (Troullier-Martins, aliases 'TM' / 'NCPP-TM'), "
-            "basis='ONCVPSP' (alias 'ONCV') or basis='PAW', with the size "
-            "hierarchy as options: basis={'name': 'PAW', 'size': 'DZP'}")
+            "basis='ONCVPSP' (alias 'ONCV') or basis='PAW-LCAO', with the size "
+            "hierarchy as options: basis={'name': 'PAW-LCAO', 'size': 'DZP'}")
 
 
 def pseudopotential_family(name):
@@ -322,7 +322,7 @@ def pseudopotential_family(name):
 
     The registry :data:`~mandacaru.pseudopotentials.families.PSEUDO_FAMILIES`
     is the single source of truth: ``"NCPP"`` / ``"TM"`` / ``"NCPP-TM"``,
-    ``"ONCVPSP"`` / ``"ONCV"`` and ``"PAW"`` today, plus anything added with
+    ``"ONCVPSP"`` / ``"ONCV"`` and ``"PAW-LCAO"`` today, plus anything added with
     :func:`~mandacaru.pseudopotentials.families.register_family`.  Names are
     case-insensitive.
     """
@@ -520,7 +520,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
     :func:`resolve_basis`).  The plane-wave family (``"PW"``) uses the periodic
     :class:`~mandacaru.core.PlaneWaveIntegrals` engine; a **pseudopotential
-    family** (``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW"``, see
+    family** (``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW-LCAO"``, see
     :func:`pseudopotential_family`) builds the valence-only Hamiltonian of
     that family -- the core electrons are removed, the basis is the smooth
     pseudo-atomic orbitals and the ``-Z/r`` potential is replaced by the

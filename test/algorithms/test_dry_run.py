@@ -113,36 +113,36 @@ class TestEstimate:
         est = estimate_qubits(_boxed("H2O"), basis="NCPP")
         assert est.n_electrons == 8 and est.n_frozen_orbitals == 0
         # The label always names the filter, so a reader need not know each
-        # family's default: NCPP leaves it off, PAW/UPAW turn it on.
+        # family's default: NCPP leaves it off, PAW-LCAO/UPAW-LCAO turn it on.
         assert est.basis == "NCPP (SZ, unfiltered, pseudopotentials)"
         assert est.per_atom == [("O", 4), ("H", 1), ("H", 1)]
         assert est.n_qubits == 12
         assert any("pseudopotentials" in n for n in est.notes)
 
     @pytest.mark.parametrize("basis, expected, per_atom, label", [
-        ({"name": "PAW", "size": "DZP"}, 46, [("O", 13), ("H", 5), ("H", 5)],
-         "PAW (DZP, filtered (auto: 1 x Nyquist), energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
-        ({"name": "PAW", "size": "DZ"}, 24, [("O", 8), ("H", 2), ("H", 2)],
-         "PAW (DZ, filtered (auto: 1 x Nyquist), energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
-        ({"name": "PAW", "size": "DZ", "filter": False}, 24,
+        ({"name": "PAW-LCAO", "size": "DZP"}, 46, [("O", 13), ("H", 5), ("H", 5)],
+         "PAW-LCAO (DZP, filtered (auto: 1 x Nyquist), energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
+        ({"name": "PAW-LCAO", "size": "DZ"}, 24, [("O", 8), ("H", 2), ("H", 2)],
+         "PAW-LCAO (DZ, filtered (auto: 1 x Nyquist), energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
+        ({"name": "PAW-LCAO", "size": "DZ", "filter": False}, 24,
          [("O", 8), ("H", 2), ("H", 2)],
-         "PAW (DZ, unfiltered, energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
+         "PAW-LCAO (DZ, unfiltered, energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
         ({"name": "ONCVPSP", "size": "DZP"}, 46, [("O", 13), ("H", 5), ("H", 5)],
          "ONCVPSP (DZP, unfiltered, pseudopotentials)"),
-        ({"O": {"name": "PAW", "size": "DZP"}, "H": "PAW"}, 30,
+        ({"O": {"name": "PAW-LCAO", "size": "DZP"}, "H": "PAW-LCAO"}, 30,
          [("O", 13), ("H", 1), ("H", 1)],
-         'PAW (per-element sizes {"H": "SZ", "O": "DZP"}, '
+         'PAW-LCAO (per-element sizes {"H": "SZ", "O": "DZP"}, '
          'filtered (auto: 1 x Nyquist), energy_shift 0.1 eV, '
          'gaussian polarization, pseudopotentials)'),
         # The unconfined free-atom basis is still one option away.
-        ({"name": "PAW", "size": "DZP", "energy_shift": None}, 46,
+        ({"name": "PAW-LCAO", "size": "DZP", "energy_shift": None}, 46,
          [("O", 13), ("H", 5), ("H", 5)],
-         "PAW (DZP, filtered (auto: 1 x Nyquist), unconfined, "
+         "PAW-LCAO (DZP, filtered (auto: 1 x Nyquist), unconfined, "
          "orbital polarization, pseudopotentials)"),
     ])
     def test_pseudopotential_size_hierarchy_is_counted(self, basis, expected,
                                                         per_atom, label):
-        """The DZ/DZP size options of a pseudopotential family (PAW included)
+        """The DZ/DZP size options of a pseudopotential family (PAW-LCAO included)
         enlarge the valence basis exactly as a run would build it -- a 46-qubit
         water estimate is what makes the dry run indispensable here, since no
         state-vector driver could materialize that register."""
@@ -153,7 +153,7 @@ class TestEstimate:
         assert est.n_qubits == expected and est.per_atom == per_atom
         assert est.basis == label
         # Cross-check against the family's own basis constructor.
-        name = basis["name"] if "name" in basis else "PAW"
+        name = basis["name"] if "name" in basis else "PAW-LCAO"
         size = (basis.get("size", "SZ") if "name" in basis
                 else {"O": "DZP", "H": "SZ"})
         family = lookup_family(name)

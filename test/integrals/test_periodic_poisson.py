@@ -108,9 +108,9 @@ class TestItIsNotTheIsolatedSolver:
     def test_the_two_disagree_on_a_compact_charge(self, coordinates):
         """A localized blob feels its own images periodically and not in vacuum."""
         x, y, z = coordinates
-        centre = BOX / 2
-        density = np.exp(-((x - centre) ** 2 + (y - centre) ** 2
-                           + (z - centre) ** 2) / (2 * 0.5 ** 2))
+        center = BOX / 2
+        density = np.exp(-((x - center) ** 2 + (y - center) ** 2
+                           + (z - center) ** 2) / (2 * 0.5 ** 2))
         flat = density.reshape(-1)
         periodic = PeriodicPoissonSolver(shape=(NODES,) * 3, spacing=BOX / NODES)
         isolated = PoissonFFTSolver(shape=(NODES,) * 3, spacing=BOX / NODES)

@@ -26,7 +26,7 @@ Without it the full variational run is performed:
 .. code-block:: console
 
     $ mandacaru water.xyz --method adapt-vqe --basis HAO --h 0.25 --frozen-core
-    $ mandacaru LiH --cell 10 --basis PAW --h 0.25
+    $ mandacaru LiH --cell 10 --basis PAW-LCAO --h 0.25
 
 The geometry is any file :func:`ase.io.read` understands (``.xyz``, ``.cif``,
 ``POSCAR``, ...) or the name of a molecule in ASE's ``g2`` collection
@@ -98,16 +98,20 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Examples:\n"
                "  mandacaru water.xyz --frozen-core --dry-run\n"
                "  mandacaru H2O --cell 8 --basis NAO --basis-option size=DZP --dry-run\n"
-               "  mandacaru H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run\n"
+               "  mandacaru H2O --cell 8 --basis PAW-LCAO --basis-option size=DZP --dry-run\n"
                "  mandacaru --load-hamiltonian lih.parquet --dry-run --json\n"
                "  mandacaru LiH --cell 10 --method adapt-vqe --pool qeb --h 0.3\n"
                "  mandacaru --build-backend\n"
-               "  mandacaru --link-paw ~/Repositories/mandacaru-paw\n",
+               "  mandacaru --link-paw-lcao ~/Repositories/mandacaru-paw\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version",
                         version=f"mandacaru {__version__}")
-    parser.add_argument("--link-paw", metavar="DIR", default=None,
-                        help="link a checkout of the PAW dataset repository "
+    # `dest` is explicit because argparse would otherwise derive
+    # `link_paw_lcao` from the hyphenated flag: the user-facing name carries
+    # the family rename, the identifier does not.
+    parser.add_argument("--link-paw-lcao", metavar="DIR", dest="link_paw",
+                        default=None,
+                        help="link a checkout of the PAW-LCAO dataset repository "
                              "(mandacaru-paw) into Mandacaru's library, then "
                              "exit.  The datasets are too large to ship, so "
                              "they live in their own repository and the "
@@ -177,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "(cc-pVDZ, aug-cc-pVTZ, cc-pCVDZ) or Karlsruhe "
                             "(def2-SVP, def2-TZVP, ...) -- or a "
                             "pseudopotential family, NCPP (Troullier-"
-                            "Martins), ONCVPSP or PAW, for a valence-only "
+                            "Martins), ONCVPSP or PAW-LCAO, for a valence-only "
                             "run (size=DZP etc. through --basis-option)")
     basis.add_argument("--basis-option", action="append", type=_key_value,
                        default=[], metavar="KEY=VALUE",
@@ -425,9 +429,9 @@ def build_backend_command() -> int:
 
 
 def link_library_command(*, paw=None, oncvpsp=None) -> int:
-    """``mandacaru --link-paw DIR`` / ``--link-oncvpsp DIR`` / ``--pseudo-status``.
+    """``mandacaru --link-paw-lcao DIR`` / ``--link-oncvpsp DIR`` / ``--pseudo-status``.
 
-    The ONCVPSP and PAW datasets are ~100 MB and ~200 MB for Z <= 92, too large
+    The ONCVPSP and PAW-LCAO datasets are ~100 MB and ~200 MB for Z <= 92, too large
     to ship, so they live in their own repositories and the library holds a
     symlink to a checkout (see
     :mod:`mandacaru.pseudopotentials.link_library`).  This links them and then
@@ -439,7 +443,7 @@ def link_library_command(*, paw=None, oncvpsp=None) -> int:
     """
     from .pseudopotentials.link_library import link_library, status_lines
 
-    requested = [("paw", paw), ("oncvpsp", oncvpsp)]
+    requested = [("paw-lcao", paw), ("oncvpsp", oncvpsp)]
     failed = False
     for family, source in requested:
         if source is None:

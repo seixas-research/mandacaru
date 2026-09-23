@@ -108,23 +108,63 @@ Construction
    real); :func:`diagonalized_projectors` gives Hamann's equivalent
    orthogonalized pair with a diagonal coupling.
 
-Not implemented: the nonlinear core correction, scalar-relativistic or
-spin-orbit terms, projectors for angular momenta above the valence (those
-channels see the local potential alone), and GGA reference atoms.
+Beyond the plain construction
+-----------------------------
+
+Five options change what the reference atom is and what the channels cover.
+All of them are generation-time: they change the pseudopotential, not the
+calculation that later uses it.
+
+``relativity``
+    ``"scalar"`` by default.  The reference atom solves the Koelling-Harmon
+    equation rather than the Schrodinger one, and ``"dirac"`` solves each
+    :math:`j` separately and stores both the :math:`(2j+1)` average and the
+    spin-orbit difference (:mod:`mandacaru.basis.relativity`).  The pseudo
+    partial waves stay non-relativistic -- they are Bessel expansions, meant
+    for a Schrodinger calculation -- so the **generalized norm condition
+    changes**: what has to be conserved is
+    :math:`-W_{ij}(r_c)/2(\varepsilon_j-\varepsilon_i)`, a Wronskian, which
+    equals the inner overlap only when :math:`M\to1`
+    (:func:`norm_targets`).  Conserving the overlap instead leaves the
+    Vanderbilt matrix asymmetric by 1.4e-4 Ha for oxygen, against a 1e-5
+    tolerance.
+
+``xc``
+    ``"lda"`` by default, or ``"pbe"`` for a GGA reference atom
+    (:mod:`mandacaru.basis.xc`).  The same functional screens the atom and
+    unscreens the local potential; they are one argument because they must
+    agree.
+
+``nlcc``
+    On by default.  A partial core density is built and the unscreening uses
+    :math:`v_{xc}[\tilde\rho_c + \tilde\rho_v]`
+    (:mod:`mandacaru.pseudopotentials.core_correction`).
+
+``extra_l``
+    Channels above the highest valence :math:`l`, each with two scattering
+    references.  Zero by default, which leaves those angular momenta to the
+    local potential.
+
+Defaults note
+-------------
+
+``relativity="scalar"`` and ``nlcc=True`` are **on by default**, and both
+change every generated pseudopotential.  ``relativity="none"`` with
+``nlcc=False`` reproduces the pre-relativistic construction bit for bit.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy.integrate import simpson
 from scipy.optimize import brentq
 from scipy.special import spherical_jn
 
-from ..basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
-                                    solve_atom)
+from ..basis.atomic_solver import AtomicResult, hartree_potential, solve_atom
+from ..basis.xc import xc_potential
 from .generation import (Channel, PseudoPotential, _local_derivatives,
                          _valence_configuration)
 
@@ -143,6 +183,26 @@ DEFAULT_Q_CUT = 5.0
 DEFAULT_ENERGY_OFFSET = 1.0
 #: Default cutoff radius as a multiple of the outermost maximum of ``r R(r)``.
 DEFAULT_RC_FACTOR = 1.3
+
+#: Exchange-correlation functional of the reference atom and the unscreening.
+DEFAULT_XC = "lda"
+
+#: Radial equation of the reference atom.  Scalar-relativistic by default:
+#: mass-velocity and Darwin are a first-row effect already (the 1s of neon
+#: moves by 0.06 Ha) and grow fast with Z, while the cost over the
+#: non-relativistic solve is one extra tridiagonal solve per state.
+DEFAULT_RELATIVITY = "scalar"
+
+#: Whether to build a partial core density and unscreen with it.  On by
+#: default: the unscreening is where the nonlinearity of v_xc is committed,
+#: and leaving it uncorrected is an error of the generator, not a choice
+#: about the calculation that follows.
+DEFAULT_NLCC = True
+
+#: Channels added above the highest valence l.  Zero: an extra channel is a
+#: real improvement for an atom whose unoccupied l matters chemically, and
+#: dead weight otherwise, so it is asked for rather than assumed.
+DEFAULT_EXTRA_L = 0
 #: Local-potential radius as a multiple of the smallest channel cutoff.
 DEFAULT_LOCAL_FACTOR = 0.9
 #: Per-element cutoff radii (Bohr) overriding the factor heuristic -- close to
@@ -280,7 +340,7 @@ def _radial_f(r0: np.ndarray, potential0: np.ndarray, l: int,
 
 
 def _origin_seed(r0: np.ndarray, l: int, z_eff: float, potential0=None,
-                 energy: float = 0.0, order: int = 6):
+                 energy: float = 0.0, order: int = 6, exponent=None):
     r"""Power-series start of the regular solution at the first two points.
 
     For :math:`V = -Z/r + c_0` near the origin, :math:`u = r^{l+1}\sum_k a_k
@@ -296,8 +356,10 @@ def _origin_seed(r0: np.ndarray, l: int, z_eff: float, potential0=None,
     for k in range(2, order + 1):
         a.append((-2.0 * z_eff * a[k - 1] + 2.0 * c0 * a[k - 2])
                  / (k * (k + 2 * l + 1)))
+    power = float(l + 1) if exponent is None else float(exponent)
+
     def series(x):
-        return x ** (l + 1) * sum(ak * x ** k for k, ak in enumerate(a))
+        return x ** power * sum(ak * x ** k for k, ak in enumerate(a))
     return (series(r0[1]), series(r0[2]))
 
 
@@ -307,19 +369,111 @@ def _derivative(u: np.ndarray, h: float, index: int) -> float:
             - u[index + 2]) / (12.0 * h)
 
 
+def _relativistic_arrays(r0, v0, l, energy, treatment, kappa, z_eff):
+    r"""``(f, sqrt(M), seed exponent)`` for the Numerov recursion.
+
+    The integrated variable is :math:`W`, and :math:`P = M^{1/2}W` is the
+    large component every caller wants -- see
+    :mod:`mandacaru.basis.relativity`.  ``treatment="none"`` returns the
+    non-relativistic ``f``, no factor and no exponent, so the relativistic
+    path is a strict generalization of the original one.
+
+    The ``r = 0`` node is prepended for the recursion and never used
+    (``start >= 1``), so the :math:`1/r^3` in :math:`M''` is harmless there.
+
+    .. note::
+
+       **The seed exponent has to be the relativistic one.**  :math:`M \to
+       Z/2c^2r` as :math:`r\to0`, so :math:`M^{-1/2}\sim r^{1/2}` and the
+       integrated variable behaves as
+
+       .. math::
+
+           W \sim r^{\gamma + 1/2},
+           \qquad \gamma = \sqrt{\kappa^2 - (Z\alpha)^2},
+
+       not as :math:`r^{l+1}`.  For the 2s channel of oxygen that is
+       :math:`r^{1.498}` against :math:`r^{1}`, and seeding the wrong power
+       put the shooting eigenvalue **9.35 mHa** away from the one the
+       self-consistent atom had -- against 1.1e-4 non-relativistically.  It
+       surfaced three steps downstream, as a PAW-LCAO ionic potential missing
+       :math:`-Z_{ion}/r` by 8e-4 Hartree, because the pseudization and the
+       SCF had ended up using different 2s waves.
+
+       The sub-leading terms of :func:`_origin_seed` stay the
+       non-relativistic ones.  They carry the screening, a correction of
+       relative order :math:`Zr`, which is not where the failure was.
+    """
+    from ..basis.relativity import _resolve, mass_factor, relativistic_f
+
+    if _resolve(treatment) == "none":
+        return _radial_f(r0, v0, l, energy), None, None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f = relativistic_f(r0, v0, l, kappa, energy, atomic_number=z_eff,
+                           treatment=treatment)
+        M, _dM, _d2M = mass_factor(r0, v0, energy, z_eff)
+    f = np.nan_to_num(f, nan=0.0, posinf=0.0, neginf=0.0)
+    f[0] = 0.0
+    M = np.nan_to_num(M, nan=1.0, posinf=1.0, neginf=1.0)
+    M[0] = M[1]
+    return f, np.sqrt(M), _relativistic_seed(r0, v0, l, kappa, treatment,
+                                            z_eff)
+
+
+def _relativistic_seed(r0, v0, l, kappa, treatment, z_eff):
+    r"""The first two nodes of :math:`W`, taken from the tridiagonal solver.
+
+    A power-series seed is the wrong tool here.  The leading exponent is
+    :math:`\gamma + 1/2` rather than :math:`l+1`, and the recursion of
+    :func:`_origin_seed` -- which carries the screening and is what makes the
+    non-relativistic seed good to 1e-8 -- is derived *for* the integer power,
+    so substituting the relativistic one into it is worse than leaving it
+    alone: oxygen's 2s shooting eigenvalue misses the self-consistent atom by
+    9.4 mHa with the integer power and 57 mHa with the fractional one.
+
+    :func:`~mandacaru.basis.relativity.solve_radial_relativistic` needs no
+    seed at all -- it is a tridiagonal eigenproblem with :math:`P(0)=0` built
+    into the discretization -- so its solution near the origin already has the
+    right power *and* the right screening.  Two nodes of it start the Numerov
+    recursion, which then refines the whole wave to fourth order.  The
+    energy dependence of those two nodes is :math:`O(arepsilon r^2)`, i.e.
+    1e-6 of the value at the first grid point, so one seed serves every trial
+    energy of the shoot.
+    """
+    from ..basis.relativity import (_resolve, mass_factor,
+                                    solve_radial_relativistic)
+
+    r = r0[1:]
+    P, _eps = solve_radial_relativistic(
+        r, v0[1:], l, 0, kappa=kappa,
+        treatment="dirac" if _resolve(treatment) == "dirac" else "scalar",
+        atomic_number=z_eff)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        M, _dM, _d2M = mass_factor(r, v0[1:], float(_eps), z_eff)
+    W = P / np.sqrt(np.maximum(M, 1e-30))
+    scale = W[1] if abs(W[1]) > 0 else 1.0
+    return (float(W[0] / scale), float(W[1] / scale))
+
+
 def scattering_wave(r: np.ndarray, potential: np.ndarray, l: int,
-                    energy: float, z_eff: float) -> np.ndarray:
+                    energy: float, z_eff: float, treatment: str = "none",
+                    kappa: int | None = None) -> np.ndarray:
     """Outward Numerov solution ``u(r)`` at ``energy`` (arbitrary scale)."""
     r0 = _with_origin(r)
     v0 = np.concatenate([[0.0], potential])
-    f = _radial_f(r0, v0, l, energy)
-    u = numerov_outward(r0, f, np.zeros_like(r0),
-                        _origin_seed(r0, l, z_eff, v0, energy), start=1)
+    f, sqrt_M, power = _relativistic_arrays(r0, v0, l, energy, treatment,
+                                            kappa, z_eff)
+    seed = (power if power is not None
+            else _origin_seed(r0, l, z_eff, v0, energy))
+    u = numerov_outward(r0, f, np.zeros_like(r0), seed, start=1)
+    if sqrt_M is not None:
+        u = u * sqrt_M
     return u[1:]
 
 
 def bound_state(r: np.ndarray, potential: np.ndarray, l: int,
-                energy_guess: float, z_eff: float, window: float = 5e-3):
+                energy_guess: float, z_eff: float, window: float = 5e-3,
+                treatment: str = "none", kappa: int | None = None):
     """Numerov bound state ``(u, energy)`` near ``energy_guess``.
 
     Outward and inward integrations are matched at the outermost classical
@@ -333,17 +487,24 @@ def bound_state(r: np.ndarray, potential: np.ndarray, l: int,
     h = r0[1] - r0[0]
 
     def mismatch(energy):
-        f = _radial_f(r0, v0, l, energy)
+        f, sqrt_M, power = _relativistic_arrays(r0, v0, l, energy,
+                                                treatment, kappa, z_eff)
         # Outermost classical turning point of the effective potential.
         turning = np.nonzero(f[10:] < 0)[0]
         match = int(turning[-1]) + 10 if turning.size else r0.size // 2
         match = min(max(match, 20), r0.size - 20)
-        out = numerov_outward(r0, f, np.zeros_like(r0),
-                              _origin_seed(r0, l, z_eff, v0, energy), start=1)
-        kappa = np.sqrt(max(-2.0 * energy, 1e-6))
-        inn = _numerov_inward(r0, f, match - 3, kappa)
+        seed = (power if power is not None
+                else _origin_seed(r0, l, z_eff, v0, energy))
+        out = numerov_outward(r0, f, np.zeros_like(r0), seed, start=1)
+        decay = np.sqrt(max(-2.0 * energy, 1e-6))
+        inn = _numerov_inward(r0, f, match - 3, decay)
         scale = out[match] / inn[match]
         inn = inn * scale
+        # The matching condition is on W; multiplying both branches by the
+        # same sqrt(M) afterwards leaves the logarithmic-derivative mismatch
+        # unchanged, so the eigenvalue is the relativistic one either way.
+        if sqrt_M is not None:
+            out, inn = out * sqrt_M, inn * sqrt_M
         return ((_derivative(out, h, match) - _derivative(inn, h, match))
                 / out[match]), out, inn, match
 
@@ -366,9 +527,11 @@ def bound_state(r: np.ndarray, potential: np.ndarray, l: int,
 
 
 def log_derivative_ae(r: np.ndarray, potential: np.ndarray, l: int,
-                      energy: float, r_cut: float, z_eff: float) -> float:
+                      energy: float, r_cut: float, z_eff: float,
+                      treatment: str = "none",
+                      kappa: int | None = None) -> float:
     r"""All-electron logarithmic derivative :math:`R'/R` at ``r_cut``."""
-    u = scattering_wave(r, potential, l, energy, z_eff)
+    u = scattering_wave(r, potential, l, energy, z_eff, treatment, kappa)
     return _log_derivative_of_u(r, u, r_cut)
 
 
@@ -538,35 +701,80 @@ class PseudoWaves:
     wavevectors: list
     coefficients: list
     residual_kinetic: list
-    norms: np.ndarray              # all-electron inner norm matrix
+    norms: np.ndarray              # all-electron inner *overlap* matrix
     achieved: np.ndarray           # pseudo inner norm matrix
     q_cut: float
+    #: What the norm condition actually imposed.  Equal to :attr:`norms`
+    #: non-relativistically; the Wronskian form of :func:`norm_targets`
+    #: otherwise.  The two are kept apart because they play different roles:
+    #: :attr:`norms` is the true all-electron overlap, which is what PAW-LCAO's
+    #: overlap correction ``q = norms - achieved`` has to reconstruct, while
+    #: :attr:`targets` is the constraint that makes the Vanderbilt matrix
+    #: symmetric.  Conflating them leaves ``D^scr - (dT + dV)`` nonzero by
+    #: their difference -- 2.2e-3 Ha for oxygen, against a 1e-10 tolerance.
+    targets: np.ndarray = None
 
     @property
     def norm_matrix_error(self) -> float:
-        return float(np.max(np.abs(self.achieved - self.norms)))
+        """How far the smooth waves fell from the condition imposed on them."""
+        reference = self.norms if self.targets is None else self.targets
+        return float(np.max(np.abs(self.achieved - reference)))
+
+    @property
+    def relativistic_norm_shift(self) -> float:
+        """``max |targets - norms|`` -- the O(c^-2) Wronskian correction."""
+        if self.targets is None:
+            return 0.0
+        return float(np.max(np.abs(self.targets - self.norms)))
 
 
 def matching_targets(r: np.ndarray, u: np.ndarray, potential: np.ndarray,
-                     l: int, energy: float, r_cut: float) -> np.ndarray:
+                     l: int, energy: float, r_cut: float,
+                     treatment: str = "none", kappa: int | None = None,
+                     z_eff: float = 0.0) -> np.ndarray:
     r"""``[R, R', R'', R''']`` of a partial wave at ``r_cut`` (a grid point).
 
-    ``R'`` comes from a fourth-order stencil on ``u = rR``; ``R''`` and
-    ``R'''`` follow from the radial equation
-    :math:`u'' = 2[V + l(l+1)/2r^2 - E]\,u` and its derivative, so the
-    targets are consistent with the all-electron equation to the accuracy of
-    the Numerov solution itself (a polynomial fit of the tabulated wave would
+    ``R'`` comes from a fourth-order stencil on ``u = rR``; the second and
+    third derivatives follow from the radial equation the wave actually
+    satisfies, so the targets are consistent with it to the accuracy of the
+    Numerov solution itself (a polynomial fit of the tabulated wave would
     leave ~1e-6 inconsistencies that surface as an asymmetric :math:`B`).
+
+    In general that equation is :math:`u'' = a\,u + b\,u'` with
+
+    .. math::
+
+        a = \frac{l(l+1)}{r^2} + \frac{\kappa M'}{Mr} + 2M(V-\varepsilon),
+        \qquad b = \frac{M'}{M} ,
+
+    and the third derivative is :math:`a'u + au' + b'u' + bu''`.
+    Non-relativistically :math:`M\equiv1` kills :math:`b` and leaves
+    :math:`a = 2[V + l(l+1)/2r^2 - \varepsilon]`, which is the form this
+    function had before relativity was an option -- so the ``"none"`` path is
+    the same arithmetic it always was.
     """
     h = r[1] - r[0]
     k = int(np.argmin(np.abs(r - r_cut)))
     rk, uk = r[k], u[k]
     up = _derivative(u, h, k)
-    vp = _derivative(potential, h, k)
-    f = 2.0 * (potential[k] + l * (l + 1) / (2.0 * rk * rk) - energy)
-    fp = 2.0 * (vp - l * (l + 1) / rk ** 3)
-    upp = f * uk
-    uppp = fp * uk + f * up
+    centrifugal = l * (l + 1) / (r * r)
+
+    from ..basis.relativity import SCALAR_KAPPA, _resolve, mass_factor
+
+    if _resolve(treatment) == "none":
+        a = centrifugal + 2.0 * (potential - energy)
+        b = np.zeros_like(r)
+    else:
+        kk = SCALAR_KAPPA if _resolve(treatment) == "scalar" else int(kappa)
+        M, dM, _d2M = mass_factor(r, potential, energy, z_eff)
+        # The spin-orbit half of the closed-form combination; the Darwin half
+        # belongs to W, not to P, so only kappa M'/(Mr) appears here.
+        a = centrifugal + kk * dM / (M * r) + 2.0 * M * (potential - energy)
+        b = dM / M
+    ap = _derivative(a, h, k)
+    bp = _derivative(b, h, k)
+    upp = a[k] * uk + b[k] * up
+    uppp = ap * uk + a[k] * up + bp * up + b[k] * upp
     return np.array([
         uk / rk,
         up / rk - uk / rk ** 2,
@@ -576,22 +784,107 @@ def matching_targets(r: np.ndarray, u: np.ndarray, potential: np.ndarray,
 
 
 def _pseudo_waves_record(l, r_cut, energies, waves, wavevectors, coefficients,
-                         residuals, norms, pseudo_in, r_in, q_cut) -> PseudoWaves:
+                         residuals, norms, pseudo_in, r_in, q_cut,
+                         targets=None) -> PseudoWaves:
     """The :class:`PseudoWaves` of a finished optimization, with the inner
-    norms the pseudo waves actually achieved (shared with the PAW family)."""
+    norms the pseudo waves actually achieved (shared with the PAW-LCAO family)."""
     achieved = np.array([[simpson(a * b * r_in * r_in, x=r_in) for b in pseudo_in]
                          for a in pseudo_in])
     return PseudoWaves(l=l, r_cut=float(r_cut), energies=list(energies),
                        waves=list(waves), wavevectors=wavevectors,
                        coefficients=coefficients, residual_kinetic=residuals,
-                       norms=norms, achieved=achieved, q_cut=float(q_cut))
+                       norms=norms, achieved=achieved, q_cut=float(q_cut),
+                       targets=(norms if targets is None else targets))
+
+
+def inner_overlaps(r, waves, r_cut):
+    """``<phi_i|phi_j>`` inside ``r_cut``, on the refined inner grid.
+
+    The *true* all-electron overlap, whatever equation the waves solve.  PAW-LCAO's
+    overlap correction is built from this; the norm **condition** imposed on
+    the smooth waves is :func:`norm_targets`, which differs from it at
+    ``O(c^-2)`` once the waves are relativistic.
+    """
+    r_in = _inner_grid(r_cut)
+    inside = [_resample(np.asarray(r, dtype=float), w, r_in) for w in waves]
+    return np.array([[simpson(a * b * r_in * r_in, x=r_in) for b in inside]
+                     for a in inside])
+
+
+def norm_targets(r, waves, energies, r_cut, v_ae=None, treatment="none",
+                 kappa=None, z_eff=0.0):
+    r"""The generalized-norm matrix the pseudo waves must reproduce.
+
+    Non-relativistically this is just
+    :math:`\langle\varphi_i|\varphi_j\rangle_{r<r_c}`.  It is **not** that
+    when the all-electron waves solve a relativistic equation and the pseudo
+    waves -- Bessel expansions, built to be used in a Schrodinger calculation
+    -- solve a non-relativistic one.  What the condition has to enforce is
+    that the *pseudo* system reproduce the all-electron logarithmic derivative
+    **and its energy derivative** at :math:`r_c`, and the quantity that does
+    that is a Wronskian, not an overlap:
+
+    .. math::
+
+        \langle\tilde\varphi_i|\tilde\varphi_j\rangle_{r<r_c}
+            = -\frac{W_{ij}(r_c)}{2(\varepsilon_j - \varepsilon_i)},
+        \qquad W_{ij} = u_i u_j' - u_j u_i' .
+
+    Integrating the relativistic radial equation gives
+    :math:`W_{ij}(r_c)/M(r_c) = -2(\varepsilon_j-\varepsilon_i)
+    \int_0^{r_c} u_iu_j\,dr` in the non-relativistic limit :math:`M\to1`, so
+    the two agree exactly there -- and differ by :math:`O(c^{-2})` otherwise.
+    That difference is the whole of the asymmetry the Vanderbilt matrix shows
+    when a scalar-relativistic atom is pseudized with the non-relativistic
+    condition: 1.4e-4 Ha for oxygen, against a 1e-5 tolerance.
+
+    The **diagonal** carries the energy derivative rather than a difference of
+    two energies, and its relativistic form is
+    :math:`M(r_c)\int(2M-1)u^2/M\,dr`; it does not enter the symmetry of
+    :math:`B`, only the transferability the norm was conserved for.
+    """
+    from ..basis.relativity import _resolve, mass_factor
+
+    r = np.asarray(r, dtype=float)
+    r_in = _inner_grid(r_cut)
+    waves_in = [_resample(r, w, r_in) for w in waves]
+    # The base matrix keeps the refined-grid Simpson quadrature the
+    # non-relativistic construction has always used, so `treatment="none"`
+    # returns the same numbers to the last bit.
+    targets = np.array([[simpson(a * b * r_in * r_in, x=r_in)
+                         for b in waves_in] for a in waves_in])
+    if _resolve(treatment) == "none":
+        return targets
+
+    h = float(r[1] - r[0])
+    k = int(np.argmin(np.abs(r - r_cut)))
+    us = [np.asarray(w, dtype=float) * r for w in waves]
+    M_in = [_resample(r, mass_factor(r, v_ae, e, z_eff)[0], r_in)
+            for e in energies]
+    for i in range(len(us)):
+        M_at_cut = float(mass_factor(r, v_ae, energies[i], z_eff)[0][k])
+        # Diagonal: the relativistic weight of the energy-derivative identity.
+        targets[i, i] = M_at_cut * simpson(
+            (2.0 * M_in[i] - 1.0) / M_in[i] * waves_in[i] ** 2
+            * r_in * r_in, x=r_in)
+        for j in range(len(us)):
+            gap = energies[j] - energies[i]
+            if i == j or abs(gap) < 1e-12:
+                continue
+            wronskian = (us[i][k] * _derivative(us[j], h, k)
+                         - us[j][k] * _derivative(us[i], h, k))
+            targets[i, j] = -wronskian / (2.0 * gap)
+    return targets
 
 
 def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
                           waves: list, energies: list, r_cut: float,
                           q_cut: float = DEFAULT_Q_CUT,
                           n_bessel: int = DEFAULT_N_BESSEL,
-                          norm_factor: float = 1.0) -> PseudoWaves:
+                          norm_factor: float = 1.0,
+                          treatment: str = "none",
+                          kappa: int | None = None,
+                          z_eff: float = 0.0) -> PseudoWaves:
     r"""The Bessel expansions of the pseudo partial waves of one channel.
 
     Each wave in turn: match value and first three derivatives at ``r_cut``
@@ -604,7 +897,7 @@ def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
     ``norm_factor`` scales the target inner-norm matrix,
     :math:`\langle\tilde\varphi_i|\tilde\varphi_j\rangle_{r<r_c} =
     f\,\langle\varphi_i|\varphi_j\rangle_{r<r_c}`: 1 (the default) is
-    norm conservation; the PAW family uses :math:`f < 1` so its overlap
+    norm conservation; the PAW-LCAO family uses :math:`f < 1` so its overlap
     correction :math:`(1-f)\langle\varphi_i|\varphi_j\rangle` is positive
     definite by construction.
     """
@@ -613,14 +906,15 @@ def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
     q_grid = np.arange(0.0, Q_MAX + 0.5 * Q_STEP, Q_STEP)
     weight = 0.5 * q_grid ** 4 * (q_grid >= q_cut)
 
-    waves_in = [_resample(r, w, r_in) for w in waves]
-    norms = np.array([[simpson(a * b * r_in * r_in, x=r_in) for b in waves_in]
-                      for a in waves_in])
+    targets = norm_targets(r, waves, energies, r_cut, v_ae, treatment, kappa,
+                           z_eff)
+    norms = inner_overlaps(r, waves, r_cut)
 
     coefficients, wavevectors, pseudo_in, residuals = [], [], [], []
     for i, (wave, energy) in enumerate(zip(waves, energies)):
         # Value and first three derivatives of R at r_c (Hamann's ncon = 4).
-        target = matching_targets(r, wave * r, v_ae, l, energy, r_cut)
+        target = matching_targets(r, wave * r, v_ae, l, energy, r_cut,
+                                  treatment, kappa, z_eff)
         qs = bessel_wavevectors(l, r_cut, n_bessel)
         j, dj, d2j, d3j = bessel_derivatives(l, qs * r_cut)
         A = [j, qs * dj, qs ** 2 * d2j, qs ** 3 * d3j]
@@ -630,7 +924,7 @@ def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
                     * (r_in * r_in)[None, None, :], x=r_in, axis=-1)
         for k in range(i):                       # cross norms are linear
             A.append(G @ coefficients[k])
-            b.append(float(norm_factor) * norms[i, k])
+            b.append(float(norm_factor) * targets[i, k])
 
         transform = _bessel_transform_table(l, qs, r_in, q_grid)   # (N, Q)
         bound = energy < 0 and abs(wave[-1] * r[-1]) < 1e-6
@@ -640,7 +934,7 @@ def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
         k0 = float(np.sum(weight * tail * tail) * Q_STEP)
 
         c = constrained_minimum(K, kvec, np.array(A), np.array(b), G,
-                                float(norm_factor) * norms[i, i])
+                                float(norm_factor) * targets[i, i])
         coefficients.append(c)
         wavevectors.append(qs)
         pseudo_in.append(c @ basis_in)
@@ -648,7 +942,7 @@ def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
 
     return _pseudo_waves_record(l, r_cut, energies, waves, wavevectors,
                                 coefficients, residuals, norms, pseudo_in,
-                                r_in, q_cut)
+                                r_in, q_cut, targets)
 
 
 def assemble_channel(r: np.ndarray, pw: PseudoWaves, v_loc: np.ndarray,
@@ -771,6 +1065,51 @@ class ONCVPseudoPotential(PseudoPotential):
     local_shift: float = 0.0
     q_cut: float = DEFAULT_Q_CUT
     energy_offset: float = DEFAULT_ENERGY_OFFSET
+    #: How the reference atom was solved.  These default to the *pre-
+    #: relativistic* construction rather than to :data:`DEFAULT_RELATIVITY`
+    #: on purpose: a record that does not say how it was made was made the
+    #: old way, and claiming otherwise would put false provenance on every
+    #: pseudopotential the library already holds.  :func:`generate_oncv`
+    #: always passes the real values.
+    xc: str = "lda"
+    relativity: str = "none"
+    #: Partial core density (zero when there is no core correction), and the
+    #: record of how it was built -- see
+    #: :mod:`mandacaru.pseudopotentials.core_correction`.
+    core_density: np.ndarray = None
+    nlcc: dict = field(default_factory=dict)
+    #: Channels added above the highest valence l.
+    extra_l: int = 0
+    #: ``(l, kappa) -> ONCVChannel``, filled only by ``relativity="dirac"``.
+    channels_j: dict = field(default_factory=dict)
+    #: ``l -> {"projectors": [...], "coupling": D}`` of the ``L . S`` term.
+    #: Empty unless the pseudopotential was generated with ``"dirac"``.
+    spin_orbit: dict = field(default_factory=dict)
+
+    @property
+    def has_spin_orbit(self) -> bool:
+        """Whether this pseudopotential carries a spin-orbit term."""
+        return bool(self.spin_orbit)
+
+    @property
+    def has_core_correction(self) -> bool:
+        """Whether a partial core density was built and unscreened with."""
+        return bool(self.nlcc.get("applied"))
+
+    def spin_orbit_projector(self, l: int, radius, index: int = 0):
+        """Interpolate spin-orbit projector ``index`` of channel ``l``."""
+        radius = np.asarray(radius, dtype=float)
+        chi = self.spin_orbit[int(l)]["projectors"][int(index)]
+        return np.where(radius <= self.r[-1],
+                        np.interp(np.clip(radius, self.r[0], self.r[-1]),
+                                  self.r, chi), 0.0)
+
+    def core_charge(self) -> float:
+        """Electrons in the partial core density (0 without a correction)."""
+        if self.core_density is None:
+            return 0.0
+        return float(np.trapezoid(
+            self.core_density * 4.0 * np.pi * self.r * self.r, self.r))
 
     def projector(self, l: int, radius, index: int = 0) -> np.ndarray:
         """Interpolate projector ``index`` of channel ``l`` onto ``radius``."""
@@ -827,8 +1166,33 @@ def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor, defaults=None):
     return float(rc_factor * peak)
 
 
+def reference_bound_state(r, potential, l, n_nodes, energy_guess, z_eff,
+                          treatment, kappa):
+    r"""The valence bound state, from the solver the reference atom used.
+
+    Always the Numerov shoot (:func:`bound_state`), at whatever level of
+    theory the atom was solved with.  The pseudization needs its waves to be
+    eigenstates of the potential it was handed, and Numerov satisfies the
+    radial equation to fourth order, which the ONCVPSP construction needs: a
+    tridiagonal wave of the same potential leaves its s channel with a ghost
+    56 Hartree below the reference.
+
+    What makes this *consistent* is that the reference atom now finishes on
+    Numerov orbitals too (:func:`~mandacaru.basis.atomic_solver.solve_atom`,
+    ``polish``).  Before it did, the self-consistent field and the
+    pseudization disagreed about oxygen's relativistic 2s by 9.5 mHa -- they
+    were using two discretizations of a state whose :math:`r^{\gamma}` cusp
+    neither resolves well -- and that surfaced as a PAW-LCAO ionic potential
+    missing :math:`-Z_{ion}/r` by 8e-4 Hartree out to 11 Bohr.
+    """
+    del n_nodes                    # the energy guess selects the state
+    return bound_state(r, potential, l, energy_guess, z_eff,
+                       treatment=treatment, kappa=kappa)
+
+
 def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
-                    energy_offset, defaults=None):
+                    energy_offset, defaults=None, treatment: str = "none",
+                    kappa: int | None = None, extra_l: int = 0):
     """``(per_l, cutoffs, references)`` -- the all-electron input of a channel.
 
     ``per_l[l]`` lists every occupied valence state ``(n, energy, R, occupancy)``
@@ -837,12 +1201,37 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
     ``references[l] = (waves, energies)`` are the two partial waves each family
     pseudizes -- the bound state(s) plus, when there is only one, the scattering
     state ``energy_offset`` above it, normalized inside the sphere.  Shared by
-    the ONCVPSP and PAW generators.
+    the ONCVPSP and PAW-LCAO generators.
+
+    ``treatment`` and ``kappa`` select the radial equation
+    (:mod:`mandacaru.basis.relativity`); ``kappa`` is required for
+    ``treatment="dirac"`` and then names which :math:`j` this set of channels
+    belongs to.
+
+    ``extra_l`` adds that many **unbound** channels above the highest valence
+    :math:`l`.  Without them those angular momenta see the local potential
+    alone -- which is the right answer only if the local potential happens to
+    scatter them correctly, and it does not, because it was built to be smooth
+    rather than to reproduce any channel.  An unbound channel has no bound
+    state to anchor it, so *both* its references are scattering states, at the
+    highest occupied valence eigenvalue and ``energy_offset`` above it; that
+    places the pair in the energy window where an atom in a molecule actually
+    samples these channels.
     """
     r, v_ae = atom.r, atom.v_effective
+
+    def kappa_of_l(l):
+        """``kappa`` may be one value or a ``{l: kappa}`` map (one j branch)."""
+        return kappa.get(l) if isinstance(kappa, dict) else kappa
+
     per_l: dict = {}
     for (n, l), occupancy in sorted(valence_config.items()):
-        u, energy = bound_state(r, v_ae, l, atom.eigenvalues[(n, l)], z_eff)
+        k = kappa_of_l(l)
+        guess = atom.eigenvalues[(n, l)]
+        if treatment == "dirac" and atom.eigenvalues_j:
+            guess = atom.eigenvalues_j.get((n, l, k), guess)
+        u, energy = reference_bound_state(r, v_ae, l, n - l - 1, guess, z_eff,
+                                          treatment, k)
         per_l.setdefault(l, []).append((n, energy, u / r, occupancy))
 
     cutoffs = {l: _snap(r, _cutoff_for(symbol, l, r, states[0][2], r_cut,
@@ -855,13 +1244,42 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
         energies = [e for _n, e, _w, _o in states]
         if len(states) == 1:
             energy_2 = energies[0] + float(energy_offset)
-            u2 = scattering_wave(r, v_ae, l, energy_2, z_eff)
+            u2 = scattering_wave(r, v_ae, l, energy_2, z_eff, treatment,
+                                 kappa_of_l(l))
             inside = r <= cutoffs[l]
             u2 = u2 / np.sqrt(np.trapezoid(u2[inside] ** 2, r[inside]))
             waves.append(u2 / r)
             energies.append(energy_2)
         references[l] = (waves[:2], energies[:2])
+
+    if int(extra_l) > 0:
+        _add_unbound_channels(r, v_ae, z_eff, per_l, cutoffs, references,
+                              int(extra_l), float(energy_offset), treatment)
     return per_l, cutoffs, references
+
+
+def _add_unbound_channels(r, v_ae, z_eff, per_l, cutoffs, references,
+                          extra_l, energy_offset, treatment):
+    """Append ``extra_l`` scattering-only channels above the valence l."""
+    highest = max(per_l)
+    anchor = max(energies[0] for energies in
+                 (e for _w, e in references.values()))
+    widest = max(cutoffs.values())
+    for l in range(highest + 1, highest + extra_l + 1):
+        energies = [anchor, anchor + energy_offset]
+        cutoffs[l] = widest
+        inside = r <= widest
+        waves = []
+        for energy in energies:
+            k = -(l + 1) if treatment == "dirac" else None
+            u = scattering_wave(r, v_ae, l, energy, z_eff, treatment, k)
+            u = u / np.sqrt(np.trapezoid(u[inside] ** 2, r[inside]))
+            waves.append(u / r)
+        references[l] = (waves, energies)
+        # n = l + 1 is the lowest principal quantum number this l could have,
+        # and the occupancy is zero: the channel exists to scatter, not to
+        # hold charge, so it contributes nothing to the valence density.
+        per_l[l] = [(l + 1, energies[0], waves[0], 0.0)]
 
 
 def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTOR,
@@ -872,7 +1290,11 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
                   energy_offset: float = DEFAULT_ENERGY_OFFSET,
                   n_bessel: int = DEFAULT_N_BESSEL,
                   points: int | None = None, r_max: float = 30.0,
-                  atom: AtomicResult | None = None) -> ONCVPseudoPotential:
+                  atom: AtomicResult | None = None,
+                  xc: str = DEFAULT_XC,
+                  relativity: str = DEFAULT_RELATIVITY,
+                  nlcc: bool | float = DEFAULT_NLCC,
+                  extra_l: int = DEFAULT_EXTRA_L) -> ONCVPseudoPotential:
     r"""Generate an ONCVPSP pseudopotential for ``symbol``.
 
     Parameters
@@ -894,6 +1316,30 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         a second bound state (Hartree).
     n_bessel : int
         Spherical Bessel functions per pseudo wave.
+    xc : str
+        Exchange-correlation functional of the reference atom and of the
+        unscreening: ``"lda"`` or ``"pbe"`` (:mod:`mandacaru.basis.xc`).  The
+        two must be the same functional, and they are, because both read this
+        one argument.
+    relativity : str
+        ``"none"``, ``"scalar"`` (the default) or ``"dirac"``
+        (:mod:`mandacaru.basis.relativity`).  ``"dirac"`` builds a separate
+        channel for each :math:`j`, then stores their :math:`(2j+1)` average
+        as the ordinary channel and their difference as the spin-orbit term --
+        so a Dirac pseudopotential is a drop-in replacement for a
+        scalar-relativistic one that additionally *carries* spin-orbit
+        coupling.  It costs twice the channels and about twice the generation
+        time.
+    nlcc : bool or float
+        Nonlinear core correction
+        (:mod:`mandacaru.pseudopotentials.core_correction`).  ``True`` (the
+        default) puts the matching radius where the core density falls to the
+        valence density; a float sets that radius in Bohr directly; ``False``
+        unscreens with the valence density alone, as before.
+    extra_l : int
+        Channels to add above the highest valence :math:`l`, each with two
+        scattering references.  Zero by default, which leaves those angular
+        momenta to the local potential.
     points : int, optional
         Radial grid points of the all-electron atom; default
         :func:`generation_points` (finer for heavier atoms, so the Numerov
@@ -902,47 +1348,90 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
     """
     from ase.data import atomic_numbers
 
+    from ..basis.relativity import _resolve as _resolve_relativity
+    from ..basis.relativity import kappa_values
+    from .core_correction import partial_core_density
+
     atomic_number = int(atomic_numbers[symbol])
+    relativity = _resolve_relativity(relativity)
     if atom is None:
         atom = solve_atom(atomic_number,
                           points=(generation_points(atomic_number)
                                   if points is None else int(points)),
-                          r_max=r_max, tolerance=1e-7, mixing=0.25)
-    valence_config, _core = _valence_configuration(atomic_number)
+                          r_max=r_max, tolerance=1e-7, mixing=0.25,
+                          xc=xc, relativity=relativity)
+    valence_config, core_config = _valence_configuration(atomic_number)
     if not valence_config:
         raise ValueError(f"{symbol} has no valence subshells to pseudize")
     valence_charge = float(sum(valence_config.values()))
     r, v_ae = atom.r, atom.v_effective
     z_eff = float(atomic_number)
+    shift = float(local_shift)
 
-    per_l, cutoffs, references = reference_waves(
-        symbol, atom, valence_config, z_eff, r_cut, rc_factor, energy_offset)
+    def channel_set(kappa_map):
+        """Every channel of one j branch (or the only branch)."""
+        per_l, cutoffs, references = reference_waves(
+            symbol, atom, valence_config, z_eff, r_cut, rc_factor,
+            energy_offset, treatment=relativity, kappa=kappa_map,
+            extra_l=extra_l)
+        return per_l, cutoffs, references
+
+    if relativity == "dirac":
+        # One full construction per j.  `kappa_values(l)` is ordered
+        # [l, -(l+1)] = [j = l-1/2, j = l+1/2]; an s channel has only the
+        # second, and both branches then ask for the same kappa = -1.
+        branches = [{l: kappa_values(l)[0] for l in range(5)},
+                    {l: kappa_values(l)[-1] for l in range(5)}]
+    else:
+        branches = [None]
+
+    built = [channel_set(branch) for branch in branches]
+    per_l, cutoffs, references = built[0]
     r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
                     else float(local_factor * min(cutoffs.values())))
-
-    pseudo_waves = {
-        l: optimize_pseudo_waves(r, v_ae, l, waves, energies, cutoffs[l],
-                                 q_cut=q_cut, n_bessel=n_bessel)
-        for l, (waves, energies) in references.items()}
-
-    shift = float(local_shift)
     v_loc = polynomial_local_potential(r, v_ae, r_local, shift)
 
-    channels: dict = {}
-    for l, states in per_l.items():
-        channels[l] = assemble_channel(
-            r, pseudo_waves[l], v_loc, n=states[0][0],
-            occupation=float(sum(o for _n, _e, _w, o in states)))
+    branch_channels = []
+    for branch, (branch_per_l, branch_cutoffs, branch_references) in zip(
+            branches, built):
+        waves_of_l = {
+            l: optimize_pseudo_waves(r, v_ae, l, waves, energies,
+                                     branch_cutoffs[l], q_cut=q_cut,
+                                     n_bessel=n_bessel, treatment=relativity,
+                                     kappa=(branch or {}).get(l),
+                                     z_eff=z_eff)
+            for l, (waves, energies) in branch_references.items()}
+        branch_channels.append({
+            l: assemble_channel(
+                r, waves_of_l[l], v_loc, n=states[0][0],
+                occupation=float(sum(o for _n, _e, _w, o in states)))
+            for l, states in branch_per_l.items()})
 
-    # Unscreen with the pseudo valence density.
+    if relativity == "dirac":
+        channels, channels_j, spin_orbit = _combine_j_channels(
+            branch_channels, r)
+    else:
+        channels, channels_j, spin_orbit = branch_channels[0], {}, {}
+
+    # Unscreen with the pseudo valence density, plus a partial core density
+    # when the nonlinear core correction is on: the all-electron potential was
+    # screened by v_xc[rho_core + rho_valence], and v_xc is not linear.
     valence_density = np.zeros_like(r)
     for channel in channels.values():
         valence_density += channel.occupation * channel.pseudo_radial ** 2 \
             / (4.0 * np.pi)
+    core_density = np.zeros_like(r)
+    nlcc_details = {"applied": False, "r_nlcc": None,
+                    "reason": "not requested"}
+    if nlcc is not False and core_config:
+        true_core, _true_valence = atom.partition_density(valence_config)
+        core_density, nlcc_details = partial_core_density(
+            r, true_core, valence_density,
+            r_nlcc=None if nlcc is True else float(nlcc))
     v_hartree = hartree_potential(r, valence_density)
-    _e_xc, v_xc = lda_xc(valence_density)
+    _e_xc, v_xc = xc_potential(r, valence_density + core_density, xc)
     v_local_ionic = v_loc - v_hartree - v_xc
-    for channel in channels.values():
+    for channel in list(channels.values()) + list(channels_j.values()):
         channel.v_ionic = v_local_ionic
 
     return ONCVPseudoPotential(
@@ -954,7 +1443,68 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         family=FAMILY,
         coupling={l: np.array(c.coupling) for l, c in channels.items()},
         v_local_screened=v_loc, r_cut_local=r_local, local_shift=float(shift),
-        q_cut=float(q_cut), energy_offset=float(energy_offset))
+        q_cut=float(q_cut), energy_offset=float(energy_offset),
+        xc=str(xc), relativity=relativity, core_density=core_density,
+        nlcc=dict(nlcc_details), extra_l=int(extra_l),
+        channels_j=channels_j, spin_orbit=spin_orbit)
+
+
+def _combine_j_channels(branch_channels, r):
+    r"""``(scalar channels, j-resolved channels, spin-orbit blocks)``.
+
+    Any :math:`j`-dependent separable operator is exactly two terms,
+
+    .. math::
+
+        V_{l,j} = V^{\text{avg}}_l + V^{\text{SO}}_l\,
+                  \mathbf{L}\cdot\mathbf{S} ,
+
+    because :math:`\mathbf{L}\cdot\mathbf{S}` takes the single value
+    :math:`l/2` on :math:`j = l+\tfrac12` and :math:`-(l+1)/2` on
+    :math:`j = l-\tfrac12`.  Solving that 2x2 system gives the
+    :math:`(2j+1)`-weighted average and
+    :math:`\frac{2}{2l+1}(V_{l+1/2} - V_{l-1/2})` -- the combinations
+    :func:`~mandacaru.basis.relativity.j_average` and
+    :func:`~mandacaru.basis.relativity.spin_orbit_difference` compute.
+
+    Both terms are built from the **union** of the two branches' projectors,
+    with only the coupling matrices reweighted: a projector set is not a
+    number, so averaging the potentials means keeping both sets and scaling
+    what multiplies them.  The scalar channel therefore carries four
+    projectors per :math:`l` where a ``relativity="scalar"`` run carries two,
+    and reproduces each :math:`j` exactly rather than approximately.
+    """
+    from scipy.linalg import block_diag
+
+    lower, upper = branch_channels           # j = l - 1/2, j = l + 1/2
+    channels: dict = {}
+    channels_j: dict = {}
+    spin_orbit: dict = {}
+    for l in sorted(upper):
+        if l == 0:
+            # One j only: the two branches solved the same equation.
+            channels[0] = upper[0]
+            channels_j[(0, -1)] = upper[0]
+            continue
+        down, up = lower[l], upper[l]
+        channels_j[(l, l)] = down
+        channels_j[(l, -(l + 1))] = up
+        w_down, w_up = 2.0 * l, 2.0 * l + 2.0
+        total = w_down + w_up
+        averaged = replace(
+            up,
+            projectors=list(down.projectors) + list(up.projectors),
+            coupling=block_diag(np.asarray(down.coupling) * (w_down / total),
+                                np.asarray(up.coupling) * (w_up / total)))
+        channels[l] = averaged
+        factor = 2.0 / (2 * l + 1)
+        spin_orbit[l] = {
+            "projectors": list(down.projectors) + list(up.projectors),
+            "coupling": block_diag(
+                -factor * np.asarray(down.coupling),
+                +factor * np.asarray(up.coupling)),
+        }
+    return channels, channels_j, spin_orbit
 
 
 # --------------------------------------------------------------------------- #
@@ -1064,21 +1614,31 @@ def log_derivative_ps(pp: ONCVPseudoPotential, l: int, energy: float,
 
 
 def log_derivative_errors(pp, l, energies, r_cut, pseudo_log_derivative,
-                          midpoint: bool = True) -> dict:
+                          midpoint: bool = True, kappa=None) -> dict:
     """``{energy: (|L_ps - L_ae|, L_ae)}`` at the reference energies (and their
     midpoint), against the all-electron atom stored on ``pp``.
 
     ``pseudo_log_derivative(pp, l, energy)`` is the family's own pseudo-side
-    evaluation -- the only part that differs between ONCVPSP and PAW.
+    evaluation -- the only part that differs between ONCVPSP and PAW-LCAO.
+
+    The all-electron side is integrated with **the equation the reference
+    atom solved**, taken from ``pp.relativity``.  This is the whole content of
+    a relativistic pseudopotential: the pseudo side is a Schrodinger problem
+    and the all-electron side is not, and transferability means the smooth
+    non-relativistic system reproduces the relativistic scattering.  Comparing
+    against a non-relativistic all-electron logarithmic derivative instead
+    measures the relativistic shift and calls it an error -- 9.6e-3 for the
+    oxygen s channel, against a 1e-3 tolerance.
     """
     ae = pp.atom
+    treatment = getattr(pp, "relativity", "none")
     probes = list(energies)
     if midpoint:
         probes.append(0.5 * (energies[0] + energies[1]))
     errors = {}
     for energy in probes:
         l_ae = log_derivative_ae(pp.r, ae.v_effective, l, energy, r_cut,
-                                 float(pp.atomic_number))
+                                 float(pp.atomic_number), treatment, kappa)
         l_ps = pseudo_log_derivative(pp, l, energy)
         errors[float(energy)] = (float(abs(l_ps - l_ae)), float(l_ae))
     return errors
@@ -1128,7 +1688,12 @@ def check_oncv_channel(pp: ONCVPseudoPotential, l: int,
     z = float(pp.atomic_number)
     errors = log_derivative_errors(pp, l, energies, channel.r_cut,
                                    log_derivative_ps, midpoint)
-    bound_u, _e = bound_state(r, ae.v_effective, l, energies[0], z)
+    # The same equation the reference atom solved: outside r_c the pseudo
+    # wave *is* the all-electron wave, and re-deriving that wave
+    # non-relativistically would measure the relativistic shift as a tail
+    # error (2.9e-4 for lithium, against a 1e-6 tolerance).
+    bound_u, _e = bound_state(r, ae.v_effective, l, energies[0], z,
+                              treatment=getattr(pp, "relativity", "none"))
     outside = r > channel.r_cut
     out["tail_error"] = float(np.max(np.abs(
         channel.pseudo_radial[outside] - (bound_u / r)[outside])))
@@ -1195,6 +1760,27 @@ def oncv_projectors(symbols, positions, potentials, units: str = "angstrom"):
                         atom_index=index, index=i, radial=chi,
                         kb_energy=float(D[i, i])))
     return projectors
+
+
+def oncv_spin_orbit_blocks(projectors, symbols, potentials) -> dict:
+    """``{(atom, l): D_SO}`` -- the spin-orbit blocks, empty without them.
+
+    Keyed by ``(atom, l)`` rather than ``(atom, l, m)``: the spin-orbit term
+    is the one part of the nonlocal potential that is **not** diagonal in
+    ``m``, so it cannot be a block of the same block-diagonal matrix
+    (:func:`mandacaru.core.spin_orbit.spin_orbit_one_body` consumes it).
+    """
+    blocks: dict = {}
+    for projector in projectors:
+        pp = potentials[symbols[projector.atom_index]]
+        table = getattr(pp, "spin_orbit", None)
+        if not table or projector.l not in table:
+            continue
+        key = (projector.atom_index, projector.l)
+        if key not in blocks:
+            blocks[key] = np.asarray(table[projector.l]["coupling"],
+                                     dtype=complex)
+    return blocks
 
 
 def oncv_coupling_blocks(projectors, symbols, potentials) -> dict:
@@ -1273,7 +1859,8 @@ def build_oncv(atoms, grid, h, charge, spin, options, kinetic=None):
         load=get_oncv,
         projectors=lambda symbols, positions, potentials, _options:
             oncv_projectors(symbols, positions, potentials),
-        coupling=oncv_coupling_blocks)
+        coupling=oncv_coupling_blocks,
+        spin_orbit=oncv_spin_orbit_blocks)
 
 
 # --------------------------------------------------------------------------- #
@@ -1310,11 +1897,21 @@ def to_payload(pp: ONCVPseudoPotential, stride: int = 1) -> dict:
             "norm_matrix_error": float(channel.norm_matrix_error),
             "q_cut": float(channel.q_cut),
         }
+    if pp.core_density is not None and np.any(pp.core_density):
+        tables["core_density"] = _table(pp.core_density, stride)
+    spin_orbit = {str(l): np.asarray(block["coupling"]).real.tolist()
+                  for l, block in (pp.spin_orbit or {}).items()}
+    for l, block in (pp.spin_orbit or {}).items():
+        for i, chi in enumerate(block["projectors"]):
+            tables[f"spin_orbit_projector_l{l}_{i}"] = _table(chi, stride)
     return {"symbol": pp.symbol, "atomic_number": int(pp.atomic_number),
             "valence_charge": float(pp.valence_charge),
             "r_cut_local": float(pp.r_cut_local),
             "local_shift": float(pp.local_shift), "q_cut": float(pp.q_cut),
             "energy_offset": float(pp.energy_offset),
+            "xc": str(pp.xc), "relativity": str(pp.relativity),
+            "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
+            "spin_orbit": spin_orbit,
             "channels": channels, "radial_tables": tables}
 
 
@@ -1365,7 +1962,28 @@ def from_payload(payload: dict) -> ONCVPseudoPotential:
         local_shift=float(payload.get("local_shift", 0.0)),
         q_cut=float(payload.get("q_cut", DEFAULT_Q_CUT)),
         energy_offset=float(payload.get("energy_offset",
-                                        DEFAULT_ENERGY_OFFSET)))
+                                        DEFAULT_ENERGY_OFFSET)),
+        # A payload without these keys predates them, and a record written
+        # before relativity was an option is non-relativistic with no core
+        # correction.  Defaulting to the *current* defaults here would label
+        # every file already in the library as something it is not.
+        xc=str(payload.get("xc", "lda")),
+        relativity=str(payload.get("relativity", "none")),
+        extra_l=int(payload.get("extra_l", 0)),
+        nlcc=dict(payload.get("nlcc") or {"applied": False, "r_nlcc": None,
+                                          "reason": "written before the "
+                                                    "core correction"}),
+        core_density=(np.asarray(tables["core_density"], dtype=float)
+                      if "core_density" in tables else np.zeros_like(r)),
+        spin_orbit={
+            int(l): {
+                "coupling": np.asarray(block, dtype=complex),
+                "projectors": [
+                    np.asarray(tables[f"spin_orbit_projector_l{l}_{i}"],
+                               dtype=float)
+                    for i in range(len(block))],
+            }
+            for l, block in (payload.get("spin_orbit") or {}).items()})
 
 
 # --------------------------------------------------------------------------- #

@@ -6,9 +6,9 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Confined pseudo-atomic orbitals: the ``energy_shift`` of a PAW basis.
+r"""Confined pseudo-atomic orbitals: the ``energy_shift`` of a PAW-LCAO basis.
 
-Without this module the first zeta of a PAW basis is the dataset's bound smooth
+Without this module the first zeta of a PAW-LCAO basis is the dataset's bound smooth
 partial wave -- the valence orbital of the **free** atom, which has no range of
 its own (a lithium 2s still carries 1e-4 of its norm beyond 14 Bohr).  LCAO
 codes (SIESTA, GPAW) instead use the orbital of the atom inside a confining
@@ -48,7 +48,7 @@ defaults** (``vconf_args=(12.0, 0.6)`` of ``BasisMaker.generate`` in
 ``gpaw/atom/basis.py``, and the functional form of
 ``get_confinement_potential`` in ``gpaw/atom/all_electron.py`` -- both read
 from the GPAW source, not recalled), chosen on purpose: with the same
-``energy_shift`` and the same ``size`` a Mandacaru PAW basis is then built by the same recipe as the GPAW LCAO basis it is compared
+``energy_shift`` and the same ``size`` a Mandacaru PAW-LCAO basis is then built by the same recipe as the GPAW LCAO basis it is compared
 with.  (The *datasets* still differ -- each code pseudizes its own atom -- so
 the radii agree closely, not identically.)
 
@@ -73,12 +73,12 @@ CONFINEMENT_AMPLITUDE = 12.0
 #: default.  Below it the atom is untouched.
 CONFINEMENT_INNER_FRACTION = 0.6
 
-#: The ``energy_shift`` (eV) a PAW / UPAW basis uses when the basis dict does
+#: The ``energy_shift`` (eV) a PAW-LCAO / UPAW-LCAO basis uses when the basis dict does
 #: not say: GPAW's ``energysplit`` default.  ``"energy_shift": None`` restores
 #: the unconfined free-atom orbital.
 DEFAULT_ENERGY_SHIFT = 0.1
 
-#: Which polarization shell a PAW basis builds (``polarization=`` option).
+#: Which polarization shell a PAW-LCAO basis builds (``polarization=`` option).
 #: ``"gaussian"``: GPAW's quasi-Gaussian, :func:`gaussian_polarization` -- the
 #: default **wherever the orbital is confined**, since the Gaussian takes its
 #: cutoff from the confined orbital.  ``"orbital"``: :math:`r^k R_{outer}(r)`,

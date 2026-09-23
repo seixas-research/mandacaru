@@ -37,7 +37,7 @@ circuits.  See :doc:`guide/dry_run`.
 Pseudopotential Forces
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Hellmann-Feynman and Pulay forces for the PAW and ONCVPSP families.  See
+Hellmann-Feynman and Pulay forces for the PAW-LCAO and ONCVPSP families.  See
 :doc:`guide/pseudopotentials`.
 
 .. automodule:: mandacaru.algorithms.pseudo_forces
@@ -133,7 +133,7 @@ Fourier Filtering
 ~~~~~~~~~~~~~~~~~
 
 Removing from a radial function the wave-vectors the real-space grid cannot
-represent -- the cure for the egg-box, on by default for the PAW families.
+represent -- the cure for the egg-box, on by default for the PAW-LCAO families.
 See :doc:`guide/pseudopotentials`.
 
 .. automodule:: mandacaru.basis.filtering
@@ -147,7 +147,7 @@ Pseudopotentials
 ----------------
 
 The valence-only families selected as basis names -- ``"NCPP"``
-(Troullier-Martins), ``"ONCVPSP"`` (Hamann) and ``"PAW"`` (Bloechl) -- their
+(Troullier-Martins), ``"ONCVPSP"`` (Hamann) and ``"PAW-LCAO"`` (Bloechl) -- their
 registry, generation, library and the pseudo-atomic orbitals.  See
 :doc:`guide/pseudopotentials`.
 
@@ -167,7 +167,7 @@ Families and Registry
 Confined Orbitals
 ~~~~~~~~~~~~~~~~~
 
-The ``energy_shift`` of a PAW basis: the first zeta solved in a smooth
+The ``energy_shift`` of a PAW-LCAO basis: the first zeta solved in a smooth
 confining potential, its cutoff radius fixed by the eigenvalue shift.  See
 :doc:`guide/pseudopotentials`.
 

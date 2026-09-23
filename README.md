@@ -23,9 +23,9 @@
 ```bash
 pip install mandacaru
 
-# PAW datasets (kept in a separate repository because of their size)
+# PAW-LCAO datasets (kept in a separate repository because of their size)
 git clone https://github.com/seixas-research/mandacaru-paw.git
-mandacaru --link-paw mandacaru-paw
+mandacaru --link-paw-lcao mandacaru-paw
 ```
 
 ## LiH with ASE
@@ -74,7 +74,7 @@ for d in distances:
                   magmoms=[1.0, -1.0])
 
     atoms.calc = Mandacaru(method="adapt-vqe",
-                           basis={"name": "PAW",
+                           basis={"name": "PAW-LCAO",
                                   "size": "DZP",
                                   "energy_shift": 0.1},
                            h=0.10,

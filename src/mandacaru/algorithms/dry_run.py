@@ -226,7 +226,7 @@ def _pseudo_basis_count(atoms, family, options):
     report the qubit count of a calculation that will not start.
 
     The label names the filter **always**, filtered or not, and reads the
-    family's own default (``filter`` is on for PAW / UPAW, off for the
+    family's own default (``filter`` is on for PAW-LCAO / UPAW-LCAO, off for the
     norm-conserving families).  Printing it only when it differs from the
     default would make the reader work out each family's default before they
     could tell what basis the estimate describes.
@@ -273,7 +273,7 @@ def count_basis_functions(atoms, basis="HAO"):
     Instantiates the basis family exactly as a run would (so every option that
     changes the function count -- ``size``, polarization, ``n_gaussians`` -- is
     honored) but never samples anything on a grid.  A pseudopotential family
-    (``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW"``) counts its valence pseudo-atomic
+    (``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW-LCAO"``) counts its valence pseudo-atomic
     orbitals; the plane-wave family returns one entry ``("PW", n_plane_waves)``
     since it is not atom-centered.  Returns ``(per_atom, basis_label)``.
     """

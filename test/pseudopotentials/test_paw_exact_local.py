@@ -8,7 +8,7 @@
 
 """The range-separated local potential: exactness, invariance, forces.
 
-PAW keeps only the long-range half of its local channel on the grid -- the
+PAW-LCAO keeps only the long-range half of its local channel on the grid -- the
 potential of a Gaussian ion, which the grid resolves -- and integrates the
 short-range remainder on atom-centered spherical quadratures
 (:mod:`mandacaru.pseudopotentials.local_split`).  The two halves add up to the
@@ -20,7 +20,7 @@ energy the solver reported.
 
 ``PAWIntegrals.exact_local_potential`` is the switch that recovers the old
 all-grid behavior, which is what the comparisons here toggle.  Every
-non-PAW basis is untouched: the hook on
+non-PAW-LCAO basis is untouched: the hook on
 :class:`~mandacaru.core.hamiltonian.MolecularIntegrals` returns ``None``.
 """
 
@@ -43,7 +43,7 @@ from mandacaru.optimizers import Optimizer
 # and 1e-12 costs 15x the wall time here for no change in what is measured.
 LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-8)
 
-SZ = {"name": "PAW", "size": "SZ"}
+SZ = {"name": "PAW-LCAO", "size": "SZ"}
 
 
 @pytest.fixture
@@ -138,10 +138,22 @@ class TestRangeSeparation:
         deviates from ``-Z/r``.  The first is the design's own quantity and is
         ``erfc(6.5/sqrt2) = 7.3e-11`` at the sphere's edge; the second is a
         property of the shipped, decimated library (measured at up to 4.4e-6
-        Hartree near 2 Bohr for oxygen, falling to ~2e-7 by 8 Bohr) and is not
+        Hartree near 2 Bohr for a *non-relativistic* oxygen, falling to ~2e-7
+        by 8 Bohr) and is not
         something the split introduces -- the all-grid form integrates the same
         table.  Both are checked, separately, so a regression in either is
         attributable.
+
+        The bound is 2e-5 rather than 1e-5 because the datasets are
+        scalar-relativistic by default: oxygen measures 1.34e-5 against 4.4e-6
+        for the same dataset generated with ``relativity="none"``, and
+        hydrogen is 7.7e-7 either way.  That factor of three is the
+        ``r**gamma`` cusp of a relativistic s state, which a uniform radial
+        grid does not resolve -- the limitation recorded in
+        :mod:`mandacaru.basis.relativity`.  It was 5.8e-4 until the reference
+        atom was made to finish on the *same* Numerov orbitals the generators
+        pseudize; a hundredfold of this number was the atom and the
+        pseudization disagreeing about where oxygen's 2s sits.
         """
         from scipy.special import erfc
 
@@ -159,7 +171,7 @@ class TestRangeSeparation:
                 assert erfc_tail.max() < 1e-9
                 table = (ls.short_range_potential(dataset, sigma, outside)
                          + erfc_tail)
-                assert np.abs(table).max() < 1e-5
+                assert np.abs(table).max() < 2e-5
 
     def test_the_width_follows_the_grid(self):
         atoms = h2()
@@ -200,7 +212,7 @@ class TestTranslationInvariance:
         This is the point of the whole construction: the integral depends only
         on the separations of the basis functions from the sphere's center, so
         no grid enters it.  The grid-sampled local potential moved by 24-634 meV
-        over the same shifts (water PAW-SZ, h = 0.16-0.25 Angstrom).
+        over the same shifts (water PAW-LCAO-SZ, h = 0.16-0.25 Angstrom).
         """
         h = 0.25
         atoms = water()
@@ -285,7 +297,7 @@ class TestAgreesWithTheGrid:
     def test_fine_grid_limit(self, h, tolerance):
         """Both forms integrate the same potential, so they must converge together.
 
-        Measured on H2 PAW-SZ: ``split - grid`` is -2.35e-4 Hartree at
+        Measured on H2 PAW-LCAO-SZ: ``split - grid`` is -2.35e-4 Hartree at
         h = 0.30 Angstrom, -4.1e-7 at 0.16 and +5.3e-8 at 0.09 -- the grid's own
         error on the short-range part, which is what the quadrature removes.
         """
@@ -393,6 +405,7 @@ def h2o_forces():
             dict(atoms.calc.force_result.details))
 
 
+@pytest.mark.slow
 class TestForces:
     def test_the_gradient_knows_about_the_split(self, h2o_forces):
         _atoms, _forces, _raw, details = h2o_forces

@@ -167,7 +167,7 @@ operator in 4 steps and 9 evaluations. If you override `tol`, keep it tight.
 
 ## Measured: a realistic system
 
-The same comparison on water — H₂O, `basis={"name": "PAW", "size": "SZ"}`,
+The same comparison on water — H₂O, `basis={"name": "PAW-LCAO", "size": "SZ"}`,
 `h=0.25`, `pool="qubit"`, Jordan-Wigner (12 qubits, a 640-operator pool, sector
 dimension 225), ADAPT-VQE to `max_iterations=40`; sector FCI = −492.521982 eV.
 No run reaches `gradient_tolerance` here, so all seven stop on ADAPT's

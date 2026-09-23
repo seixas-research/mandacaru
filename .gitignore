@@ -191,8 +191,8 @@ test/.resource_report.txt
 # External pseudopotential libraries are linked in, never committed
 # (python -m mandacaru.pseudopotentials.link_library).
 src/mandacaru/pseudopotentials/library/oncvpsp
-src/mandacaru/pseudopotentials/library/paw
-src/mandacaru/pseudopotentials/library/upaw
+src/mandacaru/pseudopotentials/library/paw-lcao
+src/mandacaru/pseudopotentials/library/upaw-lcao
 
 # CMake build trees for the C integral backend: generated, never loaded
 # (`_backend._find_library` searches csrc/ and csrc/build, not csrc/cbuild).

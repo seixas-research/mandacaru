@@ -105,7 +105,7 @@ charge. Two things follow automatically:
 * the Hirshfeld reference becomes the **valence** free atom, so the
   stockholder fractions are not weighted by core density that is not on the
   grid to share;
-* for PAW the grid holds the *smooth* density, and the charge inside each
+* for PAW-LCAO the grid holds the *smooth* density, and the charge inside each
   augmentation sphere is added back to its own atom from
   $C_A q_A C_A^\dagger$ — that term is block-diagonal per atom, so the
   decomposition is exact rather than a sharing rule. `AtomicPartition.augmentation`

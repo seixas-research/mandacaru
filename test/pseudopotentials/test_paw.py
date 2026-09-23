@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""The PAW family (experimental): Bloechl's projector augmented-wave method
+"""The PAW-LCAO family (experimental): Bloechl's projector augmented-wave method
 in its frozen-core, linearized one-center form.
 
 Atomic checks (radial, cheap) on freshly generated H, Li and O -- projector
@@ -91,36 +91,49 @@ ONCV = {"H2": {"rhf": -1.044179, "adapt": -1.058561},
 #: The shift is tiny on these s-valence systems -- H2 -1.1 meV (the filtered
 #: function is marginally *better*), LiH +14.1 meV -- because their orbitals
 #: were nearly band-limited already; the oxygen-bearing systems move by
-#: hundreds of meV.  ``basis={"name": "paw", "filter": False}`` reproduces
+#: hundreds of meV.  ``basis={"name": "paw-lcao", "filter": False}`` reproduces
 #: ``PAW_BEFORE_BASIS_FILTER`` exactly.
 #:
 #: These are the values of **both** 2026-09-20 defaults together: the filtered
 #: basis *and* the atom-centered quadrature of the local potential's short-range
 #: part (``PAWIntegrals.exact_local_potential``).  Each alone is pinned below,
 #: so either change can be audited separately.
-PAW = {"H2": {"rhf": -1.095388, "adapt": -1.109147},
-       "LiH": {"rhf": -0.772498, "adapt": -0.780327}}
+#:
+#: Re-measured 2026-09-23, when scalar-relativistic reference atoms and the
+#: nonlinear core correction became the generation defaults and the library
+#: was rebuilt.  H2 moves by ~0.5 mHa, LiH by ~2.6 mHa -- lithium has a 1s
+#: core for the correction to act on and hydrogen does not.
+#:
+#: Re-measured again later the same day, when the shipped hydrogen dataset was
+#: regenerated: it predated ``PAWChannel.norm_correction``, so its stored
+#: overlap correction was the M-weighted norm where the charge belongs
+#: (6.4e-5 for H).  Every number here moves by ~5 uHa, and only through
+#: hydrogen -- lithium's dataset is unchanged.
+PAW = {"H2": {"rhf": -1.094865, "adapt": -1.108616},
+       "LiH": {"rhf": -0.769928, "adapt": -0.777671}}
 #: The filter alone (``exact_local_potential = False``).
 PAW_FILTER_ONLY = {
-    "H2": {"rhf": -1.095435, "adapt": -1.109194},
-    "LiH": {"rhf": -0.772482, "adapt": -0.780311}}
+    "H2": {"rhf": -1.094911, "adapt": -1.108663},
+    "LiH": {"rhf": -0.769909, "adapt": -0.777653}}
 #: The exact local potential alone (``filter=False``).
 PAW_EXACT_LOCAL_ONLY = {
-    "H2": {"rhf": -1.095403, "adapt": -1.109176},
-    "LiH": {"rhf": -0.772959, "adapt": -0.780763}}
+    "H2": {"rhf": -1.094880, "adapt": -1.108646},
+    "LiH": {"rhf": -0.770388, "adapt": -0.778105}}
 #: Neither: ``filter=False`` and ``exact_local_potential = False`` -- the
 #: pre-2026-09-20 model.  Not wrong, just grid-sampled throughout; pinned so
 #: both flips are auditable.
 PAW_BEFORE_BASIS_FILTER = {
-    "H2": {"rhf": -1.095396, "adapt": -1.109168},
-    "LiH": {"rhf": -0.773001, "adapt": -0.780800}}
+    "H2": {"rhf": -1.094874, "adapt": -1.108638},
+    "LiH": {"rhf": -0.770427, "adapt": -0.778141}}
 #: The family's **default basis** since 2026-09-20: the four tables above with
 #: the first zeta *confined* (``energy_shift = 0.1`` eV, GPAW's recipe; H 1s at
 #: 6.68 Bohr, Li 2s at 11.20).  A mild confinement lowers a minimal basis's
 #: energy -- free-atom orbitals are too diffuse for a molecule -- by 19.3 mHa
 #: for H2 and 1.5 mHa for LiH.  ``{"energy_shift": None}`` reproduces ``PAW``.
-PAW_DEFAULT = {"H2": {"rhf": -1.114401, "adapt": -1.128495},
-               "LiH": {"rhf": -0.773186, "adapt": -0.781824}}
+#: Re-measured 2026-09-23 with the rebuilt library (see ``PAW`` above):
+#:   H2  adapt -1.128495 -> -1.127975   LiH adapt -0.781824 -> -0.779022
+PAW_DEFAULT = {"H2": {"rhf": -1.118043, "adapt": -1.127975},
+               "LiH": {"rhf": -0.773118, "adapt": -0.779022}}
 #: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
 PAW_BEFORE_COMPENSATION_ATTRACTION = {
     "H2": {"rhf": -1.053292, "adapt": -1.067402},
@@ -195,6 +208,7 @@ def _total(integrals, n_electrons) -> float:
 CHANNELS = [("H", 0), ("Li", 0), ("O", 0), ("O", 1)]
 
 
+@pytest.mark.slow
 class TestAtomic:
     @pytest.mark.parametrize("symbol, l", CHANNELS)
     def test_projectors_are_dual_to_the_smooth_waves(self, symbol, l):
@@ -277,14 +291,39 @@ class TestAtomic:
     @pytest.mark.parametrize("symbol, l", CHANNELS)
     def test_reconstruction_of_the_all_electron_wave(self, symbol, l):
         """phi = phi~ + sum_i (phi_i - phi~_i) <p_i|phi~> applied to the lowest
-        smooth eigenfunction gives the all-electron orbital everywhere."""
+        smooth eigenfunction gives the all-electron orbital everywhere.
+
+        The s channel is allowed more room, and only because of the reference
+        atom: a relativistic ``l = 0`` wave goes as ``r^gamma`` with
+        ``gamma < 1``, which the uniform radial grid cannot represent, so the
+        all-electron wave being reconstructed *towards* is itself the least
+        accurate thing here.  Isolated on oxygen: 7.4e-6 with
+        ``relativity="none"`` against 1.6e-4 with the shipped
+        scalar-relativistic default, while ``l = 1`` barely moves (6.5e-5 to
+        5.4e-5).  `basis/loggrid.py` is the fix for the cusp and is not wired
+        into generation; until it is, this is the honest bound.
+        """
         c = checks(symbol, l)
         print(f"\n{symbol} l={l}: |phi_rec - phi_AE| = "
               f"{c['reconstruction_error']:.1e} (smooth wave deviates by "
               f"{c['smooth_deviation']:.2e})")
-        assert c["reconstruction_error"] < 1e-4
+        assert c["reconstruction_error"] < (2e-4 if l == 0 else 1e-4)
         assert c["smooth_deviation"] > 1e-2          # the smooth wave differs
         assert c["tail_error"] < 1e-6                # ... only inside r_c
+
+    def test_the_s_channel_reconstruction_is_limited_by_the_cusp(self):
+        """The evidence for the bound above: it is the reference atom, not the
+        PAW transformation, and it is specific to ``l = 0``."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            free = generate_paw("O", relativity="none")
+        free_s = check_paw_channel(free, 0)["reconstruction_error"]
+        free_p = check_paw_channel(free, 1)["reconstruction_error"]
+        scalar_s = checks("O", 0)["reconstruction_error"]
+        scalar_p = checks("O", 1)["reconstruction_error"]
+        assert free_s < 2e-5                      # the transformation is exact
+        assert scalar_s > 5.0 * free_s            # ... the s cusp is not
+        assert scalar_p < 2.0 * free_p            # ... and p is untouched
 
     @pytest.mark.parametrize("symbol, l", CHANNELS)
     def test_logarithmic_derivatives(self, symbol, l):
@@ -303,7 +342,7 @@ class TestAtomic:
         pp = generated("H")
         e1 = pp.channels[0].eigenvalue
         l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, 0, e1,
-                                 pp.channels[0].r_cut, 1.0)
+                                 pp.channels[0].r_cut, 1.0, pp.relativity)
         assert abs(log_derivative_paw(pp, 0, e1) - l_ae) < 1e-5
 
     def test_reference_waves_reconstruct_exactly(self):
@@ -424,17 +463,17 @@ class TestAtomic:
 class TestLibrary:
     def test_shipped_elements(self):
         # The external paw repository (all 92 elements) linked into
-        # library/paw; at least the six generated in-repo must be there.
+        # library/paw-lcao; at least the six generated in-repo must be there.
         shipped = available_elements(paw_library_path())
         if not shipped:
             pytest.skip("external paw repository not linked on this machine")
         assert {"C", "F", "H", "Li", "N", "O"} <= set(shipped)
-        assert "paw" not in available_elements(default_library_path())
+        assert "paw-lcao" not in available_elements(default_library_path())
 
     @pytest.mark.parametrize("symbol", ["H", "Li", "C", "N", "O", "F"])
     def test_shipped_file_loads(self, symbol):
         pp = get_paw(symbol)
-        assert isinstance(pp, PAWDataset) and pp.family == "paw"
+        assert isinstance(pp, PAWDataset) and pp.family == "paw-lcao"
         for l, channel in pp.channels.items():
             assert len(pp.projectors[l]) == 2
             assert np.asarray(pp.coupling[l]).shape == (2, 2)
@@ -459,14 +498,39 @@ class TestLibrary:
             fresh.one_center_energy, rel=1e-6)
         assert shipped.r.size * 4 == pytest.approx(fresh.r.size, abs=4)
 
+    def test_a_dataset_that_stores_the_wrong_norm_says_so(self):
+        """A file written before the charge and the M-weighted norm were
+        distinguished holds the *norm* in its overlap correction -- and that
+        field is read by the compensation charge, the multipole moments and the
+        ionic screening, so it is wrong by the O(c^-2) gap rather than merely
+        stale.  It cannot be repaired on load (the plain overlap is not a
+        function of anything stored), so loading one must warn.
+
+        Hydrogen was regenerated and must stay silent; that is the control
+        which keeps this from passing for the wrong reason.
+        """
+        paw._CACHE.clear()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            get_paw("H")
+        assert not [w for w in caught if "M-weighted" in str(w.message)]
+
+        paw._CACHE.clear()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            get_paw("O")
+        hits = [w for w in caught if "M-weighted" in str(w.message)]
+        assert hits, [str(w.message) for w in caught]
+        assert "regenerate" in str(hits[0].message)
+
     def test_loaders_refuse_the_other_families(self, tmp_path):
-        with pytest.raises(ValueError, match="belongs to family 'paw'"):
+        with pytest.raises(ValueError, match="belongs to family 'paw-lcao'"):
             PSEUDO_FAMILIES["ncpp"].get("H", paw_library_path())
         with pytest.raises(ValueError, match="not 'oncvpsp'"):
             get_oncv("H", paw_library_path())
-        with pytest.raises(ValueError, match="not 'paw'"):
+        with pytest.raises(ValueError, match="not 'paw-lcao'"):
             get_paw("H", default_library_path())
-        with pytest.raises(FileNotFoundError, match="PAW"):
+        with pytest.raises(FileNotFoundError, match="PAW-LCAO"):
             get_paw("Xe", directory=str(tmp_path))
 
 
@@ -482,7 +546,7 @@ class TestIO:
         assert detect_format(path) == fmt
         back = load_pseudopotential(path)
         assert isinstance(back, PAWDataset)
-        assert back.family == "paw" and back.atom is None
+        assert back.family == "paw-lcao" and back.atom is None
         assert back.symbol == "O" and back.valence_charge == 6.0
         for name in ("r_cut_local", "local_shift", "compensation_radius",
                      "compensation_charge", "hartree_screening",
@@ -525,29 +589,29 @@ class TestIO:
     def test_a_plain_record_named_paw_keeps_the_tm_layout(self, tmp_path):
         import copy
         pp = copy.copy(get_pseudopotential("H"))
-        pp.family = "paw"
+        pp.family = "paw-lcao"
         for fmt in ("json", "parquet"):
             back = load_pseudopotential(
                 save_pseudopotential(pp, tmp_path / f"H.{fmt}"))
             assert type(back).__name__ == "PseudoPotential"
-            assert back.family == "paw"
+            assert back.family == "paw-lcao"
 
 
 class TestResolution:
-    @pytest.mark.parametrize("name", ["paw", "PAW", " Paw "])
+    @pytest.mark.parametrize("name", ["paw-lcao", "PAW-LCAO", " Paw-LCAO "])
     def test_names(self, name):
-        assert resolve_family(name) is PSEUDO_FAMILIES["paw"]
-        assert lookup_family(name) is PSEUDO_FAMILIES["paw"]
-        assert "paw" in family_names()
+        assert resolve_family(name) is PSEUDO_FAMILIES["paw-lcao"]
+        assert lookup_family(name) is PSEUDO_FAMILIES["paw-lcao"]
+        assert "paw-lcao" in family_names()
 
     def test_unknown_family_lists_all_three(self):
-        with pytest.raises(ValueError, match="'ncpp'.*'oncvpsp'.*'paw'"):
+        with pytest.raises(ValueError, match="'ncpp'.*'oncvpsp'.*'paw-lcao'"):
             resolve_family("gth")
 
     def test_spec_and_basis_selection(self):
-        spec = PSEUDO_FAMILIES["paw"]
+        spec = PSEUDO_FAMILIES["paw-lcao"]
         assert spec.norm_conserving is False and spec.aliases == ()
-        assert spec.label == "PAW"
+        assert spec.label == "PAW-LCAO"
         assert spec.options == ("size", "split_norm", "tail_norm",
                                 "directory", "filter", "projector_basis",
                                 "energy_shift", "confinement", "polarization")
@@ -563,38 +627,38 @@ class TestResolution:
             **defaults, "energy_shift": None}
         assert spec.resolved_options({"size": "DZ"}) == {**defaults,
                                                          "size": "DZ"}
-        assert spec.get("H").family == "paw"
+        assert spec.get("H").family == "paw-lcao"
         assert spec.generate is not None and spec.build is paw.build_paw
-        name, options = resolve_basis({"name": "PAW", "size": "DZ",
+        name, options = resolve_basis({"name": "PAW-LCAO", "size": "DZ",
                                        "projector_basis": "raw"})
         family, options = resolve_pseudo_basis(name, options, ["H"])
         assert family is spec
         assert options == {"size": "DZ", "projector_basis": "raw"}
         with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
-            resolve_pseudo_basis("per-element", {"H": "PAW", "Li": "6-31G(d)"},
+            resolve_pseudo_basis("per-element", {"H": "PAW-LCAO", "Li": "6-31G(d)"},
                                  ["Li", "H"])
 
     @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
     def test_drivers_accept_the_family(self, method):
-        assert Mandacaru(method=method, basis="paw").basis == "paw"
-        sized = {"name": "paw", "size": "DZ"}
+        assert Mandacaru(method=method, basis="paw-lcao").basis == "paw-lcao"
+        sized = {"name": "paw-lcao", "size": "DZ"}
         assert Mandacaru(method=method, basis=sized).basis == sized
         with pytest.raises(ValueError, match="frozen_core is redundant"):
-            Mandacaru(method=method, basis="PAW", frozen_core=True)
+            Mandacaru(method=method, basis="PAW-LCAO", frozen_core=True)
 
     def test_dry_run(self):
-        estimate = estimate_qubits(h2(), basis="paw")
+        estimate = estimate_qubits(h2(), basis="paw-lcao")
         assert estimate.n_qubits == 4 and estimate.num_particles == (1, 1)
-        assert any("PAW family" in note for note in estimate.notes)
-        assert estimate_qubits(lih(), basis={"name": "paw"}).n_qubits == 4
-        dz = estimate_qubits(h2(), basis={"name": "PAW", "size": "DZ"})
+        assert any("PAW-LCAO family" in note for note in estimate.notes)
+        assert estimate_qubits(lih(), basis={"name": "paw-lcao"}).n_qubits == 4
+        dz = estimate_qubits(h2(), basis={"name": "PAW-LCAO", "size": "DZ"})
         assert dz.n_qubits == 8
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw",
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw-lcao",
                                h=H2_H, dry_run=True)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4
-        assert Mandacaru(method="vqe", basis={"name": "PAW", "size": "DZ"},
+        assert Mandacaru(method="vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
                          h=LIH_H).dry_run(lih()).n_qubits == 8
 
 
@@ -604,9 +668,9 @@ class TestResolution:
 
 class TestOverlap:
     def test_augmented_overlap_on_h2(self):
-        _H, _p, n_orb, _pr, context = _build("H2", "paw")
+        _H, _p, n_orb, _pr, context = _build("H2", "paw-lcao")
         ints = context["integrals"]
-        assert isinstance(ints, PAWIntegrals) and context["family"] == "paw"
+        assert isinstance(ints, PAWIntegrals) and context["family"] == "paw-lcao"
         assert n_orb == 2 and len(ints.kb_projectors) == 4
         S, S_bare = ints.overlap(), ints.bare_overlap()
         w = np.linalg.eigvalsh(S)
@@ -641,7 +705,7 @@ class TestOverlap:
         the unfiltered first zeta.  The filtered case is checked below --
         the quadrature is still exact, it is the function that moved.
         """
-        _H, _p, _n, _pr, context = _build("H2", {"name": "paw",
+        _H, _p, _n, _pr, context = _build("H2", {"name": "paw-lcao",
                                                  "filter": False})
         ints = context["integrals"]
         pp = get_paw("H")
@@ -681,7 +745,7 @@ class TestOverlap:
         grid-sampled projection was off by 0.7-3x, which is what this number
         has to stay clear of.
         """
-        ints = _build("H2", "paw")[4]["integrals"]          # default: filtered
+        ints = _build("H2", "paw-lcao")[4]["integrals"]          # default: filtered
         pp = get_paw("H")
         B = np.asarray(pp.channels[0].vanderbilt)
         C = ints.projections()
@@ -692,8 +756,8 @@ class TestOverlap:
             assert np.abs(C[atom, cols].imag).max() < 1e-12
 
     def test_projector_basis_does_not_change_the_energy(self):
-        raw = _build("H2", {"name": "paw", "projector_basis": "raw"})
-        dual = _build("H2", {"name": "paw", "projector_basis": "dual"})
+        raw = _build("H2", {"name": "paw-lcao", "projector_basis": "raw"})
+        dual = _build("H2", {"name": "paw-lcao", "projector_basis": "dual"})
         e_raw = _total(raw[4]["integrals"], 2)
         e_dual = _total(dual[4]["integrals"], 2)
         assert e_raw == pytest.approx(e_dual, abs=1e-8)
@@ -701,7 +765,7 @@ class TestOverlap:
         assert raw[4]["integrals"].kb_projectors[0].projector_basis == "raw"
 
     def test_augmented_two_body_tensor(self):
-        _H, _p, _n, _pr, context = _build("H2", "paw")
+        _H, _p, _n, _pr, context = _build("H2", "paw-lcao")
         ints = context["integrals"]
         aug = ints.two_body_augmentation()
         assert aug.shape == (2, 2, 2, 2) and np.abs(aug).max() > 1e-3
@@ -727,7 +791,7 @@ class TestOverlap:
 class TestMolecular:
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
     def test_rhf_and_fci_against_the_other_families(self, name):
-        H, particles, n_orb, _profile, context = _build(name, "paw")
+        H, particles, n_orb, _profile, context = _build(name, "paw-lcao")
         ints = context["integrals"]
         assert n_orb == 2 and particles == (1, 1)
         assert len(ints.kb_projectors) == 4
@@ -736,8 +800,8 @@ class TestMolecular:
         print(f"\n{name}: PAW RHF {e_rhf * HARTREE_TO_EV:.4f} eV, FCI "
               f"{e_fci * HARTREE_TO_EV:.4f} eV  ({e_rhf:.6f} / {e_fci:.6f} Ha; "
               f"ONCV RHF {ONCV[name]['rhf']:.6f}, TM RHF {TM[name]['rhf']:.6f}; "
-              f"PAW - ONCV = {(e_rhf - ONCV[name]['rhf']) * HARTREE_TO_EV:+.3f} eV, "
-              f"PAW - TM = {(e_rhf - TM[name]['rhf']) * HARTREE_TO_EV:+.3f} eV)")
+              f"PAW-LCAO - ONCV = {(e_rhf - ONCV[name]['rhf']) * HARTREE_TO_EV:+.3f} eV, "
+              f"PAW-LCAO - TM = {(e_rhf - TM[name]['rhf']) * HARTREE_TO_EV:+.3f} eV)")
         assert np.isfinite(e_rhf) and np.isfinite(e_fci)
         assert e_fci <= e_rhf + 1e-9
         assert abs(e_rhf - ONCV[name]["rhf"]) < FAMILY_TOL
@@ -750,7 +814,7 @@ class TestMolecular:
         (False, False, "PAW_BEFORE_BASIS_FILTER"),
         (True, False, "PAW_FILTER_ONLY"),
         (False, True, "PAW_EXACT_LOCAL_ONLY"),
-        (True, True, "PAW"),
+        (True, True, "PAW"),          # the dict above, not the basis name
     ])
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
     def test_each_default_is_separately_auditable(self, name, filtered,
@@ -766,7 +830,7 @@ class TestMolecular:
         written at, so a switch that stopped working would fail here.
         """
         monkeypatch.setattr(PAWIntegrals, "exact_local_potential", exact_local)
-        H, _p, _n, _pr, context = _build(name, {"name": "paw",
+        H, _p, _n, _pr, context = _build(name, {"name": "paw-lcao",
                                                 "filter": filtered})
         assert (context["filter_cutoff"] is None) == (not filtered)
         e_rhf = _total(context["integrals"], context["n_electrons"])
@@ -787,7 +851,7 @@ class TestMolecular:
     def test_adapt_vqe(self, name):
         factory, h = SYSTEMS[name]
         atoms = factory()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw", h=h,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw-lcao", h=h,
                                pool="qeb", max_iterations=4,
                                profile=False)
         with warnings.catch_warnings():
@@ -801,7 +865,7 @@ class TestMolecular:
         assert atoms.calc.n_qubits == 4
         assert result.energy_unit == "eV"
         assert np.isfinite(result.optimal_energy)
-        # Through the calculator with `basis="paw"`: the family's default
+        # Through the calculator with `basis="paw-lcao"`: the family's default
         # basis, confined since 2026-09-20.
         assert energy == pytest.approx(PAW_DEFAULT[name]["adapt"], abs=1e-5)
         assert energy <= PAW_DEFAULT[name]["rhf"] + PIN_TOL
@@ -812,10 +876,10 @@ class TestMolecular:
 
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
     def test_hardness_at_a_quarter_angstrom(self, name):
-        ints = _build(name, "paw", h=0.25)[4]["integrals"]
+        ints = _build(name, "paw-lcao", h=0.25)[4]["integrals"]
         basis = ints.resolution_ratios
         projectors = ints.kb_resolution_ratios
-        print(f"\n{name} (h=0.25 A): PAW basis T_grid/T_exact = "
+        print(f"\n{name} (h=0.25 A): PAW-LCAO basis T_grid/T_exact = "
               f"{np.round(basis, 3)}, projector norm ratios = "
               f"{np.round(projectors, 3)}")
         assert np.all((basis > 0.75) & (basis < 1.25))
@@ -825,15 +889,15 @@ class TestMolecular:
     def test_lih_is_stable_against_the_grid(self):
         """The on-site projections being exact, the energy drifts smoothly
         with the grid (egg-box) instead of collapsing between nodes."""
-        e30 = _total(_build("LiH", "paw", h=0.30)[4]["integrals"], 2)
-        e25 = _total(_build("LiH", "paw", h=0.25)[4]["integrals"], 2)
+        e30 = _total(_build("LiH", "paw-lcao", h=0.30)[4]["integrals"], 2)
+        e25 = _total(_build("LiH", "paw-lcao", h=0.25)[4]["integrals"], 2)
         print(f"\nLiH PAW RHF: h=0.30 {e30:.6f}, h=0.25 {e25:.6f} Ha")
         assert abs(e25 - e30) < 0.02
         assert abs(e25 - ONCV["LiH"]["rhf"]) < FAMILY_TOL
 
     def test_size_hierarchy_is_variational(self):
-        sz = _build("H2", "paw")[4]["integrals"]
-        dz = _build("H2", {"name": "paw", "size": "DZ"})
+        sz = _build("H2", "paw-lcao")[4]["integrals"]
+        dz = _build("H2", {"name": "paw-lcao", "size": "DZ"})
         ints = dz[4]["integrals"]
         assert dz[2] == 4 and len(ints.kb_projectors) == 4
         e_sz = _total(sz, 2)
@@ -844,7 +908,7 @@ class TestMolecular:
 
     def test_first_zeta_is_the_smooth_partial_wave(self):
         """Unfiltered, the first zeta *is* the dataset's own partial wave."""
-        _H, _p, _n, _pr, context = _build("H2", {"name": "paw",
+        _H, _p, _n, _pr, context = _build("H2", {"name": "paw-lcao",
                                                  "filter": False})
         fn = context["integrals"].basis[0]
         pp = get_paw("H")
@@ -865,7 +929,7 @@ class TestMolecular:
         """
         from mandacaru.basis.filtering import filter_cutoff, filter_radial
 
-        context = _build("H2", "paw")[4]                    # default: filtered
+        context = _build("H2", "paw-lcao")[4]                    # default: filtered
         fn = context["integrals"].basis[0]
         assert context["filter_cutoff"] == pytest.approx(
             filter_cutoff(True, max(context["integrals"].grid.dx,

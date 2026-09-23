@@ -8,7 +8,7 @@
 
 """H2 geometry relaxation on IBM Quantum hardware (ADAPT-VQE, fermionic pool).
 
-PAW pseudopotentials with the parity mapping and the two-qubit reduction put H2
+PAW-LCAO pseudopotentials with the parity mapping and the two-qubit reduction put H2
 on 2 qubits.  At each geometry the ansatz is optimized locally; the optimized
 state is then measured on the processor -- one Estimator job per geometry --
 and both the energy and the forces (from the measured reduced density
@@ -64,7 +64,7 @@ if HARDWARE:
                               estimator_options=options)
 
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="PAW",
+                       basis="PAW-LCAO",
                        h=0.20,
                        pool="fermionic",
                        mapping="parity_reduced",

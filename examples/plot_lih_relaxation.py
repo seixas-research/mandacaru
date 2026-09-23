@@ -40,7 +40,7 @@ plt.plot(d_vasp, e_vasp - e_min_vasp, "o-", color="gray", ms=4,
          label="VASP, PBE (plane waves)")
 plt.plot(d_steps, e_steps, "--", color="tab:red", lw=0.8)
 plt.scatter(d_steps, e_steps, c=np.arange(len(steps)), cmap="autumn", zorder=3,
-            edgecolors="k", label="Mandacaru BFGS steps (ADAPT-VQE, PAW-DZP)")
+            edgecolors="k", label="Mandacaru BFGS steps (ADAPT-VQE, PAW-LCAO-DZP)")
 labeled = None                  # label steps that moved, not the converged cluster
 for i, (d, e) in enumerate(zip(d_steps, e_steps)):
     if labeled is None or abs(d - labeled) > 0.015 or i == len(steps) - 1:

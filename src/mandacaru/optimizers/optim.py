@@ -59,7 +59,7 @@ class OptimizeResult:
 NAMED_OPTIMIZERS = ("SPSA", "COBYLA", "Nelder-Mead", "SLSQP",
                     "BFGS", "L-BFGS", "NLCG-PR")
 
-#: Default method everywhere (drivers included).  Measured on H2O/PAW-SZ with
+#: Default method everywhere (drivers included).  Measured on H2O/PAW-LCAO-SZ with
 #: the qubit pool, where it reaches the same energy on the same circuit as
 #: every other method at **one to two orders of magnitude fewer steps and
 #: evaluations**, and was one of only two that certified convergence at every

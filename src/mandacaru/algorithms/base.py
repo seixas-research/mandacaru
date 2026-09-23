@@ -296,7 +296,7 @@ class VariationalDriver(Calculator):
         self.spin = bool(spin)
         self.frozen_core = frozen_core
         self.frozen_orbitals = frozen_orbitals
-        # A pseudopotential family is a basis name (basis="PAW", ...); its
+        # A pseudopotential family is a basis name (basis="PAW-LCAO", ...); its
         # options are validated here so a typo fails at construction, not
         # after the grid.  It replaces the core + the -Z/r singularity with a
         # smooth valence-only problem and subsumes the frozen core.
@@ -795,6 +795,13 @@ class VariationalDriver(Calculator):
                 options = dict(spec or {})
         pool = getattr(getattr(self, "pool", None), "name", None) \
             or getattr(self, "_pool_spec", None)
+        # How the datasets were *generated* -- scalar-relativistic, GGA, with
+        # a core correction -- is recorded on the datasets themselves, not in
+        # the basis options, so a run that merely loads the shipped library
+        # still cites what produced it.
+        integrals = context.get("integrals")
+        datasets = (getattr(integrals, "pseudopotentials", None)
+                    or getattr(integrals, "datasets", None) or ())
         return {"method": self.citation_method,
                 "pool": pool if isinstance(pool, str) else None,
                 "mapping": self.mapping,
@@ -810,6 +817,7 @@ class VariationalDriver(Calculator):
                 "prune": bool(getattr(self, "prune", False)),
                 "has_geometry": self.atoms is not None,
                 "built_basis": built,
+                "datasets": tuple(datasets),
                 "extras": tuple(sorted(self._citation_extras))}
 
     def citation_keys(self) -> list:
@@ -1380,7 +1388,7 @@ class VariationalDriver(Calculator):
             self.results["free_energy"] = float("nan")
             return
 
-        require_runnable(self.device)     # e.g. 'ibm-quantum' is not runnable yet
+        require_runnable(self.device)     # refuses a reserved (non-runnable) entry
         self._wall_start = _perf()        # wall clock spans integration + run
 
         if not self._built_from_hamiltonian:

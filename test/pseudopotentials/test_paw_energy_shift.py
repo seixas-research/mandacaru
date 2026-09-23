@@ -6,9 +6,9 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""The ``energy_shift`` of a PAW basis: confined pseudo-atomic orbitals.
+"""The ``energy_shift`` of a PAW-LCAO basis: confined pseudo-atomic orbitals.
 
-``basis={"name": "PAW", "size": "DZP", "energy_shift": 0.1}`` replaces the
+``basis={"name": "PAW-LCAO", "size": "DZP", "energy_shift": 0.1}`` replaces the
 free-atom first zeta by the orbital of the atom in GPAW's smooth confining
 potential, with the cutoff radius fixed by how far (in eV) the eigenvalue may
 rise.  These tests pin the option's contract, the radial solver, the defaults
@@ -41,7 +41,7 @@ def _library_present() -> bool:
 
 
 needs_library = pytest.mark.skipif(not _library_present(),
-                                   reason="the PAW library is not linked")
+                                   reason="the PAW-LCAO library is not linked")
 
 
 def h2(distance=0.74, cell=8.0):
@@ -175,6 +175,27 @@ class TestBasis:
             assert np.max(np.abs(function.radial(beyond))) < 1e-6
 
 
+#: H2 through the PAW-LCAO family, h = 0.25 Angstrom, fermionic pool.
+#: Re-measured 2026-09-23, when scalar-relativistic reference atoms and the
+#: nonlinear core correction became the generation defaults and the library
+#: was rebuilt:  free -30.242543 -> -30.228345, confined -30.709314 ->
+#: -30.695169.  The *gain* from confining, 0.4668 eV, is what this file is
+#: really about and it moved by under a milli-electronvolt.
+#:
+#: Re-measured again when the shipped hydrogen dataset was regenerated (it
+#: predated ``PAWChannel.norm_correction``): free -> -30.228191, confined ->
+#: -30.695442.  The gain becomes 0.4673 eV -- still under a milli-electronvolt
+#: of movement, which is the point.
+UNCONFINED_EV = -30.228191
+CONFINED_EV = -30.695442
+#: The same molecule in the DZP basis with a Gaussian polarization shell,
+#: 20 qubits.  Re-measured in the same rebuild: -33.374833 -> -33.360087.
+DZP_GAUSSIAN_EV = -33.360024
+#: The same, with the confinement switched off (orbital polarization).
+#: -32.884195 -> -32.869555 in the same rebuild.
+DZP_UNCONFINED_EV = -32.869439
+
+
 @needs_library
 class TestMolecule:
     def _energy(self, basis, **kwargs):
@@ -188,34 +209,35 @@ class TestMolecule:
         from mandacaru.pseudopotentials.confinement import DEFAULT_ENERGY_SHIFT
 
         assert DEFAULT_ENERGY_SHIFT == 0.1
-        default, _ = self._energy({"name": "PAW"})
-        explicit, _ = self._energy({"name": "PAW", "energy_shift": 0.1})
+        default, _ = self._energy({"name": "PAW-LCAO"})
+        explicit, _ = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})
         assert default == explicit
 
     @pytest.mark.parametrize("off", [None, False, 0])
     def test_it_can_be_switched_off(self, off):
-        energy, atoms = self._energy({"name": "PAW", "energy_shift": off})
-        assert energy == pytest.approx(-30.242543, abs=2e-5)
+        energy, atoms = self._energy({"name": "PAW-LCAO", "energy_shift": off})
+        assert energy == pytest.approx(UNCONFINED_EV, abs=2e-5)
         assert atoms.calc.solver._gradient_context["confinement"] == {}
 
     def test_confinement_improves_the_minimal_basis(self):
         # A free-atom orbital is too diffuse for a molecule; a mild confinement
         # contracts it, and the variational energy drops.  Pinned so that a
         # change to the confining potential or the root search is noticed.
-        free, _ = self._energy({"name": "PAW", "energy_shift": None})
-        confined, _ = self._energy({"name": "PAW", "energy_shift": 0.1})
-        assert free == pytest.approx(-30.242543, abs=2e-5)
-        assert confined == pytest.approx(-30.709314, abs=2e-5)
+        free, _ = self._energy({"name": "PAW-LCAO", "energy_shift": None})
+        confined, _ = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})
+        assert free == pytest.approx(UNCONFINED_EV, abs=2e-5)
+        assert confined == pytest.approx(CONFINED_EV, abs=2e-5)
+        assert free - confined == pytest.approx(0.4673, abs=1e-3)
 
     def test_the_context_reports_the_radii(self):
-        _, atoms = self._energy({"name": "PAW", "energy_shift": 0.1})
+        _, atoms = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})
         context = atoms.calc.solver._gradient_context
         orbital = context["confinement"]["H"][0]
         assert orbital.r_c == pytest.approx(6.68, abs=0.05)
         assert context["options"]["energy_shift"] == 0.1
 
     def test_forces_differentiate_the_confined_energy(self):
-        basis = {"name": "PAW", "energy_shift": 0.1}
+        basis = {"name": "PAW-LCAO", "energy_shift": 0.1}
         _, atoms = self._energy(basis, project_translation=False)
         analytic = atoms.get_forces()[1, 2]
         step = 0.005
@@ -240,7 +262,7 @@ class TestPlumbing:
     def test_a_bad_value_is_refused_by_the_constructor(self):
         with pytest.raises(ValueError, match="energy_shift"):
             Mandacaru(method="adapt-vqe",
-                      basis={"name": "PAW", "energy_shift": -1})
+                      basis={"name": "PAW-LCAO", "energy_shift": -1})
 
     def test_norm_conserving_families_do_not_have_it(self):
         with pytest.raises(ValueError, match="unknown option.*energy_shift"):
@@ -249,11 +271,11 @@ class TestPlumbing:
 
     def test_upaw_has_it(self):
         Mandacaru(method="adapt-vqe",
-                  basis={"name": "UPAW", "energy_shift": 0.1})
+                  basis={"name": "UPAW-LCAO", "energy_shift": 0.1})
 
     def test_the_dry_run_names_it(self):
         calc = Mandacaru(method="adapt-vqe",
-                         basis={"name": "PAW", "size": "DZP",
+                         basis={"name": "PAW-LCAO", "size": "DZP",
                                 "energy_shift": 0.1})
         estimate = calc.dry_run(h2())
         assert "energy_shift 0.1 eV" in estimate.basis
@@ -263,8 +285,8 @@ class TestPlumbing:
         # An element left out of the mapping gets the family's default:
         # leaving an option out never means turning it off.
         calc = Mandacaru(method="adapt-vqe",
-                         basis={"O": {"name": "PAW", "energy_shift": 0.2},
-                                "H": "PAW"})
+                         basis={"O": {"name": "PAW-LCAO", "energy_shift": 0.2},
+                                "H": "PAW-LCAO"})
         water = Atoms("OH2", positions=[[4, 4, 4], [4, 4.77, 4.59],
                                         [4, 3.23, 4.59]], cell=[8.0] * 3)
         assert "energy_shift {*: 0.1, O: 0.2} eV" in calc.dry_run(water).basis
@@ -395,11 +417,11 @@ class TestNewOptionsEndToEnd:
         return atoms.get_potential_energy(), atoms.calc
 
     def test_gaussian_polarization_runs_and_is_reported(self):
-        energy, calc = self._energy({"name": "PAW", "size": "DZP",
+        energy, calc = self._energy({"name": "PAW-LCAO", "size": "DZP",
                                      "energy_shift": 0.1,
                                      "polarization": "gaussian"})
         assert calc.n_qubits == 20
-        assert energy == pytest.approx(-33.374833, abs=5e-5)
+        assert energy == pytest.approx(DZP_GAUSSIAN_EV, abs=5e-5)
         shell = calc.solver._gradient_context["polarization"]["H"]
         assert shell.l == 1 and shell.r_char == pytest.approx(1.396, abs=0.005)
 
@@ -407,12 +429,12 @@ class TestNewOptionsEndToEnd:
         # Asked for explicitly with the confinement switched off: refused.
         with pytest.raises(ValueError, match="needs an energy_shift"):
             Mandacaru(method="adapt-vqe",
-                      basis={"name": "PAW", "size": "DZP",
+                      basis={"name": "PAW-LCAO", "size": "DZP",
                              "energy_shift": None,
                              "polarization": "gaussian"})
         # With the family's default confinement it needs nothing else.
         Mandacaru(method="adapt-vqe",
-                  basis={"name": "PAW", "size": "DZP",
+                  basis={"name": "PAW-LCAO", "size": "DZP",
                          "polarization": "gaussian"})
 
     def test_the_polarization_shell_follows_the_confinement(self):
@@ -426,13 +448,14 @@ class TestNewOptionsEndToEnd:
         assert resolve_polarization(None, {"O": 0.2}, "H") == "orbital"
         # Written, it is what was written.
         assert resolve_polarization("orbital", 0.1) == "orbital"
-        default = self._energy({"name": "PAW", "size": "DZP"})[0]
-        gaussian = self._energy({"name": "PAW", "size": "DZP",
+        default = self._energy({"name": "PAW-LCAO", "size": "DZP"})[0]
+        gaussian = self._energy({"name": "PAW-LCAO", "size": "DZP",
                                  "polarization": "gaussian"})[0]
-        assert default == gaussian == pytest.approx(-33.374833, abs=5e-5)
-        unconfined = self._energy({"name": "PAW", "size": "DZP",
+        assert default == gaussian == pytest.approx(DZP_GAUSSIAN_EV,
+                                                    abs=5e-5)
+        unconfined = self._energy({"name": "PAW-LCAO", "size": "DZP",
                                    "energy_shift": None})[0]
-        assert unconfined == pytest.approx(-32.884195, abs=5e-5)
+        assert unconfined == pytest.approx(DZP_UNCONFINED_EV, abs=5e-5)
 
     def test_the_confinement_is_an_option_with_gpaws_default(self):
         from mandacaru.pseudopotentials.confinement import validate_confinement
@@ -444,17 +467,17 @@ class TestNewOptionsEndToEnd:
         for bad in ((12.0, 1.5), (-1.0, 0.6), "gpaw", (12.0,)):
             with pytest.raises(ValueError, match="confinement"):
                 Mandacaru(method="adapt-vqe",
-                          basis={"name": "PAW", "confinement": bad})
+                          basis={"name": "PAW-LCAO", "confinement": bad})
 
     def test_both_split_options_are_refused_together(self):
         with pytest.raises(ValueError, match="not both"):
             Mandacaru(method="adapt-vqe",
-                      basis={"name": "PAW", "size": "DZ", "tail_norm": 0.16,
+                      basis={"name": "PAW-LCAO", "size": "DZ", "tail_norm": 0.16,
                              "split_norm": 0.15})
 
     def test_the_dry_run_names_the_gaussian_shell(self):
         calc = Mandacaru(method="adapt-vqe",
-                         basis={"name": "PAW", "size": "DZP",
+                         basis={"name": "PAW-LCAO", "size": "DZP",
                                 "energy_shift": 0.1,
                                 "polarization": "gaussian"})
         assert "gaussian polarization" in calc.dry_run(h2()).basis

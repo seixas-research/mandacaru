@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""LiH geometry relaxation with ADAPT-VQE forces (PAW pseudopotentials, DZP basis).
+"""LiH geometry relaxation with ADAPT-VQE forces (PAW-LCAO pseudopotentials, DZP basis).
 
 Starts at 2.0 Angstrom, relaxes with ASE's BFGS and writes the final geometry
 to examples/data/relax.xyz.
@@ -30,7 +30,7 @@ atoms = Atoms("LiH",
 atoms.center()
 
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis={"name": "PAW", "size": "SZ"},
+                       basis={"name": "PAW-LCAO", "size": "SZ"},
                        h=0.10,
                        pool="ceo",
                        mapping="jordan_wigner",

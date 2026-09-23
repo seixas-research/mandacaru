@@ -10,12 +10,12 @@ r"""Running the variational solvers with pseudopotentials.
 
 A pseudopotential family is selected **as a basis**.  ``basis="NCPP"``
 (norm-conserving Troullier-Martins; aliases ``"TM"`` / ``"NCPP-TM"``),
-``basis="ONCVPSP"`` (alias ``"ONCV"``) or ``basis="PAW"`` switches any solver
+``basis="ONCVPSP"`` (alias ``"ONCV"``) or ``basis="PAW-LCAO"`` switches any solver
 from an all-electron calculation to a **valence-only** one:
 
 * the core electrons are removed (oxygen keeps 6 of its 8);
 * the basis becomes the smooth pseudo-atomic orbitals of that family, with the
-  usual size hierarchy as options (``{"name": "PAW", "size": "DZP"}``);
+  usual size hierarchy as options (``{"name": "PAW-LCAO", "size": "DZP"}``);
 * the singular :math:`-Z/r` external potential is replaced by a bounded local
   channel plus the family's projectors.
 
@@ -26,17 +26,20 @@ from an all-electron calculation to a **valence-only** one:
                            h=0.15)
 
 The bundled NCPP library covers every element up to uranium and is loaded
-automatically; the ONCVPSP and PAW datasets live in the ``mandacaru-oncvpsp`` /
+automatically; the ONCVPSP and PAW-LCAO datasets live in the ``mandacaru-oncvpsp`` /
 ``mandacaru-paw`` repositories and are linked in with
 ``python -m mandacaru.pseudopotentials.link_library``.
 
 What this script measures
 -------------------------
 1. the library and the size reduction it buys;
-2. H2 end to end, all-electron vs the three pseudopotential families;
-3. the **isolated-atom force test** -- the exact answer is zero, and it is the
+2. the five generation-time options ONCVPSP and PAW-LCAO share --
+   ``xc``, ``relativity``, ``nlcc`` and ``extra_l`` -- on a single freshly
+   generated oxygen dataset (a few seconds, not a library rebuild);
+3. H2 end to end, all-electron vs the three pseudopotential families;
+4. the **isolated-atom force test** -- the exact answer is zero, and it is the
    sharpest probe of the grid pathology that motivated pseudopotentials;
-4. H2O with a valence-only Hamiltonian.
+5. H2O with a valence-only Hamiltonian.
 
 Output: ``examples/data/pseudopotential_forces.png``.
 """
@@ -53,7 +56,7 @@ from mandacaru.algorithms import Mandacaru
 from mandacaru.integrals import Grid
 from mandacaru.pseudopotentials import family_names
 from mandacaru.pseudopotentials.io import available_elements, get_pseudopotential
-from mandacaru.pseudopotentials.oncv import oncv_library_path
+from mandacaru.pseudopotentials.oncv import generate_oncv, oncv_library_path
 from mandacaru.pseudopotentials.paw import paw_library_path
 from mandacaru.units import BOHR_TO_ANGSTROM
 
@@ -73,7 +76,7 @@ elements = available_elements()
 print(f"families: {', '.join(family_names())}")
 print(f"NCPP: {len(elements)} elements: {' '.join(elements)}")
 print(f"ONCVPSP: {len(available_elements(oncv_library_path()))} elements linked, "
-      f"PAW: {len(available_elements(paw_library_path()))} elements linked\n")
+      f"PAW-LCAO: {len(available_elements(paw_library_path()))} elements linked\n")
 print(f"{'atom':>5}{'Z':>4}{'Z_ion':>7}{'core removed':>15}{'V_loc(0) Ha':>14}")
 for symbol in ("H", "C", "O", "Si", "Cl", "Fe"):
     pp = get_pseudopotential(symbol)
@@ -82,20 +85,65 @@ for symbol in ("H", "C", "O", "Si", "Cl", "Fe"):
           f"{removed:>15.0f}{pp.v_local[0]:>14.2f}")
 
 # --------------------------------------------------------------------------- #
-# 2. H2 end to end.
+# 2. Generation-time options: xc, relativity, nlcc, extra_l.
 # --------------------------------------------------------------------------- #
 
 print(f"\n{RULE}")
-print("2. H2: all-electron vs the three pseudopotential families")
+print("2. Five generation-time options shared by ONCVPSP and PAW-LCAO")
+print(RULE)
+print("These choose what the reference atom is and what the channel set")
+print("covers; they change the dataset, never a calculation that later reads")
+print("it.  Generating one atom is a few seconds, not the ~92-element library.")
+
+oxygen_lda = generate_oncv("O")                              # the defaults
+oxygen_bare = generate_oncv("O", relativity="none", nlcc=False)
+oxygen_dirac = generate_oncv("O", relativity="dirac")
+oxygen_pbe = generate_oncv("O", xc="pbe")
+oxygen_extra = generate_oncv("O", extra_l=1)
+
+print(f"\n{'variant':>34}{'channels':>11}{'V_loc(0) Ha':>14}")
+for label, pp in (("default: scalar + NLCC on", oxygen_lda),
+                  ("relativity='none', nlcc=False", oxygen_bare),
+                  ("relativity='dirac'", oxygen_dirac),
+                  ("xc='pbe'", oxygen_pbe),
+                  ("extra_l=1", oxygen_extra)):
+    channels = ",".join(f"l{l}" for l in sorted(pp.channels))
+    print(f"{label:>34}{channels:>11}{pp.v_local[0]:>14.3f}")
+
+so = oxygen_dirac.spin_orbit[1]["coupling"]                  # l=1 (p) block
+split = oxygen_dirac.atom.spin_orbit_splitting(2, 1)
+print("\nrelativity='dirac' additionally carries a spin-orbit term.  What it")
+print("is worth physically is the reference atom's 2p splitting,")
+print(f"eps(2p3/2) - eps(2p1/2) = {split * 27.211386:.4f} eV.")
+# D_SO is a Kleinman-Bylander coupling in the projector basis, not a
+# splitting: it is large (order Ha) because the projectors are not
+# normalized waves, and only becomes an energy once it is contracted with
+# them.  Printing it beside the splitting invites reading it as one.
+print(f"The coupling matrix that carries it has elements up to "
+      f"{np.abs(so).max():.3f} Ha in the")
+print("projector basis -- a coupling strength, not a splitting; it becomes an")
+print("energy only once contracted with the projectors, which is what")
+print("mandacaru.core.spin_orbit does when a run asks for it.")
+print("\n'relativity=\"none\", nlcc=False' reproduces the pre-relativistic")
+print("construction bit for bit; 'scalar' + NLCC are the defaults because they")
+print("change every generated dataset -- see the guide for the honest caveat")
+print("about how well a relativistic s channel converges on this grid.")
+
+# --------------------------------------------------------------------------- #
+# 3. H2 end to end.
+# --------------------------------------------------------------------------- #
+
+print(f"\n{RULE}")
+print("3. H2: all-electron vs the three pseudopotential families")
 print(RULE)
 
 grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
 FAMILIES = (("all-electron HAO", "HAO"),
             ("NCPP (Troullier-Martins)", "NCPP"),
             ("ONCVPSP (Hamann)", "ONCVPSP"),
-            ("PAW (Bloechl)", "PAW"))
+            ("PAW-LCAO (Bloechl)", "PAW-LCAO"))
 for label, basis in FAMILIES:
-    if basis in ("ONCVPSP", "PAW") and not available_elements(
+    if basis in ("ONCVPSP", "PAW-LCAO") and not available_elements(
             oncv_library_path() if basis == "ONCVPSP" else paw_library_path()):
         print(f"  {label:<26} (library not linked -- see link_library)")
         continue
@@ -113,11 +161,11 @@ print("   of its 1s -- the absolute energies are not comparable; the three")
 print("   pseudopotential families agree to within a few tenths of an eV.)")
 
 # --------------------------------------------------------------------------- #
-# 3. Isolated-atom force: the decisive test.
+# 4. Isolated-atom force: the decisive test.
 # --------------------------------------------------------------------------- #
 
 print(f"\n{RULE}")
-print("3. Force on an ISOLATED oxygen atom.  Exact answer: zero.")
+print("4. Force on an ISOLATED oxygen atom.  Exact answer: zero.")
 print(RULE)
 
 
@@ -158,11 +206,11 @@ print("s+p shell per atom -- not the core.  It shrinks with the grid rather")
 print("than growing, which is what makes relaxation tractable in principle.")
 
 # --------------------------------------------------------------------------- #
-# 4. H2O, valence only.
+# 5. H2O, valence only.
 # --------------------------------------------------------------------------- #
 
 print(f"\n{RULE}")
-print("4. H2O with a valence-only Hamiltonian")
+print("5. H2O with a valence-only Hamiltonian")
 print(RULE)
 water = Atoms("OH2", positions=[[0.0, 0.0, 0.0],
                                 [0.0, 0.7634, 0.5921],
@@ -185,7 +233,7 @@ print("  valence space: O(2s + 2p) + 2 x H(1s) = 6 orbitals, 8 electrons")
 print("  the O 1s pair never enters the calculation at all.")
 
 # --------------------------------------------------------------------------- #
-# 5. Plot.
+# 6. Plot.
 # --------------------------------------------------------------------------- #
 
 try:
@@ -216,7 +264,7 @@ print(f"\nwrote {PNG_PATH}")
 print(f"\n{RULE}")
 print("STATUS")
 print(RULE)
-print("Working: the NCPP library (H-U), the ONCVPSP and PAW families, the")
+print("Working: the NCPP library (H-U), the ONCVPSP and PAW-LCAO families, the")
 print("valence-only Hamiltonian, the separable nonlocal term (C-accelerated),")
 print("the basis-name selector, and forces that converge with grid refinement.")
 print()

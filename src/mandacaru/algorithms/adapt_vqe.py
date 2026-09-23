@@ -395,8 +395,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         actually used is reported as ``gradient_method`` in the
         ``[OPTIMIZATION SETUP]`` block of the ``output.txt`` log.
     device : str
-        Execution device -- ``"AER_simulator"`` (default; ideal simulator) or
-        ``"ibm-quantum"`` (reserved for real hardware, not yet runnable).  See
+        Execution device -- ``"AER_simulator"`` (default; ideal simulator),
+        a noiseless fake backend (``"fake_kingston"``, ...), an IBM Quantum
+        device (``"ibm-quantum"``, ``"ibm_torino"``, ...) or an Amazon Braket
+        device (``"braket-sv1"``, ...).  See
         :mod:`mandacaru.backends.hardware`.
     max_iterations : int
         Maximum number of operators to append before stopping (default ``50``).

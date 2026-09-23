@@ -50,8 +50,13 @@ transversely padded cell, eventually grows.
 **Limitations.** The kernel is periodic in all three directions.  For a chain
 or a slab the transverse images are spurious; a neutral chain's images interact
 only through quadrupoles (``L^-5``) and are negligible, but a **slab carrying a
-dipole needs a 2-D-truncated kernel**, which is not implemented here.  Forces
-are not differentiated through any of this.
+dipole needs a 2-D-truncated kernel**, which is not implemented here.
+
+Forces and stress *are* differentiated through this construction, in
+:mod:`mandacaru.algorithms.periodic_forces`: the Ewald potential is rebuilt with
+one ion displaced, the ion-ion Ewald gradient is analytic, and the Madelung term
+-- a function of the cell alone -- drops out of the force and reappears in the
+stress.
 """
 
 from __future__ import annotations

@@ -66,10 +66,18 @@ The drivers provide the two things a periodic calculation needs:
   :meth:`_BlochMixin.band_structure` raises.  A finer band needs a larger
   ``kpts``, hence a larger supercell and proportionally more qubits.
 
-**Forces are not implemented** for the periodic path: there is no
-Born-von Karman equivalent of the Hellmann-Feynman and Pulay terms here, and a
-force that is not the derivative of the reported energy would be worse than
-none.  ``atoms.get_forces()`` raises :class:`NotImplementedError`.
+**Forces and stress are available** on the periodic path, through
+:mod:`mandacaru.algorithms.periodic_forces`.  The Born-von Karman equivalents
+of the two molecular terms are what that module builds: Hellmann-Feynman
+differentiates the Ewald potential of the whole ion lattice together with the
+analytic ion-ion Ewald force, and Pulay re-samples the displaced atom's basis
+functions *including their periodic images*.  The gradient is computed on the
+supercell and folded back to the primitive cell.  ``atoms.get_forces()``
+requires ``force_method='rdm'`` -- the default -- since the differentiated-SCF
+path rebuilds :math:`-Z/r` potentials a lattice-summed Hamiltonian was never
+assembled from.  :meth:`~mandacaru.algorithms.calculator.Mandacaru.get_stress`
+strains the cell, the atoms and the grid together, holding the node count fixed
+so the strained grid stays commensurate.
 """
 
 from __future__ import annotations
@@ -215,14 +223,14 @@ class _BlochMixin:
     wrong.  Write ``kpts={"size": (2, 1, 1), "gamma": True}``.
     """
 
-    #: Forces come from :mod:`mandacaru.algorithms.periodic_forces`: the
-    #: Hellmann-Feynman half differentiates the Ewald potential of the ion
-    #: lattice and the analytic Ewald ion-ion energy, the Pulay half the
-    #: image-summed basis.  Validated against a central difference of the same
-    #: fixed-state energy at 1.5e-4 eV/Angstrom.
-    supports_forces = True
     #: The supercell is a crystal: its Hamiltonian is built with lattice-summed
-    #: electrostatics (:class:`~mandacaru.core.periodic.PeriodicIntegrals`).
+    #: electrostatics (:class:`~mandacaru.core.periodic.PeriodicIntegrals`), and
+    #: this flag is what routes ``Mandacaru._forces`` to
+    #: :mod:`mandacaru.algorithms.periodic_forces` -- where Hellmann-Feynman
+    #: differentiates the Ewald potential of the ion lattice and the analytic
+    #: Ewald ion-ion energy, and Pulay the image-summed basis.  Validated
+    #: against a central difference of the same fixed-state energy at
+    #: 1.5e-4 eV/Angstrom.
     periodic_hamiltonian = True
 
     def __init__(self, *, kpts=None, **kwargs):

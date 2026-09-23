@@ -110,23 +110,23 @@ def _sample_stack(integrals, positions):
     """
     engine = integrals._engine
     moved = []
-    for function, centre in zip(integrals.basis, positions):
-        shifted = _shift_function(function, centre)
+    for function, center in zip(integrals.basis, positions):
+        shifted = _shift_function(function, center)
         moved.append(engine._sample_periodic(shifted) if engine.periodic
                      else shifted.sample(engine.grid))
     return np.ascontiguousarray(np.stack(moved), dtype=np.complex128)
 
 
-def _shift_function(function, centre):
-    """A shallow copy of ``function`` centred at ``centre`` (Bohr)."""
+def _shift_function(function, center):
+    """A shallow copy of ``function`` centered at ``center`` (Bohr)."""
     import copy
 
     shifted = copy.copy(function)
-    shifted.center = np.asarray(centre, dtype=float)
+    shifted.center = np.asarray(center, dtype=float)
     return shifted
 
 
-def _function_centres(integrals):
+def _function_centers(integrals):
     """Where each basis function sits, in Bohr."""
     return np.array([np.asarray(function.center, dtype=float)
                      for function in integrals.basis])
@@ -209,7 +209,7 @@ def periodic_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     sites = np.array([to_bohr(position, integrals.units)
                       for _charge, position in integrals.nuclei])
     charges = np.array([float(charge) for charge, _p in integrals.nuclei])
-    centres = _function_centres(integrals)
+    centers = _function_centers(integrals)
 
     stack0 = integrals._engine._psi
     S0, h0, g0 = _matrices(integrals, stack0, _ion_potential(integrals, sites))
@@ -248,9 +248,9 @@ def periodic_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 continue
 
             # -- Pulay: the basis functions move, the operators do not.
-            moved_plus = centres.copy()
+            moved_plus = centers.copy()
             moved_plus[own] += step
-            moved_minus = centres.copy()
+            moved_minus = centers.copy()
             moved_minus[own] -= step
             potential = _ion_potential(integrals, sites)
             S_p, h_p, g_p = _matrices(

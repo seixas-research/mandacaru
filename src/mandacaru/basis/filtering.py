@@ -18,7 +18,7 @@ wave-vectors with a phase that depends on where the function's center sits
 between two nodes.  Rigidly translating a molecule by a fraction of :math:`h`
 therefore changes the kinetic energy, the local-potential integral and the
 electron repulsion -- the *egg-box* -- and :func:`atoms.get_forces` faithfully
-differentiates that artifact.  Measured on water / PAW-SZ, the net force
+differentiates that artifact.  Measured on water / PAW-LCAO-SZ, the net force
 (which a free molecule's exact force must make vanish) is 1.85 / 0.86 / 0.41 /
 0.099 / 0.025 eV/Angstrom at ``h`` = 0.30 / 0.25 / 0.20 / 0.16 / 0.13.
 
@@ -57,7 +57,7 @@ Two properties of doing this **per angular-momentum channel** matter here:
   asserted by the test suite;
 * the filter commutes with the angular part, so a filtered table drops into
   :class:`~mandacaru.basis.multizeta.TabulatedOrbital` unchanged and everything
-  downstream -- grid sampling, the PAW atom-centered projection quadrature, the
+  downstream -- grid sampling, the PAW-LCAO atom-centered projection quadrature, the
   displaced sampling the forces are built from -- sees one consistent function.
 
 Confinement: what we actually do, and why
@@ -84,13 +84,13 @@ above :math:`k_c` before -> after, and the range the result occupies
 (smaller residual is better)::
 
     function              before     plain    switch      mask   range(switch)
-    PAW H 1s   zeta 1    1.2e-06   4.9e-07   4.9e-07   5.3e-05     17.3 Bohr
-    PAW H 1s   zeta 3    1.0e-04   3.7e-06   1.6e-05   2.0e-05      2.2
+    PAW-LCAO H 1s   zeta 1    1.2e-06   4.9e-07   4.9e-07   5.3e-05     17.3 Bohr
+    PAW-LCAO H 1s   zeta 3    1.0e-04   3.7e-06   1.6e-05   2.0e-05      2.2
     H polarization (p)   3.4e-07   ~1e-12    ~1e-12    4.5e-08     21.8
-    PAW O 2s   zeta 1    1.3e-05   7.4e-08   7.4e-08   6.5e-07      9.5
-    PAW O 2s   zeta 3    9.3e-03   7.5e-07   2.8e-04   3.2e-04      1.7
-    PAW O 2p   zeta 1    8.4e-05   ~2e-12    2.1e-11   9.8e-07     13.7
-    PAW O 2p   zeta 3    4.7e-03   ~1e-11    2.8e-04   3.6e-04      1.9
+    PAW-LCAO O 2s   zeta 1    1.3e-05   7.4e-08   7.4e-08   6.5e-07      9.5
+    PAW-LCAO O 2s   zeta 3    9.3e-03   7.5e-07   2.8e-04   3.2e-04      1.7
+    PAW-LCAO O 2p   zeta 1    8.4e-05   ~2e-12    2.1e-11   9.8e-07     13.7
+    PAW-LCAO O 2p   zeta 3    4.7e-03   ~1e-11    2.8e-04   3.6e-04      1.9
     O polarization (d)   8.4e-05   ~1e-13    4.0e-12   1.1e-04     17.5
 
 ``"mask"`` loses on **every** function, and on the long-ranged ones it is
@@ -113,7 +113,7 @@ live.
 What it costs, and who gets it by default
 -----------------------------------------
 Filtering removes variational freedom, so the *reported* energy goes **up**:
-water / PAW-SZ by 832 meV at ``h`` = 0.25 and 422 meV at ``h`` = 0.20.  That
+water / PAW-LCAO-SZ by 832 meV at ``h`` = 0.25 and 422 meV at ``h`` = 0.20.  That
 number looks alarming and mostly is not a loss.  Holding the cutoff **fixed**
 (602 eV) and refining the grid, the filtered-to-unfiltered gap shrinks with
 ``h`` -- 530 / 422 / 294 / 237 meV at ``h`` = 0.25 / 0.20 / 0.16 / 0.13, close
@@ -126,11 +126,11 @@ resolved by ``h`` = 0.12, the gap is 2 meV and has the *opposite* sign (the
 filtered function is slightly better).
 
 So the default is per family (:attr:`~mandacaru.pseudopotentials.families.FamilySpec.default_options`):
-**on for PAW and UPAW**, whose smooth partial waves are built band-limited
+**on for PAW-LCAO and UPAW-LCAO**, whose smooth partial waves are built band-limited
 (:func:`~mandacaru.pseudopotentials.oncv.optimize_pseudo_waves` minimizes the
 kinetic energy beyond ``q_cut``) so the filter has little to take, and **off
 for NCPP and ONCVPSP**, whose orbitals are not optimized that way.
-``basis={"name": "PAW", "filter": False}`` restores the unfiltered basis
+``basis={"name": "PAW-LCAO", "filter": False}`` restores the unfiltered basis
 exactly.  The measured prices and benefits are in
 ``docs/source/guide/pseudopotentials.md``.
 """
@@ -149,7 +149,7 @@ from ..units import EV_TO_HARTREE
 #: Nyquist wave-vector :math:`\pi/h` -- i.e. **exactly at** it.  The principle
 #: is the whole point of the filter: remove what the grid cannot represent and
 #: keep everything it can.  It is also what the measurement says.  Water /
-#: PAW-SZ, peak-to-peak energy over one grid period under a rigid shift along
+#: PAW-LCAO-SZ, peak-to-peak energy over one grid period under a rigid shift along
 #: (1,1,1), against the variational cost (the rise in :math:`E_\text{RHF}`):
 #:
 #: ::
@@ -226,7 +226,7 @@ FILTER_WEIGHT_WARN = 0.05
 
 
 # --------------------------------------------------------------------------- #
-# The option: what ``basis={"name": "PAW", "filter": ...}`` may say.
+# The option: what ``basis={"name": "PAW-LCAO", "filter": ...}`` may say.
 # --------------------------------------------------------------------------- #
 
 def validate_filter(spec):
@@ -464,7 +464,7 @@ def filter_radial(r, values, l: int, k_c: float, *,
     tests assert.
 
     The result is rescaled to the **original** norm rather than to 1: the
-    tables do not all arrive normalized (the PAW hydrogen 1s carries 0.979),
+    tables do not all arrive normalized (the PAW-LCAO hydrogen 1s carries 0.979),
     and forcing them to 1 would make the filter change the function even in
     the ``k_c -> infinity`` limit where it must be the identity.  The scale is
     in any case invisible downstream -- the basis is Loewdin-orthogonalized

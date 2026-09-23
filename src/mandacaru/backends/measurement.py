@@ -192,12 +192,12 @@ NOMINAL_2Q_ERROR = 3.0e-3
 #: At 0.1 an unmitigated expectation value retains a tenth of its amplitude,
 #: which is already past the point where zero-noise extrapolation has anything
 #: to extrapolate from (measured: 12-qubit LiH, 92 CZ, landed 0.5-0.8 Ha above
-#: exact; a 24-qubit PAW-TZP ansatz transpiles to ~2,200 two-qubit gates, i.e.
+#: exact; a 24-qubit PAW-LCAO-TZP ansatz transpiles to ~2,200 two-qubit gates, i.e.
 #: a fidelity of 1e-3).
 FIDELITY_WARNING = 0.1
 
 #: Default ceilings for :meth:`MeasurementPlan.check`.  They exist to stop the
-#: job that motivated them: LiH/PAW-TZP submitted 97,980 observables in ~21,000
+#: job that motivated them: LiH/PAW-LCAO-TZP submitted 97,980 observables in ~21,000
 #: measurement bases and the Runtime program died with "error code 1336;
 #: Program runtime ran out of memory" after 37 minutes in the queue.  Each
 #: limit is generous enough for a problem that can actually run and tight
@@ -273,7 +273,7 @@ class MeasurementPlan:
     #: Bases the same energy would need under double factorization (``L + 1``),
     #: when the integrals were available to compute it.  Reported beside the
     #: qubit-wise count because the gap is the argument for implementing the
-    #: basis-rotation circuits: measured on LiH/PAW, 21 -> 4, 93 -> 11,
+    #: basis-rotation circuits: measured on LiH/PAW-LCAO, 21 -> 4, 93 -> 11,
     #: 1,600 -> 55 and 3,290 -> 73 bases at 4 / 8 / 20 / 24 spin orbitals.
     factorized_bases: int | None = None
     #: Which scheme this submission uses (:data:`MEASUREMENT_SCHEMES`).

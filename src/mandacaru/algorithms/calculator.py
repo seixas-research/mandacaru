@@ -296,7 +296,7 @@ def _watchable_stdout() -> None:
 #: it vanishes at **both** ends of the correlation range: for the Hartree-Fock
 #: determinant (RHF is orbital-stationary) and for the exact ground state of the
 #: same orbital space (a full CI there is invariant under any rotation of those
-#: orbitals).  Measured on H2O / PAW-SZ at h = 0.25: 1.2e-9 Ha for the HF
+#: orbitals).  Measured on H2O / PAW-LCAO-SZ at h = 0.25: 1.2e-9 Ha for the HF
 #: determinant, 1.8e-9 for the sector FCI, and 1.0e-2 for the ADAPT state that
 #: stalls 5.4e-4 Ha above it.  So a nonzero residual says the ansatz stopped
 #: short of that exact state -- to *first* order in the state error, where the
@@ -350,8 +350,8 @@ class Mandacaru(Calculator):
         Basis family, as for the solvers (default ``"HAO"``); accepts a
         ``{"name": ..., <options>}`` dict, including the periodic plane-wave
         family (energy only -- plane waves carry no forces) and the
-        pseudopotential families ``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW"``
-        (``{"name": "PAW", "size": "DZP"}``), which replace the all-electron
+        pseudopotential families ``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW-LCAO"``
+        (``{"name": "PAW-LCAO", "size": "DZP"}``), which replace the all-electron
         problem by a valence-only one.
     h : float
         Grid spacing in Angstrom (default ``0.20``), used both for the
@@ -373,10 +373,9 @@ class Mandacaru(Calculator):
         default) decides automatically: **off** when ``txt=<path>`` gives it a
         destination, **on** when it does not.  With it off, standard output
         carries only the evolution of energies and forces an ASE optimizer
-        prints there (``Step Time Energy fmax``) -- the same split GPAW makes
-        with ``txt=``.  ``True`` with a ``txt=`` file writes both; ``False``
-        without one makes a single-point run report nothing to the terminal
-        (the energy is still the return value).
+        prints there (``Step Time Energy fmax``).  ``True`` with a ``txt=``
+        file writes both; ``False`` without one makes a single-point run report
+        nothing to the terminal (the energy is still the return value).
     measurement_provider : CircuitProvider, optional
         Measure the optimized state instead of reading the local state vector:
         the ansatz is still optimized locally, then every Pauli string of the
@@ -721,13 +720,13 @@ class Mandacaru(Calculator):
     def _show_trace(self) -> bool:
         """Whether the solver prints its full trace to standard output.
 
-        Automatic by default, on the same principle as GPAW's ``txt=``: with
-        ``txt=<path>`` the report has a destination, so standard output is
-        left to the **evolution of energies and forces** -- which is what an ASE
-        optimizer prints there, in ASE's own ``Step Time Energy fmax`` format.
-        Without ``txt=`` standard output is the only destination there is, so
-        the blocks go there.  ``trace=True`` / ``False`` overrides either way;
-        ``True`` alongside a ``txt=`` file writes the report to both.
+        Automatic by default: with ``txt=<path>`` the report has a destination,
+        so standard output is left to the **evolution of energies and forces** --
+        which is what an ASE optimizer prints there, in ASE's own ``Step Time
+        Energy fmax`` format. Without ``txt=`` standard output is the only
+        destination there is, so the blocks go there.  ``trace=True`` / ``False``
+        overrides either way; ``True`` alongside a ``txt=`` file writes the
+        report to both.
         """
         if self.trace is not None:
             return self.trace
@@ -859,7 +858,7 @@ class Mandacaru(Calculator):
                 "nuclear forces need an atom-centered basis whose orbitals move "
                 "with the nuclei; the plane-wave ('PW') family does not "
                 "qualify. Use 'HAO', 'NAO', 'GTO', '6-31G(d)' or a "
-                "pseudopotential family ('NCPP', 'ONCVPSP', 'PAW').")
+                "pseudopotential family ('NCPP', 'ONCVPSP', 'PAW-LCAO').")
 
     # -- ASE hook ---------------------------------------------------------- #
 
@@ -880,16 +879,6 @@ class Mandacaru(Calculator):
             _watchable_stdout()
 
         want_forces = "forces" in properties
-        if want_forces and not getattr(self._solver_class,
-                                       "supports_forces", True):
-            # Refused here, before the energy is computed: a force that is not
-            # the derivative of the reported energy is worse than none.
-            raise NotImplementedError(
-                f"method {self.method!r} does not implement forces.  The "
-                "energy is a Born-von Karman supercell estimate and there is "
-                "no periodic Hellmann-Feynman/Pulay gradient for it, so no "
-                "array returned here would be its derivative.  Use a "
-                "molecular method for forces and relaxation.")
         # A previous step's breakdown must never survive a new geometry.
         self.force_result = None
         if want_forces:
@@ -916,7 +905,7 @@ class Mandacaru(Calculator):
         if self.measurement_provider is not None and not solver.dry_run:
             t0 = _perf()
             # RDMs are measured only when the forces need them: they are an
-            # O(M^4) set of extra observables (LiH/PAW-TZP: 97,980 Pauli
+            # O(M^4) set of extra observables (LiH/PAW-LCAO-TZP: 97,980 Pauli
             # strings against the Hamiltonian's 12,736) that an energy-only
             # evaluation would throw away, and the job that carries them is
             # what exhausts the Runtime program's memory.
@@ -1051,7 +1040,7 @@ class Mandacaru(Calculator):
         Hamiltonian goes to the provider as a **single weighted observable**
         and nothing else is measured.  The RDM operators are an ``O(M^4)`` set
         that would be built (34 s at 24 qubits) and submitted only to be
-        discarded: on LiH/PAW-TZP that is 97,980 Pauli strings instead of
+        discarded: on LiH/PAW-LCAO-TZP that is 97,980 Pauli strings instead of
         12,736, and the Runtime Estimator returns one result array *per
         observable*, which under ZNE is what runs it out of memory.
         """
@@ -1092,7 +1081,7 @@ class Mandacaru(Calculator):
         # with an odd number of Y a vanishing expectation value: <Y> is the
         # imaginary part of an amplitude product, and an odd count leaves the
         # whole string anti-Hermitian under complex conjugation.  Half the RDM
-        # labels are of that kind (measured: 472 of 981 on LiH/PAW-DZ), so
+        # labels are of that kind (measured: 472 of 981 on LiH/PAW-LCAO-DZ), so
         # leaving them out is an exact halving of the job, not an
         # approximation -- provided the premise holds, which is checked.
         assumed_zero: set[str] = set()
@@ -1779,7 +1768,7 @@ class Mandacaru(Calculator):
 
         The block covers the **whole** step, which is why the calculator writes
         it and not the solver: on a real relaxation the nuclear gradient is the
-        largest single stage -- a six-step water relaxation in PAW-SZ at
+        largest single stage -- a six-step water relaxation in PAW-LCAO-SZ at
         h = 0.10 spends 62 % of its 325 s on forces against 19 % on the
         variational optimization -- so a block closed when the solver finished
         would account for the smaller part of the time.  ``stages`` carries what
@@ -1903,7 +1892,7 @@ class Mandacaru(Calculator):
                 f"not physics.  The energy is not translation invariant on "
                 f"this grid -- typically a basis function too sharp for the "
                 f"spacing (an all-electron core).  Refine h, or use a "
-                f"pseudopotential basis (PAW / ONCVPSP / NCPP), which removes "
+                f"pseudopotential basis (PAW-LCAO / ONCVPSP / NCPP), which removes "
                 f"the core rather than trying to sample it.",
                 RuntimeWarning, stacklevel=3)
         return residual
@@ -1962,7 +1951,7 @@ class Mandacaru(Calculator):
                 "carries only a qubit operator, and the plane-wave ('PW') "
                 "family is not sampled on the real-space grid.  Run the same "
                 "geometry with an atom-centered basis ('HAO', 'NAO', 'GTO', "
-                "'6-31G(d)', 'PAW', ...) to get a density.")
+                "'6-31G(d)', 'PAW-LCAO', ...) to get a density.")
         return solver, context["integrals"], context.get("frozen") or ()
 
     def _volumetric_state(self, solver, state):
@@ -2022,7 +2011,7 @@ class Mandacaru(Calculator):
         .. code-block:: python
 
             atoms.calc = Mandacaru(method="adapt-vqe",
-                                   basis={"name": "PAW", "size": "DZP"},
+                                   basis={"name": "PAW-LCAO", "size": "DZP"},
                                    h=0.20)
             atoms.get_potential_energy()
             atoms.calc.write_cube("density.cube")
@@ -2032,7 +2021,7 @@ class Mandacaru(Calculator):
 
         The returned
         :class:`~mandacaru.algorithms.volumetric.VolumetricField` reports the
-        integrated charge, the natural-orbital occupation and -- for PAW -- the
+        integrated charge, the natural-orbital occupation and -- for PAW-LCAO -- the
         augmentation charge the smooth density on the grid does not carry.
         """
         volumetric = self.volumetric_field(quantity, index, state=state,

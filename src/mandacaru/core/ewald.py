@@ -347,9 +347,9 @@ def ewald_potential(positions, charges, cell, points,
     # -- real space: erfc over the images within the cutoff ----------------- #
     translations = _lattice_points(cell, _shell_range(cell, r_cut))
     out = np.zeros(points.shape[0], dtype=float)
-    for centre, charge in zip(positions, charges):
+    for center, charge in zip(positions, charges):
         for shift in translations:
-            separation = np.linalg.norm(points - (centre + shift), axis=1)
+            separation = np.linalg.norm(points - (center + shift), axis=1)
             near = separation < r_cut
             if not np.any(near):
                 continue

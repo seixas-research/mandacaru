@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""The PAW one-center electron-electron term.
+r"""The PAW-LCAO one-center electron-electron term.
 
 Blöchl's total energy splits the Hartree energy into a smooth part evaluated
 everywhere and a correction confined to each augmentation sphere,

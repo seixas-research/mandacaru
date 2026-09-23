@@ -12,7 +12,7 @@ The norm-conserving Troullier-Martins potentials in Kleinman-Bylander form
 are the family ``"ncpp"`` (aliases ``"tm"`` / ``"ncpp-tm"``), registered in
 ``PSEUDO_FAMILIES`` and **selected as a basis name** (``basis="NCPP"``,
 ``basis={"name": "NCPP", "size": "DZP"}``); the driver dispatches on the
-registry so ONCVPSP / PAW plug in without touching it.  The nonlocal term became the general separable form
+registry so ONCVPSP / PAW-LCAO plug in without touching it.  The nonlocal term became the general separable form
 ``H_NL = C D C^dagger`` with a block-diagonal coupling ``D``, plus an optional
 overlap correction ``S + C Q C^dagger``.
 
@@ -132,7 +132,7 @@ class TestFamilyResolution:
         assert spec.options == ("size", "split_norm", "tail_norm",
                                 "directory", "filter")
         # A norm-conserving family leaves the Fourier filter opt-in: its
-        # orbitals are not built band-limited the way PAW's partial waves are.
+        # orbitals are not built band-limited the way PAW-LCAO's partial waves are.
         assert spec.default_options == {}
         assert spec.resolved_options() == {}
         assert spec.resolved_options({"filter": True}) == {"filter": True}
@@ -176,7 +176,7 @@ class TestFamilyResolution:
             resolve_pseudo_basis("per-element", {"O": "NCPP", "H": "HAO"},
                                  ["O", "H"])
         with pytest.raises(ValueError, match="one pseudopotential family"):
-            resolve_pseudo_basis("per-element", {"O": "NCPP", "H": "PAW"},
+            resolve_pseudo_basis("per-element", {"O": "NCPP", "H": "PAW-LCAO"},
                                  ["O", "H"])
         with pytest.raises(ValueError,
                            match="only 'size', 'split_norm', 'energy_shift' and 'filter'"):
@@ -278,9 +278,9 @@ class TestFamilyField:
         """A plain TM record merely *carrying* another family's name keeps
         the TM file layout (the table families are recognized by type)."""
         pp = copy.copy(get_pseudopotential("H"))
-        pp.family = "paw"
+        pp.family = "paw-lcao"
         save_pseudopotential(pp, tmp_path / "H.json")
-        with pytest.raises(ValueError, match="belongs to family 'paw'"):
+        with pytest.raises(ValueError, match="belongs to family 'paw-lcao'"):
             PSEUDO_FAMILIES["ncpp"].get("H", tmp_path)
 
 

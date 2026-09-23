@@ -37,6 +37,32 @@ def _slater_group(l: int) -> str:
     return "sp" if l in (0, 1) else ("d" if l == 2 else "f")
 
 
+def split_configuration(configuration):
+    """Resolve ``{(n, l): q}`` into ``{(n, l, kappa): q}`` for a Dirac atom.
+
+    Each subshell is shared between its two ``j = l +/- 1/2`` levels in
+    proportion to their ``2j + 1`` degeneracies, and a **partially** filled
+    subshell fills the lower level first -- ``j = l - 1/2`` (``kappa = +l``),
+    which lies below ``j = l + 1/2`` for the ordinary (non-inverted) ordering
+    of a neutral atom.  An s subshell has one level and is passed through.
+
+    This is the j-j coupled filling; it is not the same state an LS-coupled
+    Hund's-rule treatment would occupy for an open shell, and for a spherical
+    reference atom -- which is already an average over the multiplet -- the
+    difference is absorbed into the spherical average.
+    """
+    from .relativity import degeneracy, kappa_values
+
+    resolved: dict[tuple[int, int, int], float] = {}
+    for (n, l), occupancy in configuration.items():
+        left = float(occupancy)
+        for k in kappa_values(int(l)):        # ordered j = l-1/2 first
+            capacity = float(degeneracy(k))
+            resolved[(int(n), int(l), k)] = min(left, capacity)
+            left = max(left - capacity, 0.0)
+    return resolved
+
+
 def ground_state_config(atomic_number: int) -> dict[tuple[int, int], int]:
     """Neutral-atom ground-state configuration as ``{(n, l): occupancy}``.
 

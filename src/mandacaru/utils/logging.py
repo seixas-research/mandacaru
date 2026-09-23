@@ -389,7 +389,7 @@ class AdaptOutputLogger:
         """Write the ``[BASIS]`` block: the single-particle basis that ran.
 
         A Mandacaru basis is built at run time from options, several of which
-        have family defaults (a PAW basis is Fourier-filtered unless told
+        have family defaults (a PAW-LCAO basis is Fourier-filtered unless told
         otherwise) or resolve to numbers only the builder knows (the cutoff
         radius an ``energy_shift`` gives each orbital, the file each dataset
         was read from).  The options the user typed are therefore not a record

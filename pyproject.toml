@@ -56,7 +56,16 @@ dev = ['pyarrow', 'psutil', 'jax', 'sphinx>=8,<10', 'myst-parser>=4,<6',
 # `python -m pytest` with no arguments runs the whole suite (there is no CI:
 # it is run locally).
 testpaths = ["test"]
-addopts = "-q"
+# `-m "not slow"` is what keeps a bare run inside the session budget that
+# `test/conftest.py` enforces.  The slow mark is for tests that *generate* a
+# pseudopotential from scratch: a scalar-relativistic reference atom costs
+# 20-40 s per element, and the suite has dozens of them.  Nothing is skipped
+# silently -- `python -m pytest -m slow` runs exactly those, and
+# `python -m pytest -m ""` runs everything.
+addopts = "-q -m 'not slow'"
+markers = [
+    "slow: generates a pseudopotential or PAW-LCAO dataset from scratch",
+]
 filterwarnings = [
     # A fallback to the NumPy kernels is announced once; it is not a failure.
     "default::RuntimeWarning",
@@ -85,10 +94,13 @@ path = "src/mandacaru/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mandacaru"]
-# The ONCVPSP and PAW libraries (~600 MB) live in the mandacaru-oncvpsp and
-# mandacaru-paw repositories and are linked into library/ locally; PyPI caps a
-# release at 100 MB, so only the 11 MB NCPP library ships in the wheel.
+# The ONCVPSP and PAW-LCAO libraries (~600 MB) live in the mandacaru-oncvpsp
+# and mandacaru-paw repositories and are linked into library/ locally; PyPI
+# caps a release at 100 MB, so only the 11 MB NCPP library ships in the wheel.
+# These paths are the library subdirectories, so they follow the family rename:
+# `paw` here would exclude nothing now that the directory is `paw-lcao`.
 exclude = [
   "src/mandacaru/pseudopotentials/library/oncvpsp",
-  "src/mandacaru/pseudopotentials/library/paw",
+  "src/mandacaru/pseudopotentials/library/paw-lcao",
+  "src/mandacaru/pseudopotentials/library/upaw-lcao",
 ]

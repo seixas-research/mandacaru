@@ -37,13 +37,13 @@ checkout or select the documentation version for your release.
 
 ## Pseudopotential datasets
 
-The NCPP datasets ship with the package. The **ONCVPSP** and **PAW** ones do
+The NCPP datasets ship with the package. The **ONCVPSP** and **PAW-LCAO** ones do
 not — about 110 MB and 190 MB for all 92 elements — so they live in their own
 repositories, and the library holds a symbolic link to a checkout:
 
 ```bash
 git clone https://github.com/seixas-research/mandacaru-paw.git
-mandacaru --link-paw mandacaru-paw
+mandacaru --link-paw-lcao mandacaru-paw
 
 git clone https://github.com/seixas-research/mandacaru-oncvpsp.git
 mandacaru --link-oncvpsp mandacaru-oncvpsp
@@ -54,14 +54,14 @@ mandacaru --pseudo-status        # what is linked, and how many datasets each se
 Each command links the directory and then loads one dataset through the normal
 loader to prove the link works, exiting non-zero if it does not. Re-running with
 a new path moves the link, so the data repository can be relocated freely; a
-real, non-empty `library/paw/` directory is refused rather than deleted.
+real, non-empty `library/paw-lcao/` directory is refused rather than deleted.
 
-Without this, `basis="PAW"` and `basis="ONCVPSP"` raise a `FileNotFoundError`
+Without this, `basis="PAW-LCAO"` and `basis="ONCVPSP"` raise a `FileNotFoundError`
 that repeats these commands. `basis="NCPP"` and the all-electron bases (`HAO`,
 `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. Set
 `MANDACARU_PSEUDO_PATH` to serve the library from somewhere else entirely.
 
-`basis="UPAW"` needs nothing either: no library is shipped for it, so a missing
+`basis="UPAW-LCAO"` needs nothing either: no library is shipped for it, so a missing
 dataset is generated on demand (a fraction of a second per element) and cached
 for the session. `build_upaw_library()` writes them out if you would rather not
 pay that again.

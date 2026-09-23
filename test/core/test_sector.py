@@ -69,7 +69,7 @@ def test_restrict_batches_without_changing_the_result():
 
     Every Pauli term contributes one entry per sector state, so keeping all of
     them before de-duplicating costs ``len(terms) * dim`` entries -- 3.7e8 of
-    them (~12 GB) for OH in PAW-DZ, against a summed result of 16.5M nonzeros.
+    them (~12 GB) for OH in PAW-LCAO-DZ, against a summed result of 16.5M nonzeros.
     ``restrict`` therefore folds the terms into the running matrix in batches,
     which is only legitimate because the sum is linear in them.
     """

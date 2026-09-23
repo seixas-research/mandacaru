@@ -10,7 +10,7 @@
 
 A basis here is *built* at run time -- the size hierarchy, the confinement, the
 Fourier filter are options, not files -- so the options a user typed are not a
-record of the basis that ran: the defaults they left alone (a PAW basis is
+record of the basis that ran: the defaults they left alone (a PAW-LCAO basis is
 filtered unless told otherwise), the radii an ``energy_shift`` resolved to and
 the dataset each element was read from are all decided below the calculator.
 This module collects them from the Hamiltonian builder's ``context`` into the
@@ -120,7 +120,7 @@ def _pseudo_report(name, context, symbols, fields, tables):
         fields["filter_cutoff"] = (f"{k_c:.4f} Bohr^-1 "
                                    f"({cutoff_energy_ev(k_c):.2f} eV)")
 
-    # How the local potential is integrated (PAW's range separation).
+    # How the local potential is integrated (PAW-LCAO's range separation).
     if getattr(integrals, "split_local_potential", False):
         fields["local_potential"] = (
             "range-separated: long range on the grid, short range on "

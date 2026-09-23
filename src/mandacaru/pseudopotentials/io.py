@@ -76,16 +76,16 @@ LEGACY_FAMILY = "ncpp"
 ONCV_FAMILY = "oncvpsp"
 #: Family whose files carry partial waves, projectors and one-center matrices
 #: (see :mod:`.paw`).
-PAW_FAMILY = "paw"
+PAW_FAMILY = "paw-lcao"
 #: The unitary variant of the same record (``norm_deficit = 0``): a distinct
 #: family with the *same* layout, hence the same codec.
-UPAW_FAMILY = "upaw"
+UPAW_FAMILY = "upaw-lcao"
 #: Families whose payload keeps every radial table under ``"radial_tables"``
 #: and whose record is (de)serialized by the family's own module
 #: (``to_payload`` / ``from_payload``).  A file of another family -- or a
 #: plain :class:`PseudoPotential` that merely *carries* one of these names --
 #: uses the Troullier-Martins layout.  Several families may share one codec
-#: (UPAW *is* a :class:`~.paw.PAWDataset`), so this maps family -> layout and
+#: (UPAW-LCAO *is* a :class:`~.paw.PAWDataset`), so this maps family -> layout and
 #: is not invertible.
 TABLE_FAMILIES = {ONCV_FAMILY: ".oncv", PAW_FAMILY: ".paw",
                   UPAW_FAMILY: ".paw"}
@@ -181,7 +181,7 @@ def generation_points(atomic_number: int, minimum: int = 6000) -> int:
 
 
 #: Subdirectory of the library holding the Troullier-Martins (NCPP) files;
-#: the other families keep theirs in ``oncvpsp/`` and ``paw/``.
+#: the other families keep theirs in ``oncvpsp/`` and ``paw-lcao/``.
 LIBRARY_SUBDIR = "ncpp"
 
 
@@ -251,10 +251,10 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
     family = str(getattr(pp, "family", LEGACY_FAMILY))
     layout = _table_record(pp)
     if layout is not None:
-        # ONCVPSP / PAW records carry several projectors per channel, coupling
+        # ONCVPSP / PAW-LCAO records carry several projectors per channel, coupling
         # matrices, partial waves...; their payload is assembled by their own
         # module and every radial table lives under ``radial_tables``.  A
-        # record may declare a *variant* of that layout's family (UPAW is a
+        # record may declare a *variant* of that layout's family (UPAW-LCAO is a
         # PAWDataset), and then it keeps its own name -- the layout only
         # chooses the codec.
         stored = (family if TABLE_FAMILIES.get(family) == TABLE_FAMILIES[layout]
@@ -378,7 +378,7 @@ def _read_parquet(path, engine):
             f"{path!r} is not a Mandacaru pseudopotential Parquet file")
     payload = json.loads(raw["mandacaru.pseudopotential"])
     if "local_l" not in payload:
-        # Not the Troullier-Martins layout: a table family (ONCVPSP / PAW).
+        # Not the Troullier-Martins layout: a table family (ONCVPSP / PAW-LCAO).
         payload["radial_tables"] = columns
         return payload
     payload["r"] = columns["r"]
@@ -495,7 +495,7 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
                          link_flag: str, builder: str):
     """Load ``symbol`` of an external family library (cached), or explain.
 
-    The ONCVPSP and PAW datasets are too large to ship, so an **empty** library
+    The ONCVPSP and PAW-LCAO datasets are too large to ship, so an **empty** library
     is the normal state of a fresh install and gets the ``git clone`` + link
     recipe; a library that is present but lacks the element names what it does
     hold.  A file of another family is refused.

@@ -8,7 +8,7 @@
 
 """What a hardware measurement costs, and the six things that make it smaller.
 
-Written after a 24-qubit LiH/PAW-TZP job died on IBM Runtime with "error code
+Written after a 24-qubit LiH/PAW-LCAO-TZP job died on IBM Runtime with "error code
 1336; Program runtime ran out of memory" -- 37 minutes of queue, then nothing,
 and a converged optimization discarded with it.  The job had submitted 97,980
 Pauli observables in one PUB because an energy-only ``get_potential_energy()``
@@ -88,7 +88,7 @@ def integrals_of(calc):
 class TestTheRDMsAreNotMeasuredForAnEnergy:
     """The ``O(M^4)`` half of the job, submitted for an answer nobody read.
 
-    On LiH/PAW-TZP that was 97,980 observables instead of 12,736, plus 34 s of
+    On LiH/PAW-LCAO-TZP that was 97,980 observables instead of 12,736, plus 34 s of
     local work building 117,792 operators -- for a ``get_potential_energy()``
     that discards every one of them.
     """
@@ -334,7 +334,7 @@ class TestOddYStringsAreNotMeasured:
     r"""A string with an odd number of ``Y`` is ``i`` times a real
     *antisymmetric* matrix, so its expectation in a real state is exactly
     ``0`` -- an identity, not an approximation.  Half the RDM labels are of
-    that kind (measured: 472 of 981 on LiH/PAW-DZ).
+    that kind (measured: 472 of 981 on LiH/PAW-LCAO-DZ).
     """
 
     def test_the_parity_rule(self):
@@ -422,7 +422,7 @@ class TestDoubleFactorization:
         factorized = double_factorization(h_so, g_so)
         groups, _identity = qubit_wise_commuting_groups(
             calc.solver.hamiltonian)
-        # Measured on the LiH/PAW series: 21 -> 4, 93 -> 11, 1,600 -> 55 and
+        # Measured on the LiH/PAW-LCAO series: 21 -> 4, 93 -> 11, 1,600 -> 55 and
         # 3,290 -> 73 bases at 4 / 8 / 20 / 24 spin orbitals.  The gap widens
         # with M, which is the whole argument.
         assert factorized.measurement_bases < len(groups)

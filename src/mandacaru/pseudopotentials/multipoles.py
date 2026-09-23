@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Multipole compensation charges for PAW.
+r"""Multipole compensation charges for PAW-LCAO.
 
 Blöchl's compensation charge restores the multipole moments the smooth density
 lost inside the augmentation sphere.  Written out,

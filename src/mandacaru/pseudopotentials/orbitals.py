@@ -200,7 +200,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     ``filter_cutoff`` (a wave-vector in Bohr\\ :sup:`-1`, ``None`` = off) runs
     every radial table through the Fourier filter of
     :mod:`mandacaru.basis.filtering` before it becomes a basis function, so the
-    grid sampling, the PAW atom-centered projection quadrature and the displaced
+    grid sampling, the PAW-LCAO atom-centered projection quadrature and the displaced
     sampling the forces are built from all see one band-limited function.  The
     filter is applied **after** the split-valence construction: the split is
     defined on the pseudopotential's own orbital, and it is each *final* basis
@@ -215,8 +215,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     reference energy, so the atomic reference is no longer reproduced exactly.
     That is a variational price, measured in
     ``docs/source/guide/pseudopotentials.md``, and it is why the norm-conserving
-    families (NCPP, ONCVPSP) leave the filter **off** by default while PAW and
-    UPAW turn it on -- a PAW partial wave is already built band-limited, so
+    families (NCPP, ONCVPSP) leave the filter **off** by default while PAW-LCAO and
+    UPAW-LCAO turn it on -- a PAW-LCAO partial wave is already built band-limited, so
     the filter barely moves it.
     """
     from ..basis.filtering import filter_radial, filter_table

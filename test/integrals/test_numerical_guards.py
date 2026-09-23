@@ -140,7 +140,7 @@ class TestForceCapabilityGate:
             shots=context.pop("shots", 0),
             num_particles=context.pop("num_particles", (1, 1)),
             _gradient_context={
-                "family": context.pop("family", "paw"),
+                "family": context.pop("family", "paw-lcao"),
                 "integrals": SimpleNamespace(
                     kinetic=context.pop("kinetic", "fd"),
                     basis=context.pop("basis", []))})
@@ -229,8 +229,8 @@ class TestPseudoBasisOptions:
         from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
-        name, options = resolve_basis({"Li": {"name": "PAW", "split_norm": 0.3},
-                                       "H": {"name": "PAW",
+        name, options = resolve_basis({"Li": {"name": "PAW-LCAO", "split_norm": 0.3},
+                                       "H": {"name": "PAW-LCAO",
                                              "split_norm": 0.15}})
         _family, merged = resolve_pseudo_basis(name, options, ["Li", "H"])
         assert merged["split_norm"] == {"Li": 0.3, "H": 0.15}
@@ -239,8 +239,8 @@ class TestPseudoBasisOptions:
         from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
-        name, options = resolve_basis({"Li": {"name": "PAW", "split_norm": 0.2},
-                                       "H": {"name": "PAW",
+        name, options = resolve_basis({"Li": {"name": "PAW-LCAO", "split_norm": 0.2},
+                                       "H": {"name": "PAW-LCAO",
                                              "split_norm": 0.2}})
         _family, merged = resolve_pseudo_basis(name, options, ["Li", "H"])
         assert merged["split_norm"] == 0.2
@@ -267,4 +267,4 @@ class TestPseudoBasisOptions:
                       cell=[8.0] * 3)
         atoms.center()
         with pytest.raises(ValueError, match="n_electrons is not accepted"):
-            build_basis_hamiltonian(atoms, "PAW", None, 0.4, 0, 2)
+            build_basis_hamiltonian(atoms, "PAW-LCAO", None, 0.4, 0, 2)

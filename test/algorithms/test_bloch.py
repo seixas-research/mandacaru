@@ -178,7 +178,7 @@ class TestUnsupportedCombinations:
         """
         atoms = chain()
         atoms.calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2,
-                               basis={"name": "PAW", "size": "SZ"}, h=0.35,
+                               basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.35,
                                trace=False)
         with pytest.raises(NotImplementedError, match="periodic lattice sum"):
             atoms.get_potential_energy()
@@ -842,15 +842,17 @@ class TestForcesAreImplemented:
     Born-von Karman analogue of the Hellmann-Feynman and Pulay terms.  There is
     one now (:mod:`mandacaru.algorithms.periodic_forces`), validated against a
     central difference of the same fixed-state energy, so the refusal is gone
-    rather than merely bypassed.  The gradient itself is pinned in
+    rather than merely bypassed -- the ``supports_forces`` gate it was built on
+    is deleted, not set to ``True``.  The gradient itself is pinned in
     ``test/algorithms/test_periodic_forces.py``; what is kept here is that the
-    periodic *driver* advertises and delivers it.
+    periodic *driver* delivers it through ASE.
     """
 
     @pytest.mark.parametrize("method", METHODS)
-    def test_the_driver_advertises_forces(self, method):
+    def test_the_driver_routes_to_the_periodic_gradient(self, method):
         calc = periodic(method).calc
-        assert type(calc.solver).supports_forces is True
+        assert type(calc.solver).periodic_hamiltonian is True
+        assert not hasattr(type(calc.solver), "supports_forces")
 
     def test_get_forces_returns_a_finite_gradient(self, forced_chain):
         forces = forced_chain.get_forces()

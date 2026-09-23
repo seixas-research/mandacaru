@@ -12,7 +12,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="ONCVPSP",     # Hamann's optimized norm-conserving Vanderbilt
                        h=0.25)
 atoms.calc = Mandacaru(method="vqe",
-                       basis={"name": "PAW", "size": "DZP"},   # Bloechl's PAW, polarized double zeta
+                       basis={"name": "PAW-LCAO", "size": "DZP"},   # Bloechl's PAW-LCAO, polarized double zeta
                        h=0.25)
 ```
 
@@ -22,7 +22,7 @@ smooth pseudo-atomic orbitals — with the same `size` hierarchy as the
 [NAO family](basis_sets.md) as its options — and the singular $-Z/r$ external
 potential is replaced by a bounded local channel plus the family's projectors.
 Every driver, `interaction_energy`, the periodic methods, the dry run and the
-command line (`mandacaru H2O --cell 8 --basis PAW --basis-option size=DZP`)
+command line (`mandacaru H2O --cell 8 --basis PAW-LCAO --basis-option size=DZP`)
 accept the names; `frozen_core` is refused with them as redundant. There is no
 separate switch: the family is the basis, and the retired `"PP"` basis name
 raises an error that names the families instead of aliasing to one.
@@ -36,20 +36,20 @@ radial atomic solver (`mandacaru.basis.atomic_solver`):
 |---|---|---|---|---|---|
 | `"NCPP"` | `"TM"`, `"NCPP-TM"` | Troullier–Martins norm-conserving, Kleinman–Bylander separable form | one per channel | none | bundled, H–U |
 | `"ONCVPSP"` | `"ONCV"` | Hamann's optimized norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `mandacaru-oncvpsp`, H–U |
-| `"PAW"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `mandacaru-paw`, H–U |
-| `"UPAW"` | `"unitary-paw"` | the same, with a **unitary** transformation ($q = 0$, below) | two per channel, $2\times2$ coupling | $S$ (unaugmented) | generated on demand |
+| `"PAW-LCAO"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `mandacaru-paw`, H–U |
+| `"UPAW-LCAO"` | `"unitary-paw-lcao"` | the same, with a **unitary** transformation ($q = 0$, below) | two per channel, $2\times2$ coupling | $S$ (unaugmented) | generated on demand |
 
 Names are case-insensitive. Each family accepts the options `size`,
 `tail_norm` or `split_norm` (the split-valence scheme: GPAW's by default, or
 the SIESTA-style one), `directory` (an alternative library folder) and `filter`
-(*Fourier filtering*, below); PAW and UPAW also take
+(*Fourier filtering*, below); PAW-LCAO and UPAW-LCAO also take
 `projector_basis="raw"|"dual"`, `energy_shift`, `confinement` and
 `polarization` (*Confined orbitals*, below). Any other key — or an all-electron option such
 as `tier` — is refused before an integral is computed. A family may give an
-option a **default of its own**: PAW and UPAW declare `filter=True`, the
+option a **default of its own**: PAW-LCAO and UPAW-LCAO declare `filter=True`, the
 norm-conserving families leave it off.
 
-`"PAW"` is the recommended pseudopotential family. `"UPAW"` is an option — the
+`"PAW-LCAO"` is the recommended pseudopotential family. `"UPAW-LCAO"` is an option — the
 same construction with a unitary transformation — and the measurements that
 decided that are in its own section below.
 
@@ -57,12 +57,12 @@ A **per-element basis** may give each atom its own size, as long as every
 element uses the *same* family:
 
 ```python
-basis={"O": {"name": "PAW", "size": "DZP"}, "H": {"name": "PAW"}}
+basis={"O": {"name": "PAW-LCAO", "size": "DZP"}, "H": {"name": "PAW-LCAO"}}
 basis={"O": {"name": "NCPP", "size": "DZP"}, "*": "NCPP"}     # "*" = every other element
 ```
 
 Mixing a pseudopotential family with an all-electron family across elements
-(`{"O": "PAW", "H": "6-31G"}`), or two pseudopotential families, raises: a
+(`{"O": "PAW-LCAO", "H": "6-31G"}`), or two pseudopotential families, raises: a
 pseudopotential replaces the core *and* the potential of its atom, so the
 Hamiltonian is either valence-only or all-electron.
 
@@ -76,11 +76,11 @@ from mandacaru.pseudopotentials import (
     PSEUDO_FAMILIES, FamilySpec, family_names, lookup_family,
     register_family, resolve_family)
 
-family_names()      # ['ncpp', 'oncvpsp', 'paw', 'upaw', 'ncpp-tm', 'oncv', 'tm', 'unitary-paw']
+family_names()      # ['ncpp', 'oncvpsp', 'paw-lcao', 'upaw-lcao', 'ncpp-tm', 'oncv', 'tm', 'unitary-paw-lcao']
 spec = resolve_family("TM")            # -> PSEUDO_FAMILIES["ncpp"]
 spec.name, spec.aliases, spec.label    # "ncpp", ("tm", "ncpp-tm"), "NCPP"
 spec.options       # ("size", "split_norm", "tail_norm", "directory", "filter")
-spec.default_options       # {} -- PAW/UPAW declare {"filter": True, "energy_shift": 0.1}
+spec.default_options       # {} -- PAW-LCAO/UPAW-LCAO declare {"filter": True, "energy_shift": 0.1}
 spec.resolved_options({"size": "DZ"})  # the defaults with the user's options on top
 spec.norm_conserving                   # True
 spec.generate("O")                     # generate_pseudopotential("O")
@@ -264,28 +264,129 @@ scheme with `"family": "oncvpsp"` (format version 2; radial tables under
 the family and loading a TM file is untouched. Generation takes 0.5 s (H) to
 2.5 s (F).
 
-### Not implemented
+### The reference atom and the channel set
 
-No nonlinear core correction, no scalar-relativistic or spin-orbit terms, no
-projectors for angular momenta above the valence (those channels see the
-local potential alone — a p projector at unbound energies, which Hamann adds
-for H and O, is not built, so DZP polarization functions on H see only
-$V_{loc}$), no GGA reference atom, and the second reference energy is a fixed
-offset rather than Hamann's per-element tuned values. Departures from the
-paper: the Bessel wave vectors are the interleaved zeros rather than Hamann's
-own choice; the scattering tail entering the residual energy is tapered
-between $3r_c$ and $5r_c$ (it does not decay); $r_{cl}$ is a fixed fraction
-of the smallest $r_c$; and the raw Vanderbilt coupling is kept instead of the
-orthogonalized projectors (equivalent operator).
+Five arguments of `generate_oncv` change what the pseudopotential is built
+*from*. They are generation-time only: they change the dataset, never the
+calculation that later reads it.
 
-## PAW: projector augmented waves
+| Argument | Default | What it does |
+| --- | --- | --- |
+| `relativity` | `"scalar"` | `"none"`, `"scalar"` (Koelling–Harmon) or `"dirac"` (each $j$ separately) |
+| `xc` | `"lda"` | `"lda"` or `"pbe"`; screens the atom and unscreens the potential with the same functional |
+| `nlcc` | `True` | Partial core density; `True` matches where $\rho_c = \rho_v$, a float sets the radius |
+| `extra_l` | `0` | Channels above the highest valence $l$, two scattering references each |
+| `points`, `r_max` | per element | The radial grid of the reference atom |
+
+**`relativity="none"` with `nlcc=False` reproduces the pre-relativistic
+construction bit for bit.** Both new defaults change every generated dataset.
+
+#### Relativity
+
+The Dirac radial pair collapses *exactly* onto one equation for the large
+component, and the only place $j$ survives is a single $\kappa M'P/Mr$ term —
+so one operator covers all three theories
+(`mandacaru.basis.relativity`). The $(2j+1)$-weighted average of $\kappa$ is
+$-1$ for every $l$, which is why the scalar-relativistic equation has no $l$
+dependence in its spin-orbit term. For $l = 0$ there is one $j$ and
+$\kappa = -1$ *is* its physical value, so the scalar equation **is** the Dirac
+equation there.
+
+With `relativity="dirac"` each $j$ gets its own full construction, and the two
+are stored as their $(2j+1)$ average plus the difference
+$\tfrac{2}{2l+1}(V_{l+1/2} - V_{l-1/2})$, which is the coefficient of
+$\mathbf{L}\cdot\mathbf{S}$. Adding $\mathbf{L}\cdot\mathbf{S}$ back
+reproduces each $j$ exactly — it is a $2\times2$ solve, not a fit. The average
+sits in `channels` as usual, so a Dirac dataset is a drop-in replacement for a
+scalar one that additionally *carries* spin-orbit coupling in `spin_orbit`.
+
+```{note}
+The pseudo partial waves stay non-relativistic — they are Bessel expansions,
+meant for a Schrödinger calculation — so **the generalized norm condition
+changes**. What has to be conserved is
+$-W_{ij}(r_c)/2(\varepsilon_j-\varepsilon_i)$, a Wronskian, which equals the
+inner overlap only as $M \to 1$. Conserving the overlap instead leaves the
+Vanderbilt matrix asymmetric by $1.4\times10^{-4}$ Ha for oxygen against a
+$10^{-5}$ tolerance, and refining the grid does not help. With the Wronskian
+the logarithmic derivative of the *smooth* system reproduces the
+*relativistic* all-electron one to $4\times10^{-7}$ at the reference energy.
+```
+
+Spin-orbit splittings of the reference atom, against experiment:
+
+| Atom | Level | Computed | Measured |
+| --- | --- | --- | --- |
+| Ar | 3p | 0.1786 eV | 0.178 eV |
+| Kr | 4p | 0.6482 eV | 0.666 eV |
+
+```{note}
+**Be honest about what the scalar-relativistic default buys for an $s$
+channel.** A point-nucleus Dirac $s$ or $p_{1/2}$ state behaves like
+$r^\gamma$ with $\gamma = \sqrt{\kappa^2 - (Z\alpha)^2} < 1$, and a uniform
+radial grid cannot converge that cusp at second order -- the rate never
+approaches 2, unlike every other state. On the *real* SCF potential of
+oxygen and argon this stays harmless for the splittings above: every $p$
+level (both $j$) converges at the clean rate 2.00, because the centrifugal
+barrier regularizes $p_{1/2}$ despite it sharing $|\kappa| = 1$ with an $s$
+state. It is not harmless for the **absolute size of an $s$-channel
+relativistic shift**, which drifts with grid density instead of settling:
+
+| points | O 2s shift (Ha) | O 2p shift (Ha) |
+| --- | --- | --- |
+| 3000 | −0.005298 | +0.000919 |
+| 12000 (production for O) | −0.005047 | +0.000871 |
+| 24000 | −0.004408 | +0.000754 |
+
+A shift is a small difference of two large, separately-converging numbers, so
+its relative error is amplified far past the underlying grid error -- about
+400× for O 2p. **Treat a valence relativistic shift as good to about
+10-15 % at production grid densities, not better.** That is enough for the
+shift to be worth including by default (5 mHa on O 2s, and 85 % of a
+correction beats none), and not enough to quote it past the first
+significant digit. Spin-orbit splittings themselves are not affected by this:
+$l = 0$ carries none, and every channel that does carry one is $p$ or higher,
+converging at the clean rate.
+```
+
+#### Nonlinear core correction
+
+Unscreening subtracts $V_{xc}[\tilde\rho_v]$, but the all-electron potential
+was screened by $V_{xc}[\rho_c + \rho_v]$, and $V_{xc}$ is not linear. The
+correction keeps a partial core density — the true core outside
+$r_{\text{nlcc}}$, and $A\sin(Br)/r$ inside it, matched in value and slope —
+and unscreens with $V_{xc}[\tilde\rho_c + \tilde\rho_v]$.
+
+Mandacaru's many-body Hamiltonian is a wavefunction method with no
+exchange-correlation functional at run time, so the *run-time* half of the
+correction has nothing to act on and is not performed. The generation-time
+half, which is where the nonlinearity is committed, is. `core_density` is
+stored and reported so a DFT consumer of the dataset can do the rest.
+
+### Still not implemented
+
+The second reference energy is a fixed offset rather than Hamann's
+per-element tuned values. Departures from the paper: the Bessel wave vectors
+are the interleaved zeros rather than Hamann's own choice; the scattering tail
+entering the residual energy is tapered between $3r_c$ and $5r_c$ (it does not
+decay); $r_{cl}$ is a fixed fraction of the smallest $r_c$; and the raw
+Vanderbilt coupling is kept instead of the orthogonalized projectors
+(equivalent operator).
+
+A point-nucleus Dirac s or p$_{1/2}$ state behaves like $r^\gamma$ with
+$\gamma = \sqrt{\kappa^2 - (Z\alpha)^2} < 1$, and **a uniform radial grid
+cannot converge that at second order**: gold's 1s is 1.6 % off and improves
+only as $h^{1.5}$, against the clean rate 2.00 of its 2p$_{3/2}$ ($\gamma =
+1.92$). It affects deep core levels, not the valence channels or the
+splittings a pseudopotential is built from.
+
+## PAW-LCAO: projector augmented waves
 
 *(2026-09-14, step 3 of the family plan.)* The third shipped family is
-`"paw"`, P. E. Blöchl's projector augmented-wave method, *Phys. Rev. B* **50**,
+`"paw-lcao"`, P. E. Blöchl's projector augmented-wave method, *Phys. Rev. B* **50**,
 17953 (1994), in its **frozen-core, one-center-expansion** form with the
 one-center energies **linearized around the reference atom** — a fixed
 per-species coupling matrix $D^0$, which makes the dataset behave like an
-ultrasoft pseudopotential with an exact PAW reconstruction of the atomic
+ultrasoft pseudopotential with an exact PAW-LCAO reconstruction of the atomic
 partial waves. Written from scratch in
 `mandacaru.pseudopotentials.paw` on the same LDA radial atom as
 the other two families, reusing the Numerov partial waves, the Bessel
@@ -293,10 +394,10 @@ machinery and the polynomial local potential of the ONCVPSP module:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="PAW",
+                       basis="PAW-LCAO",
                        h=0.25)
 atoms.calc = Mandacaru(method="vqe",
-                       basis={"name": "PAW", "size": "DZ", "projector_basis": "raw"},
+                       basis={"name": "PAW-LCAO", "size": "DZ", "projector_basis": "raw"},
                        h=0.25)
 ```
 
@@ -369,7 +470,7 @@ through Löwdin, RHF and UHF.
    Ha). Without the raise the continued potential (O: −5.8 Ha at the origin)
    binds a spurious 1s-like state of its own in the s channel — a ghost 0.6–1
    Ha below $\varepsilon_{2s}$ — which the near-singular ONCVPSP coupling
-   suppresses but the PAW projector term does not; the raise is chosen so the
+   suppresses but the PAW-LCAO projector term does not; the raise is chosen so the
    s spectrum has nothing between the bound state and the box states.
 4. **Projectors** (`assemble_paw_channel`). $\chi_i = (\varepsilon_i - T -
    \tilde v^{scr})\tilde\varphi_i$ inside $r_c$ (analytic, $T j_l = \tfrac12
@@ -408,7 +509,7 @@ through Löwdin, RHF and UHF.
    Li +0.0006, C +0.030, N +0.053, O −0.107, F −0.570 Ha. It enters every
    molecular Hamiltonian through the new
    `MolecularIntegrals.constant_energy` (next to the nuclear repulsion, also
-   in `hartree_fock_hamiltonian`), so PAW totals are comparable with TM/ONCV.
+   in `hartree_fock_hamiltonian`), so PAW-LCAO totals are comparable with TM/ONCV.
 
 ### In a molecule (`build_paw`, `PAWIntegrals`)
 
@@ -474,10 +575,10 @@ back on the grid.
 The split is exact by construction — $v^{sr}$ is evaluated as the *difference*
 of the dataset's own `local_potential` and $v^{lr}$, never from the asymptotic
 form — so only the quadrature order and the truncation approximate anything:
-$3\times10^{-7}$ Ha on the hardest case measured (water PAW-DZ, the oxygen
+$3\times10^{-7}$ Ha on the hardest case measured (water PAW-LCAO-DZ, the oxygen
 sphere holding both hydrogens) and better than $10^{-9}$ Ha on H₂.
 
-**What it buys, measured.** Rigidly translating water (PAW-SZ, 10 Å cell) by
+**What it buys, measured.** Rigidly translating water (PAW-LCAO-SZ, 10 Å cell) by
 fractions of $h$ along $(1,1,1)/\sqrt3$ with the orbitals and density frozen,
 peak-to-peak per term in meV:
 
@@ -519,7 +620,7 @@ dual 0.78/0.77). The local potential is interpolated with a cubic spline
 
 ### Forces (`algorithms/pseudo_forces.py`)
 
-`atoms.get_forces()` with `basis="PAW"` (or `"ONCVPSP"`) returns the
+`atoms.get_forces()` with `basis="PAW-LCAO"` (or `"ONCVPSP"`) returns the
 Hellmann–Feynman plus Pulay force of the converged state. With the reduced
 density matrices $D$, $\Gamma$ and the molecular orbitals $V$ held fixed,
 
@@ -559,12 +660,12 @@ DZP basis has complex $Y_{lm}$ functions, the molecular orbitals are first made
 **conjugation-real** (`core.hamiltonian.conjugation_real_orbitals`, same
 determinant): with the phases the SCF happens to return, the MO integrals are
 complex and the real excitation operators of every pool stall above the ground
-state (62 meV on H₂ PAW-DZP). H₂ and LiH in PAW-DZP are 20-qubit problems,
+state (62 meV on H₂ PAW-LCAO-DZP). H₂ and LiH in PAW-LCAO-DZP are 20-qubit problems,
 solved exactly in their (1, 1) particle-number sector (`core.sector`, 100
 states).
 
 On H₂ (h = 0.25 Å) the analytic force agrees with a central difference of the
-energy to 1e-4 eV/Å. Against VASP (PBE, plane waves, PAW) the force curves
+energy to 1e-4 eV/Å. Against VASP (PBE, plane waves, PAW-LCAO) the force curves
 agree qualitatively: the H₂ minimum is near 0.81 Å instead of 0.750 Å — mostly
 from the H augmentation radius, 1.30 bohr, which two atoms 0.75 Å apart overlap
 almost entirely — while the LiH bond forces from 2.1 to 3.2 Å match within
@@ -598,12 +699,12 @@ Molecular, same grids as the TM/ONCV pins (H₂ 0.74 Å at h = 0.25 Å, LiH 1.6 
 at h = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4
 iterations; energies in eV as the user sees them, Hartree in parentheses):
 
-| | PAW RHF | PAW FCI = ADAPT | ONCV RHF / ADAPT | TM RHF / ADAPT | PAW − ONCV | PAW − TM |
+| | PAW-LCAO RHF | PAW-LCAO FCI = ADAPT | ONCV RHF / ADAPT | TM RHF / ADAPT | PAW-LCAO − ONCV | PAW-LCAO − TM |
 |---|---|---|---|---|---|---|
 | H₂ | −28.662 eV (−1.053292) | −29.046 eV (−1.067402) | −1.044179 / −1.058561 | −1.061096 / −1.075333 | −0.248 eV | +0.212 eV |
 | LiH | −20.693 eV (−0.760451) | −20.924 eV (−0.768954) | −0.774343 / −0.782341 | −0.729555 / −0.740839 | +0.378 eV | −0.841 eV |
 
-PAW lands between the two norm-conserving families on both molecules (all
+PAW-LCAO lands between the two norm-conserving families on both molecules (all
 three agree within 0.05 Ha, against the 0.1 Ha asked). On H₂ the augmented
 overlap has eigenvalues 0.203 / 1.809 (bare 0.199 / 1.757), the
 Löwdin-orthonormalized overlap is the identity to 1e-16, and the augmented
@@ -620,7 +721,7 @@ give nonsense.
 
 ### Library and files
 
-`library/paw/{H,Li,C,N,O,F}.parquet` (100–385 kB, decimated to 0.02 Bohr;
+`library/paw-lcao/{H,Li,C,N,O,F}.parquet` (100–385 kB, decimated to 0.02 Bohr;
 9.6 s to regenerate with `build_paw_library()`; `get_paw(symbol, directory)`
 is the family's loader, `paw_library_path()` its directory, TM and ONCVPSP
 files untouched). The record is `PAWDataset` (a `PseudoPotential` subclass:
@@ -635,13 +736,79 @@ blocks; `v_local` (ionic) / `v_local_screened`, `core_density`,
 below), `compensation_radius`, `compensation_charge`, `hartree_screening`,
 `one_center_energy`, `energies`, `norm_deficit`, `local_shift`, `q_cut`,
 `energy_offset`). Files use the same Parquet/JSON scheme with `"family":
-"paw"` (format version 2; every radial table under `radial_tables` —
+"paw-lcao"` (format version 2; every radial table under `radial_tables` —
 `ae_wave_l{l}_{i}`, `pseudo_wave_l{l}_{i}`, `projector_l{l}_{i}`,
 `raw_projector_l{l}_{i}`, the densities — and the scalars in the metadata).
 `io.py` now dispatches the table families (`TABLE_FAMILIES`) by *record type*
 on save and by the presence of `radial_tables` on load, so a plain TM record
-merely carrying the name `"paw"` keeps the TM layout and the TM loader refuses
+merely carrying the name `"paw-lcao"` keeps the TM layout and the TM loader refuses
 it as before. Round trips are lossless and idempotent (tested).
+
+### Relativity, GGA and spin-orbit coupling
+
+`generate_paw` takes the same `xc`, `relativity`, `nlcc` and `extra_l`
+arguments as `generate_oncv`, with the same defaults (`"lda"`, `"scalar"`,
+`True`, `0`), and `relativity="none", nlcc=False` reproduces the
+pre-relativistic dataset.
+
+```{note}
+The same honest limit applies here as for ONCVPSP: a relativistic $s$-channel
+eigenvalue does not converge cleanly on this grid (the $r^\gamma$ cusp of a
+point-nucleus Dirac state), so treat a valence relativistic shift as good to
+about 10-15 % at production grid densities, not better -- see the
+*Relativity* subsection under ONCVPSP, above, for the measured table. It does
+not touch the spin-orbit splittings below, which come entirely from $p$ and
+higher channels.
+```
+
+Two things differ from ONCVPSP, and both follow from PAW-LCAO's overlap operator.
+
+**A Dirac PAW-LCAO dataset is scalar-relativistic partial waves plus a spin-orbit
+term, not a $j$-resolved augmentation sphere.** $S = 1 + \sum|\tilde p\rangle q
+\langle\tilde p|$ is the *metric* of the generalized eigenproblem, so a
+$j$-dependent $q$ would give that metric an $\mathbf{L}\cdot\mathbf{S}$
+structure and every consumer of $S$ — the Löwdin orthogonalization above all —
+would have to learn about spin. Keeping one partial-wave set per $l$ leaves
+$q$, $\Delta T$ and the compensation charges untouched, and carries spin-orbit
+coupling where it belongs: as a one-center difference in the *Hamiltonian*,
+
+$$D^{SO}_{ij} = \int_0^{r_c}\Big[\xi(r)\varphi_i\varphi_j
+  - \tilde\xi(r)\tilde\varphi_i\tilde\varphi_j\Big]r^2\,dr,
+\qquad \xi = \frac{1}{2c^2M^2 r}\frac{dV}{dr},$$
+
+built exactly the way $D$ and $q$ are. For oxygen $\langle\xi\rangle(2l+1)/2$
+reproduces the Dirac atom's own 2p splitting — 0.03675 eV against 0.03674 —
+and 99.7 % of it sits inside $r_c$, which is why a one-center term captures
+it. The smooth part is 0.5 % and is subtracted rather than assumed away.
+
+**The overlap correction is built from the conserved norm, not the plain
+overlap.** Relativistically they differ at $O(c^{-2})$, and the choice is not
+free: the Wronskian at $r_c$ is a property of the all-electron equation, so
+$B - B^\mathsf{T} = (\varepsilon_j - \varepsilon_i)(\text{achieved} -
+\text{target})$ whatever constraint was imposed, and only
+$q = \text{target} - \text{achieved}$ cancels it. The same quantity has to
+appear in $\Delta T$, through
+$\langle\varphi_i|T|\varphi_j\rangle = \varepsilon_j\,\text{target}_{ij}
+- \langle\varphi_i|V|\varphi_j\rangle$ — which *is* the relativistic kinetic
+matrix element, because the target is the $M$-weighted norm the relativistic
+radial equation puts on the right-hand side. With both in place
+$D^{scr} = \Delta T + \Delta V$ closes to $2\times10^{-15}$ and $D^{scr}$ is
+symmetric to $10^{-9}$; getting either wrong breaks one of the two.
+
+```{note}
+UPAW-LCAO sets $q \equiv 0$, so it has no overlap correction left to absorb the
+residual, and its hydrogen eigenvalue reproduction degrades from
+$5.5\times10^{-8}$ to $1.3\times10^{-6}$ Ha (3.5e-5 eV) with the
+scalar-relativistic default. That is the honest price of a smooth,
+non-relativistic system reproducing a relativistic reference.
+```
+
+An `extra_l` channel has no bound state, so its references are normalized
+inside $r_c$ by convention rather than by physics. Asking it to *also* give up
+a fraction of that norm over-constrains the Bessel expansion and leaves the
+minimization with no feasible point, so such channels conserve norm exactly —
+which makes their $q$ identically zero. They hold no charge, so there is
+nothing to correct.
 
 ### What is frozen or omitted relative to Blöchl's full method
 
@@ -657,14 +824,14 @@ it as before. Round trips are lossless and idempotent (tested).
   compensation charge is attracted to the other ions as well as repelled by
   the electrons. What is still omitted is the *one-center* two-body
   correction beyond the linearization -- measured at 0.08-0.33 eV for oxygen.
-* **Frozen core, no nonlinear core correction.** The core density is frozen
-  (stored as `core_density`); the core-valence xc of the reference atom stays
-  inside $\tilde v^{ion}$ and $D^{ion}$ (unscreened with $v_{xc}[\tilde n_v]$
-  only, as TM/ONCVPSP do). The smooth core density is generated and stored
-  but does not enter the Hamiltonian; the omitted core–valence xc
-  correction is reported in `energies["core_valence_xc_omitted"]` (Li −1.54,
-  O −4.60 Ha — the size of the core xc energy itself, which the linearized
-  treatment keeps frozen).
+* **Frozen core.** The core density is frozen (stored as `core_density`).
+  Since 2026-09-23 the unscreening *does* include the smooth core when
+  `nlcc=True` (the default), which is the nonlinear core correction: PAW-LCAO
+  already builds `smooth_core_density` for its one-center energies, so the
+  correction here is a matter of including that density in $v_{xc}$ rather
+  than constructing a second one. What remains frozen is the linearized
+  treatment of the one-center core–valence xc, reported in
+  `energies["core_valence_xc_omitted"]` (Li −1.54, O −4.60 Ha).
 * **HF/FCI valence with LDA-generated datasets.** The molecule's exchange and
   correlation are exact within the augmented Coulomb tensor, while the
   one-center xc corrections were linearized at the LDA level — the same
@@ -678,9 +845,9 @@ it as before. Round trips are lossless and idempotent (tested).
   softness gain over ONCVPSP is correspondingly modest (H₂ basis ratio 0.98
   vs 0.975).
 
-## UPAW: a unitary transformation
+## UPAW-LCAO: a unitary transformation
 
-`basis="UPAW"` (alias `"unitary-paw"`) is the PAW construction with the
+`basis="UPAW-LCAO"` (alias `"unitary-paw-lcao"`) is the PAW construction with the
 orthonormality constraint of Ivanov *et al.*,
 [arXiv:2408.03159](https://arxiv.org/abs/2408.03159), imposed on the smooth
 partial waves:
@@ -699,12 +866,12 @@ operator is the identity, and the whole augmentation of the metric disappears �
 S = \tilde S + C\,q\,C^\dagger \;\longrightarrow\; \tilde S , \qquad q = 0 .
 ```
 
-Everything else is the ordinary PAW dataset: the same two reference energies,
+Everything else is the ordinary PAW-LCAO dataset: the same two reference energies,
 the same residual-kinetic-energy minimization of the smooth waves, the same
 dual projectors, the same local potential and one-center linearization. Only
 the norm constraint changes, so `generate_upaw(symbol, **options)` is
 `generate_paw(symbol, norm_deficit=0.0, **options)` with the record tagged
-`family="upaw"`, and it *refuses* an explicit `norm_deficit` — that number is
+`family="upaw-lcao"`, and it *refuses* an explicit `norm_deficit` — that number is
 the definition of the family.
 
 ### Why it is attractive on a quantum computer
@@ -713,13 +880,13 @@ The motivation is not accuracy but the structure of the second-quantized
 problem. With $q = 0$ the one-particle basis is orthonormal *before* the
 Löwdin step, the overlap operator never enters the Hamiltonian, and the
 generalized eigenproblem $Hc = \varepsilon S c$ becomes an ordinary one. In a
-plane-wave PAW code that removes a nontrivial metric from every algorithm built
+plane-wave PAW-LCAO code that removes a nontrivial metric from every algorithm built
 on top; in Mandacaru it removes one matrix product, because $S^{-1/2}$ is
 computed anyway for the grid basis.
 
 ### What it costs (measured, `mandacaru` env, h as noted)
 
-| | PAW | UPAW |
+| | PAW-LCAO | UPAW-LCAO |
 |---|---|---|
 | overlap correction $\max|q_{ij}|$, H | $2.12\times10^{-2}$ | $3.0\times10^{-14}$ |
 | overlap minimum (H) | $1.055$ | $1.000000$ |
@@ -737,10 +904,10 @@ Three things to read out of that table.
 **The constraint does what it claims, and only for the monopole.** $q$ and the
 $L = 0$ augmentation vanish to machine precision. But the constraint is one
 number per pair of partial waves, and the higher multipoles are not constrained
-by it: on oxygen the $L = 2$ moment comes out **16× larger** than PAW's. The
+by it: on oxygen the $L = 2$ moment comes out **16× larger** than PAW-LCAO's. The
 compensation machinery (`compensation_moments`, `compensation_potentials`,
 `compensation_coulomb`, and the force derivatives of all three) therefore
-cannot be deleted — the reason to want UPAW is not realized in this code.
+cannot be deleted — the reason to want UPAW-LCAO is not realized in this code.
 
 **The smooth waves get harder.** Forcing the inner norm to match the
 all-electron one removes the freedom that the scaled-norm construction spends
@@ -749,13 +916,13 @@ uniform real-space grid that shows up immediately as a larger egg-box: the
 translational residual on water is **≈ 5× worse at both spacings tested**, and
 the residual is what limits how far a relaxation can be converged.
 
-**Binding is slightly worse, and $\lambda$ barely moves.** UPAW under-binds
-H₂ by 0.25 eV and LiH by 0.10 eV relative to PAW at the same grid and size,
+**Binding is slightly worse, and $\lambda$ barely moves.** UPAW-LCAO under-binds
+H₂ by 0.25 eV and LiH by 0.10 eV relative to PAW-LCAO at the same grid and size,
 while the LCU one-norm — the figure of merit for a qubitized phase estimation,
 where the Toffoli count scales as $\lambda/\epsilon$ — improves by 1.6 %. The
 quantum-resource argument for the unitary form is real but small here.
 
-So UPAW is available, tested, and not the default. It is worth revisiting if
+So UPAW-LCAO is available, tested, and not the default. It is worth revisiting if
 the compensation charge ever grows its full multipole expansion (then $q = 0$
 buys a genuinely simpler metric), or on a smooth basis where the egg-box
 penalty does not apply — a plane-wave or Gaussian representation rather than a
@@ -763,7 +930,7 @@ uniform grid.
 
 ### Datasets
 
-No UPAW library is shipped. `get_upaw(symbol)` looks in `library/upaw/` and,
+No UPAW-LCAO library is shipped. `get_upaw(symbol)` looks in `library/upaw-lcao/` and,
 finding nothing there, **generates the dataset on the fly**, caches it in
 memory and warns once — generation is 0.4–2.2 s per element, so an interactive
 run pays a fraction of a second and a scan pays nothing after the first
@@ -773,12 +940,12 @@ there, and a missing element then raises with the `build_upaw_library` recipe:
 ```python
 from mandacaru.pseudopotentials.paw import build_upaw_library
 
-build_upaw_library(("H", "C", "N", "O"))          # into library/upaw/
+build_upaw_library(("H", "C", "N", "O"))          # into library/upaw-lcao/
 build_upaw_library(("H", "O"), directory="/data/upaw")
 ```
 
-The files use the PAW layout (`TABLE_FAMILIES` maps both families to the same
-codec) and record `family: "upaw"`, so a PAW dataset is refused as UPAW and
+The files use the PAW-LCAO layout (`TABLE_FAMILIES` maps both families to the same
+codec) and record `family: "upaw-lcao"`, so a PAW-LCAO dataset is refused as UPAW-LCAO and
 vice versa.
 
 ## The nonlocal term: general separable form
@@ -801,7 +968,7 @@ For Troullier–Martins/Kleinman–Bylander there is one projector per channel a
 the block is the $1\times1$ matrix $[E^{KB}_l]$ (`kb_coupling_blocks`), so
 $C\,D\,C^\dagger$ reduces to the familiar $\sum_p |\chi_p\rangle E^{KB}_p
 \langle\chi_p|$ — the test suite checks it agrees with the old rank-one formula
-to $10^{-12}$. ONCVPSP and PAW fill $2\times2$ blocks; the machinery
+to $10^{-12}$. ONCVPSP and PAW-LCAO fill $2\times2$ blocks; the machinery
 (`projector_blocks`, `assemble_block_matrix` in `mandacaru.core.hamiltonian`)
 validates and assembles them. `kb_nonlocal()` keeps its name (alias
 `nonlocal_matrix()`), and the projector resolution check
@@ -809,7 +976,7 @@ validates and assembles them. `kb_nonlocal()` keeps its name (alias
 
 ### Overlap correction
 
-Families whose projectors also change the metric (PAW) pass the blocks of a
+Families whose projectors also change the metric (PAW-LCAO) pass the blocks of a
 second matrix $Q$ in the same layout, `nonlocal_overlap={(atom, l, m): block}`.
 The overlap the Löwdin orthonormalization uses then becomes
 
@@ -821,7 +988,7 @@ S \;\to\; S + C\,Q\,C^\dagger ,
 so the orthonormalized one- and two-body integrals — and everything downstream,
 RHF, the UHF natural orbitals, the qubit Hamiltonian — see the augmented
 metric automatically. Norm-conserving families pass `None`; `Q = 0` reproduces
-the plain Hamiltonian exactly. The PAW family is the first to use it (its $q$
+the plain Hamiltonian exactly. The PAW-LCAO family is the first to use it (its $q$
 blocks), together with two further hooks on `MolecularIntegrals`:
 `two_body_augmentation()` (a correction added to the grid two-body tensor —
 the compensation-charge terms) and `constant_energy` (an additive constant
@@ -871,14 +1038,14 @@ Hydrogen and lithium carry a single valence channel, which is the local one, so
 in this family H₂ and LiH have no projectors at all — their nonlocal term is
 identically zero (the ONCVPSP family gives them two s projectors each).
 
-The ONCVPSP and PAW datasets (all 92 elements, generated 2026-09-14) are too
+The ONCVPSP and PAW-LCAO datasets (all 92 elements, generated 2026-09-14) are too
 large for this repository — about 110 MB and 190 MB — so they live in the
 `mandacaru-oncvpsp` and `mandacaru-paw` repositories as flat directories of
 `<Symbol>.parquet` files. The loaders read them from `library/oncvpsp/` and
-`library/paw/`, which are **symbolic links** created by
+`library/paw-lcao/`, which are **symbolic links** created by
 
 ```bash
-mandacaru --link-paw ~/Repositories/mandacaru-paw
+mandacaru --link-paw-lcao ~/Repositories/mandacaru-paw
 mandacaru --link-oncvpsp ~/Repositories/mandacaru-oncvpsp
 mandacaru --pseudo-status          # what is linked, and how many datasets each serves
 ```
@@ -887,19 +1054,20 @@ Each command links the directory and then **loads one dataset through the
 normal loader** to prove the link is usable, exiting non-zero if it is not — a
 link to the wrong directory would otherwise only fail later, in the middle of a
 calculation. Re-running with a new path moves the link (the data repository can
-be moved freely); a real, non-empty `library/paw/` directory is refused rather
+be moved freely); a real, non-empty `library/paw-lcao/` directory is refused rather
 than deleted. The underlying module takes a few more options:
 
 ```bash
 python -m mandacaru.pseudopotentials.link_library \
-    --oncvpsp ~/Repositories/mandacaru-oncvpsp --paw ~/Repositories/mandacaru-paw
+    --oncvpsp ~/Repositories/mandacaru-oncvpsp \
+    --paw-lcao ~/Repositories/mandacaru-paw
 # --files links each dataset instead of the directory; --force replaces; --status reports
 ```
 
 (git ignores the links). `io.library_root()` is the common parent (overridden
 by `MANDACARU_PSEUDO_PATH`); `io.default_library_path()` is the `ncpp/` directory,
 `oncv_library_path()` / `paw_library_path()` the others. Without the links the
-ONCVPSP/PAW loaders raise `FileNotFoundError` and their tests skip.
+ONCVPSP/PAW-LCAO loaders raise `FileNotFoundError` and their tests skip.
 
 To regenerate or extend the library:
 
@@ -968,12 +1136,12 @@ already at the edge of what a state-vector simulator can hold. The dry run
 counts the valence functions of the family and size you ask for:
 
 ```console
-$ mandacaru H2O --cell 8 --basis PAW --basis-option size=DZP --dry-run
+$ mandacaru H2O --cell 8 --basis PAW-LCAO --basis-option size=DZP --dry-run
 ```
 
 ## Confined orbitals: `energy_shift`
 
-Without further instruction the first zeta of a PAW basis is the dataset's
+Without further instruction the first zeta of a PAW-LCAO basis is the dataset's
 bound smooth partial wave: the valence orbital of the **free** atom. It has no
 range of its own -- a lithium 2s still carries 10⁻⁴ of its norm beyond 14 Bohr
 -- and it is more diffuse than the same orbital inside a molecule. LCAO codes
@@ -985,15 +1153,15 @@ is tight for a compact orbital and generous for a diffuse one.
 
 ```python
 Mandacaru(method="adapt-vqe",
-          basis={"name": "PAW", "size": "DZP", "energy_shift": 0.1},
+          basis={"name": "PAW-LCAO", "size": "DZP", "energy_shift": 0.1},
           h=0.20)
 ```
 
 `energy_shift` is in **eV** (as in GPAW and as for [the NAO
-family](basis_sets.md)) and is accepted by `"PAW"` and `"UPAW"`. **The default
-is 0.1 eV**, GPAW's default -- so a plain `basis="PAW"` is a confined basis.
+family](basis_sets.md)) and is accepted by `"PAW-LCAO"` and `"UPAW-LCAO"`. **The default
+is 0.1 eV**, GPAW's default -- so a plain `basis="PAW-LCAO"` is a confined basis.
 `None`, `False` or `0` switch the confinement off and restore the free-atom
-orbitals; every PAW energy quoted in this guide outside this section was
+orbitals; every PAW-LCAO energy quoted in this guide outside this section was
 computed that way (it predates the default, 2026-09-20). A `{symbol: eV}`
 mapping, or the per-element basis form, confines elements differently; an
 element left out gets the 0.1 eV default.
@@ -1041,14 +1209,14 @@ fixed:
 | confining potential | `vconf_args=(12.0, 0.6)` | `"confinement": (12.0, 0.6)` | **GPAW's** |
 | split-valence zetas | `tailnorm=(0.16, 0.3, 0.6)` | `"tail_norm": (0.16, 0.3, 0.6)` | **GPAW's** |
 | polarization function | quasi-Gaussian | `"polarization": "gaussian"` | **GPAW's** (when confined) |
-| PAW dataset | GPAW's own setups (LDA or PBE) | Mandacaru's own datasets (LDA) | -- |
+| PAW-LCAO dataset | GPAW's own setups (LDA or PBE) | Mandacaru's own datasets (LDA) | -- |
 
 Every default is GPAW's, so the basis closest to a GPAW `dzp` basis needs only
 its size:
 
 ```python
 Mandacaru(method="adapt-vqe",
-          basis={"name": "PAW", "size": "DZP"},
+          basis={"name": "PAW-LCAO", "size": "DZP"},
           h=0.20)
 ```
 
@@ -1057,7 +1225,7 @@ SIESTA-style split, the `r · R_outer` polarization shell -- is
 
 ```python
 Mandacaru(method="adapt-vqe",
-          basis={"name": "PAW",
+          basis={"name": "PAW-LCAO",
                  "size": "DZP",
                  "energy_shift": None,
                  "split_norm": 0.15},
@@ -1101,11 +1269,11 @@ is considerably **longer-ranged** than one made with `split_norm = 0.15`.
 `tail_norm` takes a number (the second zeta's; GPAW's values are kept for the
 higher ones) or the whole sequence. Writing `split_norm` selects the
 SIESTA-style scheme instead; giving both is refused. The choice applies to
-every family with a size hierarchy (`"NCPP"`, `"ONCVPSP"`, `"PAW"`, `"UPAW"`
+every family with a size hierarchy (`"NCPP"`, `"ONCVPSP"`, `"PAW-LCAO"`, `"UPAW-LCAO"`
 and the all-electron `"NAO"`), and the log's `[BASIS]` block names the scheme
 in its `zeta_split:` line.
 
-The scheme is part of the model. H₂ in PAW-DZP (h = 0.25), with free-atom
+The scheme is part of the model. H₂ in PAW-LCAO-DZP (h = 0.25), with free-atom
 orbitals and the `r · R_outer` shell on both sides: GPAW's split gives an
 equilibrium distance of **0.760 Å** and the SIESTA-style one **0.711 Å**
 (experiment 0.741, VASP-PBE 0.750), while the SIESTA-style basis is about
@@ -1188,11 +1356,11 @@ function's own support so a split zeta stays short-ranged
 
 ```python
 Mandacaru(method="adapt-vqe",
-          basis={"name": "PAW", "size": "DZ"},          # filtered: the default
+          basis={"name": "PAW-LCAO", "size": "DZ"},          # filtered: the default
           h=0.20)
 
 Mandacaru(method="adapt-vqe",
-          basis={"name": "PAW", "filter": False},       # today's raw basis
+          basis={"name": "PAW-LCAO", "filter": False},       # today's raw basis
           h=0.20)
 
 Mandacaru(method="adapt-vqe",
@@ -1200,21 +1368,21 @@ Mandacaru(method="adapt-vqe",
           h=0.20)
 
 Mandacaru(method="adapt-vqe",
-          basis={"name": "PAW", "filter": 800.0},       # explicit cutoff, in eV
+          basis={"name": "PAW-LCAO", "filter": 800.0},       # explicit cutoff, in eV
           h=0.20)
 ```
 
 `filter` takes `True` / `"auto"` (cutoff tied to the grid, `k_c = π/h`), a
 positive **kinetic-energy cutoff in eV** (`k_c = sqrt(2E)` in atomic units),
 or `False`. Anything else raises at construction. It is **on by default for
-`PAW` and `UPAW`, off for `NCPP` and `ONCVPSP`** — declared once per family as
+`PAW-LCAO` and `UPAW-LCAO`, off for `NCPP` and `ONCVPSP`** — declared once per family as
 `FamilySpec.default_options`, so a new family states its own and the drivers
 need no edit. `filter=False` reproduces the unfiltered basis byte for byte.
 
 ### Why the cutoff sits exactly at Nyquist
 
 Remove what the grid cannot carry, keep everything it can. The measurement
-agrees: water/PAW-SZ, peak-to-peak RHF energy over one grid period under a
+agrees: water/PAW-LCAO-SZ, peak-to-peak RHF energy over one grid period under a
 rigid shift along (1,1,1), against the rise in the energy itself.
 
 | `k_c / k_N` | ripple, h = 0.25 | cost, h = 0.25 | ripple, h = 0.20 | cost, h = 0.20 |
@@ -1239,7 +1407,7 @@ Per term at h = 0.25, the ripple goes (unfiltered → filtered): kinetic
 367.5 → 0.05 meV, local pseudopotential 1608.3 → 21.0, electron repulsion
 1321.5 → 7.1. The total is far smaller than its parts because they partly
 cancel. The nonlocal and compensation terms do not appear because they never
-aliased: PAW evaluates both by atom-centered quadrature, not on the grid.
+aliased: PAW-LCAO evaluates both by atom-centered quadrature, not on the grid.
 
 **What is left is the local potential.** At h = 0.25 it is 21.0 of the
 remaining 27.1 meV, and at h = 0.20 it is 5.8 of 6.0 — the filter band-limits
@@ -1263,7 +1431,7 @@ The analytic gradient is still the derivative of the calculator's own energy:
 central-difference agreement is 1.0e-3 (H₂, h = 0.25) and 7.5e-4 eV/Å (water,
 h = 0.25) with the filter on, the same as without it.
 
-The reported energy goes **up** — water/PAW-SZ by 832 meV at h = 0.25 — and
+The reported energy goes **up** — water/PAW-LCAO-SZ by 832 meV at h = 0.25 — and
 most of that is not a loss. Hold the cutoff fixed at 602 eV and refine the
 grid: the filtered-to-unfiltered gap is 530 / 422 / 294 / 237 meV at
 h = 0.25 / 0.20 / 0.16 / 0.13, close to linear in `h`. It is the *unfiltered*
@@ -1274,7 +1442,7 @@ is 2 meV and has the opposite sign.
 
 And what a user actually reads off — geometry and binding — barely moves,
 because the shift is nearly a constant offset that cancels in differences
-(exact sector ground states, PAW-SZ):
+(exact sector ground states, PAW-LCAO-SZ):
 
 | | d_eq unfiltered | d_eq filtered | D_e unfiltered | D_e filtered |
 |---|---|---|---|---|
@@ -1290,7 +1458,7 @@ energy 0.037 eV.
 choice, not a numerical detail: the filtered first zeta is no longer exactly
 the pseudo-orbital the projectors were built from, so the atomic reference is
 no longer reproduced exactly. That is why the norm-conserving families leave
-it off — their orbitals are not built band-limited — while PAW and UPAW turn
+it off — their orbitals are not built band-limited — while PAW-LCAO and UPAW-LCAO turn
 it on, since `optimize_pseudo_waves` already minimizes the kinetic energy
 beyond `q_cut` and the filter has little left to take. Set `filter=False` to
 compare against an older result.
@@ -1308,7 +1476,7 @@ basis addresses it directly; see [Basis sets](basis_sets.md).
 LiH relaxes cleanly (`examples/28_LiH_relaxation_PAW.py`: five BFGS steps from
 2.0 Å to d = 1.6876 Å, final fmax 0.002 eV/Å), and so do H₂, OH, CH and H₂O.
 Water from a 90°, 1.0 Å start converges in **three BFGS steps** (h = 0.16 Å,
-PAW-SZ, 123 s) to d = 0.992 Å and an angle of 117.3°, against 0.9572 Å and
+PAW-LCAO-SZ, 123 s) to d = 0.992 Å and an angle of 117.3°, against 0.9572 Å and
 104.52° in experiment: the bond length is good, and the 13° on the angle is
 the minimal valence s+p shell, not the gradient — a polarized basis is what
 addresses it (see [Basis sets](basis_sets.md)).
@@ -1326,7 +1494,7 @@ addresses it (see [Basis sets](basis_sets.md)).
   for water it falls as `|sum F|` = 1.85, 0.86, 0.41, 0.099, 0.025 eV/Å at
   h = 0.30, 0.25, 0.20, 0.16, 0.13 Å — oxygen then needs h ≤ 0.16 Å for
   geometry, finer than the h ≤ 0.25 Å that suffices for energies.
-  *Fourier filtering* (above), on by default for PAW, removes most
+  *Fourier filtering* (above), on by default for PAW-LCAO, removes most
   of it (15–26× on water) and is the reason a coarser grid is now usable.
 * **`project_translation=True`** subtracts the mean force so the molecule
   cannot drift. A free molecule's exact forces do sum to zero, so this enforces
@@ -1357,7 +1525,7 @@ LiH (1.6 Å, h = 0.30 Å) measured before the nonlocal generalization and
 exercises the general form with synthetic projectors; `pseudopotentials/test_oncv.py`
 validates the ONCVPSP family atomically (H, Li, O) and on the same two
 molecules (50 tests, ~11 s, peak RSS 0.6 GB); `pseudopotentials/test_paw.py` does the same for
-the PAW family, adding the overlap, on-site-projection, compensation and
+the PAW-LCAO family, adding the overlap, on-site-projection, compensation and
 grid-stability checks (70 tests, 11.5 s, peak RSS 0.77 GB);
 `pseudopotentials/test_engine.py` covers the engine, the basis-name selector
 and the per-element sizes.

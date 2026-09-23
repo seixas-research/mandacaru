@@ -14,15 +14,15 @@ Troullier-Martins pseudization of the self-consistent LDA atom
 (:mod:`mandacaru.basis.atomic_solver`) with Kleinman-Bylander separable
 projectors (:mod:`.generation`); ``"oncvpsp"`` (alias ``"oncv"``),
 Hamann's optimized norm-conserving Vanderbilt potentials with two projectors
-per channel (:mod:`.oncv`); ``"paw"``, Bloechl's projector augmented-wave
+per channel (:mod:`.oncv`); ``"paw-lcao"``, Bloechl's projector augmented-wave
 datasets with an overlap correction and frozen one-center terms
-(:mod:`.paw`); and ``"upaw"`` (alias ``"unitary-paw"``), the PAW construction
+(:mod:`.paw`); and ``"upaw-lcao"`` (alias ``"unitary-paw-lcao"``), the PAW construction
 with a vanishing norm deficit, generated on demand.  The on-disk library lives under ``library/``, one
 subdirectory per family -- ``library/ncpp/`` (Troullier-Martins, :mod:`.io`),
-``library/oncvpsp/`` and ``library/paw/`` -- and the valence
+``library/oncvpsp/`` and ``library/paw-lcao/`` -- and the valence
 pseudo-atomic orbitals and projectors are sampled on the real-space grid by
 :mod:`.orbitals`.  A family is selected **as a basis**: ``basis="NCPP"``,
-``basis="ONCVPSP"``, ``basis={"name": "PAW", "size": "DZP"}`` on any driver
+``basis="ONCVPSP"``, ``basis={"name": "PAW-LCAO", "size": "DZP"}`` on any driver
 (the family name is a basis name, with the multiple-zeta size hierarchy as
 its options); see the *Pseudopotentials* guide of the manual.
 """

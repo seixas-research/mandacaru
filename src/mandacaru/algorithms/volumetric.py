@@ -39,7 +39,7 @@ Quantities
 ----------
 ``density``
     The spin-summed electron density :math:`n_\alpha + n_\beta`, in
-    e/Bohr^3.  It integrates to the electron count (see the PAW note below).
+    e/Bohr^3.  It integrates to the electron count (see the PAW-LCAO note below).
 ``alpha_density`` / ``beta_density``
     The two spin channels separately.  The spin-orbitals are spin-blocked
     (:math:`P = p + \sigma M`, alpha first), so these are the two diagonal
@@ -74,10 +74,10 @@ density and integrates to the full electron count.
 
 The pseudopotential caveat
 --------------------------
-With a PAW / UPAW / ONCVPSP / NCPP basis the orbitals are the **smooth pseudo**
+With a PAW-LCAO / UPAW-LCAO / ONCVPSP / NCPP basis the orbitals are the **smooth pseudo**
 valence orbitals, so what is written is the *pseudo valence density*: the core
 is absent by construction, and inside the augmentation spheres the smooth
-density is not the physical one.  For PAW the overlap itself is augmented,
+density is not the physical one.  For PAW-LCAO the overlap itself is augmented,
 :math:`S = \tilde S + C q C^\dagger`, so the smooth density does **not**
 integrate to the valence electron count:
 
@@ -220,7 +220,7 @@ class NaturalOrbitals:
     coefficients : (M, M) ndarray
         Column ``i`` expands natural orbital ``i`` in the **atomic-orbital**
         basis, :math:`\\psi_i = \\sum_\\mu c_{\\mu i}\\chi_\\mu`.  Orthonormal
-        under the (augmented, for PAW) overlap.
+        under the (augmented, for PAW-LCAO) overlap.
     mo_coefficients : (M, M) ndarray
         The same orbitals in the **molecular-orbital** basis the Hamiltonian
         was built in -- which is where the departure from a single determinant
@@ -504,7 +504,7 @@ def volumetric_field(integrals, gamma, *, quantity: str = "density",
     integrals : MolecularIntegrals
         The live integral object of the run -- its basis functions, its grid
         and its molecular orbitals.  The *actual* basis of the calculation is
-        used (a confined, Fourier-filtered PAW orbital included); nothing is
+        used (a confined, Fourier-filtered PAW-LCAO orbital included); nothing is
         rebuilt from options.
     gamma : (2*M_act, 2*M_act) array
         The active-space spin-orbital one-RDM, spin-blocked with the alpha

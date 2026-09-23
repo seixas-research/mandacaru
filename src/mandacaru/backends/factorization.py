@@ -10,7 +10,7 @@ r"""Double factorization: measuring :math:`\langle H\rangle` in ``O(M)`` bases.
 
 Qubit-wise commuting grouping (:mod:`mandacaru.backends.measurement`) turns the
 :math:`O(M^4)` Pauli strings of a molecular Hamiltonian into :math:`O(M^3)`
-measurement circuits.  Measured on Mandacaru's own LiH/PAW series that is
+measurement circuits.  Measured on Mandacaru's own LiH/PAW-LCAO series that is
 23 / 79 / 1,600 / 3,067 bases at 4 / 8 / 20 / 24 qubits -- roughly
 :math:`0.2\,M^3` -- and at a few thousand shots per basis it is the *shot*
 budget, not the Runtime's memory, that makes a hardware energy unaffordable.

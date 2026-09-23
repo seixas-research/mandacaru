@@ -8,7 +8,7 @@
 
 r"""Hellmann-Feynman and Pulay forces for every atom-centered basis.
 
-Pseudopotential families (PAW, ONCVPSP, NCPP) and all-electron bases share one
+Pseudopotential families (PAW-LCAO, ONCVPSP, NCPP) and all-electron bases share one
 derivative: the difference is only which terms exist.  An all-electron
 Hamiltonian has no projectors, no augmented overlap and no compensation
 charges, and its per-atom local potential is the bare (softened) ``-Z/r``;
@@ -28,7 +28,7 @@ with :math:`D` and :math:`\Gamma` the spin-summed reduced density matrices of
 the converged state, :math:`V` its molecular orbitals in the Löwdin basis, and
 the atomic-orbital matrices
 
-* :math:`S = \tilde S + C q C^\dagger` (the PAW-augmented overlap),
+* :math:`S = \tilde S + C q C^\dagger` (the PAW-LCAO-augmented overlap),
 * :math:`h = T + V_{\rm loc} + C D^{\rm ion} C^\dagger` (kinetic, local and
   nonlocal parts),
 * :math:`g = g_{\rm grid} + \sum_A (Q^A\otimes W^A + W^A\otimes Q^A)
@@ -76,7 +76,7 @@ How the pieces are evaluated
   reuse the energy's own finite-difference kernel on the stacked
   ``[phi; dphi]`` basis, and the two-electron derivative is contracted from
   the pair densities against the Coulomb potentials the energy uses.
-* The PAW **projections** :math:`C_{\mu p} = \langle\phi_\mu|p_p\rangle` are
+* The PAW-LCAO **projections** :math:`C_{\mu p} = \langle\phi_\mu|p_p\rangle` are
   atom-centered quadratures over each projector's sphere
   (:meth:`~mandacaru.pseudopotentials.paw.PAWIntegrals.projections`), so they
   depend only on the separation of the function and the projector.  Their
@@ -85,7 +85,7 @@ How the pieces are evaluated
   the Hellmann-Feynman part (projector moving) is :math:`-G`, so the total is
   exactly translation invariant.  ONCVPSP keeps grid projections, whose
   derivatives are sampled on the grid like everything else.
-* PAW's **local potential** is range-separated
+* PAW-LCAO's **local potential** is range-separated
   (:meth:`~mandacaru.pseudopotentials.paw.PAWIntegrals.short_range_local`): the
   grid samples only the long-range Gaussian-ion half, and the short-range half
   is an atom-centered sphere integral :math:`I^A_{pq}`.  It is differentiated
@@ -297,7 +297,7 @@ def _atom_potentials(integrals):
     so the Hellmann-Feynman term differentiates the same operator the energy
     was built from.
 
-    The engine may sample only *part* of its local potential on the grid -- PAW
+    The engine may sample only *part* of its local potential on the grid -- PAW-LCAO
     keeps the long-range Gaussian-ion half there and integrates the rest on
     atom-centered spheres (``short_range_local``).  It then says so through
     ``local_potential_functions``, and that is what this returns: the grid half
@@ -424,7 +424,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     electronic = energy(S0, h0, g0)
     total = electronic + integrals.nuclear_repulsion + integrals.constant_energy
 
-    # -- PAW compensation charges --
+    # -- PAW-LCAO compensation charges --
     paw = augmentation is not None and hasattr(integrals, "compensation_moments")
     if paw:
         from ..pseudopotentials.paw import paw_multipole_blocks

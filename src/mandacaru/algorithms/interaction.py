@@ -165,7 +165,7 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
         circuit at all.
     basis, h, grid, **solver_kwargs :
         Forwarded to every run (``basis`` may be a pseudopotential family --
-        ``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW"`` -- like anywhere else).  ``grid``
+        ``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW-LCAO"`` -- like anywhere else).  ``grid``
         overrides the shared grid built from the complex.
 
     Returns

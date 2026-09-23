@@ -15,4 +15,4 @@ When a method graduates to the stable API, its page moves into
 `docs/source/` and is added to the relevant toctree — as the pseudopotentials
 did on 2026-09-15 (`mandacaru.pseudopotentials`, guide
 `docs/source/guide/pseudopotentials.md`, selected with `basis="NCPP"` /
-`"ONCVPSP"` / `"PAW"`).
+`"ONCVPSP"` / `"PAW-LCAO"`).
