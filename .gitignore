@@ -204,3 +204,9 @@ src/mandacaru/basis/csrc/build/
 
 # Local convenience link to the built manual (docs/build is not tracked).
 docs/index.html
+
+# others
+examples/references.bib
+examples/output_*
+examples/data/references.bib
+examples/data/output_*

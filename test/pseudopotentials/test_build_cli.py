@@ -48,3 +48,35 @@ def test_it_writes_a_loadable_dataset(tmp_path, capsys, pp, family):
     assert "no ghost" in out and "1 of 1 dataset(s) written" in out
     pp = load_pseudopotential(str(tmp_path / family / "H.parquet"))
     assert pp.symbol == "H" and pp.relativity == "scalar"
+
+
+def test_a_failed_element_is_reported_and_sets_the_exit_code(tmp_path, capsys,
+                                                             monkeypatch):
+    from mandacaru.pseudopotentials import build_cli
+
+    def broken(family, symbol, options):
+        raise RuntimeError("no bound state")
+    monkeypatch.setattr(build_cli, "_generate", broken)
+    code = main(["--pp", "PAW", "--element", "H", "--output", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "H  FAILED" in out and "RuntimeError: no bound state" in out
+    assert "0 of 1 dataset(s) written, 1 failed" in out
+
+
+def test_a_generator_warning_reaches_the_report(tmp_path, capsys, monkeypatch):
+    import warnings
+
+    from mandacaru.pseudopotentials import build_cli
+    real = build_cli._generate
+
+    def noisy(family, symbol, options):
+        warnings.warn("cutoff beyond the trustworthy range")
+        warnings.warn("overflow", RuntimeWarning)
+        return real(family, symbol, options)
+    monkeypatch.setattr(build_cli, "_generate", noisy)
+    code = main(["--pp", "PAW", "--element", "H", "--output", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "warning: cutoff beyond the trustworthy range" in out
+    assert "overflow" not in out

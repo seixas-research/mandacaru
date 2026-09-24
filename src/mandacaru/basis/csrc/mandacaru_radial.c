@@ -130,8 +130,9 @@ static void shifted_solve(int n, const double *d, const double *e,
  * decays.  No subtraction of nearly equal numbers is involved, so a component
  * of 1e-40 has full relative accuracy and the right sign -- which inverse
  * iteration cannot give below eps * max|x|: oxygen's 1s came out with a
- * spurious node at 7.3 Bohr, amplitude 1e-22. */
-static void twisted_vector(int n, const double *d, const double *e,
+ * spurious node at 7.3 Bohr, amplitude 1e-22.  Returns 0, or -3 when the
+ * products overflowed or vanished and x is not a usable vector. */
+static int twisted_vector(int n, const double *d, const double *e,
                            double lambda, double pivmin, double *dplus,
                            double *dminus, double *x)
 {
@@ -161,14 +162,17 @@ static void twisted_vector(int n, const double *d, const double *e,
     double norm = 0.0;
     for (int i = 0; i < n; ++i) norm += x[i] * x[i];
     norm = sqrt(norm);
+    if (!(norm > 0.0) || !isfinite(norm)) return -3;
     for (int i = 0; i < n; ++i) x[i] /= norm;
+    return 0;
 }
 
 /* The k-th smallest eigenvalue (k = 0, 1, ...) of the symmetric tridiagonal
  * matrix with diagonal d[0..n-1] and off-diagonal e[0..n-2], and its unit
  * eigenvector.  `guess` (NaN for none) is where to start looking.  Bisection on the Sturm count to full double precision, then
  * inverse iteration at that shift.  Returns 0 on success, -1 on bad input,
- * -2 when memory could not be allocated. */
+ * -2 when memory could not be allocated, -3 when the eigenvector came out
+ * non-finite or zero (never silently). */
 int mandacaru_tridiagonal_eigenpair(int n, const double *d, const double *e,
                                     int k, double guess, double *value,
                                     double *vector)
@@ -255,7 +259,11 @@ int mandacaru_tridiagonal_eigenpair(int n, const double *d, const double *e,
         const double change = fabs(rq - lambda);
         lambda = rq;
         if (it >= 1 && change <= 8.0 * DBL_EPSILON * scale) {
-            accepted = 1;
+            /* The bracket is assumed to hold one eigenvalue; confirm that
+             * the one converged to is the k-th, not a close neighbor. */
+            const double margin = 64.0 * DBL_EPSILON * scale + pivmin;
+            accepted = sturm_count(n, d, e2, rq - margin, pivmin) <= k
+                       && sturm_count(n, d, e2, rq + margin, pivmin) > k;
             break;
         }
     }
@@ -290,9 +298,9 @@ int mandacaru_tridiagonal_eigenpair(int n, const double *d, const double *e,
     *value = lambda;
     /* The vector inverse iteration produced has the right shape but noise
      * below eps * max|x|; recompute it from the converged eigenvalue. */
-    twisted_vector(n, d, e, lambda, pivmin, dl, dd, vector);
+    const int status = twisted_vector(n, d, e, lambda, pivmin, dl, dd, vector);
     free(work);
-    return 0;
+    return status;
 }
 
 int mandacaru_radial_abi_version(void) { return MANDACARU_RADIAL_ABI; }

@@ -448,6 +448,35 @@ class TestAtomic:
         with pytest.raises(RuntimeError, match="overlap operator"):
             generate_paw("Li", norm_deficit=None, atom=generated("Li").atom)
 
+    def test_projectors_reach_the_local_radius(self):
+        """Aluminum (s 2.68, p 3.43 Bohr): r_cl follows the larger cutoff, the
+        s projectors extend past their own r_cut to it, and the channel is
+        still dual, symmetric and ghost-free."""
+        from mandacaru.pseudopotentials import oncv, paw
+        pp = generated("Al")
+        s, p = pp.channels[0], pp.channels[1]
+        assert pp.r_cut_local > s.r_cut
+        assert pp.projector_radius(0) == pytest.approx(pp.r_cut_local)
+        assert pp.projector_radius(1) == pytest.approx(p.r_cut)
+        shell = (pp.r > s.r_cut + 0.05) & (pp.r < pp.r_cut_local - 0.05)
+        assert np.abs(np.asarray(s.projectors)[:, shell]).max() > 0.0
+        assert np.all(np.asarray(s.projectors)[:, pp.r > pp.r_cut_local] == 0.0)
+        assert s.duality_error < 1e-10 and s.asymmetry < 1e-6
+        assert oncv.ghost_errors(pp, paw._paw_levels) == {}
+
+    def test_the_local_potential_alone_binds_no_ghost(self):
+        """Iron's p channel has no projectors.  With r_cl at 0.9 x the compact
+        3d cutoff, the bare all-electron well bound a p level at -4.6 Ha
+        (4p: -0.05); with r_cl at the 4s cutoff it binds nothing extra."""
+        from mandacaru.pseudopotentials import oncv, paw
+        atom = generated("Fe").atom
+        old = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
+                           r_cut_local=0.828)
+        assert old.unconstructed_ghosts()[1] < -4.0
+        assert 1 in oncv.ghost_errors(old, paw._paw_levels)
+        new = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom)
+        assert new.unconstructed_ghosts() == {}
+
     def test_report_runs_generated_and_loaded(self):
         text = report_paw(generated("H"))
         assert "l=0x2" in text and "|dL|" in text and "E_1c" in text
@@ -595,6 +624,25 @@ class TestLibrary:
 # --------------------------------------------------------------------------- #
 
 class TestIO:
+    def test_a_flagged_dataset_warns_whoever_loads_it(self, tmp_path):
+        """A ``ghosts="flag"`` dataset records what its generator could not
+        remove; the file keeps it, and every load warns."""
+        import copy
+
+        from mandacaru.pseudopotentials.oncv import GhostStateWarning
+        pp = copy.copy(generated("H"))
+        pp.defects = {"ghosts": {0: -5.03}, "phases": {3: (0.09, 0.09)}}
+        assert "GHOSTED" in repr(pp) and "SCATTERING OFF" in repr(pp)
+        path = save_pseudopotential(pp, tmp_path / "H.parquet")
+        with pytest.warns(GhostStateWarning, match="l=0 ghost -5.03 Ha"):
+            back = load_pseudopotential(path)
+        assert back.defects == {"ghosts": {0: -5.03}, "phases": {3: (0.09, 0.09)}}
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", GhostStateWarning)
+            clean = load_pseudopotential(save_pseudopotential(
+                generated("H"), tmp_path / "clean.parquet"))
+        assert clean.defects == {}
+
     @pytest.mark.parametrize("fmt", ["json", "parquet"])
     def test_round_trip(self, tmp_path, fmt):
         pp = generated("O")

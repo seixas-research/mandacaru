@@ -105,7 +105,19 @@ class TestRoundTrip:
 
     def test_explicit_stride_decimates(self, silicon, tmp_path):
         path = save_pseudopotential(silicon, tmp_path / "si.parquet", stride=4)
-        assert load_pseudopotential(path).r.size == -(-silicon.r.size // 4)
+        assert load_pseudopotential(path).r.size == silicon.r.size // 4
+
+    def test_a_decimated_grid_starts_one_step_from_the_origin(self):
+        """The PAW-LCAO and ONCVPSP grids are r_k = k h; every Numerov
+        diagnostic of a loaded dataset prepends r = 0 and takes r[1] - r[0]
+        as its step, so the stored grid must be k (stride h) -- not
+        h, 5h, 9h, ..., whose first step differs from the rest."""
+        from mandacaru.pseudopotentials.io import _table
+
+        h = 0.0025
+        r = np.asarray(_table(h * np.arange(1, 4001), 4))
+        steps = np.diff(np.concatenate([[0.0], r]))
+        assert np.allclose(steps, 4 * h, rtol=1e-8)
 
     def test_parquet_is_smaller_than_json(self, silicon, tmp_path):
         parquet = save_pseudopotential(silicon, tmp_path / "si.parquet")

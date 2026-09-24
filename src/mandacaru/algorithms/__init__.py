@@ -56,8 +56,18 @@ from .volumetric import (NaturalOrbitals, QUANTITIES, VolumetricField,
 from .vqe import VQEResult
 from .qpe import (QPEMemoryEstimate, QPEResult, QuantumPhaseEstimation,
                   phase_estimation, qpe_memory_estimate)
+from .time_evolution import SuzukiTrotter, time_evolve
+from .quantum_echoes import (EchoSpectrum, QuantumEchoes, QuantumEchoesResult,
+                             fourier_spectrum, quantum_echoes)
 
 __all__ = [
+    "SuzukiTrotter",
+    "time_evolve",
+    "QuantumEchoes",
+    "QuantumEchoesResult",
+    "quantum_echoes",
+    "EchoSpectrum",
+    "fourier_spectrum",
     "VQEResult",
     "QuantumPhaseEstimation",
     "QPEResult",

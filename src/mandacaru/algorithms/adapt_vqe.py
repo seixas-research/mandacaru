@@ -657,10 +657,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         if self._taper_info is not None:
             qubit_h = self._taper_info.hamiltonian
             self._pool_ops = [
-                replace(self._pool_ops[index], generator=generator,
-                        support=tuple(q for q, letter in enumerate(
-                            next(iter(generator.terms), "")) if letter != "I"),
-                        _matrix=None)
+                self._tapered_pool_operator(self._pool_ops[index], generator)
                 for index, generator in zip(self._taper_info.kept,
                                             self._taper_info.generators)]
         # The pool's width, not the Hamiltonian's: `_materialize_hamiltonian`
@@ -960,7 +957,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 "register is unchanged; the run continues untapered",
                 RuntimeWarning, stacklevel=3)
             return None
-        if not info.generators:
+        # Only an error when the taper is what emptied the pool: a pool that was
+        # already empty (one electron in one orbital, e.g. an isolated atom in
+        # SZ) has nothing to correlate, and the untapered run accepts it too.
+        if not info.generators and info.dropped:
             raise ValueError(
                 f"tapering left the operator pool empty: all "
                 f"{len(info.dropped)} generators change one of the "
@@ -969,6 +969,28 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 f"with no operators cannot correlate anything.  Use taper=False, "
                 f"or a pool whose excitations conserve these symmetries.")
         return info
+
+    def _tapered_pool_operator(self, op: PoolOperator,
+                               generator) -> PoolOperator:
+        """``op`` on the tapered register, with ``generator`` as its generator.
+
+        The operators a coupled-exchange operator was built from travel with it
+        in ``members``, and the growth step evaluates and appends *them* when it
+        expands the selected operator.  They have to be reduced by the same
+        Clifford as the operator itself: left on the full register they meet a
+        state of the tapered width in :meth:`_operator_gradient`, and if that
+        were patched they would put untapered generators into the ansatz.  A
+        member cannot leak when its parent does not -- under Jordan-Wigner, which
+        tapering requires, a qubit excitation puts an X or Y on every qubit it
+        acts on, so it meets a Z-type symmetry the same way whichever
+        excitation of the set it is -- so this never drops one.
+        """
+        members = tuple(
+            self._tapered_pool_operator(
+                member, self._taper_info.taper_operator(member.generator))
+            for member in op.members)
+        return replace(op, generator=generator, members=members, _matrix=None,
+                       support=_support_of(generator))
 
     def _resolve_sector(self, n_qubits: int, qubit_h=None, operators=()):
         """The :class:`~mandacaru.core.sector.ParticleSector` to simulate, or ``None``.

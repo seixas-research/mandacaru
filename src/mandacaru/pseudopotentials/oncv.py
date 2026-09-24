@@ -239,9 +239,18 @@ GHOST_TOLERANCE = 1e-4
 #: Local-potential raises (Hartree) :func:`ghost_free` tries, in order, once
 #: the channel cutoffs are balanced.
 GHOST_REMEDY_SHIFTS = (0.0, 10.0, 20.0, 40.0, 80.0)
-#: What a generator does about a ghost state: build around it, refuse, or
-#: return the dataset as it came out (for studying one).
-GHOST_MODES = ("repair", "refuse", "keep")
+#: Raises tried first with every channel at its *own* cutoff.  Once a
+#: PAW-LCAO local potential follows the largest cutoff, a raise acts on the
+#: whole extended channel, and thorium (10 Ha) and uranium (5 Ha) come out
+#: clean without stretching their compact 5f channel -- which balancing did,
+#: at 0.09-0.13 rad of phase error.
+OWN_CUTOFF_SHIFTS = (5.0, 10.0, 20.0, 40.0)
+#: What a generator does about a ghost state: build around it, refuse,
+#: return the dataset as it came out (for studying one), or -- PAW-LCAO only --
+#: repair and, where no remedy works, return the least-defective attempt
+#: with its defects recorded on it (``flag``), so a library can hold every
+#: element and a calculation that loads a flagged one is warned.
+GHOST_MODES = ("repair", "refuse", "keep", "flag")
 #: A repaired channel must scatter like the all-electron atom: the phase
 #: :math:`\arctan L(E)` of its logarithmic derivative at :math:`r_c` within
 #: this many radians over :math:`\varepsilon_{ref} \pm` :data:`PHASE_WINDOW`
@@ -657,6 +666,31 @@ class GhostStateError(RuntimeError):
     """A generated channel binds a state below its reference energy."""
 
 
+class GhostStateWarning(UserWarning):
+    """A dataset in use carries a ghost state (or wrong scattering) that its
+    generator could not remove."""
+
+
+def defect_message(symbol: str, family: str, defects: dict) -> str:
+    """The warning text for a dataset's recorded ``defects``."""
+    parts = [f"l={l} ghost {float(e):+.3g} Ha"
+             for l, e in sorted(defects.get("ghosts", {}).items())]
+    parts += [f"l={l} phase error {float(near):.2f}/{float(far):.2f} rad"
+              for l, (near, far) in sorted(defects.get("phases", {}).items())]
+    if defects.get("ghosts"):
+        what = "ghost states"
+        consequence = (f"A variational calculation containing {symbol} can "
+                       f"collapse into a spurious state, so its energies and "
+                       f"forces are not reliable.")
+    else:
+        what = "scattering errors"
+        consequence = (f"Its channels do not scatter like the all-electron "
+                       f"atom, so energies and forces of systems containing "
+                       f"{symbol} carry an error of unknown size.")
+    return (f"the {family} dataset for {symbol} still has {what} its "
+            f"generator could not remove ({'; '.join(parts)}).  {consequence}")
+
+
 def ghost_errors(pp, levels) -> dict:
     """``{l: eps_0 - eps_ref}`` for every channel holding a ghost state.
 
@@ -676,6 +710,10 @@ def ghost_errors(pp, levels) -> dict:
         if (first - reference < -GHOST_TOLERANCE
                 and abs(second - reference) < abs(first - reference)):
             out[int(l)] = first - reference
+    # Channels without projectors (PAW-LCAO): the local potential alone.
+    unconstructed = getattr(pp, "unconstructed_ghosts", None)
+    if unconstructed is not None:
+        out.update(unconstructed())
     return out
 
 
@@ -688,19 +726,23 @@ def scattering_errors(pp, log_derivative) -> dict:
     all-electron atom on ``pp``.
     """
     treatment = getattr(pp, "relativity", "none")
+    # Compare where the smooth wave obeys the all-electron equation again:
+    # past the projectors, which for PAW-LCAO can reach beyond r_cut.
+    radius = getattr(pp, "projector_radius", None)
     out = {}
     for l, channel in pp.channels.items():
         reference = float(channel.reference_energies[0])
         if reference >= 0.0:
             continue
+        r_match = float(radius(l)) if radius is not None else channel.r_cut
         near = far = 0.0
         for offset in np.arange(-RESONANCE_WINDOW,
                                 RESONANCE_WINDOW + 0.5 * PHASE_STEP, PHASE_STEP):
             energy = reference + offset
             l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, l, energy,
-                                     channel.r_cut, float(pp.atomic_number),
+                                     r_match, float(pp.atomic_number),
                                      treatment)
-            l_ps = log_derivative(pp, l, energy)
+            l_ps = log_derivative(pp, l, energy, r_match)
             d = np.arctan(l_ps) - np.arctan(l_ae)
             error = abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi)
             far = max(far, error)
@@ -708,6 +750,32 @@ def scattering_errors(pp, log_derivative) -> dict:
                 near = max(near, error)
         out[int(l)] = (float(near), float(far))
     return out
+
+
+def _least_defective(candidates):
+    """The attempt a ``flag`` build keeps, with ``pp.defects`` recorded.
+
+    An attempt without a ghost (only scattering off tolerance) beats every
+    ghosted one, the smaller phase error winning; among ghosted attempts the
+    shallowest deepest ghost wins, and fewer ghosted channels breaks a tie.
+    """
+    def badness(candidate):
+        _pp, ghosts, wrong = candidate
+        if not ghosts:
+            return (0, max(max(near, far) for near, far in wrong.values()), 0)
+        return (1, -min(ghosts.values()), len(ghosts))
+
+    pp, ghosts, wrong = min(candidates, key=badness)
+    pp.defects = {"ghosts": {int(l): float(e) for l, e in ghosts.items()},
+                  "phases": {int(l): (float(a), float(b))
+                             for l, (a, b) in wrong.items()}}
+    return pp
+
+
+def _wrong_phases(phases: dict) -> dict:
+    """The channels of :func:`scattering_errors` outside tolerance."""
+    return {l: (near, far) for l, (near, far) in phases.items()
+            if near > PHASE_TOLERANCE or far > RESONANCE_TOLERANCE}
 
 
 def _describe(errors: dict) -> str:
@@ -732,8 +800,10 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     **What is done about it.**  ``overrides`` go into every attempt, and when
     there are any they are first tried alone with the construction otherwise
     unchanged -- PAW-LCAO passes ``norm_deficit=0``, which is all iron needs.
-    Then every channel is given the largest cutoff, so :math:`r_{cl}` can
-    move out with them, and the local potential is raised by each of
+    Next the local potential is raised by each of :data:`OWN_CUTOFF_SHIFTS`
+    with the cutoffs untouched.  Then every channel is given the largest
+    cutoff, so :math:`r_{cl}` can move out with them, and the local
+    potential is raised by each of
     :data:`GHOST_REMEDY_SHIFTS` in turn (Hamann's ``dvloc0``).  A construction is
     accepted when it has no ghost **and** every bound channel scatters like the
     atom -- to :data:`PHASE_TOLERANCE` near its reference and
@@ -754,14 +824,23 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         return first
     errors = ghost_errors(first, levels)
     if not errors:
-        return first
+        # No ghost is not enough: the first construction has to scatter like
+        # the atom too, or it is repaired like a ghosted one.  (Aluminum's p
+        # channel was once returned 0.95 rad off, untested.)
+        wrong = _wrong_phases(scattering_errors(first, log_derivative))
+        if not wrong:
+            return first
+    problem = (f"ghost state below the reference ({_describe(errors)})"
+               if errors else "wrong scattering (" + ", ".join(
+                   f"l={l} {near:.3f}/{far:.3f} rad"
+                   for l, (near, far) in sorted(wrong.items())) + ")")
     pinned = [name for name in ("r_cut", "r_cut_local", "local_shift")
               if options.get(name) is not None]
     if mode == "refuse" or pinned:
         why = (f"with {', '.join(pinned)} fixed by the caller" if pinned
                else "and ghosts='refuse'")
         raise GhostStateError(
-            f"{symbol}: ghost state below the reference ({_describe(errors)}) "
+            f"{symbol}: {problem} "
             f"{why}.  Leave the cutoffs and the local potential to the "
             f"generator, or pass ghosts='keep' to study it.")
 
@@ -771,10 +850,15 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     overrides = dict(overrides or {})
     attempts = ([(", ".join(f"{k}={v:g}" for k, v in overrides.items()),
                   overrides)] if overrides else [])
+    attempts += [(f"own cutoffs, shift {shift:g}",
+                  dict(overrides, local_shift=float(shift)))
+                 for shift in OWN_CUTOFF_SHIFTS]
     attempts += [(f"balanced at {radius:.3f} Bohr, shift {shift:g}",
                   dict(overrides, **balanced, local_shift=float(shift)))
                  for shift in GHOST_REMEDY_SHIFTS]
     tried = []
+    # (pp, ghosts, wrong phases) of every attempt that built, for ``flag``.
+    candidates = [(first, errors, {} if errors else wrong)]
     for label, remedy in attempts:
         trial = dict(options, atom=first.atom, **remedy)
         try:
@@ -785,18 +869,20 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         remaining = ghost_errors(pp, levels)
         if remaining:
             tried.append(f"{label}: ghost {_describe(remaining)}")
+            candidates.append((pp, remaining, {}))
             continue
-        phases = scattering_errors(pp, log_derivative)
-        wrong = {l: (near, far) for l, (near, far) in phases.items()
-                 if near > PHASE_TOLERANCE or far > RESONANCE_TOLERANCE}
+        wrong = _wrong_phases(scattering_errors(pp, log_derivative))
         if wrong:
+            candidates.append((pp, {}, wrong))
             tried.append(f"{label}: phase " + ", ".join(
                 f"l={l} {near:.3f}/{far:.3f} rad"
                 for l, (near, far) in sorted(wrong.items())))
             continue
         return pp
+    if mode == "flag":
+        return _least_defective(candidates)
     raise GhostStateError(
-        f"{symbol}: ghost state below the reference ({_describe(errors)}) and "
+        f"{symbol}: {problem} and "
         f"no remedy removed it while keeping the scattering "
         f"({'; '.join(tried)}).")
 
@@ -1609,6 +1695,10 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         ``"refuse"`` raises :class:`GhostStateError` instead; ``"keep"``
         returns it unexamined.  See :func:`ghost_free`.
     """
+    if ghosts == "flag":
+        raise ValueError("ghosts='flag' is PAW-LCAO only: an ONCVPSP file has "
+                         "nowhere to record the defect, so its users would "
+                         "never be warned")
     if ghosts != "keep":
         options = {k: v for k, v in locals().items()
                    if k not in ("symbol", "ghosts")}

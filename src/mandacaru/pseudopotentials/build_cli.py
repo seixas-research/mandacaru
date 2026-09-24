@@ -94,7 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", "-j", type=int, default=1,
                         help="elements generated in parallel (default 1)")
     parser.add_argument("--ghosts", default="repair", choices=GHOST_MODES,
-                        help="repair (default), refuse or keep a ghost state")
+                        help="repair (default), refuse or keep a ghost state; "
+                             "flag (PAW/UPAW) writes an element no repair "
+                             "cleans with its defect recorded, so loading it "
+                             "warns")
     parser.add_argument("--check", action="store_true",
                         help="also compare every channel's scattering phase "
                              "with the all-electron atom")
@@ -119,9 +122,8 @@ def build_backend_command() -> int:
     from ..basis import radial_backend
 
     os.environ["MANDACARU_BACKEND"] = "auto"
-    path = radial_backend.build_radial_backend(verbose=True)
-    radial_backend._LIB = None
-    radial_backend._attempted = path is not None
+    radial_backend.build_radial_backend(verbose=True)
+    radial_backend.reload_radial_backend()
     uses_c, message = radial_backend.radial_backend_status(build=False)
     if uses_c:
         print(f"C radial backend: {message}")
@@ -176,11 +178,28 @@ def _levels_and_phase(family: str):
 
 def build_one(family: str, symbol: str, options: dict, directory: str,
               fmt: str, check: bool) -> tuple[bool, str]:
-    """Generate, write and check one dataset; ``(ok, report)``."""
+    """Generate, write and check one dataset; ``(ok, report)``.
+
+    Numerical ``RuntimeWarning`` noise is silenced for this call only; any
+    other warning the generator raises (a cutoff past where a channel is
+    trustworthy, say) is kept and listed in the report.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("ignore", RuntimeWarning)
+        warnings.simplefilter("always", UserWarning)
+        ok, report = _build_one(family, symbol, options, directory, fmt, check)
+    notes = sorted({str(w.message) for w in caught
+                    if not issubclass(w.category, RuntimeWarning)})
+    if notes:
+        report += "".join(f"\n    warning: {note}" for note in notes)
+    return ok, report
+
+
+def _build_one(family: str, symbol: str, options: dict, directory: str,
+               fmt: str, check: bool) -> tuple[bool, str]:
     from .io import STRIDE, library_file, save_pseudopotential
     from ..basis.radial_backend import radial_backend_status
 
-    warnings.simplefilter("ignore", RuntimeWarning)
     started = time.perf_counter()
     try:
         pp = _generate(family, symbol, options)
@@ -193,9 +212,13 @@ def build_one(family: str, symbol: str, options: dict, directory: str,
                        f"{type(error).__name__}: {error}")
     elapsed = time.perf_counter() - started
     uses_c, _message = radial_backend_status(build=False)
-    lines = [f"{symbol:>2}  {pp!r}",
-             f"    {elapsed:.1f} s, {'C' if uses_c else 'Python'} radial "
-             f"kernels -> {path}"]
+    lines = [f"{symbol:>2}  {pp!r}"]
+    if getattr(pp, "defects", None):
+        from .oncv import defect_message
+        lines = [f"{symbol:>2}  FLAGGED  "
+                 + defect_message(symbol, family, pp.defects), f"    {pp!r}"]
+    lines.append(f"    {elapsed:.1f} s, {'C' if uses_c else 'Python'} radial "
+                 f"kernels -> {path}")
     if family in MODERN:
         from .oncv import ghost_errors, scattering_errors
         levels, log_derivative = _levels_and_phase(family)
@@ -211,6 +234,9 @@ def build_one(family: str, symbol: str, options: dict, directory: str,
                 near, far = phases[l]
                 line += f"  phase {near:.3f}/{far:.3f} rad"
             lines.append(line)
+        for l in sorted(set(ghosts) - set(pp.channels)):
+            lines.append(f"    l={l}  no projectors  local potential binds "
+                         f"{ghosts[l]:+.1e} Ha below the atom  GHOST")
         lines.append(f"    local potential: r_cl={pp.r_cut_local:.3f} Bohr, "
                      f"shift {pp.local_shift:+.1f} Ha")
     return True, "\n".join(lines)
@@ -229,6 +255,9 @@ def main(argv=None) -> int:
         parser.error(f"--pp must be one of PAW, UPAW, ONCV, NCPP, not {args.pp!r}")
     if args.install and args.output is not None:
         parser.error("--install and --output are exclusive")
+    if args.ghosts == "flag" and family not in ("paw-lcao", "upaw-lcao"):
+        parser.error("--ghosts flag is PAW/UPAW only: only those files record "
+                     "a defect for their users to be warned of")
     relativity = args.relativity or "scalar"
     if family == "ncpp" and (args.relativity not in (None, "none")
                              or args.xc != "lda"):
@@ -263,22 +292,36 @@ def main(argv=None) -> int:
     print(f"radial kernels: {message}")
     print(f"writing to {directory}\n", flush=True)
 
-    failures = 0
+    failures = flagged = 0
     jobs = [(family, s, options, directory, args.format, args.check)
             for s in symbols]
     if args.workers <= 1 or len(jobs) == 1:
         for job in jobs:
             ok, report = build_one(*job)
             failures += not ok
+            flagged += "  FLAGGED  " in report
             print(report, flush=True)
     else:
+        from ase.data import atomic_numbers
+
+        # Generation time grows steeply with Z (O 5 s, Fe 30 s, Th 670 s), so
+        # the heaviest start first and the light ones fill in around them.
+        jobs.sort(key=lambda job: -atomic_numbers[job[1]])
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
-            futures = [pool.submit(build_one, *job) for job in jobs]
+            futures = {pool.submit(build_one, *job): job[1] for job in jobs}
             for future in as_completed(futures):
-                ok, report = future.result()
+                try:
+                    ok, report = future.result()
+                except Exception as error:              # noqa: BLE001
+                    # A worker that died (a crash in native code, say) takes
+                    # only its own element down; the rest still report.
+                    ok, report = False, (f"{futures[future]:>2}  FAILED  "
+                                         f"{type(error).__name__}: {error}")
                 failures += not ok
+                flagged += "  FLAGGED  " in report
                 print(report, flush=True)
     print(f"\n{len(jobs) - failures} of {len(jobs)} dataset(s) written"
+          + (f", {flagged} flagged" if flagged else "")
           + (f", {failures} failed" if failures else ""))
     return 1 if failures else 0
 

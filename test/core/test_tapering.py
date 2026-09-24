@@ -31,7 +31,8 @@ from mandacaru.core.mapping import PauliSum
 from mandacaru.core.tapering import (leaking_terms, reduce_generators,
                                      rotate_to_z_type, sector_signs,
                                      symmetry_generators, symplectic_form,
-                                     taper, tapered_reference_bits)
+                                     taper, taper_problem,
+                                     tapered_reference_bits)
 from mandacaru.integrals import Grid
 
 
@@ -289,6 +290,41 @@ class TestItRefusesToProjectAnOperator:
             taper(operator, reduced, [1], anchors)
 
 
+class TestTaperingAnOperatorAfterwards:
+    def test_it_lands_where_the_problem_put_its_own_generators(self, lih_minimal):
+        # ``taper_operator`` is how an operator that was not handed to
+        # ``taper_problem`` joins the register it built; if it took a different
+        # Clifford or sector, that operator would sit on a register of its own.
+        # Terms of the Hamiltonian commute with every symmetry by construction,
+        # so they stand in for pool generators that survive the taper.
+        operator, bits = lih_minimal
+        labels = [label for label in operator.terms if set(label) != {"I"}][:3]
+        generators = [PauliSum({label: 1j}) for label in labels]
+        info = taper_problem(operator, generators, bits)
+        assert info.kept == (0, 1, 2)
+        for original, tapered in zip(generators, info.generators):
+            assert info.taper_operator(original).terms == pytest.approx(
+                tapered.terms)
+
+    def test_it_uses_the_sector_the_problem_chose(self, lih_minimal):
+        # The wrong sector gives a different spectrum (see
+        # ``test_the_wrong_sector_gives_a_different_energy``), so this is what
+        # a mismatched sign or anchor would break.
+        operator, bits = lih_minimal
+        info = taper_problem(operator, [], bits)
+        tapered = info.taper_operator(operator)
+        assert tapered.num_qubits == info.n_qubits
+        assert ground_energy(tapered) == pytest.approx(ground_energy(operator),
+                                                      abs=1e-10)
+
+    def test_it_refuses_to_project_an_operator(self, lih_minimal):
+        operator, bits = lih_minimal
+        info = taper_problem(operator, [], bits)
+        stray = PauliSum({"X" + "I" * (operator.num_qubits - 1): 1 + 0j})
+        with pytest.raises(ValueError, match="do not commute"):
+            info.taper_operator(stray)
+
+
 class TestTheReferenceState:
     def test_the_signs_are_plus_or_minus_one(self, lih_minimal):
         operator, bits = lih_minimal
@@ -353,6 +389,38 @@ class TestThroughTheCalculator:
         _a1, e1, s1 = _run("H2", [(0, 0, 0), (0, 0, 0.74)], "6-31G",
                            (8., 8., 8.), taper=True)
         assert s1._taper_info.dropped
+        assert e1 == pytest.approx(e0, abs=1e-8)
+
+    def test_the_coupled_exchange_pool_is_tapered_through_its_members(
+            self, monkeypatch):
+        # A CEO operator carries the excitations it couples in ``members``, and
+        # the growth step evaluates and appends those.  They were left on the
+        # full register while the operator itself was tapered, so the first
+        # gradient of a member multiplied a 2^n matrix into a 2^(n-k) state.
+        from mandacaru.circuits.pools import CEOPool
+
+        expanded = []
+        grown_operators = CEOPool.grown_operators
+
+        def spy(self, selected, gradient):
+            if len(selected.members) > 1:
+                expanded.append(selected.label)
+            return grown_operators(self, selected, gradient)
+
+        monkeypatch.setattr(CEOPool, "grown_operators", spy)
+        args = ("LiH", [(0, 0, 0), (0, 0, 1.60)], "STO-3G", (9., 9., 10.))
+        _a0, e0, _s0 = _run(*args, taper=False, pool="ceo")
+        expanded.clear()
+        _a1, e1, s1 = _run(*args, taper=True, pool="ceo")
+        # The pool must hold coupled operators and the run must have reached the
+        # branch that evaluates their members; without that the energy match
+        # below would pass on a run that never touched them.
+        assert any(len(op.members) > 1 for op in s1._pool_ops)
+        assert expanded
+        for op in s1._pool_ops:
+            assert op.generator.num_qubits == s1.n_qubits
+            for member in op.members:
+                assert member.generator.num_qubits == s1.n_qubits
         assert e1 == pytest.approx(e0, abs=1e-8)
 
     def test_it_reports_what_it_did(self):

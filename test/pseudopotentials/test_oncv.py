@@ -607,6 +607,34 @@ class TestGhostSearch:
         assert self._run(generate) is clean
         assert len(calls) == 1
 
+    def test_a_clean_dataset_that_scatters_wrong_is_repaired(self):
+        """Aluminum's first p channel: no ghost, 0.95 rad off.  Absence of a
+        ghost alone no longer returns the first construction."""
+        wrong = self._Dataset(self.CLEAN)
+        right = self._Dataset(self.CLEAN)
+        self.phases[id(wrong)] = {1: (0.949, 0.949)}
+        generate, calls = self._generator([wrong, right])
+        assert self._run(generate, overrides={"norm_deficit": 0.0}) is right
+        assert calls[1]["norm_deficit"] == 0.0
+
+    def test_flag_keeps_the_least_defective_attempt_and_records_it(self):
+        """No remedy works: ``flag`` returns the attempt with the shallowest
+        ghost (a scattering-only defect would beat any ghost) and records it."""
+        deep = self._Dataset({0: (-5.0, -0.2), 2: (-0.2, 0.3)})
+        shallow = self._Dataset({0: (-0.5, -0.2), 2: (-0.2, 0.3)})
+        rest = [self._Dataset(self.GHOST) for _ in range(9)]
+        generate, _calls = self._generator([deep, shallow] + rest)
+        kept = self._run(generate, mode="flag",
+                         overrides={"norm_deficit": 0.0})
+        assert kept is shallow
+        assert kept.defects == {"ghosts": {0: pytest.approx(-0.3)},
+                                "phases": {}}
+
+    def test_flag_is_refused_for_oncvpsp(self):
+        from mandacaru.pseudopotentials.oncv import generate_oncv
+        with pytest.raises(ValueError, match="PAW-LCAO only"):
+            generate_oncv("H", ghosts="flag")
+
     def test_an_inaccurate_level_is_not_a_ghost(self):
         """One level 6e-4 Ha low with nothing displaced: accuracy, not a ghost."""
         from mandacaru.pseudopotentials.oncv import ghost_errors
@@ -616,26 +644,35 @@ class TestGhostSearch:
             0: pytest.approx(-1.6)}
 
     def test_overrides_are_tried_alone_first_then_kept_in_every_attempt(self):
-        still = self._Dataset(self.GHOST)
+        from mandacaru.pseudopotentials.oncv import OWN_CUTOFF_SHIFTS
+        n_own = len(OWN_CUTOFF_SHIFTS)
+        stills = [self._Dataset(self.GHOST) for _ in range(1 + n_own)]
         clean = self._Dataset(self.CLEAN)
-        generate, calls = self._generator([self._Dataset(self.GHOST), still,
-                                           clean])
+        generate, calls = self._generator([self._Dataset(self.GHOST)]
+                                          + stills + [clean])
         assert self._run(generate, overrides={"norm_deficit": 0.0}) is clean
-        alone, balanced = calls[1], calls[2]
+        alone, raised, balanced = calls[1], calls[2], calls[2 + n_own]
         assert alone["norm_deficit"] == 0.0
         assert alone["r_cut"] is None           # the cutoffs are untouched
         assert alone["atom"] == "atom"          # the SCF atom is reused
+        assert raised["r_cut"] is None          # raised at the own cutoffs
+        assert raised["local_shift"] == OWN_CUTOFF_SHIFTS[0]
         assert balanced["norm_deficit"] == 0.0  # and kept with balanced ones
         assert balanced["r_cut"] == {0: 3.0, 2: 3.0}
 
     def test_a_ghost_is_repaired_with_balanced_cutoffs_and_a_raised_shift(self):
-        from mandacaru.pseudopotentials.oncv import GHOST_REMEDY_SHIFTS
+        from mandacaru.pseudopotentials.oncv import (GHOST_REMEDY_SHIFTS,
+                                                     OWN_CUTOFF_SHIFTS)
+        n_own = len(OWN_CUTOFF_SHIFTS)
+        own = [self._Dataset(self.GHOST) for _ in range(n_own)]
         still = self._Dataset({0: (-0.5, -0.2), 2: (-0.2, 0.3)})
         clean = self._Dataset(self.CLEAN)
-        generate, calls = self._generator([self._Dataset(self.GHOST), still,
-                                           clean])
+        generate, calls = self._generator([self._Dataset(self.GHOST)] + own
+                                          + [still, clean])
         assert self._run(generate) is clean
-        first, second = calls[1], calls[2]
+        assert [c["local_shift"] for c in calls[1:1 + n_own]] == list(
+            OWN_CUTOFF_SHIFTS)
+        first, second = calls[1 + n_own], calls[2 + n_own]
         assert first["r_cut"] == {0: 3.0, 2: 3.0}
         assert first["r_cut_local"] == pytest.approx(2.7)
         assert first["local_shift"] == GHOST_REMEDY_SHIFTS[0]
@@ -681,12 +718,14 @@ class TestGhostSearch:
 
     def test_no_remedy_is_an_error_naming_every_attempt(self):
         from mandacaru.pseudopotentials.oncv import (GHOST_REMEDY_SHIFTS,
+                                                     OWN_CUTOFF_SHIFTS,
                                                      GhostStateError)
-        generate, calls = self._generator(
-            [self._Dataset(self.GHOST)] * (1 + len(GHOST_REMEDY_SHIFTS)))
-        with pytest.raises(GhostStateError, match="no remedy removed it"):
+        n = 1 + len(OWN_CUTOFF_SHIFTS) + len(GHOST_REMEDY_SHIFTS)
+        generate, calls = self._generator([self._Dataset(self.GHOST)] * n)
+        with pytest.raises(GhostStateError, match="no remedy removed it") as error:
             self._run(generate)
-        assert len(calls) == 1 + len(GHOST_REMEDY_SHIFTS)
+        assert len(calls) == n
+        assert "own cutoffs, shift 5" in str(error.value)
 
     def test_a_scattering_channel_is_not_judged(self):
         from mandacaru.pseudopotentials.oncv import ghost_errors

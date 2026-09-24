@@ -66,9 +66,12 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
-from typing import Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from ..algorithms.quantum_echoes import EchoSpectrum, QuantumEchoesResult
 
 _BANNER = "=" * 72
 _RULE = "-" * 72
@@ -1033,6 +1036,81 @@ def append_block(path: str, section: str, fields: dict,
     _write_lines(path, lines)
 
 
+def append_quantum_echoes(
+    path: str, results: Sequence[QuantumEchoesResult], *, order: int,
+    steps: int, kick_steps: int = 1, max_perturbation: float = 0.1,
+    field: Sequence[float] | None = None, spectrum: EchoSpectrum | None = None,
+    spectrum_steps_per_sample: int | None = None,
+) -> None:
+    """Append a ``[QUANTUM ECHOES]`` block in the standard report format.
+
+    Record the propagation settings used for ``results``, and optionally the
+    Fourier spectrum with its sampling parameters, peaks, and complete signed
+    energy grid. Energies are reported in Hartree and eV; the spectral magnitude
+    is the Fourier magnitude of a potential correlation, not an absorption
+    cross section. Complex data have separate real/imaginary columns.
+
+    ``path`` accepts the usual destinations, including :data:`STDOUT`. Call
+    once per ``calculator.solver.log_targets`` to respect file/terminal routing.
+    :func:`parse_output` returns metadata and the ``samples``, ``peaks``, and
+    ``spectrum`` tables under ``quantum_echoes`` for the current geometry step.
+    """
+    from ..units import HARTREE_TO_EV
+
+    fields = {
+        "protocol": "U(t)^dagger exp(-i tau_p V) U(t)",
+        "propagator": "Suzuki-Trotter",
+        "order": order, "steps": steps, "kick_steps": kick_steps,
+        "time_unit": "atomic time", "response_unit": "Hartree",
+        "correlation_unit": "Hartree^2",
+        "max_perturbation": f"{max_perturbation:.12e}",
+        "perturbation_bound": "abs(tau_p) sum_P abs(v_P)",
+    }
+    if field is not None:
+        fields["field_au"] = " ".join(f"{float(value):.12e}" for value in field)
+    if spectrum is not None:
+        fields.update({
+            "spectrum_method": "FFT of connected <V V(t)> (linear response)",
+            "spectrum_energy": "excitation gaps, not absolute total energies",
+            "spectrum_intensity": "Fourier magnitude (Hartree), not absorption",
+            "spectrum_window": spectrum.window,
+            "spectrum_num_samples": spectrum.times.size,
+            "spectrum_time_step": f"{spectrum.time_step:.12e}",
+            "spectrum_last_time": f"{spectrum.times[-1]:.12e}",
+            "spectrum_resolution_ha": f"{spectrum.resolution:.12e}",
+            "spectrum_resolution_ev": f"{spectrum.resolution*HARTREE_TO_EV:.12e}",
+            "spectrum_nyquist_ha": f"{spectrum.nyquist_energy:.12e}",
+            "spectrum_elastic": f"{spectrum.elastic:.12e}",
+            "peak_relative_threshold": "5.000000000000e-02",
+        })
+        if spectrum_steps_per_sample is not None:
+            fields["spectrum_steps_per_sample"] = spectrum_steps_per_sample
+    lines = ["", "[QUANTUM ECHOES]"]
+    lines += _indent([f"{key}: {value}" for key, value in fields.items()])
+    lines += _indent(["samples:"])
+    lines += _indent([
+        "time tau_p pulse_bound fidelity amplitude_real amplitude_imag "
+        "response correlation_real correlation_imag"], 2)
+    for result in results:
+        values = (result.time, result.tau_p, result.perturbation_bound,
+                  result.fidelity, result.amplitude.real, result.amplitude.imag,
+                  result.response, result.correlation.real, result.correlation.imag)
+        lines += _indent([" ".join(f"{value:.12e}" for value in values)], 2)
+    if spectrum is not None:
+        intensity = spectrum.intensities
+        for name, indices in (("peaks", spectrum.peaks()),
+                              ("spectrum", range(spectrum.energies.size))):
+            lines += _indent([f"{name}:"])
+            lines += _indent(["energy_ha energy_ev magnitude fft_real fft_imag"], 2)
+            for i in indices:
+                values = (spectrum.energies[i], spectrum.energies[i]*HARTREE_TO_EV,
+                          intensity[i], spectrum.amplitudes[i].real,
+                          spectrum.amplitudes[i].imag)
+                lines += _indent([" ".join(f"{value:.12e}" for value in values)], 2)
+    lines.append(_BANNER)
+    _write_lines(path, lines)
+
+
 def append_performance(path: str, stages=None, wall_time_s=None,
                        resources=None, step: int | None = None,
                        extra: dict | None = None) -> None:
@@ -1144,6 +1222,7 @@ _PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs")
 #: Section markers of the protocol, mapped to the key they fill (the step
 #: markers are handled separately: they open a new geometry step).
 _SECTIONS = {"[BASIS]": "basis",
+             "[QUANTUM ECHOES]": "quantum_echoes",
              "[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
              "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
@@ -1167,6 +1246,8 @@ def parse_output(path: str) -> dict:
     ``[ITERATIONS]`` table as one record per row keyed by its column heading, and
     the ``[FORCES]`` block as per-atom vectors plus its scalar keys --
     demonstrating that the protocol is machine-parseable as written.
+    ``[QUANTUM ECHOES]`` is returned under ``quantum_echoes`` with metadata
+    and numeric ``samples``, ``peaks``, and ``spectrum`` tables when present.
 
     A file written by a geometry optimization holds one block per step
     (see the module docstring).  ``result["steps"]`` is the list of those blocks,
@@ -1186,6 +1267,7 @@ def parse_output(path: str) -> dict:
     energy_unit = "eV"
     table = None                      # which force table rows are landing in
     basis_columns = None              # heading of the [BASIS] table being read
+    echo_columns = None               # heading of the current echo table
 
     def number(text):
         try:
@@ -1233,6 +1315,10 @@ def parse_output(path: str) -> dict:
                     table = None
                     basis_columns = None
                     step["basis"] = {}
+                elif section == "quantum_echoes":
+                    table = None
+                    echo_columns = None
+                    step["quantum_echoes"] = {}
                 elif section in ("optimization", "completion"):
                     # The relaxation's own blocks: they close the file, not a
                     # geometry step, so they are kept at the top level.
@@ -1273,6 +1359,31 @@ def parse_output(path: str) -> dict:
                         block[key] = int(numeric)
                     else:
                         block[key] = numeric
+            elif section == "quantum_echoes":
+                block = step["quantum_echoes"]
+                if stripped in ("samples:", "peaks:", "spectrum:"):
+                    table = stripped[:-1]
+                    echo_columns = None
+                    block[table] = []
+                elif table is not None and indent >= len(INDENT) * 2:
+                    cells = stripped.split()
+                    if echo_columns is None:
+                        echo_columns = cells
+                    else:
+                        block[table].append(
+                            {name: float(value) for name, value
+                             in zip(echo_columns, cells)})
+                elif ":" in stripped:
+                    key, _, value = stripped.partition(":")
+                    key, value = key.strip(), value.strip()
+                    if key in ("order", "steps", "kick_steps", "spectrum_num_samples",
+                               "spectrum_steps_per_sample"):
+                        block[key] = int(value)
+                    elif key == "field_au":
+                        block[key] = [float(v) for v in value.split()]
+                    else:
+                        numeric = number(value)
+                        block[key] = value if numeric is None else numeric
             elif section == "basis":
                 block = step["basis"]
                 if stripped.endswith(":") and indent < len(INDENT) * 2:

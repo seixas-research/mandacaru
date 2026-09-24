@@ -148,15 +148,17 @@ from ..basis.atomic_solver import (AtomicResult, hartree_potential,
 from ..core.hamiltonian import MolecularIntegrals, projector_blocks
 from .confinement import DEFAULT_ENERGY_SHIFT
 from .generation import Channel, PseudoPotential, _valence_configuration
-from .oncv import (Q_MAX, Q_STEP, PseudoWaves, _bessel_table,
-                   _bessel_transform_table, _inner_grid, _log_derivative_of_u,
+from .oncv import (INNER_POINTS, Q_MAX, Q_STEP, GhostStateWarning,
+                   PseudoWaves, _bessel_table, _bessel_transform_table,
+                   _inner_grid, _log_derivative_of_u,
                    _pseudo_waves_record, _radial_f, _resample, _snap,
                    _spectrum_extent, _tail_transform, _with_origin,
                    bessel_derivatives, bessel_wavevectors, generation_points,
                    DEFAULT_EXTRA_L, DEFAULT_NLCC, DEFAULT_RELATIVITY,
                    DEFAULT_XC, log_derivative_errors, matching_targets,
-                   ghost_free, numerov_outward, optimize_pseudo_waves,
-                   polynomial_local_potential, reference_waves)
+                   defect_message, ghost_free, numerov_outward,
+                   optimize_pseudo_waves, polynomial_local_potential,
+                   reference_waves)
 
 #: Registry name of the family (no aliases).  The **-LCAO** is not decoration:
 #: this is Bloechl's projector-augmented-wave transformation carried on a
@@ -402,12 +404,24 @@ class PAWChannel(Channel):
 
 def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
                          v_loc: np.ndarray, n: int, occupation: float = 0.0,
-                         strict: bool = True) -> PAWChannel:
+                         strict: bool = True,
+                         r_local: float = 0.0) -> PAWChannel:
     r"""Projectors and one-center matrices of a channel for a given
     screened ``v_loc``.
 
     :math:`\chi_i = \sum_n c_{in}(\varepsilon_i - q_n^2/2 - \tilde v^{scr})
-    j_l(q_n r)` inside ``r_cut`` (zero beyond), :math:`B_{ij} =
+    j_l(q_n r)` inside ``r_cut``; between ``r_cut`` and the radius
+    ``r_local`` of the local potential, where the smooth wave *is* the
+    all-electron one, :math:`\chi_i = (v^{AE} - \tilde v^{scr})\varphi_i`;
+    zero beyond both.  That shell is what lets :math:`r_{cl}` exceed a
+    compact channel's cutoff (Bloechl's construction: a projector reaches
+    wherever :math:`(\varepsilon - T - \tilde v)\tilde\varphi \neq 0`).
+    Cutting every projector at its own ``r_cut`` instead forced
+    :math:`r_{cl} \le \min r_c`, and for a transition metal, lanthanide or
+    6p element that left the extended ``s`` and ``p`` channels in the bare
+    all-electron well between the compact ``d``/``f`` cutoff and their own --
+    the well that bound every ghost of the 2026-09-24 census (HISTORY.md).
+    :math:`B_{ij} =
     \langle\tilde\varphi_i|\chi_j\rangle`, projectors
     :math:`\tilde p_i = \sum_k (B^{-1})_{ki}\chi_k` (dual to the smooth
     waves), :math:`q_{ij}`, :math:`\Delta T_{ij}`, :math:`\Delta V^{scr}_{ij}`
@@ -418,6 +432,16 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
     l, r_cut = pw.l, pw.r_cut
     r_in = _inner_grid(r_cut)
     inside = r <= r_cut
+    # The shell (r_cut, r_local] where v_loc still differs from v_AE.  There
+    # phi~ = phi and T phi = (eps - v_AE) phi, so chi = (v_AE - v_loc) phi and
+    # the shell adds <phi_i|v_AE - v_loc|phi_j> to B and to Delta V alike
+    # (Delta T gets nothing: both sides carry the same wave).  The kinetic
+    # identity is the non-relativistic one; for a scalar-relativistic wave it
+    # is off by O(c^-2) there, the same residual the old zero-beyond-r_cut
+    # projector dropped, and the asymmetry tolerance judges it.
+    r_shell = (np.linspace(r_cut, float(r_local), INNER_POINTS)
+               if float(r_local) > r_cut else None)
+    shell = (r > r_cut) & (r <= float(r_local))
     w = r_in * r_in
     v_loc_in = _resample(r, v_loc, r_in)
     v_ae_in = _resample(r, v_ae, r_in)
@@ -438,12 +462,32 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
         return float(simpson(a * b * w, x=r_in))
 
     n_waves = len(pseudo_in)
-    B = np.array([[inner(p, x) for x in chi_in] for p in pseudo_in])
+    shell_V = np.zeros((n_waves, n_waves))
+    shell_chi = [np.zeros(0)] * n_waves
+    shell_ae = [np.zeros(0)] * n_waves
+    if r_shell is not None:
+        dv_shell = _resample(r, v_ae - v_loc, r_shell)
+        shell_ae = [_resample(r, wave, r_shell) for wave in pw.waves]
+        shell_chi = [dv_shell * wave for wave in shell_ae]
+        w_shell = r_shell * r_shell
+        shell_V = np.array([[float(simpson(a * b * w_shell, x=r_shell))
+                             for b in shell_chi] for a in shell_ae])
+
+    def inner_all(a_in, a_sh, b_in, b_sh):
+        total = inner(a_in, b_in)
+        if r_shell is not None:
+            total += float(simpson(a_sh * b_sh * r_shell * r_shell, x=r_shell))
+        return total
+
+    B = np.array([[inner(p, x) for x in chi_in] for p in pseudo_in]) + shell_V
     B_inv = np.linalg.inv(B)
     projectors_in = [sum(B_inv[k, i] * chi_in[k] for k in range(n_waves))
                      for i in range(n_waves)]
-    duality = np.array([[inner(p, f) for f in pseudo_in]
-                        for p in projectors_in])
+    projectors_sh = [sum(B_inv[k, i] * shell_chi[k] for k in range(n_waves))
+                     for i in range(n_waves)]
+    duality = np.array([[inner_all(p, ps, f, fs)
+                         for f, fs in zip(pseudo_in, shell_ae)]
+                        for p, ps in zip(projectors_in, projectors_sh)])
     duality_error = float(np.max(np.abs(duality - np.eye(n_waves))))
     if strict and duality_error > DUALITY_TOLERANCE:
         raise RuntimeError(
@@ -475,7 +519,9 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
     # where the reference energy sits near a node of the wave.
     # The overlap operator 1 + sum |p_i> q_ij <p_j| restricted to the channel
     # has the eigenvalues 1 + eig(q G_p); it must stay positive definite.
-    gram = np.array([[inner(a, b) for b in projectors_in] for a in projectors_in])
+    gram = np.array([[inner_all(a, a_sh, b, b_sh)
+                      for b, b_sh in zip(projectors_in, projectors_sh)]
+                     for a, a_sh in zip(projectors_in, projectors_sh)])
     overlap_minimum = float(1.0 + np.linalg.eigvals(q @ gram).real.min())
     if strict and overlap_minimum < OVERLAP_MINIMUM:
         raise RuntimeError(
@@ -506,7 +552,7 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
     dT = 0.5 * (dT + dT.T)
     dV = V_ae - np.array([[inner(pseudo_in[i], v_loc_in * pseudo_in[j])
                            for j in range(n_waves)] for i in range(n_waves)])
-    dV = 0.5 * (dV + dV.T)
+    dV = 0.5 * (dV + dV.T) + 0.5 * (shell_V + shell_V.T)
     D_raw = B + q_norm * energies[None, :]
     asymmetry = float(np.max(np.abs(D_raw - D_raw.T)))
     if strict and asymmetry > COUPLING_ASYMMETRY_TOLERANCE:
@@ -528,6 +574,8 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
         chi = ((energy - 0.5 * qs ** 2)[:, None] * basis
                - v_loc[None, :] * basis).T @ c
         chi_full.append(np.where(inside, chi, 0.0))
+    for k, wave in enumerate(pw.waves):
+        chi_full[k] = np.where(shell, (v_ae - v_loc) * wave, chi_full[k])
     for i in range(n_waves):
         projectors.append(sum(B_inv[k, i] * chi_full[k] for k in range(n_waves)))
 
@@ -707,6 +755,64 @@ class PAWDataset(PseudoPotential):
     #: projectors -- there is one set per l, not one per j -- so the overlap
     #: operator is untouched and stays diagonal in spin.
     spin_orbit: dict = field(default_factory=dict)
+    #: What its generator could not remove (``ghosts="flag"``):
+    #: ``{"ghosts": {l: eps_0 - eps_ref}, "phases": {l: (near, far)}}``.
+    #: Empty for a clean dataset.  Stored in the file; loading a dataset that
+    #: has any raises a :class:`~.oncv.GhostStateWarning`.
+    defects: dict = field(default_factory=dict)
+
+    def unconstructed_ghosts(self) -> dict:
+        """``{l: eps_ps - eps_ae}`` for every channel *without* projectors
+        (``l`` up to one above the highest channel) in which the local
+        potential alone binds more states than the all-electron atom has
+        valence states of that ``l``.
+
+        Such a channel is governed by :attr:`v_local_screened` only, so the
+        spectral test of :func:`~.oncv.ghost_errors` never sees it -- iron's
+        ``p`` channel held a level at -4.63 Ha against a 4p at -0.05 Ha while
+        every constructed channel was clean.  Both spectra are counted below
+        zero in the same box, on the reference atom's uniform grid, where the
+        two potentials agree beyond ``r_cut_local``; the all-electron count
+        less that ``l``'s core shells is the number of states the local
+        potential may bind.  Needs the all-electron atom (a dataset read from
+        the library has none, and gives ``{}``).
+        """
+        from scipy.linalg import eigvalsh_tridiagonal
+
+        from .generation import _valence_configuration
+
+        if self.atom is None:
+            return {}
+        r = np.asarray(self.atom.r, dtype=float)
+        h = float(r[1] - r[0])
+        _valence, core = _valence_configuration(
+            int(self.atomic_number), configuration=self.atom.occupations)
+        off = np.full(r.size - 1, -0.5 / h ** 2)
+
+        def bound(v, l):
+            diag = 1.0 / h ** 2 + v + l * (l + 1) / (2.0 * r * r)
+            return eigvalsh_tridiagonal(diag, off, select="v",
+                                        select_range=(float(v.min()) - 1.0,
+                                                      0.0))
+
+        out = {}
+        for l in range(max(self.channels) + 2):
+            if l in self.channels:
+                continue
+            smooth = bound(np.interp(r, self.r, self.v_local_screened), l)
+            ae = bound(np.asarray(self.atom.v_effective, dtype=float), l)
+            allowed = ae[sum(1 for (_n, lc) in core if lc == l):]
+            if smooth.size > allowed.size:
+                reference = float(allowed[0]) if allowed.size else 0.0
+                out[int(l)] = float(smooth[0]) - reference
+        return out
+
+    def projector_radius(self, l: int) -> float:
+        """Radius beyond which channel ``l``'s projectors vanish and the
+        smooth wave obeys the all-electron equation: its own ``r_cut``, or
+        the local potential's ``r_cut_local`` when that is larger
+        (:func:`assemble_paw_channel`)."""
+        return max(float(self.channels[int(l)].r_cut), float(self.r_cut_local))
 
     @property
     def has_spin_orbit(self) -> bool:
@@ -822,7 +928,9 @@ class PAWDataset(PseudoPotential):
                 f"[{channels}], rg={self.compensation_radius:.2f}, "
                 f"Q^={self.compensation_charge:+.4f}, "
                 f"E1c={self.one_center_energy:+.4f} Ha, "
-                f"deficit={_deficit_label(self.norm_deficit)})")
+                f"deficit={_deficit_label(self.norm_deficit)}"
+                f"{', GHOSTED' if (self.defects or {}).get('ghosts') else ''}"
+                f"{', SCATTERING OFF' if (self.defects or {}).get('phases') else ''})")
 
 
 # --------------------------------------------------------------------------- #
@@ -830,7 +938,7 @@ class PAWDataset(PseudoPotential):
 # --------------------------------------------------------------------------- #
 
 def spin_orbit_blocks(r, channels, v_ae, v_smooth, atomic_number,
-                      mass_corrected: bool = True):
+                      mass_corrected: bool = True, r_local: float = 0.0):
     r"""``{l: D_SO}`` -- the one-center spin-orbit difference of each channel.
 
     Spin-orbit coupling enters a PAW-LCAO dataset exactly the way every other
@@ -865,7 +973,9 @@ def spin_orbit_blocks(r, channels, v_ae, v_smooth, atomic_number,
     for l, channel in channels.items():
         if int(l) == 0:
             continue
-        inside = r <= channel.r_cut
+        # The smooth and all-electron waves agree beyond r_cut, but the two
+        # spin-orbit radial factors do not until v_smooth meets v_AE at r_cl.
+        inside = r <= max(float(channel.r_cut), float(r_local))
         n = len(channel.ae_waves)
         D = np.zeros((n, n), dtype=float)
         weight = r * r
@@ -980,8 +1090,10 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         symbol, atom, valence_config, z_eff, r_cut, rc_factor, energy_offset,
         defaults=DEFAULT_CUTOFFS, treatment=partial_wave_treatment,
         extra_l=extra_l)
+    # The local potential follows the *largest* cutoff: a compact channel's
+    # projector reaches out to r_cl instead (assemble_paw_channel).
     r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
-                    else float(local_factor * min(cutoffs.values())))
+                    else float(local_factor * max(cutoffs.values())))
     r_g = float(min(cutoffs.values()))
 
     # An `extra_l` channel has no bound state: both its references are
@@ -1010,7 +1122,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     for l, states in per_l.items():
         channels[l] = assemble_paw_channel(
             r, waves[l], v_ae, v_loc, n=states[0][0],
-            occupation=float(sum(o for _n, _e, _w, o in states)))
+            occupation=float(sum(o for _n, _e, _w, o in states)),
+            r_local=r_local)
 
     # Densities of the reference atom: frozen core, all-electron valence
     # (Numerov bound states), smooth valence and its compensation charge.
@@ -1063,7 +1176,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     # Spin-orbit coupling, when asked for: a one-center difference like every
     # other PAW-LCAO matrix.  `v_loc` is the *screened* smooth potential, which is
     # what the smooth Hamiltonian actually carries inside the sphere.
-    spin_orbit = (spin_orbit_blocks(r, channels, v_ae, v_loc, atomic_number)
+    spin_orbit = (spin_orbit_blocks(r, channels, v_ae, v_loc, atomic_number,
+                                    r_local=r_local)
                   if relativity == "dirac" else {})
     for channel in channels.values():
         channel.v_ionic = v_local_ionic
@@ -1242,7 +1356,9 @@ def log_derivative_paw(pp: PAWDataset, l: int, energy: float,
     :math:`D^{scr} - E\,q`.  Equals the all-electron one at the reference
     energies (and, for a good dataset, in between)."""
     l = int(l)
-    r_cut = pp.channels[l].r_cut if r_cut is None else float(r_cut)
+    # Past the projectors, where the smooth wave obeys the all-electron
+    # equation again -- beyond r_cut when they reach out to r_cl.
+    r_cut = pp.projector_radius(l) if r_cut is None else float(r_cut)
     r = pp.r
     r0 = _with_origin(r)
     v0 = np.concatenate([[pp.v_local_screened[0]], pp.v_local_screened])
@@ -1319,7 +1435,7 @@ def check_paw_channel(pp: PAWDataset, l: int, midpoint: bool = True) -> dict:
     if pp.atom is None:
         return out
     out["log_derivative_errors"] = log_derivative_errors(
-        pp, l, energies, channel.r_cut, log_derivative_paw, midpoint)
+        pp, l, energies, pp.projector_radius(l), log_derivative_paw, midpoint)
     return out
 
 
@@ -1336,6 +1452,9 @@ def report_paw(pp: PAWDataset) -> str:
              f"  one-center      : E_1c = {pp.one_center_energy:+.6f} Ha "
              f"(reference valence {pp.energies.get('reference_valence', 0.0):+.6f}, "
              f"pseudo atom {pp.energies.get('pseudo_atom', 0.0):+.6f})"]
+    if pp.defects:
+        lines.append("  WARNING         : "
+                     + defect_message(pp.symbol, FAMILY, pp.defects))
     for l in sorted(pp.channels):
         channel = pp.channels[l]
         checks = check_paw_channel(pp, l)
@@ -2161,6 +2280,11 @@ def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
             "norm_deficit": pp.norm_deficit,
             "xc": str(pp.xc), "relativity": str(pp.relativity),
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
+            "defects": {
+                "ghosts": {str(l): float(e) for l, e in
+                           (pp.defects or {}).get("ghosts", {}).items()},
+                "phases": {str(l): [float(a), float(b)] for l, (a, b) in
+                           (pp.defects or {}).get("phases", {}).items()}},
             "spin_orbit": {str(l): np.asarray(D).real.tolist()
                            for l, D in (pp.spin_orbit or {}).items()},
             "channels": channels, "radial_tables": tables}
@@ -2261,7 +2385,7 @@ def from_payload(payload: dict) -> PAWDataset:
         projectors[l] = ps_p
         coupling[l], coupling_screened[l] = D, D_scr
         overlap[l], kinetic[l], norm[l] = q, dT, q_norm
-    return PAWDataset(
+    dataset = PAWDataset(
         symbol=payload["symbol"], atomic_number=int(payload["atomic_number"]),
         valence_charge=float(payload["valence_charge"]), r=r,
         channels=channels, v_local=v_local, local_l=-1, projectors=projectors,
@@ -2297,7 +2421,25 @@ def from_payload(payload: dict) -> PAWDataset:
                                           "reason": "written before the "
                                                     "core correction"}),
         spin_orbit={int(l): np.asarray(D, dtype=float)
-                    for l, D in (payload.get("spin_orbit") or {}).items()})
+                    for l, D in (payload.get("spin_orbit") or {}).items()},
+        defects=_read_defects(payload.get("defects")))
+    if dataset.defects:
+        # Warned on load, so every route to a calculation -- the library,
+        # a file path, a user's own directory -- carries it.
+        warnings.warn(defect_message(dataset.symbol, FAMILY, dataset.defects),
+                      GhostStateWarning, stacklevel=2)
+    return dataset
+
+
+def _read_defects(record) -> dict:
+    """``defects`` of :func:`from_payload`; ``{}`` when there are none."""
+    record = record or {}
+    ghosts = {int(l): float(e) for l, e in (record.get("ghosts") or {}).items()}
+    phases = {int(l): (float(a), float(b))
+              for l, (a, b) in (record.get("phases") or {}).items()}
+    if not ghosts and not phases:
+        return {}
+    return {"ghosts": ghosts, "phases": phases}
 
 
 # --------------------------------------------------------------------------- #

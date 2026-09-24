@@ -385,6 +385,17 @@ class TaperedRegister:
         """How many qubits the taper took off."""
         return len(self.anchors)
 
+    def taper_operator(self, operator: PauliSum) -> PauliSum:
+        """``operator`` reduced by this register's own Clifford and sector.
+
+        For an operator that was not among the ``generators`` handed to
+        :func:`taper_problem` -- a coupled-exchange operator's member
+        excitations, say -- but has to live on the same register.  Raises the
+        ``ValueError`` of :func:`taper` when it does not commute with the
+        symmetries.
+        """
+        return taper(operator, self.symmetries, self.signs, self.anchors)
+
     def summary(self) -> str:
         """One line for the run log."""
         line = (f"{self.removed} qubit(s) removed by Z2 symmetry "

@@ -111,6 +111,22 @@ its state-vector simulation.  See :doc:`guide/checkpoints_qpe`.
    :undoc-members:
    :show-inheritance:
 
+Quantum Echoes and Time Evolution
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Weak dipole echoes and matrix-free Suzuki–Trotter propagation from prepared
+states. See :doc:`guide/quantum_echoes`.
+
+.. automodule:: mandacaru.algorithms.quantum_echoes
+   :members:
+   :no-index:
+
+.. automodule:: mandacaru.algorithms.time_evolution
+   :members: SuzukiTrotter, time_evolve
+
+.. automodule:: mandacaru.core.dipole
+   :members:
+
 Wavefunction Checkpoints
 ~~~~~~~~~~~~~~~~~~~~~~~~
 

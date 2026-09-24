@@ -133,7 +133,12 @@ class KBProjector(_RadialTabulated):
         #: Radial projector index within the ``(atom, l, m)`` channel.
         self.index = int(index)
         channel = pseudopotential.channels.get(int(l))
-        self.r_cut = float(channel.r_cut) if channel is not None else float("nan")
+        # The projector's support: a PAW-LCAO projector reaches out to the
+        # local potential's radius when that exceeds the channel's cutoff.
+        radius = getattr(pseudopotential, "projector_radius", None)
+        self.r_cut = (float("nan") if channel is None
+                      else float(radius(l)) if radius is not None
+                      else float(channel.r_cut))
 
     @property
     def channel(self) -> tuple[int, int]:

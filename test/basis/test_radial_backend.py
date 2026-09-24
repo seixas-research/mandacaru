@@ -51,6 +51,25 @@ class TestTridiagonalEigenpair:
             assert value == pytest.approx(exact[k], abs=1e-12)
             assert np.linalg.norm(dense @ vector - value * vector) < 1e-11
 
+    def test_a_near_degenerate_pair_gives_the_kth_level(self):
+        # Two uncoupled copies of the radial matrix, one shifted by 1e-9 Ha:
+        # the 1e-6 bisection bracket holds both levels, so only the Sturm
+        # confirmation keeps k = 0 and k = 1 apart.
+        diag, off = _radial_matrix(n=3000)
+        both = np.concatenate([diag, diag + 1e-9])
+        link = np.concatenate([off, [0.0], off])
+        exact = eigh_tridiagonal(both, link, select="i",
+                                 select_range=(0, 1))[0]
+        for k in (0, 1):
+            value, vector = tridiagonal_eigenpair(both, link, k)
+            assert value == pytest.approx(exact[k], abs=1e-10)
+            assert np.all(np.isfinite(vector))
+
+    def test_a_short_off_diagonal_is_refused(self):
+        diag, off = _radial_matrix(n=100)
+        with pytest.raises(ValueError, match="off-diagonal"):
+            tridiagonal_eigenpair(diag, off[:-1], 0)
+
 
 class TestNumerov:
     def _reference_outward(self, f, s, h2, start, u):

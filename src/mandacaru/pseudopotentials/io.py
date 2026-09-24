@@ -219,9 +219,18 @@ DIGITS = 10
 
 
 def _table(values, stride=1):
-    """Subsample and round a radial table for compact storage."""
+    """Subsample and round a radial table for compact storage.
+
+    The kept points are ``stride - 1, 2 stride - 1, ...``: the generation grid
+    starts one step ``h`` from the origin, so these are the radii
+    ``stride h, 2 stride h, ...`` -- a grid that again starts one (coarser)
+    step from the origin.  Keeping ``0, stride, ...`` instead stored
+    ``h, (stride + 1) h, ...``, whose first step differs from every other,
+    and every Numerov diagnostic of a loaded dataset (which prepends ``r = 0``
+    and takes ``r[1] - r[0]`` as the step) integrated with the wrong step.
+    """
     return [float(f"%.{DIGITS}g" % v)
-            for v in np.asarray(values, dtype=float)[::stride]]
+            for v in np.asarray(values, dtype=float)[stride - 1::stride]]
 
 
 def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,

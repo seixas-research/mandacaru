@@ -31,4 +31,5 @@ measurement_cost
 optimizers
 quenching
 checkpoints_qpe
+quantum_echoes
 ```

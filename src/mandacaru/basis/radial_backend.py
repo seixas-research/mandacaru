@@ -39,6 +39,7 @@ ABI_VERSION = 2
 _SRC_DIR = Path(__file__).resolve().parent / "csrc"
 _BUILD_DIR = _SRC_DIR / "build"
 _SOURCE = _SRC_DIR / "mandacaru_radial.c"
+_HEADER = _SRC_DIR / "mandacaru_radial.h"
 _LIB_NAME = {"Darwin": "libmandacaru_radial.dylib",
              "Windows": "mandacaru_radial.dll"}.get(platform.system(),
                                                     "libmandacaru_radial.so")
@@ -95,6 +96,9 @@ def build_radial_backend(*, verbose: bool = False) -> Path | None:
         _last_message = f"cannot create {_BUILD_DIR}: {exc}"
         return None
     target = _BUILD_DIR / _LIB_NAME
+    # Compile to a private name and rename into place, so a process loading
+    # the library never sees a half-written file from a concurrent build.
+    partial = _BUILD_DIR / f".{_LIB_NAME}.{os.getpid()}"
     log = _BUILD_DIR / "radial_build.log"
     with open(log, "w") as out:
         for name in (os.environ.get("CC"), "cc", "clang", "gcc"):
@@ -102,7 +106,7 @@ def build_radial_backend(*, verbose: bool = False) -> Path | None:
             if compiler is None:
                 continue
             cmd = [compiler, "-std=c11", "-O2", "-fPIC", shared,
-                   f"-I{_SRC_DIR}", str(_SOURCE), "-o", str(target), "-lm"]
+                   f"-I{_SRC_DIR}", str(_SOURCE), "-o", str(partial), "-lm"]
             out.write("$ " + " ".join(cmd) + "\n")
             if verbose:
                 print("[mandacaru] " + " ".join(cmd))
@@ -113,9 +117,11 @@ def build_radial_backend(*, verbose: bool = False) -> Path | None:
                 out.write(f"failed to run: {exc}\n")
                 continue
             out.write(run.stdout + run.stderr)
-            if run.returncode == 0 and target.is_file():
+            if run.returncode == 0 and partial.is_file():
+                os.replace(partial, target)
                 _last_message = f"compiled with {compiler}"
                 return target
+            partial.unlink(missing_ok=True)
             out.write(f"exit status {run.returncode}\n")
     _last_message = f"no C compiler could build it; see {log}"
     return None
@@ -131,7 +137,8 @@ def _library(build: bool = True):
         return _LIB
     target = _BUILD_DIR / _LIB_NAME
     stale = (target.is_file()
-             and target.stat().st_mtime < _SOURCE.stat().st_mtime)
+             and target.stat().st_mtime < max(_SOURCE.stat().st_mtime,
+                                              _HEADER.stat().st_mtime))
     if target.is_file() and not stale:
         _LIB = _load(target)
     if _LIB is None and build and not _attempted:
@@ -148,6 +155,13 @@ def _library(build: bool = True):
     else:
         _last_message = f"C backend loaded from {target}"
     return _LIB
+
+
+def reload_radial_backend() -> None:
+    """Forget the loaded library, so the next kernel call loads (and if
+    needed builds) it afresh.  The last status message is kept."""
+    global _LIB, _attempted
+    _LIB, _attempted = None, False
 
 
 def radial_backend_status(build: bool = True) -> tuple[bool, str]:
@@ -171,6 +185,10 @@ def tridiagonal_eigenpair(diag, off, k: int, guess: float | None = None):
     """
     diag = np.ascontiguousarray(diag, dtype=np.float64)
     off = np.ascontiguousarray(off, dtype=np.float64)
+    if diag.ndim != 1 or off.shape != (max(diag.size - 1, 0),):
+        raise ValueError(f"a tridiagonal matrix of order {diag.size} needs "
+                         f"{max(diag.size - 1, 0)} off-diagonal elements, "
+                         f"not {off.shape}")
     lib = _library()
     if lib is None:
         from scipy.linalg import eigh_tridiagonal
@@ -185,14 +203,20 @@ def tridiagonal_eigenpair(diag, off, k: int, guess: float | None = None):
         ctypes.byref(value), vector)
     if status != 0:
         raise RuntimeError(f"mandacaru_tridiagonal_eigenpair failed ({status})")
+    if not np.isfinite(value.value):
+        raise RuntimeError("mandacaru_tridiagonal_eigenpair returned a "
+                           "non-finite eigenvalue")
     return float(value.value), vector
 
 
 def numerov_outward_kernel(f, s, h2: float, start: int, u) -> np.ndarray:
     """Run the outward recursion in place on ``u`` (seeded at ``start`` and
     ``start + 1``) and return it."""
+    if np.shape(f) != u.shape or np.shape(s) != u.shape:
+        raise ValueError(f"f {np.shape(f)} and s {np.shape(s)} must match "
+                         f"u {u.shape}")
     lib = _library()
-    if lib is None or not u.flags.c_contiguous:
+    if lib is None or not u.flags.c_contiguous or u.dtype != np.float64:
         a = 1.0 - h2 * f / 12.0
         b = 2.0 * (1.0 + 5.0 * h2 * f / 12.0)
         c = h2 / 12.0
@@ -209,8 +233,10 @@ def numerov_outward_kernel(f, s, h2: float, start: int, u) -> np.ndarray:
 def numerov_inward_kernel(f, h2: float, stop: int, u) -> np.ndarray:
     """Run the homogeneous inward recursion in place on ``u`` (seeded at its
     last two points) down to ``stop`` and return it."""
+    if np.shape(f) != u.shape:
+        raise ValueError(f"f {np.shape(f)} must match u {u.shape}")
     lib = _library()
-    if lib is None or not u.flags.c_contiguous:
+    if lib is None or not u.flags.c_contiguous or u.dtype != np.float64:
         a = 1.0 - h2 * f / 12.0
         b = 2.0 * (1.0 + 5.0 * h2 * f / 12.0)
         for i in range(u.size - 2, stop, -1):

@@ -29,8 +29,10 @@ from .serialization import (HAMILTONIAN_FORMATS, HamiltonianRecord,
                             save_hamiltonian)
 from .checkpoint import (WavefunctionCheckpoint, load_checkpoint,
                          prepare_state)
+from .dipole import electric_dipole_potential
 
 __all__ = [
+    "electric_dipole_potential",
     "reduce_generators",
     "sector_signs",
     "taper",
