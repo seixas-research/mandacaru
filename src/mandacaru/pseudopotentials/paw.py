@@ -127,10 +127,10 @@ the one-center Hartree and xc terms are linearized at the reference (fixed
 :math:`D^0`, no self-consistent :math:`D_{ij}[\rho_{ij}]`); the
 compensation multipoles stop at :math:`L \le 2 l_{max}` of the valence
 channels (:mod:`.multipoles`); the core
-is frozen with no nonlinear core correction (the core-valence xc of the
-reference atom stays in :math:`\tilde v^{ion}` / :math:`D^{ion}`, the smooth
-core density is stored but not used); LDA only; no relativistic terms; no
-projectors above the valence :math:`l`.
+is frozen; the one-center terms are those of the functional the reference
+atom was solved with (``xc``); relativity enters through the scalar-relativistic
+(or Dirac, with a spin-orbit term) reference atom and partial waves, not through
+the molecular Hamiltonian; no projectors above the valence :math:`l`.
 """
 
 from __future__ import annotations
@@ -143,7 +143,7 @@ import numpy as np
 from scipy.integrate import simpson
 
 from ..basis.xc import xc_potential
-from ..basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
+from ..basis.atomic_solver import (AtomicResult, hartree_potential,
                                     solve_atom)
 from ..core.hamiltonian import MolecularIntegrals, projector_blocks
 from .confinement import DEFAULT_ENERGY_SHIFT
@@ -155,7 +155,7 @@ from .oncv import (Q_MAX, Q_STEP, PseudoWaves, _bessel_table,
                    bessel_derivatives, bessel_wavevectors, generation_points,
                    DEFAULT_EXTRA_L, DEFAULT_NLCC, DEFAULT_RELATIVITY,
                    DEFAULT_XC, log_derivative_errors, matching_targets,
-                   numerov_outward, optimize_pseudo_waves,
+                   ghost_free, numerov_outward, optimize_pseudo_waves,
                    polynomial_local_potential, reference_waves)
 
 #: Registry name of the family (no aliases).  The **-LCAO** is not decoration:
@@ -621,9 +621,14 @@ def _hartree_energy(r, rho) -> float:
                                     * 4.0 * np.pi * r * r, r))
 
 
-def _xc_energies(r, rho):
-    """``(E_xc[rho], int rho v_xc[rho])``."""
-    e_xc, v_xc = lda_xc(rho)
+def _xc_energies(r, rho, xc: str = DEFAULT_XC):
+    """``(E_xc[rho], int rho v_xc[rho])`` in the functional ``xc``.
+
+    It has to be the functional the reference atom was solved with: the
+    one-center constant subtracts these double-counting terms from that atom's
+    band energy, and a PBE band energy corrected with LDA terms is neither.
+    """
+    e_xc, v_xc = xc_potential(r, rho, xc)
     shell = 4.0 * np.pi * r * r
     return (float(np.trapezoid(e_xc * rho * shell, r)),
             float(np.trapezoid(v_xc * rho * shell, r)))
@@ -634,6 +639,13 @@ def _xc_energies(r, rho):
 # --------------------------------------------------------------------------- #
 
 _LOCAL_SPLINES: dict = {}
+
+
+def _deficit_label(norm_deficit) -> str:
+    """``norm_deficit`` as printed: a zero deficit is a unitary dataset."""
+    if norm_deficit is None:
+        return "free"
+    return f"{float(norm_deficit):g}" + (" (unitary)" if norm_deficit == 0 else "")
 
 
 def _local_spline(dataset):
@@ -809,7 +821,8 @@ class PAWDataset(PseudoPotential):
         return (f"PAWDataset({self.symbol}, Z_ion={self.valence_charge:g}, "
                 f"[{channels}], rg={self.compensation_radius:.2f}, "
                 f"Q^={self.compensation_charge:+.4f}, "
-                f"E1c={self.one_center_energy:+.4f} Ha)")
+                f"E1c={self.one_center_energy:+.4f} Ha, "
+                f"deficit={_deficit_label(self.norm_deficit)})")
 
 
 # --------------------------------------------------------------------------- #
@@ -880,7 +893,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                  xc: str = DEFAULT_XC,
                  relativity: str = DEFAULT_RELATIVITY,
                  nlcc: bool | float = DEFAULT_NLCC,
-                 extra_l: int = DEFAULT_EXTRA_L) -> PAWDataset:
+                 extra_l: int = DEFAULT_EXTRA_L,
+                 ghosts: str = "repair") -> PAWDataset:
     r"""Generate a PAW-LCAO dataset for ``symbol`` (see the module docstring).
 
     Parameters
@@ -906,9 +920,25 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         Second reference energy above the bound state (Hartree); defaults to
         :data:`DEFAULT_ENERGY_OFFSETS` for the element, else
         :data:`DEFAULT_ENERGY_OFFSET`.
-    q_cut, n_bessel, points, r_max, atom
-        As in :func:`~.oncv.generate_oncv`.
+    q_cut, n_bessel, points, r_max, atom, ghosts
+        As in :func:`~.oncv.generate_oncv`; the ghost search is
+        :func:`~.oncv.ghost_free`, with the spectrum of the generalized
+        problem (:func:`paw_spectrum`).
     """
+    if ghosts != "keep":
+        options = {k: v for k, v in locals().items()
+                   if k not in ("symbol", "ghosts")}
+        # Every repair is built at zero norm deficit.  Alone it removes the
+        # ghost the deficit itself causes (iron, cutoffs untouched).  And
+        # when the cutoffs have to be balanced, a positive deficit with those
+        # large augmentation spheres is ghost-free but does not bind: CuH at
+        # deficit 0.1 has its minimum at 1.8 Angstrom and disagrees with the
+        # ONCVPSP curve by 1-2 eV; at deficit 0 both minima are at 1.46 and
+        # the curves agree to 0.07-0.3 eV (HISTORY.md, 2026-09-24).
+        return ghost_free(generate_paw, _paw_levels, log_derivative_paw,
+                          symbol, options, ghosts,
+                          overrides={"norm_deficit": 0.0})
+
     from ase.data import atomic_numbers
 
     from ..basis.relativity import _resolve as _resolve_relativity
@@ -933,7 +963,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                                   if points is None else int(points)),
                           r_max=r_max, tolerance=1e-7, mixing=0.25,
                           xc=xc, relativity=relativity)
-    valence_config, core_config = _valence_configuration(atomic_number)
+    valence_config, core_config = _valence_configuration(
+        atomic_number, configuration=atom.occupations)
     if not valence_config:
         raise ValueError(f"{symbol} has no valence subshells to pseudize")
     valence_charge = float(sum(valence_config.values()))
@@ -1044,13 +1075,13 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     # norm-conserving convention.
     e_h_ae = _hartree_energy(r, ae_valence)
     e_h_ps = _hartree_energy(r, augmented)
-    e_xc_ae, v_xc_ae = _xc_energies(r, ae_valence)
-    e_xc_ps, v_xc_ps = _xc_energies(r, smooth_valence)
+    e_xc_ae, v_xc_ae = _xc_energies(r, ae_valence, xc)
+    e_xc_ps, v_xc_ps = _xc_energies(r, smooth_valence, xc)
     reference_valence = band - e_h_ae - v_xc_ae + e_xc_ae
     pseudo_atom = band - e_h_ps - v_xc_ps + e_xc_ps
     one_center = reference_valence - pseudo_atom
-    e_xc_full_ae, _v = _xc_energies(r, ae_valence + core_density)
-    e_xc_full_ps, _v = _xc_energies(r, smooth_valence + smooth_core)
+    e_xc_full_ae, _v = _xc_energies(r, ae_valence + core_density, xc)
+    e_xc_full_ps, _v = _xc_energies(r, smooth_valence + smooth_core, xc)
     energies = {
         "band": float(band),
         "reference_valence": float(reference_valence),
@@ -1150,6 +1181,12 @@ def paw_spectrum(pp: PAWDataset, l: int, n_states: int = 3,
     coarse = _generalized_spectrum(*_channel_operator(pp, l, r_max, 2 * stride),
                                    n_states)
     return (4.0 * fine - coarse) / 3.0
+
+
+def _paw_levels(pp, l: int) -> np.ndarray:
+    """The two lowest eigenvalues of one PAW-LCAO channel
+    (:func:`~.oncv.ghost_free`)."""
+    return paw_spectrum(pp, l, n_states=2)
 
 
 def paw_eigenstate(pp: PAWDataset, l: int, r_max: float | None = None,
@@ -1290,6 +1327,7 @@ def report_paw(pp: PAWDataset) -> str:
     """Human-readable validation summary for every channel."""
     lines = [f"{pp!r}",
              f"  valence charge  : {pp.valence_charge:g}",
+             f"  norm deficit    : {_deficit_label(pp.norm_deficit)}",
              f"  local potential : polynomial inside rcl = {pp.r_cut_local:.3f} "
              f"Bohr, V_loc(0) = {pp.v_local_screened[0]:+.4f} Ha (screened)",
              f"  compensation    : Q^ = {pp.compensation_charge:+.5f} e in "

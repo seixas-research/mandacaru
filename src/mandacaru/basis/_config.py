@@ -85,7 +85,8 @@ def ground_state_config(atomic_number: int) -> dict[tuple[int, int], int]:
     return config
 
 
-def valence_subshells(atomic_number: int) -> list[tuple[int, int]]:
+def valence_subshells(atomic_number: int, configuration=None
+                      ) -> list[tuple[int, int]]:
     """Outermost occupied ``(n, l)`` subshells -- a minimal-basis valence set.
 
     Returns every occupied subshell sharing the highest occupied principal
@@ -102,8 +103,17 @@ def valence_subshells(atomic_number: int) -> list[tuple[int, int]]:
     pseudopotential generation, where an ``[Ar]``-core iron would have no d
     channel at all.  So Fe -> ``[(3, 2), (4, 0)]`` (8 valence electrons) and
     Ce -> ``[(4, 3), (5, 2), (6, 0)]``.
+
+    ``configuration`` overrides the aufbau filling, and a caller that has
+    already solved the atom should pass the atom's own ``occupations``.  The two
+    differ wherever :func:`mandacaru.basis.atomic_solver.relaxed_configuration`
+    moved an electron: lanthanum's aufbau valence is ``[(4, 3), (6, 0)]``, and
+    the configuration LDA actually prefers makes it ``[(5, 2), (6, 0)]``.
+    Deriving the valence from the aufbau filling while the orbitals came from
+    the relaxed one asks for a ``4f`` the atom never solved.
     """
-    config = ground_state_config(atomic_number)
+    config = (ground_state_config(atomic_number) if configuration is None
+              else {k: v for k, v in configuration.items() if v > 0})
     n_max = max(n for (n, _l) in config)
     valence = {(n, l) for (n, l) in config if n == n_max}
     for l, offset in ((2, 1), (3, 2)):              # (n-1)d, (n-2)f
@@ -155,3 +165,73 @@ def unoccupied_subshells(atomic_number: int, count: int = 1
             f"subshell(s) below the end of the aufbau filling table "
             f"({n_last}{'spdf'[l_last]}), but {count} were requested")
     return empty[:count]
+
+#: ``l`` values the aufbau order interleaves, and so can order wrongly: the
+#: Madelung rule crosses ``(n-1)d`` with ``ns`` and ``(n-2)f`` with ``ns``, and
+#: those are the crossings the neutral-atom anomalies live on.  ``p`` is never
+#: in question -- no element's ground state is settled by moving an electron
+#: between ``ns`` and ``np``.
+_COMPETING_L = (0, 2, 3)
+
+
+def rearrangements(atomic_number: int, virtuals: int = 3
+                   ) -> list[dict[tuple[int, int], int]]:
+    """Aufbau, then every **one-electron** rearrangement of its valence.
+
+    The aufbau (Madelung) order is a rule of thumb, and where it is wrong it is
+    wrong about exactly one electron: lanthanum is ``5d^1 6s^2`` and not
+    ``4f^1 6s^2``, chromium ``3d^5 4s^1`` and not ``3d^4 4s^2``.  Which of the
+    two a *functional* prefers is a question with a computable answer, so this
+    function enumerates the candidates and
+    :func:`mandacaru.basis.atomic_solver.relaxed_configuration` picks the lowest
+    in energy.  No table of experimental configurations enters the repository.
+
+    A move takes one electron from an occupied valence subshell to another
+    valence subshell or to one of the ``virtuals`` lowest unoccupied ones (so
+    lanthanum's empty ``5d`` is reachable), never emptying, never overfilling
+    and never entering a principal shell above the outermost occupied one.
+    Both subshells must have different ``l`` drawn from
+    :data:`_COMPETING_L`, which is what keeps the list short and physical: for
+    oxygen it yields no candidate at all, because ``2s -> 2p`` is not a
+    crossing the aufbau order can get wrong, and there is no point solving the
+    atom twice to discover that.  The aufbau configuration itself is always
+    first.
+
+    Single moves are enough for the cases that matter here: they turn La's
+    unbound ``4f`` into a bound ``5d``, and thorium's ``5f^2`` into
+    ``5f^1 6d^1``, which is what LDA prefers over both ``5f^2`` and ``6d^2``.
+    They cannot reach a two-electron anomaly such as palladium's ``4d^10``, and
+    this function does not claim to reproduce experiment -- only to let the
+    functional choose.
+    """
+    base = ground_state_config(atomic_number)
+    sources = [s for s in valence_subshells(atomic_number) if base.get(s, 0) > 0]
+    empty: list[tuple[int, int]] = []
+    for count in range(int(virtuals), 0, -1):
+        try:                       # the filling table runs out for heavy atoms
+            empty = unoccupied_subshells(atomic_number, count)
+            break
+        except ValueError:
+            continue
+    # A destination in a *new* principal shell is an excitation, not a
+    # reordering: the Madelung crossings that can be wrong are between shells
+    # already in play.  Without this bound, lanthanum's lowest-energy candidate
+    # came out as 4f -> 7s, whose valence set is the single 7s electron -- a
+    # one-electron lanthanum, which is not a reference atom, it is a mistake.
+    n_outer = max(n for (n, _l) in base)
+    targets = [s for s in dict.fromkeys(list(sources) + list(empty))
+               if s[0] <= n_outer]
+    out = [dict(base)]
+    for src in sources:
+        if src[1] not in _COMPETING_L:
+            continue
+        for dst in targets:
+            if dst[1] not in _COMPETING_L or dst[1] == src[1]:
+                continue
+            if base.get(dst, 0) >= _L_CAPACITY[dst[1]]:
+                continue
+            moved = dict(base)
+            moved[src] = moved[src] - 1
+            moved[dst] = moved.get(dst, 0) + 1
+            out.append({k: v for k, v in moved.items() if v > 0})
+    return out

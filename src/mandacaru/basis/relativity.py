@@ -110,7 +110,7 @@ want it.
 from __future__ import annotations
 
 import numpy as np
-from scipy.linalg import eigh_tridiagonal
+from .radial_backend import tridiagonal_eigenpair
 
 #: Speed of light in atomic units -- the inverse fine-structure constant.
 #: CODATA 2022: ``1/alpha = 137.035999177(21)``.
@@ -553,9 +553,8 @@ def solve_radial_relativistic(r, potential, l: int, n_nodes: int,
     def non_relativistic():
         diag = 1.0 / step ** 2 + potential + centrifugal
         off = -0.5 / step ** 2 * np.ones(r.size - 1)
-        values, vectors = eigh_tridiagonal(diag, off, select="i",
-                                           select_range=(n_nodes, n_nodes))
-        return vectors[:, 0], float(values[0])
+        value, vector = tridiagonal_eigenpair(diag, off, n_nodes)
+        return vector, value
 
     if key == "none":
         if grid == "uniform":
@@ -589,7 +588,7 @@ def solve_radial_relativistic(r, potential, l: int, n_nodes: int,
     if grid != "uniform":
         raise ValueError(f"grid must be 'log' or 'uniform', not {grid!r}")
 
-    vectors = None
+    vector = None
     last_change = np.inf
     for _ in range(max_iterations):
         M, dM, _d2M = mass_factor(r, potential, eps, atomic_number, c,
@@ -604,16 +603,16 @@ def solve_radial_relativistic(r, potential, l: int, n_nodes: int,
         inv_sqrt = 1.0 / np.sqrt(M)
         diag = (2.0 / step ** 2 + bracket) * inv_sqrt * inv_sqrt
         off = -1.0 / step ** 2 * inv_sqrt[:-1] * inv_sqrt[1:]
-        values, vectors = eigh_tridiagonal(diag, off, select="i",
-                                           select_range=(n_nodes, n_nodes))
-        new = 0.5 * float(values[0])
+        value, vector = tridiagonal_eigenpair(diag, off, n_nodes,
+                                              guess=2.0 * eps)
+        new = 0.5 * value
         change = abs(new - eps)
         eps = new
         if (change <= ENERGY_TOLERANCE * max(1.0, abs(new))
                 or change >= last_change):
             break
         last_change = change
-    return _normalize(vectors[:, 0], r), eps
+    return _normalize(vector, r), eps
 
 
 def _normalize(u, r):

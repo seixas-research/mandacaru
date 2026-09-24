@@ -84,6 +84,7 @@ exclude_also = [
 
 [project.scripts]
 mandacaru = "mandacaru.cli:main"
+mandacaru-build = "mandacaru.pseudopotentials.build_cli:main"
 
 [project.urls]
 "Homepage" = "https://github.com/seixas-research/mandacaru"

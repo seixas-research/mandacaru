@@ -347,10 +347,19 @@ class PseudoPotential:
                 f"[{channels}], local=l{self.local_l}, family={self.family!r})")
 
 
-def _valence_configuration(atomic_number: int):
-    """``(valence subshells, core subshells)`` for the aufbau ground state."""
-    configuration = ground_state_config(atomic_number)
-    valence = set(valence_subshells(atomic_number))
+def _valence_configuration(atomic_number: int, configuration=None):
+    """``(valence subshells, core subshells)`` of the reference atom.
+
+    ``configuration`` defaults to the aufbau filling; a generator that has
+    already solved its reference atom passes that atom's ``occupations``, so
+    the split describes the atom whose orbitals are about to be pseudized
+    rather than a different one.
+    """
+    configuration = (ground_state_config(atomic_number)
+                     if configuration is None
+                     else {k: v for k, v in configuration.items() if v > 0})
+    valence = set(valence_subshells(atomic_number,
+                                    configuration=configuration))
     valence_config = {k: v for k, v in configuration.items() if k in valence}
     core_config = {k: v for k, v in configuration.items() if k not in valence}
     return valence_config, core_config
@@ -393,7 +402,8 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
         atom = solve_atom(atomic_number, points=points, r_max=r_max,
                           tolerance=1e-7, mixing=0.25)
 
-    valence_config, core_config = _valence_configuration(atomic_number)
+    valence_config, core_config = _valence_configuration(
+        atomic_number, configuration=atom.occupations)
     if not valence_config:
         raise ValueError(f"{symbol} has no valence subshells to pseudize")
     valence_charge = float(sum(valence_config.values()))

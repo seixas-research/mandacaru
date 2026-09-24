@@ -134,12 +134,17 @@ def reference_subshells(atomic_number: int, valence: bool):
     ``valence=True`` returns the same valence set the pseudopotentials and the
     minimal bases are built from (:func:`mandacaru.basis._config.
     valence_subshells`), so the promolecule holds exactly the electrons a
-    pseudopotential run put on the grid.
+    pseudopotential run put on the grid.  It is taken in the configuration
+    :func:`free_atom_density` solves the atom in, which is not always aufbau
+    (lanthanum's reference atom carries 5d, not 4f).
     """
     if not valence:
         return None
     from ..basis._config import valence_subshells
-    return valence_subshells(int(atomic_number))
+    from ..basis.atomic_solver import relaxed_configuration
+    Z = int(atomic_number)
+    return valence_subshells(
+        Z, configuration=relaxed_configuration(Z, r_max=REFERENCE_RADIUS))
 
 
 # --------------------------------------------------------------------------- #

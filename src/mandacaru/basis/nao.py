@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.interpolate import CubicSpline
-from scipy.linalg import eigh_tridiagonal
 
 from ..units import EV_TO_HARTREE, to_bohr
 from ._angular import spherical_coords, spherical_harmonic
@@ -93,9 +92,8 @@ def solve_confined_radial(n: int, l: int, Z: float, r_c: float,
     diag = inv_h2 - Z / r + l * (l + 1) / (2.0 * r * r)
     offdiag = -0.5 * inv_h2 * np.ones(r.size - 1)
 
-    evals, evecs = eigh_tridiagonal(diag, offdiag, select="i",
-                                    select_range=(k, k))
-    u = evecs[:, 0]
+    from .radial_backend import tridiagonal_eigenpair
+    value, u = tridiagonal_eigenpair(diag, offdiag, k)
     R = u / r
     norm = np.sqrt(np.trapezoid(R * R * r * r, r))
     R = R / norm
@@ -107,7 +105,7 @@ def solve_confined_radial(n: int, l: int, Z: float, r_c: float,
     R0 = R[0] - slope * r[0]
     r_full = np.concatenate(([0.0], r, [r_c]))
     R_full = np.concatenate(([R0], R, [0.0]))
-    return r_full, R_full, float(evals[0])
+    return r_full, R_full, value
 
 
 class NumericalAtomicOrbital(BasisFunction):

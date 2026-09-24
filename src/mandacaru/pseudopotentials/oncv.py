@@ -156,6 +156,7 @@ change every generated pseudopotential.  ``relativity="none"`` with
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -220,6 +221,42 @@ DEFAULT_CUTOFFS = {
 }
 #: Largest tolerated asymmetry of the Vanderbilt matrix ``B`` (Hartree).
 B_ASYMMETRY_TOLERANCE = 1e-5   # Ha; heavy atoms (U) reach ~2e-6 from quadrature alone
+#: Fraction of the radial grid the fallback cutoff of :func:`_cutoff_for` may
+#: reach before it refuses.  Half leaves the Wronskian stencil and the tail
+#: comparison room to work in.
+CUTOFF_GRID_FRACTION = 0.5
+#: Fallback cutoff (Bohr) above which :func:`_cutoff_for` warns.  Li's
+#: deliberate cutoff, 2.60, is the largest in :data:`DEFAULT_CUTOFFS`, and
+#: `HISTORY.md` records Li growing a ghost state at 3.3.
+CUTOFF_WARN_RADIUS = 3.3
+#: How far (Hartree) a channel's lowest eigenvalue must lie below its bound
+#: reference, *with the reference level itself displaced to second place*, for
+#: the channel to count as holding a ghost state.  The displacement is what
+#: tells a ghost from an inaccurate level: a d channel whose one level sits
+#: 6e-4 Hartree low (the shipped Ga) has no extra state, a ghosted s channel
+#: has an extra state 0.1 to 100 Hartree down and its true level above it.
+GHOST_TOLERANCE = 1e-4
+#: Local-potential raises (Hartree) :func:`ghost_free` tries, in order, once
+#: the channel cutoffs are balanced.
+GHOST_REMEDY_SHIFTS = (0.0, 10.0, 20.0, 40.0, 80.0)
+#: What a generator does about a ghost state: build around it, refuse, or
+#: return the dataset as it came out (for studying one).
+GHOST_MODES = ("repair", "refuse", "keep")
+#: A repaired channel must scatter like the all-electron atom: the phase
+#: :math:`\arctan L(E)` of its logarithmic derivative at :math:`r_c` within
+#: this many radians over :math:`\varepsilon_{ref} \pm` :data:`PHASE_WINDOW`
+#: Hartree.  Removing a ghost with a raised local potential can move a
+#: scattering resonance into the valence window instead -- iron's s channel
+#: at a 10 Hartree raise is ghost-free and 0.74 rad wrong at +0.25 Hartree.
+PHASE_TOLERANCE = 0.05
+#: Half-width (Hartree) and spacing of the energy window of that test.
+PHASE_WINDOW, PHASE_STEP = 0.5, 0.05
+#: A resonance just outside that window is caught by a looser bound over a
+#: wider one: gallium's s channel at a 20 Hartree raise is 0.027 rad inside
+#: :math:`\pm 0.5` Hartree and 0.94 rad at +0.55.  The bound is loose on
+#: purpose -- a d channel balanced out to 3.3 Bohr drifts to 0.07 rad at the
+#: far edge without anything being wrong with it.
+RESONANCE_WINDOW, RESONANCE_TOLERANCE = 1.0, 0.3
 #: Upper wave vector and spacing of the Fourier grid of the residual energy.
 Q_MAX, Q_STEP = 60.0, 0.1
 #: Points of the fine quadrature grid inside ``r_c``.
@@ -302,32 +339,28 @@ def numerov_outward(r0: np.ndarray, f: np.ndarray, s: np.ndarray,
     indices below ``start`` is used (so a ``-Z/r`` singularity at ``r0[0]``
     is harmless as long as ``start >= 1``).
     """
-    h2 = (r0[1] - r0[0]) ** 2
-    u = np.zeros_like(r0)
+    from ..basis.radial_backend import numerov_outward_kernel
+
+    h2 = float((r0[1] - r0[0]) ** 2)
+    u = np.zeros_like(r0, dtype=float)
     u[start], u[start + 1] = u_start
-    a = 1.0 - h2 * f / 12.0
-    b = 2.0 * (1.0 + 5.0 * h2 * f / 12.0)
-    c = h2 / 12.0
-    for i in range(start + 1, r0.size - 1):
-        u[i + 1] = (b[i] * u[i] - a[i - 1] * u[i - 1]
-                    + c * (s[i + 1] + 10.0 * s[i] + s[i - 1])) / a[i + 1]
-    return u
+    return numerov_outward_kernel(np.asarray(f, dtype=float),
+                                  np.asarray(s, dtype=float), h2, int(start),
+                                  u)
 
 
 def _numerov_inward(r0: np.ndarray, f: np.ndarray, stop: int,
                     kappa: float) -> np.ndarray:
     """Homogeneous inward integration from a decaying start down to ``stop``."""
+    from ..basis.radial_backend import numerov_inward_kernel
+
     h = r0[1] - r0[0]
-    h2 = h * h
-    u = np.zeros_like(r0)
+    h2 = float(h * h)
+    u = np.zeros_like(r0, dtype=float)
     n = r0.size
     u[n - 1] = np.exp(-kappa * r0[n - 1])
     u[n - 2] = np.exp(-kappa * r0[n - 2])
-    a = 1.0 - h2 * f / 12.0
-    b = 2.0 * (1.0 + 5.0 * h2 * f / 12.0)
-    for i in range(n - 2, stop, -1):
-        u[i - 1] = (b[i] * u[i] - a[i + 1] * u[i + 1]) / a[i - 1]
-    return u
+    return numerov_inward_kernel(np.asarray(f, dtype=float), h2, int(stop), u)
 
 
 def _radial_f(r0: np.ndarray, potential0: np.ndarray, l: int,
@@ -364,7 +397,25 @@ def _origin_seed(r0: np.ndarray, l: int, z_eff: float, potential0=None,
 
 
 def _derivative(u: np.ndarray, h: float, index: int) -> float:
-    """Fourth-order centered first derivative at one grid index."""
+    """Fourth-order centered first derivative at one grid index.
+
+    The stencil spans ``index - 2 .. index + 2``, so it needs
+    ``2 <= index <= len(u) - 3``.  Outside that it used to raise numpy's
+    ``IndexError: index N is out of bounds for axis 0 with size N``, which says
+    nothing about *why* an index reached the end of a radial grid -- the real
+    cause is always a channel cutoff that landed there, and finding that out
+    from the numpy message cost hours once.  So the range is checked here and
+    the error names the cause.
+    """
+    n = len(u)
+    if not 2 <= index <= n - 3:
+        raise ValueError(
+            f"the fourth-order derivative stencil needs a grid index in "
+            f"[2, {n - 3}] and was asked for {index} on a {n}-point grid.  An "
+            f"index at the edge of a radial grid means the channel cutoff was "
+            f"placed there: see `_cutoff_for`, which falls back to "
+            f"`rc_factor * (outermost peak of |r R|)` and returns a radius at "
+            f"the end of the grid when the reference wave is not localized.")
     return (u[index - 2] - 8 * u[index - 1] + 8 * u[index + 1]
             - u[index + 2]) / (12.0 * h)
 
@@ -600,6 +651,154 @@ def constrained_minimum(K: np.ndarray, k: np.ndarray, A: np.ndarray,
                 break
     lam = brentq(residual, lo, hi, xtol=1e-15, rtol=1e-15, maxiter=500)
     return c0 + Z @ solution(lam)
+
+
+class GhostStateError(RuntimeError):
+    """A generated channel binds a state below its reference energy."""
+
+
+def ghost_errors(pp, levels) -> dict:
+    """``{l: eps_0 - eps_ref}`` for every channel holding a ghost state.
+
+    ``levels(pp, l)`` returns the two lowest eigenvalues of the channel's
+    pseudo Hamiltonian.  A ghost is an *extra* state: the lowest level lies
+    more than :data:`GHOST_TOLERANCE` below the reference and the second one
+    is closer to the reference than the first.  Only channels built on a bound
+    reference are judged; a scattering-only channel has no bound level for a
+    ghost to undercut.
+    """
+    out = {}
+    for l, channel in pp.channels.items():
+        reference = float(channel.reference_energies[0])
+        if reference >= 0.0:
+            continue
+        first, second = (float(e) for e in levels(pp, l)[:2])
+        if (first - reference < -GHOST_TOLERANCE
+                and abs(second - reference) < abs(first - reference)):
+            out[int(l)] = first - reference
+    return out
+
+
+def scattering_errors(pp, log_derivative) -> dict:
+    r"""``{l: (near, far)}``: the largest phase error
+    :math:`|\arctan L_{ps} - \arctan L_{ae}|` at each bound channel's
+    :math:`r_c`, within :math:`\varepsilon_{ref} \pm` :data:`PHASE_WINDOW`
+    (``near``) and :data:`RESONANCE_WINDOW` (``far``) Hartree, wrapped
+    modulo :math:`\pi` so a pole of :math:`L` is not an error.  Needs the
+    all-electron atom on ``pp``.
+    """
+    treatment = getattr(pp, "relativity", "none")
+    out = {}
+    for l, channel in pp.channels.items():
+        reference = float(channel.reference_energies[0])
+        if reference >= 0.0:
+            continue
+        near = far = 0.0
+        for offset in np.arange(-RESONANCE_WINDOW,
+                                RESONANCE_WINDOW + 0.5 * PHASE_STEP, PHASE_STEP):
+            energy = reference + offset
+            l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, l, energy,
+                                     channel.r_cut, float(pp.atomic_number),
+                                     treatment)
+            l_ps = log_derivative(pp, l, energy)
+            d = np.arctan(l_ps) - np.arctan(l_ae)
+            error = abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi)
+            far = max(far, error)
+            if abs(offset) <= PHASE_WINDOW + 1e-9:
+                near = max(near, error)
+        out[int(l)] = (float(near), float(far))
+    return out
+
+
+def _describe(errors: dict) -> str:
+    return ", ".join(f"l={l} {e:+.3g} Ha" for l, e in sorted(errors.items()))
+
+
+def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
+               mode: str, overrides=None):
+    r"""``generate(symbol, **options)``, rebuilt until no channel holds a ghost.
+
+    **Why a ghost appears.**  The local potential is the all-electron one
+    beyond :math:`r_{cl}`, and :math:`r_{cl}` is set by the *smallest*
+    channel cutoff.  For a transition metal that is the compact 3d at about
+    0.9 Bohr, while the 4s channel extends to 3 Bohr, so between the two the
+    s channel's local potential is the deep well around the core.  On its own
+    that well binds an s state far below the valence reference -- 13 Hartree
+    deep for iron, 27 for lanthanum -- and the two projectors have to lift it
+    out.  When they do not quite, the level left behind is the ghost.  In
+    PAW-LCAO the norm deficit adds a second route: iron is ghost-free at a
+    deficit of exactly 0 and ghosted at every deficit from 0.005 up.
+
+    **What is done about it.**  ``overrides`` go into every attempt, and when
+    there are any they are first tried alone with the construction otherwise
+    unchanged -- PAW-LCAO passes ``norm_deficit=0``, which is all iron needs.
+    Then every channel is given the largest cutoff, so :math:`r_{cl}` can
+    move out with them, and the local potential is raised by each of
+    :data:`GHOST_REMEDY_SHIFTS` in turn (Hamann's ``dvloc0``).  A construction is
+    accepted when it has no ghost **and** every bound channel scatters like the
+    atom -- to :data:`PHASE_TOLERANCE` near its reference and
+    :data:`RESONANCE_TOLERANCE` farther out (:func:`scattering_errors`); a
+    raise that trades the ghost for a misplaced resonance is not a repair.  The
+    self-consistent atom is solved once and shared by every attempt, and a
+    dataset that was clean to begin with is returned exactly as before.
+
+    A caller that fixed ``r_cut``, ``r_cut_local`` or ``local_shift`` has
+    made the choice this search would make, so a ghost there is refused
+    rather than overridden; so is one with ``mode="refuse"``, and one no
+    remedy removes.  ``mode="keep"`` returns the first construction as is.
+    """
+    if mode not in GHOST_MODES:
+        raise ValueError(f"ghosts must be one of {GHOST_MODES}, not {mode!r}")
+    first = generate(symbol, **options, ghosts="keep")
+    if mode == "keep":
+        return first
+    errors = ghost_errors(first, levels)
+    if not errors:
+        return first
+    pinned = [name for name in ("r_cut", "r_cut_local", "local_shift")
+              if options.get(name) is not None]
+    if mode == "refuse" or pinned:
+        why = (f"with {', '.join(pinned)} fixed by the caller" if pinned
+               else "and ghosts='refuse'")
+        raise GhostStateError(
+            f"{symbol}: ghost state below the reference ({_describe(errors)}) "
+            f"{why}.  Leave the cutoffs and the local potential to the "
+            f"generator, or pass ghosts='keep' to study it.")
+
+    radius = max(float(channel.r_cut) for channel in first.channels.values())
+    balanced = {"r_cut": {int(l): radius for l in first.channels},
+                "r_cut_local": float(options["local_factor"]) * radius}
+    overrides = dict(overrides or {})
+    attempts = ([(", ".join(f"{k}={v:g}" for k, v in overrides.items()),
+                  overrides)] if overrides else [])
+    attempts += [(f"balanced at {radius:.3f} Bohr, shift {shift:g}",
+                  dict(overrides, **balanced, local_shift=float(shift)))
+                 for shift in GHOST_REMEDY_SHIFTS]
+    tried = []
+    for label, remedy in attempts:
+        trial = dict(options, atom=first.atom, **remedy)
+        try:
+            pp = generate(symbol, **trial, ghosts="keep")
+        except (ValueError, RuntimeError) as error:
+            tried.append(f"{label}: {type(error).__name__}")
+            continue
+        remaining = ghost_errors(pp, levels)
+        if remaining:
+            tried.append(f"{label}: ghost {_describe(remaining)}")
+            continue
+        phases = scattering_errors(pp, log_derivative)
+        wrong = {l: (near, far) for l, (near, far) in phases.items()
+                 if near > PHASE_TOLERANCE or far > RESONANCE_TOLERANCE}
+        if wrong:
+            tried.append(f"{label}: phase " + ", ".join(
+                f"l={l} {near:.3f}/{far:.3f} rad"
+                for l, (near, far) in sorted(wrong.items())))
+            continue
+        return pp
+    raise GhostStateError(
+        f"{symbol}: ghost state below the reference ({_describe(errors)}) and "
+        f"no remedy removed it while keeping the scattering "
+        f"({'; '.join(tried)}).")
 
 
 # --------------------------------------------------------------------------- #
@@ -1152,9 +1351,31 @@ def _snap(r: np.ndarray, radius: float) -> float:
     return float(r[int(np.argmin(np.abs(r - radius)))])
 
 
-def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor, defaults=None):
+def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor, defaults=None,
+                energy=None):
     """Cutoff radius of channel ``l``: explicit, tabulated (``defaults``, the
-    family's own table), else ``rc_factor`` times the outermost peak."""
+    family's own table), else ``rc_factor`` times the outermost peak.
+
+    The fallback is **bounded**, and the bound raises rather than clamping.
+    Clamping would turn a crash into a wrong number: the cutoff sets where the
+    pseudo wave stops matching the all-electron one, so a value silently moved
+    to fit the grid produces a dataset that looks fine and is not.
+
+    The bound exists because ``rc_factor * peak`` is unbounded and a diffuse
+    reference state sends it past the end of the grid.  Generating the library
+    scalar-relativistically, La's :math:`4f` came out at
+    :math:`\varepsilon = -0.0076` Hartree peaking at 28.6 Bohr in a 30 Bohr
+    box -- a box state, not an atomic one -- so the cutoff landed at 37.1 Bohr
+    and :func:`norm_targets` indexed one point past the array.  Three elements
+    (La, Ac, Th) died that way, 254 to 735 minutes into a 12.8 hour run.
+
+    A peak beyond half the grid means the reference state is not bound by the
+    atom, and no cutoff can rescue it: the configuration or the box is what
+    needs fixing.  ``rc_factor * peak`` is also a poor estimator even when it
+    is in range -- against the six cutoffs in :data:`DEFAULT_CUTOFFS` it runs
+    from 0.65x (F) to 1.56x (Li) -- so the warning below fires well before the
+    refusal does.
+    """
     if isinstance(r_cut, dict):
         return float(r_cut[l])
     if r_cut is not None:
@@ -1162,8 +1383,28 @@ def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor, defaults=None):
     table = (DEFAULT_CUTOFFS if defaults is None else defaults).get(symbol)
     if table is not None and l in table:
         return float(table[l])
-    peak = r[int(np.argmax(np.abs(radial * r)))]
-    return float(rc_factor * peak)
+    peak = float(r[int(np.argmax(np.abs(radial * r)))])
+    candidate = float(rc_factor * peak)
+    detail = (f"its reference state peaks at {peak:.3f} Bohr"
+              + ("" if energy is None else f" with eps = {energy:.5f} Ha")
+              + f" on a grid reaching {r[-1]:.3f} Bohr")
+    if candidate > CUTOFF_GRID_FRACTION * float(r[-1]):
+        raise ValueError(
+            f"{symbol} l={l}: the fallback cutoff {candidate:.3f} Bohr exceeds "
+            f"{CUTOFF_GRID_FRACTION:g} of the radial grid, because {detail}.  A "
+            f"reference state peaking that far out is bound by the box rather "
+            f"than by the atom, and no cutoff fixes that -- change the "
+            f"reference configuration, or enlarge r_max.  Pass an explicit "
+            f"r_cut= to override.")
+    if candidate > CUTOFF_WARN_RADIUS:
+        warnings.warn(
+            f"{symbol} l={l}: the fallback cutoff is {candidate:.3f} Bohr, "
+            f"beyond the {CUTOFF_WARN_RADIUS:g} Bohr where a norm-conserving "
+            f"channel is normally trustworthy ({detail}).  rc_factor times the "
+            f"outermost peak overestimates a diffuse channel; check the "
+            f"dataset with check_oncv_channel, or pass an explicit r_cut=.",
+            RuntimeWarning, stacklevel=2)
+    return candidate
 
 
 def reference_bound_state(r, potential, l, n_nodes, energy_guess, z_eff,
@@ -1232,10 +1473,26 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
             guess = atom.eigenvalues_j.get((n, l, k), guess)
         u, energy = reference_bound_state(r, v_ae, l, n - l - 1, guess, z_eff,
                                           treatment, k)
+        # A norm-conserving channel is a statement about a *bound* state, so a
+        # non-negative reference energy is not a hard case to handle -- it is
+        # the wrong input.  Under strict aufbau filling Ac's 5f came out at
+        # +0.0065 Hartree and Pa's at +0.0672: box states with atomic labels.
+        # Pseudizing one produces a dataset that cannot be diagnosed later,
+        # which is worse than the IndexError it used to cause 254 minutes into
+        # a library build.  `relaxed_configuration` is what stops this
+        # happening; the check is here so that a hand-passed configuration
+        # cannot walk around it.
+        if not energy < 0.0:
+            raise ValueError(
+                f"{symbol}: the {n}{'spdf'[l]} reference state is not bound "
+                f"(eps = {energy:+.5f} Ha).  A norm-conserving channel cannot "
+                f"be built from an unbound state; the reference configuration "
+                f"is what needs changing, not the cutoff or the grid.")
         per_l.setdefault(l, []).append((n, energy, u / r, occupancy))
 
     cutoffs = {l: _snap(r, _cutoff_for(symbol, l, r, states[0][2], r_cut,
-                                        rc_factor, defaults))
+                                        rc_factor, defaults,
+                                        energy=states[0][1]))
                for l, states in per_l.items()}
 
     references: dict = {}
@@ -1285,7 +1542,7 @@ def _add_unbound_channels(r, v_ae, z_eff, per_l, cutoffs, references,
 def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTOR,
                   r_cut_local: float | None = None,
                   local_factor: float = DEFAULT_LOCAL_FACTOR,
-                  local_shift: float = 0.0,
+                  local_shift: float | None = None,
                   q_cut: float = DEFAULT_Q_CUT,
                   energy_offset: float = DEFAULT_ENERGY_OFFSET,
                   n_bessel: int = DEFAULT_N_BESSEL,
@@ -1294,7 +1551,8 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
                   xc: str = DEFAULT_XC,
                   relativity: str = DEFAULT_RELATIVITY,
                   nlcc: bool | float = DEFAULT_NLCC,
-                  extra_l: int = DEFAULT_EXTRA_L) -> ONCVPseudoPotential:
+                  extra_l: int = DEFAULT_EXTRA_L,
+                  ghosts: str = "repair") -> ONCVPseudoPotential:
     r"""Generate an ONCVPSP pseudopotential for ``symbol``.
 
     Parameters
@@ -1306,7 +1564,7 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
     r_cut_local : float, optional
         Radius of the polynomial local potential (default ``local_factor``
         times the smallest channel cutoff).
-    local_shift : float
+    local_shift : float, optional
         Raise of the local potential at the origin (Hartree, Hamann's
         ``dvloc0``), a knob against ghost states; zero by default.
     q_cut : float
@@ -1345,7 +1603,18 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         :func:`generation_points` (finer for heavier atoms, so the Numerov
         partial waves satisfy the radial equation to the ~1e-7 needed for a
         symmetric Vanderbilt matrix).
+    ghosts : str
+        ``"repair"`` (the default) rebuilds a channel set that binds a ghost
+        state with balanced cutoffs and a raised local potential;
+        ``"refuse"`` raises :class:`GhostStateError` instead; ``"keep"``
+        returns it unexamined.  See :func:`ghost_free`.
     """
+    if ghosts != "keep":
+        options = {k: v for k, v in locals().items()
+                   if k not in ("symbol", "ghosts")}
+        return ghost_free(generate_oncv, _oncv_levels, log_derivative_ps,
+                          symbol, options, ghosts)
+
     from ase.data import atomic_numbers
 
     from ..basis.relativity import _resolve as _resolve_relativity
@@ -1360,13 +1629,14 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
                                   if points is None else int(points)),
                           r_max=r_max, tolerance=1e-7, mixing=0.25,
                           xc=xc, relativity=relativity)
-    valence_config, core_config = _valence_configuration(atomic_number)
+    valence_config, core_config = _valence_configuration(
+        atomic_number, configuration=atom.occupations)
     if not valence_config:
         raise ValueError(f"{symbol} has no valence subshells to pseudize")
     valence_charge = float(sum(valence_config.values()))
     r, v_ae = atom.r, atom.v_effective
     z_eff = float(atomic_number)
-    shift = float(local_shift)
+    shift = 0.0 if local_shift is None else float(local_shift)
 
     def channel_set(kappa_map):
         """Every channel of one j branch (or the only branch)."""
@@ -1561,6 +1831,11 @@ def _spectrum_extent(pp: ONCVPseudoPotential, l: int, floor: float = 1e-5,
     tail = np.nonzero(u[peak:] > floor * u[peak])[0]
     extent = float(r[peak + tail[-1]]) if tail.size else bounds[1]
     return float(np.clip(extent, *bounds))
+
+
+def _oncv_levels(pp, l: int) -> np.ndarray:
+    """The two lowest eigenvalues of one ONCVPSP channel (:func:`ghost_free`)."""
+    return radial_spectrum(pp, l, n_states=2)
 
 
 def radial_spectrum(pp: ONCVPseudoPotential, l: int, n_states: int = 3,

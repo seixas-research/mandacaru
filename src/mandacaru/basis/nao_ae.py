@@ -302,7 +302,8 @@ MAX_TIER = 2
 def valence_radii(atom) -> dict[int, float]:
     """``{l: <r>}`` of the valence shells, plus ``-1`` -> the outermost one."""
     radii = {}
-    for (n, l) in valence_subshells(atom.atomic_number):
+    for (n, l) in valence_subshells(atom.atomic_number,
+                              configuration=atom.occupations):
         u = atom.orbitals.get((n, l))
         if u is not None:
             radii[l] = mean_radius(atom.r, u)
@@ -321,7 +322,8 @@ def tier_specification(atom, tier: int) -> list[tuple[int, int, float, str]]:
         raise ValueError(f"tier must be in [0, {MAX_TIER}], got {tier}")
     if tier == 0:
         return []
-    valence = valence_subshells(atom.atomic_number)
+    valence = valence_subshells(atom.atomic_number,
+                              configuration=atom.occupations)
     n_of_l = {l: n for (n, l) in valence}
     l_max = max(n_of_l)
     radii = valence_radii(atom)

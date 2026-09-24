@@ -41,6 +41,7 @@ from mandacaru.pseudopotentials import (
     paw_spectrum, reconstruct_ae, report_paw, resolve_family,
     save_pseudopotential)
 from mandacaru.pseudopotentials import paw
+from mandacaru.pseudopotentials.io import library_elements
 from mandacaru.pseudopotentials.io import (available_elements,
                                                        default_library_path,
                                                        detect_format)
@@ -460,6 +461,11 @@ class TestAtomic:
 # The shipped library.
 # --------------------------------------------------------------------------- #
 
+#: One element from each population the 2026-09-24 ghost census found
+#: ghosted (PAW-LCAO only, both families, ONCVPSP only, first rows, d, f, p).
+GHOST_SWEEP = ["B", "Na", "Cl", "Fe", "Cu", "Ga", "Ba", "La", "W", "Bi"]
+
+
 class TestLibrary:
     def test_shipped_elements(self):
         # The external paw repository (all 92 elements) linked into
@@ -488,6 +494,21 @@ class TestLibrary:
             spectrum = paw_spectrum(pp, l)
             assert abs(spectrum[0] - channel.eigenvalue) < 1e-4
             assert spectrum[1] > 0.0
+
+    @pytest.mark.parametrize("symbol", GHOST_SWEEP)
+    def test_no_shipped_channel_holds_a_ghost(self, symbol):
+        """An extra state below the reference, with the reference level
+        displaced to second place (:func:`~mandacaru.pseudopotentials.oncv.
+        ghost_errors`), in one element of every population the 2026-09-24
+        census found ghosted.  The whole library is the slow test below."""
+        from mandacaru.pseudopotentials import oncv
+        assert oncv.ghost_errors(get_paw(symbol), paw._paw_levels) == {}
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("symbol", library_elements())
+    def test_no_shipped_dataset_holds_a_ghost(self, symbol):
+        from mandacaru.pseudopotentials import oncv
+        assert oncv.ghost_errors(get_paw(symbol), paw._paw_levels) == {}
 
     def test_shipped_h_matches_a_fresh_generation(self):
         shipped, fresh = get_paw("H"), generated("H")

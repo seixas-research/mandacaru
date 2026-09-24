@@ -25,7 +25,7 @@ to a set of one-dimensional radial equations for :math:`u_{nl} = r R_{nl}`,
     V_{\text{eff}} = -\frac{Z}{r} + V_H[\rho] + V_{xc}[\rho],
 
 solved on a uniform radial grid by a tridiagonal eigensolve and iterated to
-self-consistency with linear density mixing.
+self-consistency with Pulay density mixing (:class:`_PulayMixer`).
 
 Exchange-correlation is the local density approximation: Slater exchange plus the
 Perdew-Zunger (1981) parameterization of the Ceperley-Alder correlation energy.
@@ -36,9 +36,10 @@ basis from scratch.
 .. note::
 
    A uniform grid (rather than the logarithmic grid atomic codes usually use) is
-   deliberate: it keeps the eigenproblem a plain symmetric tridiagonal matrix, so
-   :func:`scipy.linalg.eigh_tridiagonal` solves it directly with no shooting or
-   node counting by hand.  The cost is more points -- resolving a :math:`1s`
+   deliberate: it keeps the eigenproblem a plain symmetric tridiagonal matrix,
+   whose k-th eigenpair :func:`~mandacaru.basis.radial_backend.
+   tridiagonal_eigenpair` finds directly (in C, with a SciPy fallback) with no
+   shooting or node counting by hand.  The cost is more points -- resolving a :math:`1s`
    orbital of scale :math:`a_0/Z` needs a fine spacing -- but the solve is
    one-dimensional and takes milliseconds.
 """
@@ -48,13 +49,279 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.linalg import eigh_tridiagonal
+from .radial_backend import tridiagonal_eigenpair
 
-from ._config import ground_state_config
 
 #: Default radial grid: points and outer radius (Bohr).
 DEFAULT_POINTS = 4000
 DEFAULT_R_MAX = 25.0
+#: Densities kept by the Pulay mixer.  Eight is the usual plateau; more history
+#: buys nothing once the residuals span the slow subspace.
+MIXING_HISTORY = 8
+#: Negative charge, as a fraction of the electron count, that an extrapolated
+#: density may carry before the mixer falls back to a linear step.
+NEGATIVE_CHARGE_TOLERANCE = 1e-9
+#: A valence eigenvalue at or above this (Hartree) is not a bound state, and a
+#: configuration containing one is rejected whatever its total energy.
+BOUND_STATE_CEILING = -1e-3
+#: Fraction of the radial box beyond which a valence orbital's maximum means the
+#: state is held by the box rather than by the atom.
+BOX_STATE_FRACTION = 0.5
+
+
+class _PulayMixer:
+    r"""Pulay (DIIS) density mixing, in the radial metric.
+
+    The metric matters as much as the algorithm.  :math:`n(r)` spans ten orders
+    of magnitude between the nucleus and the valence tail, so a least squares in
+    the plain Euclidean norm optimizes the core and leaves the valence to bare
+    linear mixing.  The inner product here is
+
+    .. math:: \langle A, B\rangle = \int A\,B\;4\pi r^2\,\mathrm{d}r ,
+
+    the one in which a charge is a charge.
+
+    Given past inputs :math:`n_i` and residuals :math:`R_i = n^{\text{out}}_i -
+    n_i`, the coefficients minimize :math:`\|\sum_i c_i R_i\|` subject to
+    :math:`\sum_i c_i = 1`, and the next input is :math:`\sum_i c_i (n_i +
+    \beta R_i)`.  With one density in hand that is exactly linear mixing, so the
+    first iteration is unchanged.
+    """
+
+    def __init__(self, weight, mixing: float, electrons: float,
+                 history: int = MIXING_HISTORY):
+        self.weight = np.asarray(weight, dtype=float)
+        self.beta = float(mixing)
+        self.electrons = float(electrons)
+        self.history = int(history)
+        self.inputs: list = []
+        self.residuals: list = []
+
+    def _dot(self, a, b) -> float:
+        return float(np.sum(self.weight * a * b))
+
+    def _accept(self, mixed, linear):
+        r"""``mixed``, or ``linear`` when the extrapolation is not a density.
+
+        Charge needs no repair: every stored input holds :math:`N`, every
+        residual holds zero, and :math:`\sum_i c_i = 1`, so the combination
+        holds :math:`N` identically.  Non-negativity is the one property Pulay
+        can violate, and the honest response is to fall back to the linear
+        step.  Clipping and rescaling instead -- perturbing every point of the
+        density to repair a few -- is what an earlier version of this class did,
+        and it stalled the SCF outright: oxygen sat at a residual of 1e-2 for
+        200 iterations and never converged, where the linear mixing it replaced
+        converged in 86.  With the fallback it converges in 13.
+        """
+        deficit = float(np.sum(self.weight * np.where(mixed < 0.0, -mixed, 0.0)))
+        if deficit > NEGATIVE_CHARGE_TOLERANCE * self.electrons:
+            return linear
+        return np.where(mixed > 0.0, mixed, 0.0)
+
+    def __call__(self, density_in, density_out):
+        residual = density_out - density_in
+        linear = density_in + self.beta * residual
+        self.inputs.append(np.asarray(density_in, dtype=float))
+        self.residuals.append(residual)
+        if len(self.inputs) > self.history:
+            del self.inputs[0]
+            del self.residuals[0]
+        m = len(self.inputs)
+        if m < 2:
+            return linear
+        matrix = np.empty((m + 1, m + 1))
+        for i in range(m):
+            for j in range(i, m):
+                matrix[i, j] = matrix[j, i] = self._dot(self.residuals[i],
+                                                        self.residuals[j])
+        matrix[:m, m] = 1.0
+        matrix[m, :m] = 1.0
+        matrix[m, m] = 0.0
+        rhs = np.zeros(m + 1)
+        rhs[m] = 1.0
+        try:
+            coefficients = np.linalg.solve(matrix, rhs)[:m]
+        except np.linalg.LinAlgError:
+            # Linearly dependent residuals: the history has nothing left to
+            # extrapolate along.  Restart it and take the linear step.
+            self.inputs, self.residuals = [self.inputs[-1]], [self.residuals[-1]]
+            return linear
+        if not np.all(np.isfinite(coefficients)):
+            self.inputs, self.residuals = [self.inputs[-1]], [self.residuals[-1]]
+            return linear
+        mixed = np.zeros_like(linear)
+        for c, past_in, past_residual in zip(coefficients, self.inputs,
+                                             self.residuals):
+            mixed += c * (past_in + self.beta * past_residual)
+        return self._accept(mixed, linear)
+
+
+def density_change(previous, current, shell) -> float:
+    r"""How far two radial densities are apart, as the SCF loop measures it.
+
+    The maximum of the deviation in :math:`n(r)` **and** in the radial density
+    :math:`4\pi r^2 n(r)`, so the test is never blind to one of them.
+
+    The second term is the one that matters and the reason this function
+    exists.  :math:`n(r)` runs from :math:`10^4` at the nucleus of a heavy atom
+    to :math:`10^{-7}` in the valence tail, so ``max|dn|`` alone is a statement
+    about the core: La's aufbau atom reported ``converged=True`` with its
+    :math:`6s` at :math:`-0.012` Hartree peaking at 28 Bohr, while the same
+    configuration run harder puts it at :math:`-0.192` Hartree peaking at 4.8 --
+    a different atom, reached because the branch flip is invisible in
+    :math:`n(r)`.  Taking the larger of the two can only ever tighten the
+    criterion, never loosen it.
+    """
+    difference = np.asarray(current, dtype=float) - np.asarray(previous,
+                                                              dtype=float)
+    return max(float(np.max(np.abs(difference))),
+               float(np.max(np.abs(shell * difference))))
+
+
+# --------------------------------------------------------------------------- #
+# Reference configuration.
+# --------------------------------------------------------------------------- #
+
+#: ``(Z, xc, relativity, r_max) -> configuration`` decided by
+#: :func:`relaxed_configuration`.  One SCF sweep per element per process.
+_CONFIGURATION_CACHE: dict = {}
+
+
+def selection_points(atomic_number: int) -> int:
+    """Uniform radial points :func:`relaxed_configuration` judges an atom on.
+
+    Not a free parameter.  At 6000 points cerium's aufbau ``4f`` and ``6s`` come
+    out at :math:`+0.036` and :math:`+0.029` Hartree peaking at 21.7 and 25.9
+    Bohr, where 12000 points gives :math:`-0.048` at 0.73 Bohr and
+    :math:`-0.121` at 4.19 -- a qualitatively different atom.  A bound-state
+    test on the coarse grid is reading discretization error, and it did: it
+    declared cerium's aufbau filling unbound and "repaired" a configuration that
+    was never broken.
+
+    So the floor scales with :math:`Z` like everything else that has to resolve
+    a :math:`a_0/Z` cusp on a uniform mesh.  It stays well below
+    :func:`mandacaru.pseudopotentials.oncv.generation_points` (``1500 Z``),
+    because ranking configurations needs the valence bound and ordered, not the
+    total energy converged.
+    """
+    return max(12000, 300 * int(atomic_number))
+
+
+def relaxed_configuration(atomic_number: int, *, xc: str = "lda",
+                          relativity: str = "none", r_max: float = DEFAULT_R_MAX,
+                          points: int | None = None):
+    r"""The reference configuration to solve this atom in: ``{(n, l): q}``.
+
+    **The aufbau filling is used unless it produces an unbound valence state.**
+    That is the whole rule, and it is deliberately narrower than "whichever
+    configuration has the lowest energy".
+
+    The defect it exists to repair is sharp.  Under strict aufbau filling the
+    ``f`` shell of La, Ac, Th and Pa is not bound at all:
+
+        La  4f^1  eps = -0.00425 Ha, peaking at 27.6 Bohr in a 30 Bohr box
+        Ac  5f^1  eps = +0.00647 Ha
+        Th  5f^2  eps = -0.01226 Ha, peaking at 26.3 Bohr
+        Pa  5f^3  eps = +0.06716 Ha, peaking at 29.99 Bohr -- the last node
+
+    A positive eigenvalue is not a valence orbital, it is a box state, and a
+    norm-conserving channel built from one is meaningless.  That is what killed
+    three elements 254 to 735 minutes into a 12.8 hour library build.  Moving one
+    electron to the ``d`` shell binds it -- La's ``5d`` sits at -0.111 Hartree
+    peaking at 3.34 Bohr -- and LDA prefers that by 30.87 Hartree, a margin
+    stable at -30.71, -30.87 and -31.12 across 6000, 12000 and 24000 points.
+
+    **Why it does not simply minimize the energy.**  Chromium's ``3d^5 4s^1``
+    margin reads -0.355, -0.125 and -0.029 Hartree over that same grid range: a
+    number shrinking toward zero, which could still change sign.  Acting on it
+    would be acting on noise, so this function **declines to reproduce the Cr
+    and Cu anomalies** rather than claim a variational result it cannot support.
+    No table of experimental configurations enters the repository either way.
+
+    **Cost.**  A configuration with no occupied ``f`` shell in its valence
+    returns immediately, with no solve at all: the aufbau ``d`` shell of a
+    transition metal is bound, and the energy margins there are the
+    unresolvable ones above.  So only the ``f`` block pays, and only La, Ac, Th
+    and Pa pay more than a single solve.  Cached per
+    ``(Z, xc, relativity, r_max)``.
+    """
+    from ._config import rearrangements, valence_subshells
+
+    Z = int(atomic_number)
+    candidates = rearrangements(Z)
+    aufbau = dict(candidates[0])
+    if len(candidates) == 1:
+        return aufbau
+    # Only an occupied f shell can be the unbound one; see "Cost" above.
+    if not any(l == 3 and aufbau.get((n, l), 0) > 0
+               for (n, l) in valence_subshells(Z, configuration=aufbau)):
+        return aufbau
+
+    # The grid is part of the key: at 6000 points cerium's aufbau 4f and 6s
+    # come out unbound, at 12000 they are bound -- so which configuration wins
+    # depends on it (see `selection_points`).
+    grid = selection_points(Z) if points is None else int(points)
+    key = (Z, str(xc).strip().lower(), str(relativity).strip().lower(),
+           float(r_max), grid)
+    cached = _CONFIGURATION_CACHE.get(key)
+    if cached is not None:
+        return dict(cached)
+
+    def solved(configuration):
+        try:
+            return solve_atom(Z, points=grid, r_max=float(r_max),
+                              configuration=configuration, xc=xc,
+                              relativity=relativity)
+        except (ValueError, RuntimeError):
+            return None           # a candidate the solver cannot follow
+
+    atom = solved(aufbau)
+    if atom is not None and atom.converged and bound_valence(atom):
+        _CONFIGURATION_CACHE[key] = aufbau
+        return dict(aufbau)
+
+    best, best_energy = None, np.inf
+    for candidate in candidates[1:]:
+        trial = solved(candidate)
+        if (trial is not None and trial.converged and bound_valence(trial)
+                and trial.total_energy < best_energy):
+            best, best_energy = candidate, trial.total_energy
+    # Nothing bound: keep aufbau and let the generator refuse it by name, which
+    # says more than a silently substituted configuration would.
+    chosen = dict(aufbau if best is None else best)
+    _CONFIGURATION_CACHE[key] = chosen
+    return dict(chosen)
+
+
+def bound_valence(atom) -> bool:
+    r"""Is every valence orbital of ``atom`` bound by the atom?
+
+    Two ways it can fail to be.  The eigenvalue can be at or above zero, which
+    is not a bound state at all -- Ac's aufbau ``5f`` comes out at
+    :math:`+0.0065` Hartree.  Or it can be
+    negative but tiny with its maximum against the wall of the box, which is a
+    box state wearing an atomic label: La's aufbau ``4f`` sits at
+    :math:`-0.0043` Hartree peaking at 27.6 Bohr in a 30 Bohr box.
+
+    Either way a norm-conserving pseudopotential channel built from it is
+    meaningless, which is how three elements died partway through a 12.8 hour
+    library build.  This is a **property of the configuration**, not a matter
+    of which configuration has the lowest energy, so it is tested separately
+    and it overrides the energy.
+    """
+    from ._config import valence_subshells
+
+    valence = valence_subshells(atom.atomic_number,
+                               configuration=atom.occupations)
+    edge = BOX_STATE_FRACTION * float(atom.r[-1])
+    for state in valence:
+        eps = atom.eigenvalues.get(state)
+        if eps is None or eps > BOUND_STATE_CEILING:
+            return False
+        u = atom.orbitals.get(state)
+        if u is not None and atom.r[int(np.argmax(np.abs(u)))] > edge:
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -135,13 +402,11 @@ def solve_radial(r: np.ndarray, potential: np.ndarray, l: int, n_nodes: int):
     step = float(r[1] - r[0])
     diag = 1.0 / step ** 2 + potential + l * (l + 1) / (2.0 * r * r)
     offdiag = -0.5 / step ** 2 * np.ones(r.size - 1)
-    values, vectors = eigh_tridiagonal(diag, offdiag, select="i",
-                                       select_range=(n_nodes, n_nodes))
-    u = vectors[:, 0]
+    value, u = tridiagonal_eigenpair(diag, offdiag, n_nodes)
     u = u / np.sqrt(np.trapezoid(u * u, r))
     if u[0] < 0:                                # fix the global sign
         u = -u
-    return u, float(values[0])
+    return u, value
 
 
 def hartree_potential(r: np.ndarray, rho: np.ndarray) -> np.ndarray:
@@ -275,9 +540,11 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         resolves the :math:`1s` shell of the first two rows; heavier atoms want
         more points.
     mixing : float
-        Linear density-mixing fraction.  Small values are slower but stable.
+        Fraction of the linear step taken by the Pulay mixer (and the whole
+        step whenever the Pulay extrapolation is not a density).
     configuration : dict, optional
-        ``{(n, l): occupancy}``.  Defaults to the aufbau ground state.
+        ``{(n, l): occupancy}``.  Defaults to :func:`relaxed_configuration`:
+        the aufbau ground state unless it leaves the valence unbound.
     confinement : callable or ndarray, optional
         An extra external potential (Hartree) added **only when integrating
         the orbitals** -- a confining wall for a localized basis (see
@@ -309,7 +576,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
     grid : str
         ``"uniform"`` (the default) is the grid every consumer of this atom
         expects.  ``"log"`` solves each state on a logarithmic grid instead
-        (:mod:`~mandacaru.basis.loggrid}`), which is the only way to converge a
+        (:mod:`~mandacaru.basis.loggrid`), which is the only way to converge a
         relativistic :math:`l=0` level, and is meant for **measuring** the
         uniform atom rather than for feeding a generator: the pseudopotential
         constructions need waves that satisfy the uniform-grid equation, which
@@ -332,7 +599,9 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
 
     Z = int(atomic_number)
     occupations = dict(configuration if configuration is not None
-                       else ground_state_config(Z))
+                       else relaxed_configuration(Z, xc=xc,
+                                                  relativity=relativity,
+                                                  r_max=r_max))
     relativity = str(relativity).strip().lower()
     j_resolved = relativity in ("dirac", "full", "relativistic")
     if j_resolved:
@@ -358,6 +627,23 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
     scale = max(Z ** (1.0 / 3.0), 1.0)
     density = Z * (scale ** 3 / np.pi) * np.exp(-2.0 * scale * r)
     density *= Z / max(np.trapezoid(4.0 * np.pi * density * r * r, r), 1e-30)
+    seed_energies: dict = {}
+    if grid == "log":
+        # The log grid cannot start from that guess.  Its potential binds no
+        # 3d state for iron (V + l(l+1)/r^2 > 0 everywhere, +0.0096 Ha at its
+        # lowest), and a Dirichlet search with no classically allowed region
+        # has nothing to return; the uniform tridiagonal solve returns a box
+        # state instead and lets the SCF recover.  So the log-grid atom
+        # starts from the converged uniform one -- a better guess, not a
+        # different answer: every orbital it reports is still a log-grid one.
+        seed = solve_atom(Z, points=points, r_max=r_max,
+                          max_iterations=max_iterations, tolerance=tolerance,
+                          mixing=mixing, configuration=occupations,
+                          confinement=confinement, xc=xc,
+                          relativity=relativity, polish=0, grid="uniform")
+        density = np.asarray(seed.density, dtype=float).copy()
+        seed_energies = dict(seed.eigenvalues_j if seed.eigenvalues_j
+                             else seed.eigenvalues)
 
     orbitals: dict = {}
     eigenvalues: dict = {}
@@ -373,7 +659,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
                                       "non-relativistic", "nr")
     # V' and V'' do not depend on the energy, so they are built once per
     # potential and shared by every state and every M(eps) step.
-    cache: dict = {"derivatives": None, "energy": {}}
+    cache: dict = {"derivatives": None, "energy": seed_energies}
 
     def solve_one(key, l, n_nodes, potential, kappa=None):
         """One radial state, at whichever level of theory was asked for."""
@@ -387,6 +673,9 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
             derivatives=cache["derivatives"], grid=grid)
         cache["energy"][key] = eps
         return u, eps
+
+    electrons = float(sum(occupations.values()))
+    mixer = _PulayMixer(shell * step, mixing, electrons)
 
     for iteration in range(1, max_iterations + 1):
         v_hartree = hartree_potential(r, density)
@@ -423,8 +712,8 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
                 eigenvalues[(n, l)] = eps
                 new_density += occupancy * u * u / shell
 
-        change = float(np.max(np.abs(new_density - density)))
-        density = (1.0 - mixing) * density + mixing * new_density
+        change = density_change(density, new_density, shell)
+        density = mixer(density, new_density)
         if change < tolerance:
             converged = True
             break
@@ -449,11 +738,13 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         # expensive to shoot (deep, many nodes) and the least likely to
         # bracket.  Re-solving the whole atom instead made the heavy end of
         # the library 39 hours of work rather than 5.
-        wanted = {(int(n), int(l)) for n, l in valence_subshells(Z)}
+        wanted = {(int(n), int(l)) for n, l
+                  in valence_subshells(Z, configuration=occupations)}
 
         def is_valence(key):
             return (int(key[0]), int(key[1])) in wanted
 
+        polish_mixer = _PulayMixer(shell * step, mixing, electrons)
         for _ in range(polish):
             v_hartree = hartree_potential(r, density)
             _e_xc, v_xc = xc_potential(r, density, xc)
@@ -478,8 +769,8 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
                         # solution stands.
                         pass
                 new_density += occupancy * store[key] ** 2 / shell
-            change = float(np.max(np.abs(new_density - density)))
-            density = (1.0 - mixing) * density + mixing * new_density
+            change = density_change(density, new_density, shell)
+            density = polish_mixer(density, new_density)
             if change < tolerance:
                 break
         # One last solve in the potential that will actually be *reported*.

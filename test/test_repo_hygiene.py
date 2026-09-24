@@ -30,7 +30,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: The only files that may live in the repository root.
 ROOT_ALLOWED = {".gitignore", ".readthedocs.yaml", "CLAUDE.md", "HISTORY.md",
-                "LICENSE", "README.md", "VERSION_DESCRIPTION.md",
+                "LICENSE", "PAW_SAGA.md", "README.md", "VERSION_DESCRIPTION.md",
                 "pyproject.toml"}
 def gitignore_patterns():
     """Directory patterns ``.gitignore`` excludes (negations not supported)."""

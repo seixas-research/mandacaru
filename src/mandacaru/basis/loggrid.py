@@ -11,8 +11,8 @@ r"""Radial eigenstates on a logarithmic grid.
 The uniform radial grid of :mod:`mandacaru.basis.atomic_solver` is a
 deliberate choice and a good one for everything non-relativistic: it keeps the
 eigenproblem a plain symmetric tridiagonal matrix, and a Schrodinger radial
-function :math:`u = rR \sim r^{l+1}` is analytic at the origin, so the
-discretization converges at fourth order.
+function :math:`u = rR \sim r^{l+1}` is analytic at the origin, so its
+three-point Laplacian converges cleanly at second order.
 
 **A relativistic state is not analytic there.**  With a point nucleus
 :math:`P \sim r^{\gamma}`, :math:`\gamma = \sqrt{\kappa^2-(Z\alpha)^2}`, which
@@ -97,12 +97,12 @@ This module solves; it does not replace the uniform grid.  The reference atom,
 the pseudopotential generators and everything downstream stay on the uniform
 grid they were written for.
 
-**Nothing imports this module yet.**  It is validated against closed forms and
-ready to be called, but wiring it into
-:func:`~mandacaru.basis.relativity.solve_radial_relativistic` would change
-every relativistic eigenvalue the generators produce, and so every shipped
-dataset -- that is a deliberate step to take on its own, not a side effect of
-adding a solver.  What it would buy is an accurate **eigenvalue**; the wave on
+It is reached only on request, through ``grid="log"`` of
+:func:`~mandacaru.basis.relativity.solve_radial_relativistic` and
+:func:`~mandacaru.basis.atomic_solver.solve_atom`; the generators never pass
+it.  Making it their default would change every relativistic eigenvalue they
+produce, and so every shipped dataset -- a deliberate step to take on its own,
+not a side effect of adding a solver.  What it would buy is an accurate **eigenvalue**; the wave on
 the uniform grid still could not represent the cusp, but nothing downstream
 needs it to -- the pseudization works at :math:`r_c`, where the wave is
 smooth, and the cusp region carries almost no charge.
