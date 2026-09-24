@@ -249,8 +249,13 @@ class TestDeviceSelection:
             self.calls.append(("least_busy", kwargs))
             return self._backends["ibm_fez"]
 
-        def backend(self, name):
-            self.calls.append(("backend", name))
+        def backend(self, name, **kwargs):
+            # ``use_fractional_gates`` is part of the call now: every request
+            # states whether it wants the processor's fractional instruction
+            # set, because the answer changes which entangler the ansatz
+            # compiles to and therefore the run's fidelity.  Recorded so the
+            # tests below can pin that it is passed and what it is set to.
+            self.calls.append(("backend", name, kwargs))
             return self._backends[name]
 
     @pytest.fixture
@@ -264,12 +269,22 @@ class TestDeviceSelection:
     def test_least_busy_of_the_account(self, service):
         backend = QiskitProvider(device="ibm-quantum", shots=1).backend()
         assert backend.name == "ibm_fez"
-        assert service.calls == [("least_busy", {"operational": True,
-                                                 "simulator": False})]
+        assert service.calls == [("least_busy",
+                                  {"operational": True, "simulator": False,
+                                   "use_fractional_gates": False})]
 
     def test_named_processor(self, service):
         assert QiskitProvider(device="ibm_kingston", shots=1).backend().name \
             == "ibm_kingston"
+        assert service.calls == [("backend", "ibm_kingston",
+                                  {"use_fractional_gates": False})]
+
+    def test_fractional_gates_are_requested_when_asked_for(self, service):
+        provider = QiskitProvider(device="ibm_kingston", shots=1,
+                                  enable_fractional_gates=True)
+        assert provider.backend().name == "ibm_kingston"
+        assert service.calls == [("backend", "ibm_kingston",
+                                  {"use_fractional_gates": True})]
 
     def test_least_busy_of_a_list_skips_non_operational(self, service):
         provider = QiskitProvider(

@@ -602,6 +602,80 @@ _BASES = [
   doi     = {10.1002/andp.19213690304}
 }""", "the Ewald sum for periodic ion-ion energies", verified=False,
          topics=("periodic",)),
+    _ref("Moller1934", """
+@article{Moller1934,
+  author  = {M{\\o}ller, Chr. and Plesset, Milton S.},
+  title   = {Note on an Approximation Treatment for Many-Electron Systems},
+  journal = {Phys. Rev.},
+  volume  = {46},
+  pages   = {618--622},
+  year    = {1934},
+  doi     = {10.1103/PhysRev.46.618}
+}""", "second-order perturbation theory (the MP2 active-space selector)",
+         verified=False, topics=("mp2", "active-space")),
+    _ref("Loewdin1955", """
+@article{Loewdin1955,
+  author  = {L{\\"o}wdin, Per-Olov},
+  title   = {Quantum Theory of Many-Particle Systems. I. Physical
+             Interpretations by Means of Density Matrices, Natural Spin-Orbitals,
+             and Convergence Problems in the Method of Configurational
+             Interaction},
+  journal = {Phys. Rev.},
+  volume  = {97},
+  pages   = {1474--1489},
+  year    = {1955},
+  doi     = {10.1103/PhysRev.97.1474}
+}""", "natural orbitals and their occupation numbers", verified=False,
+         topics=("natural-orbitals", "active-space")),
+    _ref("Sosa1989", """
+@article{Sosa1989,
+  author  = {Sosa, Carlos and Geertsen, Jan and Trucks, Gary W. and
+             Bartlett, Rodney J. and Franz, Judy A.},
+  title   = {Selection of the reduced virtual space for correlated
+             calculations. An application to the energy and dipole moment of
+             H2O},
+  journal = {Chem. Phys. Lett.},
+  volume  = {159},
+  pages   = {148--154},
+  year    = {1989},
+  doi     = {10.1016/0009-2614(89)87399-3}
+}""", "the frozen natural orbital truncation of the virtual space",
+         verified=False, topics=("fno", "active-space", "mp2")),
+    _ref("TaubeBartlett2005", """
+@article{TaubeBartlett2005,
+  author  = {Taube, Andrew G. and Bartlett, Rodney J.},
+  title   = {Frozen natural orbitals: Systematic basis set truncation for
+             coupled-cluster theory},
+  journal = {Collect. Czech. Chem. Commun.},
+  volume  = {70},
+  pages   = {837--850},
+  year    = {2005},
+  doi     = {10.1135/cccc20050837}
+}""", "frozen natural orbitals as a systematic basis truncation",
+         verified=False, topics=("fno", "active-space")),
+    _ref("Rozzi2006", """
+@article{Rozzi2006,
+  author  = {Rozzi, Carlo A. and Varsano, Daniele and Marini, Andrea and
+             Gross, Eberhard K. U. and Rubio, Angel},
+  title   = {Exact {C}oulomb cutoff technique for supercell calculations},
+  journal = {Phys. Rev. B},
+  volume  = {73},
+  pages   = {205119},
+  year    = {2006},
+  doi     = {10.1103/PhysRevB.73.205119}
+}""", "the two-dimensionally truncated Coulomb kernel for slabs",
+         verified=False, topics=("slab", "periodic", "coulomb-cutoff")),
+    _ref("Bravyi2017", """
+@misc{Bravyi2017,
+  author        = {Bravyi, Sergey and Gambetta, Jay M. and Mezzacapo, Antonio
+                   and Temme, Kristan},
+  title         = {Tapering off qubits to simulate fermionic {H}amiltonians},
+  year          = {2017},
+  eprint        = {1701.08213},
+  archivePrefix = {arXiv},
+  doi           = {10.48550/arXiv.1701.08213}
+}""", "Z2 symmetry tapering (mandacaru.core.tapering)", verified=False,
+         topics=("tapering", "mapping", "symmetry")),
     _ref("Loewdin1950", """
 @article{Loewdin1950,
   author  = {L{\\"o}wdin, Per-Olov},

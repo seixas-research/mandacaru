@@ -138,7 +138,7 @@ ORBITAL_UNITS = "Bohr^-3/2"
 # Reduced density matrices, in the shape a one-particle picture needs.
 # --------------------------------------------------------------------------- #
 
-def spin_resolved_rdm(gamma, n_spatial_orbitals: int, frozen=()):
+def spin_resolved_rdm(gamma, n_spatial_orbitals: int, frozen=(), active=None):
     r"""``(D_alpha, D_beta)`` spatial one-RDMs, with the frozen core refilled.
 
     ``gamma`` is the **active-space** spin-orbital RDM the solver's register
@@ -148,19 +148,29 @@ def spin_resolved_rdm(gamma, n_spatial_orbitals: int, frozen=()):
     :func:`~mandacaru.algorithms.rdm.expand_frozen_core`, which the forces use
     for the same reason.
 
+    ``active`` names the spatial orbitals the register carried.  ``None`` means
+    the complement of ``frozen``, which is what a frozen core alone leaves.  It
+    has to be given explicitly once the **virtual** space is truncated as well
+    (:mod:`mandacaru.algorithms.active_space`): a deleted virtual orbital is
+    neither frozen nor active, so the complement is no longer the active set and
+    the RDM's rows would be laid out against the wrong orbitals.  Deleted
+    orbitals are empty, so they simply stay zero here.
+
     Returns two ``(M, M)`` Hermitian matrices over the **full** set of spatial
     molecular orbitals.
     """
     M = int(n_spatial_orbitals)
     gamma = np.asarray(gamma, dtype=complex)
     core = sorted({int(f) for f in frozen})
-    active = [p for p in range(M) if p not in set(core)]
+    active = ([p for p in range(M) if p not in set(core)] if active is None
+              else sorted({int(p) for p in active}))
+    _check_partition(M, core, active)
     n_act = len(active)
     if gamma.shape != (2 * n_act, 2 * n_act):
         raise ValueError(
             f"expected a {2 * n_act}x{2 * n_act} spin-orbital RDM for "
-            f"{n_act} active orbitals ({len(core)} frozen of {M}), got "
-            f"{gamma.shape}")
+            f"{n_act} active orbitals ({len(core)} frozen, "
+            f"{M - n_act - len(core)} deleted of {M}), got {gamma.shape}")
     scale = float(np.abs(gamma).max()) or 1.0
     asymmetry = float(np.abs(gamma - gamma.conj().T).max()) / scale
     if asymmetry > RDM_HERMITICITY_TOLERANCE:
@@ -180,7 +190,22 @@ def spin_resolved_rdm(gamma, n_spatial_orbitals: int, frozen=()):
     return blocks[0], blocks[1]
 
 
-def reference_occupations(n_spatial_orbitals: int, num_particles, frozen=()):
+def _check_partition(M: int, frozen, active) -> None:
+    """Refuse a frozen / active pair that does not describe one orbital set."""
+    for label, indices in (("frozen", frozen), ("active", active)):
+        for p in indices:
+            if not 0 <= p < M:
+                raise ValueError(
+                    f"{label} spatial orbital {p} is out of range [0, {M})")
+    overlap = sorted(set(frozen) & set(active))
+    if overlap:
+        raise ValueError(
+            f"spatial orbital(s) {overlap} are listed as both frozen and "
+            f"active; the density would count their electrons twice")
+
+
+def reference_occupations(n_spatial_orbitals: int, num_particles, frozen=(),
+                          active=None):
     r"""``(occ_alpha, occ_beta)`` of the Hartree-Fock reference determinant.
 
     The ansatz starts from the determinant that fills the frozen core plus the
@@ -191,7 +216,9 @@ def reference_occupations(n_spatial_orbitals: int, num_particles, frozen=()):
     """
     M = int(n_spatial_orbitals)
     core = sorted({int(f) for f in frozen})
-    active = [p for p in range(M) if p not in set(core)]
+    active = ([p for p in range(M) if p not in set(core)] if active is None
+              else sorted({int(p) for p in active}))
+    _check_partition(M, core, active)
     out = []
     for count in (int(num_particles[0]), int(num_particles[1])):
         if not 0 <= count <= len(active):
@@ -490,7 +517,7 @@ def _checked_density(values, what: str) -> np.ndarray:
 def volumetric_field(integrals, gamma, *, quantity: str = "density",
                      index: int = 0, frozen=(), num_particles=None,
                      n_spatial_orbitals=None, component: str = "auto",
-                     grid=None, numbers=None) -> VolumetricField:
+                     grid=None, numbers=None, active=None) -> VolumetricField:
     """Build one real-space quantity of a converged variational state.
 
     This is the solver-free entry point: give it the integral object the
@@ -516,6 +543,9 @@ def volumetric_field(integrals, gamma, *, quantity: str = "density",
         ``molecular_orbital`` (0 = lowest).
     frozen : sequence of int
         Frozen spatial-orbital indices; refilled into the density.
+    active : sequence of int, optional
+        Spatial orbitals the register carried.  Needed only when the virtual
+        space was truncated as well -- see :func:`spin_resolved_rdm`.
     num_particles : (int, int)
         Active ``(n_alpha, n_beta)``.  Required for ``difference_density``,
         which needs the reference determinant.
@@ -543,7 +573,7 @@ def volumetric_field(integrals, gamma, *, quantity: str = "density",
     expansion = OrbitalExpansion(integrals, grid=grid)
     M = int(len(integrals.basis) if n_spatial_orbitals is None
             else n_spatial_orbitals)
-    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen)
+    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active)
 
     notes: list[str] = []
     occupation = None
@@ -589,7 +619,8 @@ def volumetric_field(integrals, gamma, *, quantity: str = "density",
                 raise ValueError(
                     "difference_density needs num_particles to build the "
                     "Hartree-Fock reference determinant it subtracts")
-            occ_a, occ_b = reference_occupations(M, num_particles, frozen)
+            occ_a, occ_b = reference_occupations(M, num_particles, frozen,
+                                                active)
             reference = np.diag(occ_a + occ_b).astype(complex)
             total, aug_total = expansion.density(D_alpha + D_beta)
             hartree_fock, aug_ref = expansion.density(reference)
@@ -634,7 +665,8 @@ def volumetric_field(integrals, gamma, *, quantity: str = "density",
 
 
 def state_natural_orbitals(integrals, gamma, *, frozen=(),
-                           n_spatial_orbitals=None, grid=None) -> NaturalOrbitals:
+                           n_spatial_orbitals=None, grid=None,
+                           active=None) -> NaturalOrbitals:
     """Natural orbitals and occupations of a state's one-particle RDM.
 
     The same decomposition :func:`volumetric_field` draws, returned as data:
@@ -643,6 +675,6 @@ def state_natural_orbitals(integrals, gamma, *, frozen=(),
     """
     M = int(len(integrals.basis) if n_spatial_orbitals is None
             else n_spatial_orbitals)
-    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen)
+    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active)
     return OrbitalExpansion(integrals, grid=grid).natural_orbitals(
         D_alpha + D_beta)

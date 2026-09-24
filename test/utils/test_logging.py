@@ -444,7 +444,7 @@ class TestElectronsBlock:
     # No "basis": the [BASIS] block owns it (TestBasisBlock below).
     FIELDS = ("grid spacing", "grid points", "kinetic operator", "k-points",
               "charge", "spin-polarized", "reference state", "frozen core",
-              "mapping", "Hamiltonian",
+              "active space", "Z2 tapering", "mapping", "Hamiltonian",
               "spatial orbitals", "electrons (alpha, beta)", "qubits")
 
     @pytest.fixture(scope="class")
@@ -475,6 +475,10 @@ class TestElectronsBlock:
         assert block["charge"] == "0"
         assert block["reference state"] == "hartree-fock"
         assert block["frozen core"] == "none"
+        # Never blank: a run that puts every orbital on the register says so, so
+        # a reader can tell the truncation was absent rather than unrecorded.
+        assert block["active space"] == "none (every orbital on the register)"
+        assert block["Z2 tapering"] == "none"
         assert block["kinetic operator"] == "finite difference"
         assert "Monkhorst-Pack" in block["k-points"]
         assert block["spin-polarized"] == "False (multiplicity 1)"

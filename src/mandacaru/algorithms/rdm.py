@@ -297,7 +297,8 @@ def pauli_expectations(psi, labels) -> dict:
         out[label] = float(np.real(np.vdot(psi, matrix @ psi)))
     return out
 
-def expand_frozen_core(gamma, gamma2, frozen, n_spatial_orbitals: int):
+def expand_frozen_core(gamma, gamma2, frozen, n_spatial_orbitals: int,
+                       active=None):
     r"""Lift active-space RDMs to the full orbital set, refilling the core.
 
     A frozen-core run solves for :math:`|\Psi\rangle = a^\dagger_{c_1}\cdots
@@ -328,6 +329,12 @@ def expand_frozen_core(gamma, gamma2, frozen, n_spatial_orbitals: int):
         Frozen (doubly occupied) **spatial** orbital indices.
     n_spatial_orbitals : int
         Total number of spatial orbitals.
+    active : sequence of int, optional
+        Spatial orbitals the register carried.  ``None`` means the complement of
+        ``frozen``, which is all a frozen core leaves.  With a **truncated
+        virtual space** the complement is no longer the active set, so the list
+        must be given; the deleted orbitals are empty in the model and stay
+        zero in both RDMs.
 
     Returns
     -------
@@ -337,9 +344,10 @@ def expand_frozen_core(gamma, gamma2, frozen, n_spatial_orbitals: int):
     """
     M = int(n_spatial_orbitals)
     core_spatial = sorted({int(f) for f in frozen})
-    if not core_spatial:
+    active_spatial = ([p for p in range(M) if p not in set(core_spatial)]
+                      if active is None else sorted({int(p) for p in active}))
+    if not core_spatial and len(active_spatial) == M:
         return gamma, gamma2
-    active_spatial = [p for p in range(M) if p not in set(core_spatial)]
     n_act = len(active_spatial)
     gamma = np.asarray(gamma, dtype=complex)
     gamma2 = np.asarray(gamma2, dtype=complex)

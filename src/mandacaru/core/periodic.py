@@ -50,7 +50,25 @@ transversely padded cell, eventually grows.
 **Limitations.** The kernel is periodic in all three directions.  For a chain
 or a slab the transverse images are spurious; a neutral chain's images interact
 only through quadrupoles (``L^-5``) and are negligible, but a **slab carrying a
-dipole needs a 2-D-truncated kernel**, which is not implemented here.
+dipole needs a 2-D-truncated kernel**.  That kernel now exists and is verified
+-- :func:`~mandacaru.integrals.poisson.slab_truncated_kernel`, reached as
+``PeriodicPoissonSolver(..., truncation="slab", axis=2)`` -- but it is **not
+wired into this class**, and the reason is worth stating rather than leaving as
+an omission.
+
+The Hartree term is one of *three* electrostatic terms here, and they share a
+convention: the electron-ion potential is a 3-D Ewald lattice sum
+(:func:`~mandacaru.core.ewald.ewald_potential`), the ion-ion energy is the 3-D
+Ewald energy, and :attr:`constant_energy` carries the 3-D Madelung constant.
+Truncating only the electron-electron kernel would give a total energy assembled
+from two different boundary conditions -- each term finite and plausible, the sum
+meaningless -- and for a dipolar slab the ion terms carry exactly the image
+interaction the truncation was meant to remove.  Making the option available
+here therefore needs the matching 2-D forms of all three (an Ewald split against
+the truncated kernel, with the real-space sum restricted to in-plane lattice
+vectors and the ``G = 0`` background re-derived), plus their derivatives in
+:mod:`mandacaru.algorithms.periodic_forces`.  Until then the combination is
+refused by name rather than silently mixed.
 
 Forces and stress *are* differentiated through this construction, in
 :mod:`mandacaru.algorithms.periodic_forces`: the Ewald potential is rebuilt with
@@ -94,7 +112,24 @@ class PeriodicIntegrals(MolecularIntegrals):
     """
 
     def __init__(self, nuclei, basis, grid, cell, n_electrons: int | None = None,
-                 units: str = "angstrom", kinetic: str = "spectral", **kwargs):
+                 units: str = "angstrom", kinetic: str = "spectral",
+                 truncation: str = "none", **kwargs):
+        if str(truncation).strip().lower() != "none":
+            raise NotImplementedError(
+                f"truncation={truncation!r} is not available on the periodic "
+                f"Hamiltonian yet.  The two-dimensionally truncated kernel "
+                f"itself is implemented and verified "
+                f"(mandacaru.integrals.poisson.slab_truncated_kernel), but this "
+                f"class assembles three electrostatic terms that must share one "
+                f"boundary condition -- the Hartree kernel, the electron-ion "
+                f"Ewald potential and the ion-ion Ewald energy, plus the "
+                f"Madelung constant in constant_energy.  Truncating only the "
+                f"first would give a total energy built from two different "
+                f"boundary conditions: every term finite and plausible, the sum "
+                f"meaningless, and for a dipolar slab the ion terms would still "
+                f"carry the image interaction the truncation removes.  Use the "
+                f"solver directly for a Hartree-only study, and see this "
+                f"module's docstring for what wiring it up requires.")
         super().__init__(nuclei, basis, grid, units=units, kinetic=kinetic,
                          periodic=True, **kwargs)
         self.cell = to_bohr(np.asarray(cell, dtype=float).reshape(3, 3), units)

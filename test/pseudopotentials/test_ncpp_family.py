@@ -515,8 +515,19 @@ class TestDispatch:
         calls = []
         sentinel = ("H", (1, 1), 2, {}, {"family": "dummy"})
 
-        def build(atoms, grid, h, charge, spin, options, kinetic):
-            calls.append((options, kinetic))
+        def build(atoms, grid, h, charge, spin, options, kinetic,
+                  active_orbitals=None, active_selection="energy",
+                  active_threshold=None):
+            # The active-space keywords are part of the protocol: they are
+            # always passed, so a family that cannot honour a truncation has to
+            # refuse it rather than quietly return the full register.  Recorded
+            # as a mapping, not a positional tuple, so that extending the
+            # protocol again does not turn this assertion into a puzzle -- the
+            # *named* parameters above are what pin it.
+            calls.append({"options": options, "kinetic": kinetic,
+                          "active_orbitals": active_orbitals,
+                          "active_selection": active_selection,
+                          "active_threshold": active_threshold})
             return sentinel
 
         register_family(FamilySpec(
@@ -530,8 +541,12 @@ class TestDispatch:
                 h2(), {"name": "dmy", "size": "DZ", "directory": "/nowhere"},
                 None, H2_H, 0, None, kinetic="spectral")
             assert out is sentinel
-            assert calls == [({"directory": "/nowhere", "size": "DZ"},
-                              "spectral")]
+            assert calls == [{"options": {"directory": "/nowhere",
+                                          "size": "DZ"},
+                              "kinetic": "spectral",
+                              "active_orbitals": None,
+                              "active_selection": "energy",
+                              "active_threshold": None}]
             with pytest.raises(ValueError, match="unknown option.*'tier'"):
                 build_basis_hamiltonian(h2(), {"name": "dmy", "tier": 1},
                                         None, H2_H, 0, None)

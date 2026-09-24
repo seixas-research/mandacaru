@@ -67,6 +67,36 @@ def _format_bytes(n: int) -> str:
     return f"{value:.3g} PiB"
 
 
+#: Ansatz length against register width, measured on the LiH / PAW-LCAO series
+#: (``docs/source/guide/measurement_cost.md``): qubits -> converged ADAPT
+#: operators at ``pool="ceo-ovp"``.  One system, so it is an *order of magnitude*
+#: for the depth estimate below and nothing finer -- which is still the
+#: difference between "fits" and "fits and returns noise".
+MEASURED_ANSATZ_LENGTH = ((4, 3), (8, 15), (20, 45), (24, 75))
+
+#: Two-qubit gates per ADAPT operator, from the same series: 2,223 two-qubit
+#: gates for 75 operators at 24 qubits, 881 for 45 at 20, 150 for 15 at 8.
+#: Roughly 30 per operator once routing on a heavy-hex lattice dominates, which
+#: it does above a handful of qubits.
+GATES_PER_OPERATOR = 30
+
+
+def estimate_ansatz_operators(n_qubits: int) -> int:
+    """Converged ADAPT operator count expected at this register width.
+
+    Log-log interpolation of :data:`MEASURED_ANSATZ_LENGTH`, extrapolated at the
+    ends.  This is the one quantity in a dry run that is genuinely a *guess*:
+    ADAPT decides its own length from gradients the dry run never computes.  It
+    is here because the alternative -- reporting a register width and calling the
+    job feasible -- is the mistake that
+    ``docs/source/guide/measurement_cost.md`` exists to document.
+    """
+    width = max(int(n_qubits), 1)
+    xs = np.log([q for q, _ in MEASURED_ANSATZ_LENGTH])
+    ys = np.log([n for _, n in MEASURED_ANSATZ_LENGTH])
+    return int(round(float(np.exp(np.interp(np.log(width), xs, ys)))))
+
+
 # --------------------------------------------------------------------------- #
 # The estimate.
 # --------------------------------------------------------------------------- #
@@ -87,7 +117,15 @@ class QubitEstimate:
     n_basis_functions : int
         Spatial basis functions before freezing anything.
     n_frozen_orbitals : int
-        Doubly occupied spatial orbitals removed by the frozen core.
+        Doubly occupied spatial orbitals removed by the frozen core, plus any
+        the active-space selector folded into the mean field on top of it.
+    n_deleted_orbitals : int
+        Virtual spatial orbitals dropped by ``active_orbitals``.
+    active_selection : str
+        How the virtuals were ranked.  Only the *count* is a dry-run quantity --
+        which orbitals a selector picks needs the integrals this run does not
+        compute -- so the register width below is exact and the identity of its
+        orbitals is not yet decided.
     n_electrons : int
         Electrons in the active space.
     num_particles : (int, int)
@@ -100,7 +138,22 @@ class QubitEstimate:
     device_qubits : int or None
         Register size of ``device`` when the name fixes one (the Braket QPUs).
     fits_device : bool or None
-        ``n_qubits <= device_qubits`` when the capacity is known.
+        ``n_qubits <= device_qubits`` when the capacity is known.  **Width
+        only** -- see :attr:`runnable_on_device`, which is the question a user
+        actually has.
+    expected_operators : int or None
+        Converged ADAPT operator count expected at this width
+        (:func:`estimate_ansatz_operators`), for a real device.
+    expected_two_qubit_gates : int or None
+        ``expected_operators * GATES_PER_OPERATOR``: the depth estimate.
+    expected_fidelity : float or None
+        ``(1 - e)^n2q`` at the nominal two-qubit error.  This, not the width, is
+        what decides whether a hardware run returns signal.
+    runnable_on_device : bool or None
+        Both criteria together: the register fits **and** the expected fidelity
+        clears the threshold below which an expectation value is noise.  A run
+        can fit a 156-qubit processor with room to spare and still be
+        unrunnable, which is the case this field exists to state.
     statevector_bytes : int
         Memory of one exact state vector, the cost driver of a local simulator.
     source : str
@@ -115,6 +168,8 @@ class QubitEstimate:
     num_particles: tuple[int, int]
     n_basis_functions: int = 0
     n_frozen_orbitals: int = 0
+    n_deleted_orbitals: int = 0
+    active_selection: str = "energy"
     per_atom: list[tuple[str, int]] = field(default_factory=list)
     basis: str = "HAO"
     mapping: str = "jordan_wigner"
@@ -122,6 +177,8 @@ class QubitEstimate:
     device: str = "AER_simulator"
     device_qubits: int | None = None
     fits_device: bool | None = None
+    expected_operators: int | None = None
+    expected_two_qubit_gates: int | None = None
     source: str = "geometry"
     notes: list[str] = field(default_factory=list)
 
@@ -145,6 +202,32 @@ class QubitEstimate:
     def device_is_simulator(self) -> bool:
         return is_simulator(self.device)
 
+    @property
+    def expected_fidelity(self) -> float | None:
+        """``(1 - e)^n2q`` at the nominal two-qubit error, or ``None``."""
+        from ..backends.measurement import NOMINAL_2Q_ERROR
+
+        if self.expected_two_qubit_gates is None:
+            return None
+        return float((1.0 - NOMINAL_2Q_ERROR) ** self.expected_two_qubit_gates)
+
+    @property
+    def runnable_on_device(self) -> bool | None:
+        """Width **and** depth, or ``None`` when either is unknown.
+
+        The width test alone says a 56-qubit problem fits a 156-qubit processor,
+        which is true and beside the point: the binding constraint is the
+        two-qubit gate count of the ansatz, and past a few hundred gates an
+        unmitigated expectation value is noise.  A dry run that reported only
+        the first would be answering a question nobody asked.
+        """
+        from ..backends.measurement import FIDELITY_WARNING
+
+        fidelity = self.expected_fidelity
+        if self.fits_device is None or fidelity is None:
+            return None
+        return bool(self.fits_device and fidelity >= FIDELITY_WARNING)
+
     # -- presentation ----------------------------------------------------- #
 
     def as_dict(self) -> dict:
@@ -156,6 +239,8 @@ class QubitEstimate:
         data["n_qubits_reduced"] = self.n_qubits_reduced
         data["statevector_bytes"] = self.statevector_bytes
         data["device_is_simulator"] = self.device_is_simulator
+        data["expected_fidelity"] = self.expected_fidelity
+        data["runnable_on_device"] = self.runnable_on_device
         return data
 
     def to_json(self, **kwargs) -> str:
@@ -178,6 +263,10 @@ class QubitEstimate:
         if self.n_frozen_orbitals:
             lines.append(f"  frozen core       : {self.n_frozen_orbitals} "
                          "spatial orbital(s)")
+        if self.n_deleted_orbitals:
+            lines.append(f"  deleted virtuals  : {self.n_deleted_orbitals} "
+                         f"spatial orbital(s), ranked by "
+                         f"{self.active_selection}")
         lines.append(f"  active orbitals   : {self.n_spatial_orbitals} spatial "
                      f"/ {self.n_spin_orbitals} spin")
         lines.append(f"  active electrons  : {self.n_electrons}  "
@@ -191,7 +280,17 @@ class QubitEstimate:
         if self.device_qubits is not None:
             verdict = "fits" if self.fits_device else "DOES NOT FIT"
             lines.append(f"  device capacity   : {self.device_qubits} qubits  "
-                         f"-> {verdict}")
+                         f"-> {verdict} (width)")
+        if self.expected_two_qubit_gates is not None:
+            fidelity = self.expected_fidelity
+            lines.append(f"  expected ansatz   : ~{self.expected_operators} "
+                         f"operators, ~{self.expected_two_qubit_gates} "
+                         f"two-qubit gates")
+            lines.append(f"  expected fidelity : {fidelity:.2e}  "
+                         f"-> {'usable' if self.runnable_on_device else 'NOISE'}")
+            lines.append(f"  RUNNABLE HERE     : "
+                         f"{'yes' if self.runnable_on_device else 'NO'}"
+                         f"  (width and depth together)")
         if self.device_is_simulator:
             lines.append(f"  state vector      : 2^{self.n_qubits} amplitudes = "
                          f"{_format_bytes(self.statevector_bytes)}")
@@ -337,6 +436,8 @@ def _device_fields(device, notes):
 def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                     charge: int = 0, n_electrons=None, spin: bool = False,
                     frozen_core=False, frozen_orbitals=None,
+                    active_orbitals=None, active_selection: str = "energy",
+                    active_threshold=None, taper: bool = False,
                     load_hamiltonian=None,
                     hamiltonian=None, num_particles=None,
                     n_spatial_orbitals=None, method: str = "adapt-vqe",
@@ -375,6 +476,26 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                             device_qubits=capacity, notes=notes, **kw)
         if capacity is not None:
             est.fits_device = est.n_qubits <= capacity
+        # The depth estimate is only meaningful for a processor: a simulator has
+        # no two-qubit error, so quoting a fidelity for it would be noise of a
+        # different kind.
+        if not est.device_is_simulator:
+            est.expected_operators = estimate_ansatz_operators(est.n_qubits)
+            est.expected_two_qubit_gates = int(est.expected_operators
+                                               * GATES_PER_OPERATOR)
+            fidelity = est.expected_fidelity
+            if fidelity is not None and est.runnable_on_device is False \
+                    and est.fits_device:
+                from ..backends.measurement import FIDELITY_WARNING
+
+                notes.append(
+                    f"the register fits, and the run would still return noise: "
+                    f"~{est.expected_two_qubit_gates} two-qubit gates give an "
+                    f"expected fidelity of {fidelity:.1e}, below the "
+                    f"{FIDELITY_WARNING:g} at which an unmitigated expectation "
+                    f"value stops being signal.  The ansatz length is estimated "
+                    f"from a measured series, not computed here -- see "
+                    f"docs/source/guide/measurement_cost.md")
         return est
 
     # -- an explicit operator ------------------------------------------- #
@@ -467,10 +588,66 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
             frozen = resolve_frozen_core(frozen_core, frozen_orbitals, numbers,
                                          n_el, n_basis)
 
-    n_active_el = n_el - 2 * len(frozen)
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
+    n_deleted = 0
+    if taper:
+        notes.append(
+            "taper=True: the qubit count below is an UPPER BOUND.  How many Z2 "
+            "symmetries a Hamiltonian has is a property of its Pauli terms, "
+            "which a dry run does not build -- two is the minimum for a "
+            "molecule (the two the parity reduction already knows) and a "
+            "symmetric molecule usually has more.  Reduced density matrices, "
+            "and so forces, densities and charges, are refused on a tapered "
+            "register")
+    if active_threshold is not None:
+        # A count fixes the register width without any integrals; an occupation
+        # threshold does not -- how many virtual orbitals clear it is a property
+        # of the second-order density, which a dry run does not compute.  So the
+        # width reported here is an *upper* bound, and saying so is the only
+        # honest option: printing the untruncated number unqualified would have
+        # a user size a job against a register the run will not use.
+        from .active_space import resolve_threshold
+
+        value = resolve_threshold(active_threshold)
+        notes.append(
+            f"active_threshold={value:g}: the qubit count below is an UPPER "
+            f"BOUND.  How many virtual orbitals clear an occupation threshold "
+            f"depends on the second-order density, which a dry run does not "
+            f"compute -- run the geometry to learn the real width, or give "
+            f"active_orbitals=<count> as well, which caps it in advance")
+    if active_orbitals is not None:
+        # Only the counts, never the choice: which orbitals a selector keeps
+        # takes the integrals, and a dry run computes none.  The register width
+        # does not depend on that choice, so it is still exact here.
+        from .active_space import (_resolve_counts, normalize_active_orbitals,
+                                   resolve_selection)
+
+        active_selection = resolve_selection(active_selection)
+        spec = normalize_active_orbitals(active_orbitals)
+        n_alpha_full, n_beta_full = _num_particles(n_el, n_unpaired, label)
+        n_doubly = min(n_alpha_full, n_beta_full)
+        n_singly = abs(n_alpha_full - n_beta_full)
+        n_virtual = n_basis - n_doubly - n_singly
+        if isinstance(spec, tuple):
+            kept = [p for p in spec if p not in set(frozen)]
+            n_deleted = n_virtual - sum(1 for p in kept
+                                        if p >= n_doubly + n_singly)
+        else:
+            n_occ_active, n_virt_active = _resolve_counts(
+                spec, n_doubly, n_singly, n_virtual, len(frozen))
+            frozen = list(frozen) + [
+                p for p in range(n_doubly) if p not in set(frozen)
+            ][:n_doubly - len(frozen) - n_occ_active]
+            n_deleted = n_virtual - n_virt_active
+        notes.append(
+            f"active_orbitals: {n_deleted} virtual spatial orbital(s) dropped "
+            f"(ranked by {active_selection} once the integrals exist). Nuclear "
+            f"forces and the stress are refused with a truncated virtual "
+            f"space, because the selection moves with the nuclei")
+
+    n_active_el = n_el - 2 * len(frozen)
     particles = _num_particles(n_active_el, n_unpaired, label)
-    n_active = n_basis - len(frozen)
+    n_active = n_basis - len(frozen) - n_deleted
     if n_active_el > 2 * n_active:
         raise ValueError(
             f"{n_active_el} active electrons cannot fit {n_active} spatial "
@@ -479,4 +656,6 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
     return finish(n_qubits=2 * n_active, n_spatial_orbitals=n_active,
                   n_electrons=n_active_el, num_particles=particles,
                   n_basis_functions=n_basis, n_frozen_orbitals=len(frozen),
+                  n_deleted_orbitals=n_deleted,
+                  active_selection=active_selection,
                   per_atom=per_atom, basis=label, source="geometry")

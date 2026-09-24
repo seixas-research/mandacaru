@@ -368,7 +368,8 @@ class QiskitProvider(CircuitProvider):
                  channel: str | None = None, optimization_level: int = 3,
                  estimator_options: dict | None = None,
                  physical_qubits=None, seed: int | None = None,
-                 max_bases_per_job: int | None = None):
+                 max_bases_per_job: int | None = None,
+                 enable_fractional_gates: bool = False):
         self.device_spec = str(device).strip()
         self.physical_qubits = (None if physical_qubits is None
                                 else [int(q) for q in physical_qubits])
@@ -377,6 +378,14 @@ class QiskitProvider(CircuitProvider):
         self.token = token
         self.channel = channel
         self.optimization_level = int(optimization_level)
+        #: Ask Runtime for the processor's **fractional** instruction set, whose
+        #: entangler is a continuously parameterized ``RZZ(theta)`` rather than a
+        #: fixed CZ.  Every exponentiated Pauli pair an excitation generator
+        #: decomposes into *is* such a rotation, so the ansatz needs roughly half
+        #: as many entanglers, which is the quantity that sets a run's fidelity.
+        #: Requires a processor that offers them (Heron and later); Qiskit spells
+        #: it ``use_fractional_gates``, which is what this forwards.
+        self.enable_fractional_gates = bool(enable_fractional_gates)
         self.estimator_options = (None if estimator_options is None
                                   else dict(estimator_options))
         #: Seed of the local Estimator's sampling, so a shot-based run is
@@ -449,13 +458,15 @@ class QiskitProvider(CircuitProvider):
 
     def _ibm_backend(self, service):
         name = self.device_spec.lower()
+        fractional = {"use_fractional_gates": self.enable_fractional_gates}
         if name in self.LEAST_BUSY:
-            return service.least_busy(operational=True, simulator=False)
+            return service.least_busy(operational=True, simulator=False,
+                                      **fractional)
         names = [n.strip() for n in name.split(",") if n.strip()]
         if len(names) == 1:
-            return service.backend(names[0])
+            return service.backend(names[0], **fractional)
         # The least busy of the named processors.
-        candidates = [service.backend(n) for n in names]
+        candidates = [service.backend(n, **fractional) for n in names]
         operational = [b for b in candidates if b.status().operational]
         if not operational:
             raise RuntimeError(f"none of {names} is operational right now")
@@ -523,16 +534,50 @@ class QiskitProvider(CircuitProvider):
         return np.asarray(Statevector(qc).data, dtype=complex)
 
     def profile(self, n_qubits: int, occupied, generators) -> dict:
+        """Compiled cost of the ansatz, against the device's own ISA when there is one.
+
+        The count used to be taken against a proxy basis, ``["cx", "u"]``, on
+        every device.  That is a reasonable structural measure and it is *not*
+        the number that decides a hardware run: the processor's own instruction
+        set has a different entangler, a coupling map that forces routing swaps,
+        and -- with ``enable_fractional_gates`` -- a continuously parameterized
+        ``RZZ`` that replaces pairs of fixed entanglers.  A depth quoted against
+        the proxy basis therefore understates a real submission, sometimes badly.
+
+        So a real or fake backend is transpiled against, at the same
+        ``optimization_level`` a submission would use, and the reported
+        ``two_qubit_gates`` is counted by arity
+        (:func:`~mandacaru.backends.measurement.two_qubit_gate_count`) rather
+        than by gate name.  ``basis`` says which instruction set the numbers
+        belong to, because a count without that label is not comparable to
+        anything.  The local state-vector path has no ISA and keeps the proxy,
+        labelled as such.
+        """
         from qiskit import transpile
+
+        from .measurement import two_qubit_gate_count
 
         qc = self.build(n_qubits, occupied, generators,
                         np.ones(len(generators)))
-        compiled = transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
+        backend = self.backend()
+        if backend is None:
+            compiled = transpile(qc, basis_gates=["cx", "u"],
+                                 optimization_level=1)
+            basis = "proxy (cx, u)"
+        else:
+            compiled, _layout = self._transpiled(qc, n_qubits)
+            basis = getattr(backend, "name", None) or str(backend)
         counts = compiled.count_ops()
-        return {"cnot_count": int(counts.get("cx", 0)),
+        two_q = two_qubit_gate_count(compiled)
+        return {"cnot_count": two_q,
+                "two_qubit_gates": two_q,
                 "depth": int(compiled.depth()),
-                "num_1q_gates": int(counts.get("u", 0)),
-                "total_gates": int(sum(counts.values()))}
+                "num_1q_gates": int(sum(
+                    v for k, v in counts.items()
+                    if k not in ("barrier", "measure", "reset", "delay")
+                    and k not in ("cz", "cx", "ecr", "rzz", "swap"))),
+                "total_gates": int(sum(counts.values())),
+                "isa": basis}
 
     # -- Estimator energies (the hardware path) ---------------------------- #
 

@@ -2019,7 +2019,7 @@ def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
     return written
 
 
-def build_upaw(atoms, grid, h, charge, spin, options, kinetic=None):
+def build_upaw(atoms, grid, h, charge, spin, options, kinetic=None, **active):
     """Valence-only Hamiltonian from UPAW-LCAO datasets (see :func:`build_paw`).
 
     The whole molecular path is PAW-LCAO's; only the loader and the recorded
@@ -2028,11 +2028,11 @@ def build_upaw(atoms, grid, h, charge, spin, options, kinetic=None):
     run must resolve *its own* spec, not PAW-LCAO's.
     """
     return build_paw(atoms, grid, h, charge, spin, options, kinetic=kinetic,
-                     loader=get_upaw, family=UPAW_FAMILY)
+                     loader=get_upaw, family=UPAW_FAMILY, **active)
 
 
 def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
-              loader=None, family=None):
+              loader=None, family=None, **active):
     r"""Valence-only Hamiltonian from PAW-LCAO datasets.
 
     Same 5-tuple as the other families: the basis is the bound smooth
@@ -2046,7 +2046,7 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
     from .families import build_valence_hamiltonian
 
     return build_valence_hamiltonian(
-        atoms, grid, h, charge, spin, options, kinetic,
+        atoms, grid, h, charge, spin, options, kinetic, **active,
         family=FAMILY if family is None else family,
         load=get_paw if loader is None else loader,
         projectors=lambda symbols, positions, datasets, opts: paw_projectors(

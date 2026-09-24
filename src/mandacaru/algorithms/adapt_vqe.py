@@ -45,7 +45,7 @@ from __future__ import annotations
 import shutil
 import warnings
 from collections import namedtuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -649,10 +649,34 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         # The pool is built first: a sector may only be used when every
         # generator keeps the ansatz inside it (see _resolve_sector).
         self._pool_ops = self.pool.operators()
+        # Z2 tapering replaces the register, so it has to happen before the
+        # Hamiltonian is materialized and before a sector is resolved -- and it
+        # has to reduce the Hamiltonian, every generator and the reference with
+        # the *same* Clifford, which is why one call does all three.
+        self._taper_info = self._resolve_taper(qubit_h)
+        if self._taper_info is not None:
+            qubit_h = self._taper_info.hamiltonian
+            self._pool_ops = [
+                replace(self._pool_ops[index], generator=generator,
+                        support=tuple(q for q, letter in enumerate(
+                            next(iter(generator.terms), "")) if letter != "I"),
+                        _matrix=None)
+                for index, generator in zip(self._taper_info.kept,
+                                            self._taper_info.generators)]
+        # The pool's width, not the Hamiltonian's: `_materialize_hamiltonian`
+        # compares the two and raises when they disagree, so handing it the
+        # Hamiltonian's own count makes that guard vacuous -- which is exactly
+        # what a first version of this did, and what
+        # `test_qubit_count_mismatch_raises` caught.  Only a taper legitimately
+        # changes the register, and then the tapered width is the right answer
+        # for both sides.
+        n_register = (self._taper_info.n_qubits
+                      if self._taper_info is not None else self.pool.n_qubits)
         self._materialize_hamiltonian(
-            qubit_h, self.pool.n_qubits,
-            sector=self._resolve_sector(self.pool.n_qubits, qubit_h,
-                                        self._pool_ops))
+            qubit_h, n_register,
+            sector=(None if self._taper_info is not None
+                    else self._resolve_sector(n_register, qubit_h,
+                                              self._pool_ops)))
         self._maybe_save_hamiltonian(self.num_particles,
                                      self.pool.n_spatial_orbitals)
         self._maybe_dump_hamiltonian(self.num_particles,
@@ -912,6 +936,40 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     #: Largest ``sector.dim * len(terms)`` product worth checking for leakage.
     SECTOR_GUARD_WORK = 20_000_000
 
+    def _resolve_taper(self, qubit_h):
+        """The :class:`TaperedRegister` this run uses, or ``None``.
+
+        The particle-number sector is **not** available alongside it: a tapered
+        register has no particle-number basis to enumerate, because the Clifford
+        mixed the occupation bits into parities.  That costs nothing, since the
+        taper already made the register smaller by the same symmetries the sector
+        was exploiting.
+        """
+        if not getattr(self, "taper", False):
+            return None
+        from ..core.mapping import reference_qubit_bits
+        from ..core.tapering import taper_problem
+
+        bits = reference_qubit_bits("jordan_wigner", qubit_h.num_qubits,
+                                    self.pool.occupied_orbitals)
+        info = taper_problem(qubit_h,
+                             [op.generator for op in self._pool_ops], bits)
+        if info is None:
+            warnings.warn(
+                "taper=True found no Z2 symmetry in this Hamiltonian, so the "
+                "register is unchanged; the run continues untapered",
+                RuntimeWarning, stacklevel=3)
+            return None
+        if not info.generators:
+            raise ValueError(
+                f"tapering left the operator pool empty: all "
+                f"{len(info.dropped)} generators change one of the "
+                f"{len(info.symmetries)} Z2 symmetries, so none of them can act "
+                f"within the sector the reference determinant fixes.  An ansatz "
+                f"with no operators cannot correlate anything.  Use taper=False, "
+                f"or a pool whose excitations conserve these symmetries.")
+        return info
+
     def _resolve_sector(self, n_qubits: int, qubit_h=None, operators=()):
         """The :class:`~mandacaru.core.sector.ParticleSector` to simulate, or ``None``.
 
@@ -1085,6 +1143,17 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         so the ansatz evaluates its states either with the internal state-vector
         backend or by executing circuits on Qiskit / Braket / Cirq.
         """
+        info = getattr(self, "_taper_info", None)
+        if info is not None:
+            # On a tapered register the reference is still a computational basis
+            # state -- the Clifford maps |HF> to |rest> times an X eigenstate of
+            # the anchor, so deleting the anchor bit is exactly the tapered
+            # reference.  Its 1-positions are handed over as the "occupied" list
+            # and the encoding is the identity, which is what Jordan-Wigner is.
+            return AdaptAnsatz(self.n_qubits, info.occupied, "jordan_wigner",
+                               sparse=getattr(self, "_sparse", False),
+                               provider=self.ansatz_provider(),
+                               num_particles=None, sector=None)
         return AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                            self.mapping, sparse=getattr(self, "_sparse", False),
                            provider=self.ansatz_provider(),
@@ -1257,6 +1326,11 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                                  for d in (grid.dx, grid.dy, grid.dz))
             realized = (f"{grid.nx} x {grid.ny} x {grid.nz} "
                         f"(spacing {spacing} Angstrom)")
+        # Adding a key here changes the [ELECTRONS] block, whose exact ordered
+        # field list is pinned by `test/utils/test_logging.py`
+        # (TestElectronsBlock.FIELDS).  That is deliberate -- the block is the
+        # only record of the configuration when the trace goes to a file -- so a
+        # new field means updating that tuple in the same change.
         return {
             "grid spacing": f"{self.h:g} Angstrom (requested)",
             "grid points": realized,
@@ -1266,6 +1340,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             "spin-polarized": self._spin_polarized_label(),
             "reference state": str(self.initial_state),
             "frozen core": str(frozen),
+            "active space": self._active_space_label(),
+            "Z2 tapering": self._taper_label(),
             "mapping": MAPPING_LABELS.get(str(self.mapping), str(self.mapping)),
             "Hamiltonian": f"{len(self.hamiltonian.simplify().terms)} "
                            f"Pauli terms",
@@ -1906,6 +1982,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             ("spin-polarized", self._spin_polarized_label()),
             ("reference state", str(self.initial_state)),
             ("frozen core", str(frozen)),
+            ("active space", self._active_space_label()),
+            ("Z2 tapering", self._taper_label()),
             None,
             ("qubits", str(self.n_qubits)),
             ("electrons (alpha, beta)", str(particles)),

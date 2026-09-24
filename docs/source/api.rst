@@ -34,6 +34,39 @@ circuits.  See :doc:`guide/dry_run`.
    :undoc-members:
    :show-inheritance:
 
+Active Space
+~~~~~~~~~~~~
+
+Which spatial orbitals reach the qubit register, and how the virtuals are
+ranked.  See :doc:`guide/active_space`.
+
+.. automodule:: mandacaru.algorithms.active_space
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Moller-Plesset Perturbation Theory
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Second-order correlation energy and the frozen natural orbitals of its density,
+used to select an active space.  See :doc:`guide/active_space`.
+
+.. automodule:: mandacaru.algorithms.mp2
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Z2 Symmetry Tapering
+~~~~~~~~~~~~~~~~~~~~
+
+One qubit removed per conserved parity of the Hamiltonian, found from its Pauli
+terms rather than from a declared point group.  See :doc:`guide/tapering`.
+
+.. automodule:: mandacaru.core.tapering
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Pseudopotential Forces
 ~~~~~~~~~~~~~~~~~~~~~~
 

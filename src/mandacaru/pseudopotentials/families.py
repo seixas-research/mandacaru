@@ -103,11 +103,19 @@ class FamilySpec:
         ``get(symbol, directory=None) -> PseudoPotential`` -- the (cached)
         library loader.
     build : callable
-        ``build(atoms, grid, h, charge, spin, options, kinetic)`` returning the
-        driver 5-tuple ``(hamiltonian, num_particles, n_spatial_orbitals,
+        ``build(atoms, grid, h, charge, spin, options, kinetic, *,
+        active_orbitals=None, active_selection="energy",
+        active_threshold=None)`` returning the driver
+        5-tuple ``(hamiltonian, num_particles, n_spatial_orbitals,
         integration_profile, context)`` -- exactly what
         :func:`~mandacaru.algorithms._hamiltonian_from_atoms.build_basis_hamiltonian`
-        returns for the all-electron path.
+        returns for the all-electron path.  The two keyword arguments are always
+        passed, so a builder must accept them (``**kwargs`` forwarded to
+        :func:`build_valence_hamiltonian` is enough, and is what every built-in
+        family does).  They arrived with virtual-orbital truncation: a
+        valence-only basis has no core to freeze but plenty of virtual orbitals
+        to drop, so unlike ``frozen_core`` this is a request a pseudopotential
+        family has to be able to honour.
     norm_conserving : bool
         Whether the family's projectors leave the basis overlap untouched
         (``True`` for TM/ONCVPSP; PAW-LCAO carries an overlap correction).
@@ -316,6 +324,9 @@ def pseudo_basis_arguments(family, options, *, confinement=None,
 
 
 def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
+                              active_orbitals=None,
+                              active_selection: str = "energy",
+                              active_threshold=None,
                               family: str, load, projectors, coupling,
                               overlap=None, spin_orbit=None,
                               integrals_class=None,
@@ -387,24 +398,39 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
         spin_orbit_coupling=spin_orbit_blocks,
         kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"],
         **{potentials_keyword: [potentials[s] for s in symbols]})
-    hamiltonian = integrals.molecular_hamiltonian(mo_basis=True,
-                                                  n_electrons=n_el,
-                                                  num_particles=num_particles)
+    hamiltonian = integrals.molecular_hamiltonian(
+        mo_basis=True, n_electrons=n_el, num_particles=num_particles,
+        active_orbitals=active_orbitals, active_selection=active_selection,
+        active_threshold=active_threshold)
     _warn_unresolved(integrals, basis_fns, h)
 
+    # A valence-only basis has no core to freeze, but it does have virtual
+    # orbitals to delete, and the selector may also fold valence occupied
+    # orbitals into a mean field when the register is named as a count.  Either
+    # way the active electron count comes from the partition, not the request.
+    space = integrals.active_space
+    frozen = tuple(space.frozen) if space is not None else ()
+    if frozen:
+        num_particles = _num_particles(n_el - 2 * len(frozen), n_unpaired,
+                                       family.upper())
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
-               "frozen": (), "n_electrons": n_el,
+               "frozen": frozen, "n_electrons": n_el,
                "pseudopotentials": potentials, "kb_projectors": kb,
                "nonlocal_coupling": coupling_blocks, "family": family,
                "filter_cutoff": k_c, "options": dict(options),
-               "confinement": confinement, "polarization": polarization}
+               "confinement": confinement, "polarization": polarization,
+               "active_space": space}
+    if space is not None:
+        context["active"] = tuple(space.active)
+        context["deleted"] = tuple(space.deleted)
     if overlap_blocks is not None:
         context["nonlocal_overlap"] = overlap_blocks
-    return (hamiltonian, num_particles, len(basis_fns),
+    n_active = space.n_active if space is not None else len(basis_fns)
+    return (hamiltonian, num_particles, n_active,
             integrals.integration_profile(), context)
 
 
-def _build_tm(atoms, grid, h, charge, spin, options, kinetic=None):
+def _build_tm(atoms, grid, h, charge, spin, options, kinetic=None, **active):
     r"""Valence-only Hamiltonian from Troullier-Martins pseudopotentials.
 
     The core electrons are gone entirely: the basis is the set of valence
@@ -419,7 +445,7 @@ def _build_tm(atoms, grid, h, charge, spin, options, kinetic=None):
 
     return build_valence_hamiltonian(
         atoms, grid, h, charge, spin, options, kinetic, family="ncpp",
-        load=_get_tm,
+        load=_get_tm, **active,
         projectors=lambda symbols, positions, potentials, _options:
             kb_projectors(symbols, positions, potentials),
         coupling=lambda projectors, _symbols, _potentials:

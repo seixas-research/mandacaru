@@ -1842,7 +1842,7 @@ def build_oncv_library(elements=("H", "Li", "C", "N", "O", "F"),
     return written
 
 
-def build_oncv(atoms, grid, h, charge, spin, options, kinetic=None):
+def build_oncv(atoms, grid, h, charge, spin, options, kinetic=None, **active):
     r"""Valence-only Hamiltonian from ONCVPSP pseudopotentials.
 
     Same 5-tuple as the Troullier-Martins builder
@@ -1856,7 +1856,7 @@ def build_oncv(atoms, grid, h, charge, spin, options, kinetic=None):
 
     return build_valence_hamiltonian(
         atoms, grid, h, charge, spin, options, kinetic, family=FAMILY,
-        load=get_oncv,
+        load=get_oncv, **active,
         projectors=lambda symbols, positions, potentials, _options:
             oncv_projectors(symbols, positions, potentials),
         coupling=oncv_coupling_blocks,

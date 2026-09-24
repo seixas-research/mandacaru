@@ -83,8 +83,45 @@ def _frozen_core(text: str):
             f"--frozen-core takes 'auto', an integer or 'false', not {text!r}")
 
 
+def _active_orbitals(text: str):
+    """``--active-orbitals`` value: an integer, ``n,m`` or a list of indices.
+
+    ``12`` is the register width in spatial orbitals.  ``3,9`` is the
+    ``occupied,virtual`` split (the one spelling with a comma, so it cannot be
+    confused with a two-orbital list).  ``[0,1,4,7]`` is an explicit index list.
+    """
+    raw = str(text).strip()
+    if raw.startswith("["):
+        try:
+            return [int(i) for i in json.loads(raw)]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raise argparse.ArgumentTypeError(
+                f"--active-orbitals got {text!r}: a bracketed value must be a "
+                "JSON list of integers, e.g. '[0,1,4,7]'")
+    if "," in raw:
+        parts = raw.split(",")
+        if len(parts) != 2:
+            raise argparse.ArgumentTypeError(
+                f"--active-orbitals got {text!r}: the comma form is "
+                "'occupied,virtual' (two numbers).  For an explicit index list "
+                "use a JSON list, e.g. '[0,1,4,7]'")
+        try:
+            return {"occupied": int(parts[0]), "virtual": int(parts[1])}
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"--active-orbitals got {text!r}: 'occupied,virtual' must be "
+                "two integers")
+    try:
+        return int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--active-orbitals takes an integer, 'occupied,virtual' or a JSON "
+            f"index list, not {text!r}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The ``mandacaru`` argument parser."""
+    from .algorithms.active_space import ACTIVE_SELECTIONS
     from .algorithms.calculator import DEFAULT_METHOD, STABLE_METHODS
     from .backends.hardware import available_devices
     from .circuits.pools import available_pools
@@ -198,6 +235,39 @@ def build_parser() -> argparse.ArgumentParser:
                             "of lowest MOs")
     basis.add_argument("--frozen-orbitals", type=int, nargs="+", default=None,
                        help="explicit spatial-MO indices to freeze")
+    basis.add_argument("--active-orbitals", type=_active_orbitals, default=None,
+                       metavar="N|n,m|[i,j,...]",
+                       help="truncate the virtual space to fit a register: N "
+                            "spatial orbitals in total, 'occupied,virtual' as "
+                            "a split, or a JSON list of spatial-MO indices. "
+                            "Unlike --frozen-core this applies to a "
+                            "pseudopotential basis too")
+    basis.add_argument("--taper", action="store_true",
+                       help="remove one qubit per Z2 symmetry of the "
+                            "Hamiltonian, found from its Pauli terms rather "
+                            "than from a declared point group. Generalizes the "
+                            "two qubits --mapping parity_reduced removes, and "
+                            "needs jordan_wigner. Energies only: densities, "
+                            "charges and forces are refused on a tapered "
+                            "register")
+    basis.add_argument("--active-threshold", type=float, default=None,
+                       metavar="OCCUPATION",
+                       help="keep the virtual natural orbitals whose occupation "
+                            "is at least this, instead of counting them. Needs "
+                            "--active-selection mp2 (or natural). Virtual "
+                            "occupations are small by construction, so the "
+                            "useful range is about 1e-3 to 1e-5; 1e-3 keeps "
+                            "~95%% of the promoted charge on the systems "
+                            "measured. May be combined with --active-orbitals, "
+                            "which then caps the register")
+    basis.add_argument("--active-selection", default="energy",
+                       choices=ACTIVE_SELECTIONS,
+                       help="how the virtual orbitals are ranked for "
+                            "--active-orbitals: 'energy' (canonical order), "
+                            "'mp2' (frozen natural orbitals of the "
+                            "second-order density) or 'natural' (the "
+                            "open-shell reference's own occupations). "
+                            "Default energy")
     basis.add_argument("--mapping", default="jordan_wigner",
                        choices=MAPPINGS,
                        help="fermion-to-qubit mapping (default jordan_wigner)")
@@ -311,6 +381,10 @@ def solver_options(args) -> dict:
                    charge=args.charge, spin=args.spin,
                    frozen_core=args.frozen_core,
                    frozen_orbitals=args.frozen_orbitals,
+                   active_orbitals=args.active_orbitals,
+                   active_selection=args.active_selection,
+                   active_threshold=args.active_threshold,
+                   taper=args.taper,
                    mapping=args.mapping, optimizer=args.optimizer,
                    device=args.device, shots=args.shots,
                    load_hamiltonian=args.load_hamiltonian,

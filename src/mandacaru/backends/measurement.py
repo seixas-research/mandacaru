@@ -45,6 +45,38 @@ import numpy as np
 from ..core.mapping import PauliSum
 
 
+#: Instructions that occupy wires without being gates, so they never count.
+NON_GATE_INSTRUCTIONS = ("barrier", "measure", "reset", "delay", "snapshot")
+
+
+def two_qubit_gate_count(circuit) -> int:
+    """Two-qubit gates in a compiled circuit, counted by **arity**.
+
+    Counting by name was the previous approach and it does not survive a change
+    of instruction set architecture.  The list in use was
+    ``("cz", "cx", "ecr", "cnot")``, which is right for an Eagle or a Heron
+    compiled the ordinary way and **silently reports zero** for a Heron compiled
+    with fractional gates, whose entangler is ``rzz``: a deep circuit would then
+    come back with a perfect expected fidelity, which is the most misleading
+    number this module could produce.
+
+    An instruction acting on two wires is a two-qubit gate whatever it is
+    called, so that is what is counted.  ``swap`` is included and counted once,
+    which understates its cost (three entanglers) -- it does not survive
+    transpilation to an IBM basis, and a count that is honest about its unit is
+    better than a name list that can miss an entangler entirely.
+    """
+    total = 0
+    for instruction in getattr(circuit, "data", ()):
+        operation = getattr(instruction, "operation", None)
+        name = str(getattr(operation, "name", "")).lower()
+        if name in NON_GATE_INSTRUCTIONS:
+            continue
+        if len(getattr(instruction, "qubits", ())) == 2:
+            total += 1
+    return total
+
+
 def is_qubit_wise_commuting(a: str, b: str) -> bool:
     """True when Pauli strings ``a`` and ``b`` can be measured in one basis.
 
@@ -454,9 +486,7 @@ def measurement_plan(provider, n_qubits: int, labels, hamiltonian=None,
 
     two_q = depth = None
     if isa_circuit is not None:
-        counts = isa_circuit.count_ops()
-        two_q = int(sum(v for k, v in counts.items()
-                        if k in ("cz", "cx", "ecr", "cnot")))
+        two_q = two_qubit_gate_count(isa_circuit)
         depth = int(isa_circuit.depth())
 
     noise_factors, twirls = _resilience_multipliers(provider)

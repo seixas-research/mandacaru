@@ -31,6 +31,10 @@ from .checkpoint import (WavefunctionCheckpoint, load_checkpoint,
                          prepare_state)
 
 __all__ = [
+    "reduce_generators",
+    "sector_signs",
+    "taper",
+    "symmetry_generators",
     "MolecularIntegrals",
     "minimal_hao_basis",
     "PlaneWaveIntegrals",
@@ -52,3 +56,6 @@ __all__ = [
     "load_checkpoint",
     "prepare_state",
 ]
+
+from .tapering import (reduce_generators, sector_signs,
+                       symmetry_generators, taper)

@@ -174,7 +174,8 @@ def _resolve_population(spec):
     return name
 
 
-def _spin_moment(gamma, n_spatial_orbitals: int, frozen=()) -> float:
+def _spin_moment(gamma, n_spatial_orbitals: int, frozen=(),
+                 active=None) -> float:
     """``N_alpha - N_beta`` of an active spin-orbital RDM.
 
     ``n_spatial_orbitals`` is the **total** count (the basis size), not the
@@ -185,7 +186,8 @@ def _spin_moment(gamma, n_spatial_orbitals: int, frozen=()) -> float:
     """
     from .volumetric import spin_resolved_rdm
 
-    D_alpha, D_beta = spin_resolved_rdm(gamma, int(n_spatial_orbitals), frozen)
+    D_alpha, D_beta = spin_resolved_rdm(gamma, int(n_spatial_orbitals), frozen,
+                                        active)
     return float(np.real(np.trace(D_alpha) - np.trace(D_beta)))
 
 
@@ -1337,6 +1339,19 @@ class Mandacaru(Calculator):
         from .rdm import (one_rdm, pauli_expectations, rdm_qubit_operators,
                           rdms_from_expectations, two_rdm)
 
+        if getattr(solver, "_taper_info", None) is not None:
+            raise NotImplementedError(
+                "reduced density matrices are not available on a Z2-tapered "
+                "register (taper=True), and everything built on them -- forces, "
+                "the stress, cube files, atomic charges, natural orbitals -- is "
+                "refused with them.  The Clifford that removed the qubits mixed "
+                "the occupation bits into parities, so a ladder operator on the "
+                "tapered register is not the ladder operator of any spin-orbital: "
+                "reading an RDM off it would give a plausible density that is "
+                "not the state's.  The RDM operators would have to be tapered by "
+                "the same Clifford and their expectation values assembled on the "
+                "reduced register, which is not implemented.  Use taper=False "
+                "for anything beyond an energy.")
         if psi is None:
             psi = self._converged_state(solver)
         n_qubits = int(solver.n_qubits)
@@ -1428,6 +1443,21 @@ class Mandacaru(Calculator):
                 "nuclear forces need an atom-centered basis whose integrals are "
                 "available; the plane-wave ('PW') family does not qualify. Use "
                 "an atom-centered basis such as 'HAO', 'GTO' or '6-31G(d)'.")
+
+        if context.get("deleted"):
+            raise NotImplementedError(
+                "nuclear forces with a truncated virtual space "
+                "(active_orbitals=) is not implemented.  Deleting a virtual "
+                "orbital is exact for the energy at a fixed geometry, but the "
+                "selection itself moves with the nuclei: which orbitals are "
+                "kept, and -- for active_selection='mp2' -- the rotation that "
+                "defines them, both depend on the geometry, and that "
+                "dependence is a response term the Hellmann-Feynman and Pulay "
+                "sums here do not contain.  The result would be the "
+                "derivative of a different energy than the one reported, "
+                "which is worse than not having it.  Use the full virtual "
+                "space for a relaxation, or a frozen core alone "
+                "(frozen_core=), whose orbitals are fixed by the reference.")
 
         gamma, gamma2 = self._state_rdms(solver) if rdms is None else rdms
         frozen = context.get("frozen") or ()
@@ -1928,7 +1958,7 @@ class Mandacaru(Calculator):
     # -- real-space visualization ------------------------------------------ #
 
     def _volumetric_context(self):
-        """``(solver, integrals, frozen)`` of the last evaluation, or refuse.
+        """``(solver, integrals, frozen, active)`` of the last evaluation, or refuse.
 
         A picture on a grid needs basis functions to draw.  A direct-mode
         problem (``hamiltonian=`` / ``load_hamiltonian=``) has a qubit operator
@@ -1952,7 +1982,8 @@ class Mandacaru(Calculator):
                 "family is not sampled on the real-space grid.  Run the same "
                 "geometry with an atom-centered basis ('HAO', 'NAO', 'GTO', "
                 "'6-31G(d)', 'PAW-LCAO', ...) to get a density.")
-        return solver, context["integrals"], context.get("frozen") or ()
+        return (solver, context["integrals"], context.get("frozen") or (),
+                context.get("active"))
 
     def _volumetric_state(self, solver, state):
         """The state vector a picture is drawn from.
@@ -1989,7 +2020,7 @@ class Mandacaru(Calculator):
         """
         from .volumetric import volumetric_field
 
-        solver, integrals, frozen = self._volumetric_context()
+        solver, integrals, frozen, active = self._volumetric_context()
         psi = self._volumetric_state(solver, state)
         gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
         numbers = (None if self.atoms is None
@@ -1997,7 +2028,7 @@ class Mandacaru(Calculator):
         return volumetric_field(
             integrals, gamma, quantity=quantity, index=index, frozen=frozen,
             num_particles=solver.num_particles, component=component,
-            grid=grid, numbers=numbers)
+            grid=grid, numbers=numbers, active=active)
 
     def write_cube(self, path, quantity: str = "density", index: int = 0, *,
                    state=0, component: str = "auto", grid=None, format=None,
@@ -2040,11 +2071,11 @@ class Mandacaru(Calculator):
         """
         from .volumetric import state_natural_orbitals
 
-        solver, integrals, frozen = self._volumetric_context()
+        solver, integrals, frozen, active = self._volumetric_context()
         psi = self._volumetric_state(solver, state)
         gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
         return state_natural_orbitals(integrals, gamma, frozen=frozen,
-                                      grid=grid)
+                                      grid=grid, active=active)
 
     # -- population analysis ----------------------------------------------- #
 
@@ -2107,6 +2138,21 @@ class Mandacaru(Calculator):
             raise ValueError(
                 "the stress needs the integrals the Hamiltonian was built "
                 "from; run a geometry first (atoms.get_potential_energy()).")
+
+        if context.get("deleted"):
+            raise NotImplementedError(
+                "the stress tensor with a truncated virtual space "
+                "(active_orbitals=) is not implemented.  Deleting a virtual "
+                "orbital is exact for the energy at a fixed geometry, but the "
+                "selection itself moves with the nuclei: which orbitals are "
+                "kept, and -- for active_selection='mp2' -- the rotation that "
+                "defines them, both depend on the geometry, and that "
+                "dependence is a response term the Hellmann-Feynman and Pulay "
+                "sums here do not contain.  The result would be the "
+                "derivative of a different energy than the one reported, "
+                "which is worse than not having it.  Use the full virtual "
+                "space for a relaxation, or a frozen core alone "
+                "(frozen_core=), whose orbitals are fixed by the reference.")
 
         gamma, gamma2 = self._state_rdms(solver, two_body=True)
         frozen = context.get("frozen") or ()
@@ -2227,13 +2273,16 @@ class Mandacaru(Calculator):
             raise ValueError(
                 "the correction needs the integrals the Hamiltonian was built "
                 "from; run a geometry first (atoms.get_potential_energy()).")
-        if context.get("frozen") and scheme in ("mpc", "ccmh"):
+        if scheme in ("mpc", "ccmh") and (context.get("frozen")
+                                          or context.get("deleted")):
+            what = ("a frozen core" if context.get("frozen")
+                    else "a truncated virtual space (active_orbitals=)")
             raise NotImplementedError(
-                f"a frozen core is not supported by scheme {scheme!r}: the "
-                "pair density would be contracted over the active orbitals "
-                "only, while the core electrons carry a hole of their own.  "
-                "Use scheme='kzk', which reads the density and refills the "
-                "core.")
+                f"{what} is not supported by scheme {scheme!r}: the pair "
+                "density would be contracted over the active orbitals only, "
+                "while the electrons outside them carry a hole of their own.  "
+                "Use scheme='kzk', which reads the density and refills what is "
+                "missing.")
 
         # Cited at use: which correction a run reaches for is not knowable
         # when the driver is built.
@@ -2271,8 +2320,9 @@ class Mandacaru(Calculator):
             field = volumetric_field(
                 integrals, gamma, quantity="density",
                 frozen=context.get("frozen") or (),
+                active=context.get("active"),
                 num_particles=getattr(solver, "num_particles", None),
-                n_spatial_orbitals=getattr(solver, "n_spatial_orbitals", None))
+                n_spatial_orbitals=len(integrals.basis))
             return kzk_correction(
                 field.data, integrals.grid.dV, integrals.cell,
                 n_cells=n_cells, energy_per_cell=energy_per_cell)
@@ -2327,13 +2377,13 @@ class Mandacaru(Calculator):
         """
         from .charges import partition_state
 
-        solver, integrals, frozen = self._volumetric_context()
+        solver, integrals, frozen, active = self._volumetric_context()
         psi = self._volumetric_state(solver, state)
         gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
         numbers = (None if self.atoms is None
                    else self.atoms.get_atomic_numbers())
         return partition_state(integrals, gamma, method=method, frozen=frozen,
-                               numbers=numbers, grid=grid)
+                               numbers=numbers, grid=grid, active=active)
 
     def _store_population(self) -> None:
         """Put ``charges`` / ``magmoms`` / ``magmom`` in ``results``.
@@ -2404,9 +2454,9 @@ class Mandacaru(Calculator):
         """
         if atoms is not None:
             self.atoms = atoms.copy()
-        solver, integrals, frozen = self._volumetric_context()
+        solver, integrals, frozen, active = self._volumetric_context()
         gamma, _ = self._state_rdms(solver, two_body=False)
-        moment = _spin_moment(gamma, len(integrals.basis), frozen)
+        moment = _spin_moment(gamma, len(integrals.basis), frozen, active)
         self.results["magmom"] = moment
         return moment
 

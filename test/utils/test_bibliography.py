@@ -31,7 +31,8 @@ from mandacaru.utils import bibliography as bib
 from mandacaru.utils.citations import (DEFAULT_REFERENCES_FILE, _FAMILY_KEYS,
                                        _MAPPING_KEYS, _METHOD_KEYS,
                                        _OPTIMIZER_KEYS, _POOL_KEYS,
-                                       _PROVENANCE_KEYS, citation_keys,
+                                       _PROVENANCE_KEYS, _SELECTION_KEYS,
+                                       citation_keys,
                                        provenance_keys,
                                        resolve_references_path,
                                        write_references)
@@ -130,9 +131,22 @@ class TestEveryRegisteredChoiceIsCitable:
         for method in STABLE_METHODS:
             assert _METHOD_KEYS.get(method), method
 
+    def test_every_active_selection(self):
+        # "energy" is the exception the table states outright: it is the
+        # canonical orbital order the mean field already produced, so it
+        # borrows nothing and cites nothing.  The other two are constructions.
+        from mandacaru.algorithms.active_space import ACTIVE_SELECTIONS
+
+        for selection in ACTIVE_SELECTIONS:
+            assert selection in _SELECTION_KEYS, selection
+            if selection != "energy":
+                assert _SELECTION_KEYS[selection], selection
+                assert (citation_keys(active_selection=selection)
+                        != citation_keys())
+
     def test_every_key_in_every_table_exists(self):
         tables = (_POOL_KEYS, _MAPPING_KEYS, _METHOD_KEYS, _OPTIMIZER_KEYS,
-                  _FAMILY_KEYS, _PROVENANCE_KEYS)
+                  _FAMILY_KEYS, _PROVENANCE_KEYS, _SELECTION_KEYS)
         for table in tables:
             for name, keys in table.items():
                 bib.resolve(keys)             # raises on an unknown key

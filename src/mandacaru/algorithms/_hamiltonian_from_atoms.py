@@ -491,7 +491,9 @@ def _warn_unresolved(integrals, basis_fns, h):
 
 
 def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
-                                 options, kinetic=None):
+                                 options, kinetic=None, active_orbitals=None,
+                                 active_selection: str = "energy",
+                                 active_threshold=None):
     """Valence-only Hamiltonian from a pseudopotential **family**.
 
     A thin dispatcher: ``family`` is the
@@ -501,20 +503,35 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
     fails before any integral -- and ``family.build`` returns the same
     5-tuple as :func:`build_basis_hamiltonian`.  A new family is registered
     with ``register_family`` and needs nothing here.
+
+    ``active_orbitals`` / ``active_selection`` are always forwarded as keywords,
+    which is part of the ``build`` protocol
+    (:class:`~mandacaru.pseudopotentials.families.FamilySpec`): a builder that
+    does not accept them raises ``TypeError`` here.  That is deliberate -- a
+    family silently dropping an active-space request would return the full
+    register and a qubit count the user did not ask for -- and ``**kwargs``
+    forwarded to
+    :func:`~mandacaru.pseudopotentials.families.build_valence_hamiltonian` is all
+    it takes to satisfy it.
     """
     unknown = sorted(set(options) - set(family.options))
     if unknown:
         raise ValueError(
             f"unknown option(s) {unknown} for the {family.label} basis; it "
             f"accepts {list(family.options)}")
-    return family.build(atoms, grid, h, charge, spin, dict(options), kinetic)
+    return family.build(atoms, grid, h, charge, spin, dict(options), kinetic,
+                        active_orbitals=active_orbitals,
+                        active_selection=active_selection,
+                        active_threshold=active_threshold)
 
 
 def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                             n_electrons, spin: bool = False,
                             frozen_core=False, frozen_orbitals=None,
                             kinetic=None, periodic: bool = False,
-                            commensurate=None):
+                            commensurate=None, active_orbitals=None,
+                            active_selection: str = "energy",
+                            active_threshold=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
@@ -546,6 +563,13 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     :func:`resolve_frozen_core`): the resolved core spatial MOs are removed from
     the active space, so the returned ``num_particles`` and ``n_spatial_orbitals``
     describe the reduced active space.
+
+    ``active_orbitals`` / ``active_selection`` additionally truncate the
+    **virtual** space (see
+    :func:`~mandacaru.algorithms.active_space.resolve_active_space`), which is
+    how a large basis is made to fit a qubit register.  Unlike ``frozen_core``
+    they apply to a pseudopotential family too: the core is already gone from a
+    valence-only basis, but its virtual orbitals are not.
 
     ``kinetic`` selects the Laplacian discretization (``"fd"`` or
     ``"spectral"``); ``None`` takes :data:`DEFAULT_KINETIC` for the path.  After
@@ -582,8 +606,11 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                 f"n_electrons is not accepted with the {family.label} basis: "
                 "the valence electron count comes from the pseudopotentials "
                 "themselves.  Use `charge` to add or remove electrons.")
-        return _pseudopotential_hamiltonian(atoms, grid, h, charge, spin,
-                                            family, options, kinetic=kinetic)
+        return _pseudopotential_hamiltonian(
+            atoms, grid, h, charge, spin, family, options, kinetic=kinetic,
+            active_orbitals=active_orbitals,
+            active_selection=active_selection,
+            active_threshold=active_threshold)
 
     numbers = atoms.get_atomic_numbers()
     n_el = (int(n_electrons) if n_electrons is not None
@@ -591,7 +618,8 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
 
     if _is_plane_wave(name):
         return _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
-                                       frozen_core, frozen_orbitals)
+                                       frozen_core, frozen_orbitals,
+                                       active_orbitals, active_threshold)
 
     from ..basis import BasisSet
     from ..core import MolecularIntegrals
@@ -628,8 +656,6 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     n_alpha, n_beta = _num_particles(n_el, n_unpaired, name)
     frozen = resolve_frozen_core(frozen_core, frozen_orbitals, numbers, n_el,
                                  len(basis_fns), n_doubly=n_beta)
-    n_active_el = n_el - 2 * len(frozen)
-    num_particles = _num_particles(n_active_el, n_unpaired, name)
 
     # Soften the -Z/r cusp to half a grid step (Bohr): a nucleus that lands on a
     # grid node would otherwise sample -Z/r at r->0 and produce a ~1e12 garbage
@@ -651,16 +677,33 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
             kinetic=kinetic or DEFAULT_KINETIC["all-electron"])
     hamiltonian = integrals.molecular_hamiltonian(
         mo_basis=True, n_electrons=n_el, num_particles=(n_alpha, n_beta),
-        frozen_orbitals=frozen if frozen else None)
+        frozen_orbitals=frozen if frozen else None,
+        active_orbitals=active_orbitals, active_selection=active_selection,
+        active_threshold=active_threshold)
     _warn_unresolved(integrals, basis_fns, h)
+    # The selector may freeze more than `resolve_frozen_core` did (the dict form
+    # of `active_orbitals` names a count of active occupied orbitals), so the
+    # active electron count is read back from the partition it actually built
+    # rather than from the request.
+    space = integrals.active_space
+    frozen = list(space.frozen) if space is not None else list(frozen)
+    n_active_el = n_el - 2 * len(frozen)
+    num_particles = _num_particles(n_active_el, n_unpaired, name)
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
-               "frozen": tuple(frozen), "n_electrons": n_el}
-    return (hamiltonian, num_particles, len(basis_fns) - len(frozen),
+               "frozen": tuple(frozen), "n_electrons": n_el,
+               "active_space": space}
+    if space is not None:
+        context["active"] = tuple(space.active)
+        context["deleted"] = tuple(space.deleted)
+    n_active = (space.n_active if space is not None
+                else len(basis_fns) - len(frozen))
+    return (hamiltonian, num_particles, n_active,
             integrals.integration_profile(), context)
 
 
 def _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
-                            frozen_core=False, frozen_orbitals=None):
+                            frozen_core=False, frozen_orbitals=None,
+                            active_orbitals=None, active_threshold=None):
     """Build the periodic plane-wave (PW) MO Hamiltonian from ``atoms``."""
     from ..core import PlaneWaveIntegrals
 
@@ -669,6 +712,14 @@ def _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
             "the frozen-core approximation is not supported for the plane-wave "
             "(PW) basis: plane waves are delocalized and have no localized core "
             "to freeze.  Use a localized basis (HAO / GTO / 6-31G(d) / NAO).")
+    if active_orbitals is not None or active_threshold is not None:
+        raise NotImplementedError(
+            "active_orbitals is not supported for the plane-wave (PW) basis: "
+            "the register is the plane-wave cutoff, which is what "
+            "`energy_cutoff` sets.  Truncating the mean-field orbitals on top "
+            "of it would be a second, hidden cutoff with no convergence "
+            "handle.  Use a localized basis (HAO / GTO / NAO / PAW-LCAO) for a "
+            "chosen active space.")
 
     cell = np.asarray(atoms.get_cell(), dtype=float)
     if not np.any(cell):

@@ -341,6 +341,218 @@ def fft_g_squared(shape, cell):
     return g_squared
 
 
+#: Recognized Coulomb truncations for :class:`PeriodicPoissonSolver`.
+#: ``"none"`` is the fully periodic ``4 pi / G^2``; ``"slab"`` is the
+#: two-dimensionally truncated kernel of :func:`slab_truncated_kernel`.
+KERNEL_TRUNCATIONS = ("none", "slab")
+
+#: Largest ``|a_c . a_a| / (|a_c||a_a|)`` accepted between the non-periodic
+#: lattice vector and an in-plane one.  The slab derivation splits ``G`` into an
+#: in-plane part and an axial one, which only exists when the axis is
+#: perpendicular to the plane.
+SLAB_ORTHOGONALITY_TOLERANCE = 1e-10
+
+#: Fraction of the cell length along the non-periodic axis that the density may
+#: occupy before :func:`slab_occupancy_warning` complains.  The truncation cuts
+#: the interaction at ``L/2``, so two points further apart than that in ``z``
+#: stop interacting altogether: the density has to be confined to half the cell.
+SLAB_MAX_OCCUPANCY = 0.5
+
+
+def slab_truncated_kernel(shape, cell, axis: int = 2) -> np.ndarray:
+    r"""The **two-dimensionally truncated** Coulomb kernel on the FFT mesh.
+
+    A slab is periodic in two directions and finite in the third, but a
+    three-dimensional kernel makes it interact with an infinite stack of copies
+    of itself along the vacuum direction.  For a *neutral, non-polar* slab that
+    error decays with the vacuum thickness and can be converged away.  For a
+    slab carrying a **dipole** it cannot: two dipole sheets a distance ``L``
+    apart interact with an energy per area that does not vanish as ``L`` grows,
+    so the total energy converges to the wrong number no matter how much vacuum
+    is added.  This kernel removes the images instead of out-running them.
+
+    The construction (Rozzi *et al.*, Phys. Rev. B **73**, 205119, 2006;
+    ``Rozzi2006`` in the bibliography) is to
+    Fourier transform the Coulomb interaction *truncated* beyond half a cell
+    along the non-periodic axis, :math:`v(\mathbf r) = \theta(L/2 - |z|)/|\mathbf
+    r|`.  In-plane, :math:`\int d^2\rho\, e^{-i\mathbf G_\parallel \cdot
+    \boldsymbol\rho}/\sqrt{\rho^2+z^2} = 2\pi e^{-G_\parallel |z|}/G_\parallel`,
+    and the remaining integral over :math:`|z| \le L/2` is elementary:
+
+    .. math::
+
+        \tilde v(\mathbf G) = \frac{4\pi}{G^2}\left[1 + e^{-G_\parallel L/2}
+            \left(\frac{G_z}{G_\parallel}\sin\frac{G_z L}{2}
+                  - \cos\frac{G_z L}{2}\right)\right] ,
+        \qquad G_\parallel \neq 0 .
+
+    At :math:`G_\parallel = 0` that expression has a :math:`1/G_\parallel` pole
+    -- the divergent self-interaction of a charged *sheet*, the two-dimensional
+    counterpart of the :math:`\mathbf G = 0` divergence of the periodic kernel.
+    Removing it leaves the interaction between neutral sheets, which is what a
+    uniform plane at :math:`z'` produces, :math:`-2\pi|z-z'|`, truncated and
+    transformed the same way:
+
+    .. math::
+
+        \tilde v(0, G_z) = \frac{2\pi}{G_z^2}
+            \left[2 - 2\cos\frac{G_z L}{2}
+                  - G_z L \sin\frac{G_z L}{2}\right] .
+
+    **The two are one function.** Subtracting the pole
+    :math:`4\pi \sin(G_z L/2)/(G_z G_\parallel)` from the first branch and
+    letting :math:`G_\parallel \to 0` gives the second identically, which is the
+    check that the algebra is right rather than merely plausible
+    (``test/integrals/test_slab_kernel.py`` pins it numerically, and the
+    symbolic version is in ``HISTORY.md``).
+
+    ``G = 0`` is set to zero, the same neutrality convention the untruncated
+    kernel uses: it is a choice of reference that cancels against the
+    electron-ion and ion-ion :math:`\mathbf G = 0` terms for a neutral cell.
+    Note that :math:`\mathbf G_\parallel = 0` with :math:`G_z \neq 0` is **not**
+    dropped -- those are exactly the components a dipole lives in, and dropping
+    them would discard the effect this kernel exists to produce.
+
+    Parameters
+    ----------
+    shape : (int, int, int)
+        Nodes per axis; the grid is the cell.
+    cell : (3, 3) array_like
+        Lattice vectors as **columns**, in Bohr.
+    axis : int
+        Which lattice vector is the non-periodic (vacuum) direction.
+
+    Raises
+    ------
+    ValueError
+        If ``axis``'s lattice vector is not perpendicular to the other two: the
+        split of :math:`\mathbf G` into in-plane and axial parts, and with it
+        every formula above, exists only then.
+
+    What it does and does not give
+    ------------------------------
+    The convolution is still *circular*, and the kernel's real-space profile
+    over one period is the true interaction restricted to :math:`|\Delta z| \le
+    L/2`.  For a density confined to less than half the cell that makes the
+    circular convolution equal the isolated one **wherever the density is**, so
+    the Hartree **energy** is exact -- measured exact to every digit the grid
+    carries, and independent of the vacuum thickness, where the untruncated
+    kernel drifts as :math:`1/L` and is still moving at four times the slab
+    width.
+
+    It does **not** give the isolated potential out in the vacuum.  A field point
+    far from the slab is more than :math:`L/2` from part of the density, so its
+    circular displacement is not the true one and the kernel value is not the
+    true one.  That does not touch the energy (which only samples
+    :math:`\Phi` where :math:`\rho` is) nor the potential inside the slab, but
+    it means **the vacuum level is not available from this kernel** -- a work
+    function or a band alignment needs the mixed-space solver
+    (:math:`\Phi(\mathbf G_\parallel, z)` convolved along :math:`z`), which is
+    not implemented here.  :func:`slab_occupancy` measures the confinement the
+    energy relies on.
+
+    Notes
+    -----
+    Even in :math:`G_z`, which is what lets the Nyquist plane along the
+    non-periodic axis be treated with :math:`|G_z|`: the two aliases
+    :math:`\pm n_c/2` are the same mode and give the same kernel.  The in-plane
+    Nyquist aliasing that :func:`fft_g_squared` documents for a sheared cell is
+    handled the same way here -- by symmetrizing :math:`G_\parallel^2` over the
+    sign choices -- so a hexagonal slab is treated as consistently as an
+    orthogonal one.
+    """
+    shape = tuple(int(n) for n in shape)
+    cell = np.asarray(cell, dtype=float)
+    axis = int(axis)
+    if axis not in (0, 1, 2):
+        raise ValueError(f"axis must be 0, 1 or 2, got {axis}")
+    plane = [a for a in (0, 1, 2) if a != axis]
+
+    # The derivation needs a genuine in-plane / axial split.
+    a_c = cell[:, axis]
+    length = float(np.linalg.norm(a_c))
+    for a in plane:
+        a_i = cell[:, a]
+        cosine = abs(float(a_c @ a_i)) / (length * float(np.linalg.norm(a_i)))
+        if cosine > SLAB_ORTHOGONALITY_TOLERANCE:
+            raise ValueError(
+                f"the slab-truncated kernel needs lattice vector {axis} (the "
+                f"non-periodic one) perpendicular to the periodic plane, and it "
+                f"makes an angle with vector {a} whose cosine is {cosine:.3e}.  "
+                f"The kernel splits G into an in-plane part and an axial one, "
+                f"which is only defined for a perpendicular axis; tilt the cell "
+                f"so the vacuum direction is normal to the surface.")
+
+    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
+    Q = reciprocal.T @ reciprocal
+    axes = [sfft.fftfreq(n) * n for n in shape]
+    m = np.meshgrid(*axes, indexing="ij")
+    nyquist = [np.isclose(m[a], -(n // 2)) if n % 2 == 0
+               else np.zeros(shape, dtype=bool)
+               for a, n in enumerate(shape)]
+
+    # In-plane |G_par|^2, with the same Nyquist symmetrization fft_g_squared
+    # applies to |G|^2 (identical to the plain form for an orthogonal plane).
+    g_par2 = np.zeros(shape, dtype=float)
+    for a in plane:
+        g_par2 += Q[a, a] * m[a] * m[a]
+        for b in plane:
+            if b == a:
+                continue
+            keep = ~(nyquist[a] | nyquist[b])
+            g_par2 += Q[a, b] * np.where(keep, m[a] * m[b], 0.0)
+    g_par2 = np.maximum(g_par2, 0.0)
+    # Axial part: no cross terms survive the orthogonality guard above.
+    g_z2 = Q[axis, axis] * m[axis] * m[axis]
+
+    g_par = np.sqrt(g_par2)
+    g_z = np.sqrt(np.maximum(g_z2, 0.0))          # the kernel is even in G_z
+    g2 = g_par2 + g_z2
+    half = 0.5 * length
+    phase = g_z * half
+
+    kernel = np.zeros(shape, dtype=float)
+    inplane = g_par > 0.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bracket = 1.0 + np.exp(-g_par * half) * (
+            np.where(inplane, g_z / np.where(inplane, g_par, 1.0), 0.0)
+            * np.sin(phase) - np.cos(phase))
+        kernel = np.where(inplane & (g2 > 0.0),
+                          4.0 * np.pi * bracket / np.where(g2 > 0.0, g2, 1.0),
+                          0.0)
+        # G_par = 0, G_z != 0: the neutral-sheet branch.
+        sheet = 2.0 * np.pi * (2.0 - 2.0 * np.cos(phase)
+                               - g_z * length * np.sin(phase))
+        kernel = np.where(~inplane & (g_z2 > 0.0),
+                          sheet / np.where(g_z2 > 0.0, g_z2, 1.0),
+                          kernel)
+    kernel[~np.isfinite(kernel)] = 0.0
+    return kernel
+
+
+def slab_occupancy(rho, shape, axis: int) -> float:
+    """Fraction of the non-periodic axis the density ``rho`` actually occupies.
+
+    The truncation stops two points interacting once they are more than ``L/2``
+    apart along ``axis``, so a density spread over more than half the cell is
+    having real interactions cut.  Measured as the extent of the nodes carrying
+    at least ``1e-6`` of the peak plane-averaged density, divided by ``L``.
+    """
+    rho = np.abs(np.asarray(rho, dtype=complex)).reshape(shape)
+    profile = rho.sum(axis=tuple(a for a in (0, 1, 2) if a != int(axis)))
+    peak = float(profile.max())
+    if peak <= 0.0:
+        return 0.0
+    occupied = np.flatnonzero(profile >= 1e-6 * peak)
+    if occupied.size == 0:
+        return 0.0
+    # The axis wraps, so the extent is the smallest arc covering every occupied
+    # node: the complement's largest gap is what is *not* occupied.
+    n = shape[int(axis)]
+    gaps = np.diff(np.concatenate([occupied, occupied[:1] + n]))
+    return float(n - (gaps.max() - 1)) / float(n)
+
+
 class PeriodicPoissonSolver:
     r"""Solve the Coulomb convolution under **periodic** boundary conditions.
 
@@ -380,9 +592,19 @@ ho(\mathbf G), \qquad
         lengths.
     workers : int, optional
         Threads for the FFTs (``-1`` uses all cores).
+    truncation : {"none", "slab"}
+        ``"none"`` (default) is the fully periodic kernel described above.
+        ``"slab"`` truncates the Coulomb interaction beyond half a cell along
+        ``axis``, giving a system periodic in **two** directions and finite in
+        the third -- the kernel a slab carrying a dipole needs, because its
+        image interaction does not decay with vacuum thickness.  See
+        :func:`slab_truncated_kernel`.
+    axis : int, optional
+        The non-periodic (vacuum) direction, required by ``truncation="slab"``.
     """
 
-    def __init__(self, shape, step=None, spacing=None, workers: int = -1):
+    def __init__(self, shape, step=None, spacing=None, workers: int = -1,
+                 truncation: str = "none", axis: int | None = None):
         if np.isscalar(shape):
             self.shape = (int(shape),) * 3
         else:
@@ -411,15 +633,39 @@ ho(\mathbf G), \qquad
         #: the periodicity -- so the transform is the grid itself.
         self.L = self.shape
         self.workers = workers
+        name = str(truncation).strip().lower()
+        if name not in KERNEL_TRUNCATIONS:
+            raise ValueError(f"unknown truncation {truncation!r}; use one of "
+                             f"{KERNEL_TRUNCATIONS}")
+        #: Which Coulomb kernel this solver carries (:data:`KERNEL_TRUNCATIONS`).
+        self.truncation = name
+        if name == "slab":
+            if axis is None:
+                raise ValueError(
+                    "truncation='slab' needs axis=, the non-periodic (vacuum) "
+                    "direction: the kernel is built by cutting the Coulomb "
+                    "interaction along it, so there is no sensible default")
+            self.axis = int(axis)
+        elif axis is not None:
+            raise ValueError(
+                f"axis={axis!r} means nothing with truncation={name!r}: the "
+                f"fully periodic kernel has no distinguished direction")
+        else:
+            self.axis = None
         self._kernel = self._build_kernel()
 
     def _build_kernel(self) -> np.ndarray:
-        """``4 pi / G^2`` on the FFT grid, with ``G = 0`` set to zero.
+        """The reciprocal-space kernel this solver convolves with.
+
+        ``4 pi / G^2`` on the FFT grid with ``G = 0`` set to zero, or the
+        two-dimensionally truncated kernel when ``truncation="slab"``.
 
         ``|G|^2`` comes from :func:`fft_g_squared`, whose Nyquist plane is
         symmetrized; for an orthogonal cell that is identical to the plain
         quadratic form, so no existing energy changes.
         """
+        if self.truncation == "slab":
+            return slab_truncated_kernel(self.shape, self.cell, self.axis)
         g_squared = fft_g_squared(self.shape, self.cell)
         with np.errstate(divide="ignore", invalid="ignore"):
             kernel = np.where(g_squared > 0.0, 4.0 * np.pi / g_squared, 0.0)

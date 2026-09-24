@@ -87,6 +87,16 @@ _FAMILY_KEYS = {
 }
 
 
+#: What an ``active_selection`` cites.  The energy ordering is the canonical
+#: orbital order the mean field already produced, so it adds nothing of its
+#: own; the other two are constructions with papers behind them.
+_SELECTION_KEYS = {
+    "energy": (),
+    "mp2": ("Moller1934", "Sosa1989", "TaubeBartlett2005"),
+    "natural": ("Loewdin1955",),
+}
+
+
 def _basis_keys(name, options) -> list:
     """References for an all-electron basis name and its options."""
     upper = str(name).upper()
@@ -160,7 +170,7 @@ def citation_keys(*, method=None, pool=None, mapping=None, basis=None,
                   backend_provider=None, shots=0, execute_circuits=False,
                   profile=False, tetris=False, prune=False,
                   has_geometry=True, built_basis=True, extras=(),
-                  datasets=()) -> list:
+                  datasets=(), active_selection=None) -> list:
     """The bibliography keys a run with this configuration should cite.
 
     Every argument is optional: what is not known is not cited.  ``family`` and
@@ -185,6 +195,7 @@ def citation_keys(*, method=None, pool=None, mapping=None, basis=None,
         keys.append("VaqueroSabater2025")
     keys += list(_MAPPING_KEYS.get(_key(mapping), ()))
     keys += list(_OPTIMIZER_KEYS.get(_key(optimizer), ()))
+    keys += list(_SELECTION_KEYS.get(_key(active_selection), ()))
 
     options = dict(basis_options or {})
     if family:

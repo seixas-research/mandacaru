@@ -543,6 +543,15 @@ class _BlochMixin:
             raise NotImplementedError(
                 "the spectral function does not support a frozen core yet: the "
                 "removal branch would have to reach the frozen orbitals.")
+        if context.get("deleted"):
+            raise NotImplementedError(
+                "the spectral function does not support a truncated virtual "
+                "space (active_orbitals=): the addition branch puts an extra "
+                "electron into the virtual orbitals, and the ones the selector "
+                "deleted are exactly where it would go.  The peaks it found "
+                "would be those of the truncated model presented as the "
+                "material's.  Run the spectral function with the full virtual "
+                "space.")
         psi = self.ansatz.state(self.result.optimal_parameters)
         # The reference energy has to be taken in whatever representation the
         # ansatz works in, because `energy()` contracts with the Hamiltonian in

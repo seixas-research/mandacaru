@@ -440,7 +440,7 @@ def _augmentation_by_atom(integrals, orbitals, n_atoms: int) -> np.ndarray:
 
 def partition_state(integrals, gamma, *, method: str = "hirshfeld",
                     frozen=(), n_spatial_orbitals=None, numbers=None,
-                    grid=None) -> AtomicPartition:
+                    grid=None, active=None) -> AtomicPartition:
     """Split a converged state's density and spin density between the atoms.
 
     This is the solver-free entry point, the counterpart of
@@ -460,6 +460,10 @@ def partition_state(integrals, gamma, *, method: str = "hirshfeld",
         One of :data:`PARTITION_METHODS`.
     frozen : sequence of int
         Frozen spatial orbitals, refilled into both spin channels.
+    active : sequence of int, optional
+        Spatial orbitals the register carried; needed only when the virtual
+        space was truncated (see
+        :func:`~mandacaru.algorithms.volumetric.spin_resolved_rdm`).
     numbers : sequence of int, optional
         True atomic numbers, used only to pick the Hirshfeld reference atoms.
         Defaults to the Hamiltonian's charges, which for a pseudopotential run
@@ -479,7 +483,7 @@ def partition_state(integrals, gamma, *, method: str = "hirshfeld",
     used = expansion.grid
     M = int(len(integrals.basis) if n_spatial_orbitals is None
             else n_spatial_orbitals)
-    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen)
+    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active)
 
     # `_potentials.nuclei` is the Bohr frame the grid and the basis functions
     # live in; `integrals.nuclei` is in the integrals' own `units` (Angstrom by

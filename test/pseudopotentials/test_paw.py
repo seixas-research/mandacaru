@@ -498,7 +498,7 @@ class TestLibrary:
             fresh.one_center_energy, rel=1e-6)
         assert shipped.r.size * 4 == pytest.approx(fresh.r.size, abs=4)
 
-    def test_a_dataset_that_stores_the_wrong_norm_says_so(self):
+    def test_a_dataset_that_stores_the_wrong_norm_says_so(self, tmp_path):
         """A file written before the charge and the M-weighted norm were
         distinguished holds the *norm* in its overlap correction -- and that
         field is read by the compensation charge, the multipole moments and the
@@ -506,22 +506,57 @@ class TestLibrary:
         stale.  It cannot be repaired on load (the plain overlap is not a
         function of anything stored), so loading one must warn.
 
-        Hydrogen was regenerated and must stay silent; that is the control
-        which keeps this from passing for the wrong reason.
+        The pre-split file is **synthesized** here rather than read from the
+        shipped library.  It used to be read: the test named oxygen, which was
+        stale at the time it was written, and hydrogen as the regenerated
+        control.  Regenerating the library then made oxygen correct and the test
+        failed -- it had been pinning the library's transient state instead of
+        the detection logic.  Building the payload makes it permanent, and it
+        also means the detection can be exercised long after no such file
+        exists anywhere.
         """
+        import json
+
+        from mandacaru.pseudopotentials.io import library_file
+
+        # A correctly written dataset: silent, and the control that keeps this
+        # from passing because nothing warns about anything.
         paw._CACHE.clear()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            get_paw("H")
+            reference = get_paw("O")
         assert not [w for w in caught if "M-weighted" in str(w.message)]
+        assert str(reference.relativity) != "none", (
+            "the detection is defined only for a relativistic atom, so a "
+            "non-relativistic dataset cannot exercise it")
+
+        # Roll it back to the pre-split shape: one matrix, holding the
+        # M-weighted norm where the charge belongs, and no norm_correction for
+        # the loader to find.
+        # Written by the real writer, so the file envelope (format tag, family,
+        # radial tables) is whatever the loader expects; only the two fields
+        # under test are rolled back afterwards.
+        path = save_pseudopotential(
+            reference, library_file("O", str(tmp_path), "json"), format="json")
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        for key, entry in payload["channels"].items():
+            norm = np.asarray(reference.norm_correction[int(key)], dtype=float)
+            # The pre-split file had one matrix, and it was the norm.
+            entry["overlap_correction"] = [[float(v) for v in row]
+                                           for row in norm]
+            entry.pop("norm_correction", None)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
 
         paw._CACHE.clear()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            get_paw("O")
+            get_paw("O", directory=str(tmp_path))
         hits = [w for w in caught if "M-weighted" in str(w.message)]
         assert hits, [str(w.message) for w in caught]
         assert "regenerate" in str(hits[0].message)
+        paw._CACHE.clear()
 
     def test_loaders_refuse_the_other_families(self, tmp_path):
         with pytest.raises(ValueError, match="belongs to family 'paw-lcao'"):
