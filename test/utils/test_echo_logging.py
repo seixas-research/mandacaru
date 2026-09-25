@@ -9,6 +9,42 @@ from mandacaru.utils import append_performance, append_quantum_echoes, parse_out
 from mandacaru.utils.logging import STDOUT
 
 
+def test_nested_otoc_report_is_separate_and_csv_units_are_explicit(tmp_path, capsys):
+    from mandacaru.algorithms import NestedOTOC
+    from mandacaru.utils import append_nested_otoc
+
+    echo = NestedOTOC(PauliSum({"XX": 0.5}), PauliSum({"IZ": 1}), PauliSum({"ZI": 1}))
+    results = [echo.run([1, 0, 0, 0], np.pi/4, otoc_order=k) for k in (1, 2)]
+    spectrum = echo.spectrum([1, 0, 0, 0], num_samples=16)
+    path = tmp_path / "output.txt"
+    append_quantum_echoes(str(path), [], order=2, steps=1)
+    options = dict(trotter_order=2, steps=1, butterfly="IZ", measurement="ZI",
+                   spectrum=spectrum, spectrum_steps_per_sample=1,
+                   spectrum_path=tmp_path / "otoc_spectrum.csv")
+    append_nested_otoc(str(path), results, **options)
+    append_nested_otoc(STDOUT, results, **options)
+    text = path.read_text()
+    assert capsys.readouterr().out.strip() == text[text.index("[NESTED OTOC]"):].strip()
+    parsed = parse_output(str(path))
+    assert parsed["quantum_echoes"]["samples"] == []
+    block = parsed["nested_otoc"]
+    assert block["trotter_order"] == 2 and block["spectrum_otoc_order"] == 2
+    assert block["spectrum_amplitude_unit"] == "atomic time"
+    assert [row["otoc_order"] for row in block["samples"]] == [1, 2]
+    assert block["samples"][-1]["C_real"] == pytest.approx(-1)
+    table = text.split("[NESTED OTOC]")[1].split("    samples:\n")[1].splitlines()
+    assert set(table[1].strip()) == {"-"}
+    assert len({len(row) for row in table[:4]}) == 1
+    csv = np.genfromtxt(block["spectrum_file"], delimiter=",", names=True)
+    np.testing.assert_allclose(csv["angular_frequency_ha"], spectrum.frequencies)
+    np.testing.assert_allclose(csv["magnitude_au_time"], spectrum.intensities)
+    with pytest.raises(ValueError, match="differ"):
+        append_nested_otoc(str(path), results, trotter_order=2, steps=1,
+                           butterfly="IZ", measurement="ZI", spectrum=spectrum,
+                           spectrum_path=path)
+    assert path.read_text() == text
+
+
 def test_echo_report_roundtrip(tmp_path, capsys):
     echo = QuantumEchoes(PauliSum({"Z": -0.4}), PauliSum({"X": 0.2}))
     results = [echo.run([1, 0], t, tau_p=0.01, steps=4) for t in [0, 0.5, 1]]

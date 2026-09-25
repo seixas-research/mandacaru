@@ -74,6 +74,7 @@ import numpy as np
 if TYPE_CHECKING:
     from ..algorithms.hartree_fock import RHFResult
     from ..algorithms.quantum_echoes import EchoSpectrum, QuantumEchoesResult
+    from ..algorithms.nested_otoc import NestedOTOCResult, OTOCSpectrum
 
 _BANNER = "=" * 72
 _RULE = "-" * 72
@@ -1156,6 +1157,58 @@ def append_quantum_echoes(
     _write_lines(path, lines)
 
 
+def append_nested_otoc(
+    path: str, results: Sequence[NestedOTOCResult], *, trotter_order: int,
+    steps: int, butterfly: str, measurement: str,
+    spectrum: OTOCSpectrum | None = None,
+    spectrum_steps_per_sample: int | None = None,
+    spectrum_path: str | os.PathLike[str] | None = None,
+) -> None:
+    """Append a nested-OTOC report with compact samples and optional FFT CSV.
+
+    ``butterfly`` and ``measurement`` describe the signed Pauli insertions.
+    ``steps`` is the per-leg count used for the listed samples. Fourier
+    frequencies are combinations of gaps, not excitation energies; the CSV
+    records atomic-time amplitudes. Default CSV: otoc_spectrum.csv beside
+    the report (working directory for STDOUT). Standard log routing applies.
+    """
+    fields = {
+        "protocol": "C^(2k) = <[B(t) M]^(2k)>",
+        "butterfly": butterfly, "measurement": measurement,
+        "trotter_order": trotter_order, "steps": steps,
+        "time_unit": "atomic time", "correlator_unit": "dimensionless",
+        "readout": "C = m * <M> for an initial M eigenstate; otherwise two branches",
+    }
+    if spectrum is not None:
+        destination = (Path(spectrum_path) if spectrum_path is not None else
+                       Path("otoc_spectrum.csv") if _is_stdout(path) else
+                       Path(path).with_name("otoc_spectrum.csv"))
+        if not _is_stdout(path) and destination.resolve() == Path(path).resolve():
+            raise ValueError("spectrum_path must differ from the main report path")
+        spectrum.to_csv(destination)
+        fields.update({
+            "spectrum_file": str(destination), "spectrum_otoc_order": spectrum.otoc_order,
+            "spectrum_num_samples": spectrum.times.size,
+            "spectrum_time_step": f"{spectrum.time_step:.6g}",
+            "spectrum_window": spectrum.window,
+            "spectrum_resolution_ha": f"{spectrum.resolution:.6g}",
+            "spectrum_nyquist_ha": f"{spectrum.nyquist_frequency:.6g}",
+            "spectrum_frequency": "sums of energy differences; not excitation gaps",
+            "spectrum_amplitude_unit": "atomic time",
+        })
+        if spectrum_steps_per_sample is not None:
+            fields["spectrum_steps_per_sample"] = spectrum_steps_per_sample
+    rows = [[f"{r.time:.6g}", str(r.otoc_order), f"{r.correlator.real:.6g}",
+             f"{r.correlator.imag:.4e}", f"{r.measurement_expectation:.6g}"]
+            for r in results]
+    lines = ["", "[NESTED OTOC]"]
+    lines += _indent([f"{key}: {value}" for key, value in fields.items()])
+    lines += _indent(["samples:"])
+    lines += _indent(_ascii_table(("time", "otoc_order", "C_real", "C_imag", "M_mean"), rows), 2)
+    lines.append(_BANNER)
+    _write_lines(path, lines)
+
+
 def append_performance(path: str, stages=None, wall_time_s=None,
                        resources=None, step: int | None = None,
                        extra: dict | None = None) -> None:
@@ -1267,6 +1320,7 @@ _PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs")
 #: Section markers of the protocol, mapped to the key they fill (the step
 #: markers are handled separately: they open a new geometry step).
 _SECTIONS = {"[BASIS]": "basis",
+             "[NESTED OTOC]": "nested_otoc",
              "[QUANTUM ECHOES]": "quantum_echoes",
              "[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
              "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
@@ -1294,6 +1348,8 @@ def parse_output(path: str) -> dict:
     ``[QUANTUM ECHOES]`` is returned under ``quantum_echoes`` with metadata
     and numeric ``samples`` and ``peaks`` tables. Legacy inline ``spectrum``
     tables remain readable; current reports point to a separate CSV file.
+    ``[NESTED OTOC]`` is returned under ``nested_otoc`` with metadata and
+    dimensionless correlator samples; its CSV contains signed frequencies.
 
     A file written by a geometry optimization holds one block per step
     (see the module docstring).  ``result["steps"]`` is the list of those blocks,
@@ -1361,10 +1417,10 @@ def parse_output(path: str) -> dict:
                     table = None
                     basis_columns = None
                     step["basis"] = {}
-                elif section == "quantum_echoes":
+                elif section in ("quantum_echoes", "nested_otoc"):
                     table = None
                     echo_columns = None
-                    step["quantum_echoes"] = {}
+                    step[section] = {}
                 elif section in ("optimization", "completion"):
                     # The relaxation's own blocks: they close the file, not a
                     # geometry step, so they are kept at the top level.
@@ -1405,8 +1461,8 @@ def parse_output(path: str) -> dict:
                         block[key] = int(numeric)
                     else:
                         block[key] = numeric
-            elif section == "quantum_echoes":
-                block = step["quantum_echoes"]
+            elif section in ("quantum_echoes", "nested_otoc"):
+                block = step[section]
                 if stripped in ("samples:", "peaks:", "spectrum:"):
                     table = stripped[:-1]
                     echo_columns = None
@@ -1422,7 +1478,8 @@ def parse_output(path: str) -> dict:
                 elif ":" in stripped:
                     key, _, value = stripped.partition(":")
                     key, value = key.strip(), value.strip()
-                    if key in ("order", "steps", "kick_steps", "spectrum_num_samples",
+                    if key in ("order", "trotter_order", "spectrum_otoc_order",
+                               "steps", "kick_steps", "spectrum_num_samples",
                                "spectrum_steps_per_sample"):
                         block[key] = int(value)
                     elif key in ("field_au", "field_direction"):

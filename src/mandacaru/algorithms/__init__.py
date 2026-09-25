@@ -59,8 +59,12 @@ from .qpe import (QPEMemoryEstimate, QPEResult, QuantumPhaseEstimation,
 from .time_evolution import SuzukiTrotter, time_evolve
 from .quantum_echoes import (EchoSpectrum, QuantumEchoes, QuantumEchoesResult,
                              fourier_spectrum, quantum_echoes)
+from .nested_otoc import NestedOTOC, NestedOTOCResult, OTOCSpectrum
 
 __all__ = [
+    "NestedOTOC",
+    "NestedOTOCResult",
+    "OTOCSpectrum",
     "SuzukiTrotter",
     "time_evolve",
     "QuantumEchoes",

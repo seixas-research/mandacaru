@@ -8,7 +8,7 @@ dynamic = ["version"]
 authors = [
   { name="Leandro Seixas Rocha", email="leandro.rocha@ilum.cnpem.br" },
 ]
-description = "A framework for fermionic quantum simulation based on variational quantum algorithms."
+description = "Everything you need for fermionic quantum simulation."
 readme = "README.md"
 license = {file = "LICENSE"} 
 requires-python = ">=3.14"

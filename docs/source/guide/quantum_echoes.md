@@ -13,9 +13,138 @@ are not a four-operator out-of-time-order correlator (OTOC). The
 [Quantum Echoes description from Google Research](https://research.google/blog/a-verifiable-quantum-advantage/)
 explains the broader use of forward/backward evolution in OTOC experiments.
 
+The weak-dipole `QuantumEchoes` API does **not** reproduce the nested OTOC protocol in
+[Observation of constructive interference at the edge of quantum ergodicity](https://doi.org/10.1038/s41586-025-09526-6)
+(Nature 646, 825–830, 2025). Equation (1) of that article evaluates
+$\langle[B(t)M]^{2k}\rangle$ with Pauli insertions and repeated echoes. Here the
+kick is a weak dipole rotation, and spectroscopy uses a two-point potential
+correlation. The API's `order=2` specifies the Suzuki–Trotter approximation;
+it does not implement the article's second-order OTOC ($k=2$). The separate
+`NestedOTOC` API implements that nested observable, as described below.
+
 The implementation is a classical state-vector simulation with Trotter error.
 It stores O($2^n$) amplitudes and scratch space, avoiding dense $2^n\times2^n$
 Hamiltonians and propagators. It does not claim a quantum speedup.
+
+## Nested OTOCs from the article
+
+`NestedOTOC` implements Equation (1) using separate signed Pauli strings
+$B$ and $M$, with $B^2=M^2=I$:
+
+$$
+B(t)=U_S(t)^\dagger B U_S(t),\qquad
+U_k=B(t)[M B(t)]^{k-1},\qquad
+C^{(2k)}=\langle U_k^\dagger M U_k M\rangle
+        =\langle[B(t)M]^{2k}\rangle.
+$$
+
+`otoc_order=1` gives the four-operator OTOC, and `otoc_order=2` gives the
+article's eight-operator OTOC. `trotter_order=2` independently selects Strang
+splitting for every free-evolution leg. These insertions are Pauli operations,
+not weak dipole pulses, and have no `tau_p` parameter.
+
+```python
+from mandacaru.algorithms import NestedOTOC
+from mandacaru.core import PauliSum
+
+# After the H2 ADAPT-VQE calculation (four Jordan-Wigner qubits):
+prepared = calc.solver.checkpoint
+otoc = NestedOTOC(
+    prepared.hamiltonian,
+    butterfly=PauliSum({"IIIZ": 1}),
+    measurement=PauliSum({"ZIII": 1}),
+    trotter_order=2,
+)
+result = otoc.run(prepared, time=1.0, otoc_order=2, steps=40)
+print(result.correlator)                 # Dimensionless C^(4), possibly complex
+print(result.measurement_expectation)   # Physical <M> after the nested sequence
+circuit = otoc.circuit(time=1.0, otoc_order=2, steps=40)
+```
+
+Every backward leg is the exact adjoint of its discrete forward approximation,
+including for first-order Trotter splitting. Input states may be normalized
+vectors, checkpoints, or checkpoint paths. The signed Pauli strings may span
+multiple qubits but must share the Hamiltonian's register and mapping. They
+must preserve any tapered symmetry sectors needed by the calculation.
+
+For an initial $M$ eigenstate with eigenvalue $m=\pm1$, the measured expectation
+gives $C^{(2k)}=m\langle M\rangle_{U_k\psi}$. For generic states, including
+generic ADAPT states, this shortcut is invalid: the simulator evaluates the
+overlap of the two branches $U_k|\psi\rangle$ and $U_kM|\psi\rangle$, retaining
+the complex result. `circuit()` exports only $U_k$, without preparation or
+readout. Hardware measurement for a generic state needs an additional
+interferometric protocol. Mixed-state values can be obtained by probability-
+weighted averages of pure-state correlators; the API does not accept a density
+matrix. Averaging a complete orthonormal basis gives the normalized trace.
+
+The complete three-dimensional H2 example reuses the molecular builder and
+ADAPT checkpoint from the dipole example:
+
+```console
+conda run -n mandacaru python examples/nested_otoc.py
+```
+
+It writes the standard `[BASIS]` and ADAPT report, then `[NESTED OTOC]` with
+compact $k=1$ and $k=2$ sample rows. The full signed FFT goes to
+`otoc_spectrum.csv`. `parse_output("output.txt")["nested_otoc"]` reads the
+metadata and sample table. Its occupation-parity insertions probe electronic
+correlations; they are not electric dipole operators.
+
+## What an OTOC spectrum reveals about a Hamiltonian
+
+```python
+spectrum = otoc.spectrum(
+    prepared, time_step=0.2, num_samples=128,
+    steps_per_sample=2, otoc_order=2,
+)
+spectrum.to_csv("otoc_spectrum.csv")
+```
+
+The negative-phase FFT reports signed angular frequencies and their energy
+equivalents with $\hbar=1$. Its amplitudes have atomic-time units because
+$C^{(2k)}$ is dimensionless. A Hann window is the default; `window="none"`
+selects the unwindowed transform. Neither the mean nor an assumed elastic line
+is subtracted. The CSV labels frequencies and amplitude units explicitly.
+
+An OTOC Fourier spectrum is **not generally an excitation spectrum**. In an
+energy basis, $B(t)_{ab}=B_{ab}e^{i(E_a-E_b)t}$. The four-operator OTOC therefore
+contains frequencies of the form
+
+$$
+\omega=(E_a-E_b)+(E_c-E_d),
+$$
+
+weighted by matrix elements and the initial state. Order $k$ contains sums of
+$2k$ such differences. Interference, selection rules, and cancellation determine
+which lines appear. Higher harmonics can exceed the Hamiltonian's spectral
+width, so the sampling interval must resolve these combined frequencies.
+
+For example, $H=X\otimes X/2$ has energies $\pm1/2$ Ha, hence gap 1 Ha. With
+$B=I\otimes Z$, $M=Z\otimes I$, and initial $|00\rangle$:
+$C^{(2)}(t)=\cos(2t)$ and $C^{(4)}(t)=\cos(4t)$. Their FFT lines are at
+$\pm2$ and $\pm4$ Ha-equivalent frequencies, respectively, rather than the
+Hamiltonian's 1 Ha gap. The tests check this example explicitly.
+
+Nested OTOCs can constrain an unknown Hamiltonian through their sensitivity to
+its couplings: fit predicted correlator traces for several operators, times,
+and states to observed traces, then calculate the fitted Hamiltonian's spectrum.
+The paper demonstrates this Hamiltonian-learning strategy. This implementation
+provides the forward correlator calculation; parameter fitting is not included.
+The inverse problem need not have a unique solution, and $H$ and $H+cI$ give
+identical OTOCs, so absolute energies need an independent reference.
+
+For ground-state excitation spectroscopy, the existing dipole correlation
+$\langle0|V V(t)|0\rangle$ remains more directly interpretable: its lines are
+$E_n-E_0$ for states coupled by $V$. It can miss dipole-forbidden transitions.
+The RHF HOMO–LUMO orbital gap is a separate mean-field quantity.
+
+Nested sampling recomputes each repeated sequence at $t_j=j\Delta t$, with
+`j * steps_per_sample` subdivisions per leg to hold Trotter step size fixed.
+Its work grows quadratically with sample count and linearly with OTOC order;
+it does not have the incremental two-point algorithm's linear sampling cost.
+Only current state branches and scalar samples are retained. This API does not
+implement the paper's Pauli-averaging interference decomposition or hardware
+error mitigation.
 
 ## Passing an ADAPT-VQE state
 

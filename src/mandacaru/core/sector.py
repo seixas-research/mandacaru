@@ -111,9 +111,11 @@ def apply_pauli_sum(operator: PauliSum, indices, amplitudes):
 
     Returns
     -------
-    (indices, amplitudes)
-        The image as a sparse state, with duplicate indices summed and exact
-        zeros dropped; indices sorted ascending.
+    indices : ndarray
+        Image basis indices, sorted ascending, after summing duplicates and
+        dropping exact zeros.
+    amplitudes : ndarray
+        Complex amplitudes corresponding to the returned indices.
     """
     indices = np.asarray(indices, dtype=np.int64).ravel()
     amplitudes = np.asarray(amplitudes, dtype=complex).ravel()

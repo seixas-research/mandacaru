@@ -114,11 +114,16 @@ its state-vector simulation.  See :doc:`guide/checkpoints_qpe`.
 Quantum Echoes and Time Evolution
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Weak dipole echoes and matrix-free Suzuki–Trotter propagation from prepared
-states. See :doc:`guide/quantum_echoes`.
+Weak dipole echoes, nested Pauli OTOCs, and matrix-free Suzuki–Trotter
+propagation from prepared states. See :doc:`guide/quantum_echoes`.
 
 .. automodule:: mandacaru.algorithms.quantum_echoes
    :members:
+   :no-index:
+
+.. automodule:: mandacaru.algorithms.nested_otoc
+   :members:
+   :undoc-members:
    :no-index:
 
 .. automodule:: mandacaru.algorithms.time_evolution
