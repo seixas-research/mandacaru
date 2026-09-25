@@ -88,8 +88,8 @@ combined**, so the file records it as `preparation`:
 
 | `preparation` | state | written by |
 | :--- | :--- | :--- |
-| `"product"` | $\prod_k e^{\theta_k A_k}\,|\mathrm{ref}\rangle$ | ADAPT-VQE, and UCCSD with `trotter=True` |
-| `"sum"` | $e^{\sum_k \theta_k A_k}\,|\mathrm{ref}\rangle$ | the default, exact UCCSD of `method="vqe"` |
+| `"product"` | $\prod_k e^{\theta_k A_k}\,\vert\mathrm{ref}\rangle$ | ADAPT-VQE, and UCCSD with `trotter=True` |
+| `"sum"` | $e^{\sum_k \theta_k A_k}\,\vert\mathrm{ref}\rangle$ | the default, exact UCCSD of `method="vqe"` |
 
 The two coincide only when the generators commute (on a three-angle H₂ example
 their fidelity is 0.94), so a reader must not guess. `state_vector()`,

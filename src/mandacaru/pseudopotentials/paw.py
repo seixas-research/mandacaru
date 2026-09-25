@@ -417,7 +417,7 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
     :math:`r_{cl} \le \min r_c`, and for a transition metal, lanthanide or
     6p element that left the extended ``s`` and ``p`` channels in the bare
     all-electron well between the compact ``d``/``f`` cutoff and their own --
-    the well that bound every ghost of the 2026-09-24 census (HISTORY.md).
+    the well that bound every such ghost state.
     :math:`B_{ij} =
     \langle\tilde\varphi_i|\chi_j\rangle`, projectors
     :math:`\tilde p_i = \sum_k (B^{-1})_{ki}\chi_k` (dual to the smooth
@@ -1956,7 +1956,7 @@ class PAWIntegrals(MolecularIntegrals):
         return self._Vion
 
     def one_body_augmentation(self):
-        r"""``sum_{A,LM} Q^{A,LM}_{pr} \int \hat g_{A,LM} v^{ion}``.
+        r""":math:`\sum_{A,LM} Q^{A,LM}_{pr} \int \hat g_{A,LM}\, v^{ion}`.
 
         The compensation charge is a real piece of electron density, so it is
         attracted to the other nuclei exactly as the smooth density is.  The
@@ -2065,8 +2065,8 @@ def generate_upaw(symbol: str, **options) -> PAWDataset:
 
 def upaw_library_path(directory=None, xc: str = DEFAULT_XC) -> str | None:
     """The UPAW-LCAO library folder: ``directory`` when given, else
-    ``$MANDACARU_PAW_PATH/upaw-lcao/<xc>``, or ``None`` when that variable is
-    unset (UPAW-LCAO is then generated on demand)."""
+    ``$MANDACARU_UPAW_PATH/<xc>``, or ``None`` when that variable is unset
+    (UPAW-LCAO is then generated on demand)."""
     from .environment import upaw_directory
     return upaw_directory(xc, directory)
 
@@ -2100,7 +2100,7 @@ def get_upaw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
             raise FileNotFoundError(
                 f"no UPAW-LCAO dataset for {symbol!r} at {path!r}; build one with "
                 f"build_upaw_library([{symbol!r}], directory={directory!r})")
-        where = ("MANDACARU_PAW_PATH is not set" if folder is None
+        where = ("MANDACARU_UPAW_PATH is not set" if folder is None
                  else f"no library at {folder!r}")
         warnings.warn(
             f"generating a UPAW-LCAO dataset for {symbol} ({where}); it is "
@@ -2123,7 +2123,7 @@ def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
                                generation_options.get("xc", DEFAULT_XC))
     if folder is None:
         from .environment import repository_path
-        repository_path(FAMILY)          # raises the "not set" explanation
+        repository_path(UPAW_FAMILY)     # raises the "not set" explanation
     os.makedirs(folder, exist_ok=True)
     format = DEFAULT_FORMAT if format is None else format
     stride = STRIDE if stride is None else int(stride)

@@ -22,11 +22,31 @@
 
 ```bash
 pip install mandacaru
-
-# PAW-LCAO datasets (kept in a separate repository because of their size)
-git clone https://github.com/seixas-research/mandacaru-paw.git
-mandacaru --set-paw mandacaru-paw
 ```
+
+No pseudopotential data ships with the package. NCPP, ONCVPSP, PAW-LCAO and
+UPAW-LCAO each live in their own repository, and an environment variable
+names the checkout Mandacaru reads from:
+
+| basis | variable | repository |
+| :--- | :--- | :--- |
+| `NCPP` | `MANDACARU_NCPP_PATH` | `mandacaru-ncpp` |
+| `ONCVPSP` | `MANDACARU_ONCVPSP_PATH` | `mandacaru-oncvpsp` |
+| `PAW-LCAO` | `MANDACARU_PAW_PATH` | `mandacaru-paw` |
+| `UPAW-LCAO` | `MANDACARU_UPAW_PATH` | `mandacaru-upaw` |
+
+```bash
+git clone https://github.com/seixas-research/mandacaru-paw.git
+mandacaru --set-paw mandacaru-paw     # writes ~/.zshrc or ~/.bashrc, asking before replacing
+mandacaru --pseudo-status             # each variable, where it points, and how many datasets it serves
+```
+
+Datasets sit one directory per exchange-correlation functional inside each
+checkout (`<checkout>/lda/<Symbol>.parquet` today). The all-electron bases
+(`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need none of this. See the
+[pseudopotentials guide](https://mandacaru.readthedocs.io/en/latest/guide/pseudopotentials.html)
+for the full setup and the [installation guide](https://mandacaru.readthedocs.io/en/latest/installation.html)
+for the numerical backend and the optional dependencies.
 
 ## LiH with ASE
 
@@ -101,6 +121,10 @@ df.to_csv("lih_dissociation.csv", index=False)
 **Operator pools.** The pool is the set of anti-Hermitian generators ADAPT-VQE chooses from, and it sets the trade-off between circuit depth and the number of iterations. `fermionic` holds spin-adapted single and double excitations; `qubit` splits them into individual Pauli strings (the shallowest gates, more iterations); `qeb` uses qubit excitations — the same occupation moves without the fermionic sign; `ceo` couples the qubit excitations that act on the same spin-orbitals, and `ceo-ovp` keeps that coupling to one parameter per step, roughly halving the two-qubit gate count of `qeb`. Every pool is built in the encoding you ask for (Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev) and reaches the same ground state. The fermionic and qubit-excitation pools conserve the particle number; the individual Pauli strings of `qubit` do not, by design.
 
 **Classical optimization.** The parameters are updated by the optimizer in `optimizer=` — a method name, a dict `{"method": ..., "maxiter": ..., "tol": ...}`. SLSQP (the default), BFGS, L-BFGS and NLCG-PR use gradients and stop in one to two orders of magnitude fewer steps on exact simulators; Nelder–Mead and COBYLA are gradient-free and more robust on a small, nearly-converged problem; SPSA (two energy evaluations per step, whatever the number of parameters) tolerates the statistical noise of shot-based hardware.
+
+## Beyond the ground state
+
+Once a state is prepared — by VQE, ADAPT-VQE or a checkpoint loaded back in — Mandacaru can do more with it than report its energy. `time_evolve` propagates a Pauli Hamiltonian with a matrix-free Suzuki–Trotter product formula; `QuantumEchoes` applies a weak dipole kick between forward and backward evolution for a spectroscopy-style response; `NestedOTOC` evaluates the nested out-of-time-order correlator ⟨[B(t)M]<sup>2k</sup>⟩ of repeated echoes with Pauli insertions B and M; and `QuantumPhaseEstimation` reads the energy of a prepared state off a phase-estimation register. See the [quantum echoes](https://mandacaru.readthedocs.io/en/latest/guide/quantum_echoes.html) and [checkpoints and QPE](https://mandacaru.readthedocs.io/en/latest/guide/checkpoints_qpe.html) guides.
 
 ## License
 

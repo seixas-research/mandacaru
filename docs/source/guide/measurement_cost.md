@@ -42,13 +42,14 @@ two-qubit error.
 **Fixing the first wall does not make a 24-qubit run meaningful.** It makes a
 4-to-8-qubit run possible at all, which is where the useful demonstrations are.
 
-## Energy runs no longer measure the RDMs
+## Energy runs do not measure the RDMs
 
-`get_potential_energy()` used to submit the union of the Hamiltonian's Pauli
-strings *and* every spin-conserving 1- and 2-RDM operator — 97,980 strings
-instead of 12,736 on the TZP case, plus 34 s of local work building 117,792
-operators — and then discard all of it. The RDMs are what the **forces** need,
-so they are measured when forces are asked for and not otherwise:
+`get_potential_energy()` measures only the Hamiltonian's Pauli strings, not
+every spin-conserving 1- and 2-RDM operator as well: submitting the union of
+both would mean 97,980 strings instead of 12,736 on the TZP case, plus 34 s of
+local work building 117,792 operators, only to discard the RDM half of it. The
+RDMs are what the **forces** need, so they are measured when forces are asked
+for and not otherwise:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
@@ -108,8 +109,8 @@ plan below `0.1` expected fidelity raises a `RuntimeWarning` saying so.
 ## A failed job keeps the optimization
 
 The state is optimized locally and only then measured, so a measurement failure
-costs no optimization time — provided the exception does not take the calculator
-with it. It no longer does:
+costs no optimization time — the exception does not take the calculator down
+with it:
 
 ```python
 try:

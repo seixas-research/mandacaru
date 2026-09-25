@@ -154,6 +154,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--set-oncvpsp", metavar="DIR", default=None,
                         help="the same for the ONCVPSP datasets "
                              "(mandacaru-oncvpsp, MANDACARU_ONCVPSP_PATH).")
+    parser.add_argument("--set-upaw", metavar="DIR", default=None,
+                        help="the same for the UPAW-LCAO datasets "
+                             "(mandacaru-upaw, MANDACARU_UPAW_PATH); optional, "
+                             "since UPAW-LCAO is otherwise generated on "
+                             "demand.")
     parser.add_argument("--pseudo-status", action="store_true",
                         help="report where each pseudopotential library "
                              "variable points and how many datasets it "
@@ -557,15 +562,20 @@ def set_library_command(settings: dict) -> int:
 
 def pseudo_status_command() -> int:
     """``mandacaru --pseudo-status``: every library variable, where it
-    points and what it holds; 0 when all three are set and valid."""
+    points and what it holds; 0 when every required one is set and valid
+    (an unset optional one, UPAW-LCAO, is fine; a wrong one is not)."""
     from .pseudopotentials.environment import (FAMILY_VARIABLES,
+                                               OPTIONAL_FAMILIES,
                                                LibraryPathError,
                                                repository_path, status_lines)
 
     for line in status_lines():
         print(line)
     ok = True
-    for family in FAMILY_VARIABLES:
+    for family, variable in FAMILY_VARIABLES.items():
+        if (family in OPTIONAL_FAMILIES
+                and not os.environ.get(variable, "").strip()):
+            continue
         try:
             repository_path(family)
         except LibraryPathError:
@@ -581,7 +591,8 @@ def main(argv=None) -> int:
         return build_backend_command()
     settings = {family: path for family, path in (
         ("paw-lcao", args.set_paw), ("ncpp", args.set_ncpp),
-        ("oncvpsp", args.set_oncvpsp)) if path is not None}
+        ("oncvpsp", args.set_oncvpsp), ("upaw-lcao", args.set_upaw))
+        if path is not None}
     if settings:
         return set_library_command(settings)
     if args.pseudo_status:

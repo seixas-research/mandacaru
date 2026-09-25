@@ -20,7 +20,7 @@ energies in eV *by default*, converting to/from atomic units at their boundary,
 while the numerical core (the integral engine, the C backend) works throughout
 in atomic units (Bohr, Hartree).
 
-**Convention (2026-09-14).**  Everything a user *sees* -- the result objects of
+**Convention.**  Everything a user *sees* -- the result objects of
 the variational drivers (``optimal_energy``, ``reference_energy``, energy
 histories, ``EnergyLevels``, the subspace results, ``InteractionEnergy``,
 ``ForceResult``), the verbose printouts, the CLI, the band structures and the

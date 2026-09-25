@@ -403,8 +403,7 @@ def slab_truncated_kernel(shape, cell, axis: int = 2) -> np.ndarray:
     :math:`4\pi \sin(G_z L/2)/(G_z G_\parallel)` from the first branch and
     letting :math:`G_\parallel \to 0` gives the second identically, which is the
     check that the algebra is right rather than merely plausible
-    (``test/integrals/test_slab_kernel.py`` pins it numerically, and the
-    symbolic version is in ``HISTORY.md``).
+    (``test/integrals/test_slab_kernel.py`` pins it numerically).
 
     ``G = 0`` is set to zero, the same neutrality convention the untruncated
     kernel uses: it is a choice of reference that cancels against the

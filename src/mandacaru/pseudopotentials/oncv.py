@@ -208,7 +208,7 @@ DEFAULT_LOCAL_FACTOR = 0.9
 #: Hamann's choices for the first row.  Lithium is *not* pushed further out:
 #: at 3.0 Bohr the LiH energy jumps by 0.15 Ha and at 3.3 Bohr the s channel
 #: grows a ghost state at -0.83 Ha, because the polynomial local potential over
-#: so wide a core no longer resembles the atom (checked 2026-09-14).
+#: so wide a core no longer resembles the atom.
 DEFAULT_CUTOFFS = {
     "H": {0: 1.30},
     "Li": {0: 2.60},
@@ -225,7 +225,7 @@ B_ASYMMETRY_TOLERANCE = 1e-5   # Ha; heavy atoms (U) reach ~2e-6 from quadrature
 CUTOFF_GRID_FRACTION = 0.5
 #: Fallback cutoff (Bohr) above which :func:`_cutoff_for` warns.  Li's
 #: deliberate cutoff, 2.60, is the largest in :data:`DEFAULT_CUTOFFS`, and
-#: `HISTORY.md` records Li growing a ghost state at 3.3.
+#: Li grows a ghost state at 3.3.
 CUTOFF_WARN_RADIUS = 3.3
 #: How far (Hartree) a channel's lowest eigenvalue must lie below its bound
 #: reference, *with the reference level itself displaced to second place*, for
@@ -1338,8 +1338,8 @@ def assemble_channel(r: np.ndarray, pw: PseudoWaves, v_loc: np.ndarray,
     and :math:`D = B^{-1}`.  This is the PAW-LCAO construction of
     :func:`~.paw.assemble_paw_channel` at zero overlap correction: it lets
     :math:`r_{cl}` follow the *largest* cutoff instead of the smallest,
-    which is what removed the ghost states of the deep all-electron well
-    (``HISTORY.md``, 2026-09-24).  With ``strict`` an asymmetry of :math:`B`
+    which is what removed the ghost states of the deep all-electron well.
+    With ``strict`` an asymmetry of :math:`B`
     above :data:`B_ASYMMETRY_TOLERANCE` raises.
     """
     l, r_cut = pw.l, pw.r_cut

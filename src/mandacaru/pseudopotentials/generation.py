@@ -439,8 +439,7 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
         ground state is the pseudo wave at the relativistic eigenvalue, so
         the relativistic shift of the valence levels lives in the potential.
         Norm conservation uses the large-component norm, which differs from
-        the relativistic Wronskian identity by :math:`O(c^{-2})`
-        (``HISTORY.md``, "The relativistic norm condition is a Wronskian").
+        the relativistic Wronskian identity by :math:`O(c^{-2})`.
     nlcc : bool or float
         Nonlinear core correction (Louie-Froyen-Cohen, :mod:`.core_correction`):
         unscreen with :math:`V_{xc}[\tilde\rho_c + \tilde\rho_v]` and keep the

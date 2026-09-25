@@ -68,7 +68,7 @@ from .generation import Channel, PseudoPotential, generate_pseudopotential
 
 #: Identifies a Mandacaru pseudopotential file.
 FORMAT_TAG = "mandacaru-pseudopotential"
-#: Current schema version.  Version 2 (2026-09-14) added the ``family`` field;
+#: Current schema version.  Version 2 added the ``family`` field;
 #: a version-1 file (no field) loads as the Troullier-Martins family.
 FORMAT_VERSION = 2
 #: Family assumed for files written before the field existed.

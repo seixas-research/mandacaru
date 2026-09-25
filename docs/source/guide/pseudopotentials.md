@@ -112,7 +112,7 @@ driver, in the dry run and on the command line, with no change to any of them.
 
 ## ONCVPSP: optimized norm-conserving Vanderbilt potentials
 
-*(2026-09-14, step 2 of the family plan.)* The second shipped family is
+The second shipped family is
 `"oncvpsp"` (alias `"oncv"`), D. R. Hamann's construction, *Phys. Rev. B*
 **88**, 085117 (2013), written from scratch in
 `mandacaru.pseudopotentials.oncv` on top of the same LDA radial
@@ -207,7 +207,7 @@ Richardson-extrapolated, `log_derivative_ps` solving the nonlocal radial
 equation exactly through the homogeneous + two inhomogeneous Numerov
 solutions):
 
-| | $r_c$ | $\varepsilon_1, \varepsilon_2$ (Ha) | lowest eigenvalue − $\varepsilon_1$ | $|\Delta L|$ at $\varepsilon_1$ / $\varepsilon_2$ / midpoint | $E^r$ (Ha) |
+| | $r_c$ | $\varepsilon_1, \varepsilon_2$ (Ha) | lowest eigenvalue − $\varepsilon_1$ | $\vert\Delta L\vert$ at $\varepsilon_1$ / $\varepsilon_2$ / midpoint | $E^r$ (Ha) |
 |---|---|---|---|---|---|
 | H s | 1.30 | −0.234, +0.766 | −5.5e-8 | 1.8e-6 / 5.2e-5 / 5.9e-6 | 5.6e-4, 4.8e-3 |
 | Li s | 2.60 | −0.106, +0.894 | +7.4e-9 | 3.0e-8 / 1.1e-5 / 2.5e-3 (L = −1.84) | 5.0e-7, 8.0e-5 |
@@ -381,7 +381,7 @@ splittings a pseudopotential is built from.
 
 ## PAW-LCAO: projector augmented waves
 
-*(2026-09-14, step 3 of the family plan.)* The third shipped family is
+The third shipped family is
 `"paw-lcao"`, P. E. Blöchl's projector augmented-wave method, *Phys. Rev. B* **50**,
 17953 (1994), in its **frozen-core, one-center-expansion** form with the
 one-center energies **linearized around the reference atom** — a fixed
@@ -401,8 +401,8 @@ atoms.calc = Mandacaru(method="vqe",
                        h=0.25)
 ```
 
-The name has no alias; `family_names()` lists `ncpp`, `oncvpsp`, `paw` first
-(and the unknown-family error names all three).
+The name has no alias; `family_names()` lists `ncpp`, `oncvpsp`, `paw-lcao`,
+`upaw-lcao` first (and the unknown-family error names all four).
 
 ### The transformation
 
@@ -826,7 +826,7 @@ nothing to correct.
   the electrons. What is still omitted is the *one-center* two-body
   correction beyond the linearization -- measured at 0.08-0.33 eV for oxygen.
 * **Frozen core.** The core density is frozen (stored as `core_density`).
-  Since 2026-09-23 the unscreening *does* include the smooth core when
+  The unscreening includes the smooth core when
   `nlcc=True` (the default), which is the nonlinear core correction: PAW-LCAO
   already builds `smooth_core_density` for its one-center energies, so the
   correction here is a matter of including that density in $v_{xc}$ rather
@@ -889,9 +889,9 @@ computed anyway for the grid basis.
 
 | | PAW-LCAO | UPAW-LCAO |
 |---|---|---|
-| overlap correction $\max|q_{ij}|$, H | $2.12\times10^{-2}$ | $3.0\times10^{-14}$ |
+| overlap correction $\max\vert q_{ij}\vert$, H | $2.12\times10^{-2}$ | $3.0\times10^{-14}$ |
 | overlap minimum (H) | $1.055$ | $1.000000$ |
-| $\max|S - \tilde S|$, H₂ (h = 0.3 Å) | $2.8\times10^{-2}$ | $1.0\times10^{-13}$ |
+| $\max\vert S - \tilde S\vert$, H₂ (h = 0.3 Å) | $2.8\times10^{-2}$ | $1.0\times10^{-13}$ |
 | O, $L=0$ compensation moment | $3.2\times10^{-2}$ | $7.7\times10^{-15}$ |
 | O, $L=2$ compensation moment | $1.4\times10^{-3}$ | $2.2\times10^{-2}$ |
 | H₂O net force, h = 0.25 Å | 0.380 eV/Å | 1.918 eV/Å |
@@ -931,19 +931,19 @@ uniform grid.
 
 ### Datasets
 
-No UPAW-LCAO library is shipped, and it has no repository of its own:
-`get_upaw(symbol)` looks in `$MANDACARU_PAW_PATH/upaw-lcao/<xc>/` and, finding
-nothing there (including when `MANDACARU_PAW_PATH` is unset), **generates the
-dataset on the fly**, caches it in memory and warns once — generation is
-0.4–2.2 s per element, so an interactive run pays a fraction of a second and a
-scan pays nothing after the first geometry. Naming a `directory` explicitly is
-a statement that the library is there, and a missing element then raises with
-the `build_upaw_library` recipe:
+No UPAW-LCAO library is shipped, and its repository, `mandacaru-upaw`, is the
+one optional one: `get_upaw(symbol)` looks in `$MANDACARU_UPAW_PATH/<xc>/`
+and, finding nothing there (including when `MANDACARU_UPAW_PATH` is unset),
+**generates the dataset on the fly**, caches it in memory and warns once —
+generation is 0.4–2.2 s per element, so an interactive run pays a fraction of
+a second and a scan pays nothing after the first geometry. Naming a
+`directory` explicitly is a statement that the library is there, and a
+missing element then raises with the `build_upaw_library` recipe:
 
 ```python
 from mandacaru.pseudopotentials.paw import build_upaw_library
 
-build_upaw_library(("H", "C", "N", "O"))          # into $MANDACARU_PAW_PATH/upaw-lcao/lda/
+build_upaw_library(("H", "C", "N", "O"))          # into $MANDACARU_UPAW_PATH/lda/
 build_upaw_library(("H", "O"), directory="/data/upaw")
 ```
 
@@ -1024,16 +1024,17 @@ optimization on this grid is not merely inaccurate — it does not converge.
 
 ## The pseudopotential libraries
 
-None of the three generated families ships inside the package. Each lives in
+None of the four generated families ships inside the package. Each lives in
 a repository of its own — `mandacaru-ncpp`, `mandacaru-oncvpsp`,
-`mandacaru-paw` — and an environment variable names the checkout Mandacaru
-reads from:
+`mandacaru-paw`, `mandacaru-upaw` — and an environment variable names the
+checkout Mandacaru reads from:
 
 | family | variable | set it with |
 |---|---|---|
 | `ncpp` | `MANDACARU_NCPP_PATH` | `mandacaru --set-ncpp DIR` |
 | `oncvpsp` | `MANDACARU_ONCVPSP_PATH` | `mandacaru --set-oncvpsp DIR` |
 | `paw-lcao` | `MANDACARU_PAW_PATH` | `mandacaru --set-paw DIR` |
+| `upaw-lcao` | `MANDACARU_UPAW_PATH` | `mandacaru --set-upaw DIR` (optional) |
 
 ```bash
 git clone https://github.com/seixas-research/mandacaru-ncpp.git
@@ -1048,14 +1049,15 @@ mandacaru --set-paw mandacaru-paw
 mandacaru --pseudo-status        # each variable, where it points, and how many datasets it serves
 ```
 
-`--set-ncpp` / `--set-oncvpsp` / `--set-paw` write `export
+`--set-ncpp` / `--set-oncvpsp` / `--set-paw` / `--set-upaw` write `export
 MANDACARU_..._PATH=DIR` into `~/.zshrc` or `~/.bashrc` (whichever `$SHELL`
 reads), asking `[Y/n]` before replacing a different value; open a new
 terminal, or `source` the file, for the variable to take effect in your
 shell. Inside a checkout the datasets sit one directory per
 exchange-correlation functional — `<checkout>/lda/<Symbol>.parquet` today,
 `<checkout>/pbe/` once there are PBE datasets — so one checkout serves every
-functional.
+functional. `MANDACARU_UPAW_PATH` is the one optional variable: UPAW-LCAO is
+generated on demand without it (*Datasets* above).
 
 ```python
 from mandacaru.pseudopotentials.io import available_elements, get_pseudopotential
@@ -1072,8 +1074,8 @@ d channel rather than a two-electron 4s² one. Hydrogen and lithium carry a
 single valence channel, which is the local one, so in this family H₂ and LiH
 have no projectors at all — their nonlocal term is identically zero (the
 ONCVPSP family gives them two s projectors each). The ONCVPSP and PAW-LCAO
-checkouts (all 92 elements, generated 2026-09-14) are about 110 MB and 190 MB;
-NCPP's own datasets are about 11 MB.
+checkouts (all 92 elements) are about 110 MB and 190 MB; NCPP's own datasets
+are about 11 MB.
 
 A calculation that needs a variable that is unset, or that names something
 that is not a directory, raises `LibraryPathError`
@@ -1084,9 +1086,11 @@ holding the `<Symbol>.parquet` files itself, with no functional subdirectory,
 and the loaders raise `FileNotFoundError` rather than `LibraryPathError` when
 that folder is missing or empty.
 
-UPAW-LCAO has no repository — it is generated on demand (*Datasets* above) —
-but a library built with `mandacaru-build --pp UPAW --install` goes to
-`$MANDACARU_PAW_PATH/upaw-lcao/<xc>/`, inside the PAW-LCAO checkout.
+UPAW-LCAO has its own repository, `mandacaru-upaw`, but it is the one
+optional library: without `MANDACARU_UPAW_PATH` a missing dataset is
+generated on demand (*Datasets* above) rather than raising
+`LibraryPathError`. A library built with `mandacaru-build --pp UPAW
+--install` goes to `$MANDACARU_UPAW_PATH/<xc>/`, inside that checkout.
 
 To regenerate or extend a library:
 
@@ -1181,7 +1185,7 @@ family](basis_sets.md)) and is accepted by `"PAW-LCAO"` and `"UPAW-LCAO"`. **The
 is 0.1 eV**, GPAW's default -- so a plain `basis="PAW-LCAO"` is a confined basis.
 `None`, `False` or `0` switch the confinement off and restore the free-atom
 orbitals; every PAW-LCAO energy quoted in this guide outside this section was
-computed that way (it predates the default, 2026-09-20). A `{symbol: eV}`
+computed that way, with confinement off rather than at the default. A `{symbol: eV}`
 mapping, or the per-element basis form, confines elements differently; an
 element left out gets the 0.1 eV default.
 
@@ -1298,8 +1302,10 @@ equilibrium distance of **0.760 Å** and the SIESTA-style one **0.711 Å**
 (experiment 0.741, VASP-PBE 0.750), while the SIESTA-style basis is about
 0.5 eV lower in absolute energy -- its tighter second zeta adds more freedom
 near the nucleus. The full default basis (GPAW's split, the 0.1 eV confinement
-and the Gaussian polarization shell) lands at **0.733 Å**. Every DZ/DZP/TZP energy quoted in this guide before
-2026-09-20 was computed with `split_norm = 0.15`; pass it to reproduce them.
+and the Gaussian polarization shell) lands at **0.733 Å**. Every DZ/DZP/TZP energy quoted in this guide outside
+this section was computed with the SIESTA-style `split_norm = 0.15` scheme
+rather than the current `tail_norm` default; pass `split_norm=0.15` to
+reproduce them.
 
 #### The polarization function
 

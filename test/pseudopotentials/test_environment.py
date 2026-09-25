@@ -29,7 +29,8 @@ def checkout(tmp_path):
 
 @pytest.mark.parametrize("family, flag", [("paw-lcao", "--set-paw"),
                                           ("oncvpsp", "--set-oncvpsp"),
-                                          ("ncpp", "--set-ncpp")])
+                                          ("ncpp", "--set-ncpp"),
+                                          ("upaw-lcao", "--set-upaw")])
 def test_an_unset_variable_names_the_command_that_sets_it(monkeypatch, family,
                                                           flag):
     monkeypatch.delenv(FAMILY_VARIABLES[family], raising=False)
@@ -83,11 +84,17 @@ def test_a_user_path_is_expanded(monkeypatch, checkout):
 
 
 def test_upaw_is_generated_on_demand_without_the_variable(monkeypatch,
-                                                         checkout):
-    monkeypatch.delenv("MANDACARU_PAW_PATH", raising=False)
+                                                         checkout, tmp_path_factory):
+    monkeypatch.delenv("MANDACARU_UPAW_PATH", raising=False)
     assert upaw_directory() is None
-    monkeypatch.setenv("MANDACARU_PAW_PATH", str(checkout))
-    assert upaw_directory() == os.path.join(str(checkout), "upaw-lcao", "lda")
+    monkeypatch.setenv("MANDACARU_UPAW_PATH", str(checkout))
+    assert upaw_directory() == os.path.join(str(checkout), "lda")
+    # Optional does not mean unchecked: a variable that names no directory
+    # is still an error.
+    monkeypatch.setenv("MANDACARU_UPAW_PATH",
+                       str(tmp_path_factory.mktemp("u") / "missing"))
+    with pytest.raises(LibraryPathError, match="--set-upaw"):
+        upaw_directory()
 
 
 def test_status_reports_every_family(monkeypatch, checkout, tmp_path_factory):
@@ -106,6 +113,8 @@ def test_a_loader_refuses_before_any_file_is_read(monkeypatch):
 
     for variable in FAMILY_VARIABLES.values():
         monkeypatch.delenv(variable, raising=False)
+    # UPAW-LCAO is optional: without its variable it is generated on demand,
+    # so only the three required families are asked to refuse here.
     for load, flag in ((get_paw, "--set-paw"), (get_oncv, "--set-oncvpsp"),
                        (get_pseudopotential, "--set-ncpp")):
         with pytest.raises(LibraryPathError, match=flag):

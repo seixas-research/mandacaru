@@ -276,17 +276,18 @@ the grid along with the cell is deliberate: freezing the grid over a varying
 cell would fold a change in discretization into the answer, and the two are
 not separable.
 
-```{admonition} The shear no longer depends on the grid's parity
+```{admonition} The shear is independent of the grid's parity
 :class: note
 A single hydrogen atom in a cubic cell has an isotropic, shear-free stress by
-symmetry. Before `mandacaru.integrals.poisson.fft_g_squared` symmetrized the
-Nyquist plane of the FFT mesh, an *even* node count picked up a spurious shear
-of a few times `1e-4` eV/Angstrom^3 while an odd one stayed at round-off; the
-cause was the Nyquist mode shared by the spectral kinetic operator and the
-periodic Coulomb kernel, not the real-space sampling. Every grid now gives a
-shear at round-off, on an orthogonal or a skewed cell alike, and because the
-symmetrization is a no-op for an orthogonal cell, no previously computed
-energy moved.
+symmetry, and every grid gives a shear at round-off, on an orthogonal or a
+skewed cell alike, whatever its node count. `mandacaru.integrals.poisson.fft_g_squared`
+symmetrizes the Nyquist plane of the FFT mesh, which is what removes an
+otherwise even/odd-dependent spurious shear (a few times `1e-4` eV/Angstrom^3
+on an even node count against round-off on an odd one): the Nyquist mode is
+shared by the spectral kinetic operator and the periodic Coulomb kernel, so
+the artifact traces to that mode, not to the real-space sampling. The
+symmetrization is a no-op for an orthogonal cell, so it changes no energy
+computed on one.
 ```
 
 ### A supercell gradient, folded to the primitive cell
@@ -316,9 +317,10 @@ runnable, validated reference.
 The same interface handles 2-D and 3-D crystals, and the cell need not be
 orthogonal — hexagonal, monoclinic, FCC, BCC and triclinic lattices all reach
 an energy the same way a cubic one does, only `atoms.pbc`, the cell and the
-k-points change. (A skewed cell used to be refused outright, with
-`ValueError: not commensurate`, before the grid-vs-cell commensurability check
-was fixed to compare the two consistently.) A square lattice of hydrogen:
+k-points change. The grid-vs-cell commensurability check compares the two
+consistently, so a skewed cell is accepted on the same footing as an
+orthogonal one rather than raising `ValueError: not commensurate`. A square
+lattice of hydrogen:
 
 ```python
 square = Atoms("H", positions=[[0.0, 0.0, 0.0]],

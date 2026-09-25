@@ -156,10 +156,13 @@ def pytest_sessionstart(session):
     (A report header would be hidden by the ``-q`` in ``addopts``.)
     """
     from mandacaru.pseudopotentials.environment import (FAMILY_VARIABLES,
+                                                        OPTIONAL_FAMILIES,
                                                         LibraryPathError,
                                                         repository_path)
     missing = []
     for family, variable in FAMILY_VARIABLES.items():
+        if family in OPTIONAL_FAMILIES:
+            continue
         try:
             repository_path(family)
         except LibraryPathError:

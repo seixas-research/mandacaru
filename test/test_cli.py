@@ -58,7 +58,7 @@ class TestLibraryVariables:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("SHELL", "/bin/zsh")
         for variable in ("MANDACARU_PAW_PATH", "MANDACARU_NCPP_PATH",
-                         "MANDACARU_ONCVPSP_PATH"):
+                         "MANDACARU_ONCVPSP_PATH", "MANDACARU_UPAW_PATH"):
             monkeypatch.delenv(variable, raising=False)
         return tmp_path
 
@@ -94,6 +94,20 @@ class TestLibraryVariables:
         capsys.readouterr()
         assert main(["--pseudo-status"]) == 0
         assert capsys.readouterr().out.count("lda/: 1 datasets") == 3
+
+    def test_upaw_is_optional_but_can_be_set(self, home, capsys):
+        for name in ("mandacaru-paw", "mandacaru-ncpp", "mandacaru-oncvpsp"):
+            self._checkout(home, name)
+        assert main(["--set-paw", str(home / "mandacaru-paw"),
+                     "--set-ncpp", str(home / "mandacaru-ncpp"),
+                     "--set-oncvpsp", str(home / "mandacaru-oncvpsp")]) == 0
+        capsys.readouterr()
+        # Unset UPAW: reported as optional, and the status still passes.
+        assert main(["--pseudo-status"]) == 0
+        assert "optional, generated on demand" in capsys.readouterr().out
+        upaw = self._checkout(home, "mandacaru-upaw")
+        assert main(["--set-upaw", str(upaw)]) == 0
+        assert f"MANDACARU_UPAW_PATH={upaw}" in (home / ".zshrc").read_text()
 
     def test_a_missing_directory_writes_nothing(self, home, capsys):
         assert main(["--set-ncpp", str(home / "nowhere")]) == 1

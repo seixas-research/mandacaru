@@ -8,10 +8,10 @@
 
 """Where the pseudopotential libraries live: one environment variable each.
 
-The NCPP, ONCVPSP and PAW-LCAO datasets are not part of the package.  Each
-family lives in a repository of its own (``mandacaru-ncpp``,
-``mandacaru-oncvpsp``, ``mandacaru-paw``), and an environment variable names
-the checkout:
+The NCPP, ONCVPSP, PAW-LCAO and UPAW-LCAO datasets are not part of the
+package.  Each family lives in a repository of its own (``mandacaru-ncpp``,
+``mandacaru-oncvpsp``, ``mandacaru-paw``, ``mandacaru-upaw``), and an
+environment variable names the checkout:
 
 ====================  ==========================  ==========================
 family                variable                    set it with
@@ -19,14 +19,15 @@ family                variable                    set it with
 ``ncpp``              ``MANDACARU_NCPP_PATH``     ``mandacaru --set-ncpp DIR``
 ``oncvpsp``           ``MANDACARU_ONCVPSP_PATH``  ``mandacaru --set-oncvpsp DIR``
 ``paw-lcao``          ``MANDACARU_PAW_PATH``      ``mandacaru --set-paw DIR``
+``upaw-lcao``         ``MANDACARU_UPAW_PATH``     ``mandacaru --set-upaw DIR``
 ====================  ==========================  ==========================
 
 Inside a checkout the datasets sit one directory per exchange-correlation
 functional -- ``<checkout>/lda/<Symbol>.parquet`` today, ``<checkout>/pbe/``
 when there are PBE datasets -- so one repository serves every functional.
-UPAW-LCAO has no repository: it is generated on demand, and a UPAW-LCAO library
-built with ``mandacaru-build --pp UPAW --install`` goes to
-``$MANDACARU_PAW_PATH/upaw-lcao/<xc>/``.
+UPAW-LCAO is the one optional library: without ``MANDACARU_UPAW_PATH`` its
+datasets are generated on demand (a few seconds per element), so an unset
+variable is not an error for it (:data:`OPTIONAL_FAMILIES`).
 
 The variables are read at the moment a dataset is needed, never cached, so a
 calculation that needs a library and cannot find it fails in the
@@ -43,19 +44,21 @@ import os
 #: Family -> the environment variable naming its repository checkout.
 FAMILY_VARIABLES = {"ncpp": "MANDACARU_NCPP_PATH",
                     "oncvpsp": "MANDACARU_ONCVPSP_PATH",
-                    "paw-lcao": "MANDACARU_PAW_PATH"}
+                    "paw-lcao": "MANDACARU_PAW_PATH",
+                    "upaw-lcao": "MANDACARU_UPAW_PATH"}
 #: Family -> the ``mandacaru`` flag that sets its variable.
 SET_FLAGS = {"ncpp": "--set-ncpp", "oncvpsp": "--set-oncvpsp",
-             "paw-lcao": "--set-paw"}
+             "paw-lcao": "--set-paw", "upaw-lcao": "--set-upaw"}
 #: Family -> the repository that holds its datasets.
 REPOSITORIES = {"ncpp": "mandacaru-ncpp", "oncvpsp": "mandacaru-oncvpsp",
-                "paw-lcao": "mandacaru-paw"}
+                "paw-lcao": "mandacaru-paw", "upaw-lcao": "mandacaru-upaw"}
+#: Families that work without their variable: UPAW-LCAO is generated on
+#: demand when there is no library to read.
+OPTIONAL_FAMILIES = ("upaw-lcao",)
 #: Exchange-correlation functionals a checkout may hold a directory for.
 FUNCTIONALS = ("lda", "pbe")
 #: The functional of every dataset loaded without saying which.
 DEFAULT_XC = "lda"
-#: Where a UPAW-LCAO library goes inside the PAW-LCAO checkout.
-UPAW_SUBDIRECTORY = "upaw-lcao"
 
 _DATA_EXTENSIONS = (".parquet", ".pq", ".json")
 
@@ -145,17 +148,18 @@ def library_directory(family: str, xc: str = DEFAULT_XC, directory=None, *,
 
 
 def upaw_directory(xc: str = DEFAULT_XC, directory=None) -> str | None:
-    """The UPAW-LCAO library folder, or ``None`` when there is none to use.
+    """The UPAW-LCAO library folder, ``$MANDACARU_UPAW_PATH/<xc>``, or
+    ``None`` when there is none to use.
 
-    UPAW-LCAO is generated on demand, so an unset ``MANDACARU_PAW_PATH`` is
-    not an error here: it only means there is no library to read from.
+    UPAW-LCAO is generated on demand, so an unset ``MANDACARU_UPAW_PATH`` is
+    not an error here: it only means there is no library to read from.  A
+    set variable that names no directory still is.
     """
     if directory is not None:
         return os.fspath(directory)
-    if not os.environ.get(FAMILY_VARIABLES["paw-lcao"], "").strip():
+    if not os.environ.get(FAMILY_VARIABLES["upaw-lcao"], "").strip():
         return None
-    return os.path.join(repository_path("paw-lcao"), UPAW_SUBDIRECTORY,
-                        _functional(xc))
+    return os.path.join(repository_path("upaw-lcao"), _functional(xc))
 
 
 def dataset_count(folder: str) -> int:
@@ -172,8 +176,10 @@ def status_lines() -> list[str]:
     for key, variable in FAMILY_VARIABLES.items():
         value = os.environ.get(variable, "").strip()
         if not value:
+            optional = ("; optional, generated on demand"
+                        if key in OPTIONAL_FAMILIES else "")
             lines.append(f"{key:<9} {variable} is not set  "
-                         f"(mandacaru {SET_FLAGS[key]} DIR)")
+                         f"(mandacaru {SET_FLAGS[key]} DIR{optional})")
             continue
         try:
             root = repository_path(key)

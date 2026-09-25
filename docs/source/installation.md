@@ -37,10 +37,17 @@ checkout or select the documentation version for your release.
 
 ## Pseudopotential datasets
 
-None of the generated families ships with the package: **NCPP**, **ONCVPSP**
-and **PAW-LCAO** each live in their own repository — about 11 MB, 110 MB and
-190 MB for all 92 elements — and an environment variable names the checkout
-Mandacaru reads from:
+None of the generated families ships with the package: **NCPP**, **ONCVPSP**,
+**PAW-LCAO** and **UPAW-LCAO** each live in their own repository — about 11 MB,
+110 MB and 190 MB for all 92 elements of the first three — and an environment
+variable names the checkout Mandacaru reads from:
+
+| basis | variable | repository |
+| :--- | :--- | :--- |
+| `NCPP` | `MANDACARU_NCPP_PATH` | `mandacaru-ncpp` |
+| `ONCVPSP` | `MANDACARU_ONCVPSP_PATH` | `mandacaru-oncvpsp` |
+| `PAW-LCAO` | `MANDACARU_PAW_PATH` | `mandacaru-paw` |
+| `UPAW-LCAO` | `MANDACARU_UPAW_PATH` | `mandacaru-upaw` (optional) |
 
 ```bash
 git clone https://github.com/seixas-research/mandacaru-ncpp.git
@@ -52,23 +59,28 @@ mandacaru --set-paw mandacaru-paw
 git clone https://github.com/seixas-research/mandacaru-oncvpsp.git
 mandacaru --set-oncvpsp mandacaru-oncvpsp
 
+git clone https://github.com/seixas-research/mandacaru-upaw.git
+mandacaru --set-upaw mandacaru-upaw
+
 mandacaru --pseudo-status        # each variable, where it points, and how many datasets it serves
 ```
 
-Each command writes `export MANDACARU_..._PATH=DIR` into `~/.zshrc` or
-`~/.bashrc` (whichever `$SHELL` reads), asking `[Y/n]` before replacing a
+Each `--set-*` command writes `export MANDACARU_..._PATH=DIR` into `~/.zshrc`
+or `~/.bashrc` (whichever `$SHELL` reads), asking `[Y/n]` before replacing a
 different value; open a new terminal, or `source` the file, for the variable
-to take effect in your shell.
+to take effect in your shell. Inside a checkout the datasets sit one directory
+per exchange-correlation functional (`<checkout>/lda/<Symbol>.parquet` today).
 
 Without this, `basis="NCPP"`, `basis="PAW-LCAO"` and `basis="ONCVPSP"` raise a
 `LibraryPathError` that repeats the matching `--set-*` command; the all-electron
 bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. A
 basis option `directory=...` overrides the variable for one run.
 
-`basis="UPAW-LCAO"` needs nothing either: no library is shipped for it, so a missing
-dataset is generated on demand (a fraction of a second per element) and cached
-for the session. `build_upaw_library()` writes them out if you would rather not
-pay that again.
+`basis="UPAW-LCAO"` needs nothing either: `MANDACARU_UPAW_PATH` is the one
+optional variable, and without it a missing dataset is generated on demand
+(0.4-2.2 s per element, measured) and cached for the session.
+`build_upaw_library()` writes them out into `$MANDACARU_UPAW_PATH/<xc>/` if
+you would rather not pay that again.
 
 ## Numerical backend
 

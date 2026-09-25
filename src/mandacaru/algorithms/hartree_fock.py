@@ -166,7 +166,7 @@ def transform_integrals(h: np.ndarray, eri: np.ndarray,
                         C: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     r"""Rotate ``h`` and physicists'-notation ``eri`` into the basis ``C``.
 
-    ``h_new = C^\dagger h C`` and
+    :math:`h_{\text{new}} = C^\dagger h C` and
     ``eri_new[p,q,r,s] = sum C*_ap C*_bq C_cr C_ds <ab|cd>``.
     """
     h_new = C.conj().T @ h @ C

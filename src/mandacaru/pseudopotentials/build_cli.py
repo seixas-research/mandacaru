@@ -23,8 +23,8 @@ A dataset is written to ``--output`` (default: the current directory, one
 subdirectory per family) at the library stride.  ``--install`` writes into
 Mandacaru's own library for the family instead -- ``<checkout>/<xc>/`` of the
 checkout its environment variable names (``MANDACARU_PAW_PATH``,
-``MANDACARU_ONCVPSP_PATH``, ``MANDACARU_NCPP_PATH``; UPAW-LCAO goes to
-``$MANDACARU_PAW_PATH/upaw-lcao/<xc>/``) -- and so replaces the dataset
+``MANDACARU_ONCVPSP_PATH``, ``MANDACARU_NCPP_PATH``,
+``MANDACARU_UPAW_PATH``) -- and so replaces the dataset
 calculations load; it is never the default.
 
 Each channel is checked after generation: its two lowest levels against the
@@ -142,11 +142,7 @@ def _directory(family: str, output, install: bool, xc: str = "lda") -> str:
     """Where the datasets go; ``--install`` resolves (and validates) the
     family's library variable (:mod:`.environment`)."""
     if install:
-        from .environment import library_directory, repository_path
-        if family == "upaw-lcao":
-            from .paw import upaw_library_path
-            repository_path("paw-lcao")      # the "not set" explanation
-            return upaw_library_path(xc=xc)
+        from .environment import library_directory
         return library_directory(family, xc, must_exist=False)
     return os.path.join(output if output is not None else os.getcwd(), family)
 
