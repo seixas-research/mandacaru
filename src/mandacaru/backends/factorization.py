@@ -57,7 +57,7 @@ The rotations :math:`U_\ell` are realized on hardware by
 :func:`givens_decomposition`: any real orthogonal :math:`M \times M` matrix is a
 product of at most :math:`M(M-1)/2` Givens rotations on **adjacent** modes, and
 under Jordan-Wigner each of those is a two-qubit number-conserving gate on
-neighbouring wires (Clements *et al.*, Optica **3**, 1460, 2016; Kivlichan
+neighboring wires (Clements *et al.*, Optica **3**, 1460, 2016; Kivlichan
 *et al.*, Phys. Rev. Lett. **120**, 110501, 2018).  After the rotation every
 occupation is diagonal, so the leaf's whole contribution is a single
 **diagonal** observable in ``I`` and ``Z`` -- one PUB per leaf, one job for the
@@ -318,8 +318,8 @@ def givens_decomposition(unitary, tol: float = GIVENS_TOLERANCE):
     :math:`\begin{pmatrix}\cos\theta & \sin\theta\\ -\sin\theta &
     \cos\theta\end{pmatrix}` on rows :math:`(p, p+1)`.
 
-    The elimination is the ordinary Givens QR, restricted to **neighbouring**
-    rows so that every rotation is a nearest-neighbour gate under
+    The elimination is the ordinary Givens QR, restricted to **neighboring**
+    rows so that every rotation is a nearest-neighbor gate under
     Jordan-Wigner: column by column, each sub-diagonal entry is zeroed against
     the row above it.  What is left is orthogonal and upper triangular, hence
     diagonal with entries :math:`\pm 1`.

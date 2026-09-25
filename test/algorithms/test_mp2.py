@@ -35,7 +35,9 @@ from mandacaru.core.hamiltonian import molecular_orbital_integrals
 from mandacaru.integrals import Grid
 from mandacaru.algorithms.mp2 import (MIN_DENOMINATOR, fock_matrix,
                                       mp2_amplitudes, mp2_density, mp2_energy,
-                                      mp2_natural_orbitals, rotate_integrals,
+                                      mp2_natural_orbitals,
+                                      open_shell_mp2_natural_orbitals,
+                                      rotate_integrals,
                                       semicanonical_rotation)
 
 
@@ -492,4 +494,224 @@ class TestThePrefactorsAgainstExactPerturbationTheory:
         coefficient = (gamma - reference) / 0.05 ** 2
         right = float(np.max(np.abs(coefficient[n_occ:, n_occ:] - d_vv)))
         doubled = float(np.max(np.abs(coefficient[n_occ:, n_occ:] - 2.0 * d_vv)))
+        assert doubled > 10.0 * right, (right, doubled)
+
+
+# --------------------------------------------------------------------------- #
+# Semicanonicalization of a complex-stored, degenerate Fock matrix.
+# --------------------------------------------------------------------------- #
+
+class TestAComplexStoredFockMatrix:
+    """The MO integrals arrive as complex arrays with ~1e-12 imaginary parts.
+
+    A degenerate pair lets LAPACK return an eigenvector with any complex phase
+    -- ``1j * v`` is as good as ``v`` -- and the real part of ``1j * v`` is
+    zero.  Taking ``np.real`` *after* ``eigh`` therefore produced a rotation
+    with ``|R^T R - 1| ~ 1`` on O2 (degenerate pi orbitals); the cast has to
+    come first.
+    """
+
+    @staticmethod
+    def _degenerate_fock():
+        rng = np.random.default_rng(7)
+        q_occ, _ = np.linalg.qr(rng.normal(size=(3, 3)))
+        q_vir, _ = np.linalg.qr(rng.normal(size=(2, 2)))
+        # Occupied block {-1, -0.5, -0.5}, virtual block {0.3, 0.3}: two pairs.
+        fock = np.zeros((5, 5))
+        fock[:3, :3] = q_occ @ np.diag([-1.0, -0.5, -0.5]) @ q_occ.T
+        fock[3:, 3:] = q_vir @ np.diag([0.3, 0.3]) @ q_vir.T
+        return 0.5 * (fock + fock.T)
+
+    def test_round_off_imaginary_parts_still_give_an_orthogonal_rotation(self):
+        fock = self._degenerate_fock().astype(complex)
+        fock = fock + 1e-12j * (np.triu(np.ones((5, 5)), 1)
+                                - np.tril(np.ones((5, 5)), -1))
+        rotation, energies = semicanonical_rotation(fock, 3)
+        assert rotation.dtype == float
+        assert np.allclose(rotation.T @ rotation, np.eye(5), atol=1e-12)
+        assert np.allclose(energies, [-1.0, -0.5, -0.5, 0.3, 0.3], atol=1e-12)
+
+    def test_a_genuinely_complex_fock_matrix_is_refused(self):
+        fock = self._degenerate_fock().astype(complex)
+        fock[0, 1] += 1e-3j
+        fock[1, 0] -= 1e-3j
+        with pytest.raises(ValueError, match="genuinely complex"):
+            semicanonical_rotation(fock, 3)
+
+
+# --------------------------------------------------------------------------- #
+# Open shells.
+# --------------------------------------------------------------------------- #
+
+def _h3_doublet_integrals():
+    atoms = Atoms("H3", positions=[(0, 0, 0), (0, 0, 0.9), (0, 0, 1.8)])
+    positions = atoms.get_positions()
+    from mandacaru.basis import BasisSet
+
+    bset = BasisSet.build("6-31G")
+    functions, nuclei = [], []
+    for symbol, position in zip(atoms.get_chemical_symbols(), positions):
+        functions += bset.atom(symbol, center=position, units="angstrom")
+        nuclei.append((1.0, position))
+    grid = Grid(center=positions.mean(axis=0), box_size=8.0, h=0.3,
+                units="angstrom")
+    return MolecularIntegrals(nuclei, functions, grid,
+                              softening=0.5 * min(grid.dx, grid.dy, grid.dz))
+
+
+@pytest.fixture(scope="module")
+def h3_doublet():
+    """``(h_mo, eri_mo, (2, 1))`` of linear H3 in the UHF natural orbitals.
+
+    Six spatial orbitals: one doubly occupied, one singly occupied and
+    **four** true virtuals, enough for a ranking to mean something, in a
+    90-determinant sector.
+    """
+    integrals = _h3_doublet_integrals()
+    h_mo, eri_mo, _orbitals = molecular_orbital_integrals(integrals, 3, (2, 1),
+                                                          True)
+    return np.real(h_mo), np.real(eri_mo), (2, 1)
+
+
+class TestOpenShellMP2:
+    def test_it_reduces_to_the_closed_shell_expression(self, h2):
+        h_mo, eri_mo, n_occ = h2
+        closed = mp2_natural_orbitals(h_mo, eri_mo, n_occ)
+        opened = open_shell_mp2_natural_orbitals(h_mo, eri_mo, n_occ, n_occ)
+        assert opened.correlation_energy == pytest.approx(
+            closed.correlation_energy, abs=1e-12)
+        assert np.allclose(opened.virtual_occupations,
+                           closed.virtual_occupations, atol=1e-12)
+        assert np.allclose(opened.occupied_occupations,
+                           closed.occupied_occupations, atol=1e-12)
+
+    def test_the_spin_labels_do_not_matter(self, h3_doublet):
+        h_mo, eri_mo, (na, nb) = h3_doublet
+        forward = open_shell_mp2_natural_orbitals(h_mo, eri_mo, na, nb)
+        backward = open_shell_mp2_natural_orbitals(h_mo, eri_mo, nb, na)
+        assert forward.correlation_energy == pytest.approx(
+            backward.correlation_energy, abs=1e-14)
+        assert np.allclose(forward.occupations, backward.occupations,
+                           atol=1e-14)
+
+    def test_it_never_rotates_an_occupied_orbital(self, h3_doublet):
+        # Doubly and singly occupied alike: the semicanonical rotations mix
+        # them (alpha) and mix the singly occupied one with the virtuals
+        # (beta), and neither may reach the rotation that is returned.
+        h_mo, eri_mo, (na, nb) = h3_doublet
+        result = open_shell_mp2_natural_orbitals(h_mo, eri_mo, na, nb)
+        M = h_mo.shape[0]
+        assert np.allclose(result.rotation[:na, :], np.eye(M)[:na, :],
+                           atol=1e-14)
+        assert np.allclose(result.rotation[:, :na], np.eye(M)[:, :na],
+                           atol=1e-14)
+        assert np.allclose(result.rotation.T @ result.rotation, np.eye(M),
+                           atol=1e-12)
+
+    def test_the_occupations_are_physical_and_sum_to_the_electron_count(
+            self, h3_doublet):
+        h_mo, eri_mo, (na, nb) = h3_doublet
+        result = open_shell_mp2_natural_orbitals(h_mo, eri_mo, na, nb)
+        assert result.correlation_energy < 0.0
+        assert result.occupations.sum() == pytest.approx(na + nb, abs=1e-12)
+        virtual = result.virtual_occupations
+        assert np.all(virtual > 0.0)
+        assert np.all(np.diff(virtual) <= 0.0)
+        assert result.occupied_occupations[0] < 2.0     # doubly occupied
+        # The singly occupied orbital loses alpha and gains beta charge, and
+        # which wins is system-specific (O2 pi*: 1.027, this H3: 0.9993).
+        assert 0.0 < result.occupied_occupations[1] < 2.0
+
+    def test_a_vanishing_gap_is_refused(self, h3_doublet):
+        h_mo, eri_mo, (na, nb) = h3_doublet
+        flat = np.diag(np.full(h_mo.shape[0], -0.5))
+        with pytest.raises(ValueError, match="vanishing gap"):
+            open_shell_mp2_natural_orbitals(flat, np.zeros_like(eri_mo), na,
+                                            nb)
+
+
+class TestOpenShellPrefactorsAgainstExactPerturbationTheory:
+    r"""The coupling-constant limit of the closed-shell class, for an open shell.
+
+    :math:`H_0` is the block-diagonal spin Fock operator -- occupied-occupied
+    and virtual-virtual blocks of :math:`F^\alpha` and :math:`F^\beta` -- which
+    is exactly the semicanonical partition of the module in another basis, and
+    :math:`V = H - H_0` keeps the occupied-virtual Fock elements.  Then
+
+    .. math::
+
+        E(\mu) - \langle\Phi|H(\mu)|\Phi\rangle = \mu^2 E^{(2)} + O(\mu^3),
+        \qquad
+        \gamma_{ab}(\mu) = \mu^2 D^{(2)}_{ab} + O(\mu^3)
+
+    on the true virtuals, from exact diagonalization.  A missing singles term
+    or a wrong spin-case factor leaves a constant residual instead of one that
+    halves with :math:`\mu` (measured ratios 0.47-0.49).
+    """
+
+    @staticmethod
+    def _scaled(h_mo, eri_mo, num_particles, mu):
+        from mandacaru.algorithms.mp2 import spin_fock_matrices
+        from mandacaru.algorithms.rdm import one_rdm
+        from mandacaru.core.hamiltonian import spin_block_integrals
+        from mandacaru.core.mapping import Fermion
+        from mandacaru.core.sector import ParticleSector
+
+        M = h_mo.shape[0]
+        na, nb = num_particles
+        h_zero = np.zeros((2 * M, 2 * M))
+        for spin, (n, fock) in enumerate(
+                zip((na, nb), spin_fock_matrices(h_mo, eri_mo, na, nb))):
+            fock = np.real(fock)
+            block = np.zeros_like(fock)
+            block[:n, :n], block[n:, n:] = fock[:n, :n], fock[n:, n:]
+            h_zero[spin * M:(spin + 1) * M, spin * M:(spin + 1) * M] = block
+        h_so, g_so = spin_block_integrals(mu * h_mo, mu * eri_mo,
+                                          (1.0 - mu) * h_zero)
+        H = Fermion.from_integrals(h_so, g_so)
+        n_modes = H.n_modes()
+        sector = ParticleSector(n_modes, (na, nb), "jordan_wigner")
+        matrix = sector.restrict(
+            H.map_to_qubits("jordan_wigner", n_modes=n_modes)).toarray()
+        reference = int(sum(1 << q for q in
+                            list(range(na)) + [M + p for p in range(nb)]))
+        position = int(sector.positions(np.array([reference]))[0])
+        values, vectors = np.linalg.eigh(matrix)
+        # The state adiabatically connected to the reference determinant.
+        k = int(np.argmax(np.abs(vectors[position, :])))
+        gamma = np.real(one_rdm(vectors[:, k], n_modes, "jordan_wigner",
+                                sector))
+        energy = (values[k] - np.real(matrix[position, position])) / mu ** 2
+        return energy, (gamma[:M, :M] + gamma[M:, M:]) / mu ** 2
+
+    def _module(self, h3_doublet):
+        h_mo, eri_mo, (na, nb) = h3_doublet
+        result = open_shell_mp2_natural_orbitals(h_mo, eri_mo, na, nb)
+        rv = result.rotation[na:, na:]
+        return result, rv @ np.diag(result.virtual_occupations) @ rv.T
+
+    def test_energy_and_density_are_the_mu_squared_coefficients(
+            self, h3_doublet):
+        h_mo, eri_mo, particles = h3_doublet
+        n_high = max(particles)
+        result, d_vv = self._module(h3_doublet)
+        energy_errors, density_errors = [], []
+        for mu in (0.2, 0.1, 0.05):
+            energy, gamma = self._scaled(h_mo, eri_mo, particles, mu)
+            energy_errors.append(abs(energy - result.correlation_energy))
+            density_errors.append(float(np.max(np.abs(
+                gamma[n_high:, n_high:] - d_vv))))
+        for errors in (energy_errors, density_errors):
+            ratios = [errors[i + 1] / errors[i] for i in range(len(errors) - 1)]
+            assert all(0.4 < r < 0.6 for r in ratios), (errors, ratios)
+
+    def test_a_doubled_density_would_not_survive_the_same_limit(
+            self, h3_doublet):
+        h_mo, eri_mo, particles = h3_doublet
+        n_high = max(particles)
+        _result, d_vv = self._module(h3_doublet)
+        _energy, gamma = self._scaled(h_mo, eri_mo, particles, 0.05)
+        block = gamma[n_high:, n_high:]
+        right = float(np.max(np.abs(block - d_vv)))
+        doubled = float(np.max(np.abs(block - 2.0 * d_vv)))
         assert doubled > 10.0 * right, (right, doubled)

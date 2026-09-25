@@ -519,7 +519,7 @@ class TestDispatch:
                   active_orbitals=None, active_selection="energy",
                   active_threshold=None):
             # The active-space keywords are part of the protocol: they are
-            # always passed, so a family that cannot honour a truncation has to
+            # always passed, so a family that cannot honor a truncation has to
             # refuse it rather than quietly return the full register.  Recorded
             # as a mapping, not a positional tuple, so that extending the
             # protocol again does not turn this assertion into a puzzle -- the

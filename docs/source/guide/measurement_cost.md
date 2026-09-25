@@ -189,7 +189,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
 Each rotation $U_\ell$ is realized by a **Givens network**: any real orthogonal
 $M \times M$ matrix is a product of at most $M(M-1)/2$ rotations on *adjacent*
 modes, and under Jordan-Wigner each of those is a two-qubit number-conserving
-gate on neighbouring wires (Clements *et al.*, Optica **3**, 1460, 2016;
+gate on neighboring wires (Clements *et al.*, Optica **3**, 1460, 2016;
 Kivlichan *et al.*, PRL **120**, 110501, 2018). After the rotation every
 occupation is diagonal, so each leaf is one **diagonal** observable in `I` and
 `Z` — `L + 1` PUBs, one job, whatever the register size.

@@ -141,7 +141,12 @@ occupation criterion instead.
   actually occupies*, which is the question an active space is asking, and it
   answers it in a **rotated** virtual basis, so a few orbitals can gather up
   correlation that canonical ordering leaves spread thinly over many. Costs one
-  MP2 calculation in the full virtual space.
+  MP2 calculation in the full virtual space. Open shells (odd electron counts,
+  and any `n_alpha != n_beta`, such as triplet O₂) use the open-shell
+  expression: separate alpha and beta Fock operators of the reference
+  determinant, semicanonicalized per spin, with the singles that a
+  non-stationary reference brings. Only the orbitals empty in both spins are
+  ranked; the singly occupied ones stay occupied.
 
 `"natural"`
 : The occupations of the **reference** natural orbitals. Open-shell references
@@ -219,8 +224,12 @@ reference and is refused for one. The RHF density is idempotent, so its natural
 occupations are exactly 2 and 0 and every ordering of the virtuals is as good as
 every other; returning the energy ordering under another name would be a no-op
 wearing a physical label. Reference natural orbitals do say something for an
-**open-shell (UHF)** reference, and that combination is allowed. For a closed
-shell, `"mp2"` is the selector that actually ranks.
+**open-shell (UHF)** reference, and that combination is allowed. `"mp2"` ranks
+both: it is the selector that actually ranks a closed shell, and for an open
+shell it measures correlation rather than the reference's own spin
+polarization. For triplet O₂ in PAW-LCAO-SZP at the same eight orbitals, the
+MP2-selected space is 278 meV lower in exact energy than the natural or energy
+selection.
 ```
 
 ## Occupied orbitals are ranked by energy, always

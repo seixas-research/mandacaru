@@ -260,7 +260,7 @@ class VariationalDriver(Calculator):
                 "use mapping='parity_reduced'")
         if "output" in calc_kwargs:
             raise TypeError(
-                "output= is now txt= (GPAW's spelling for the same thing): "
+                "output= is now txt=: "
                 "the run log is written with `txt='output.txt'`, and with no "
                 "`txt=` the same blocks go to standard output.")
         Calculator.__init__(self, **calc_kwargs)
@@ -655,14 +655,14 @@ class VariationalDriver(Calculator):
     def ansatz_problem(self, theta=None):
         """``(n_qubits, occupied, generators, theta, hamiltonian)`` of the
         optimized ansatz -- what a provider's ``energy``/``energies`` takes."""
-        from ..circuits.base import is_serializable
+        from ..circuits.base import is_circuit_serializable
 
         ansatz = self.ansatz
-        if not is_serializable(ansatz):
+        if not is_circuit_serializable(ansatz):
             raise TypeError(
-                f"{type(ansatz).__name__} exposes no `pauli_generators` / "
-                "`reference_qubits()` (SerializableAnsatz), so its state cannot "
-                "be exported as a circuit or measured on a provider")
+                f"{type(ansatz).__name__} needs SerializableAnsatz data and "
+                "a provider-compatible generator sequence before its state "
+                "can be exported or measured as a circuit")
         if getattr(ansatz, "preparation", "product") == "sum" \
                 and ansatz.num_parameters > 1:
             raise ValueError(

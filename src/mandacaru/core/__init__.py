@@ -37,6 +37,7 @@ __all__ = [
     "reduce_generators",
     "sector_signs",
     "taper",
+    "SymmetryLeakError",
     "symmetry_generators",
     "MolecularIntegrals",
     "minimal_hao_basis",
@@ -60,5 +61,5 @@ __all__ = [
     "prepare_state",
 ]
 
-from .tapering import (reduce_generators, sector_signs,
+from .tapering import (SymmetryLeakError, reduce_generators, sector_signs,
                        symmetry_generators, taper)

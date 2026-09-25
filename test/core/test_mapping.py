@@ -12,7 +12,28 @@ from mandacaru.core.mapping import (
     jordan_wigner,
     parity,
     parity_reduced,
+    reencode_pauli,
 )
+
+
+@pytest.mark.parametrize("mapping", MAPPINGS)
+def test_reencode_pauli_matches_direct_fermion_mapping(mapping):
+    """A canonical JW string decomposition survives the encoding Clifford."""
+    hopping = (Fermion.creation(0) * Fermion.annihilation(1)
+               + Fermion.creation(1) * Fermion.annihilation(0))
+    density = Fermion.creation(0) * Fermion.annihilation(0)
+    hamiltonian = hopping + density
+    jw = hamiltonian.map_to_qubits("jordan_wigner", n_modes=4)
+    expected = hamiltonian.map_to_qubits(
+        mapping, n_modes=4,
+        num_particles=(1, 1) if mapping == "parity_reduced" else None)
+    actual = reencode_pauli(
+        jw, mapping,
+        num_particles=(1, 1) if mapping == "parity_reduced" else None)
+    labels = set(expected.terms) | set(actual.terms)
+    assert all(abs(expected.terms.get(label, 0j)
+                   - actual.terms.get(label, 0j)) < 1e-10
+               for label in labels)
 
 METHODS = ["jordan_wigner", "parity", "bravyi_kitaev"]
 

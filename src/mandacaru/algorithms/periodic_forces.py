@@ -78,7 +78,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..core.ewald import ewald_forces
-from ..units import from_hartree
+from ..units import BOHR_TO_ANGSTROM, from_hartree
 from .forces import ForceResult
 from .pseudo_forces import (DEFAULT_ALGEBRAIC_STEP, AlgebraicEnergy,
                             spatial_rdms)
@@ -271,7 +271,7 @@ def periodic_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
 
     gradient = hf + pulay
     forces_hartree_bohr = -gradient
-    conversion = from_hartree(1.0, "eV") / 0.52917721092
+    conversion = from_hartree(1.0, "eV") / BOHR_TO_ANGSTROM
     forces = forces_hartree_bohr * conversion
 
     residual = None

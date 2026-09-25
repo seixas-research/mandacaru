@@ -46,7 +46,7 @@ from .hartree_fock import (RHF, RHFResult, UHF, UHFResult, natural_orbitals,
 from .mean_field import MeanFieldResult
 from .subspace import SubspaceADAPTVQEResult, SubspaceVQEResult
 from .base import format_pauli_sum
-from .calculator import (DEFAULT_METHOD, METHODS, STABLE_METHODS, Mandacaru,
+from .calculator import (DEFAULT_METHOD, STABLE_METHODS, Mandacaru,
                          available_methods, experimental_methods,
                          register_method, resolve_method)
 from .forces import ForceResult, hellmann_feynman_gradient, nuclear_gradient
@@ -117,7 +117,6 @@ __all__ = [
     "QubitEstimate",
     "estimate_qubits",
     "count_basis_functions",
-    "METHODS",
     "STABLE_METHODS",
     "DEFAULT_METHOD",
     "available_methods",

@@ -116,7 +116,7 @@ class FamilySpec:
         family does).  They arrived with virtual-orbital truncation: a
         valence-only basis has no core to freeze but plenty of virtual orbitals
         to drop, so unlike ``frozen_core`` this is a request a pseudopotential
-        family has to be able to honour.
+        family has to be able to honor.
     norm_conserving : bool
         Whether the family's projectors leave the basis overlap untouched
         (``True`` for TM/ONCVPSP; PAW-LCAO carries an overlap correction).

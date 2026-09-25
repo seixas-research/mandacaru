@@ -473,7 +473,7 @@ class TestDoubleFactorization:
 # --------------------------------------------------------------------------- #
 
 class TestGivensRotations:
-    """Any real orthogonal ``U`` is a product of nearest-neighbour rotations.
+    """Any real orthogonal ``U`` is a product of nearest-neighbor rotations.
 
     Clements *et al.*, Optica **3**, 1460 (2016); Kivlichan *et al.*, Phys.
     Rev. Lett. **120**, 110501 (2018).  Under Jordan-Wigner each one is a

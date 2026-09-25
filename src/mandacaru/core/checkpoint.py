@@ -310,6 +310,11 @@ class WavefunctionCheckpoint:
         return self.preparation == "product" or len(self.generators) <= 1
 
     def _require_product(self, what: str) -> None:
+        if self.metadata.get("hva", {}).get("evolution") == "exact":
+            raise ValueError(
+                f"{what} cannot compile exact HVA group exponentials as "
+                "generic Pauli rotations; use state_vector() or prepare "
+                "the HVA with evolution='trotter'")
         if not self.is_product:
             raise ValueError(
                 f"{what} needs a product of exponentials, but this checkpoint "

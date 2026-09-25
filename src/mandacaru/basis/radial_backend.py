@@ -17,8 +17,8 @@ compiler, no dependencies), loads it with :mod:`ctypes`, and routes
 
 Every kernel keeps its Python reference implementation, used when the library
 cannot be built and selectable with ``MANDACARU_BACKEND=numpy`` (the switch
-the integral backend already reads).  ``mandacaru-build --backend`` reports
-which one is in use.
+the integral backend already reads).  ``mandacaru-build --build-backend``
+builds the library and reports which one is in use.
 """
 
 from __future__ import annotations

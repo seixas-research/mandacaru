@@ -626,6 +626,55 @@ def two_qubit_reduce(op: PauliSum, n_modes: int,
     return _parity_two_qubit_reduction(op, int(n_modes), tuple(num_particles))
 
 
+def reencode_pauli(operator: PauliSum, mapping: str, *,
+                   num_particles: tuple[int, int] | None = None) -> PauliSum:
+    r"""Conjugate a Jordan-Wigner Pauli sum into another fermionic encoding.
+
+    The occupation-to-register map is the binary basis permutation
+    ``q = beta @ f (mod 2)``.  Under its Clifford unitary, a Pauli string's
+    ``X`` bits transform as ``beta @ x`` and its ``Z`` bits as
+    ``beta**(-T) @ z``.  The phase restores the canonical ``Y = i X Z``
+    convention.  ``parity_reduced`` then evaluates its two fixed parity qubits
+    in the supplied particle-number sector.  Each input Pauli string maps to
+    one output string, so callers can preserve an ordered product formula.
+
+    Parameters
+    ----------
+    operator : PauliSum
+        Operator written in Jordan-Wigner occupation qubits.
+    mapping : str
+        Target encoding: Jordan-Wigner, parity, parity-reduced or
+        Bravyi-Kitaev.
+    num_particles : tuple[int, int], optional
+        Required for parity reduction.
+    """
+    if not isinstance(operator, PauliSum):
+        raise TypeError("operator must be a PauliSum")
+    canonical = resolve_mapping(mapping)
+    n = operator.num_qubits
+    beta = _encoding_matrix(canonical, n)
+    inverse = _gf2_inverse(beta)
+    out: dict[str, complex] = {}
+    for label, coefficient in operator.terms.items():
+        x = np.fromiter((letter in "XY" for letter in label), dtype=np.int8)
+        z = np.fromiter((letter in "ZY" for letter in label), dtype=np.int8)
+        new_x = (beta @ x) % 2
+        new_z = (inverse.T @ z) % 2
+        old_y = int(np.count_nonzero(x & z))
+        new_y = int(np.count_nonzero(new_x & new_z))
+        phase = 1j ** (old_y - new_y)
+        encoded = "".join("Y" if xx and zz else
+                          "X" if xx else "Z" if zz else "I"
+                          for xx, zz in zip(new_x, new_z))
+        out[encoded] = out.get(encoded, 0j) + phase * coefficient
+    mapped = PauliSum(out, num_qubits=n).simplify()
+    if canonical == "parity_reduced":
+        if num_particles is None:
+            raise ValueError("parity_reduced needs num_particles")
+        return two_qubit_reduce(mapped, n, num_particles)
+    return mapped
+
+
 def reference_qubit_bits(method: str, n_modes: int, occupied) -> np.ndarray:
     r"""Qubit bit-string of a Slater determinant under a fermion-to-qubit map.
 

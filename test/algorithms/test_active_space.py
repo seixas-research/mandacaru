@@ -306,11 +306,29 @@ class TestTheSelectors:
                                  active_orbitals=4, selection="natural",
                                  open_shell=False)
 
-    def test_the_mp2_selector_is_refused_for_an_open_shell(self):
-        with pytest.raises(NotImplementedError, match="closed-shell"):
-            resolve_active_space(n_orbitals=8, num_particles=(3, 2),
-                                 active_orbitals=4, selection="mp2",
-                                 open_shell=True)
+    def test_the_mp2_selector_ranks_an_open_shell_by_a_threshold(self):
+        # H3 doublet in its UHF natural orbitals: one doubly and one singly
+        # occupied orbital, four true virtuals.  The threshold alone sets the
+        # width, and the occupied orbitals -- including the singly occupied
+        # one -- are left exactly where they are.
+        from mandacaru.algorithms.mp2 import open_shell_mp2_natural_orbitals
+
+        integrals = _integrals("H3", [(0, 0, 0), (0, 0, 0.9), (0, 0, 1.8)],
+                               "6-31G")
+        h_mo, eri_mo, _orbitals = molecular_orbital_integrals(
+            integrals, 3, (2, 1), True)
+        h_mo, eri_mo = np.real(h_mo), np.real(eri_mo)
+        virtual = open_shell_mp2_natural_orbitals(
+            h_mo, eri_mo, 2, 1).virtual_occupations
+        threshold = 0.5 * (virtual[1] + virtual[2])        # keeps exactly two
+        space = resolve_active_space(h_mo, eri_mo, n_orbitals=6,
+                                    num_particles=(2, 1),
+                                    selection="mp2", threshold=threshold,
+                                    open_shell=True)
+        assert space.active == (0, 1, 2, 3)
+        assert space.deleted == (4, 5)
+        assert np.allclose(space.rotation[:2, :], np.eye(6)[:2, :], atol=1e-14)
+        assert space.correlation_energy < 0.0
 
     def test_the_natural_selector_ranks_an_open_shell_by_occupation(self):
         occupations = np.array([2.0, 1.0, 0.01, 0.40, 0.05])

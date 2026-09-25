@@ -43,6 +43,13 @@ its expectation of `mean_field.qubit_hamiltonian(mapping)` is
 `mean_field.optimal_energy` (converted to Hartree). The full state vector is
 allocated only when requested.
 
+HVA can start from the actual unrestricted determinant without constructing
+that full vector in advance: `Mandacaru(method="hva", reference=mean_field)`
+reuses the mean-field Hamiltonian and prepares the UHF state by spin-resolved
+Givens rotations. The default `as_quantum_problem()` handoff still starts from
+the occupation-ordered natural-orbital determinant. The two starts can have
+different reference energies.
+
 RHF requires equal alpha and beta counts. Classical SCF nuclear forces are not
 yet exposed through these methods because they require self-consistent orbital
 response; the variational-state force expression is not their derivative.
@@ -69,12 +76,26 @@ $$
   |\Phi_{\mathrm{HF}}\rangle .
 $$
 
-Each complete group conserves particle number. `hva_groups=` can supply
-another physical decomposition whose sum is the nonconstant Hamiltonian.
-The local implementation applies each exponential exactly to a sparse state
-vector. Circuit execution and checkpoints are refused until a gate-level
-decomposition for noncommuting terms within each group is defined; silently
-turning a group into individual Pauli rotations would change the ansatz.
+Each complete group conserves particle number. `grouping="body_order"` is the
+default. `grouping="spin_resolved"` splits one-body alpha/beta and two-body
+alpha-alpha/alpha-beta/beta-beta blocks; it requires each term to conserve
+both spin populations. `hva_groups=` supplies an explicit ordered
+decomposition whose sum is the nonconstant Hamiltonian. Every group is
+validated for finite coefficients, Hermiticity, and the symmetries required
+by the selected register.
+
+`evolution="exact"` (the default) applies each full group exponential to a
+local state vector with sparse `expm_multiply`. `evolution="trotter"` compiles
+each group to first- or second-order Pauli-rotation steps. The same ordered
+rotations and **tied group angles** are used by the local objective and the
+Qiskit, Cirq, or Braket circuit providers. A finite-step product formula is a
+different ansatz from the exact group exponential; increasing `steps=` makes
+it converge toward the exact one. The Pauli term order is fixed before the
+fermion-to-qubit encoding, so a fixed-step ansatz has the same physical order
+under each mapping. Circuit export and `execute_circuits=True`
+therefore require `evolution="trotter"`. `shots=` is not an HVA optimization
+option: optimize locally and use `measurement_provider=` or `remeasure()` for
+one budgeted final measurement.
 
 ```python
 atoms.calc = Mandacaru(method="hva", basis="HAO", h=0.35,
@@ -82,7 +103,38 @@ atoms.calc = Mandacaru(method="hva", basis="HAO", h=0.35,
 energy_ev = atoms.get_potential_energy()
 ```
 
+```python
+# A finite-depth circuit-compatible HVA on the same geometry.
+atoms.calc = Mandacaru(method="hva", basis="HAO", h=0.35,
+                       evolution="trotter", order=2, steps=2,
+                       execute_circuits=True, taper=True,
+                       checkpoint="hva.json")
+energy_ev = atoms.get_potential_energy()
+prepared_state = atoms.calc.solver.checkpoint.state_vector()
+```
+
+`taper=True` is available with Jordan–Wigner mapping. It reduces the
+Hamiltonian, **every** HVA group, and the reference with the same Z₂ sector.
+If a custom group changes that sector, the run fails: dropping a fixed group
+would change the ansatz. `parity_reduced` remains a separate mapping and is
+not combined with `taper=True`. An actual UHF reference is tapered only when
+it belongs to one selected symmetry sector and its Givens preparation
+preserves that sector.
+
+Both evolution modes can write and resume wavefunction checkpoints. Exact
+checkpoints reconstruct their state vector and can initialize QPE or Quantum
+Echoes; they do not claim a generic gate circuit for a noncommuting group.
+Product-formula checkpoints contain the compiled rotation sequence and the
+logical group angles, so their state vectors and circuits represent the same
+finite-step state. Resuming checks the Hamiltonian, group order, evolution
+policy, mapping, taper sector, and reference preparation.
+
 The default is two layers. On a real Hamiltonian with a real HF reference,
 every first derivative at the all-zero angles can vanish; HVA starts from
-small nonzero deterministic angles. Some symmetric systems need a second
-layer before the ansatz can lower the HF energy.
+small nonzero deterministic angles (`seed_angle=0.1` by default). Some
+symmetric systems need a second layer before the ansatz can lower the HF
+energy. The Givens circuit path currently requires real UHF orbitals;
+complex unrestricted orbitals are rejected explicitly.
+
+The runnable [H₂ HVA example](../../../examples/37_HVA_H2.py) compares exact
+and circuit-compatible layers and writes its checkpoint under `examples/data/`.

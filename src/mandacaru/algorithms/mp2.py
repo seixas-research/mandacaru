@@ -95,6 +95,19 @@ label that claims otherwise.  Reference natural orbitals do carry information
 for an **open-shell (UHF)** reference, which is why that combination is
 allowed.
 
+Open shells
+-----------
+
+An open-shell Hamiltonian is built in the UHF natural orbitals, and its
+reference fills the lowest ``n_alpha`` of them with alpha electrons and the
+lowest ``n_beta`` with beta ones.
+:func:`open_shell_mp2_natural_orbitals` perturbs exactly that determinant:
+one Fock operator per spin (:func:`spin_fock_matrices`), semicanonicalized
+separately, and -- because the determinant is not a stationary point in this
+basis -- singles alongside the doubles.  Its density is spin-summed and only
+the orbitals empty in *both* spins are ranked.  The closed-shell expressions
+above are its ``n_alpha == n_beta`` limit on a canonical basis.
+
 Semicanonicalization
 --------------------
 
@@ -123,6 +136,33 @@ SEMICANONICAL_TOLERANCE = 1e-8
 #: Below it the perturbation series has no small parameter and the amplitudes
 #: are meaningless rather than merely inaccurate, so they are refused.
 MIN_DENOMINATOR = 1e-6
+
+#: Largest imaginary part (Hartree) read as round-off on integrals that are
+#: meant to be real.  The MO integrals arrive as complex arrays whose imaginary
+#: part is ~1e-12 after the real-orbital recombination; anything larger is a
+#: genuinely complex basis, which the real rotations here cannot represent.
+IMAGINARY_TOLERANCE = 1e-8
+
+
+def _real(array, what: str) -> np.ndarray:
+    """``array`` as a real array, refusing a non-negligible imaginary part.
+
+    Casting has to happen *before* an eigendecomposition, not after it: a
+    Hermitian matrix with a degenerate pair (the two pi orbitals of a linear
+    molecule) lets LAPACK return eigenvectors with any complex phase, e.g.
+    ``1j * v``, and the real part of that is zero rather than ``v``.
+    """
+    array = np.asarray(array)
+    if not np.iscomplexobj(array):
+        return array
+    imaginary = float(np.max(np.abs(array.imag))) if array.size else 0.0
+    if imaginary > IMAGINARY_TOLERANCE:
+        raise ValueError(
+            f"the {what} has an imaginary part of {imaginary:.2e} Ha: the "
+            f"orbitals are genuinely complex, and the MP2 natural orbitals are "
+            f"built as a real rotation.  Use active_selection='energy' for a "
+            f"complex basis.")
+    return np.ascontiguousarray(array.real)
 
 
 @dataclass(frozen=True)
@@ -202,7 +242,7 @@ def semicanonical_rotation(fock: np.ndarray, n_occ: int,
     (as the identity matrix, not as ``None``) together with its diagonal, so
     callers need no special case.
     """
-    fock = np.asarray(fock)
+    fock = _real(fock, "Fock matrix")
     n = fock.shape[0]
     n_occ = int(n_occ)
     blocks = [slice(0, n_occ), slice(n_occ, n)]
@@ -220,7 +260,7 @@ def semicanonical_rotation(fock: np.ndarray, n_occ: int,
         if sub.size == 0:
             continue
         eigenvalues, vectors = np.linalg.eigh(sub)
-        rotation[block, block] = np.real(vectors)
+        rotation[block, block] = vectors
         energies[block] = eigenvalues
     return rotation, energies
 
@@ -359,3 +399,190 @@ def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
                      occupied_occupations=2.0 + np.real(np.diag(d_oo)),
                      virtual_occupations=vir_values,
                      rotation=canonical @ natural)
+
+
+# --------------------------------------------------------------------------- #
+# Open shells.
+# --------------------------------------------------------------------------- #
+
+def spin_fock_matrices(h_mo: np.ndarray, eri_mo: np.ndarray, n_alpha: int,
+                       n_beta: int):
+    r"""``(F_alpha, F_beta)`` of the determinant occupying ``0..n_sigma-1``.
+
+    .. math::
+
+        F^\sigma_{pq} = h_{pq}
+            + \sum_{\tau}\sum_{i \in \tau}^{\rm occ} \langle pi|qi\rangle
+            - \sum_{i \in \sigma}^{\rm occ} \langle pi|iq\rangle ,
+
+    the Fock operators of the spin-restricted determinant that fills the
+    lowest ``n_alpha`` spatial orbitals with alpha electrons and the lowest
+    ``n_beta`` with beta ones -- the reference an open-shell Hamiltonian is
+    built for.  With ``n_alpha == n_beta`` both reduce to :func:`fock_matrix`.
+    """
+    h_mo = np.asarray(h_mo)
+    eri_mo = np.asarray(eri_mo)
+    coulomb = sum(np.einsum("piqi->pq", eri_mo[:, :n, :, :n])
+                  for n in (int(n_alpha), int(n_beta)))
+    matrices = []
+    for n in (int(n_alpha), int(n_beta)):
+        exchange = np.einsum("piiq->pq", eri_mo[:, :n, :n, :])
+        fock = h_mo + coulomb - exchange
+        matrices.append(0.5 * (fock + fock.conj().T))
+    return matrices[0], matrices[1]
+
+
+def _check_denominators(d: np.ndarray, what: str) -> np.ndarray:
+    smallest = float(np.min(np.abs(d))) if d.size else np.inf
+    if smallest < MIN_DENOMINATOR:
+        raise ValueError(
+            f"the smallest open-shell MP2 {what} denominator is "
+            f"{smallest:.3e} Ha: the reference has an (almost) vanishing gap, "
+            f"so the perturbation series has no small parameter and its "
+            f"amplitudes are not an approximation to anything.  Such a system "
+            f"needs a multireference active space chosen by hand "
+            f"(active_orbitals=[...]) rather than by perturbation theory.")
+    return d
+
+
+def _pair_denominators(occ1, occ2, vir1, vir2) -> np.ndarray:
+    """``eps_i + eps_j - eps_a - eps_b`` over ``(i, j, a, b)``."""
+    d = (occ1[:, None, None, None] + occ2[None, :, None, None]
+         - vir1[None, None, :, None] - vir2[None, None, None, :])
+    return _check_denominators(d, "doubles")
+
+
+def _transform(eri, c1, c2, c3, c4) -> np.ndarray:
+    """``<ij|ab>`` with ``i, j, a, b`` the columns of ``c1..c4`` (real)."""
+    return np.einsum("pi,qj,pqrs,ra,sb->ijab", c1, c2, eri, c3, c4,
+                     optimize=True)
+
+
+def open_shell_mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
+                                    n_alpha: int, n_beta: int) -> MP2Result:
+    r"""Open-shell MP2 and the frozen natural orbitals of its virtual density.
+
+    The reference is the determinant the open-shell Hamiltonian is built for:
+    one set of spatial orbitals (the UHF natural orbitals), the lowest
+    ``n_alpha`` filled with alpha electrons and the lowest ``n_beta`` with beta
+    ones.  That is the state the ansatz starts from, so it is the one perturbed
+    -- not the UHF determinant, whose alpha and beta orbitals differ from it.
+
+    **Partition.**  Each spin has its own Fock operator
+    (:func:`spin_fock_matrices`), block-diagonalized separately in that spin's
+    occupied and virtual spaces (:func:`semicanonical_rotation`), and
+    :math:`H_0 = \sum_\sigma \sum_p \varepsilon^\sigma_p n_{p\sigma}` in those
+    semicanonical spin orbitals.  This is the partition of restricted
+    open-shell MP2 (Knowles, Andrews, Amos, Handy and Pople 1991; Lauderdale,
+    Stanton, Gauss, Watts and Bartlett 1991).  The reference is not a
+    Hartree-Fock stationary point in this basis, so the occupied-virtual Fock
+    elements survive in :math:`V = H - H_0` and the first-order wavefunction
+    carries **singles** as well as doubles:
+
+    .. math::
+
+        t_i^a = \frac{f_{ia}}{\varepsilon_i - \varepsilon_a} , \qquad
+        t_{ij}^{ab} = \frac{\langle ij||ab\rangle}
+                           {\varepsilon_i + \varepsilon_j
+                            - \varepsilon_a - \varepsilon_b} ,
+
+    with same-spin pairs antisymmetrized and opposite-spin pairs direct.  With
+    ``n_alpha == n_beta`` on a canonical RHF basis the singles vanish
+    (Brillouin) and everything reduces to :func:`mp2_natural_orbitals`.
+
+    **Density.**  The second-order virtual density of each spin,
+    :math:`D^\sigma_{ab} = \sum_i t_i^a t_i^b
+    + \tfrac12 \sum_{ijc} t_{ij}^{ac} t_{ij}^{bc}` summed over every spin case,
+    is rotated back from its semicanonical basis to the incoming orbitals and
+    the two spins are added.  Only the **true virtuals** -- empty in both
+    spins, indices ``max(n_alpha, n_beta)`` and up -- are ranked: the singly
+    occupied orbitals are virtual for one spin, and excitations into them are
+    in the sums, but they are occupied in the reference and never deleted.
+
+    **Rotation.**  The identity on every occupied orbital (doubly and singly),
+    the eigenvectors of that spin-summed true-virtual block on the rest.  The
+    semicanonical rotations are *not* part of it: they mix doubly with singly
+    occupied orbitals (alpha) and singly occupied orbitals with virtuals
+    (beta), which would change the determinant the ansatz prepares.
+
+    Returns an :class:`MP2Result` whose ``occupied_occupations`` are the
+    reference occupation (2 or 1) plus the diagonal of the second-order
+    density, one per occupied orbital in the incoming order, and whose
+    ``virtual_occupations`` are the true-virtual natural occupations,
+    descending.  Every occupation together sums to the electron count.
+    """
+    h_mo = _real(h_mo, "one-electron integral matrix")
+    eri_mo = _real(eri_mo, "two-electron integral tensor")
+    M = h_mo.shape[0]
+    n_spin = (int(n_alpha), int(n_beta))
+    n_high, n_low = max(n_spin), min(n_spin)
+    if not 0 < n_high < M or n_low < 0:
+        raise ValueError(
+            f"open-shell MP2 needs at least one occupied and one virtual "
+            f"orbital in each spin, got (n_alpha, n_beta) = {n_spin} in {M}")
+
+    # Per spin: semicanonical orbitals (columns, in the incoming basis), their
+    # energies, and the occupied-virtual Fock block in that basis.
+    blocks = []
+    for n, fock in zip(n_spin, spin_fock_matrices(h_mo, eri_mo, *n_spin)):
+        rotation, energies = semicanonical_rotation(fock, n)
+        fock = _real(fock, "Fock matrix")
+        c_occ, c_vir = rotation[:, :n], rotation[:, n:]
+        f_ov = c_occ.T @ fock @ c_vir
+        denominator = _check_denominators(
+            energies[:n, None] - energies[None, n:], "singles")
+        blocks.append({"occ": c_occ, "vir": c_vir, "eps_occ": energies[:n],
+                       "eps_vir": energies[n:], "t1": f_ov / denominator,
+                       "f_ov": f_ov})
+    alpha, beta = blocks
+
+    # Doubles: alpha-alpha and beta-beta antisymmetrized, alpha-beta direct.
+    same = []
+    for s in blocks:
+        g = _transform(eri_mo, s["occ"], s["occ"], s["vir"], s["vir"])
+        anti = g - np.swapaxes(g, 2, 3)
+        d = _pair_denominators(s["eps_occ"], s["eps_occ"],
+                               s["eps_vir"], s["eps_vir"])
+        same.append((anti, anti / d))
+    g_ab = _transform(eri_mo, alpha["occ"], beta["occ"], alpha["vir"],
+                      beta["vir"])
+    t_ab = g_ab / _pair_denominators(alpha["eps_occ"], beta["eps_occ"],
+                                     alpha["eps_vir"], beta["eps_vir"])
+
+    correlation = sum(float(np.sum(s["f_ov"] * s["t1"])) for s in blocks)
+    correlation += sum(0.25 * float(np.sum(anti * t)) for anti, t in same)
+    correlation += float(np.sum(g_ab * t_ab))
+
+    # Second-order density of each spin in its semicanonical blocks.
+    (_, t_aa), (_, t_bb) = same
+    d_vir = [
+        alpha["t1"].T @ alpha["t1"]
+        + 0.5 * np.einsum("ijac,ijbc->ab", t_aa, t_aa, optimize=True)
+        + np.einsum("ijac,ijbc->ab", t_ab, t_ab, optimize=True),
+        beta["t1"].T @ beta["t1"]
+        + 0.5 * np.einsum("ijac,ijbc->ab", t_bb, t_bb, optimize=True)
+        + np.einsum("ijca,ijcb->ab", t_ab, t_ab, optimize=True),
+    ]
+    d_occ = [
+        -(alpha["t1"] @ alpha["t1"].T)
+        - 0.5 * np.einsum("ikab,jkab->ij", t_aa, t_aa, optimize=True)
+        - np.einsum("ikab,jkab->ij", t_ab, t_ab, optimize=True),
+        -(beta["t1"] @ beta["t1"].T)
+        - 0.5 * np.einsum("ikab,jkab->ij", t_bb, t_bb, optimize=True)
+        - np.einsum("kiab,kjab->ij", t_ab, t_ab, optimize=True),
+    ]
+    # Back to the incoming orbitals, spin-summed.
+    gamma = np.zeros((M, M))
+    for s, oo, vv in zip(blocks, d_occ, d_vir):
+        gamma += s["occ"] @ oo @ s["occ"].T + s["vir"] @ vv @ s["vir"].T
+    gamma = 0.5 * (gamma + gamma.T)
+
+    vir_values, vir_vectors = np.linalg.eigh(gamma[n_high:, n_high:])
+    vir_values, vir_vectors = vir_values[::-1], vir_vectors[:, ::-1]
+    natural = np.eye(M)
+    natural[n_high:, n_high:] = vir_vectors
+    reference = np.array([2.0 if p < n_low else 1.0 for p in range(n_high)])
+    return MP2Result(correlation_energy=float(correlation),
+                     occupied_occupations=reference + np.diag(gamma)[:n_high],
+                     virtual_occupations=vir_values,
+                     rotation=natural)

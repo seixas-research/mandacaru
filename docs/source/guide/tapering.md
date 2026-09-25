@@ -32,7 +32,7 @@ not to a tolerance. H₂ in a minimal basis reducing to a *single* qubit is the
 known result for the full Z₂ group, and it is the check that the symmetry finder
 is neither missing symmetries nor inventing them.
 
-LiH matching `parity_reduced` rather than beating it is the expected behaviour,
+LiH matching `parity_reduced` rather than beating it is the expected behavior,
 not a shortfall. The finder reads the symmetries **off the Hamiltonian**, so it
 finds the ones that are there. H₂ has one more than LiH — the spatial parity of a
 homonuclear diatomic — and that is the qubit it gains.

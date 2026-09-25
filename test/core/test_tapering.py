@@ -28,7 +28,8 @@ from ase import Atoms
 from mandacaru.basis import BasisSet
 from mandacaru.core import MolecularIntegrals
 from mandacaru.core.mapping import PauliSum
-from mandacaru.core.tapering import (leaking_terms, reduce_generators,
+from mandacaru.core.tapering import (SymmetryLeakError, leaking_terms,
+                                     reduce_generators,
                                      rotate_to_z_type, sector_signs,
                                      symmetry_generators, symplectic_form,
                                      taper, taper_problem,
@@ -273,8 +274,11 @@ class TestItRefusesToProjectAnOperator:
         reduced, anchors = reduce_generators(symmetry_generators(operator))
         signs = sector_signs(bits, reduced)
         stray = PauliSum({"X" + "I" * (operator.num_qubits - 1): 1 + 0j})
-        with pytest.raises(ValueError, match="do not commute with the Z2"):
+        with pytest.raises(SymmetryLeakError,
+                           match="do not commute with the Z2"):
             taper(stray, reduced, signs, anchors)
+        # Callers that catch ValueError keep working.
+        assert issubclass(SymmetryLeakError, ValueError)
 
     def test_the_hamiltonian_itself_never_leaks(self, h2_split):
         # By construction: the generators were found as the operators commuting

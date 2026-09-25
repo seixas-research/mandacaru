@@ -61,11 +61,11 @@ class Ansatz(Protocol):
 class SerializableAnsatz(Ansatz, Protocol):
     """An :class:`Ansatz` that can also be *described*, not only evaluated.
 
-    Checkpoints, circuit export and provider measurement need the state as
-    data: the generators as Pauli sums and the reference determinant in
-    register terms.  This is **optional** -- an ansatz that only implements
-    :class:`Ansatz` still runs through VQE; it just cannot be checkpointed or
-    exported, and asking for either is refused before the run starts.
+    Checkpoints need the state as data: generators as Pauli sums and the
+    reference determinant in register terms.  Circuit export additionally
+    requires that each generator has a provider-compatible decomposition.
+    ``circuit_serializable=False`` lets an ansatz checkpoint exact products of
+    noncommuting-group exponentials without claiming those groups are gates.
     """
 
     @property
@@ -79,7 +79,12 @@ class SerializableAnsatz(Ansatz, Protocol):
 
 
 def is_serializable(ansatz) -> bool:
-    """Whether ``ansatz`` can be written to a checkpoint / exported as a circuit."""
+    """Whether ``ansatz`` can be described in a wavefunction checkpoint."""
     return (hasattr(ansatz, "pauli_generators")
             and callable(getattr(ansatz, "reference_qubits", None)))
 
+
+def is_circuit_serializable(ansatz) -> bool:
+    """Whether its checkpoint generators can also be emitted as a circuit."""
+    return (is_serializable(ansatz)
+            and bool(getattr(ansatz, "circuit_serializable", True)))

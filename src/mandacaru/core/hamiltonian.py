@@ -937,9 +937,12 @@ def resolve_reference(n_electrons, num_particles=None, open_shell=None):
     """``(n_el, n_alpha, n_beta, open_shell)`` of a mean-field reference.
 
     ``num_particles`` defaults to the lowest spin state (one unpaired electron
-    for an odd count) and ``open_shell`` to "odd count"; ``open_shell=False``
-    with an odd count is refused.  The one place this is decided, for every
-    integral class.
+    for an odd count) and ``open_shell`` to "any unpaired electron", i.e. an odd
+    count **or** ``n_alpha != n_beta``: a triplet O2 has an even count and still
+    needs the UHF natural orbitals, because RHF orbitals are optimized for the
+    singlet and put the (7, 5) determinant eV above its open-shell reference.
+    ``open_shell=False`` with an odd count is refused.  The one place this is
+    decided, for every integral class.
     """
     if n_electrons is None:
         raise ValueError("mo_basis=True requires n_electrons")
@@ -953,7 +956,7 @@ def resolve_reference(n_electrons, num_particles=None, open_shell=None):
             f"num_particles {num_particles} does not sum to "
             f"n_electrons={n_el}")
     if open_shell is None:
-        open_shell = n_el % 2 == 1
+        open_shell = n_el % 2 == 1 or na != nb
     if not open_shell and n_el % 2:
         raise ValueError(
             "open_shell=False (closed-shell RHF) needs an even "

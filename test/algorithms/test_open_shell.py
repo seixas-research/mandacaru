@@ -157,6 +157,21 @@ class TestOpenShellHamiltonian:
         assert rhf.map_to_qubits().to_matrix() == pytest.approx(
             forced.map_to_qubits().to_matrix())
 
+    def test_unpaired_spins_with_an_even_count_build_in_the_no_basis(self, h3):
+        # A triplet (O2 is the case that found this) has an even count and
+        # still needs the UHF natural orbitals: RHF orbitals are the singlet's.
+        default = h3.molecular_hamiltonian(mo_basis=True, n_electrons=2,
+                                           num_particles=(2, 0))
+        forced = h3.molecular_hamiltonian(mo_basis=True, n_electrons=2,
+                                          num_particles=(2, 0),
+                                          open_shell=True)
+        rhf = h3.molecular_hamiltonian(mo_basis=True, n_electrons=2,
+                                       num_particles=(2, 0),
+                                       open_shell=False)
+        matrix = default.map_to_qubits().to_matrix()
+        assert matrix == pytest.approx(forced.map_to_qubits().to_matrix())
+        assert not np.allclose(matrix, rhf.map_to_qubits().to_matrix())
+
     def test_quartet_reference(self, h3):
         H = h3.molecular_hamiltonian(mo_basis=True, n_electrons=3,
                                      num_particles=(3, 0))

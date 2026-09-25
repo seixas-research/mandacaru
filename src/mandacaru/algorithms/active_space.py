@@ -60,7 +60,9 @@ For the virtuals there are three rankings:
     wavefunction actually occupy", which is the question an active space is
     asking, and it answers it in a *rotated* virtual basis, so a few orbitals
     can gather up correlation that canonical ordering leaves spread thinly over
-    many.  Costs one MP2 calculation in the full virtual space.
+    many.  Costs one MP2 calculation in the full virtual space.  An open shell
+    uses :func:`~mandacaru.algorithms.mp2.open_shell_mp2_natural_orbitals`,
+    which ranks only the orbitals empty in both spins.
 ``"natural"``
     The occupations of the **reference** natural orbitals.  Meaningful only for
     an open-shell (UHF) reference.  For a closed-shell RHF reference the density
@@ -311,23 +313,30 @@ def _resolve_counts(active_orbitals, n_doubly: int, n_singly: int,
 
 def _virtual_ranking(selection: str, h_mo, eri_mo, n_doubly: int,
                      first_virtual: int, n_orbitals: int,
-                     reference_occupations=None):
+                     reference_occupations=None, open_shell: bool = False):
     """``(rotation, occupations, correlation_energy)`` ranking the virtuals.
 
     ``rotation`` is ``None`` when canonical order is already the ranking.
     ``occupations`` covers every orbital of the rotated basis, or is ``None``
-    when the ranking is by orbital energy.
+    when the ranking is by orbital energy.  ``open_shell`` selects the
+    open-shell MP2 expression for ``"mp2"``.
     """
     if selection == "energy":
         return None, None, None
 
     if selection == "mp2":
-        from .mp2 import mp2_natural_orbitals
+        from .mp2 import mp2_natural_orbitals, open_shell_mp2_natural_orbitals
 
-        # MP2 is a closed-shell expression here, so the reference it perturbs is
-        # the doubly occupied one.  An open shell reaches this only through the
-        # refusal in `resolve_active_space`.
-        result = mp2_natural_orbitals(h_mo, eri_mo, n_doubly)
+        # An open-shell Hamiltonian is built in the UHF natural orbitals, which
+        # do not diagonalize any Fock matrix, and its reference may have singly
+        # occupied orbitals: the open-shell expression perturbs that determinant
+        # and never rotates its occupied orbitals.  The alpha/beta labels do not
+        # matter to a spin-summed density, so the larger count goes first.
+        if open_shell:
+            result = open_shell_mp2_natural_orbitals(h_mo, eri_mo,
+                                                     first_virtual, n_doubly)
+        else:
+            result = mp2_natural_orbitals(h_mo, eri_mo, n_doubly)
         occupations = np.concatenate([result.occupied_occupations,
                                       result.virtual_occupations])
         return result.rotation, occupations, result.correlation_energy
@@ -429,13 +438,6 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
             "active_selection='mp2', which ranks the virtuals by the charge "
             "second-order correlation actually puts in them, or "
             "'energy' if the canonical order is what you meant.")
-    if selection == "mp2" and open_shell:
-        raise NotImplementedError(
-            "active_selection='mp2' is a closed-shell (RMP2) expression and "
-            "this reference is open-shell: the amplitudes would be formed from "
-            "a doubly occupied reference the calculation does not have.  Use "
-            "active_selection='natural', which reads the UHF natural "
-            "occupations the open-shell Hamiltonian is already built in.")
 
     # -- explicit index list ------------------------------------------------ #
     if isinstance(active_orbitals, (list, tuple, set, frozenset, np.ndarray)):
@@ -477,7 +479,7 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
     # -- the selector ranks, then the criteria cut -------------------------- #
     rotation, occupations, correlation = _virtual_ranking(
         selection, h_mo, eri_mo, n_doubly, first_virtual, M,
-        reference_occupations)
+        reference_occupations, open_shell=open_shell)
     if active_orbitals is None:
         # A threshold on its own is a complete criterion: it names how many
         # virtual orbitals are worth keeping, so no count is needed.

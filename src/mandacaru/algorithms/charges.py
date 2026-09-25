@@ -209,7 +209,7 @@ def hirshfeld_weights(grid, positions, numbers, valence=False) -> np.ndarray:
     return weights
 
 
-#: Offsets of the 26 neighbours of a grid node.
+#: Offsets of the 26 neighbors of a grid node.
 _NEIGHBORS = tuple((i, j, k)
                    for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)
                    if (i, j, k) != (0, 0, 0))
@@ -222,9 +222,9 @@ BADER_TIE = 1.0e-9
 
 
 def _ascent(grid, density):
-    """``(best_slope, pointer)``: the steepest uphill neighbour of every node.
+    """``(best_slope, pointer)``: the steepest uphill neighbor of every node.
 
-    ``pointer`` is the flat index of that neighbour, or the node itself when
+    ``pointer`` is the flat index of that neighbor, or the node itself when
     nothing around it is higher.  ``best_slope`` is the rise per unit distance
     it achieves, which :func:`bader_weights` reuses to find the ties.
     """
@@ -237,7 +237,7 @@ def _ascent(grid, density):
     pointer = flat.copy()
     for offset in _NEIGHBORS:
         # np.roll is periodic; the molecular box has ~zero density at its
-        # faces, and a wrapped neighbour there cannot out-climb the interior.
+        # faces, and a wrapped neighbor there cannot out-climb the interior.
         shifted = np.roll(density, shift=[-o for o in offset], axis=(0, 1, 2))
         neighbor = np.roll(flat, shift=[-o for o in offset], axis=(0, 1, 2))
         distance = float(np.linalg.norm(step @ np.asarray(offset, dtype=float)))
@@ -251,10 +251,10 @@ def _ascent(grid, density):
 def bader_basins(grid, density) -> np.ndarray:
     """Basin label of every grid node, by on-grid steepest ascent.
 
-    Each node points at the neighbour with the largest density *rise per unit
-    distance* -- the discrete gradient, so a diagonal neighbour is not
-    favoured just for being further away -- and a node with no uphill
-    neighbour points at itself and is a maximum.  Following the pointers by
+    Each node points at the neighbor with the largest density *rise per unit
+    distance* -- the discrete gradient, so a diagonal neighbor is not
+    favored just for being further away -- and a node with no uphill
+    neighbor points at itself and is a maximum.  Following the pointers by
     repeated squaring (:math:`p \\leftarrow p[p]`) resolves every node to its
     maximum in :math:`O(\\log N)` passes rather than by walking each path.
 
@@ -296,10 +296,10 @@ def bader_weights(grid, density, positions) -> np.ndarray:
     owner = lookup[basins]
 
     # Fractional weights on the separatrix.  A node whose steepest ascent is a
-    # tie sits on the boundary between the basins its tied neighbours belong
+    # tie sits on the boundary between the basins its tied neighbors belong
     # to, and giving it wholly to the first of them is the same discretization
     # charge the Voronoi tie-break had: it charges H2 by 0.16 e at some grid
-    # spacings.  A node with one best neighbour is unaffected -- the split
+    # spacings.  A node with one best neighbor is unaffected -- the split
     # reproduces the hard assignment exactly.
     density = np.asarray(density, dtype=float)
     best_slope, _pointer = _ascent(grid, density)
@@ -321,7 +321,7 @@ def bader_weights(grid, density, positions) -> np.ndarray:
     n_atoms = len(positions)
     weights = np.zeros((n_atoms,) + tuple(grid.shape), dtype=float)
     fraction = np.where(shares > 0, 1.0 / np.maximum(shares, 1.0), 0.0)
-    # A local maximum has no uphill neighbour at all and keeps itself.
+    # A local maximum has no uphill neighbor at all and keeps itself.
     alone = shares == 0
     for index in range(n_atoms):
         weights[index] += alone & (owner == index)

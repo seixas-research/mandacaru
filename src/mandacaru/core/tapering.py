@@ -71,6 +71,10 @@ from .mapping import PauliSum
 TAPER_ATOL = 1e-12
 
 
+class SymmetryLeakError(ValueError):
+    """An operator does not commute with the Z2 symmetries being tapered."""
+
+
 def symplectic_form(operator: PauliSum) -> tuple[np.ndarray, np.ndarray]:
     """``(X, Z)`` support matrices of ``operator``'s terms, one row per term.
 
@@ -279,7 +283,7 @@ def taper(operator: PauliSum, generators, signs, anchors=None,
 
     Raises
     ------
-    ValueError
+    SymmetryLeakError
         If ``operator`` has a term that does not commute with a generator.
         Tapering it would return its projection instead, silently.
     """
@@ -293,7 +297,7 @@ def taper(operator: PauliSum, generators, signs, anchors=None,
 
     leaks = leaking_terms(operator, generators)
     if leaks:
-        raise ValueError(
+        raise SymmetryLeakError(
             f"{len(leaks)} term(s) of this operator do not commute with the "
             f"Z2 symmetries, the first being {leaks[0]!r}.  Deleting a qubit "
             f"would replace the operator by its projection, and "

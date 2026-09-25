@@ -118,7 +118,7 @@ df.to_csv("lih_dissociation.csv", index=False)
 
 **VQE.** The variational quantum eigensolver prepares a parameterized state |ψ(θ)⟩ = U(θ)|Φ<sub>HF</sub>⟩ on a quantum processor, measures the energy ⟨ψ(θ)|H|ψ(θ)⟩, and lets a classical optimizer update θ to minimize it. By the variational principle the minimum is an upper bound to the ground-state energy, reached exactly when the ansatz can represent the ground state. Mandacaru starts from the Hartree–Fock determinant in the molecular-orbital basis; the fixed ansatz of `method="vqe"` is UCCSD.
 
-**HVA.** `method="hva"` uses VQE optimization with fixed, ordered exponentials of the Hamiltonian's one- and two-body groups. Two layers are the default; `hva_groups=` accepts another physical decomposition. It currently evaluates exact local state vectors.
+**HVA.** `method="hva"` uses VQE optimization with fixed, ordered Hamiltonian-group layers. It supports exact local evolution and explicit first- or second-order product-formula circuits (`evolution="trotter"`), checkpoint/resume, Z₂ tapering, spin-resolved grouping, and actual UHF Slater references. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html) for the distinct exact and finite-step states.
 
 
 **ADAPT-VQE.** ADAPT-VQE builds the ansatz during the calculation instead of fixing it in advance. At each iteration it evaluates the energy gradient ⟨ψ|[H, A<sub>k</sub>]|ψ⟩ of every generator A<sub>k</sub> in an operator pool, appends exp(θ<sub>k</sub>A<sub>k</sub>) for the largest one, and re-optimizes all parameters. It stops when every gradient falls below `gradient_tolerance`, producing compact circuits tailored to the molecule.

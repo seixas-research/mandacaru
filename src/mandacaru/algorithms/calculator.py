@@ -76,7 +76,7 @@ import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
 
 from .bloch import BLOCH_METHODS
-from ..units import DEFAULT_GRID_SPACING
+from ..units import BOHR_TO_ANGSTROM, DEFAULT_GRID_SPACING
 
 if TYPE_CHECKING:
     from .forces import ForceResult
@@ -90,9 +90,6 @@ DEFAULT_METHOD = "adapt-vqe"
 STABLE_METHODS = ("rhf", "uhf", "vqe", "hva", "adapt-vqe",
                   "subspace-vqe", "subspace-adapt-vqe",
                   *BLOCH_METHODS)
-
-#: Kept as the historical name of the stable list.
-METHODS = STABLE_METHODS
 
 # Methods registered by packages outside the stable API (see
 # :func:`register_method`); nothing here names them.
@@ -503,6 +500,10 @@ class Mandacaru(Calculator):
         if self.method in ("rhf", "uhf") and measurement_provider is not None:
             raise ValueError("classical RHF/UHF has no quantum state to measure; "
                              "omit measurement_provider=")
+        if self.method == "hva" and measurement_provider is not None \
+                and solver_kwargs.get("evolution", "exact") != "trotter":
+            raise ValueError("HVA circuit measurement requires "
+                             "evolution='trotter'")
         self.basis = basis
         self.h = float(h)
         self.include_pulay = bool(include_pulay)
@@ -2214,7 +2215,7 @@ class Mandacaru(Calculator):
             build, integrals.cell,
             strain=DEFAULT_STRAIN if strain is None else float(strain))
         # Hartree/Bohr^3 -> eV/Angstrom^3.
-        tensor = tensor * from_hartree(1.0, "eV") / 0.52917721092 ** 3
+        tensor = tensor * from_hartree(1.0, "eV") / BOHR_TO_ANGSTROM ** 3
         self.results["stress"] = (np.array([tensor[a, b] for a, b in VOIGT])
                                   if voigt else tensor)
         return self.results["stress"]

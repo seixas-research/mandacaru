@@ -437,6 +437,8 @@ class VQE(DeflationMixin, VariationalDriver):
               f"initial state: {self.initial_state}")
         print(f"backend provider: {self.backend_provider}  |  circuit execution: "
               f"{self.execute_circuits}  |  quenching: {self.quenching}")
+        for detail in self._ansatz_details():
+            print(detail)
         print(rule)
         n_terms = len(self.hamiltonian.simplify().terms)
         print(f"Qubit Hamiltonian: {n_terms} Pauli terms")
@@ -444,6 +446,10 @@ class VQE(DeflationMixin, VariationalDriver):
               f"{self._to_energy_units(ref_energy):+.8f} "
               f"{self._energy_unit_label()}")
         print(rule)
+
+    def _ansatz_details(self) -> tuple[str, ...]:
+        """Method-specific configuration lines inside the shared VQE header."""
+        return ()
 
     def _print_summary(self, result: VQEResult,
                        timings: Timings | None = None) -> None:
