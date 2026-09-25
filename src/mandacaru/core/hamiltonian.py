@@ -34,6 +34,7 @@ Conventions (atomic units, Hartree):
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import warnings
 
@@ -43,6 +44,9 @@ from ..basis import HydrogenicAtomicOrbital
 from ..integrals import Grid, IntegralEngine, Potentials
 from ..units import to_bohr
 from .mapping import Fermion
+
+if TYPE_CHECKING:
+    from ..algorithms.hartree_fock import RHFResult, UHFResult
 
 #: Smallest overlap eigenvalue the Loewdin transform accepts.
 OVERLAP_EIGENVALUE_FLOOR = 1e-10
@@ -67,16 +71,22 @@ class MeanFieldMixin:
     """Hartree-Fock on the ``one_body()`` / ``two_body()`` of an integral class
     whose basis is orthonormal (Löwdin-orthogonalized orbitals, plane waves)."""
 
-    def hartree_fock(self, n_electrons: int):
+    def hartree_fock(self, n_electrons: int) -> RHFResult:
         """Restricted Hartree-Fock in the orthonormal spatial basis.
 
         Returns an :class:`~mandacaru.algorithms.hartree_fock.RHFResult` with the
         MO coefficients, orbital energies and MO-basis integrals.
         """
         from ..algorithms.hartree_fock import RHF
-        return RHF(self.one_body(), self.two_body(), n_electrons).run()
+        cached = getattr(self, "_last_rhf_result", None)
+        if cached is not None and cached[0] == int(n_electrons):
+            return cached[1]
+        result = RHF(self.one_body(), self.two_body(), n_electrons).run()
+        self._last_rhf_result = (int(n_electrons), result)
+        return result
 
-    def open_shell_hartree_fock(self, n_alpha: int, n_beta: int):
+    def open_shell_hartree_fock(self, n_alpha: int,
+                               n_beta: int) -> UHFResult:
         """Unrestricted Hartree-Fock for ``(n_alpha, n_beta)`` electrons.
 
         Returns an :class:`~mandacaru.algorithms.hartree_fock.UHFResult` whose
@@ -86,7 +96,13 @@ class MeanFieldMixin:
         handled.
         """
         from ..algorithms.hartree_fock import UHF
-        return UHF(self.one_body(), self.two_body(), n_alpha, n_beta).solve()
+        particles = (int(n_alpha), int(n_beta))
+        cached = getattr(self, "_last_uhf_result", None)
+        if cached is not None and cached[0] == particles:
+            return cached[1]
+        result = UHF(self.one_body(), self.two_body(), n_alpha, n_beta).solve()
+        self._last_uhf_result = ((int(n_alpha), int(n_beta)), result)
+        return result
 
 
 class MolecularIntegrals(MeanFieldMixin):
@@ -737,6 +753,13 @@ class MolecularIntegrals(MeanFieldMixin):
         H = Fermion.from_integrals(h_so, g_so)
         const = core_energy + self.constant_energy + (
             self.nuclear_repulsion if include_nuclear_repulsion else 0.0)
+        if mo_basis and space is not None and space.deleted:
+            # Reuse the *reduced* integrals for finite-difference forces.  They
+            # already contain the frozen-core potential and the selected virtual
+            # space, before mapping and optional Z2 tapering.
+            self.active_h_so = h_so
+            self.active_g_so = g_so
+            self.active_constant = float(np.real(const))
         if abs(const) > 1e-14:
             H = H + Fermion({(): complex(const)}, n_modes=h_so.shape[0])
         return H
@@ -1140,4 +1163,3 @@ def minimal_hao_basis(nuclei, grid_units: str = "angstrom"):
         basis.append(HydrogenicAtomicOrbital(1, 0, 0, Z=z_eff, center=R,
                                        units=grid_units))
     return basis
-

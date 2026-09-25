@@ -396,6 +396,21 @@ class TaperedRegister:
         """
         return taper(operator, self.symmetries, self.signs, self.anchors)
 
+    def taper_observable(self, operator: PauliSum) -> PauliSum:
+        r"""Project an observable into this sector, then taper it.
+
+        A symmetry-changing Pauli term has zero expectation in every state of
+        this sector.  Removing such terms is therefore exact for an observable,
+        even though it would be incorrect for an ansatz generator (whose
+        exponential may leave and re-enter the sector).  The surviving terms
+        use the Hamiltonian's Clifford, anchors, and sector signs.
+        """
+        bad = set(leaking_terms(operator, self.symmetries))
+        projected = PauliSum(
+            {label: coefficient for label, coefficient in operator.terms.items()
+             if label not in bad}, num_qubits=operator.num_qubits)
+        return self.taper_operator(projected)
+
     def summary(self) -> str:
         """One line for the run log."""
         line = (f"{self.removed} qubit(s) removed by Z2 symmetry "

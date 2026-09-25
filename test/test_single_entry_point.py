@@ -22,9 +22,10 @@ from mandacaru import Mandacaru
 REPO = pathlib.Path(__file__).resolve().parents[1]
 # ``BlochCalculator`` was public until the periodic driver moved behind the
 # entry point; it is listed here so the sweep fails if it ever comes back.
-SOLVER_CLASSES = ("VQE", "ADAPTVQE", "SubspaceVQE", "SubspaceADAPTVQE",
-                  "BlochCalculator")
-METHODS = {"vqe": "VQE", "adapt-vqe": "ADAPTVQE", "subspace-vqe": "SubspaceVQE",
+SOLVER_CLASSES = ("RHFDriver", "UHFDriver", "HVA", "VQE", "ADAPTVQE",
+                  "SubspaceVQE", "SubspaceADAPTVQE", "BlochCalculator")
+METHODS = {"rhf": "RHFDriver", "uhf": "UHFDriver", "hva": "HVA",
+           "vqe": "VQE", "adapt-vqe": "ADAPTVQE", "subspace-vqe": "SubspaceVQE",
            "subspace-adapt-vqe": "SubspaceADAPTVQE",
            "bloch-vqe": "BlochVQE", "bloch-adapt-vqe": "BlochADAPTVQE"}
 

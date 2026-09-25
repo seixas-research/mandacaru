@@ -49,9 +49,14 @@ spin-orbital basis as the Hamiltonian.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 
-from ..core.mapping import Fermion
+from ..core.mapping import Fermion, PauliSum
+
+if TYPE_CHECKING:
+    from ..core.tapering import TaperedRegister
 
 
 def _ladder_operators(n_modes: int, mapping: str):
@@ -224,7 +229,11 @@ MAX_PAULI_RDM_MODES = 25
 
 
 def rdm_qubit_operators(n_modes: int, mapping: str = "jordan_wigner",
-                        num_particles=None):
+                        num_particles: tuple[int, int] | None = None,
+                        taper_info: TaperedRegister | None = None,
+                        two_body: bool = True
+                        ) -> tuple[dict[tuple[int, int], PauliSum],
+                                   dict[tuple[int, int, int, int], PauliSum]]:
     r"""Qubit operators of the spin-conserving RDM elements.
 
     Returns ``(ones, twos)``: ``{(p, q): PauliSum}`` for
@@ -236,6 +245,11 @@ def rdm_qubit_operators(n_modes: int, mapping: str = "jordan_wigner",
     only those operators survive the tapering.  Their expectation values
     determine the RDMs -- which is how a tapered register, or a state measured
     on a processor, yields forces.
+
+    ``taper_info`` projects each observable into the Z2 sector and applies the
+    same Clifford used for the Hamiltonian.  Symmetry-changing terms have zero
+    expectation in that sector, including when the observable is non-Hermitian.
+    ``two_body=False`` builds only the one-body observables for density paths.
     """
     n_modes = int(n_modes)
     if n_modes > MAX_PAULI_RDM_MODES:
@@ -245,15 +259,17 @@ def rdm_qubit_operators(n_modes: int, mapping: str = "jordan_wigner",
     half = n_modes // 2
 
     def qubit(term):
-        return Fermion({term: 1.0}, n_modes=n_modes).map_to_qubits(
+        operator = Fermion({term: 1.0}, n_modes=n_modes).map_to_qubits(
             mapping, n_modes=n_modes, num_particles=num_particles)
+        return (operator if taper_info is None
+                else taper_info.taper_observable(operator))
 
     beta = [int(p >= half) for p in range(n_modes)]
     ones = {(p, q): qubit(((p, True), (q, False)))
             for p in range(n_modes) for q in range(n_modes)
             if beta[p] == beta[q]}
     twos = {}
-    for p in range(n_modes):
+    for p in range(n_modes) if two_body else ():
         for q in range(n_modes):
             if p == q:
                 continue

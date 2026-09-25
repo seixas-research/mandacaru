@@ -242,16 +242,20 @@ approximation than removing a virtual one, and it belongs to an explicit request
 automatic selector. This is the classic frozen-natural-orbital scheme, and it is
 deliberately the conservative half of it.
 
-## What it refuses
+## Forces and remaining limits
 
-**Nuclear forces and the stress tensor.** Deleting a virtual orbital is exact
-for the energy at a fixed geometry, but the *selection* moves with the nuclei:
-which orbitals are kept, and for `"mp2"` the rotation that defines them, both
-depend on the geometry, and that dependence is a response term the
-Hellmann-Feynman and Pulay sums do not contain. The gradient would be the
-derivative of a different energy than the one reported, which is worse than not
-having it. Use the full virtual space for a relaxation, or a frozen core alone,
-whose orbitals are fixed by the reference.
+**Nuclear forces.** Molecular PAW-LCAO and other atom-centered bases support
+forces with a reduced active space. The force path rebuilds the reduced
+Hamiltonian on the same frozen grid at symmetric nuclear displacements and
+contracts it with the converged active-space RDMs. This includes the motion of
+the selected orbitals, any MP2 or natural-orbital rotation, and the frozen-core
+constant. The displaced orbitals are aligned to the original orbital gauge
+before contraction. This costs two integral and SCF builds per Cartesian
+coordinate, without additional VQE optimizations or hardware jobs. It requires
+`force_method="rdm"` and `include_pulay=True`.
+
+**Periodic stress and periodic active-space forces.** These remain unavailable
+with deleted virtual orbitals.
 
 **The plane-wave basis.** There the register *is* the cutoff, which
 `energy_cutoff` sets; truncating the mean-field orbitals on top of it would be a

@@ -324,6 +324,26 @@ class TestTaperingAnOperatorAfterwards:
         with pytest.raises(ValueError, match="do not commute"):
             info.taper_operator(stray)
 
+    def test_observable_projection_drops_only_symmetry_changing_terms(
+            self, lih_minimal):
+        """A sector observable may be projected; a pool generator may not."""
+        operator, bits = lih_minimal
+        info = taper_problem(operator, [], bits)
+        commuting = next(label for label in operator.terms
+                         if set(label) != {"I"})
+        leaking = next("".join("X" if q == index else "I"
+                               for q in range(operator.num_qubits))
+                       for index in range(operator.num_qubits)
+                       if leaking_terms(PauliSum({"".join(
+                           "X" if q == index else "I"
+                           for q in range(operator.num_qubits)): 1}),
+                           info.symmetries))
+        mixed = PauliSum({commuting: 2.0, leaking: 3.0})
+        projected = info.taper_observable(mixed)
+        expected = info.taper_operator(PauliSum({commuting: 2.0}))
+        assert projected.num_qubits == info.n_qubits
+        assert projected.terms == pytest.approx(expected.terms)
+
 
 class TestTheReferenceState:
     def test_the_signs_are_plus_or_minus_one(self, lih_minimal):
@@ -457,18 +477,32 @@ class TestWhatItRefuses:
         with pytest.raises(ValueError, match="needs mapping='jordan_wigner'"):
             Mandacaru(basis="HAO", taper=True, mapping=mapping)
 
-    @pytest.mark.parametrize("what", ["forces", "charges", "density"])
-    def test_everything_built_on_an_rdm_is_refused(self, what):
-        # Reading an RDM off a tapered register would give a plausible density
-        # that is not the state's: a ladder operator there is not the ladder
-        # operator of any spin-orbital.
-        atoms, _energy, _solver = _run("H2", [(0, 0, 0), (0, 0, 0.74)],
-                                       "STO-3G", (8., 8., 8.), taper=True)
-        call = {"forces": atoms.get_forces,
-                "charges": atoms.calc.get_charges,
-                "density": lambda: atoms.calc.volumetric_field("density")}[what]
-        with pytest.raises(NotImplementedError, match="Z2-tapered register"):
-            call()
+    def test_tapered_rdms_reproduce_untapered_density_and_forces(self):
+        """The original ladder observables are mapped through the same taper."""
+        args = ("H2", [(0, 0, 0), (0, 0, 0.74)], "STO-3G", (8., 8., 8.))
+        plain, _energy, _solver = _run(*args)
+        tapered, _energy, _solver = _run(*args, taper=True)
+        for atoms in (plain, tapered):
+            atoms.get_forces()
+        assert np.allclose(tapered.calc._state_rdms(tapered.calc.solver)[0],
+                           plain.calc._state_rdms(plain.calc.solver)[0],
+                           atol=1e-8)
+        assert np.allclose(tapered.calc.force_result.unprojected,
+                           plain.calc.force_result.unprojected, atol=1e-4)
+
+    def test_measured_tapered_rdms_reproduce_exact_forces(self):
+        """Measured Pauli labels have the tapered width and correct sector."""
+        from mandacaru.backends.providers import QiskitProvider
+
+        args = ("H2", [(0, 0, 0), (0, 0, 0.74)], "STO-3G", (8., 8., 8.))
+        exact, _energy, _solver = _run(*args, taper=True)
+        measured, _energy, _solver = _run(
+            *args, taper=True,
+            measurement_provider=QiskitProvider(device="statevector", shots=0))
+        expected = exact.get_forces()
+        observed = measured.get_forces()
+        assert np.allclose(observed, expected, atol=1e-5)
+        assert measured.calc.measurement["rdms"] is not None
 
     def test_the_dry_run_calls_its_count_an_upper_bound(self):
         # It cannot know how many symmetries there are without the Pauli terms.

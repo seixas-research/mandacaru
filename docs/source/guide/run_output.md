@@ -41,8 +41,9 @@ it is refused with a message pointing at `trace=`.
 ```{note}
 `txt=` is accepted only by a method whose `run()` goes through this protocol —
 `"adapt-vqe"` today — and refused with a message by the others rather than
-leaving an empty file. `"vqe"`, `"subspace-vqe"` and `"subspace-adapt-vqe"`
-still print a header of their own, which is not this one.
+leaving an empty file. `"rhf"` and `"uhf"` print an SCF summary;
+`"hva"`, `"vqe"`, `"subspace-vqe"` and `"subspace-adapt-vqe"` print their own
+run header, which is not this one.
 
 There is one standard output per process, so consecutive printed runs number
 their blocks `step: 1`, `step: 2`, … just as consecutive runs sharing one

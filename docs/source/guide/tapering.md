@@ -91,18 +91,14 @@ choice. And if every generator leaked, the pool would be empty; that raises,
 rather than running an ansatz with nothing in it.
 ```
 
-## Energies only
+## Observables and forces
 
-```{warning}
-**Forces, the stress, cube files, atomic charges and natural orbitals are all
-refused on a tapered register.** They are built on reduced density matrices, and
-the Clifford that removed the qubits mixed the occupation bits into parities — so
-a ladder operator on the tapered register is *not* the ladder operator of any
-spin-orbital. Reading an RDM off it would return a plausible density that is not
-the state's. Making them work needs the RDM operators tapered by the same
-Clifford and their expectation values reassembled on the reduced register, which
-is not implemented. Use `taper=False` for anything beyond an energy.
-```
+Forces, densities, charges, cube files and natural orbitals use RDM observables
+mapped from the original spin orbitals through the **same** Clifford and sector
+signs as the Hamiltonian. Terms that change the selected symmetry sector have
+zero expectation in that sector and are discarded before tapering the
+observable. This projection is valid for an expectation value; pool generators
+still have to commute with every symmetry before their exponentials are used.
 
 The particle-number sector is also disabled with tapering: a tapered register has
 no particle-number basis to enumerate. That costs nothing, because the taper has
@@ -120,6 +116,6 @@ calling it one is better than printing a width the run will not use.
 
 `taper=True` and `active_orbitals=` are independent and multiply: the active
 space decides which orbitals reach the register, tapering removes the qubits the
-resulting Hamiltonian does not use. Both restrict you to energies, for the same
-underlying reason — the density path is told about orbitals the register no
-longer represents one-to-one. See {doc}`active_space`.
+resulting Hamiltonian does not use. Force and density observables are mapped
+from that reduced orbital space to the tapered register. See
+{doc}`active_space`.

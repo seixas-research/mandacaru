@@ -506,14 +506,31 @@ class TestThroughTheCalculator:
         charges = atoms.calc.get_charges()
         assert float(np.sum(charges)) == pytest.approx(0.0, abs=1e-8)
 
-    def test_the_forces_are_refused_rather_than_guessed(self, truncated_paw_run):
-        # The selection moves with the nuclei and that response is not in the
-        # Hellmann-Feynman and Pulay sums, so the gradient would be the
-        # derivative of a different energy than the one reported.
-        atoms, _energy = truncated_paw_run
-        with pytest.raises(NotImplementedError,
-                           match="truncated virtual space"):
-            atoms.get_forces()
+    def test_frozen_core_and_deleted_virtual_forces(self):
+        """Core response and active valence RDMs follow the reduced energy."""
+        from mandacaru import Mandacaru
+        from mandacaru.algorithms._hamiltonian_from_atoms import grid_from_cell
+
+        atoms = _lih()
+        grid = grid_from_cell(atoms, 0.35)
+        atoms.calc = Mandacaru(
+            method="adapt-vqe", basis="6-31G", grid=grid, h=0.35,
+            frozen_core=1, active_orbitals=2,
+            optimizer={"method": "SLSQP", "maxiter": 200},
+            project_translation=False, trace=False)
+        force = atoms.get_forces()[1, 2]
+        context = atoms.calc.solver._gradient_context
+        assert context["frozen"] == (0,)
+        assert context["deleted"]
+        step = 0.005
+        energies = []
+        for sign in (+1, -1):
+            displaced = atoms.copy()
+            displaced.positions[1, 2] += sign * step
+            displaced.calc = atoms.calc
+            energies.append(displaced.get_potential_energy())
+        assert force == pytest.approx(-(energies[0] - energies[1]) / (2 * step),
+                                      abs=0.12)
 
     def test_the_energy_is_above_the_untruncated_one(self):
         from mandacaru import Mandacaru

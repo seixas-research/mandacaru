@@ -22,6 +22,7 @@ pseudopotentials
 active_space
 tapering
 open_shell
+mean_field_hva
 interaction_energy
 dry_run
 hamiltonian_cache

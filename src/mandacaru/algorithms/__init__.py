@@ -8,10 +8,10 @@
 
 """Variational quantum algorithms.
 
-The stable solvers -- VQE, **ADAPT-VQE** (the default method everywhere) and
-their subspace-search variants -- are reached **only** through
-:class:`Mandacaru`: ``Mandacaru(method="vqe")``, ``Mandacaru(method="adapt-vqe")``,
-``"subspace-vqe"``, ``"subspace-adapt-vqe"``.  The solver classes themselves are
+The stable solvers -- classical RHF/UHF, VQE, fixed-layer HVA,
+**ADAPT-VQE** (the default method everywhere), and the subspace-search
+variants -- are reached **only** through :class:`Mandacaru` with their
+``method`` names.  The solver classes themselves are
 the internal layer and are deliberately **not exported**; what is exported is
 the calculator and the result types the solvers return.  The periodic
 methods ``"bloch-vqe"`` and ``"bloch-adapt-vqe"`` are reached the same way, with
@@ -43,6 +43,7 @@ from .active_space import (ACTIVE_SELECTIONS, ActiveSpace,
 from .mp2 import MP2Result, mp2_energy, mp2_natural_orbitals
 from .hartree_fock import (RHF, RHFResult, UHF, UHFResult, natural_orbitals,
                            transform_integrals)
+from .mean_field import MeanFieldResult
 from .subspace import SubspaceADAPTVQEResult, SubspaceVQEResult
 from .base import format_pauli_sum
 from .calculator import (DEFAULT_METHOD, METHODS, STABLE_METHODS, Mandacaru,
@@ -82,6 +83,7 @@ __all__ = [
     "RHFResult",
     "UHF",
     "UHFResult",
+    "MeanFieldResult",
     "natural_orbitals",
     "ACTIVE_SELECTIONS",
     "ActiveSpace",

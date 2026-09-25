@@ -89,6 +89,32 @@ weights = atoms.calc.band_weights(spectral=spectral)   # (nk, n_bands), 0..1
 mu = atoms.calc.get_fermi_level(spectral=spectral)     # interacting chemical potential
 ```
 
+The spectral function supports `jordan_wigner`, `parity`, `bravyi_kitaev`, and
+`parity_reduced`. To use either of the latter two mappings with the chain above:
+
+```python
+for mapping in ("bravyi_kitaev", "parity_reduced"):
+    trial = atoms.copy()
+    trial.calc = Mandacaru(method="bloch-vqe",
+                           kpts={"size": (2, 1, 1), "gamma": True},
+                           basis="HAO", h=0.35, mapping=mapping)
+    trial.get_potential_energy()
+    spectral = trial.calc.get_spectral_function(eta=0.2)
+    print(mapping, spectral.sum_rule)
+```
+
+For `parity_reduced`, an excitation changes the conserved particle parities.
+The spectral calculation restores the two fixed parity bits of the reference
+state, applies the creation or annihilation operator in the full parity
+encoding, then removes the bits using the **target** $N+1$ or $N-1$ parity
+values. If $Q_N$ embeds the reduced $N$-electron register into the full
+parity register, the charged transition is
+$Q_{N\pm1}^{\dagger}\,\tilde c^{(\dagger)}\,Q_N|\Psi_N\rangle$.
+The charged Hamiltonian uses the same target reduction,
+$H_{N\pm1}=Q_{N\pm1}^{\dagger}H_{\mathrm{parity}}Q_{N\pm1}$.
+This keeps its dimensions consistent with the transition vector and preserves
+the addition plus removal sum rule.
+
 Energies are measured **from the N-electron ground state**: removal poles are
 negative, addition poles positive, and `mu` falls between the branches. A weight
 near 1 means the peak really is a one-particle excitation; a small one means the

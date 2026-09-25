@@ -242,7 +242,7 @@ class RHF:
         converged energy is returned -- the second start reaches the ground
         configuration where the first sometimes lands on an excited one.
         """
-        eps, C = np.linalg.eigh(self.h)
+        _eps, C = np.linalg.eigh(self.h)
         D_core = self._density(C)
         starts = [D_core]
         if guesses >= 2:
@@ -407,37 +407,52 @@ class UHF:
         return self.solve(max_iter=max_iter, tol=tol).electronic_energy
 
     def solve(self, max_iter: int = 300, tol: float = 1e-9,
-              guesses: int = 2) -> UHFResult:
+              guesses: int = 3) -> UHFResult:
         r"""Run the SCF and return the lowest converged :class:`UHFResult`.
 
-        The initial guess breaks the alpha/beta symmetry slightly for
-        :math:`n_\alpha \ne n_\beta` (they start from the same core-Hamiltonian
-        orbitals but different occupations, which is enough); for
-        :math:`n_\alpha = n_\beta` the solution is the RHF one.  As for
-        :meth:`RHF.run`, a second, screened-core start is tried and the lower
-        converged solution kept.
+        The core and screened-core starts cover ordinary closed and open shells.
+        Equal alpha/beta populations need a third, deliberately spin-broken
+        occupied/virtual rotation: otherwise their identical initial densities
+        keep UHF on the RHF branch even when a lower broken-symmetry solution
+        exists (for example, a stretched bond).  The lowest converged result
+        is retained.
         """
-        eps, C = np.linalg.eigh(self.h)
-        starts = [C]
+        _eps, C = np.linalg.eigh(self.h)
+        starts = [(C, C)]
         if guesses >= 2:
             D0 = self._density(C, self.na) + self._density(C, self.nb)
             F1 = self.h + 0.5 * self._coulomb(D0)
-            starts.append(np.linalg.eigh(0.5 * (F1 + F1.conj().T))[1])
+            screened = np.linalg.eigh(0.5 * (F1 + F1.conj().T))[1]
+            starts.append((screened, screened))
+        if guesses >= 3 and self.na == self.nb and 0 < self.na < self.M:
+            occupied, virtual = self.na - 1, self.na
+            angle = 0.3
+            cosine, sine = np.cos(angle), np.sin(angle)
+            alpha, beta = C.copy(), C.copy()
+            alpha[:, occupied] = (cosine * C[:, occupied]
+                                  + sine * C[:, virtual])
+            alpha[:, virtual] = (-sine * C[:, occupied]
+                                 + cosine * C[:, virtual])
+            beta[:, occupied] = (cosine * C[:, occupied]
+                                 - sine * C[:, virtual])
+            beta[:, virtual] = (sine * C[:, occupied]
+                                + cosine * C[:, virtual])
+            starts.append((alpha, beta))
         best = None
-        for C0 in starts[:max(int(guesses), 1)]:
-            result = self._scf(C0, max_iter, tol)
+        for Ca0, Cb0 in starts[:max(int(guesses), 1)]:
+            result = self._scf(Ca0, Cb0, max_iter, tol)
             if best is None or (result.converged and not best.converged) or (
                     result.converged == best.converged
                     and result.electronic_energy < best.electronic_energy - 1e-12):
                 best = result
         return best
 
-    def _scf(self, C: np.ndarray, max_iter: int, tol: float) -> UHFResult:
-        """One SCF run from the orbitals ``C``."""
-        eps = np.real(np.diag(C.conj().T @ self.h @ C))
-        Ca, Cb = C, C
-        epsa = epsb = np.real(eps)
-        Da, Db = self._density(C, self.na), self._density(C, self.nb)
+    def _scf(self, Ca: np.ndarray, Cb: np.ndarray,
+             max_iter: int, tol: float) -> UHFResult:
+        """One SCF run from independent alpha and beta orbital guesses."""
+        epsa = np.real(np.diag(Ca.conj().T @ self.h @ Ca))
+        epsb = np.real(np.diag(Cb.conj().T @ self.h @ Cb))
+        Da, Db = self._density(Ca, self.na), self._density(Cb, self.nb)
         energy = np.inf
         converged = False
         it = 0

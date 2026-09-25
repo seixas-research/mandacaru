@@ -12,6 +12,7 @@ from .adapt_ansatz import AdaptAnsatz
 from .ansatz import UCCSD
 from .base import Ansatz, SerializableAnsatz
 from .gates import double_excitation, single_excitation
+from .hva import HamiltonianVariationalAnsatz, hamiltonian_groups
 from .pools import (
     CEOPool,
     FermionicPool,
@@ -28,6 +29,8 @@ __all__ = [
     "Ansatz",
     "SerializableAnsatz",
     "UCCSD",
+    "HamiltonianVariationalAnsatz",
+    "hamiltonian_groups",
     "AdaptAnsatz",
     "single_excitation",
     "double_excitation",

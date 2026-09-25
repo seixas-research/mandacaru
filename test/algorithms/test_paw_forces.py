@@ -187,6 +187,49 @@ def test_two_qubit_register_forces_exact_and_measured(tmp_path):
     assert len(calc.measurement["expectation_values"]) <= 16
 
 
+@pytest.mark.parametrize("taper", [False, True])
+def test_reduced_active_space_force_tracks_optimized_energy(taper):
+    """The PAW force includes the moving selected orbitals and frozen grid."""
+    from mandacaru.algorithms._hamiltonian_from_atoms import grid_from_cell
+
+    atoms = dimer("H2", 0.92, 8.0)
+    grid = grid_from_cell(atoms, 0.35)
+    atoms.calc = Mandacaru(
+        method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
+        grid=grid, h=0.35, active_orbitals=2, active_selection="mp2",
+        taper=taper, pool="fermionic", optimizer=LBFGS,
+        max_iterations=20, gradient_tolerance=1e-6,
+        project_translation=False, profile=False)
+    force = atoms.get_forces()[1, 2]
+    assert len(atoms.calc.solver._gradient_context["deleted"]) == 2
+    assert "active_space_response" in atoms.calc.force_result.details
+    if taper:
+        assert atoms.calc.solver._taper_info is not None
+
+    step = 0.005
+    energies = []
+    for sign in (+1, -1):
+        displaced = atoms.copy()
+        displaced.positions[1, 2] += sign * step
+        displaced.calc = atoms.calc
+        energies.append(displaced.get_potential_energy())
+    assert force == pytest.approx(-(energies[0] - energies[1]) / (2 * step),
+                                  abs=0.02)
+    if taper:
+        from mandacaru.backends.providers import QiskitProvider
+
+        measured = dimer("H2", 0.92, 8.0)
+        measured.calc = Mandacaru(
+            method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
+            grid=grid, h=0.35, active_orbitals=2, active_selection="mp2",
+            taper=True, pool="fermionic", optimizer=LBFGS,
+            max_iterations=20, gradient_tolerance=1e-6,
+            project_translation=False, profile=False,
+            measurement_provider=QiskitProvider(device="statevector", shots=0))
+        assert measured.get_forces()[1, 2] == pytest.approx(force, abs=1e-5)
+        assert measured.calc.measurement["rdms"] is not None
+
+
 # --------------------------------------------------------------------------- #
 # Complex multipole channels (p/d valence).
 # --------------------------------------------------------------------------- #

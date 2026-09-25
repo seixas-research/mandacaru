@@ -61,6 +61,39 @@ def _ref(key, entry, note, verified=True, topics=()):
 # --------------------------------------------------------------------------- #
 
 _ALGORITHMS = [
+    _ref("Roothaan1951", """
+@article{Roothaan1951,
+  author  = {Roothaan, C. C. J.},
+  title   = {New developments in molecular orbital theory},
+  journal = {Rev. Mod. Phys.},
+  volume  = {23},
+  pages   = {69--89},
+  year    = {1951},
+  doi     = {10.1103/RevModPhys.23.69}
+}""", "restricted Hartree-Fock molecular orbitals", verified=False,
+         topics=("rhf", "scf")),
+    _ref("PopleNesbet1954", """
+@article{PopleNesbet1954,
+  author  = {Pople, J. A. and Nesbet, R. K.},
+  title   = {Self-consistent orbitals for radicals},
+  journal = {J. Chem. Phys.},
+  volume  = {22},
+  pages   = {571--572},
+  year    = {1954},
+  doi     = {10.1063/1.1740120}
+}""", "unrestricted Hartree-Fock for open shells", verified=False,
+         topics=("uhf", "scf")),
+    _ref("Wecker2015", """
+@article{Wecker2015,
+  author  = {Wecker, Dave and Hastings, Matthew B. and Troyer, Matthias},
+  title   = {Progress towards practical quantum variational algorithms},
+  journal = {Phys. Rev. A},
+  volume  = {92},
+  pages   = {042303},
+  year    = {2015},
+  doi     = {10.1103/PhysRevA.92.042303}
+}""", "Hamiltonian variational ansatz", verified=False,
+         topics=("hva", "vqe")),
     _ref("Grimsley2019", """
 @article{Grimsley2019,
   author  = {Grimsley, Harper R. and Economou, Sophia E. and Barnes, Edwin and

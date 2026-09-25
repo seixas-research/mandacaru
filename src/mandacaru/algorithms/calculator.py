@@ -6,11 +6,12 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""The unified ASE calculator for every molecular variational method.
+r"""The unified ASE calculator for classical mean field and variational methods.
 
 :class:`Mandacaru` is the single user-facing entry point for running a
-variational quantum simulation: the eigensolver is selected by the ``method``
-argument and every method-specific option is forwarded to it.  It reports the
+classical mean-field or variational quantum calculation: the solver is selected
+by the ``method`` argument and every method-specific option is forwarded to it.
+It reports the
 **energy** for any method and, for the atom-centered bases, the analytic
 **nuclear forces** (Hellmann-Feynman **plus** Pulay, see
 :mod:`mandacaru.algorithms.forces`), so any ASE optimizer -- ``BFGS``, ``LBFGS``,
@@ -69,6 +70,7 @@ import sys
 import warnings
 from contextlib import contextmanager
 from time import perf_counter as _perf
+from typing import TYPE_CHECKING
 
 import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
@@ -76,13 +78,17 @@ from ase.calculators.calculator import Calculator, all_changes
 from .bloch import BLOCH_METHODS
 from ..units import DEFAULT_GRID_SPACING
 
+if TYPE_CHECKING:
+    from .forces import ForceResult
+
 #: The default method: ADAPT-VQE, everywhere a ``method`` is not given.
 DEFAULT_METHOD = "adapt-vqe"
 
 #: Stable method names accepted by ``method=``.
 #: The periodic names are declared by the module that implements them, so
 #: there is one place to change them.
-STABLE_METHODS = ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe",
+STABLE_METHODS = ("rhf", "uhf", "vqe", "hva", "adapt-vqe",
+                  "subspace-vqe", "subspace-adapt-vqe",
                   *BLOCH_METHODS)
 
 #: Kept as the historical name of the stable list.
@@ -138,9 +144,12 @@ def resolve_method(name: str):
         # they are reached from, and ``Mandacaru(method=...)`` the one way in.
         from .adapt_vqe import ADAPTVQE
         from .bloch import _bloch_drivers
+        from .hva import HVA
+        from .mean_field import RHFDriver, UHFDriver
         from .subspace import SubspaceADAPTVQE, SubspaceVQE
         from .vqe import VQE
-        classes = {"vqe": VQE, "adapt-vqe": ADAPTVQE,
+        classes = {"rhf": RHFDriver, "uhf": UHFDriver,
+                   "vqe": VQE, "hva": HVA, "adapt-vqe": ADAPTVQE,
                    "subspace-vqe": SubspaceVQE,
                    "subspace-adapt-vqe": SubspaceADAPTVQE}
         # The periodic drivers are these same solvers over the Born-von Karman
@@ -342,8 +351,9 @@ class Mandacaru(Calculator):
     Parameters
     ----------
     method : str
-        Which variational eigensolver evaluates the energy -- ``"adapt-vqe"``
-        (the default), ``"vqe"``, or the subspace-search variants
+        Which solver evaluates the energy -- ``"adapt-vqe"`` (the default),
+        classical ``"rhf"`` / ``"uhf"``, fixed-layer ``"hva"``, ``"vqe"``,
+        or the subspace-search variants
         ``"subspace-vqe"`` / ``"subspace-adapt-vqe"``.  ADAPT-VQE is the
         practical choice for anything beyond a couple of orbitals: a fixed UCCSD
         ansatz becomes very slow past ~8 qubits.  A method registered through
@@ -490,6 +500,9 @@ class Mandacaru(Calculator):
                  population=None, **solver_kwargs):
         Calculator.__init__(self)
         self.method, self._solver_class = resolve_method(method)
+        if self.method in ("rhf", "uhf") and measurement_provider is not None:
+            raise ValueError("classical RHF/UHF has no quantum state to measure; "
+                             "omit measurement_provider=")
         self.basis = basis
         self.h = float(h)
         self.include_pulay = bool(include_pulay)
@@ -644,12 +657,12 @@ class Mandacaru(Calculator):
 
     @property
     def hamiltonian(self):
-        """Qubit Hamiltonian (:class:`~mandacaru.core.mapping.PauliSum`) of the last evaluation."""
+        """Last Hamiltonian: a ``Fermion`` for RHF/UHF, otherwise a ``PauliSum``."""
         return self._require_solver().hamiltonian
 
     @property
     def n_qubits(self) -> int:
-        """Qubit count of the last evaluation's active space."""
+        """Register width a quantum run would use for the last model."""
         return int(self._require_solver().n_qubits)
 
     @property
@@ -883,6 +896,12 @@ class Mandacaru(Calculator):
         want_forces = "forces" in properties
         # A previous step's breakdown must never survive a new geometry.
         self.force_result = None
+        if want_forces and getattr(self._solver_class, "classical_mean_field",
+                                   False):
+            raise NotImplementedError(
+                "RHF/UHF nuclear forces need self-consistent orbital response; "
+                "the variational-state gradient cannot be used for a "
+                "classical SCF result")
         if want_forces:
             self._require_atom_centered_basis(self.basis)
 
@@ -960,12 +979,17 @@ class Mandacaru(Calculator):
 
     # -- forces ------------------------------------------------------------ #
 
-    def _check_force_support(self, solver) -> None:
+    def _check_force_support(self, solver: object) -> None:
         """Refuse force requests the derivative does not actually cover.
 
         The gradient differentiates *this* energy expression; a configuration
         it does not model must fail here rather than return a plausible number.
         """
+        if getattr(solver, "classical_mean_field", False):
+            raise NotImplementedError(
+                "RHF/UHF nuclear forces need self-consistent orbital response; "
+                "the variational-state gradient cannot be used for a "
+                "classical SCF result")
         context = getattr(solver, "_gradient_context", None) or {}
         integrals = context.get("integrals")
         legacy = self.force_method == "scf-response"
@@ -993,6 +1017,21 @@ class Mandacaru(Calculator):
                 "be the gradient of the reported energy; pass "
                 "measurement_provider= to measure the density matrices too, "
                 "or use shots=0.")
+
+        if context.get("deleted"):
+            if legacy:
+                raise NotImplementedError(
+                    "active-space forces require force_method='rdm'; the "
+                    "scf-response path does not differentiate the selected "
+                    "virtual space")
+            if not self.include_pulay:
+                raise NotImplementedError(
+                    "active-space forces require include_pulay=True because "
+                    "the selected orbital space moves with the nuclei")
+            if periodic:
+                raise NotImplementedError(
+                    "periodic active-space forces need a displaced periodic "
+                    "Hamiltonian and are not implemented")
 
         if not legacy:
             return
@@ -1029,7 +1068,7 @@ class Mandacaru(Calculator):
                 "force_method='rdm' is complex-safe.",
                 RuntimeWarning, stacklevel=3)
 
-    def _measure(self, solver, rdms: bool = True):
+    def _measure(self, solver: object, rdms: bool = True) -> dict:
         """Energy (and RDMs) of the optimized state, from ``measurement_provider``.
 
         With ``rdms=True`` every Pauli string the qubit Hamiltonian and the
@@ -1072,8 +1111,12 @@ class Mandacaru(Calculator):
         reduced = solver.mapping == "parity_reduced"
         n_qubits = int(solver.n_qubits)
         n_modes = n_qubits + (2 if reduced else 0)
+        taper_info = getattr(solver, "_taper_info", None)
+        if taper_info is not None:
+            n_modes += taper_info.removed
         ones, twos = rdm_qubit_operators(n_modes, solver.mapping,
-                                         num_particles=solver.num_particles)
+                                         num_particles=solver.num_particles,
+                                         taper_info=taper_info)
         hamiltonian = solver.hamiltonian
         identity = "I" * n_qubits
         labels = sorted({label for op in (hamiltonian, *ones.values(),
@@ -1328,7 +1371,9 @@ class Mandacaru(Calculator):
         self._log_measurement(solver, measured)
         return measured
 
-    def _state_rdms(self, solver, psi=None, two_body: bool = True):
+    def _state_rdms(self, solver: object, psi: np.ndarray | None = None,
+                    two_body: bool = True
+                    ) -> tuple[np.ndarray, np.ndarray | None]:
         """Spin-orbital RDMs of a state vector (the converged one by default).
 
         ``two_body=False`` returns ``(gamma, None)``: a one-particle picture of
@@ -1339,28 +1384,19 @@ class Mandacaru(Calculator):
         from .rdm import (one_rdm, pauli_expectations, rdm_qubit_operators,
                           rdms_from_expectations, two_rdm)
 
-        if getattr(solver, "_taper_info", None) is not None:
-            raise NotImplementedError(
-                "reduced density matrices are not available on a Z2-tapered "
-                "register (taper=True), and everything built on them -- forces, "
-                "the stress, cube files, atomic charges, natural orbitals -- is "
-                "refused with them.  The Clifford that removed the qubits mixed "
-                "the occupation bits into parities, so a ladder operator on the "
-                "tapered register is not the ladder operator of any spin-orbital: "
-                "reading an RDM off it would give a plausible density that is "
-                "not the state's.  The RDM operators would have to be tapered by "
-                "the same Clifford and their expectation values assembled on the "
-                "reduced register, which is not implemented.  Use taper=False "
-                "for anything beyond an energy.")
         if psi is None:
             psi = self._converged_state(solver)
         n_qubits = int(solver.n_qubits)
-        if solver.mapping == "parity_reduced":
+        taper_info = getattr(solver, "_taper_info", None)
+        if solver.mapping == "parity_reduced" or taper_info is not None:
             # A tapered register has no ladder operators of its own: its RDM
             # elements are expectation values of the tapered qubit operators.
-            n_modes = n_qubits + 2
+            n_modes = n_qubits + (2 if solver.mapping == "parity_reduced" else
+                                  taper_info.removed)
             ones, twos = rdm_qubit_operators(n_modes, solver.mapping,
-                                             num_particles=solver.num_particles)
+                                             num_particles=solver.num_particles,
+                                             taper_info=taper_info,
+                                             two_body=two_body)
             labels = {label for op in (*ones.values(), *twos.values())
                       for label in op.terms}
             gamma, gamma2 = rdms_from_expectations(
@@ -1433,8 +1469,14 @@ class Mandacaru(Calculator):
             n_electrons=result.n_electrons,
             details=details)
 
-    def _forces(self, solver, rdms=None, reference_energy=None):
-        """Analytic nuclear gradient of the converged (or measured) state."""
+    def _forces(self, solver: object,
+                rdms: tuple[np.ndarray, np.ndarray] | None = None,
+                reference_energy: float | None = None) -> "ForceResult":
+        """Gradient of the converged or measured state in eV/Angstrom.
+
+        Full-space AO derivatives are analytic.  A deleted virtual space adds
+        the finite-difference response of the selected MO projector.
+        """
         from .forces import nuclear_gradient
 
         context = getattr(solver, "_gradient_context", None)
@@ -1444,30 +1486,17 @@ class Mandacaru(Calculator):
                 "available; the plane-wave ('PW') family does not qualify. Use "
                 "an atom-centered basis such as 'HAO', 'GTO' or '6-31G(d)'.")
 
-        if context.get("deleted"):
-            raise NotImplementedError(
-                "nuclear forces with a truncated virtual space "
-                "(active_orbitals=) is not implemented.  Deleting a virtual "
-                "orbital is exact for the energy at a fixed geometry, but the "
-                "selection itself moves with the nuclei: which orbitals are "
-                "kept, and -- for active_selection='mp2' -- the rotation that "
-                "defines them, both depend on the geometry, and that "
-                "dependence is a response term the Hellmann-Feynman and Pulay "
-                "sums here do not contain.  The result would be the "
-                "derivative of a different energy than the one reported, "
-                "which is worse than not having it.  Use the full virtual "
-                "space for a relaxation, or a frozen core alone "
-                "(frozen_core=), whose orbitals are fixed by the reference.")
-
         gamma, gamma2 = self._state_rdms(solver) if rdms is None else rdms
+        active_gamma, active_gamma2 = gamma, gamma2
         frozen = context.get("frozen") or ()
-        if frozen:
+        if frozen or context.get("deleted"):
             # The gradient contracts against the *full* integrals, so the
-            # inert core has to be put back into the density matrices.
+            # inert core must be refilled and deleted virtuals left empty.
             from .rdm import expand_frozen_core
 
             gamma, gamma2 = expand_frozen_core(
-                gamma, gamma2, frozen, len(context["integrals"].basis))
+                gamma, gamma2, frozen, len(context["integrals"].basis),
+                active=context.get("active"))
 
         if getattr(solver, "periodic_hamiltonian", False):
             # A crystal: the electron feels the Ewald potential of the whole
@@ -1521,6 +1550,19 @@ class Mandacaru(Calculator):
                 atom_of_orbital=context["atom_of_orbital"],
                 orbital_delta=self.orbital_delta,
                 include_pulay=self.include_pulay)
+            if context.get("deleted"):
+                from .active_space_forces import (
+                    ACTIVE_SPACE_STEP_ANGSTROM, active_space_gradient)
+
+                total_gradient = active_space_gradient(
+                    self.atoms, solver, active_gamma, active_gamma2)
+                response = total_gradient - result.gradient
+                result.pulay = result.pulay + response
+                result.gradient = total_gradient
+                result.forces = -total_gradient
+                result.details["active_space_response"] = response
+                result.details["active_space_step_angstrom"] = \
+                    ACTIVE_SPACE_STEP_ANGSTROM
             if reference_energy is None and not getattr(solver, "shots", 0):
                 # `optimal_energy` is the scalar every result type has -- the
                 # ground state, the one `_converged_state` returns -- whereas
@@ -1537,7 +1579,7 @@ class Mandacaru(Calculator):
                         f"({reported:.10f} Ha); the force would not be the "
                         "gradient of the reported energy")
             residual = float(result.details.get("orbital_gradient", 0.0) or 0.0)
-            if residual > ORBITAL_RESPONSE_TOLERANCE:
+            if residual > ORBITAL_RESPONSE_TOLERANCE and not context.get("deleted"):
                 warnings.warn(
                     f"the state is not stationary with respect to orbital "
                     f"rotations (max |dE/dkappa| = {residual:.2e} Ha): the "

@@ -375,14 +375,35 @@ class TestSpectralFunction:
                    (spectral.orbital_poles[ik][0] for ik in range(2))]
         assert removal == [True, False]
 
-    def test_a_tapered_register_is_refused(self):
-        """The N+-1 sectors do not exist once the register encodes N."""
-        atoms = chain()
-        atoms.calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2, basis="HAO",
-                               h=0.35, mapping="parity_reduced", trace=False)
+    @pytest.mark.parametrize("mapping", ["parity", "parity_reduced",
+                                         "bravyi_kitaev"])
+    def test_every_mapping_has_the_same_poles_and_weights(self, mapping):
+        """Ladder transitions and charged-sector Hamiltonians share a map."""
+        baseline = periodic(optimizer=SLSQP)
+        alternative = periodic(mapping=mapping, optimizer=SLSQP)
+        baseline.get_potential_energy()
+        alternative.get_potential_energy()
+        reference = baseline.calc.get_spectral_function(points=100)
+        spectral = alternative.calc.get_spectral_function(
+            energies=reference.energies)
+        assert spectral.sum_rule < 1e-9
+        assert np.allclose(spectral.weights, reference.weights, atol=1e-8)
+        for (poles, weights), (expected_poles, expected_weights) in zip(
+                spectral.poles, reference.poles):
+            assert np.allclose(poles, expected_poles, atol=1e-8)
+            assert np.allclose(weights, expected_weights, atol=1e-8)
+        if mapping == "parity_reduced":
+            assert alternative.calc.n_qubits == baseline.calc.n_qubits - 2
+
+    def test_adapt_uses_the_charged_reduced_sectors(self):
+        """The ADAPT ansatz can feed a parity-reduced Lehmann calculation."""
+        atoms = periodic("bloch-adapt-vqe", mapping="parity_reduced",
+                         optimizer=SLSQP, **_EXTRA["bloch-adapt-vqe"])
         atoms.get_potential_energy()
-        with pytest.raises(NotImplementedError, match="Jordan-Wigner"):
-            atoms.calc.get_spectral_function()
+        spectral = atoms.calc.get_spectral_function(points=100)
+        assert spectral.sum_rule < 1e-9
+        assert all(np.isfinite(poles).all() and np.isfinite(weights).all()
+                   for poles, weights in spectral.poles)
 
     def test_it_writes_a_csv(self, tmp_path):
         atoms = periodic(optimizer=SLSQP)

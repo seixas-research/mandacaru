@@ -51,7 +51,10 @@ _MAPPING_KEYS = {
 }
 
 _METHOD_KEYS = {
+    "rhf": ("Roothaan1951",),
+    "uhf": ("PopleNesbet1954",),
     "vqe": ("Peruzzo2014", "Romero2019"),
+    "hva": ("Peruzzo2014", "Wecker2015"),
     "adapt-vqe": ("Peruzzo2014", "Grimsley2019"),
     "subspace-vqe": ("Peruzzo2014", "Romero2019", "Nakanishi2019"),
     "subspace-adapt-vqe": ("Peruzzo2014", "Grimsley2019", "Nakanishi2019"),

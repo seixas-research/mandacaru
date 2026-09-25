@@ -46,6 +46,7 @@ import numpy as np
 
 from ..optimizers.optim import DEFAULT_OPTIMIZER, Optimizer
 from ..units import convert_energy
+from ..utils.profiling import Timings
 from .base import VariationalDriver
 from .deflation import DeflationMixin, deflation_penalty
 
@@ -176,6 +177,7 @@ class VQE(DeflationMixin, VariationalDriver):
 
     _default_sparse = False
     citation_method = "vqe"
+    solver_label = "VQE"
 
     def __init__(self, hamiltonian=None, ansatz=None,
                  optimizer: str | Optimizer = DEFAULT_OPTIMIZER,
@@ -425,7 +427,8 @@ class VQE(DeflationMixin, VariationalDriver):
         """
         rule = "=" * 70
         print(rule)
-        print(f"VQE  |  mapping: {self.mapping}  |  {self.n_qubits} qubits  |  "
+        print(f"{self.solver_label}  |  mapping: {self.mapping}  |  "
+              f"{self.n_qubits} qubits  |  "
               f"optimizer: {self.optimizer.method}  |  device: {self.device}")
         print(f"ansatz: {type(self.ansatz).__name__}  |  "
               f"parameters: {self.ansatz.num_parameters}  |  "
@@ -442,12 +445,13 @@ class VQE(DeflationMixin, VariationalDriver):
               f"{self._energy_unit_label()}")
         print(rule)
 
-    def _print_summary(self, result: VQEResult, timings=None) -> None:
+    def _print_summary(self, result: VQEResult,
+                       timings: Timings | None = None) -> None:
         """Print the closing summary: result line plus timings / resources."""
         rule = "=" * 70
         print(rule)
         status = "converged" if result.success else "did not converge"
-        print(f"VQE finished ({status}): "
+        print(f"{self.solver_label} finished ({status}): "
               f"E = {result.optimal_energy:+.8f} {result.energy_unit}, "
               f"{result.num_parameters} parameters, {result.num_evaluations} "
               f"evaluations")

@@ -84,8 +84,19 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+from ..core.mapping import Fermion, PauliSum
+from ..core.sector import ParticleSector
+from .spectral_mapping import SpectralRegister
+
+if TYPE_CHECKING:
+    from ase import Atoms
+
+SectorBasis = tuple[ParticleSector, np.ndarray, np.ndarray]
+SectorCache = dict[tuple[int, int], SectorBasis]
 
 #: The stable periodic method names, in the spelling ``Mandacaru`` takes.
 BLOCH_METHODS = ("bloch-vqe", "bloch-adapt-vqe")
@@ -258,6 +269,22 @@ class _BlochMixin:
                 "'gamma': True}} instead.  The equivalence this method uses "
                 "holds only for a Gamma-centered mesh.")
         self._primitive = None         # last primitive cell seen
+
+    def _build_hamiltonian(
+            self, atoms: Atoms
+    ) -> tuple[Fermion | PauliSum, tuple[int, int], int]:
+        """Keep the fermionic operator needed by charged parity sectors.
+
+        The solver maps it to its N-electron register during configuration.
+        A spectral function with ``parity_reduced`` also needs to reduce the
+        same operator with the N+1 and N-1 parity signs.  Retaining the
+        fermionic form avoids rebuilding integrals or repeating SCF later.
+        """
+        hamiltonian, particles, orbitals = super()._build_hamiltonian(atoms)
+        self._spectral_fermion_hamiltonian = (
+            hamiltonian if self.mapping == "parity_reduced"
+            and isinstance(hamiltonian, Fermion) else None)
+        return hamiltonian, particles, orbitals
 
     # -- option-level checks ---------------------------------------------- #
     def _mesh_is_gamma_centered(self) -> bool:
@@ -516,23 +543,13 @@ class _BlochMixin:
         return spectral.chemical_potential
 
     # -- the interacting band structure: A(E, k) --------------------------- #
-    def _spectral_context(self):
-        """The finished run's state, Hamiltonian and orbital rotation."""
+    def _spectral_context(self) -> tuple[np.ndarray, float, SpectralRegister]:
+        """The finished run's state, mapped sectors and orbital rotation."""
         if getattr(self, "result", None) is None:
             raise ValueError(
                 "the spectral function needs the correlated ground state, so "
                 "the energy has to have been computed first: "
                 "atoms.calc = Mandacaru(...); atoms.get_potential_energy().")
-        # Imported here: calculator.py reads BLOCH_METHODS from this
-        # module at import time, so the dependency cannot be mutual.
-        from .calculator import _method_key
-
-        if _method_key(self.mapping) != _method_key("jordan_wigner"):
-            raise NotImplementedError(
-                f"the spectral function is implemented for the Jordan-Wigner "
-                f"mapping only; this run used {self.mapping!r}.  A tapered "
-                "register (parity_reduced) encodes the particle number itself, "
-                "so the N+-1 sectors it would need do not exist there.")
         context = getattr(self, "_gradient_context", None) or {}
         integrals = context.get("integrals")
         if integrals is None or getattr(integrals, "mo_coefficients", None) is None:
@@ -558,36 +575,26 @@ class _BlochMixin:
         # that same representation -- restricted to the sector when the run is
         # a sector run.  Take it first, then move the state.
         reference = float(np.real(self.energy(psi)))
-        # Above `SECTOR_AUTO_QUBITS` the ansatz works inside the
-        # particle-number sector, so the state comes back with the sector's
-        # dimension rather than 2**n.  The creation operators below move
-        # between sectors, which only means anything in the full space.
-        full = 2 ** self.n_qubits
-        if psi.size != full:
-            from ..core.sector import ParticleSector
+        coefficients = np.asarray(integrals.mo_coefficients)
+        register = SpectralRegister(
+            self.mapping, 2 * coefficients.shape[0], self.num_particles,
+            psi, self._as_pauli_sum(self.hamiltonian, self.n_qubits),
+            fermion_hamiltonian=getattr(
+                self, "_spectral_fermion_hamiltonian", None))
+        return coefficients, reference, register
 
-            sector = ParticleSector(self.n_qubits, self.num_particles,
-                                    self.mapping)
-            if psi.size != sector.dim:
-                raise ValueError(
-                    f"the optimized state has {psi.size} amplitudes, which is "
-                    f"neither the full register ({full}) nor the "
-                    f"{self.num_particles} sector ({sector.dim}).")
-            psi = sector.embed(psi)
-        return psi, np.asarray(integrals.mo_coefficients), reference
-
-    def _bloch_creation(self, kpt, nu, spin, coefficients, n_orbitals):
-        """``c^dagger`` of the Bloch combination, as a qubit operator.
+    def _bloch_creation(
+            self, kpt: np.ndarray, nu: int, spin: int,
+            coefficients: np.ndarray, n_orbitals: int) -> Fermion:
+        """``c^dagger`` of the Bloch combination, as a fermionic operator.
 
         ``c^dagger_{k,nu,sigma} = N^-1/2 sum_R e^{2 pi i k.R} c^dagger_{R,nu,sigma}``,
         with each cell-local orbital expanded over the supercell's own orbitals
         by the rotation the run used.  Spin-orbitals are blocked: alpha first.
         """
-        from ..core import Fermion
-
         n_cells = self.n_supercells
         per_cell = n_orbitals // n_cells
-        operator = Fermion()
+        terms: dict[tuple[tuple[int, bool], ...], complex] = {}
         for cell, translation in enumerate(self._cell_translations()):
             phase = np.exp(2j * np.pi * float(np.dot(kpt, translation)))
             phase /= np.sqrt(n_cells)
@@ -597,9 +604,9 @@ class _BlochMixin:
                 if abs(amplitude) < 1e-14:
                     continue
                 index = orbital + (0 if spin == 0 else n_orbitals)
-                operator = operator + Fermion.creation(index) * amplitude
-        return operator.map_to_qubits(method=self.mapping,
-                                      n_modes=2 * n_orbitals).to_sparse_matrix()
+                term = ((index, True),)
+                terms[term] = terms.get(term, 0j) + amplitude
+        return Fermion(terms, n_modes=2 * n_orbitals)
 
     def _cell_translations(self):
         """Lattice translations of the supercell, in ``atoms.repeat`` order."""
@@ -607,7 +614,10 @@ class _BlochMixin:
         return [(i, j, k) for i in range(n1) for j in range(n2)
                 for k in range(n3)]
 
-    def _sector_eigenbasis(self, particles, hamiltonian, cache):
+    def _sector_eigenbasis(
+            self, particles: tuple[int, int], register: SpectralRegister,
+            cache: SectorCache
+    ) -> SectorBasis:
         """Diagonalize one ``(n_alpha, n_beta)`` sector, once.
 
         The sector Hamiltonian depends only on the particle numbers -- not on
@@ -615,23 +625,27 @@ class _BlochMixin:
         same two matrices are rebuilt and re-diagonalized for every pole set,
         which dominates the cost as soon as the register is large.
         """
-        from ..core.sector import ParticleSector
-
         if particles not in cache:
-            sector = ParticleSector(self.n_qubits, particles, self.mapping)
-            matrix = sector.restrict(hamiltonian).toarray()
+            sector = register.sector(particles)
+            matrix = sector.restrict(register.hamiltonian(particles)).toarray()
             values, vectors = np.linalg.eigh(0.5 * (matrix + matrix.conj().T))
             cache[particles] = (sector, values, vectors)
         return cache[particles]
 
-    def _lehmann(self, chi, particles, hamiltonian, reference, addition,
-                 cache=None):
-        """Poles and weights of ``chi`` in one particle-number sector."""
-        if min(particles) < 0:
+    def _lehmann(
+            self, chi: np.ndarray, particles: tuple[int, int],
+            register: SpectralRegister, reference: float, addition: bool,
+            cache: SectorCache | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Poles and weights of a vector in one charged sector."""
+        if min(particles) < 0 or max(particles) > register.n_modes // 2:
             return np.empty(0), np.empty(0)
         sector, values, vectors = self._sector_eigenbasis(
-            particles, hamiltonian, {} if cache is None else cache)
-        overlap = vectors.conj().T @ sector.project(chi)
+            particles, register, {} if cache is None else cache)
+        if np.asarray(chi).size != sector.dim:
+            raise ValueError("a spectral transition has the wrong charged-sector "
+                             "dimension")
+        overlap = vectors.conj().T @ chi
         poles = (values - reference) if addition else (reference - values)
         return poles, np.abs(overlap) ** 2
 
@@ -848,8 +862,7 @@ class _BlochMixin:
         output, evaluation, kpath, zone = self._spectral_kpoints(
             path=path, irreducible=irreducible, symprec=symprec,
             time_reversal=time_reversal)
-        psi, coefficients, reference = self._spectral_context()   # Ha
-        hamiltonian = self._as_pauli_sum(self.hamiltonian, self.n_qubits)
+        coefficients, reference, register = self._spectral_context()   # Ha
         n_orbitals = coefficients.shape[0]
         per_cell = n_orbitals // self.n_supercells
         alpha, beta = self.num_particles
@@ -870,13 +883,18 @@ class _BlochMixin:
                     step = (1, 0) if spin == 0 else (0, 1)
                     creation = self._bloch_creation(kpt, nu, spin, coefficients,
                                                     n_orbitals)
+                    addition_particles = (alpha + step[0], beta + step[1])
+                    removal_particles = (alpha - step[0], beta - step[1])
                     add_p, add_w = self._lehmann(
-                        creation @ psi, (alpha + step[0], beta + step[1]),
-                        hamiltonian, reference, addition=True, cache=sectors)
+                        register.transition(creation, addition_particles,
+                                            addition=True),
+                        addition_particles, register, reference, addition=True,
+                        cache=sectors)
                     rem_p, rem_w = self._lehmann(
-                        creation.conj().T @ psi,
-                        (alpha - step[0], beta - step[1]),
-                        hamiltonian, reference, addition=False, cache=sectors)
+                        register.transition(creation, removal_particles,
+                                            addition=False),
+                        removal_particles, register, reference, addition=False,
+                        cache=sectors)
                     deviations.append(abs(add_w.sum() + rem_w.sum() - 1.0))
                     poles_nu.append(np.concatenate([rem_p, add_p]))
                     weights_nu.append(np.concatenate([rem_w, add_w]))
