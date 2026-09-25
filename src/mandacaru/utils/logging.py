@@ -65,12 +65,14 @@ from __future__ import annotations
 
 import contextlib
 import os
+from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 import numpy as np
 
 if TYPE_CHECKING:
+    from ..algorithms.hartree_fock import RHFResult
     from ..algorithms.quantum_echoes import EchoSpectrum, QuantumEchoesResult
 
 _BANNER = "=" * 72
@@ -1036,24 +1038,42 @@ def append_block(path: str, section: str, fields: dict,
     _write_lines(path, lines)
 
 
+def _ascii_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
+    """Render left-aligned headings and right-aligned cells with fixed widths."""
+    body = [tuple(row) for row in rows]
+    widths = [max(len(header), *(len(row[i]) for row in body))
+              if body else len(header) for i, header in enumerate(headers)]
+    heading = "  ".join(header.ljust(width) for header, width in zip(headers, widths))
+    return [heading, "-" * len(heading)] + [
+        "  ".join(cell.rjust(width) for cell, width in zip(row, widths)) for row in body]
+
+
 def append_quantum_echoes(
     path: str, results: Sequence[QuantumEchoesResult], *, order: int,
     steps: int, kick_steps: int = 1, max_perturbation: float = 0.1,
     field: Sequence[float] | None = None, spectrum: EchoSpectrum | None = None,
     spectrum_steps_per_sample: int | None = None,
+    spectrum_path: str | os.PathLike[str] | None = None,
+    field_direction: Sequence[float] | None = None,
+    orbital_reference: RHFResult | None = None,
 ) -> None:
     """Append a ``[QUANTUM ECHOES]`` block in the standard report format.
 
     Record the propagation settings used for ``results``, and optionally the
-    Fourier spectrum with its sampling parameters, peaks, and complete signed
-    energy grid. Energies are reported in Hartree and eV; the spectral magnitude
+    Fourier sampling parameters and peaks. Export the complete signed spectrum
+    to ``spectrum_path`` (default: ``spectrum.csv`` next to the report, or in
+    the working directory for STDOUT). The main report contains only aligned
+    ``samples`` and ``peaks`` ASCII tables and a link to that CSV file.
+    Energies are reported in Hartree and eV; the spectral magnitude
     is the Fourier magnitude of a potential correlation, not an absorption
     cross section. Complex data have separate real/imaginary columns.
 
     ``path`` accepts the usual destinations, including :data:`STDOUT`. Call
     once per ``calculator.solver.log_targets`` to respect file/terminal routing.
-    :func:`parse_output` returns metadata and the ``samples``, ``peaks``, and
-    ``spectrum`` tables under ``quantum_echoes`` for the current geometry step.
+    ``orbital_reference`` optionally adds the converged RHF HOMO, LUMO, and
+    orbital gap. ``field_direction`` records the chosen unit vector, including
+    when the field strength is zero. :func:`parse_output` returns metadata and
+    the ``samples`` and ``peaks`` tables under ``quantum_echoes``.
     """
     from ..units import HARTREE_TO_EV
 
@@ -1068,8 +1088,26 @@ def append_quantum_echoes(
     }
     if field is not None:
         fields["field_au"] = " ".join(f"{float(value):.12e}" for value in field)
-    if spectrum is not None:
+        fields["field_strength_au"] = f"{np.linalg.norm(field):.12e}"
+    if field_direction is not None:
+        fields["field_direction"] = " ".join(f"{float(v):.12e}" for v in field_direction)
+    if orbital_reference is not None:
         fields.update({
+            "orbital_reference": "RHF canonical orbitals",
+            "homo_energy_ha": f"{orbital_reference.homo_energy:.12e}",
+            "lumo_energy_ha": f"{orbital_reference.lumo_energy:.12e}",
+            "homo_lumo_gap_ha": f"{orbital_reference.homo_lumo_gap:.12e}",
+            "homo_lumo_gap_ev": f"{orbital_reference.homo_lumo_gap*HARTREE_TO_EV:.12e}",
+        })
+    if spectrum is not None:
+        destination = (Path(spectrum_path) if spectrum_path is not None else
+                       Path("spectrum.csv") if _is_stdout(path) else
+                       Path(path).with_name("spectrum.csv"))
+        if not _is_stdout(path) and destination.resolve() == Path(path).resolve():
+            raise ValueError("spectrum_path must differ from the main report path")
+        spectrum.to_csv(destination)
+        fields.update({
+            "spectrum_file": str(destination),
             "spectrum_method": "FFT of connected <V V(t)> (linear response)",
             "spectrum_energy": "excitation gaps, not absolute total energies",
             "spectrum_intensity": "Fourier magnitude (Hartree), not absorption",
@@ -1088,25 +1126,32 @@ def append_quantum_echoes(
     lines = ["", "[QUANTUM ECHOES]"]
     lines += _indent([f"{key}: {value}" for key, value in fields.items()])
     lines += _indent(["samples:"])
-    lines += _indent([
-        "time tau_p pulse_bound fidelity amplitude_real amplitude_imag "
-        "response correlation_real correlation_imag"], 2)
+    sample_rows = []
+    # Compact display precision; retain near-unity fidelity/amplitude detail
+    # and scientific notation for small signals so they do not round to zero.
+    sample_formats = (".6g", ".4g", ".4e", ".10g", ".10g", ".4e",
+                      ".4e", ".4e", ".4e")
     for result in results:
         values = (result.time, result.tau_p, result.perturbation_bound,
                   result.fidelity, result.amplitude.real, result.amplitude.imag,
                   result.response, result.correlation.real, result.correlation.imag)
-        lines += _indent([" ".join(f"{value:.12e}" for value in values)], 2)
+        sample_rows.append([format(value, spec) for value, spec
+                            in zip(values, sample_formats)])
+    lines += _indent(_ascii_table(
+        ("time", "tau_p", "pulse_bound", "fidelity", "amplitude_real",
+         "amplitude_imag", "response", "correlation_real", "correlation_imag"),
+        sample_rows), 2)
     if spectrum is not None:
         intensity = spectrum.intensities
-        for name, indices in (("peaks", spectrum.peaks()),
-                              ("spectrum", range(spectrum.energies.size))):
-            lines += _indent([f"{name}:"])
-            lines += _indent(["energy_ha energy_ev magnitude fft_real fft_imag"], 2)
-            for i in indices:
-                values = (spectrum.energies[i], spectrum.energies[i]*HARTREE_TO_EV,
-                          intensity[i], spectrum.amplitudes[i].real,
-                          spectrum.amplitudes[i].imag)
-                lines += _indent([" ".join(f"{value:.12e}" for value in values)], 2)
+        peak_rows = []
+        for i in spectrum.peaks():
+            values = (spectrum.energies[i], spectrum.energies[i]*HARTREE_TO_EV,
+                      intensity[i], spectrum.amplitudes[i].real,
+                      spectrum.amplitudes[i].imag)
+            peak_rows.append([f"{value:.12e}" for value in values])
+        lines += _indent(["peaks:"])
+        lines += _indent(_ascii_table(
+            ("energy_ha", "energy_ev", "magnitude", "fft_real", "fft_imag"), peak_rows), 2)
     lines.append(_BANNER)
     _write_lines(path, lines)
 
@@ -1247,7 +1292,8 @@ def parse_output(path: str) -> dict:
     the ``[FORCES]`` block as per-atom vectors plus its scalar keys --
     demonstrating that the protocol is machine-parseable as written.
     ``[QUANTUM ECHOES]`` is returned under ``quantum_echoes`` with metadata
-    and numeric ``samples``, ``peaks``, and ``spectrum`` tables when present.
+    and numeric ``samples`` and ``peaks`` tables. Legacy inline ``spectrum``
+    tables remain readable; current reports point to a separate CSV file.
 
     A file written by a geometry optimization holds one block per step
     (see the module docstring).  ``result["steps"]`` is the list of those blocks,
@@ -1379,7 +1425,7 @@ def parse_output(path: str) -> dict:
                     if key in ("order", "steps", "kick_steps", "spectrum_num_samples",
                                "spectrum_steps_per_sample"):
                         block[key] = int(value)
-                    elif key == "field_au":
+                    elif key in ("field_au", "field_direction"):
                         block[key] = [float(v) for v in value.split()]
                     else:
                         numeric = number(value)

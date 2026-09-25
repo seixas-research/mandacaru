@@ -93,7 +93,7 @@ import numpy as np
 from scipy.optimize import root
 
 from ..basis._config import ground_state_config, valence_subshells
-from ..basis.atomic_solver import (AtomicResult, hartree_potential, lda_xc,
+from ..basis.atomic_solver import (AtomicResult, hartree_potential,
                             solve_atom, solve_radial)
 
 #: Powers of ``r`` in the Troullier-Martins polynomial ``p(r)``.
@@ -101,6 +101,11 @@ TM_POWERS = np.array([0, 2, 4, 6, 8, 10, 12])
 
 #: Default cutoff radius as a multiple of the outermost density maximum.
 DEFAULT_RC_FACTOR = 1.15
+#: Defaults of the reference atom: LDA, scalar-relativistic, with the
+#: nonlinear core correction -- the construction of the other families.
+DEFAULT_XC = "lda"
+DEFAULT_RELATIVITY = "scalar"
+DEFAULT_NLCC = True
 
 
 # --------------------------------------------------------------------------- #
@@ -317,6 +322,20 @@ class PseudoPotential:
     #: projector per channel).  Written to and read from the library files; a
     #: file without the field is the historical TM family.
     family: str = "ncpp"
+    #: How the reference atom was solved.  The defaults describe the
+    #: *original* construction on purpose: a file that does not say how it
+    #: was made was made that way.  :func:`generate_pseudopotential` always
+    #: passes the real values.
+    xc: str = "lda"
+    relativity: str = "none"
+    #: Partial core density the local potential was unscreened with (zero
+    #: without a core correction), and the record of how it was built
+    #: (:mod:`.core_correction`).
+    core_density: np.ndarray = None
+    nlcc: dict = field(default_factory=dict)
+    #: What its generator could not remove (``ghosts="flag"``), as for the
+    #: other families: ``{"ghosts": {l: depth}, "phases": {l: (near, far)}}``.
+    defects: dict = field(default_factory=dict)
 
     def local_potential(self, radius) -> np.ndarray:
         """Interpolate ``V_loc`` onto arbitrary radii (Bohr).
@@ -333,6 +352,15 @@ class PseudoPotential:
         # At r below the first grid point the potential is flat (finite).
         return np.where(radius < self.r[0], self.v_local[0], out)
 
+    def projector_radius(self, l: int) -> float:
+        r"""Radius beyond which the KB projector of channel ``l`` vanishes:
+        :math:`\chi_l = (V_l - V_{loc}) R^{ps}_l` is nonzero out to the larger
+        of the channel's and the local channel's cutoffs."""
+        own = float(self.channels[int(l)].r_cut)
+        if int(l) not in self.projectors or self.local_l not in self.channels:
+            return own
+        return max(own, float(self.channels[self.local_l].r_cut))
+
     def projector(self, l: int, radius) -> np.ndarray:
         """Interpolate the KB projector ``chi_l`` onto arbitrary radii."""
         radius = np.asarray(radius, dtype=float)
@@ -343,8 +371,16 @@ class PseudoPotential:
 
     def __repr__(self) -> str:
         channels = ", ".join(f"l={l}" for l in sorted(self.channels))
+        extras = "".join(
+            label for label, on in (
+                (", scalar-relativistic", self.relativity == "scalar"),
+                (", NLCC", bool((self.nlcc or {}).get("applied"))),
+                (", GHOSTED", bool((self.defects or {}).get("ghosts"))),
+                (", SCATTERING OFF", bool((self.defects or {}).get("phases"))))
+            if on)
         return (f"PseudoPotential({self.symbol}, Z_ion={self.valence_charge:g}, "
-                f"[{channels}], local=l{self.local_l}, family={self.family!r})")
+                f"[{channels}], local=l{self.local_l}, family={self.family!r}"
+                f"{extras})")
 
 
 def _valence_configuration(atomic_number: int, configuration=None):
@@ -368,9 +404,12 @@ def _valence_configuration(atomic_number: int, configuration=None):
 def generate_pseudopotential(symbol: str, *, r_cut=None,
                              rc_factor: float = DEFAULT_RC_FACTOR,
                              local_l: int | None = None,
-                             points: int = 6000, r_max: float = 30.0,
-                             atom: AtomicResult | None = None
-                             ) -> PseudoPotential:
+                             points: int | None = None, r_max: float = 30.0,
+                             atom: AtomicResult | None = None,
+                             xc: str = DEFAULT_XC,
+                             relativity: str = DEFAULT_RELATIVITY,
+                             nlcc: bool | float = DEFAULT_NLCC,
+                             ghosts: str = "flag") -> PseudoPotential:
     r"""Generate a Troullier-Martins / Kleinman-Bylander pseudopotential.
 
     Parameters
@@ -388,6 +427,38 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
         :math:`l`).  The others become Kleinman-Bylander projectors.
     atom : AtomicResult, optional
         A pre-computed all-electron atom, to avoid re-running the SCF.
+    xc : str
+        Exchange-correlation functional of the reference atom and of the
+        unscreening (``"lda"``, the default, or ``"pbe"``).
+    relativity : str
+        ``"scalar"`` (the default) solves the reference atom with the
+        scalar-relativistic (Koelling-Harmon) equation and pseudizes its
+        large component; ``"none"`` is the original non-relativistic atom.
+        The Troullier-Martins inversion stays non-relativistic, as in every
+        norm-conserving generator: it builds the potential whose *Schrodinger*
+        ground state is the pseudo wave at the relativistic eigenvalue, so
+        the relativistic shift of the valence levels lives in the potential.
+        Norm conservation uses the large-component norm, which differs from
+        the relativistic Wronskian identity by :math:`O(c^{-2})`
+        (``HISTORY.md``, "The relativistic norm condition is a Wronskian").
+    nlcc : bool or float
+        Nonlinear core correction (Louie-Froyen-Cohen, :mod:`.core_correction`):
+        unscreen with :math:`V_{xc}[\tilde\rho_c + \tilde\rho_v]` and keep the
+        partial core density :math:`\tilde\rho_c`.  ``True`` (the default)
+        matches it where the core density falls to the valence one; a float
+        sets that radius in Bohr; ``False`` unscreens with the valence alone.
+    ghosts : str
+        ``"flag"`` (the default) checks every channel for a ghost state and
+        for wrong scattering (:func:`kb_ghost_search`), tries the other
+        channels as the local one, and when none is clean returns the
+        least-defective construction with its defects recorded, so loading it
+        warns.  The default differs from the other families on purpose: a
+        single-channel atom (Li, Na, Ba) has no other local channel to try, and
+        one Kleinman-Bylander projector drifts off the all-electron phase far
+        from the reference (lithium 0.52 rad at +1 Ha) -- an NCPP property, not
+        a construction to refuse.  ``"repair"`` raises
+        :class:`~.oncv.GhostStateError` when nothing is clean, ``"refuse"`` at
+        the first defect, and ``"keep"`` returns the construction unexamined.
 
     Returns
     -------
@@ -395,12 +466,37 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
         With :attr:`v_local` smooth at the origin and one projector per remaining
         channel.
     """
+    if ghosts != "keep":
+        options = {k: v for k, v in locals().items()
+                   if k not in ("symbol", "ghosts")}
+        return kb_ghost_search(symbol, options, ghosts)
+
     from ase.data import atomic_numbers
 
+    from ..basis.relativity import _resolve as _resolve_relativity
+    from ..basis.xc import xc_potential
+    from .core_correction import partial_core_density
+
     atomic_number = int(atomic_numbers[symbol])
+    relativity = _resolve_relativity(relativity)
+    if relativity == "dirac":
+        raise ValueError("the NCPP family has one projector per l and no "
+                         "spin-orbit term; use relativity='scalar', or the "
+                         "ONCVPSP or PAW-LCAO family for 'dirac'")
     if atom is None:
-        atom = solve_atom(atomic_number, points=points, r_max=r_max,
-                          tolerance=1e-7, mixing=0.25)
+        # The ONCVPSP grid (1500 Z points): on a coarser uniform grid a
+        # scalar-relativistic s level has not converged -- aluminum's 3s
+        # comes out 6 mHa *above* the non-relativistic one at 6000 points,
+        # and 1 mHa below it, the textbook sign, at 19500.
+        from .oncv import generation_points
+        atom = solve_atom(atomic_number,
+                          points=(generation_points(atomic_number)
+                                  if points is None else int(points)),
+                          r_max=r_max, tolerance=1e-7, mixing=0.25, xc=xc,
+                          relativity=relativity)
+    else:
+        from .oncv import check_reference_atom
+        check_reference_atom(atom, xc, relativity)
 
     valence_config, core_config = _valence_configuration(
         atomic_number, configuration=atom.occupations)
@@ -421,13 +517,25 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
             cut = float(rc_factor * peak)
         channels[l] = pseudize_channel(atom, n, l, cut)
 
-    # Valence pseudo-density, used to unscreen.
+    # Valence pseudo-density, used to unscreen -- with a partial core density
+    # when the nonlinear core correction is on: the all-electron potential
+    # was screened by v_xc[rho_core + rho_valence], and v_xc is not linear.
     valence_density = np.zeros_like(r)
     for l, channel in channels.items():
         valence_density += channel.occupation * channel.pseudo_radial ** 2 \
             / (4.0 * np.pi)
+    core_density = np.zeros_like(r)
+    nlcc_details = {"applied": False, "r_nlcc": None,
+                    "reason": "not requested"}
+    if nlcc is not False and core_config:
+        true_core, _true_valence = atom.partition_density(valence_config)
+        core_density, nlcc_details = partial_core_density(
+            r, true_core, valence_density,
+            r_nlcc=None if nlcc is True else float(nlcc))
+    elif nlcc is not False:
+        nlcc_details["reason"] = "the atom has no core to correct for"
     v_hartree = hartree_potential(r, valence_density)
-    _e_xc, v_xc = lda_xc(valence_density)
+    _e_xc, v_xc = xc_potential(r, valence_density + core_density, xc)
     for channel in channels.values():
         channel.v_ionic = channel.v_screened - v_hartree - v_xc
 
@@ -456,7 +564,146 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
         valence_charge=valence_charge, r=r, channels=channels,
         v_local=v_local, local_l=local, projectors=projectors,
         kb_energies=kb_energies, valence_density=valence_density, atom=atom,
-        family="ncpp")
+        family="ncpp", xc=str(xc), relativity=relativity,
+        core_density=core_density, nlcc=dict(nlcc_details))
+
+
+# --------------------------------------------------------------------------- #
+# Ghost states of the Kleinman-Bylander form.
+# --------------------------------------------------------------------------- #
+
+class _KBChannelView:
+    """What the shared ghost and phase tests read off one channel."""
+
+    def __init__(self, channel):
+        self.l = channel.l
+        self.r_cut = float(channel.r_cut)
+        self.pseudo_radial = channel.pseudo_radial
+        self.reference_energies = [float(channel.eigenvalue)]
+
+
+#: Half-width (Hartree) of the "near" window NCPP scattering is judged over.
+#: One Kleinman-Bylander projector matches the all-electron logarithmic
+#: derivative at the reference energy and, through norm conservation, its
+#: first energy derivative -- nothing more -- so over the +-0.5 Ha of the
+#: two-projector families a sound single-channel potential drifts off
+#: (lithium 0.15, sodium 0.10, barium 0.31 rad).  Over +-0.2 Ha the same
+#: 0.05 rad tolerance measures that first-order transferability; the far
+#: bound (0.3 rad over +-1 Ha) is the one every family meets.
+NCPP_PHASE_WINDOW = 0.2
+
+
+class KBView:
+    r"""A Troullier-Martins / Kleinman-Bylander dataset in the form the
+    ONCVPSP spectral and scattering tests read (:func:`~.oncv.radial_spectrum`,
+    :func:`~.oncv.log_derivative_ps`, :func:`~.oncv.scattering_errors`,
+    :func:`~.oncv.ghost_errors`).
+
+    The screened local potential is the local channel's own
+    :math:`V^{scr}_{loc}`, and channel :math:`l` carries one projector
+    :math:`\chi_l = \delta V_l\,R^{ps}_l` with the coupling
+    :math:`E^{KB}_l`.  :math:`\delta V_l = V_l - V_{loc}` is nonzero out to
+    the larger of the two cutoffs, so that is where the projector ends and
+    where scattering is compared (:meth:`projector_radius`).  Needs a freshly
+    generated dataset: a library file keeps neither the screened potentials
+    nor the all-electron atom.
+    """
+
+    def __init__(self, pp: "PseudoPotential"):
+        if pp.atom is None:
+            raise ValueError("the ghost test needs the all-electron atom of a "
+                             "freshly generated dataset")
+        self.pp = pp
+        self.symbol, self.atomic_number = pp.symbol, pp.atomic_number
+        self.r, self.atom = pp.r, pp.atom
+        self.relativity = getattr(pp, "relativity", "none")
+        self.phase_window = NCPP_PHASE_WINDOW
+        self.channels = {l: _KBChannelView(c) for l, c in pp.channels.items()}
+        local = pp.channels[pp.local_l]
+        self.v_local_screened = local.v_screened
+        self.projectors = {l: ([pp.projectors[l]] if l in pp.projectors else [])
+                           for l in pp.channels}
+        self.coupling = {l: (np.array([[pp.kb_energies[l]]])
+                             if l in pp.kb_energies else np.zeros((0, 0)))
+                         for l in pp.channels}
+
+    def projector_radius(self, l: int) -> float:
+        return self.pp.projector_radius(l)
+
+    def unconstructed_ghosts(self) -> dict:
+        from .oncv import local_potential_ghosts
+        return local_potential_ghosts(self)
+
+
+def kb_levels(pp, l: int) -> np.ndarray:
+    """The two lowest levels of channel ``l`` of a KB dataset (or view)."""
+    from .oncv import radial_spectrum
+    view = pp if isinstance(pp, KBView) else KBView(pp)
+    return radial_spectrum(view, l, n_states=2)
+
+
+def kb_defects(pp) -> tuple[dict, dict]:
+    """``(ghosts, wrong phases)`` of a freshly generated KB dataset:
+    :func:`~.oncv.ghost_errors` (every channel, and those without a
+    projector) and the channels whose scattering phase is off tolerance
+    (:func:`~.oncv.scattering_errors`)."""
+    from .oncv import (_wrong_phases, ghost_errors, log_derivative_ps,
+                       scattering_errors)
+    view = KBView(pp)
+    ghosts = ghost_errors(view, kb_levels)
+    wrong = {} if ghosts else _wrong_phases(
+        scattering_errors(view, log_derivative_ps))
+    return ghosts, wrong
+
+
+def kb_ghost_search(symbol: str, options: dict, mode: str) -> PseudoPotential:
+    r"""``generate_pseudopotential(symbol, **options)``, checked for ghosts.
+
+    A Kleinman-Bylander projector can bind a state below the reference (Gonze,
+    Stumpf and Scheffler, Phys. Rev. B **44**, 8503 (1991)), and which channel
+    serves as the local potential decides whether it does -- the standard
+    remedy.  The construction with the default local channel (the highest
+    :math:`l`) is checked first; if it holds a ghost, in a channel with a
+    projector or without one, or scatters off tolerance, every other channel
+    is tried as the local one, the self-consistent atom solved once and
+    shared.  A caller who fixed ``local_l`` gets the error rather than an
+    override.  ``mode`` is as for :func:`~.oncv.ghost_free`: ``"refuse"``
+    raises at the first defect, ``"flag"`` keeps the least-defective
+    construction with its defects recorded, and ``"repair"`` raises
+    :class:`~.oncv.GhostStateError` when nothing is clean.
+    """
+    from .oncv import GHOST_MODES, GhostStateError, _describe, _least_defective
+
+    if mode not in GHOST_MODES:
+        raise ValueError(f"ghosts must be one of {GHOST_MODES}, not {mode!r}")
+    first = generate_pseudopotential(symbol, **options, ghosts="keep")
+    ghosts, wrong = kb_defects(first)
+    if not ghosts and not wrong:
+        return first
+
+    def problem(g, w):
+        if g:
+            return f"ghost state ({_describe(g)})"
+        return "wrong scattering (" + ", ".join(
+            f"l={l} {a:.3f}/{b:.3f} rad" for l, (a, b) in sorted(w.items())) + ")"
+
+    candidates = [(first, ghosts, wrong)]
+    tried = [f"local l={first.local_l}: {problem(ghosts, wrong)}"]
+    if mode != "refuse" and options.get("local_l") is None:
+        for local in sorted(first.channels, reverse=True):
+            if local == first.local_l:
+                continue
+            trial = dict(options, local_l=local, atom=first.atom)
+            pp = generate_pseudopotential(symbol, **trial, ghosts="keep")
+            g, w = kb_defects(pp)
+            if not g and not w:
+                return pp
+            candidates.append((pp, g, w))
+            tried.append(f"local l={local}: {problem(g, w)}")
+    if mode == "flag":
+        return _least_defective(candidates)
+    raise GhostStateError(f"{symbol}: no Kleinman-Bylander construction is "
+                          f"free of defects ({'; '.join(tried)}).")
 
 
 # --------------------------------------------------------------------------- #

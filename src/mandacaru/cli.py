@@ -139,27 +139,25 @@ def build_parser() -> argparse.ArgumentParser:
                "  mandacaru --load-hamiltonian lih.parquet --dry-run --json\n"
                "  mandacaru LiH --cell 10 --method adapt-vqe --pool qeb --h 0.3\n"
                "  mandacaru --build-backend\n"
-               "  mandacaru --link-paw-lcao ~/Repositories/mandacaru-paw\n",
+               "  mandacaru --set-paw ~/Repositories/mandacaru-paw\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version",
                         version=f"mandacaru {__version__}")
-    # `dest` is explicit because argparse would otherwise derive
-    # `link_paw_lcao` from the hyphenated flag: the user-facing name carries
-    # the family rename, the identifier does not.
-    parser.add_argument("--link-paw-lcao", metavar="DIR", dest="link_paw",
-                        default=None,
-                        help="link a checkout of the PAW-LCAO dataset repository "
-                             "(mandacaru-paw) into Mandacaru's library, then "
-                             "exit.  The datasets are too large to ship, so "
-                             "they live in their own repository and the "
-                             "library holds a symlink to it.")
-    parser.add_argument("--link-oncvpsp", metavar="DIR", default=None,
+    parser.add_argument("--set-paw", metavar="DIR", default=None,
+                        help="record DIR, a checkout of mandacaru-paw, as "
+                             "MANDACARU_PAW_PATH in ~/.zshrc or ~/.bashrc "
+                             "(asking before replacing a different value), "
+                             "then exit.")
+    parser.add_argument("--set-ncpp", metavar="DIR", default=None,
+                        help="the same for the NCPP datasets (mandacaru-ncpp, "
+                             "MANDACARU_NCPP_PATH).")
+    parser.add_argument("--set-oncvpsp", metavar="DIR", default=None,
                         help="the same for the ONCVPSP datasets "
-                             "(mandacaru-oncvpsp).")
+                             "(mandacaru-oncvpsp, MANDACARU_ONCVPSP_PATH).")
     parser.add_argument("--pseudo-status", action="store_true",
-                        help="report which pseudopotential libraries are "
-                             "linked and how many datasets each serves, then "
-                             "exit.")
+                        help="report where each pseudopotential library "
+                             "variable points and how many datasets it "
+                             "serves, then exit.")
     parser.add_argument("--build-backend", action="store_true",
                         help="compile the C integral backend (or report why it "
                              "cannot be), then exit.  Mandacaru does this by "
@@ -502,66 +500,77 @@ def build_backend_command() -> int:
     return 1
 
 
-def link_library_command(*, paw=None, oncvpsp=None) -> int:
-    """``mandacaru --link-paw-lcao DIR`` / ``--link-oncvpsp DIR`` / ``--pseudo-status``.
+def set_library_command(settings: dict) -> int:
+    """``mandacaru --set-paw DIR`` / ``--set-ncpp DIR`` / ``--set-oncvpsp DIR``.
 
-    The ONCVPSP and PAW-LCAO datasets are ~100 MB and ~200 MB for Z <= 92, too large
-    to ship, so they live in their own repositories and the library holds a
-    symlink to a checkout (see
-    :mod:`mandacaru.pseudopotentials.link_library`).  This links them and then
-    *proves* the link works by loading one dataset through the normal loader --
-    a symlink that points at the wrong directory layout would otherwise only
-    fail later, in the middle of a calculation.
-
-    Returns 0 when every requested family is linked and loadable.
+    ``settings`` maps a family to the directory given for it.  Each directory
+    must exist; it is recorded, absolute, as the family's variable in the
+    shell configuration (:func:`~mandacaru.utils.shell_config.set_shell_variable`,
+    which asks before replacing a different value), and set in this process
+    too.  Returns 0 when every variable was recorded or already held that value.
     """
-    from .pseudopotentials.link_library import link_library, status_lines
+    from .pseudopotentials.environment import (FAMILY_VARIABLES, FUNCTIONALS,
+                                               dataset_count)
+    from .utils.shell_config import ShellConfigError, set_shell_variable
 
-    requested = [("paw-lcao", paw), ("oncvpsp", oncvpsp)]
-    failed = False
-    for family, source in requested:
-        if source is None:
+    failed = changed = False
+    for family, source in settings.items():
+        variable = FAMILY_VARIABLES[family]
+        path = os.path.abspath(os.path.expanduser(source))
+        if not os.path.isdir(path):
+            print(f"{variable}: {source!r} is not a directory; nothing was "
+                  "written.")
+            failed = True
             continue
         try:
-            # From the command line, naming a path *is* the request to use it,
-            # so an existing link is replaced; a real populated directory is
-            # still refused, with a message saying so.
-            link_library(family, source, force=True)
-        except (FileNotFoundError, FileExistsError, ValueError) as exc:
-            print(f"{family}: {exc}")
+            update = set_shell_variable(variable, path)
+        except ShellConfigError as exc:
+            print(f"{variable}: {exc}")
             failed = True
-
-    for line in status_lines():
-        print(line)
-
-    # Load one dataset per newly linked family: the real check.
-    for family, source in requested:
-        if source is None or failed:
             continue
-        try:
-            element = _probe_element(family)
-            print(f"{family}: loaded {element} successfully")
-        except Exception as exc:                      # noqa: BLE001 - reported
-            print(f"{family}: linked, but loading a dataset failed: "
-                  f"{type(exc).__name__}: {exc}")
-            failed = True
+        messages = {
+            "added": f"{variable}={path} added to {update.path}",
+            "replaced": (f"{variable}={path} replaces {update.previous} in "
+                         f"{update.path}"),
+            "unchanged": f"{update.path} already sets {variable}={path}",
+            "declined": (f"{variable} left at {update.previous} in "
+                         f"{update.path}"),
+        }
+        print(messages[update.action])
+        changed = changed or update.changed
+        if update.action == "declined":
+            continue
+        os.environ[variable] = path
+        held = {xc: dataset_count(os.path.join(path, xc)) for xc in FUNCTIONALS
+                if os.path.isdir(os.path.join(path, xc))}
+        if held:
+            print("    " + ", ".join(f"{xc}/: {n} datasets"
+                                     for xc, n in held.items()))
+        else:
+            print(f"    warning: {path} has no lda/ or pbe/ directory yet; "
+                  "calculations will not find datasets there")
+    if changed:
+        print("Open a new terminal, or `source` the file above, for the "
+              "variable to be defined in your shell.")
     return 1 if failed else 0
 
 
-def _probe_element(family: str) -> str:
-    """Load the first available dataset of ``family`` through its own loader."""
-    from .pseudopotentials.families import resolve_family
-    from .pseudopotentials.io import available_elements, library_root
-    from .pseudopotentials.link_library import FAMILY_SUBDIRS, _family
+def pseudo_status_command() -> int:
+    """``mandacaru --pseudo-status``: every library variable, where it
+    points and what it holds; 0 when all three are set and valid."""
+    from .pseudopotentials.environment import (FAMILY_VARIABLES,
+                                               LibraryPathError,
+                                               repository_path, status_lines)
 
-    key = _family(family)
-    folder = os.path.join(library_root(), FAMILY_SUBDIRS[key])
-    elements = available_elements(folder)
-    if not elements:
-        raise FileNotFoundError(f"no datasets under {folder}")
-    element = "H" if "H" in elements else elements[0]
-    resolve_family(key).get(element)
-    return element
+    for line in status_lines():
+        print(line)
+    ok = True
+    for family in FAMILY_VARIABLES:
+        try:
+            repository_path(family)
+        except LibraryPathError:
+            ok = False
+    return 0 if ok else 1
 
 
 def main(argv=None) -> int:
@@ -570,9 +579,13 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.build_backend:
         return build_backend_command()
-    if args.link_paw or args.link_oncvpsp or args.pseudo_status:
-        return link_library_command(paw=args.link_paw,
-                                    oncvpsp=args.link_oncvpsp)
+    settings = {family: path for family, path in (
+        ("paw-lcao", args.set_paw), ("ncpp", args.set_ncpp),
+        ("oncvpsp", args.set_oncvpsp)) if path is not None}
+    if settings:
+        return set_library_command(settings)
+    if args.pseudo_status:
+        return pseudo_status_command()
     if args.geometry is None and args.load_hamiltonian is None:
         parser.error("a geometry (file or molecule name) is required unless "
                      "--load-hamiltonian is given")
@@ -590,9 +603,16 @@ def main(argv=None) -> int:
         # writes no log): a usage error either way, reported the way argparse
         # reports one.
         parser.error(str(exc))
-    if args.dry_run:
-        return run_dry(calc, atoms, args)
-    return run_full(calc, atoms, args)
+    from .pseudopotentials.environment import LibraryPathError
+    try:
+        if args.dry_run:
+            return run_dry(calc, atoms, args)
+        return run_full(calc, atoms, args)
+    except LibraryPathError as exc:
+        # A library variable that is unset or wrong is a setup problem with
+        # a one-line fix, not a crash: say which command fixes it.
+        print(f"mandacaru: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":                                  # pragma: no cover

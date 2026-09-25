@@ -232,9 +232,11 @@ Library Files
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: mandacaru.pseudopotentials.link_library
-   :members: link_library, status
+.. automodule:: mandacaru.pseudopotentials.environment
+   :members:
    :undoc-members:
+   :show-inheritance:
+   :exclude-members: LibraryPathError
 
 ----
 
@@ -367,6 +369,11 @@ Utilities & Profiling
    :show-inheritance:
 
 .. automodule:: mandacaru.utils.citations
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: mandacaru.utils.shell_config
    :members:
    :undoc-members:
    :show-inheritance:

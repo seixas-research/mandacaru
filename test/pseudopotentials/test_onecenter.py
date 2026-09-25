@@ -64,7 +64,7 @@ class TestOnAPAWDataset:
         try:
             dataset = get_paw("O")
         except FileNotFoundError:
-            pytest.skip("the PAW-LCAO library is not linked")
+            pytest.skip("MANDACARU_PAW_PATH is not configured")
         projectors = paw_projectors(["O"], np.zeros((1, 3)), {"O": dataset})
         return dataset, projectors
 

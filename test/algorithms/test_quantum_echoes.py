@@ -115,7 +115,7 @@ def test_adapt_ground_state_handoff(mapping, tmp_path):
     np.testing.assert_allclose(propagated, expm(-0.5j*hq.to_matrix()) @ psi, atol=2e-9)
 
 
-def test_three_dimensional_h2_example(tmp_path, monkeypatch):
+def test_three_dimensional_h2_example(tmp_path, monkeypatch, capsys):
     """Validate physical geometry, the AO/MO dipole transform, and the echo."""
     example = Path(__file__).resolve().parents[2] / "examples" / "quantum_echoes.py"
     module = runpy.run_path(str(example))
@@ -189,9 +189,16 @@ def test_three_dimensional_h2_example(tmp_path, monkeypatch):
     monkeypatch.setitem(main.__globals__, "build_h2_problem",
                         lambda txt: (atoms, integrals, h, r_mo))
     main(txt=str(output))
+    assert "HOMO-LUMO gap (RHF):" in capsys.readouterr().out
     logged = parse_output(str(output))["quantum_echoes"]
     assert len(logged["samples"]) == 9
-    assert len(logged["spectrum"]) == 1024
+    assert "spectrum" not in logged
+    assert np.genfromtxt(logged["spectrum_file"], delimiter=",", names=True).size == 1024
+    reference = integrals.hartree_fock(2)
+    expected_gap = reference.mo_energies[1] - reference.mo_energies[0]
+    assert logged["homo_lumo_gap_ha"] == pytest.approx(expected_gap)
+    assert logged["orbital_reference"] == "RHF canonical orbitals"
+    np.testing.assert_allclose(logged["field_direction"], direction)
     assert logged["spectrum_steps_per_sample"] == 10
     energies, vectors = np.linalg.eigh(hm[np.ix_(sector, sector)])
     transition = vectors.conj().T @ v.to_matrix()[np.ix_(sector, sector)] @ vectors[:, 0]

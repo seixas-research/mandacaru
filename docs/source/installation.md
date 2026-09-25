@@ -37,29 +37,33 @@ checkout or select the documentation version for your release.
 
 ## Pseudopotential datasets
 
-The NCPP datasets ship with the package. The **ONCVPSP** and **PAW-LCAO** ones do
-not — about 110 MB and 190 MB for all 92 elements — so they live in their own
-repositories, and the library holds a symbolic link to a checkout:
+None of the generated families ships with the package: **NCPP**, **ONCVPSP**
+and **PAW-LCAO** each live in their own repository — about 11 MB, 110 MB and
+190 MB for all 92 elements — and an environment variable names the checkout
+Mandacaru reads from:
 
 ```bash
+git clone https://github.com/seixas-research/mandacaru-ncpp.git
+mandacaru --set-ncpp mandacaru-ncpp
+
 git clone https://github.com/seixas-research/mandacaru-paw.git
-mandacaru --link-paw-lcao mandacaru-paw
+mandacaru --set-paw mandacaru-paw
 
 git clone https://github.com/seixas-research/mandacaru-oncvpsp.git
-mandacaru --link-oncvpsp mandacaru-oncvpsp
+mandacaru --set-oncvpsp mandacaru-oncvpsp
 
-mandacaru --pseudo-status        # what is linked, and how many datasets each serves
+mandacaru --pseudo-status        # each variable, where it points, and how many datasets it serves
 ```
 
-Each command links the directory and then loads one dataset through the normal
-loader to prove the link works, exiting non-zero if it does not. Re-running with
-a new path moves the link, so the data repository can be relocated freely; a
-real, non-empty `library/paw-lcao/` directory is refused rather than deleted.
+Each command writes `export MANDACARU_..._PATH=DIR` into `~/.zshrc` or
+`~/.bashrc` (whichever `$SHELL` reads), asking `[Y/n]` before replacing a
+different value; open a new terminal, or `source` the file, for the variable
+to take effect in your shell.
 
-Without this, `basis="PAW-LCAO"` and `basis="ONCVPSP"` raise a `FileNotFoundError`
-that repeats these commands. `basis="NCPP"` and the all-electron bases (`HAO`,
-`NAO`, `NAO-AE`, the Gaussian families) need nothing extra. Set
-`MANDACARU_PSEUDO_PATH` to serve the library from somewhere else entirely.
+Without this, `basis="NCPP"`, `basis="PAW-LCAO"` and `basis="ONCVPSP"` raise a
+`LibraryPathError` that repeats the matching `--set-*` command; the all-electron
+bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. A
+basis option `directory=...` overrides the variable for one run.
 
 `basis="UPAW-LCAO"` needs nothing either: no library is shipped for it, so a missing
 dataset is generated on demand (a fraction of a second per element) and cached

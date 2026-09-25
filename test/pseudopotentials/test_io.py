@@ -19,7 +19,7 @@ import pytest
 from mandacaru.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
                                      PARQUET_MAGIC, PSEUDO_FORMATS, STRIDE,
                                      available_elements, detect_format,
-                                     generation_points, get_pseudopotential,
+                                     get_pseudopotential,
                                      library_elements, library_file,
                                      load_pseudopotential, resolve_format,
                                      save_pseudopotential)
@@ -27,7 +27,7 @@ from mandacaru.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
 
 @pytest.fixture(scope="module")
 def silicon():
-    """A real pseudopotential from the bundled library."""
+    """A real pseudopotential from the NCPP library ($MANDACARU_NCPP_PATH)."""
     return get_pseudopotential("Si")
 
 
@@ -211,7 +211,7 @@ class TestArrowStringIsolation:
 
 
 class TestLibrary:
-    """The bundled library under ``library/``."""
+    """The NCPP library, ``$MANDACARU_NCPP_PATH/lda``."""
 
     def test_covers_z_up_to_92(self):
         elements = library_elements()
@@ -227,10 +227,6 @@ class TestLibrary:
     def test_library_file_finds_either_format(self, tmp_path):
         (tmp_path / "Si.json").write_text("{}")
         assert library_file("Si", tmp_path).endswith(".json")
-
-    def test_generation_points_scale_with_z(self):
-        assert generation_points(1) >= 6000
-        assert generation_points(80) > generation_points(8)
 
     def test_stride_is_not_the_save_default(self):
         """It applies to library generation only -- see the idempotence test."""

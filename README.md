@@ -25,7 +25,7 @@ pip install mandacaru
 
 # PAW-LCAO datasets (kept in a separate repository because of their size)
 git clone https://github.com/seixas-research/mandacaru-paw.git
-mandacaru --link-paw-lcao mandacaru-paw
+mandacaru --set-paw mandacaru-paw
 ```
 
 ## LiH with ASE

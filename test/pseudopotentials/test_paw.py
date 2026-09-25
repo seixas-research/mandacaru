@@ -42,6 +42,7 @@ from mandacaru.pseudopotentials import (
     save_pseudopotential)
 from mandacaru.pseudopotentials import paw
 from mandacaru.pseudopotentials.io import library_elements
+from mandacaru.pseudopotentials.environment import LibraryPathError
 from mandacaru.pseudopotentials.io import (available_elements,
                                                        default_library_path,
                                                        detect_format)
@@ -497,13 +498,13 @@ GHOST_SWEEP = ["B", "Na", "Cl", "Fe", "Cu", "Ga", "Ba", "La", "W", "Bi"]
 
 class TestLibrary:
     def test_shipped_elements(self):
-        # The external paw repository (all 92 elements) linked into
-        # library/paw-lcao; at least the six generated in-repo must be there.
-        shipped = available_elements(paw_library_path())
-        if not shipped:
-            pytest.skip("external paw repository not linked on this machine")
+        # The mandacaru-paw checkout ($MANDACARU_PAW_PATH/lda, all 92
+        # elements); at least the six generated in-repo must be there.
+        try:
+            shipped = available_elements(paw_library_path())
+        except LibraryPathError:
+            pytest.skip("MANDACARU_PAW_PATH is not configured here")
         assert {"C", "F", "H", "Li", "N", "O"} <= set(shipped)
-        assert "paw-lcao" not in available_elements(default_library_path())
 
     @pytest.mark.parametrize("symbol", ["H", "Li", "C", "N", "O", "F"])
     def test_shipped_file_loads(self, symbol):

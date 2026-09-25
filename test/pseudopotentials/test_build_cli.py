@@ -5,6 +5,14 @@ from mandacaru.pseudopotentials.build_cli import FAMILIES, build_parser, main
 from mandacaru.pseudopotentials.io import load_pseudopotential
 
 
+@pytest.fixture(autouse=True)
+def _outside_the_repository(tmp_path, monkeypatch):
+    """Every test runs from a temporary directory: without ``--output``,
+    ``mandacaru-build`` writes into ``./<family>/``, and a test that
+    generates by mistake must not leave datasets in the checkout."""
+    monkeypatch.chdir(tmp_path)
+
+
 def test_the_example_command_parses():
     args = build_parser().parse_args(
         ["--pp", "PAW", "--relativistic", "--xc", "LDA", "--element", "Fe"])
@@ -22,8 +30,8 @@ def test_family_spellings(spelling, family):
 
 def test_ncpp_refuses_what_its_generator_cannot_do(capsys):
     with pytest.raises(SystemExit):
-        main(["--pp", "NCPP", "--relativistic", "--element", "H"])
-    assert "non-relativistic LDA only" in capsys.readouterr().err
+        main(["--pp", "NCPP", "--dirac", "--element", "H"])
+    assert "no spin-orbit term" in capsys.readouterr().err
 
 
 def test_an_unknown_element_is_a_usage_error(capsys):
@@ -80,3 +88,16 @@ def test_a_generator_warning_reaches_the_report(tmp_path, capsys, monkeypatch):
     assert code == 0, out
     assert "warning: cutoff beyond the trustworthy range" in out
     assert "overflow" not in out
+
+
+def test_install_needs_the_library_variable(monkeypatch, capsys):
+    monkeypatch.delenv("MANDACARU_PAW_PATH", raising=False)
+    assert main(["--pp", "PAW", "--element", "H", "--install"]) == 2
+    assert "mandacaru --set-paw" in capsys.readouterr().err
+
+
+def test_install_writes_into_the_functional_folder(tmp_path, monkeypatch,
+                                                   capsys):
+    monkeypatch.setenv("MANDACARU_PAW_PATH", str(tmp_path))
+    assert main(["--pp", "PAW", "--element", "H", "--install"]) == 0
+    assert (tmp_path / "lda" / "H.parquet").is_file()

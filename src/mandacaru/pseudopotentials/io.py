@@ -12,13 +12,14 @@ Generating a pseudopotential means running a self-consistent all-electron atom
 and solving a nonlinear fit per channel -- a second or two per element.  That is
 far too slow to repeat inside a geometry optimization, and it is also pure
 overhead: the result depends only on the element, never on the molecule.  So the
-library is generated once and shipped under ``library/``.
+library is generated once and kept in the ``mandacaru-ncpp`` repository
+(``$MANDACARU_NCPP_PATH/lda/``; :mod:`.environment`).
 
 File formats
 ------------
 One file per element, in either of two interchangeable formats
 (:data:`PSEUDO_FORMATS`).  **Parquet** (``<symbol>.parquet``) is the default and
-what the shipped library uses -- the radial tables are thousands of floats per
+what the libraries use -- the radial tables are thousands of floats per
 element and columnar compression matters across the whole periodic table.
 **JSON** (``<symbol>.json``) is the same content as plain text, needs no Parquet
 engine, and is what to write when a dataset has to be inspected, plotted or
@@ -153,57 +154,28 @@ def detect_format(path) -> str:
         f"cannot determine the format of {path!r}: unrecognized extension and "
         "the content matches neither Parquet nor JSON. Pass format= explicitly.")
 
-#: Highest atomic number in the shipped library (hydrogen through actinium).
+#: Highest atomic number of the libraries.
 LIBRARY_Z_MAX = 92
 
 
 def library_elements(z_max: int = LIBRARY_Z_MAX) -> tuple:
-    """Chemical symbols shipped in ``library/`` -- everything with ``Z <= z_max``."""
+    """Chemical symbols of a library -- everything with ``Z <= z_max``."""
     from ase.data import chemical_symbols
     return tuple(chemical_symbols[z] for z in range(1, int(z_max) + 1))
 
 
-#: Elements shipped in ``library/``.
+#: Elements of a library.
 LIBRARY_ELEMENTS = library_elements()
 
 
-def generation_points(atomic_number: int, minimum: int = 6000) -> int:
-    """Radial grid points for the all-electron solve of element ``Z``.
-
-    The :math:`1s` shell scales as :math:`a_0/Z`, so a heavy atom needs a finer
-    grid than a light one.  Valence eigenvalues -- the only thing a
-    pseudopotential is built from -- are converged to ~1e-4 Ha at the floor
-    already (checked against NIST LSD for Ar, Kr and Xe), so this scaling is
-    margin rather than necessity; the deep-core *total* energy converges much
-    more slowly and is irrelevant here.
-    """
-    return max(int(minimum), int(150 * int(atomic_number)))
+def default_library_path(xc: str = "lda", *, must_exist: bool = True) -> str:
+    """The Troullier-Martins (NCPP) library folder,
+    ``$MANDACARU_NCPP_PATH/<xc>`` (:mod:`.environment`)."""
+    from .environment import library_directory
+    return library_directory("ncpp", xc, must_exist=must_exist)
 
 
-#: Subdirectory of the library holding the Troullier-Martins (NCPP) files;
-#: the other families keep theirs in ``oncvpsp/`` and ``paw-lcao/``.
-LIBRARY_SUBDIR = "ncpp"
-
-
-def library_root() -> str:
-    """Absolute path of the bundled ``library/`` directory (all families).
-
-    Resolved relative to the package so it works from a source checkout; the
-    ``MANDACARU_PSEUDO_PATH`` environment variable overrides it.
-    """
-    override = os.environ.get("MANDACARU_PSEUDO_PATH")
-    if override:
-        return os.path.abspath(override)
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(here, "library")
-
-
-def default_library_path() -> str:
-    """The Troullier-Martins (NCPP) library directory, ``library/ncpp``."""
-    return os.path.join(library_root(), LIBRARY_SUBDIR)
-
-
-#: Keep every ``STRIDE``-th radial point when writing **the bundled library**.
+#: Keep every ``STRIDE``-th radial point when writing **a library**.
 #: The generation grid is far finer than a pseudopotential needs (it must resolve
 #: the all-electron core during construction); the *result* is smooth by design,
 #: so subsampling once costs no accuracy and shrinks the library ~4x.
@@ -249,7 +221,7 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
         leads.
     stride : int
         Keep every ``stride``-th radial point.  The default of 1 writes the
-        tables as given, so save-load-save is idempotent; the bundled library is
+        tables as given, so save-load-save is idempotent; a library is
         generated once at :data:`STRIDE`.
     """
     if format is None:
@@ -300,8 +272,30 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
         "projectors": {str(l): _table(chi, stride)
                        for l, chi in pp.projectors.items()},
         "kb_energies": {str(l): float(e) for l, e in pp.kb_energies.items()},
+        "xc": str(getattr(pp, "xc", "lda")),
+        "relativity": str(getattr(pp, "relativity", "none")),
+        "nlcc": dict(getattr(pp, "nlcc", None) or {}),
+        "defects": _defects_record(getattr(pp, "defects", None)),
     }
+    core = getattr(pp, "core_density", None)
+    if core is not None and np.any(core):
+        payload["core_density"] = _table(core, stride)
     return _write_payload(path, payload, format, engine)
+
+
+def _defects_record(defects):
+    from .oncv import defects_record
+    return defects_record(defects)
+
+
+def _read_defects(record):
+    from .oncv import read_defects
+    return read_defects(record)
+
+
+def _warn_defects(dataset, family):
+    from .oncv import warn_defects
+    warn_defects(dataset, family)
 
 
 def _write_payload(path, payload, format, engine) -> str:
@@ -322,6 +316,8 @@ def _radial_columns(payload):
         return dict(payload["radial_tables"])
     columns = {"r": payload["r"], "v_local": payload["v_local"],
                "valence_density": payload["valence_density"]}
+    if "core_density" in payload:
+        columns["core_density"] = payload["core_density"]
     for key, entry in payload["channels"].items():
         columns[f"pseudo_radial_l{key}"] = entry["pseudo_radial"]
         columns[f"v_ionic_l{key}"] = entry["v_ionic"]
@@ -339,7 +335,8 @@ def _write_parquet(path, payload, engine):
         scalars = {k: v for k, v in payload.items() if k != "radial_tables"}
     else:
         scalars = {k: v for k, v in payload.items()
-                   if k not in ("r", "v_local", "valence_density", "projectors")}
+                   if k not in ("r", "v_local", "valence_density", "projectors",
+                                "core_density")}
         # Channels keep their scalars but drop the (now columnar) radial tables.
         scalars["channels"] = {
             key: {k: v for k, v in entry.items()
@@ -393,6 +390,8 @@ def _read_parquet(path, engine):
     payload["r"] = columns["r"]
     payload["v_local"] = columns["v_local"]
     payload["valence_density"] = columns["valence_density"]
+    if "core_density" in columns:
+        payload["core_density"] = columns["core_density"]
     for key, entry in payload["channels"].items():
         entry["pseudo_radial"] = columns[f"pseudo_radial_l{key}"]
         entry["v_ionic"] = columns[f"v_ionic_l{key}"]
@@ -455,7 +454,7 @@ def load_pseudopotential(path, format: str | None = None,
             occupation=float(entry["occupation"]),
             norm_error=float(entry.get("norm_error", 0.0)))
 
-    return PseudoPotential(
+    dataset = PseudoPotential(
         symbol=payload["symbol"],
         atomic_number=int(payload["atomic_number"]),
         valence_charge=float(payload["valence_charge"]),
@@ -469,7 +468,17 @@ def load_pseudopotential(path, format: str | None = None,
                      for k, v in payload["kb_energies"].items()},
         valence_density=np.asarray(payload["valence_density"], dtype=float),
         atom=None,
-        family=family)
+        family=family,
+        # A file without these keys was written by the original generator:
+        # non-relativistic LDA without a core correction.
+        xc=str(payload.get("xc", "lda")),
+        relativity=str(payload.get("relativity", "none")),
+        nlcc=dict(payload.get("nlcc") or {"applied": False, "r_nlcc": None}),
+        core_density=(np.asarray(payload["core_density"], dtype=float)
+                      if "core_density" in payload else np.zeros_like(r)),
+        defects=_read_defects(payload.get("defects")))
+    _warn_defects(dataset, family)
+    return dataset
 
 
 # --------------------------------------------------------------------------- #
@@ -500,14 +509,13 @@ def library_file(symbol: str, directory=None,
 
 
 def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
-                         *, label: str, noun: str, repository: str,
-                         link_flag: str, builder: str):
-    """Load ``symbol`` of an external family library (cached), or explain.
+                         *, label: str, noun: str, builder: str):
+    """Load ``symbol`` from the library ``folder`` (cached), or explain.
 
-    The ONCVPSP and PAW-LCAO datasets are too large to ship, so an **empty** library
-    is the normal state of a fresh install and gets the ``git clone`` + link
-    recipe; a library that is present but lacks the element names what it does
-    hold.  A file of another family is refused.
+    ``folder`` comes from :func:`.environment.library_directory`, which has
+    already refused an unset or wrong variable.  An **empty** folder gets the
+    recipe to fill it; one that lacks the element names what it does hold.  A
+    file of another family is refused.
     """
     key = f"{symbol}@{folder}"
     cached = cache.get(key)
@@ -518,13 +526,11 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
         available = available_elements(folder)
         if not available:
             raise FileNotFoundError(
-                f"the {label} dataset library at {folder!r} is empty. The "
-                "datasets are too large to ship, so they live in their own "
-                "repository:\n"
-                f"    git clone https://github.com/seixas-research/{repository}\n"
-                f"    mandacaru {link_flag} {repository}\n"
-                "(`mandacaru --pseudo-status` reports what is linked). To build "
-                f"them from scratch instead: {builder}([symbol]).")
+                f"the {label} library at {folder!r} holds no datasets.  Update "
+                "the repository checkout the library variable names "
+                "(`mandacaru --pseudo-status` shows it), or generate the "
+                f"datasets there: mandacaru-build --pp {family} --all "
+                "--install")
         raise FileNotFoundError(
             f"no {label} {noun} for {symbol!r} at {path!r}. "
             f"Available: {', '.join(available)}. "
@@ -534,7 +540,7 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
         raise ValueError(f"{path!r} belongs to family {pp.family!r}, not "
                          f"{family!r}")
     # Where the dataset came from: the run log's [BASIS] block names it, since
-    # a library is a directory the user links in and can point elsewhere.
+    # a library is a checkout an environment variable points at, anywhere.
     pp.source = os.path.realpath(path)
     cache[key] = pp
     return pp
@@ -553,26 +559,32 @@ def available_elements(directory=None) -> list[str]:
     return sorted(found)
 
 
-def get_pseudopotential(symbol: str, directory=None) -> PseudoPotential:
-    """Load ``symbol`` from the library (cached).
+def get_pseudopotential(symbol: str, directory=None,
+                        xc: str = "lda") -> PseudoPotential:
+    """Load ``symbol`` from the NCPP library (cached).
+
+    The library is ``$MANDACARU_NCPP_PATH/<xc>`` unless ``directory`` names
+    the folder itself.
 
     Raises
     ------
+    LibraryPathError
+        If the variable is unset or wrong (:mod:`.environment`).
     FileNotFoundError
         If the element is not in the library, with a pointer to the generator.
     """
-    key = f"{symbol}@{directory}"
+    folder = default_library_path(xc) if directory is None else directory
+    key = f"{symbol}@{folder}"
     cached = _CACHE.get(key)
     if cached is not None:
         return cached
-    path = library_file(symbol, directory)
+    path = library_file(symbol, folder)
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"no pseudopotential for {symbol!r} at {path!r}. Available: "
-            f"{', '.join(available_elements(directory)) or '(none)'}. "
-            "Regenerate the library with "
-            "`python -m mandacaru.pseudopotentials.io` or call "
-            "`build_library()`.")
+            f"{', '.join(available_elements(folder)) or '(none)'}. "
+            "Generate it with `mandacaru-build --pp NCPP --element "
+            f"{symbol} --install` or `build_library([{symbol!r}])`.")
     pp = load_pseudopotential(path)
     _CACHE[key] = pp
     return pp
@@ -593,14 +605,13 @@ def build_library(elements=None, directory=None, *, verbose: bool = True,
     generation grid is far finer than the smooth result needs, and this is the
     one place where decimating is safe because the fine grid is right here.
     """
-    from ase.data import atomic_numbers
-
     elements = LIBRARY_ELEMENTS if elements is None else tuple(elements)
-    directory = default_library_path() if directory is None else directory
+    directory = (default_library_path(must_exist=False) if directory is None
+                 else directory)
+    os.makedirs(directory, exist_ok=True)
     written, failures = [], {}
     for symbol in elements:
         options = dict(generation_options)
-        options.setdefault("points", generation_points(atomic_numbers[symbol]))
         try:
             pp = generate_pseudopotential(symbol, **options)
             path = save_pseudopotential(
@@ -627,7 +638,7 @@ if __name__ == "__main__":                                  # pragma: no cover
     import sys
 
     z_max = int(sys.argv[1]) if len(sys.argv) > 1 else LIBRARY_Z_MAX
-    target = default_library_path()
+    target = default_library_path(must_exist=False)
     print(f"Generating the Mandacaru pseudopotential library (Z <= {z_max}) "
           f"in {target}")
     _written, failed = build_library(library_elements(z_max))

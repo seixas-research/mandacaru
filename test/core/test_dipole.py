@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from mandacaru.core import Fermion, electric_dipole_potential
+from mandacaru.core import Fermion, electric_dipole_potential, electric_field_vector
 
 
 def test_spatial_dipole_sign_spin_blocks_and_nuclear_phase():
@@ -64,3 +64,42 @@ def test_invalid_positions(positions):
 def test_invalid_cartesian_vectors(name, value):
     with pytest.raises(ValueError, match=name):
         electric_dipole_potential(np.zeros((3, 2, 2)), **{name: value})
+
+
+def test_direction_and_strength_match_cartesian_coupling():
+    positions = np.array([[[1, 0], [0, -1]], [[0, 1], [1, 0]],
+                          [[0, -1j], [1j, 0]]])
+    direction = np.array([1, 2, -2])/3
+    potential = electric_dipole_potential(
+        positions, field_direction=direction, field_strength=0.02,
+        nuclear_dipole=[0.1, 0.3, -0.2])
+    expected = electric_dipole_potential(
+        positions, field=0.02*direction, nuclear_dipole=[0.1, 0.3, -0.2])
+    np.testing.assert_allclose(potential.to_matrix(), expected.to_matrix())
+    opposite = electric_dipole_potential(
+        positions, field_direction=-direction, field_strength=0.02,
+        nuclear_dipole=[0.1, 0.3, -0.2])
+    np.testing.assert_allclose(opposite.to_matrix(), -expected.to_matrix())
+    np.testing.assert_array_equal(electric_field_vector([1, 0, 0], 0), [0, 0, 0])
+
+
+@pytest.mark.parametrize("direction", [[0, 0, 0], [1, 1, 1], [2, 0, 0],
+                                       [1, 0], [np.nan, 0, 1], [0, 0, 1j]])
+def test_invalid_unit_direction(direction):
+    with pytest.raises(ValueError, match="field_direction"):
+        electric_field_vector(direction, 0.01)
+
+
+@pytest.mark.parametrize("strength", [-0.1, np.nan, np.inf, 1j, [0.1]])
+def test_invalid_field_strength(strength):
+    with pytest.raises(ValueError, match="field_strength"):
+        electric_field_vector([0, 0, 1], strength)
+
+
+@pytest.mark.parametrize("options", [
+    {"field_direction": [1, 0, 0]}, {"field_strength": 0.01},
+    {"field": [0, 0, 1], "field_direction": [1, 0, 0], "field_strength": 0.01},
+])
+def test_ambiguous_or_incomplete_field_input(options):
+    with pytest.raises(ValueError, match="supply both"):
+        electric_dipole_potential(np.zeros((3, 2, 2)), **options)

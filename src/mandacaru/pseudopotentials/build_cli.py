@@ -21,9 +21,11 @@ more slowly.
 
 A dataset is written to ``--output`` (default: the current directory, one
 subdirectory per family) at the library stride.  ``--install`` writes into
-Mandacaru's own library for the family instead -- the linked
-``mandacaru-paw`` / ``mandacaru-oncvpsp`` checkout -- and so replaces the
-dataset calculations load; it is never the default.
+Mandacaru's own library for the family instead -- ``<checkout>/<xc>/`` of the
+checkout its environment variable names (``MANDACARU_PAW_PATH``,
+``MANDACARU_ONCVPSP_PATH``, ``MANDACARU_NCPP_PATH``; UPAW-LCAO goes to
+``$MANDACARU_PAW_PATH/upaw-lcao/<xc>/``) -- and so replaces the dataset
+calculations load; it is never the default.
 
 Each channel is checked after generation: its two lowest levels against the
 reference (a ghost state is refused or repaired, per ``--ghosts``), and with
@@ -44,8 +46,9 @@ FAMILIES = {"paw": "paw-lcao", "paw-lcao": "paw-lcao",
             "upaw": "upaw-lcao", "upaw-lcao": "upaw-lcao",
             "oncv": "oncvpsp", "oncvpsp": "oncvpsp",
             "ncpp": "ncpp", "tm": "ncpp"}
-#: Families whose generator takes ``xc``, ``relativity`` and ``ghosts``.
-MODERN = ("paw-lcao", "upaw-lcao", "oncvpsp")
+#: Families whose generator takes ``xc``, ``relativity`` and ``ghosts`` --
+#: all of them.
+MODERN = ("paw-lcao", "upaw-lcao", "oncvpsp", "ncpp")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -88,16 +91,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", "-o", default=None, metavar="DIR",
                         help="directory to write into (default: ./<family>/)")
     parser.add_argument("--install", action="store_true",
-                        help="write into Mandacaru's library for the family, "
-                             "replacing the dataset calculations load")
+                        help="write into the family's library, <checkout>/<xc>/ "
+                             "of the checkout its MANDACARU_*_PATH variable "
+                             "names, replacing the dataset calculations load")
     parser.add_argument("--format", default="parquet", choices=PSEUDO_FORMATS)
     parser.add_argument("--workers", "-j", type=int, default=1,
                         help="elements generated in parallel (default 1)")
-    parser.add_argument("--ghosts", default="repair", choices=GHOST_MODES,
-                        help="repair (default), refuse or keep a ghost state; "
-                             "flag (PAW/UPAW) writes an element no repair "
+    parser.add_argument("--ghosts", default=None, choices=GHOST_MODES,
+                        help="repair, refuse or keep a ghost state, or flag: "
+                             "write an element no repair "
                              "cleans with its defect recorded, so loading it "
-                             "warns")
+                             "warns (default: repair; flag for NCPP)")
     parser.add_argument("--check", action="store_true",
                         help="also compare every channel's scattering phase "
                              "with the all-electron atom")
@@ -134,19 +138,16 @@ def build_backend_command() -> int:
     return 1
 
 
-def _directory(family: str, output, install: bool) -> str:
+def _directory(family: str, output, install: bool, xc: str = "lda") -> str:
+    """Where the datasets go; ``--install`` resolves (and validates) the
+    family's library variable (:mod:`.environment`)."""
     if install:
-        if family == "paw-lcao":
-            from .paw import paw_library_path
-            return paw_library_path()
+        from .environment import library_directory, repository_path
         if family == "upaw-lcao":
             from .paw import upaw_library_path
-            return upaw_library_path()
-        if family == "oncvpsp":
-            from .oncv import oncv_library_path
-            return oncv_library_path()
-        from .io import default_library_path
-        return default_library_path()
+            repository_path("paw-lcao")      # the "not set" explanation
+            return upaw_library_path(xc=xc)
+        return library_directory(family, xc, must_exist=False)
     return os.path.join(output if output is not None else os.getcwd(), family)
 
 
@@ -160,15 +161,15 @@ def _generate(family: str, symbol: str, options: dict):
     if family == "oncvpsp":
         from .oncv import generate_oncv
         return generate_oncv(symbol, **options)
-    from ase.data import atomic_numbers
-
     from .generation import generate_pseudopotential
-    from .io import generation_points
-    return generate_pseudopotential(
-        symbol, points=generation_points(atomic_numbers[symbol]))
+    return generate_pseudopotential(symbol, **options)
 
 
 def _levels_and_phase(family: str):
+    if family == "ncpp":
+        from .generation import kb_levels
+        from .oncv import log_derivative_ps
+        return kb_levels, log_derivative_ps
     if family in ("paw-lcao", "upaw-lcao"):
         from .paw import _paw_levels, log_derivative_paw
         return _paw_levels, log_derivative_paw
@@ -222,10 +223,16 @@ def _build_one(family: str, symbol: str, options: dict, directory: str,
     if family in MODERN:
         from .oncv import ghost_errors, scattering_errors
         levels, log_derivative = _levels_and_phase(family)
-        ghosts = ghost_errors(pp, levels)
-        phases = scattering_errors(pp, log_derivative) if check else {}
-        for l, channel in sorted(pp.channels.items()):
-            first, second = (float(e) for e in levels(pp, l)[:2])
+        # A Kleinman-Bylander dataset is read through the view the shared
+        # tests understand (one projector, E_KB, the local channel's V_scr).
+        subject = pp
+        if family == "ncpp":
+            from .generation import KBView
+            subject = KBView(pp)
+        ghosts = ghost_errors(subject, levels)
+        phases = scattering_errors(subject, log_derivative) if check else {}
+        for l, channel in sorted(subject.channels.items()):
+            first, second = (float(e) for e in levels(subject, l)[:2])
             reference = float(channel.reference_energies[0])
             line = (f"    l={l}  r_c={channel.r_cut:.3f}  eps_ref="
                     f"{reference:+.6f}  lowest-eps_ref={first - reference:+.1e}"
@@ -237,8 +244,14 @@ def _build_one(family: str, symbol: str, options: dict, directory: str,
         for l in sorted(set(ghosts) - set(pp.channels)):
             lines.append(f"    l={l}  no projectors  local potential binds "
                          f"{ghosts[l]:+.1e} Ha below the atom  GHOST")
-        lines.append(f"    local potential: r_cl={pp.r_cut_local:.3f} Bohr, "
-                     f"shift {pp.local_shift:+.1f} Ha")
+        if family == "ncpp":
+            lines.append(f"    local potential: the l={pp.local_l} channel"
+                         + (", NLCC" if (pp.nlcc or {}).get("applied") else "")
+                         + (f"; phase near = eps +- {subject.phase_window:g} Ha"
+                            if check else ""))
+        else:
+            lines.append(f"    local potential: r_cl={pp.r_cut_local:.3f} Bohr, "
+                         f"shift {pp.local_shift:+.1f} Ha")
     return True, "\n".join(lines)
 
 
@@ -255,14 +268,11 @@ def main(argv=None) -> int:
         parser.error(f"--pp must be one of PAW, UPAW, ONCV, NCPP, not {args.pp!r}")
     if args.install and args.output is not None:
         parser.error("--install and --output are exclusive")
-    if args.ghosts == "flag" and family not in ("paw-lcao", "upaw-lcao"):
-        parser.error("--ghosts flag is PAW/UPAW only: only those files record "
-                     "a defect for their users to be warned of")
     relativity = args.relativity or "scalar"
-    if family == "ncpp" and (args.relativity not in (None, "none")
-                             or args.xc != "lda"):
-        parser.error("the NCPP generator is non-relativistic LDA only; drop "
-                     "--relativistic/--dirac/--xc, or use --pp PAW or ONCV")
+    if family == "ncpp" and relativity == "dirac":
+        parser.error("the NCPP family has one projector per l and no "
+                     "spin-orbit term; use --relativistic, or --pp PAW or ONCV "
+                     "for --dirac")
     if args.all:
         from .io import LIBRARY_Z_MAX, library_elements
         symbols = list(library_elements(args.z_max or LIBRARY_Z_MAX))
@@ -275,9 +285,16 @@ def main(argv=None) -> int:
     else:
         parser.error("give --element SYMBOL ... or --all")
 
+    # Without --ghosts each family keeps its own default: repair for
+    # PAW/UPAW/ONCV, flag for NCPP (a single-channel atom has nothing to try).
+    ghosts = args.ghosts or ("flag" if family == "ncpp" else "repair")
     options = ({"xc": args.xc, "relativity": relativity,
-                "ghosts": args.ghosts} if family in MODERN else {})
-    directory = _directory(family, args.output, args.install)
+                "ghosts": ghosts} if family in MODERN else {})
+    try:
+        directory = _directory(family, args.output, args.install, args.xc)
+    except FileNotFoundError as error:
+        print(f"mandacaru-build: {error}", file=sys.stderr)
+        return 2
 
     from ..basis.radial_backend import radial_backend_status
     uses_c, message = radial_backend_status()
@@ -286,7 +303,7 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
     print(f"mandacaru-build: {family}, "
-          + (f"{args.xc.upper()}, relativity={relativity}, ghosts={args.ghosts}"
+          + (f"{args.xc.upper()}, relativity={relativity}, ghosts={ghosts}"
              if family in MODERN else "LDA, non-relativistic")
           + f", {len(symbols)} element(s), {args.workers} worker(s)")
     print(f"radial kernels: {message}")

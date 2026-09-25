@@ -25,10 +25,11 @@ from an all-electron calculation to a **valence-only** one:
                            basis="NCPP",
                            h=0.15)
 
-The bundled NCPP library covers every element up to uranium and is loaded
-automatically; the ONCVPSP and PAW-LCAO datasets live in the ``mandacaru-oncvpsp`` /
-``mandacaru-paw`` repositories and are linked in with
-``python -m mandacaru.pseudopotentials.link_library``.
+The NCPP, ONCVPSP and PAW-LCAO datasets each live in their own repository --
+``mandacaru-ncpp``, ``mandacaru-oncvpsp``, ``mandacaru-paw`` -- named by an
+environment variable (``MANDACARU_NCPP_PATH``, ``MANDACARU_ONCVPSP_PATH``,
+``MANDACARU_PAW_PATH``) set with ``mandacaru --set-ncpp`` / ``--set-oncvpsp`` /
+``--set-paw DIR``; ``mandacaru --pseudo-status`` reports what each one holds.
 
 What this script measures
 -------------------------
@@ -57,7 +58,16 @@ from mandacaru.integrals import Grid
 from mandacaru.pseudopotentials import family_names
 from mandacaru.pseudopotentials.io import available_elements, get_pseudopotential
 from mandacaru.pseudopotentials.oncv import generate_oncv, oncv_library_path
+from mandacaru.pseudopotentials.environment import LibraryPathError
 from mandacaru.pseudopotentials.paw import paw_library_path
+
+
+def library_size(path_of) -> int:
+    """Datasets in a family's library; 0 when its variable is not set."""
+    try:
+        return len(available_elements(path_of()))
+    except LibraryPathError:
+        return 0
 from mandacaru.units import BOHR_TO_ANGSTROM
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -70,13 +80,14 @@ RULE = "=" * 76
 # --------------------------------------------------------------------------- #
 
 print(RULE)
-print("1. The pseudopotential library (mandacaru/pseudopotentials/library/)")
+print("1. The pseudopotential libraries (MANDACARU_NCPP_PATH, "
+      "MANDACARU_ONCVPSP_PATH, MANDACARU_PAW_PATH)")
 print(RULE)
 elements = available_elements()
 print(f"families: {', '.join(family_names())}")
 print(f"NCPP: {len(elements)} elements: {' '.join(elements)}")
-print(f"ONCVPSP: {len(available_elements(oncv_library_path()))} elements linked, "
-      f"PAW-LCAO: {len(available_elements(paw_library_path()))} elements linked\n")
+print(f"ONCVPSP: {library_size(oncv_library_path)} elements available, "
+      f"PAW-LCAO: {library_size(paw_library_path)} elements available\n")
 print(f"{'atom':>5}{'Z':>4}{'Z_ion':>7}{'core removed':>15}{'V_loc(0) Ha':>14}")
 for symbol in ("H", "C", "O", "Si", "Cl", "Fe"):
     pp = get_pseudopotential(symbol)
@@ -143,9 +154,9 @@ FAMILIES = (("all-electron HAO", "HAO"),
             ("ONCVPSP (Hamann)", "ONCVPSP"),
             ("PAW-LCAO (Bloechl)", "PAW-LCAO"))
 for label, basis in FAMILIES:
-    if basis in ("ONCVPSP", "PAW-LCAO") and not available_elements(
-            oncv_library_path() if basis == "ONCVPSP" else paw_library_path()):
-        print(f"  {label:<26} (library not linked -- see link_library)")
+    if basis in ("ONCVPSP", "PAW-LCAO") and not library_size(
+            oncv_library_path if basis == "ONCVPSP" else paw_library_path):
+        print(f"  {label:<26} (library not configured -- see mandacaru --pseudo-status)")
         continue
     atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
     start = time.perf_counter()

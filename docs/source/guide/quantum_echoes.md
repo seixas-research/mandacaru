@@ -54,7 +54,8 @@ molecule with a 0.74 Å bond oriented along $(1,1,1)$. It evaluates the
 interacting molecular Hamiltonian and all three position matrices on a
 nonperiodic three-dimensional Cartesian grid. Both operators are transformed
 to the same molecular-orbital basis, including the Löwdin orthogonalization
-of the original atomic orbitals. The electric field points along the bond.
+of the original atomic orbitals. The default electric field points along the
+bond; its direction and strength can be set independently.
 One hydrogen 1s orbital per atom gives four qubits; this minimal basis is a
 demonstration of longitudinal response, not a converged optical spectrum.
 The example follows the same ASE calculator workflow as `02_ADAPTVQE_LiH.py`:
@@ -64,9 +65,12 @@ in the working directory, including `[BASIS]`, integration timings, and circuit
 metrics. A `[QUANTUM ECHOES]` block follows in the same report, recording the
 propagation settings, field, units, pulse bounds, and a `samples` table of
 echo results. It also contains the Fourier sampling settings, resolution,
-Nyquist energy, a `peaks` table, and the complete signed `spectrum` table in
-Hartree and eV. The terminal shows a short summary and the excitation peaks.
-`parse_output("output.txt")["quantum_echoes"]` reads the metadata and tables.
+Nyquist energy, and a `peaks` table in Hartree and eV. Both tables have padded
+columns and a header delimiter. The complete signed spectrum is exported to
+`spectrum.csv` beside `output.txt`, rather than printed in the main report.
+The terminal shows a short summary, the RHF HOMO–LUMO gap, and excitation peaks.
+`parse_output("output.txt")["quantum_echoes"]` reads the metadata and tables;
+its `spectrum_file` field points to the CSV file.
 The dipole calculation reuses the integral engine and orbital rotation
 retained by that calculator. The standard builder also supplies the same
 basis defaults and nuclear-cusp regularization as the other ASE examples.
@@ -74,6 +78,14 @@ basis defaults and nuclear-cusp regularization as the other ASE examples.
 ```console
 conda run -n mandacaru python examples/quantum_echoes.py
 ```
+
+For an x-polarized field of magnitude 0.01 atomic units:
+
+```console
+conda run -n mandacaru python examples/quantum_echoes.py --field-direction 1 0 0 --field-strength 0.01
+```
+
+`--output /path/to/output.txt` also places `spectrum.csv` in that directory.
 
 ## Dipole coupling and pulse size
 
@@ -93,6 +105,23 @@ The default duplicates spatial matrices into alpha and beta spin blocks.
 Set `spatial_orbitals=False` for matrices already expressed in spin orbitals.
 The field magnitude is retained. The optional `nuclear_dipole` contributes a
 global phase; frozen-core dipoles may be included in that constant as well.
+
+Alternatively, supply a real Cartesian **unit vector** and a nonnegative
+field strength separately:
+
+```python
+V = electric_dipole_potential(
+    r_mo, field_direction=[1.0, 0.0, 0.0], field_strength=0.01,
+    mapping=prepared.mapping, num_particles=prepared.num_particles,
+)
+```
+
+The field is `field_strength * field_direction` and couples as
+$V=-E_0\hat{\mathbf e}\cdot\boldsymbol\mu$. Directions must have unit norm
+within 1e-8; the zero vector, non-unit vectors, and non-finite inputs are
+rejected. Supply both directional parameters together, without `field=`.
+The existing Cartesian `field=` input remains available. To reverse a field,
+reverse its direction; zero strength is allowed.
 
 The Hamiltonian, potential, and state must use the same orbital basis,
 fermion encoding, and symmetry reduction. Width checks cannot identify two
@@ -257,3 +286,66 @@ a normalized oscillator-strength or absorption spectrum. Direct correlation
 sampling is the linear-response calculation and is independent of `tau_p`;
 the finite-pulse echo table separately records the validated pulse duration.
 Only dipole-allowed transitions represented by the orbital basis appear.
+
+## Spectrum export and orbital gap
+
+The reusable export method writes a plain numeric CSV, with one header and
+no comment lines:
+
+```python
+spectrum.to_csv("spectrum.csv")
+```
+
+Its columns are `energy_ha,energy_ev,magnitude_ha,fft_real_ha,fft_imag_ha`.
+Signed energies and both Fourier components are retained. The report writer
+`append_quantum_echoes(..., spectrum=spectrum)` exports this file automatically
+and keeps only the peak table in the main log. `spectrum_path=` can select a
+different destination. Without it, the CSV is next to the main report, or in
+the working directory for a report routed only to standard output. Existing
+CSV files are replaced on export. Older reports with inline spectrum tables
+remain readable by `parse_output`.
+
+For the closed-shell H₂ example, the HOMO–LUMO gap is calculated from a
+converged RHF reference using the same cached one- and two-electron integrals:
+
+```python
+rhf = integrals.hartree_fock(n_electrons=2)
+homo = rhf.mo_energies[rhf.n_occupied - 1]
+lumo = rhf.mo_energies[rhf.n_occupied]
+gap_ha = lumo - homo
+# Validated properties provide the same quantities:
+assert gap_ha == rhf.homo_lumo_gap
+```
+
+`RHFResult.homo_energy`, `lumo_energy`, and `homo_lumo_gap` use Hartree.
+They require a converged reference with both occupied and virtual orbitals.
+The reported RHF gap is a mean-field orbital-energy difference; correlated
+neutral excitation energies come from the separate Fourier analysis.
+
+An abbreviated report preview for `--field-direction 1 0 0` is shown below
+(selected columns and rounded values; the generated tables retain 12-digit
+scientific notation and the real/imaginary amplitude columns):
+
+```text
+[QUANTUM ECHOES]
+    field_direction: 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00
+    field_strength_au: 1.000000000000e-02
+    orbital_reference: RHF canonical orbitals
+    homo_energy_ha: -6.164138436743e-01
+    lumo_energy_ha: 3.999367660856e-01
+    homo_lumo_gap_ha: 1.016350609760e+00
+    homo_lumo_gap_ev: 2.765630900352e+01
+    spectrum_file: spectrum.csv
+    samples:
+        time    tau_p   fidelity      response
+        ------------------------------------------
+        0.000   0.010   0.9999999941  0.000000e+00
+        0.500   0.010   0.9999999941  4.334868e-07
+    peaks:
+        energy_ha   energy_ev    magnitude
+        -------------------------------------
+        0.76085447  20.70390488  1.320543e-02
+```
+
+The example's numbers depend on its minimal orbital basis and integration
+grid; they are not a converged prediction of the molecular spectrum.

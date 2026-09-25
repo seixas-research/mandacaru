@@ -41,7 +41,7 @@ def _library_present() -> bool:
 
 
 needs_library = pytest.mark.skipif(not _library_present(),
-                                   reason="the PAW-LCAO library is not linked")
+                                   reason="MANDACARU_PAW_PATH is not configured")
 
 
 def h2(distance=0.74, cell=8.0):

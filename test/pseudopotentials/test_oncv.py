@@ -37,6 +37,7 @@ from mandacaru.pseudopotentials import (
     lookup_family, oncv_library_path, radial_spectrum,
     report_oncv, resolve_family, save_pseudopotential)
 from mandacaru.pseudopotentials.io import library_elements
+from mandacaru.pseudopotentials.environment import LibraryPathError
 from mandacaru.pseudopotentials.io import (available_elements,
                                                        default_library_path,
                                                        detect_format)
@@ -220,14 +221,13 @@ GHOST_SWEEP = ["B", "Na", "Cl", "Fe", "Cu", "Ga", "Ba", "La", "W", "Bi"]
 
 class TestLibrary:
     def test_shipped_elements(self):
-        # The external oncvpsp repository (all 92 elements) linked into
-        # library/oncvpsp; at least the six generated in-repo must be there.
-        shipped = available_elements(oncv_library_path())
-        if not shipped:
-            pytest.skip("external oncvpsp repository not linked on this machine")
+        # The mandacaru-oncvpsp checkout ($MANDACARU_ONCVPSP_PATH/lda, all
+        # 92 elements); at least the six generated in-repo must be there.
+        try:
+            shipped = available_elements(oncv_library_path())
+        except LibraryPathError:
+            pytest.skip("MANDACARU_ONCVPSP_PATH is not configured here")
         assert {"C", "F", "H", "Li", "N", "O"} <= set(shipped)
-        # A subdirectory: the TM library listing is untouched.
-        assert "oncvpsp" not in available_elements(default_library_path())
 
     @pytest.mark.parametrize("symbol", ["H", "Li", "C", "N", "O", "F"])
     def test_shipped_file_loads_with_two_projectors(self, symbol):
@@ -630,11 +630,6 @@ class TestGhostSearch:
         assert kept.defects == {"ghosts": {0: pytest.approx(-0.3)},
                                 "phases": {}}
 
-    def test_flag_is_refused_for_oncvpsp(self):
-        from mandacaru.pseudopotentials.oncv import generate_oncv
-        with pytest.raises(ValueError, match="PAW-LCAO only"):
-            generate_oncv("H", ghosts="flag")
-
     def test_an_inaccurate_level_is_not_a_ghost(self):
         """One level 6e-4 Ha low with nothing displaced: accuracy, not a ghost."""
         from mandacaru.pseudopotentials.oncv import ghost_errors
@@ -736,3 +731,16 @@ class TestGhostSearch:
     def test_an_unknown_mode_is_rejected(self):
         with pytest.raises(ValueError, match="ghosts must be one of"):
             self._run(None, mode="ignore")
+
+
+def test_a_flagged_oncvpsp_file_warns_whoever_loads_it(tmp_path):
+    """ONCVPSP records its defects like PAW-LCAO, and a load warns."""
+    from mandacaru.pseudopotentials.oncv import (GhostStateWarning,
+                                                 generate_oncv)
+    pp = generate_oncv("H", ghosts="keep")
+    pp.defects = {"ghosts": {}, "phases": {3: (0.57, 0.57)}}
+    assert "SCATTERING OFF" in repr(pp)
+    path = save_pseudopotential(pp, tmp_path / "H.parquet")
+    with pytest.warns(GhostStateWarning, match="scattering errors"):
+        back = load_pseudopotential(path)
+    assert back.defects == {"ghosts": {}, "phases": {3: (0.57, 0.57)}}

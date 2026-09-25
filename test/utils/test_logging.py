@@ -524,7 +524,7 @@ class TestBasisBlock:
         try:
             get_paw("H")
         except (FileNotFoundError, ValueError):
-            pytest.skip("the PAW-LCAO library is not linked")
+            pytest.skip("MANDACARU_PAW_PATH is not configured")
         out = str(tmp_path_factory.mktemp("basis") / "output.txt")
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0, 8.0, 8.0])
@@ -588,7 +588,7 @@ class TestBasisBlock:
         try:
             get_paw("H")
         except (FileNotFoundError, ValueError):
-            pytest.skip("the PAW-LCAO library is not linked")
+            pytest.skip("MANDACARU_PAW_PATH is not configured")
         out = str(tmp_path / "output.txt")
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0, 8.0, 8.0])

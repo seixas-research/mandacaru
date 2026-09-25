@@ -148,7 +148,7 @@ from ..basis.atomic_solver import (AtomicResult, hartree_potential,
 from ..core.hamiltonian import MolecularIntegrals, projector_blocks
 from .confinement import DEFAULT_ENERGY_SHIFT
 from .generation import Channel, PseudoPotential, _valence_configuration
-from .oncv import (INNER_POINTS, Q_MAX, Q_STEP, GhostStateWarning,
+from .oncv import (INNER_POINTS, Q_MAX, Q_STEP,
                    PseudoWaves, _bessel_table, _bessel_transform_table,
                    _inner_grid, _log_derivative_of_u,
                    _pseudo_waves_record, _radial_f, _resample, _snap,
@@ -156,7 +156,8 @@ from .oncv import (INNER_POINTS, Q_MAX, Q_STEP, GhostStateWarning,
                    bessel_derivatives, bessel_wavevectors, generation_points,
                    DEFAULT_EXTRA_L, DEFAULT_NLCC, DEFAULT_RELATIVITY,
                    DEFAULT_XC, log_derivative_errors, matching_targets,
-                   defect_message, ghost_free, numerov_outward,
+                   defect_message, defects_record, ghost_free,
+                   numerov_outward, read_defects, warn_defects,
                    optimize_pseudo_waves, polynomial_local_potential,
                    reference_waves)
 
@@ -166,13 +167,9 @@ from .oncv import (INNER_POINTS, Q_MAX, Q_STEP, GhostStateWarning,
 #: hierarchy -- rather than on plane waves, which is what the name of a basis
 #: set has to say.  The method it implements is still PAW-LCAO.
 FAMILY = "paw-lcao"
-#: Subdirectory of the library holding the PAW-LCAO datasets.
-LIBRARY_SUBDIR = "paw-lcao"
 
 #: Registry name of the **unitary** variant (``basis="UPAW-LCAO"``).
 UPAW_FAMILY = "upaw-lcao"
-#: Subdirectory holding UPAW-LCAO datasets, when one has been built.
-UPAW_LIBRARY_SUBDIR = "upaw-lcao"
 
 #: Spherical Bessel functions per smooth partial wave.
 DEFAULT_N_BESSEL = 8
@@ -762,50 +759,10 @@ class PAWDataset(PseudoPotential):
     defects: dict = field(default_factory=dict)
 
     def unconstructed_ghosts(self) -> dict:
-        """``{l: eps_ps - eps_ae}`` for every channel *without* projectors
-        (``l`` up to one above the highest channel) in which the local
-        potential alone binds more states than the all-electron atom has
-        valence states of that ``l``.
-
-        Such a channel is governed by :attr:`v_local_screened` only, so the
-        spectral test of :func:`~.oncv.ghost_errors` never sees it -- iron's
-        ``p`` channel held a level at -4.63 Ha against a 4p at -0.05 Ha while
-        every constructed channel was clean.  Both spectra are counted below
-        zero in the same box, on the reference atom's uniform grid, where the
-        two potentials agree beyond ``r_cut_local``; the all-electron count
-        less that ``l``'s core shells is the number of states the local
-        potential may bind.  Needs the all-electron atom (a dataset read from
-        the library has none, and gives ``{}``).
-        """
-        from scipy.linalg import eigvalsh_tridiagonal
-
-        from .generation import _valence_configuration
-
-        if self.atom is None:
-            return {}
-        r = np.asarray(self.atom.r, dtype=float)
-        h = float(r[1] - r[0])
-        _valence, core = _valence_configuration(
-            int(self.atomic_number), configuration=self.atom.occupations)
-        off = np.full(r.size - 1, -0.5 / h ** 2)
-
-        def bound(v, l):
-            diag = 1.0 / h ** 2 + v + l * (l + 1) / (2.0 * r * r)
-            return eigvalsh_tridiagonal(diag, off, select="v",
-                                        select_range=(float(v.min()) - 1.0,
-                                                      0.0))
-
-        out = {}
-        for l in range(max(self.channels) + 2):
-            if l in self.channels:
-                continue
-            smooth = bound(np.interp(r, self.r, self.v_local_screened), l)
-            ae = bound(np.asarray(self.atom.v_effective, dtype=float), l)
-            allowed = ae[sum(1 for (_n, lc) in core if lc == l):]
-            if smooth.size > allowed.size:
-                reference = float(allowed[0]) if allowed.size else 0.0
-                out[int(l)] = float(smooth[0]) - reference
-        return out
+        """Ghost states the local potential alone binds in a channel without
+        projectors (:func:`~.oncv.local_potential_ghosts`)."""
+        from .oncv import local_potential_ghosts
+        return local_potential_ghosts(self)
 
     def projector_radius(self, l: int) -> float:
         """Radius beyond which channel ``l``'s projectors vanish and the
@@ -1073,6 +1030,9 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                                   if points is None else int(points)),
                           r_max=r_max, tolerance=1e-7, mixing=0.25,
                           xc=xc, relativity=relativity)
+    else:
+        from .oncv import check_reference_atom
+        check_reference_atom(atom, xc, relativity)
     valence_config, core_config = _valence_configuration(
         atomic_number, configuration=atom.occupations)
     if not valence_config:
@@ -2032,26 +1992,25 @@ class PAWIntegrals(MolecularIntegrals):
 
 
 
-def paw_library_path(directory=None) -> str:
-    """The PAW-LCAO library directory (``library/paw-lcao`` by default)."""
-    from .io import library_root
-    if directory is not None:
-        return os.fspath(directory)
-    return os.path.join(library_root(), LIBRARY_SUBDIR)
+def paw_library_path(directory=None, xc: str = DEFAULT_XC, *,
+                     must_exist: bool = True) -> str:
+    """The PAW-LCAO library folder: ``directory`` when given, else
+    ``$MANDACARU_PAW_PATH/<xc>`` (:func:`.environment.library_directory`)."""
+    from .environment import library_directory
+    return library_directory(FAMILY, xc, directory, must_exist=must_exist)
 
 
 _CACHE: dict = {}
 
 
-def get_paw(symbol: str, directory=None) -> PAWDataset:
-    """Load ``symbol`` from the PAW-LCAO library (cached)."""
+def get_paw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
+    """Load ``symbol`` from the PAW-LCAO library (cached): ``directory``, or
+    ``$MANDACARU_PAW_PATH/<xc>``."""
     from .io import load_library_dataset
 
     return load_library_dataset(
-        symbol, paw_library_path(directory), FAMILY, _CACHE,
-        label="PAW-LCAO", noun="dataset",
-        repository="mandacaru-paw", link_flag="--link-paw-lcao",
-        builder="build_paw_library")
+        symbol, paw_library_path(directory, xc), FAMILY, _CACHE,
+        label="PAW-LCAO", noun="dataset", builder="build_paw_library")
 
 
 def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
@@ -2061,7 +2020,10 @@ def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
     """Generate and save PAW-LCAO datasets for ``elements``; returns the paths."""
     from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
 
-    folder = paw_library_path(directory)
+    folder = paw_library_path(directory,
+                              generation_options.get("xc", DEFAULT_XC),
+                              must_exist=False)
+    os.makedirs(folder, exist_ok=True)
     format = DEFAULT_FORMAT if format is None else format
     stride = STRIDE if stride is None else int(stride)
     written = []
@@ -2101,15 +2063,15 @@ def generate_upaw(symbol: str, **options) -> PAWDataset:
     return replace(dataset, family=UPAW_FAMILY)
 
 
-def upaw_library_path(directory=None) -> str:
-    """The UPAW-LCAO library directory (``library/upaw-lcao`` by default)."""
-    from .io import library_root
-    if directory is not None:
-        return os.fspath(directory)
-    return os.path.join(library_root(), UPAW_LIBRARY_SUBDIR)
+def upaw_library_path(directory=None, xc: str = DEFAULT_XC) -> str | None:
+    """The UPAW-LCAO library folder: ``directory`` when given, else
+    ``$MANDACARU_PAW_PATH/upaw-lcao/<xc>``, or ``None`` when that variable is
+    unset (UPAW-LCAO is then generated on demand)."""
+    from .environment import upaw_directory
+    return upaw_directory(xc, directory)
 
 
-def get_upaw(symbol: str, directory=None) -> PAWDataset:
+def get_upaw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
     """Load ``symbol`` from the UPAW-LCAO library, **or generate it** (cached).
 
     Unlike the other families, UPAW-LCAO has no shipped library: there is no
@@ -2121,13 +2083,13 @@ def get_upaw(symbol: str, directory=None) -> PAWDataset:
     """
     from .io import library_file, load_pseudopotential
 
-    folder = upaw_library_path(directory)
-    key = f"{symbol}@{folder}@{UPAW_FAMILY}"
+    folder = upaw_library_path(directory, xc)
+    key = f"{symbol}@{folder}@{xc}@{UPAW_FAMILY}"
     cached = _CACHE.get(key)
     if cached is not None:
         return cached
-    path = library_file(symbol, folder)
-    if os.path.exists(path):
+    path = None if folder is None else library_file(symbol, folder)
+    if path is not None and os.path.exists(path):
         pp = load_pseudopotential(path)
         family = str(getattr(pp, "family", "")).lower()
         if family != UPAW_FAMILY:
@@ -2138,12 +2100,14 @@ def get_upaw(symbol: str, directory=None) -> PAWDataset:
             raise FileNotFoundError(
                 f"no UPAW-LCAO dataset for {symbol!r} at {path!r}; build one with "
                 f"build_upaw_library([{symbol!r}], directory={directory!r})")
+        where = ("MANDACARU_PAW_PATH is not set" if folder is None
+                 else f"no library at {folder!r}")
         warnings.warn(
-            f"generating a UPAW-LCAO dataset for {symbol} (no library at "
-            f"{folder!r}); it is cached for this process.  Build one once with "
+            f"generating a UPAW-LCAO dataset for {symbol} ({where}); it is "
+            f"cached for this process.  Build one once with "
             f"mandacaru.pseudopotentials.paw.build_upaw_library([...]) to skip "
             f"this.", RuntimeWarning, stacklevel=2)
-        pp = generate_upaw(symbol)
+        pp = generate_upaw(symbol, xc=xc)
     _CACHE[key] = pp
     return pp
 
@@ -2155,7 +2119,11 @@ def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
     """Generate and save UPAW-LCAO datasets for ``elements``; returns the paths."""
     from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
 
-    folder = upaw_library_path(directory)
+    folder = upaw_library_path(directory,
+                               generation_options.get("xc", DEFAULT_XC))
+    if folder is None:
+        from .environment import repository_path
+        repository_path(FAMILY)          # raises the "not set" explanation
     os.makedirs(folder, exist_ok=True)
     format = DEFAULT_FORMAT if format is None else format
     stride = STRIDE if stride is None else int(stride)
@@ -2280,11 +2248,7 @@ def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
             "norm_deficit": pp.norm_deficit,
             "xc": str(pp.xc), "relativity": str(pp.relativity),
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
-            "defects": {
-                "ghosts": {str(l): float(e) for l, e in
-                           (pp.defects or {}).get("ghosts", {}).items()},
-                "phases": {str(l): [float(a), float(b)] for l, (a, b) in
-                           (pp.defects or {}).get("phases", {}).items()}},
+            "defects": defects_record(pp.defects),
             "spin_orbit": {str(l): np.asarray(D).real.tolist()
                            for l, D in (pp.spin_orbit or {}).items()},
             "channels": channels, "radial_tables": tables}
@@ -2422,24 +2386,9 @@ def from_payload(payload: dict) -> PAWDataset:
                                                     "core correction"}),
         spin_orbit={int(l): np.asarray(D, dtype=float)
                     for l, D in (payload.get("spin_orbit") or {}).items()},
-        defects=_read_defects(payload.get("defects")))
-    if dataset.defects:
-        # Warned on load, so every route to a calculation -- the library,
-        # a file path, a user's own directory -- carries it.
-        warnings.warn(defect_message(dataset.symbol, FAMILY, dataset.defects),
-                      GhostStateWarning, stacklevel=2)
+        defects=read_defects(payload.get("defects")))
+    warn_defects(dataset, FAMILY)
     return dataset
-
-
-def _read_defects(record) -> dict:
-    """``defects`` of :func:`from_payload`; ``{}`` when there are none."""
-    record = record or {}
-    ghosts = {int(l): float(e) for l, e in (record.get("ghosts") or {}).items()}
-    phases = {int(l): (float(a), float(b))
-              for l, (a, b) in (record.get("phases") or {}).items()}
-    if not ghosts and not phases:
-        return {}
-    return {"ghosts": ghosts, "phases": phases}
 
 
 # --------------------------------------------------------------------------- #

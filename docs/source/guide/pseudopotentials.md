@@ -34,7 +34,7 @@ radial atomic solver (`mandacaru.basis.atomic_solver`):
 
 | Basis name | Aliases | Family | Projectors | Overlap | Library |
 |---|---|---|---|---|---|
-| `"NCPP"` | `"TM"`, `"NCPP-TM"` | Troullier–Martins norm-conserving, Kleinman–Bylander separable form | one per channel | none | bundled, H–U |
+| `"NCPP"` | `"TM"`, `"NCPP-TM"` | Troullier–Martins norm-conserving, Kleinman–Bylander separable form | one per channel | none | `mandacaru-ncpp`, H–U |
 | `"ONCVPSP"` | `"ONCV"` | Hamann's optimized norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `mandacaru-oncvpsp`, H–U |
 | `"PAW-LCAO"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `mandacaru-paw`, H–U |
 | `"UPAW-LCAO"` | `"unitary-paw-lcao"` | the same, with a **unitary** transformation ($q = 0$, below) | two per channel, $2\times2$ coupling | $S$ (unaugmented) | generated on demand |
@@ -247,12 +247,12 @@ scattering wave) is the hardest object, still within 14 %.
 
 ### Library and files
 
-`library/oncvpsp/{H,Li,C,N,O,F}.parquet` (70–220 kB each, decimated to 0.02
-Bohr like the TM library), regenerated with
+`$MANDACARU_ONCVPSP_PATH/lda/{H,Li,C,N,O,F}.parquet` (70–220 kB each, decimated
+to 0.02 Bohr like the TM library), regenerated with
 `build_oncv_library(["H", "Li", "C", "N", "O", "F"])`; `get_oncv(symbol,
-directory)` is the family's loader (`directory` defaults to that
-subdirectory, so `get(symbol, directory)` finds them and the TM files are
-untouched). The record is `ONCVPseudoPotential` (a `PseudoPotential`
+directory)` is the family's loader (`directory` defaults to
+`$MANDACARU_ONCVPSP_PATH/<xc>`, so `get_oncv(symbol, directory)` finds them and
+the TM files, in their own repository, are untouched). The record is `ONCVPseudoPotential` (a `PseudoPotential`
 subclass: `channels[l]` are `ONCVChannel`s carrying `reference_energies`,
 `wavevectors`, `wave_coefficients`, `pseudo_waves`, `projectors` (two),
 `coupling`, `vanderbilt`, `residual_kinetic`; `projectors[l]` is the list of
@@ -721,10 +721,11 @@ give nonsense.
 
 ### Library and files
 
-`library/paw-lcao/{H,Li,C,N,O,F}.parquet` (100–385 kB, decimated to 0.02 Bohr;
-9.6 s to regenerate with `build_paw_library()`; `get_paw(symbol, directory)`
-is the family's loader, `paw_library_path()` its directory, TM and ONCVPSP
-files untouched). The record is `PAWDataset` (a `PseudoPotential` subclass:
+`$MANDACARU_PAW_PATH/lda/{H,Li,C,N,O,F}.parquet` (100–385 kB, decimated to
+0.02 Bohr; 9.6 s to regenerate with `build_paw_library()`; `get_paw(symbol,
+directory)` is the family's loader, `paw_library_path()` its directory
+(`$MANDACARU_PAW_PATH/<xc>` by default), TM and ONCVPSP files, in their own
+repositories, untouched). The record is `PAWDataset` (a `PseudoPotential` subclass:
 `channels[l]` are `PAWChannel`s with `reference_energies`, `ae_waves`,
 `pseudo_waves`, `projectors` (dual), `raw_projectors`, `overlap_correction`
 $q$, `kinetic_difference` $\Delta T$, `potential_difference`,
@@ -930,19 +931,24 @@ uniform grid.
 
 ### Datasets
 
-No UPAW-LCAO library is shipped. `get_upaw(symbol)` looks in `library/upaw-lcao/` and,
-finding nothing there, **generates the dataset on the fly**, caches it in
-memory and warns once — generation is 0.4–2.2 s per element, so an interactive
-run pays a fraction of a second and a scan pays nothing after the first
-geometry. Naming a `directory` explicitly is a statement that the library is
-there, and a missing element then raises with the `build_upaw_library` recipe:
+No UPAW-LCAO library is shipped, and it has no repository of its own:
+`get_upaw(symbol)` looks in `$MANDACARU_PAW_PATH/upaw-lcao/<xc>/` and, finding
+nothing there (including when `MANDACARU_PAW_PATH` is unset), **generates the
+dataset on the fly**, caches it in memory and warns once — generation is
+0.4–2.2 s per element, so an interactive run pays a fraction of a second and a
+scan pays nothing after the first geometry. Naming a `directory` explicitly is
+a statement that the library is there, and a missing element then raises with
+the `build_upaw_library` recipe:
 
 ```python
 from mandacaru.pseudopotentials.paw import build_upaw_library
 
-build_upaw_library(("H", "C", "N", "O"))          # into library/upaw-lcao/
+build_upaw_library(("H", "C", "N", "O"))          # into $MANDACARU_PAW_PATH/upaw-lcao/lda/
 build_upaw_library(("H", "O"), directory="/data/upaw")
 ```
+
+or from the command line, which writes the same place:
+`mandacaru-build --pp UPAW --install`.
 
 The files use the PAW-LCAO layout (`TABLE_FAMILIES` maps both families to the same
 codec) and record `family: "upaw-lcao"`, so a PAW-LCAO dataset is refused as UPAW-LCAO and
@@ -1016,65 +1022,78 @@ faster than the sampling improves. The pseudopotential column converges, because
 there is no cusp left to resolve. Without pseudopotentials, geometry
 optimization on this grid is not merely inaccurate — it does not converge.
 
-## The bundled library
+## The pseudopotential libraries
 
-`src/mandacaru/pseudopotentials/library/` holds one subdirectory
-per family. `library/ncpp/` ships norm-conserving Troullier–Martins
-pseudopotentials for **every element with Z ≤ 92** (H through U), generated
-from scratch by Mandacaru's own LDA radial atomic solver. They are loaded
-automatically by symbol.
+None of the three generated families ships inside the package. Each lives in
+a repository of its own — `mandacaru-ncpp`, `mandacaru-oncvpsp`,
+`mandacaru-paw` — and an environment variable names the checkout Mandacaru
+reads from:
+
+| family | variable | set it with |
+|---|---|---|
+| `ncpp` | `MANDACARU_NCPP_PATH` | `mandacaru --set-ncpp DIR` |
+| `oncvpsp` | `MANDACARU_ONCVPSP_PATH` | `mandacaru --set-oncvpsp DIR` |
+| `paw-lcao` | `MANDACARU_PAW_PATH` | `mandacaru --set-paw DIR` |
+
+```bash
+git clone https://github.com/seixas-research/mandacaru-ncpp.git
+mandacaru --set-ncpp mandacaru-ncpp
+
+git clone https://github.com/seixas-research/mandacaru-oncvpsp.git
+mandacaru --set-oncvpsp mandacaru-oncvpsp
+
+git clone https://github.com/seixas-research/mandacaru-paw.git
+mandacaru --set-paw mandacaru-paw
+
+mandacaru --pseudo-status        # each variable, where it points, and how many datasets it serves
+```
+
+`--set-ncpp` / `--set-oncvpsp` / `--set-paw` write `export
+MANDACARU_..._PATH=DIR` into `~/.zshrc` or `~/.bashrc` (whichever `$SHELL`
+reads), asking `[Y/n]` before replacing a different value; open a new
+terminal, or `source` the file, for the variable to take effect in your
+shell. Inside a checkout the datasets sit one directory per
+exchange-correlation functional — `<checkout>/lda/<Symbol>.parquet` today,
+`<checkout>/pbe/` once there are PBE datasets — so one checkout serves every
+functional.
 
 ```python
 from mandacaru.pseudopotentials.io import available_elements, get_pseudopotential
 
-pp = get_pseudopotential("Fe")
+pp = get_pseudopotential("Fe")   # reads $MANDACARU_NCPP_PATH/lda/Fe.parquet
 pp.valence_charge     # 8.0  -- 3d^6 4s^2
 sorted(pp.channels)   # [0, 2]
 ```
 
-The valence includes semicore $(n-1)d$ and $(n-2)f$ shells, so iron is an
-eight-electron atom with a d channel rather than a two-electron 4s² one.
-Hydrogen and lithium carry a single valence channel, which is the local one, so
-in this family H₂ and LiH have no projectors at all — their nonlocal term is
-identically zero (the ONCVPSP family gives them two s projectors each).
+The NCPP datasets cover **every element with Z ≤ 92** (H through U), generated
+from scratch by Mandacaru's own LDA radial atomic solver. The valence includes
+semicore $(n-1)d$ and $(n-2)f$ shells, so iron is an eight-electron atom with a
+d channel rather than a two-electron 4s² one. Hydrogen and lithium carry a
+single valence channel, which is the local one, so in this family H₂ and LiH
+have no projectors at all — their nonlocal term is identically zero (the
+ONCVPSP family gives them two s projectors each). The ONCVPSP and PAW-LCAO
+checkouts (all 92 elements, generated 2026-09-14) are about 110 MB and 190 MB;
+NCPP's own datasets are about 11 MB.
 
-The ONCVPSP and PAW-LCAO datasets (all 92 elements, generated 2026-09-14) are too
-large for this repository — about 110 MB and 190 MB — so they live in the
-`mandacaru-oncvpsp` and `mandacaru-paw` repositories as flat directories of
-`<Symbol>.parquet` files. The loaders read them from `library/oncvpsp/` and
-`library/paw-lcao/`, which are **symbolic links** created by
+A calculation that needs a variable that is unset, or that names something
+that is not a directory, raises `LibraryPathError`
+(`mandacaru.pseudopotentials.environment`) naming the `--set-*` command that
+fixes it; the command line prints it and exits 2. A basis option
+`directory=...` bypasses the variable for one run: it names the folder
+holding the `<Symbol>.parquet` files itself, with no functional subdirectory,
+and the loaders raise `FileNotFoundError` rather than `LibraryPathError` when
+that folder is missing or empty.
 
-```bash
-mandacaru --link-paw-lcao ~/Repositories/mandacaru-paw
-mandacaru --link-oncvpsp ~/Repositories/mandacaru-oncvpsp
-mandacaru --pseudo-status          # what is linked, and how many datasets each serves
-```
+UPAW-LCAO has no repository — it is generated on demand (*Datasets* above) —
+but a library built with `mandacaru-build --pp UPAW --install` goes to
+`$MANDACARU_PAW_PATH/upaw-lcao/<xc>/`, inside the PAW-LCAO checkout.
 
-Each command links the directory and then **loads one dataset through the
-normal loader** to prove the link is usable, exiting non-zero if it is not — a
-link to the wrong directory would otherwise only fail later, in the middle of a
-calculation. Re-running with a new path moves the link (the data repository can
-be moved freely); a real, non-empty `library/paw-lcao/` directory is refused rather
-than deleted. The underlying module takes a few more options:
-
-```bash
-python -m mandacaru.pseudopotentials.link_library \
-    --oncvpsp ~/Repositories/mandacaru-oncvpsp \
-    --paw-lcao ~/Repositories/mandacaru-paw
-# --files links each dataset instead of the directory; --force replaces; --status reports
-```
-
-(git ignores the links). `io.library_root()` is the common parent (overridden
-by `MANDACARU_PSEUDO_PATH`); `io.default_library_path()` is the `ncpp/` directory,
-`oncv_library_path()` / `paw_library_path()` the others. Without the links the
-ONCVPSP/PAW-LCAO loaders raise `FileNotFoundError` and their tests skip.
-
-To regenerate or extend the library:
+To regenerate or extend a library:
 
 ```python
 from mandacaru.pseudopotentials.io import build_library
 
-written, failures = build_library()               # all of Z <= 92
+written, failures = build_library()               # all of Z <= 92, into $MANDACARU_NCPP_PATH/lda/
 written, failures = build_library(["Ti", "V"])    # or a subset
 ```
 

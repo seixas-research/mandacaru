@@ -172,8 +172,6 @@ from .generation import (Channel, PseudoPotential, _local_derivatives,
 #: Registry name of the family and its alias.
 FAMILY = "oncvpsp"
 FAMILY_ALIASES = ("oncv",)
-#: Subdirectory of the pseudopotential library holding the ONCVPSP files.
-LIBRARY_SUBDIR = "oncvpsp"
 
 #: Spherical Bessel functions per pseudo partial wave (Hamann's ``nbas``).
 DEFAULT_N_BESSEL = 8
@@ -246,8 +244,8 @@ GHOST_REMEDY_SHIFTS = (0.0, 10.0, 20.0, 40.0, 80.0)
 #: at 0.09-0.13 rad of phase error.
 OWN_CUTOFF_SHIFTS = (5.0, 10.0, 20.0, 40.0)
 #: What a generator does about a ghost state: build around it, refuse,
-#: return the dataset as it came out (for studying one), or -- PAW-LCAO only --
-#: repair and, where no remedy works, return the least-defective attempt
+#: return the dataset as it came out (for studying one), or repair and,
+#: where no remedy works, return the least-defective attempt
 #: with its defects recorded on it (``flag``), so a library can hold every
 #: element and a calculation that loads a flagged one is warned.
 GHOST_MODES = ("repair", "refuse", "keep", "flag")
@@ -662,6 +660,25 @@ def constrained_minimum(K: np.ndarray, k: np.ndarray, A: np.ndarray,
     return c0 + Z @ solution(lam)
 
 
+def check_reference_atom(atom, xc: str, relativity: str) -> None:
+    """Refuse a caller's all-electron ``atom`` solved differently from the
+    dataset being asked for.
+
+    The generator records ``xc`` and ``relativity`` from its arguments, and it
+    unscreens with ``xc``; an atom solved otherwise would give a dataset whose
+    record is false and, for a different functional, whose ionic potential is
+    wrong (a PBE-screened potential unscreened with LDA).
+    """
+    solved = (str(atom.xc).lower(), str(atom.relativity).lower())
+    wanted = (str(xc).lower(), str(relativity).lower())
+    if solved != wanted:
+        raise ValueError(
+            f"the atom passed in was solved with xc={solved[0]!r}, "
+            f"relativity={solved[1]!r}, but the dataset asks for "
+            f"xc={wanted[0]!r}, relativity={wanted[1]!r}; pass matching "
+            "options or let the generator solve the atom")
+
+
 class GhostStateError(RuntimeError):
     """A generated channel binds a state below its reference energy."""
 
@@ -669,6 +686,36 @@ class GhostStateError(RuntimeError):
 class GhostStateWarning(UserWarning):
     """A dataset in use carries a ghost state (or wrong scattering) that its
     generator could not remove."""
+
+
+def defects_record(defects) -> dict:
+    """``defects`` as a file stores it (string keys, lists)."""
+    defects = defects or {}
+    return {"ghosts": {str(l): float(e)
+                       for l, e in defects.get("ghosts", {}).items()},
+            "phases": {str(l): [float(a), float(b)]
+                       for l, (a, b) in defects.get("phases", {}).items()}}
+
+
+def read_defects(record) -> dict:
+    """The ``defects`` of a stored record; ``{}`` when there are none."""
+    record = record or {}
+    ghosts = {int(l): float(e) for l, e in (record.get("ghosts") or {}).items()}
+    phases = {int(l): (float(a), float(b))
+              for l, (a, b) in (record.get("phases") or {}).items()}
+    if not ghosts and not phases:
+        return {}
+    return {"ghosts": ghosts, "phases": phases}
+
+
+def warn_defects(dataset, family: str) -> None:
+    """Raise the :class:`GhostStateWarning` of a dataset that has defects,
+    on every load -- the library, a path or a user's own directory."""
+    import warnings
+
+    if getattr(dataset, "defects", None):
+        warnings.warn(defect_message(dataset.symbol, family, dataset.defects),
+                      GhostStateWarning, stacklevel=3)
 
 
 def defect_message(symbol: str, family: str, defects: dict) -> str:
@@ -689,6 +736,49 @@ def defect_message(symbol: str, family: str, defects: dict) -> str:
                        f"{symbol} carry an error of unknown size.")
     return (f"the {family} dataset for {symbol} still has {what} its "
             f"generator could not remove ({'; '.join(parts)}).  {consequence}")
+
+
+def local_potential_ghosts(pp) -> dict:
+    """``{l: eps_ps - eps_ae}`` for every channel *without* projectors
+    (``l`` up to one above the highest channel) in which the screened local
+    potential alone binds more states than the all-electron atom has valence
+    states of that ``l``.
+
+    Such a channel is governed by ``v_local_screened`` only, so the spectral
+    test of :func:`ghost_errors` on the constructed channels never sees it
+    -- iron's PAW-LCAO ``p`` channel held a level at -4.63 Ha against a 4p at
+    -0.05 Ha while every constructed channel was clean.  Both spectra are
+    counted below zero in the same box, on the reference atom's uniform grid;
+    the all-electron count less that ``l``'s core shells is the number of
+    states the local potential may bind.  Needs the all-electron atom (a
+    dataset read from a library has none, and gives ``{}``).
+    """
+    from scipy.linalg import eigvalsh_tridiagonal
+
+    if getattr(pp, "atom", None) is None:
+        return {}
+    r = np.asarray(pp.atom.r, dtype=float)
+    h = float(r[1] - r[0])
+    _valence, core = _valence_configuration(
+        int(pp.atomic_number), configuration=pp.atom.occupations)
+    off = np.full(r.size - 1, -0.5 / h ** 2)
+
+    def bound(v, l):
+        diag = 1.0 / h ** 2 + v + l * (l + 1) / (2.0 * r * r)
+        return eigvalsh_tridiagonal(diag, off, select="v",
+                                    select_range=(float(v.min()) - 1.0, 0.0))
+
+    out = {}
+    for l in range(max(pp.channels) + 2):
+        if l in pp.channels:
+            continue
+        smooth = bound(np.interp(r, pp.r, pp.v_local_screened), l)
+        ae = bound(np.asarray(pp.atom.v_effective, dtype=float), l)
+        allowed = ae[sum(1 for (_n, lc) in core if lc == l):]
+        if smooth.size > allowed.size:
+            reference = float(allowed[0]) if allowed.size else 0.0
+            out[int(l)] = float(smooth[0]) - reference
+    return out
 
 
 def ghost_errors(pp, levels) -> dict:
@@ -726,6 +816,9 @@ def scattering_errors(pp, log_derivative) -> dict:
     all-electron atom on ``pp``.
     """
     treatment = getattr(pp, "relativity", "none")
+    # A family may judge "near" over a narrower window (the single-projector
+    # NCPP: first-order transferability, KBView.phase_window).
+    window = float(getattr(pp, "phase_window", PHASE_WINDOW))
     # Compare where the smooth wave obeys the all-electron equation again:
     # past the projectors, which for PAW-LCAO can reach beyond r_cut.
     radius = getattr(pp, "projector_radius", None)
@@ -746,7 +839,7 @@ def scattering_errors(pp, log_derivative) -> dict:
             d = np.arctan(l_ps) - np.arctan(l_ae)
             error = abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi)
             far = max(far, error)
-            if abs(offset) <= PHASE_WINDOW + 1e-9:
+            if abs(offset) <= window + 1e-9:
                 near = max(near, error)
         out[int(l)] = (float(near), float(far))
     return out
@@ -1232,18 +1325,29 @@ def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
 
 def assemble_channel(r: np.ndarray, pw: PseudoWaves, v_loc: np.ndarray,
                      n: int, occupation: float = 0.0,
-                     strict: bool = True) -> ONCVChannel:
+                     strict: bool = True, v_ae: np.ndarray | None = None,
+                     r_local: float = 0.0) -> ONCVChannel:
     r"""Projectors and coupling of a channel for a given screened ``v_loc``.
 
     :math:`\chi_i = \sum_n c_{in}(\varepsilon_i - q_n^2/2 - V_{loc}) j_l(q_n r)`
-    inside ``r_cut`` (zero beyond), :math:`B_{ij} = \langle\tilde\varphi_i|
-    \chi_j\rangle`, :math:`D = B^{-1}`.  With ``strict`` an asymmetry of
-    :math:`B` above :data:`B_ASYMMETRY_TOLERANCE` raises.
+    inside ``r_cut``; between ``r_cut`` and the local radius ``r_local``,
+    where the pseudo wave *is* the all-electron one, :math:`\chi_i =
+    (V_{AE} - V_{loc})\varphi_i` (needs ``v_ae``); zero beyond both.
+    :math:`B_{ij} = \langle\tilde\varphi_i|\chi_j\rangle` then carries the
+    shell term :math:`\langle\varphi_i|V_{AE} - V_{loc}|\varphi_j\rangle`,
+    and :math:`D = B^{-1}`.  This is the PAW-LCAO construction of
+    :func:`~.paw.assemble_paw_channel` at zero overlap correction: it lets
+    :math:`r_{cl}` follow the *largest* cutoff instead of the smallest,
+    which is what removed the ghost states of the deep all-electron well
+    (``HISTORY.md``, 2026-09-24).  With ``strict`` an asymmetry of :math:`B`
+    above :data:`B_ASYMMETRY_TOLERANCE` raises.
     """
     l, r_cut = pw.l, pw.r_cut
     r_in = _inner_grid(r_cut)
     inside = r <= r_cut
     v_loc_in = _resample(r, v_loc, r_in)
+    extended = v_ae is not None and float(r_local) > r_cut
+    shell = (r > r_cut) & (r <= float(r_local))
 
     pseudo_in, chi_in = [], []
     for c, qs, energy in zip(pw.coefficients, pw.wavevectors, pw.energies):
@@ -1253,6 +1357,15 @@ def assemble_channel(r: np.ndarray, pw: PseudoWaves, v_loc: np.ndarray,
                        - v_loc_in[None, :] * basis_in).T @ c)
     B = np.array([[simpson(p * x * r_in * r_in, x=r_in) for x in chi_in]
                   for p in pseudo_in])
+    if extended:
+        # The shell (r_cut, r_local]: T phi = (eps - V_AE) phi there, so
+        # chi = (V_AE - V_loc) phi.  Non-relativistic identity; for a
+        # scalar-relativistic wave it is O(c^-2) off, as before.
+        r_sh = np.linspace(r_cut, float(r_local), INNER_POINTS)
+        dv = _resample(r, v_ae - v_loc, r_sh)
+        waves_sh = [_resample(r, wave, r_sh) for wave in pw.waves]
+        B = B + np.array([[simpson(a * dv * b * r_sh * r_sh, x=r_sh)
+                           for b in waves_sh] for a in waves_sh])
     asymmetry = float(np.max(np.abs(B - B.T)))
     if strict and asymmetry > B_ASYMMETRY_TOLERANCE:
         raise RuntimeError(
@@ -1269,7 +1382,10 @@ def assemble_channel(r: np.ndarray, pw: PseudoWaves, v_loc: np.ndarray,
         pseudo_waves.append(np.where(inside, c @ basis, wave))
         chi = ((energy - 0.5 * qs ** 2)[:, None] * basis
                - v_loc[None, :] * basis).T @ c
-        projectors.append(np.where(inside, chi, 0.0))
+        chi = np.where(inside, chi, 0.0)
+        if extended:
+            chi = np.where(shell, (v_ae - v_loc) * wave, chi)
+        projectors.append(chi)
 
     return ONCVChannel(
         l=l, n=n, eigenvalue=float(pw.energies[0]), r_cut=float(r_cut),
@@ -1371,10 +1487,24 @@ class ONCVPseudoPotential(PseudoPotential):
     #: Empty unless the pseudopotential was generated with ``"dirac"``.
     spin_orbit: dict = field(default_factory=dict)
 
+    #: What its generator could not remove (``ghosts="flag"``), as for
+    #: PAW-LCAO: ``{"ghosts": {l: depth}, "phases": {l: (near, far)}}``.
+    defects: dict = field(default_factory=dict)
+
     @property
     def has_spin_orbit(self) -> bool:
         """Whether this pseudopotential carries a spin-orbit term."""
         return bool(self.spin_orbit)
+
+    def projector_radius(self, l: int) -> float:
+        """Radius beyond which channel ``l``'s projectors vanish: its own
+        ``r_cut``, or ``r_cut_local`` when that is larger."""
+        return max(float(self.channels[int(l)].r_cut), float(self.r_cut_local))
+
+    def unconstructed_ghosts(self) -> dict:
+        """Ghost states the local potential alone binds in a channel without
+        projectors (:func:`local_potential_ghosts`)."""
+        return local_potential_ghosts(self)
 
     @property
     def has_core_correction(self) -> bool:
@@ -1416,7 +1546,9 @@ class ONCVPseudoPotential(PseudoPotential):
         return (f"ONCVPseudoPotential({self.symbol}, Z_ion="
                 f"{self.valence_charge:g}, [{channels}], rcl="
                 f"{self.r_cut_local:.2f}, shift={self.local_shift:+.2f}, "
-                f"qc={self.q_cut:g})")
+                f"qc={self.q_cut:g}"
+                f"{', GHOSTED' if (self.defects or {}).get('ghosts') else ''}"
+                f"{', SCATTERING OFF' if (self.defects or {}).get('phases') else ''})")
 
 
 def generation_points(atomic_number: int, minimum: int = 6000,
@@ -1695,10 +1827,6 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         ``"refuse"`` raises :class:`GhostStateError` instead; ``"keep"``
         returns it unexamined.  See :func:`ghost_free`.
     """
-    if ghosts == "flag":
-        raise ValueError("ghosts='flag' is PAW-LCAO only: an ONCVPSP file has "
-                         "nowhere to record the defect, so its users would "
-                         "never be warned")
     if ghosts != "keep":
         options = {k: v for k, v in locals().items()
                    if k not in ("symbol", "ghosts")}
@@ -1719,6 +1847,8 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
                                   if points is None else int(points)),
                           r_max=r_max, tolerance=1e-7, mixing=0.25,
                           xc=xc, relativity=relativity)
+    else:
+        check_reference_atom(atom, xc, relativity)
     valence_config, core_config = _valence_configuration(
         atomic_number, configuration=atom.occupations)
     if not valence_config:
@@ -1747,8 +1877,10 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
 
     built = [channel_set(branch) for branch in branches]
     per_l, cutoffs, references = built[0]
+    # The local potential follows the *largest* cutoff; a compact channel's
+    # projectors reach out to r_cl instead (assemble_channel).
     r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
-                    else float(local_factor * min(cutoffs.values())))
+                    else float(local_factor * max(cutoffs.values())))
     v_loc = polynomial_local_potential(r, v_ae, r_local, shift)
 
     branch_channels = []
@@ -1764,7 +1896,8 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         branch_channels.append({
             l: assemble_channel(
                 r, waves_of_l[l], v_loc, n=states[0][0],
-                occupation=float(sum(o for _n, _e, _w, o in states)))
+                occupation=float(sum(o for _n, _e, _w, o in states)),
+                v_ae=v_ae, r_local=r_local)
             for l, states in branch_per_l.items()})
 
     if relativity == "dirac":
@@ -1958,7 +2091,10 @@ def log_derivative_ps(pp: ONCVPseudoPotential, l: int, energy: float,
     from a 2x2 linear system.
     """
     l = int(l)
-    r_cut = pp.channels[l].r_cut if r_cut is None else float(r_cut)
+    radius = getattr(pp, "projector_radius", None)
+    if r_cut is None:
+        r_cut = (radius(l) if radius is not None else pp.channels[l].r_cut)
+    r_cut = float(r_cut)
     r = pp.r
     r0 = _with_origin(r)
     v0 = np.concatenate([[pp.v_local_screened[0]], pp.v_local_screened])
@@ -1971,6 +2107,10 @@ def log_derivative_ps(pp: ONCVPseudoPotential, l: int, energy: float,
     uj = [numerov_outward(r0, f, 2.0 * chi, (0.0, 0.0), start=1)
           for chi in chi_u]
     dr = r0[1] - r0[0]
+    if not chi_u:
+        # A channel without projectors (the local channel of a
+        # Kleinman-Bylander dataset): the local potential alone.
+        return _log_derivative_of_u(r0, u0, r_cut)
     m0 = np.array([np.trapezoid(chi * u0, dx=dr) for chi in chi_u])
     M = np.array([[np.trapezoid(chi * u, dx=dr) for u in uj] for chi in chi_u])
     a = np.linalg.solve(np.eye(len(chi_u)) - D @ M, D @ m0)
@@ -2051,7 +2191,7 @@ def check_oncv_channel(pp: ONCVPseudoPotential, l: int,
     if ae is None:
         return out
     z = float(pp.atomic_number)
-    errors = log_derivative_errors(pp, l, energies, channel.r_cut,
+    errors = log_derivative_errors(pp, l, energies, pp.projector_radius(l),
                                    log_derivative_ps, midpoint)
     # The same equation the reference atom solved: outside r_c the pseudo
     # wave *is* the all-electron wave, and re-deriving that wave
@@ -2159,26 +2299,26 @@ def oncv_coupling_blocks(projectors, symbols, potentials) -> dict:
     return blocks
 
 
-def oncv_library_path(directory=None) -> str:
-    """The ONCVPSP library directory (``library/oncvpsp`` by default)."""
-    from .io import library_root
-    if directory is not None:
-        return os.fspath(directory)
-    return os.path.join(library_root(), LIBRARY_SUBDIR)
+def oncv_library_path(directory=None, xc: str = DEFAULT_XC, *,
+                      must_exist: bool = True) -> str:
+    """The ONCVPSP library folder: ``directory`` when given, else
+    ``$MANDACARU_ONCVPSP_PATH/<xc>`` (:func:`.environment.library_directory`)."""
+    from .environment import library_directory
+    return library_directory(FAMILY, xc, directory, must_exist=must_exist)
 
 
 _CACHE: dict = {}
 
 
-def get_oncv(symbol: str, directory=None) -> ONCVPseudoPotential:
-    """Load ``symbol`` from the ONCVPSP library (cached)."""
+def get_oncv(symbol: str, directory=None,
+             xc: str = DEFAULT_XC) -> ONCVPseudoPotential:
+    """Load ``symbol`` from the ONCVPSP library (cached): ``directory``, or
+    ``$MANDACARU_ONCVPSP_PATH/<xc>``."""
     from .io import load_library_dataset
 
     return load_library_dataset(
-        symbol, oncv_library_path(directory), FAMILY, _CACHE,
-        label="ONCVPSP", noun="pseudopotential",
-        repository="mandacaru-oncvpsp", link_flag="--link-oncvpsp",
-        builder="build_oncv_library")
+        symbol, oncv_library_path(directory, xc), FAMILY, _CACHE,
+        label="ONCVPSP", noun="pseudopotential", builder="build_oncv_library")
 
 
 def build_oncv_library(elements=("H", "Li", "C", "N", "O", "F"),
@@ -2188,7 +2328,10 @@ def build_oncv_library(elements=("H", "Li", "C", "N", "O", "F"),
     """Generate and save ONCVPSP potentials for ``elements``; returns paths."""
     from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
 
-    folder = oncv_library_path(directory)
+    folder = oncv_library_path(directory,
+                               generation_options.get("xc", DEFAULT_XC),
+                               must_exist=False)
+    os.makedirs(folder, exist_ok=True)
     format = DEFAULT_FORMAT if format is None else format
     stride = STRIDE if stride is None else int(stride)
     written = []
@@ -2276,7 +2419,7 @@ def to_payload(pp: ONCVPseudoPotential, stride: int = 1) -> dict:
             "energy_offset": float(pp.energy_offset),
             "xc": str(pp.xc), "relativity": str(pp.relativity),
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
-            "spin_orbit": spin_orbit,
+            "spin_orbit": spin_orbit, "defects": defects_record(pp.defects),
             "channels": channels, "radial_tables": tables}
 
 
@@ -2316,7 +2459,7 @@ def from_payload(payload: dict) -> ONCVPseudoPotential:
             q_cut=float(entry.get("q_cut", payload.get("q_cut", DEFAULT_Q_CUT))))
         projectors[l] = chis
         coupling[l] = D
-    return ONCVPseudoPotential(
+    dataset = ONCVPseudoPotential(
         symbol=payload["symbol"], atomic_number=int(payload["atomic_number"]),
         valence_charge=float(payload["valence_charge"]), r=r,
         channels=channels, v_local=v_local, local_l=-1, projectors=projectors,
@@ -2348,7 +2491,10 @@ def from_payload(payload: dict) -> ONCVPseudoPotential:
                                dtype=float)
                     for i in range(len(block))],
             }
-            for l, block in (payload.get("spin_orbit") or {}).items()})
+            for l, block in (payload.get("spin_orbit") or {}).items()},
+        defects=read_defects(payload.get("defects")))
+    warn_defects(dataset, FAMILY)
+    return dataset
 
 
 # --------------------------------------------------------------------------- #

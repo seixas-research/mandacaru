@@ -145,3 +145,28 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         _LOG.finish()
     for line in _LOG.table(TERMINAL_ROWS).splitlines():
         terminalreporter.write_line(line)
+
+
+def pytest_sessionstart(session):
+    """Name the pseudopotential library variables that are unset or wrong.
+
+    The NCPP, ONCVPSP and PAW-LCAO datasets live outside the package, so
+    every test that loads one fails with a ``LibraryPathError`` without its
+    variable; this says why once, at the top, instead of in each traceback.
+    (A report header would be hidden by the ``-q`` in ``addopts``.)
+    """
+    from mandacaru.pseudopotentials.environment import (FAMILY_VARIABLES,
+                                                        LibraryPathError,
+                                                        repository_path)
+    missing = []
+    for family, variable in FAMILY_VARIABLES.items():
+        try:
+            repository_path(family)
+        except LibraryPathError:
+            missing.append(variable)
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if missing and reporter is not None:
+        reporter.write_line(
+            f"pseudopotential libraries: {', '.join(missing)} unset or not a "
+            "directory -- tests that load those datasets will fail "
+            "(mandacaru --pseudo-status)", yellow=True)

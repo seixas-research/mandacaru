@@ -41,8 +41,8 @@ Registered today:
 ``"ncpp"`` (aliases ``"tm"``, ``"ncpp-tm"``)
     Norm-conserving **Troullier-Martins** potentials in Kleinman-Bylander
     separable form -- one projector per channel, :math:`D = \mathrm{diag}(E^{KB})`,
-    no overlap correction.  The bundled library (``library/ncpp/``) covers
-    every element up to uranium.
+    no overlap correction.  Its library (the ``mandacaru-ncpp`` repository,
+    found through ``MANDACARU_NCPP_PATH``) covers every element up to uranium.
 
 ``"oncvpsp"`` (alias ``"oncv"``; :mod:`.oncv`)
     Hamann's **optimized norm-conserving Vanderbilt** potentials -- two
@@ -77,7 +77,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-#: The canonical name of the Troullier-Martins family (the bundled library).
+#: The canonical name of the Troullier-Martins family (library:
+#: ``$MANDACARU_NCPP_PATH``).
 DEFAULT_FAMILY = "ncpp"
 
 #: Basis options every family accepts: the size hierarchy built on the
@@ -285,7 +286,7 @@ def _get_tm(symbol, directory=None):
     from .io import get_pseudopotential
     pp = get_pseudopotential(symbol, directory)
     if canonical_family_name(getattr(pp, "family", DEFAULT_FAMILY)) != "ncpp":
-        location = directory or "the bundled library"
+        location = directory or "the NCPP library ($MANDACARU_NCPP_PATH)"
         raise ValueError(
             f"the pseudopotential for {symbol!r} in {location} belongs to "
             f"family {pp.family!r}, not 'ncpp'")

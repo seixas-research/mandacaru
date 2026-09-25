@@ -96,13 +96,16 @@ class TestLibrary:
             load_pseudopotential(alien)
 
     def test_missing_element_is_reported_helpfully(self, tmp_path):
-        with pytest.raises(FileNotFoundError, match="Regenerate the library"):
+        with pytest.raises(FileNotFoundError,
+                           match="mandacaru-build --pp NCPP --element Fe"):
             get_pseudopotential("Fe", directory=tmp_path)
 
     def test_library_lives_where_documented(self):
+        """``$MANDACARU_NCPP_PATH/lda``, the mandacaru-ncpp checkout."""
         path = default_library_path()
-        assert path.endswith(os.path.join("library", "ncpp"))
-        assert "experimental" not in path and "pseudopotentials" in path
+        assert path == os.path.join(
+            os.path.abspath(os.path.expanduser(
+                os.environ["MANDACARU_NCPP_PATH"])), "lda")
         assert library_file("O").endswith("O.parquet")     # Parquet by default
 
 

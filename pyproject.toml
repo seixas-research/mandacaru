@@ -95,13 +95,6 @@ path = "src/mandacaru/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mandacaru"]
-# The ONCVPSP and PAW-LCAO libraries (~600 MB) live in the mandacaru-oncvpsp
-# and mandacaru-paw repositories and are linked into library/ locally; PyPI
-# caps a release at 100 MB, so only the 11 MB NCPP library ships in the wheel.
-# These paths are the library subdirectories, so they follow the family rename:
-# `paw` here would exclude nothing now that the directory is `paw-lcao`.
-exclude = [
-  "src/mandacaru/pseudopotentials/library/oncvpsp",
-  "src/mandacaru/pseudopotentials/library/paw-lcao",
-  "src/mandacaru/pseudopotentials/library/upaw-lcao",
-]
+# No pseudopotential data ships in the wheel: the NCPP, ONCVPSP and PAW-LCAO
+# libraries live in the mandacaru-ncpp, mandacaru-oncvpsp and mandacaru-paw
+# repositories, found through MANDACARU_{NCPP,ONCVPSP,PAW}_PATH.

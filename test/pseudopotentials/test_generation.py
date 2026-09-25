@@ -47,7 +47,8 @@ def oxygen_atom():
 
 @pytest.fixture(scope="module")
 def oxygen_pp(oxygen_atom):
-    return generate_pseudopotential("O", atom=oxygen_atom)
+    # The module's atom is the non-relativistic one, so the dataset says so.
+    return generate_pseudopotential("O", atom=oxygen_atom, relativity="none")
 
 
 # --------------------------------------------------------------------------- #
@@ -99,7 +100,12 @@ class TestAtomicSolver:
 # --------------------------------------------------------------------------- #
 
 class TestTroullierMartins:
-    @pytest.mark.parametrize("symbol", ["H", "Li", "Be", "C", "N", "O", "F"])
+    # The default construction is scalar-relativistic with NLCC and a ghost
+    # search on the 1500 Z grid: 2-10 s an element.  Hydrogen stays in the
+    # default run; the sweep is `-m slow`.
+    @pytest.mark.parametrize("symbol", ["H"] + [
+        pytest.param(s, marks=pytest.mark.slow)
+        for s in ("Li", "Be", "C", "N", "O", "F")])
     def test_generates_across_the_first_rows(self, symbol):
         pp = generate_pseudopotential(symbol)
         assert pp.channels
@@ -209,12 +215,14 @@ class TestKleinmanBylander:
             assert oxygen_pp.projector(l, np.array([50.0]))[0] == 0.0
 
     def test_local_channel_choice(self, oxygen_atom):
-        pp = generate_pseudopotential("O", local_l=0, atom=oxygen_atom)
+        pp = generate_pseudopotential("O", local_l=0, atom=oxygen_atom,
+                                      relativity="none")
         assert pp.local_l == 0 and set(pp.projectors) == {1}
 
     def test_invalid_local_channel_rejected(self, oxygen_atom):
         with pytest.raises(ValueError, match="not among the channels"):
-            generate_pseudopotential("O", local_l=3, atom=oxygen_atom)
+            generate_pseudopotential("O", local_l=3, atom=oxygen_atom,
+                                     relativity="none")
 
 
 # --------------------------------------------------------------------------- #

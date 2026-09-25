@@ -11,6 +11,8 @@ All quantities use atomic units, with an eV view of the spectrum available.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from os import PathLike
+from pathlib import Path
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -103,6 +105,21 @@ class EchoSpectrum:
             return np.empty(0, dtype=np.int64)
         indices, _ = find_peaks(intensity, height=threshold*scale)
         return indices[self.energies[indices] > 0]
+
+    def to_csv(self, path: str | PathLike[str] = "spectrum.csv") -> Path:
+        """Write the complete signed spectrum to CSV and return its path.
+
+        Columns are excitation energy (Hartree, eV), Fourier magnitude, and
+        real/imaginary Fourier amplitudes (all three in Hartree). One plain
+        header is followed by numeric rows at 12-digit scientific precision.
+        Existing files are replaced; the parent directory must already exist.
+        """
+        destination = Path(path)
+        data = np.column_stack((self.energies, self.energies_ev, self.intensities,
+                                self.amplitudes.real, self.amplitudes.imag))
+        np.savetxt(destination, data, delimiter=",", fmt="%.12e", comments="",
+                   header="energy_ha,energy_ev,magnitude_ha,fft_real_ha,fft_imag_ha")
+        return destination
 
 
 def fourier_spectrum(correlation: ArrayLike, time_step: float, *,

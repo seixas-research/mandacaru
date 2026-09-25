@@ -54,7 +54,7 @@ def _paw_available() -> bool:
 
 
 needs_paw = pytest.mark.skipif(not _paw_available(),
-                               reason="the PAW-LCAO dataset library is not linked")
+                               reason="MANDACARU_PAW_PATH is not configured")
 
 
 def _molecule(symbols, positions, cell, center=True, **info):

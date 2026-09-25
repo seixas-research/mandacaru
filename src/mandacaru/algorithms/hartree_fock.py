@@ -63,6 +63,42 @@ class RHFResult:
     eri_mo: np.ndarray                # <pq|rs> (physicists') in the MO basis
     n_iterations: int = 0
 
+    def _frontier_energies(self) -> tuple[float, float]:
+        """Validated occupied/unoccupied frontier energies in Hartree."""
+        if not self.converged:
+            raise ValueError("HOMO-LUMO energies require a converged RHF reference")
+        energies = np.asarray(self.mo_energies)
+        if (energies.ndim != 1 or not np.isrealobj(energies)
+                or not np.all(np.isfinite(energies)) or np.any(np.diff(energies) < 0)):
+            raise ValueError("mo_energies must be finite real energies in ascending order")
+        occupied = self.n_occupied
+        if (isinstance(occupied, (bool, np.bool_))
+                or not isinstance(occupied, (int, np.integer))
+                or not 0 < occupied < energies.size):
+            raise ValueError("HOMO-LUMO gap requires occupied and unoccupied orbitals")
+        return float(energies[occupied - 1]), float(energies[occupied])
+
+    @property
+    def homo_energy(self) -> float:
+        """Highest occupied canonical RHF orbital energy, in Hartree."""
+        return self._frontier_energies()[0]
+
+    @property
+    def lumo_energy(self) -> float:
+        """Lowest unoccupied canonical RHF orbital energy, in Hartree."""
+        return self._frontier_energies()[1]
+
+    @property
+    def homo_lumo_gap(self) -> float:
+        """``epsilon_LUMO - epsilon_HOMO`` in Hartree for the RHF reference.
+
+        This mean-field orbital gap is distinct from a correlated neutral
+        excitation energy or a quasiparticle gap. A converged reference with
+        at least one occupied and one unoccupied spatial orbital is required.
+        """
+        homo, lumo = self._frontier_energies()
+        return lumo - homo
+
     def __repr__(self) -> str:
         return (f"RHFResult(E_elec={self.electronic_energy:.6f}, "
                 f"n_occ={self.n_occupied}, converged={self.converged})")

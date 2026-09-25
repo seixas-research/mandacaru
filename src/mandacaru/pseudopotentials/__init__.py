@@ -17,9 +17,12 @@ Hamann's optimized norm-conserving Vanderbilt potentials with two projectors
 per channel (:mod:`.oncv`); ``"paw-lcao"``, Bloechl's projector augmented-wave
 datasets with an overlap correction and frozen one-center terms
 (:mod:`.paw`); and ``"upaw-lcao"`` (alias ``"unitary-paw-lcao"``), the PAW construction
-with a vanishing norm deficit, generated on demand.  The on-disk library lives under ``library/``, one
-subdirectory per family -- ``library/ncpp/`` (Troullier-Martins, :mod:`.io`),
-``library/oncvpsp/`` and ``library/paw-lcao/`` -- and the valence
+with a vanishing norm deficit, generated on demand.  The datasets are not part
+of the package: each family's library is a repository checkout that an
+environment variable names -- ``MANDACARU_NCPP_PATH``,
+``MANDACARU_ONCVPSP_PATH``, ``MANDACARU_PAW_PATH``, set with ``mandacaru
+--set-ncpp/--set-oncvpsp/--set-paw DIR`` -- holding one folder per functional
+(``lda/``) (:mod:`.environment`).  The valence
 pseudo-atomic orbitals and projectors are sampled on the real-space grid by
 :mod:`.orbitals`.  A family is selected **as a basis**: ``basis="NCPP"``,
 ``basis="ONCVPSP"``, ``basis={"name": "PAW-LCAO", "size": "DZP"}`` on any driver
@@ -31,11 +34,13 @@ from .families import (COMMON_OPTIONS, DEFAULT_FAMILY, PSEUDO_FAMILIES,
                        FamilySpec, canonical_family_name, family_listing,
                        family_names, lookup_family, register_family,
                        resolve_family, unregister_family)
+from .environment import (FAMILY_VARIABLES, LibraryPathError,
+                          library_directory)
 from .generation import (Channel, PseudoPotential, check_channel,
                          generate_pseudopotential, pseudize_channel, report)
 from .io import (FORMAT_VERSION, LEGACY_FAMILY, LIBRARY_ELEMENTS,
                  LIBRARY_Z_MAX, available_elements, build_library,
-                 default_library_path, get_pseudopotential, library_root, library_file,
+                 default_library_path, get_pseudopotential, library_file,
                  load_pseudopotential, save_pseudopotential)
 from .orbitals import (KBProjector, PseudoAtomicOrbital, kb_coupling_blocks,
                        kb_projectors, pseudo_basis, valence_electrons)
@@ -60,11 +65,12 @@ __all__ = [
     "canonical_family_name", "family_listing", "family_names",
     "lookup_family", "register_family", "resolve_family",
     "unregister_family",
+    "FAMILY_VARIABLES", "LibraryPathError", "library_directory",
     "Channel", "PseudoPotential", "check_channel", "generate_pseudopotential",
     "pseudize_channel", "report",
     "FORMAT_VERSION", "LEGACY_FAMILY",
     "LIBRARY_ELEMENTS", "LIBRARY_Z_MAX", "available_elements", "build_library",
-    "default_library_path", "get_pseudopotential", "library_root", "library_file",
+    "default_library_path", "get_pseudopotential", "library_file",
     "load_pseudopotential", "save_pseudopotential",
     "KBProjector", "PseudoAtomicOrbital", "kb_coupling_blocks",
     "kb_projectors", "pseudo_basis", "valence_electrons",
