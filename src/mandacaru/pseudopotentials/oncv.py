@@ -2034,8 +2034,9 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         Aufbau reference explicit; for example, Ce may be generated with an
         occupied 5d channel. The occupations must sum to the atomic number.
         When ``atom`` is supplied, its occupations must agree.
-    frozen_subshells : sequence of (n, l), optional
-        Occupied reference subshells moved from valence to the frozen core.
+    frozen_subshells : sequence of tuple, optional
+        Occupied reference subshells, as ``(n, l)`` pairs, moved from valence
+        to the frozen core.
         A scattering-only channel is automatically added when this removes
         the highest angular momentum, for example Bi 4f14.
     scattering_energy : float, optional
