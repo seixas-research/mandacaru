@@ -64,6 +64,7 @@ used by the tests).
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime
 import os
 from pathlib import Path
 import sys
@@ -230,6 +231,10 @@ class AdaptOutputLogger:
         self._table_open = False
         #: Columns of this run's table, fixed when the first row is written.
         self._columns = None
+        #: Energy the next row's ``dE`` is measured from: the reference energy
+        #: (or a resumed run's restored one) until the first row, then each
+        #: row's own.  ``None`` until the setup block has been written.
+        self._previous_energy: float | None = None
 
         targets = _targets(path)
         if not targets:
@@ -454,7 +459,7 @@ class AdaptOutputLogger:
                               reference_energy: float, energy_unit: str = "eV",
                               gradient_tol: float | None = None,
                               max_iterations: int | None = None,
-                              initial_ansatz: str = "|HF> (0 parameters)",
+                              start_energy: float | None = None,
                               extra: dict | None = None,
                               gradient_method: str | None = None,
                               gradient_formula: str | None = None,
@@ -475,6 +480,10 @@ class AdaptOutputLogger:
         operator pool), the **loop's starting point**, and last the run's
         **lineage** (``lineage``; what a resumed run was restored from).
         """
+        # The first iteration's dE is measured from here: the reference state,
+        # or the restored ansatz of a resumed run (``start_energy``).
+        self._previous_energy = float(reference_energy if start_energy is None
+                                      else start_energy)
         self._emit("[OPTIMIZATION SETUP]")
         self._emit_body(f"classical_optimizer: {optimizer_method}")
         if max_iterations is not None:
@@ -496,12 +505,12 @@ class AdaptOutputLogger:
             for key, value in extra.items():
                 self._emit_body(f"{key}: {value}")
 
-        # Where the loop starts: the unit the energies below are in, the
-        # reference energy in it, and the ansatz that energy belongs to.
+        # Where the loop starts: the unit the energies below are in and the
+        # reference energy in it.  The reference state itself is the
+        # [ELECTRONS] block's; a resumed run's starting ansatz is the lineage's.
         self._emit_body(
             f"energy_unit: {energy_unit}",
-            f"reference_energy_{energy_unit}: {reference_energy:.10f}",
-            f"initial_ansatz: {initial_ansatz}")
+            f"reference_energy_{energy_unit}: {reference_energy:.10f}")
 
         if lineage:
             for key, value in lineage.items():
@@ -510,24 +519,26 @@ class AdaptOutputLogger:
 
     # -- per-iteration table ------------------------------------------------ #
 
-    #: Columns of the iteration table: ``(key, heading, width, format)``, in the
-    #: order the properties were asked for -- energy, expressivity, the selected
-    #: operator's type, the screening gradient, CNOTs, circuit depth and
-    #: single-qubit gates -- with the growth index first and the operator's
-    #: label last (it is the only variable-width field).
+    #: Columns of the iteration table: ``(key, heading, width, format)``.  The
+    #: growth index comes first, then the wall-clock time the step finished
+    #: (``HH:MM:SS``), the energy, the expressivity, the energy change from
+    #: the previous step (``dE``; the first row's is from the reference
+    #: state), the screening gradient, the optimizer steps and the circuit
+    #: cost, with the operator's label last (the only variable-width field).
+    #: The operator's kind is not a column: the label already says it
+    #: (``D(0,2->1,3)``), and the pool is named in the setup block.
     #:
-    #: This is a **file**, so nothing is dropped to fit a terminal and the
-    #: numbers keep full precision.
+    #: This is a **file**, so nothing is dropped to fit a terminal.
     ITERATION_COLUMNS = (("iter", "iter", 4, "d"),
+                         ("time", "time", 8, "s"),
                          ("energy", "energy", 18, ".10f"),
                          ("expr", "expr", 10, ".6f"),
-                         # "fermionic-double" is 16 characters: the log keeps
-                         # the pool's own kind verbatim (the stdout table
-                         # strips the pool prefix, which it can because the
-                         # pool is named in its header), so the column has to
-                         # be wide enough or every later column shifts.
-                         ("type", "type", 17, "s"),
-                         ("grad", "|grad|", 13, ".6e"),
+                         # Signed, and as wide as the energy it differences.
+                         ("dE", "dE", 18, "+.10f"),
+                         # Fixed-point, six decimals: a gradient below
+                         # 5e-7 reads as 0.000000 -- far below any
+                         # gradient_tolerance the loop stops on.
+                         ("grad", "|grad|", 13, ".6f"),
                          # Classical effort of this growth step: how many
                          # parameter updates the optimizer made to re-optimize
                          # the grown ansatz (not cost evaluations -- the two
@@ -609,11 +620,18 @@ class AdaptOutputLogger:
         def count(value):
             return "-" if value is None else str(value)
 
+        energy = float(energy)
+        delta = (None if self._previous_energy is None
+                 else energy - self._previous_energy)
+        self._previous_energy = energy
         values = {
             "iter": int(iteration),
-            "energy": float(energy),
+            # When the row is written, which is when the step finished: the
+            # re-optimization and the circuit metrics are already done.
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "energy": energy,
             "expr": None if expressivity is None else float(expressivity),
-            "type": str(selected.kind),
+            "dE": delta,
             "grad": abs(grads[selected_index]),
             "steps": count(optimizer_steps),
             "cnot": count(getattr(metrics, "cnot_count", None)),
@@ -633,6 +651,9 @@ class AdaptOutputLogger:
                 cells.append(f"{'-':>{width}}")
             elif fmt == "s":
                 cells.append(f"{value:>{width}}")
+            elif fmt.startswith("+"):
+                # The sign flag goes before the width in a format spec.
+                cells.append(f"{value:>+{width}{fmt[1:]}}")
             else:
                 cells.append(f"{value:>{width}{fmt}}")
         self._emit_body(" ".join(cells).rstrip())
@@ -1615,8 +1636,12 @@ def parse_output(path: str) -> dict:
                 entry: dict[str, Any] = {
                     "index": int(record["iter"]),
                     "selected_operator": record.get("operator", ""),
+                    # Only logs written before the `type` column was removed
+                    # carry it; the operator label says the kind.
                     "operator_kind": record.get("type", ""),
+                    "time": record.get("time"),
                     "energy": number(record.get("energy", "")),
+                    "delta_energy": number(record.get("dE", "")),
                     "energy_unit": energy_unit,
                     "expressivity_E": record.get("expr", "-"),
                     "max_gradient": number(record.get("|grad|", "")),

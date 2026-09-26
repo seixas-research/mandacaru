@@ -185,6 +185,50 @@ def resolve_basis(basis):
         "per-element mapping like {'O': 'HAO', 'H': '6-31G'}")
 
 
+def with_library_folder(basis, folder: str):
+    """``basis`` with every library-backed pseudopotential entry pointed at
+    ``<checkout>/<folder>`` of its family (``Mandacaru(directory=folder)``).
+
+    The PAW-LCAO, ONCVPSP and NCPP entries -- a name, a ``{"name": ...}``
+    dict, or the values of a per-element mapping -- gain the basis option
+    ``directory`` set to that folder, resolved against the family's own
+    library variable (``MANDACARU_PAW_PATH`` for PAW-LCAO).  An entry that
+    already names its ``directory`` keeps it: the explicit folder wins.
+    Other bases are returned unchanged.
+
+    Raises
+    ------
+    ValueError
+        When no entry of ``basis`` reads a pseudopotential library, so the
+        folder would select nothing.
+    """
+    from ..pseudopotentials.environment import FOLDER_FAMILIES, library_folder
+    from ..pseudopotentials.families import canonical_family_name
+
+    found = []
+
+    def rewrite(spec):
+        name, options = resolve_basis(spec)
+        if name == PER_ELEMENT:
+            return {key: rewrite(value) for key, value in options.items()}
+        family = canonical_family_name(name)
+        if family not in FOLDER_FAMILIES:
+            return spec
+        found.append(family)
+        if "directory" in options:
+            return spec
+        return {"name": name, **options,
+                "directory": library_folder(family, folder)}
+
+    result = rewrite(basis)
+    if not found:
+        raise ValueError(
+            f"directory={folder!r} selects a folder of a pseudopotential "
+            f"library, but basis={basis!r} reads none; use a PAW-LCAO, "
+            f"ONCVPSP or NCPP basis, or omit directory=")
+    return result
+
+
 # Noble-gas core: (highest Z of the row, core electrons of that row's atoms).
 _NOBLE_CORE_THRESHOLDS = ((2, 0), (10, 2), (18, 10), (36, 18),
                           (54, 36), (86, 54), (118, 86))

@@ -57,11 +57,12 @@ The block every run is read through, whichever destination it went to:
 
 ```text
 [ITERATIONS]
-    iter        energy (eV)              type        |grad|   steps      1q    cnot   depth operator
-    ------------------------------------------------------------------------------------------------
-       1  -154.7308990000        qeb-double  2.720000e-01       4      40      48      65 QD(0,3->2,5)
-       2  -154.7652420000        qeb-double  8.310000e-02       6      74      96     129 QD(1,4->2,5)
-       3  -154.7761050000        qeb-double  5.540000e-02       7     108     144     193 QD(1,3->2,5)
+    iter     time        energy (eV)                 dE        |grad|   steps      1q    cnot   depth operator
+    ----------------------------------------------------------------------------------------------------------
+       1 13:45:10     -33.1720283176      -0.1939118279      0.225802       3      38     104     121 D(0,4->3,7)
+       2 13:45:10     -33.2886620234      -0.1166337058      0.158793       4      73     176     209 D(0,4->1,7)
+       3 13:45:10     -33.3953428910      -0.1066808676      0.151665       5     108     256     304 D(0,4->3,5)
+       4 13:45:10     -33.4961593720      -0.1008164810      0.134065       7     143     304     368 D(0,4->1,5)
 ```
 
 The **pool's type and size** and the Hamiltonian's **term count** are in the
@@ -75,15 +76,16 @@ Each iteration is one row, one column per property computed at that step:
 | Column | Meaning |
 | :--- | :--- |
 | `iter` | Growth step (1-based). |
-| `\|grad\|` | Largest pool gradient; the operator with this gradient is the one selected. Convergence is when it falls below `gradient_tolerance`. |
+| `time` | Wall-clock time the step finished, `HH:MM:SS`. |
 | `energy (eV)` | Energy after the inner re-optimization (Hartree with `atomic_units=True`). |
 | `expr` | Expressivity of the grown ansatz: KL divergence from the Haar distribution over the number-conserving sector. It falls as the ansatz specializes. **Off by default** and the column is then absent rather than blank; `run(log_expressivity=True)` adds it. It is a diagnostic, not a result, and not cheap: `2 x 400` state preparations per iteration, each applying every operator in the ansatz, so the cost is linear in the ansatz and quadratic over a run (0.010 / 0.031 / 0.059 / 0.125 s at 1 / 4 / 8 / 16 operators, 6 qubits). |
+| `dE` | Energy change from the previous row, signed, in the energy column's unit; the first row's is from the reference state (`reference_energy_<unit>` in `[OPTIMIZATION SETUP]`), and a resumed run's from the energy its restored ansatz had. |
+| `\|grad\|` | Largest pool gradient, to six decimals; the operator with this gradient is the one selected. Convergence is when it falls below `gradient_tolerance`. A gradient below 5e-7 reads `0.000000`. |
 | `steps` | **Steps the classical optimizer took** to re-optimize the grown ansatz — parameter updates, not cost evaluations. The two differ by the method: L-BFGS spends several evaluations per step on a finite-difference gradient and a line search, SPSA two or three, while COBYLA evaluates once per trial point. `-` when a method reports neither a count nor a per-iteration callback. |
 | `cnot` | CNOT gates after compiling to the native gate set. |
 | `1q` | Single-qubit gates in the same compilation. |
 | `depth` | Circuit depth in the same compilation. |
-| `type` | Kind of the selected operator, as the pool names it (`qeb-double`, `fermionic-single`, `ceo`, ...). |
-| `operator` | Its label, e.g. `QD(0,3->2,5)`. |
+| `operator` | The selected operator's label, e.g. `D(0,4->3,7)`; the label names its kind, and the pool is named in `[OPTIMIZATION SETUP]`. |
 
 **The table does not depend on the terminal.** It is the same width whether it
 is printed or written, because it is the same table: no column is dropped and no
@@ -178,12 +180,13 @@ read off the left margin:
     filter_cutoff: 16.6244 Bohr^-1 (3760.30 eV)
     local_potential: range-separated: long range on the grid, short range on atom-centered quadrature (sigma = 0.2646 Bohr)
     dataset_xc: LDA (atomic reference only; the valence interaction is the bare Coulomb operator)
+    directory: lda (/data/mandacaru-paw/lda)
     basis_functions: 6
     datasets:
         symbol  Z  Z_ion  l_max  r_cut_Bohr  source
-        -----------------------------------------------------------------
-        O       8  6      1      1.4499      /data/mandacaru-paw/O.parquet
-        H       1  1      0      1.2998      /data/mandacaru-paw/H.parquet
+        ---------------------------------------------------
+        O       8  6      1      1.4499      O.parquet
+        H       1  1      0      1.2998      H.parquet
     orbitals:
         symbol  l  zetas  polarization  r_c_Bohr  r_c_Angstrom  eps_free_eV  eps_basis_eV  shift_eV
         -------------------------------------------------------------------------------------------
@@ -230,12 +233,11 @@ read off the left margin:
     circuit_profiling: True
     energy_unit: eV
     reference_energy_eV: -476.8628634829
-    initial_ansatz: |HF> (0 parameters)
 
 [ITERATIONS]
-    iter        energy (eV)              type        |grad|   steps      1q    cnot   depth operator
-    ------------------------------------------------------------------------------------------------
-       1     -27.6211823512  fermionic-double  2.714649e-01       4      38      48      65 D(0,2->1,3)
+    iter     time        energy (eV)                 dE        |grad|   steps      1q    cnot   depth operator
+    ----------------------------------------------------------------------------------------------------------
+       1 13:45:10     -33.1720283176      -0.1939118279      0.225802       3      38     104     121 D(0,4->3,7)
 ========================================================================
 [VARIATIONAL QUANTUM SUMMARY]
     converged: True
@@ -272,7 +274,9 @@ the options that were typed: a basis here is built at run time, so the family
 defaults left alone (a PAW-LCAO basis is Fourier-filtered and its local potential is
 range-separated unless told otherwise), the cutoff radius an `energy_shift`
 gave each orbital together with the eigenvalue shift actually achieved, the
-file every dataset was read from and the function count per element are all
+folder the datasets were read from (`directory`: the folder's name, such as
+`lda` or `pbe`, and its path), the file of every dataset, the functional the
+datasets record (`dataset_xc`) and the function count per element are all
 decided below the calculator. It is the block a comparison against another code
 is made from. Its three tables -- `datasets`, `orbitals`, `functions` -- read
 back from `parse_output(path)["basis"]` as lists of rows keyed by the column
@@ -308,12 +312,13 @@ settings:
 | screening gradient | `gradient_method`, `gradient_formula`, `gradient_tol`, `gradient_units` |
 | operator pool | `pool`, `pool_class`, `pool_size` |
 | growth and execution | `reoptimize_all_parameters`, `state_vector_backend`, `device`, `backend_provider`, `circuit_execution`, `shots`, `circuit_profiling` |
-| the loop's starting point | `energy_unit`, `reference_energy_<unit>`, `initial_ansatz` |
+| the loop's starting point | `energy_unit`, `reference_energy_<unit>` |
 
-A **resumed** run closes the block with its lineage -- `resumed_from`,
-`restored_operators`, `restored_energy_<unit>`, `resume_same_hamiltonian` -- and
-its `initial_ansatz` reads `resumed (N operators, N parameters)` rather than
-`|HF>`.
+A fresh run starts from the reference state that `[ELECTRONS]` names, with an
+empty ansatz; the block does not repeat it. A **resumed** run closes the block
+with its lineage -- `resumed_from`, `restored_operators`, `restored_parameters`,
+`restored_energy_<unit>`, `resume_same_hamiltonian` -- which is the one record
+of the grown ansatz it started from.
 
 #### The screening gradient
 

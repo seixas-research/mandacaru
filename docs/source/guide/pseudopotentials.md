@@ -269,7 +269,7 @@ the family and loading a TM file is untouched. Generation takes 0.5 s (H) to
 
 ### The reference atom and the channel set
 
-Five arguments of `generate_oncv` change what the pseudopotential is built
+Several arguments of `generate_oncv` change what the pseudopotential is built
 *from*. They are generation-time only: they change the dataset, never the
 calculation that later reads it.
 
@@ -281,6 +281,8 @@ calculation that later reads it.
 | `extra_l` | `0` | Channels above the highest valence $l$, two scattering references each |
 | `points`, `r_max` | per element | The radial grid of the reference atom |
 | `reference_configuration` | selected neutral configuration | Explicit complete occupation map `{(n, l): electrons}` for the reference atom |
+| `frozen_subshells` | none | Move selected occupied subshells into the pseudopotential core; add a scattering channel when needed |
+| `scattering_energy` | `0.25` Ha when freezing the highest angular momentum | Positive first reference for the added scattering channel |
 
 For an element whose occupied valence channels differ from the automatically
 selected configuration, supply the neutral configuration explicitly. For
@@ -301,6 +303,37 @@ can be audited after loading. A missing occupied channel requires a new
 reference atom and regenerated projectors; adding an `extra_l` scattering
 channel alone does not supply the missing occupied state. The generator also
 checks that the reference SCF converged before pseudizing its orbitals.
+
+An audit against [NIST's neutral-atom configurations](https://math.nist.gov/DFTdata/atomdata/configuration.html)
+corrected the occupied s/d counts for Cr, Cu, Nb, Mo, Ru, Rh, Ag, Pt and Au,
+as well as the previously absent d channels in Ce, Gd, Pa and U. **Pd and Th
+still use non-neutral reference occupations:** Pd has 4d8 5s2 instead of
+4d10, and Th has 5f1 6d1 7s2 instead of 6d2 7s2. Their installed reference
+atoms and local channels have no detected bound ghost, but neutral-reference
+trials produced extra s/p states and were rejected. Use those datasets with
+this occupation and transferability limitation in mind.
+
+For a deep filled shell, freezing it can be more stable than constructing a
+negative-energy second projector. For example, Bi's $4f^{14}$ lies well below
+the chemically active $5d^{10}6s^26p^3$ shells. This command retains the full
+neutral reference atom, moves $4f^{14}$ to the frozen core, and constructs a
+positive-energy $f$ scattering channel:
+
+```shell
+mandacaru-build --pp ONCV --element Bi --freeze-subshell 4f \
+  --check --output staging
+```
+
+The valence charge becomes 15 and the $f$ references are $+0.25$ and $+1.25$
+Ha. This follows the frozen-$4f$ partition and positive-energy $f$ channel in
+the [official ONCVPSP Bi input](https://github.com/oncvpsp/oncvpsp/blob/master/tests/data/83_Bi.dat).
+The generated file records the frozen subshells and scattering energy.
+For elements sharing the same frozen shell, `--element W Re Os` and
+`--freeze-subshell 4f` can be combined with `--workers` for a batch build.
+The generator rejects any optimized ONCV projector whose high-momentum residual
+kinetic energy exceeds $10^4$ Ha; loading older files with such a divergent
+residual warns instead of silently accepting them. Atomic phase and bound-state
+checks remain necessary for every candidate.
 
 The generator checks both bound levels and scattering phases. If the initial
 dataset fails, ONCV repair tries local shifts, then modest contractions of
@@ -1089,11 +1122,27 @@ mandacaru --pseudo-status        # each variable, where it points, and how many 
 MANDACARU_..._PATH=DIR` into `~/.zshrc` or `~/.bashrc` (whichever `$SHELL`
 reads), asking `[Y/n]` before replacing a different value; open a new
 terminal, or `source` the file, for the variable to take effect in your
-shell. Inside a checkout the datasets sit one directory per
-exchange-correlation functional — `<checkout>/lda/<Symbol>.parquet` today,
-`<checkout>/pbe/` once there are PBE datasets — so one checkout serves every
-functional. `MANDACARU_UPAW_PATH` is the one optional variable: UPAW-LCAO is
-generated on demand without it (*Datasets* above).
+shell. Inside a checkout the datasets sit one folder per exchange-correlation
+functional — `<checkout>/lda/<Symbol>.parquet`, and `<checkout>/pbe/` in the
+PAW-LCAO library — so one checkout serves every functional.
+`MANDACARU_UPAW_PATH` is the one optional variable: UPAW-LCAO is generated on
+demand without it (*Datasets* above).
+
+A calculation reads the `lda/` folder unless the calculator names another one
+with `directory=`, resolved against the family's own variable:
+
+```python
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis={"name": "PAW-LCAO", "size": "DZP"},
+                       directory="pbe")   # $MANDACARU_PAW_PATH/pbe/
+```
+
+The same folder is read from the ONCVPSP and NCPP libraries when those are the
+basis, and a per-element basis mapping has each of its library entries pointed
+there. `directory=` takes the name of one folder inside the checkout, not a
+path; a missing folder raises `LibraryPathError` listing the ones present, and
+naming a folder with a basis that reads no library is refused. It is not ASE's
+working directory, which the calculator leaves as it is.
 
 ```python
 from mandacaru.pseudopotentials.io import available_elements, get_pseudopotential
@@ -1117,7 +1166,8 @@ A calculation that needs a variable that is unset, or that names something
 that is not a directory, raises `LibraryPathError`
 (`mandacaru.pseudopotentials.environment`) naming the `--set-*` command that
 fixes it; the command line prints it and exits 2. A basis option
-`directory=...` bypasses the variable for one run: it names the folder
+`directory=...` (unlike the calculator's) bypasses the variable for one run,
+and wins over the calculator's folder: it names the folder
 holding the `<Symbol>.parquet` files itself, with no functional subdirectory,
 and the loaders raise `FileNotFoundError` rather than `LibraryPathError` when
 that folder is missing or empty.

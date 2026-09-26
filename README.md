@@ -41,8 +41,10 @@ mandacaru --set-paw mandacaru-paw     # writes ~/.zshrc or ~/.bashrc, asking bef
 mandacaru --pseudo-status             # each variable, where it points, and how many datasets it serves
 ```
 
-Datasets sit one directory per exchange-correlation functional inside each
-checkout (`<checkout>/lda/<Symbol>.parquet` today). The all-electron bases
+Datasets sit one folder per exchange-correlation functional inside each
+checkout (`<checkout>/lda/<Symbol>.parquet`; PAW-LCAO also has `pbe/`). A
+calculation reads `lda/` by default and another folder with
+`Mandacaru(..., directory="pbe")`. The all-electron bases
 (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need none of this. See the
 [pseudopotentials guide](https://mandacaru.readthedocs.io/en/latest/guide/pseudopotentials.html)
 for the full setup and the [installation guide](https://mandacaru.readthedocs.io/en/latest/installation.html)

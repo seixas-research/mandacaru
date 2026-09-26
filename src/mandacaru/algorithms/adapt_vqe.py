@@ -1250,11 +1250,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             gradient_formula=gradient_formula,
             gradient_tol=gradient_tol, gradient_units="Hartree",
             max_iterations=max_iterations,
-            # A resumed run does not start from |HF>: it starts from the grown
-            # ansatz the checkpoint carries.
-            initial_ansatz=("|HF> (0 parameters)" if restored is None else
-                            f"resumed ({len(restored['selected'])} operators, "
-                            f"{len(restored['parameters'])} parameters)"),
+            # The first row's dE: from the reference state, or from the energy
+            # a resumed run's restored ansatz already had.
+            start_energy=(None if restored is None else
+                          self._to_energy_units(restored["energy"])),
             # The pool's type and size, before the iteration table; the problem
             # itself is in the [ELECTRONS] block above.
             extra=self._setup_fields(),
@@ -1295,15 +1294,18 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     def _lineage_fields(self, restored=None) -> dict:
         """Closing ``[OPTIMIZATION SETUP]`` lines: what this run was resumed from.
 
-        Empty for a fresh run.  A resumed run starts from a grown ansatz, not
-        from |HF>: without these lines the setup block claims 0 parameters and
-        the iteration table starts at 1 with no sign that anything preceded it.
+        Empty for a fresh run, which starts from the reference state the
+        ``[ELECTRONS]`` block names, with an empty ansatz.  A resumed run starts
+        from the grown ansatz the checkpoint carries, and these lines are the
+        one record of it: without them the iteration table starts at 1 with no
+        sign that anything preceded it.
         """
         if restored is None:
             return {}
         return {
             "resumed_from": str(self.resume_path),
             "restored_operators": len(restored["selected"]),
+            "restored_parameters": len(restored["parameters"]),
             "restored_energy_" + self._energy_unit_label():
                 f"{self._to_energy_units(restored['energy']):.10f}",
             "resume_same_hamiltonian": bool(restored.get("same_problem", True)),

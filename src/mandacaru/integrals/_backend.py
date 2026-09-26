@@ -50,17 +50,29 @@ _C128_W = ndpointer(dtype=np.complex128, flags="C_CONTIGUOUS,WRITEABLE")
 _F64 = ndpointer(dtype=np.float64, flags="C_CONTIGUOUS")
 
 
+_LIB_NAMES = {"Darwin": "libmandacaru_integrals.dylib",
+              "Windows": "mandacaru_integrals.dll"}
+
+
+def _native_lib_name() -> str:
+    """The library file name this platform's loader can open."""
+    return _LIB_NAMES.get(platform.system(), "libmandacaru_integrals.so")
+
+
 def _find_library() -> str | None:
-    """Locate ``libmandacaru_integrals`` across the usual build locations."""
-    names = ["libmandacaru_integrals.dylib", "libmandacaru_integrals.so",
-             "mandacaru_integrals.dll"]
+    """Locate ``libmandacaru_integrals`` across the usual build locations.
+
+    Only this platform's file name is considered: a source tree synced between
+    machines (Dropbox, a shared home) holds the macOS ``.dylib`` next to the
+    Linux ``.so``, and picking the foreign one fails to load.
+    """
+    name = _native_lib_name()
     candidates = []
     env = os.environ.get("MANDACARU_INTEGRALS_LIB")
     if env:
         candidates.append(Path(env))
     search_dirs = [_PKG_DIR, _PKG_DIR / "csrc", _PKG_DIR / "csrc" / "build"]
-    for d in search_dirs:
-        candidates += [d / n for n in names]
+    candidates += [d / name for d in search_dirs]
     for c in candidates:
         if c.is_file():
             return str(c)
@@ -151,8 +163,6 @@ HAS_C_BACKEND = _LIB is not None
 
 _SRC_DIR = _PKG_DIR / "csrc"
 _BUILD_DIR = _SRC_DIR / "build"
-_LIB_NAMES = {"Darwin": "libmandacaru_integrals.dylib",
-              "Windows": "mandacaru_integrals.dll"}
 _BUILD_TIMEOUT = 600.0        # seconds; a compile that runs longer is abandoned
 _build_attempted = False       # one compile attempt per process
 _fallback_warned = False       # one NumPy-fallback warning per process
@@ -224,7 +234,7 @@ def _c_compiler() -> str | None:
     """
     system = platform.system()
     shared = "-dynamiclib" if system == "Darwin" else "-shared"
-    suffix = _LIB_NAMES.get(system, "libmandacaru_integrals.so").rsplit(".", 1)[-1]
+    suffix = _native_lib_name().rsplit(".", 1)[-1]
     for name in (os.environ.get("CC"), "cc", "clang", "gcc"):
         path = shutil.which(name) if name else None
         if path is None:
@@ -313,6 +323,35 @@ def _compile_attempts(system: str, build_dir: Path) -> list[list[list[str]]]:
     return attempts
 
 
+def _discard_foreign_cmake_cache(build_dir: Path, log) -> None:
+    """Remove a CMake cache that was configured for another path.
+
+    CMake refuses to reuse a ``CMakeCache.txt`` written for a different source
+    or build directory -- the same synced tree mounted at ``/Users/...`` on
+    macOS and ``/home/...`` on Linux, for instance.  Such a cache is dropped
+    (with ``CMakeFiles/``) so the configure step starts clean.
+    """
+    cache = build_dir / "CMakeCache.txt"
+    if not cache.is_file():
+        return
+    recorded = {}
+    try:
+        for line in cache.read_text(errors="replace").splitlines():
+            for key in ("CMAKE_CACHEFILE_DIR", "CMAKE_HOME_DIRECTORY"):
+                if line.startswith(key + ":"):
+                    recorded[key] = line.split("=", 1)[-1].strip()
+    except OSError:
+        return
+    expected = {"CMAKE_CACHEFILE_DIR": build_dir, "CMAKE_HOME_DIRECTORY": _SRC_DIR}
+    if all(key in recorded and Path(recorded[key]).resolve() == path.resolve()
+           for key, path in expected.items()):
+        return
+    log.write(f"# discarding a CMake cache configured for "
+              f"{recorded.get('CMAKE_HOME_DIRECTORY', 'another tree')}\n")
+    cache.unlink(missing_ok=True)
+    shutil.rmtree(build_dir / "CMakeFiles", ignore_errors=True)
+
+
 def _run_attempt(commands, log, timeout, verbose) -> bool:
     for cmd in commands:
         log.write("$ " + " ".join(cmd) + "\n")
@@ -374,6 +413,7 @@ def build_backend(build_dir: str | os.PathLike | None = None, *,
             if verbose:
                 print("[mandacaru] no C tool chain found (cmake / cc)")
             return None
+        _discard_foreign_cmake_cache(build_dir, log)
         for n, commands in enumerate(attempts, 1):
             log.write(f"# attempt {n}/{len(attempts)}\n")
             if _run_attempt(commands, log, timeout, verbose):
@@ -382,13 +422,11 @@ def build_backend(build_dir: str | os.PathLike | None = None, *,
             if verbose:
                 print(f"[mandacaru] build failed, see {log_path}")
             return None
-    for name in (_LIB_NAMES.get(system, "libmandacaru_integrals.so"),
-                 "libmandacaru_integrals.so", "libmandacaru_integrals.dylib"):
-        candidate = build_dir / name
-        if candidate.is_file():
-            if build_dir == _BUILD_DIR and not HAS_C_BACKEND:
-                _reload()
-            return candidate
+    candidate = build_dir / _LIB_NAMES.get(system, "libmandacaru_integrals.so")
+    if candidate.is_file():
+        if build_dir == _BUILD_DIR and not HAS_C_BACKEND:
+            _reload()
+        return candidate
     return None
 
 

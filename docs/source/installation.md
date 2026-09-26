@@ -68,13 +68,20 @@ mandacaru --pseudo-status        # each variable, where it points, and how many 
 Each `--set-*` command writes `export MANDACARU_..._PATH=DIR` into `~/.zshrc`
 or `~/.bashrc` (whichever `$SHELL` reads), asking `[Y/n]` before replacing a
 different value; open a new terminal, or `source` the file, for the variable
-to take effect in your shell. Inside a checkout the datasets sit one directory
-per exchange-correlation functional (`<checkout>/lda/<Symbol>.parquet` today).
+to take effect in your shell. Inside a checkout the datasets sit one folder
+per exchange-correlation functional (`<checkout>/lda/<Symbol>.parquet`; the
+PAW-LCAO library also has `pbe/`). A calculation reads `lda/` unless the
+calculator names another folder:
+
+```python
+atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO",
+                       directory="pbe")      # $MANDACARU_PAW_PATH/pbe/
+```
 
 Without this, `basis="NCPP"`, `basis="PAW-LCAO"` and `basis="ONCVPSP"` raise a
 `LibraryPathError` that repeats the matching `--set-*` command; the all-electron
 bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. A
-basis option `directory=...` overrides the variable for one run.
+basis option `directory=...` (a full path) overrides the variable for one run.
 
 `basis="UPAW-LCAO"` needs nothing either: `MANDACARU_UPAW_PATH` is the one
 optional variable, and without it a missing dataset is generated on demand

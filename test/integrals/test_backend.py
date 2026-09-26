@@ -202,6 +202,53 @@ class TestRealBuild:
         assert "no tool chain" in (tmp_path / "build.log").read_text()
 
 
+class TestSyncedTree:
+    """A source tree shared between macOS and Linux (Dropbox, a shared home).
+
+    Both platforms' libraries sit in ``csrc/build`` and the CMake cache names
+    whichever path configured it last.  The loader must take only its own
+    platform's library, and the build must drop a cache written for another
+    path instead of failing the CMake attempt.
+    """
+
+    def test_foreign_library_is_not_picked(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MANDACARU_INTEGRALS_LIB", raising=False)
+        monkeypatch.setattr(_backend, "_PKG_DIR", tmp_path)
+        build = tmp_path / "csrc" / "build"
+        build.mkdir(parents=True)
+        native = _backend._native_lib_name()
+        for name in ("libmandacaru_integrals.dylib", "libmandacaru_integrals.so",
+                     "mandacaru_integrals.dll"):
+            if name != native:
+                (build / name).write_bytes(b"foreign")
+        monkeypatch.setattr(_backend, "find_library", lambda name: None)
+        assert _backend._find_library() is None
+        (build / native).write_bytes(b"native")
+        assert _backend._find_library() == str(build / native)
+
+    def _cache(self, build_dir, home):
+        build_dir.mkdir(parents=True, exist_ok=True)
+        (build_dir / "CMakeFiles").mkdir(exist_ok=True)
+        (build_dir / "CMakeCache.txt").write_text(
+            f"CMAKE_CACHEFILE_DIR:INTERNAL={build_dir}\n"
+            f"CMAKE_HOME_DIRECTORY:INTERNAL={home}\n")
+
+    def test_cache_from_another_path_is_discarded(self, tmp_path):
+        self._cache(tmp_path, "/Users/elsewhere/csrc")
+        with open(tmp_path / "build.log", "w") as log:
+            _backend._discard_foreign_cmake_cache(tmp_path, log)
+        assert not (tmp_path / "CMakeCache.txt").exists()
+        assert not (tmp_path / "CMakeFiles").exists()
+        assert "discarding" in (tmp_path / "build.log").read_text()
+
+    def test_own_cache_is_kept(self, tmp_path):
+        self._cache(tmp_path, _backend._SRC_DIR)
+        with open(tmp_path / "build.log", "w") as log:
+            _backend._discard_foreign_cmake_cache(tmp_path, log)
+        assert (tmp_path / "CMakeCache.txt").is_file()
+        assert (tmp_path / "CMakeFiles").is_dir()
+
+
 class TestBuildLoadsWhatItBuilt:
     """A build into the default directory leaves the C backend *in use*.
 

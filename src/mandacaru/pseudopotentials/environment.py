@@ -147,6 +147,52 @@ def library_directory(family: str, xc: str = DEFAULT_XC, directory=None, *,
     return folder
 
 
+#: Families whose library is laid out as ``<checkout>/<folder>/``, the folder
+#: a calculation selects with ``Mandacaru(directory=...)``.  UPAW-LCAO is
+#: generated on demand into its own library and is not one of them.
+FOLDER_FAMILIES = ("ncpp", "oncvpsp", "paw-lcao")
+
+
+def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
+    """``<checkout>/<folder>`` of ``family``'s library, which must exist.
+
+    ``folder`` is one directory name inside the checkout -- ``"lda"``,
+    ``"pbe"``, or any other set placed beside them -- not a path: a
+    separator, ``"."`` or ``".."`` is refused, so a calculation cannot reach
+    outside the library its variable names.  A caller's own folder anywhere
+    on disk is the basis option ``directory=`` instead.
+
+    Raises
+    ------
+    ValueError
+        When ``folder`` is not a plain directory name.
+    LibraryPathError
+        When the variable is unset, or the folder is not in the checkout; the
+        message lists the folders that are.
+    """
+    name = str(folder).strip()
+    if (not name or name in (".", "..") or os.sep in name
+            or (os.altsep and os.altsep in name) or os.path.isabs(name)):
+        raise ValueError(
+            f"directory must be the name of one folder inside the "
+            f"pseudopotential library, such as 'lda' or 'pbe', not "
+            f"{folder!r}; to load datasets from a folder elsewhere, pass it "
+            f"as the basis option, basis={{'name': ..., 'directory': path}}")
+    key = _family(family)
+    root = repository_path(key)
+    path = os.path.join(root, name)
+    if not os.path.isdir(path):
+        present = sorted(entry for entry in os.listdir(root)
+                         if not entry.startswith(".")
+                         and os.path.isdir(os.path.join(root, entry)))
+        raise LibraryPathError(
+            f"the {key} library at {root!r} has no {name}/ folder (it has: "
+            f"{', '.join(present) or 'none'}).  Choose one of those with "
+            f"directory=, or generate the datasets into it with "
+            f"mandacaru-build --pp {key} ... --install")
+    return path
+
+
 def upaw_directory(xc: str = DEFAULT_XC, directory=None) -> str | None:
     """The UPAW-LCAO library folder, ``$MANDACARU_UPAW_PATH/<xc>``, or
     ``None`` when there is none to use.

@@ -714,10 +714,14 @@ class GhostStateWarning(UserWarning):
 def defects_record(defects) -> dict:
     """``defects`` as a file stores it (string keys, lists)."""
     defects = defects or {}
-    return {"ghosts": {str(l): float(e)
-                       for l, e in defects.get("ghosts", {}).items()},
-            "phases": {str(l): [float(a), float(b)]
-                       for l, (a, b) in defects.get("phases", {}).items()}}
+    record = {"ghosts": {str(l): float(e)
+                         for l, e in defects.get("ghosts", {}).items()},
+              "phases": {str(l): [float(a), float(b)]
+                         for l, (a, b) in defects.get("phases", {}).items()}}
+    if defects.get("residuals"):
+        record["residuals"] = {str(l): float(e)
+                               for l, e in defects["residuals"].items()}
+    return record
 
 
 def read_defects(record) -> dict:
@@ -726,9 +730,14 @@ def read_defects(record) -> dict:
     ghosts = {int(l): float(e) for l, e in (record.get("ghosts") or {}).items()}
     phases = {int(l): (float(a), float(b))
               for l, (a, b) in (record.get("phases") or {}).items()}
-    if not ghosts and not phases:
+    residuals = {int(l): float(e) for l, e in
+                 (record.get("residuals") or {}).items()}
+    if not ghosts and not phases and not residuals:
         return {}
-    return {"ghosts": ghosts, "phases": phases}
+    result = {"ghosts": ghosts, "phases": phases}
+    if residuals:
+        result["residuals"] = residuals
+    return result
 
 
 def warn_defects(dataset, family: str) -> None:
@@ -736,6 +745,11 @@ def warn_defects(dataset, family: str) -> None:
     on every load -- the library, a path or a user's own directory."""
     import warnings
 
+    if family == FAMILY:
+        residuals = _oncv_residual_defects(dataset.channels)
+        if residuals:
+            dataset.defects = dict(getattr(dataset, "defects", None) or {})
+            dataset.defects["residuals"] = residuals
     if getattr(dataset, "defects", None):
         warnings.warn(defect_message(dataset.symbol, family, dataset.defects),
                       GhostStateWarning, stacklevel=3)
@@ -747,18 +761,25 @@ def defect_message(symbol: str, family: str, defects: dict) -> str:
              for l, e in sorted(defects.get("ghosts", {}).items())]
     parts += [f"l={l} phase error {float(near):.2f}/{float(far):.2f} rad"
               for l, (near, far) in sorted(defects.get("phases", {}).items())]
+    parts += [f"l={l} residual kinetic energy {float(e):.3g} Ha"
+              for l, e in sorted(defects.get("residuals", {}).items())]
     if defects.get("ghosts"):
         what = "ghost states"
         consequence = (f"A variational calculation containing {symbol} can "
                        f"collapse into a spurious state, so its energies and "
                        f"forces are not reliable.")
+    elif defects.get("residuals"):
+        what = "divergent projector residuals"
+        consequence = (f"Its projectors are numerically unreliable, so "
+                       f"energies and forces of systems containing "
+                       f"{symbol} carry an error of unknown size.")
     else:
         what = "scattering errors"
         consequence = (f"Its channels do not scatter like the all-electron "
                        f"atom, so energies and forces of systems containing "
                        f"{symbol} carry an error of unknown size.")
-    return (f"the {family} dataset for {symbol} still has {what} its "
-            f"generator could not remove ({'; '.join(parts)}).  {consequence}")
+    return (f"the {family} dataset for {symbol} has {what} "
+            f"({'; '.join(parts)}).  {consequence}")
 
 
 def local_potential_ghosts(pp) -> dict:
@@ -813,14 +834,17 @@ def ghost_errors(pp, levels) -> dict:
     ``levels(pp, l)`` returns the two lowest eigenvalues of the channel's
     pseudo Hamiltonian.  A ghost is an *extra* state: the lowest level lies
     more than :data:`GHOST_TOLERANCE` below the reference and the second one
-    is closer to the reference than the first.  Only channels built on a bound
-    reference are judged; a scattering-only channel has no bound level for a
-    ghost to undercut.
+    is closer to the reference than the first. For frozen-core scattering-only
+    channels, any bound pseudo level is an extra state and therefore a ghost.
     """
     out = {}
     for l, channel in pp.channels.items():
         reference = float(channel.reference_energies[0])
         if reference >= 0.0:
+            if getattr(pp, "frozen_subshells", ()):
+                first = float(levels(pp, l)[0])
+                if first < -GHOST_TOLERANCE:
+                    out[int(l)] = first
             continue
         first, second = (float(e) for e in levels(pp, l)[:2])
         if (first - reference < -GHOST_TOLERANCE
@@ -1023,10 +1047,11 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
                                      f"shift {shift:g}",
                                      dict(overrides, r_cut=expanded,
                                           local_shift=float(shift))))
-            # A filled, deep semicore f shell can start below 0.5 Bohr.
-            # Multiplicative changes then remain too small: Bi's 4f phase
-            # falls from 0.55 rad at 0.89 Bohr to 0.004 rad at 2 Bohr on a
-            # 60000-point reference, without creating a bound ghost.
+            # A compact highest-l shell can start below 0.5 Bohr, making
+            # multiplicative changes too small. These larger radii still
+            # have to pass the residual-kinetic guard: Bi's deep 4f second
+            # reference can phase-match but diverge by 1e15 Ha, in which
+            # case freezing 4f and using positive scattering is required.
             for target in (1.5, 1.75, 2.0):
                 if target <= 2.0 * compact_radius or target >= radius:
                     continue
@@ -1940,6 +1965,22 @@ def _validate_frozen_subshells(
     if len(result) == len(valence):
         raise ValueError("at least one occupied valence subshell must remain")
     return tuple(sorted(result))
+
+
+def _oncv_residual_defects(channels: dict[int, object]) -> dict[int, float]:
+    """Return channels with a nonfinite or divergent projector residual.
+
+    The values are stored in Hartree. This also audits older serialized
+    datasets whose generators did not reject exponentially growing second
+    reference waves.
+    """
+    result = {}
+    for l, channel in channels.items():
+        values = np.asarray(channel.residual_kinetic, dtype=float)
+        if values.size and (not np.isfinite(values).all()
+                            or np.max(values) > MAX_RESIDUAL_KINETIC):
+            result[int(l)] = float(np.max(values))
+    return result
 
 
 def _check_oncv_residual_kinetic(waves: dict[int, PseudoWaves]) -> None:

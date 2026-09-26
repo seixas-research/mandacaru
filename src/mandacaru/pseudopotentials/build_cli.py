@@ -117,9 +117,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "subshell occupations, for example "
                              "4f=1 5d=1 6s=2 for Ce")
     parser.add_argument("--freeze-subshell", nargs="+", metavar="NL",
-                        help="ONCV, one element only: place occupied "
-                             "subshells in the pseudopotential core, for "
-                             "example 4f for Bi")
+                        help="ONCV: place occupied subshells in each "
+                             "selected element's pseudopotential core, "
+                             "for example 4f for Bi")
     parser.add_argument("--backend", default="auto",
                         choices=["auto", "c", "python"],
                         help="radial kernels: C when available (auto), C or "
@@ -348,8 +348,8 @@ def main(argv=None) -> int:
         except (TypeError, ValueError) as error:
             parser.error(str(error))
     if args.freeze_subshell:
-        if family != "oncvpsp" or args.all or len(symbols) != 1:
-            parser.error("--freeze-subshell requires --pp ONCV and one --element")
+        if family != "oncvpsp" or args.all:
+            parser.error("--freeze-subshell requires --pp ONCV and --element")
         try:
             frozen_subshells = _frozen_subshells(args.freeze_subshell)
         except ValueError as error:

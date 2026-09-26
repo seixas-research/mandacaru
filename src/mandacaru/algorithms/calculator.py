@@ -76,6 +76,7 @@ import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
 
 from .bloch import BLOCH_METHODS
+from ..pseudopotentials.environment import DEFAULT_XC as DEFAULT_LIBRARY_FOLDER
 from ..units import BOHR_TO_ANGSTROM, DEFAULT_GRID_SPACING
 
 if TYPE_CHECKING:
@@ -362,6 +363,14 @@ class Mandacaru(Calculator):
         pseudopotential families ``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW-LCAO"``
         (``{"name": "PAW-LCAO", "size": "DZP"}``), which replace the all-electron
         problem by a valence-only one.
+    directory : str
+        The folder of the pseudopotential library the datasets are read
+        from, relative to the family's library variable: ``"lda"`` (the
+        default) reads ``$MANDACARU_PAW_PATH/lda/`` for PAW-LCAO, ``"pbe"``
+        reads ``$MANDACARU_PAW_PATH/pbe/``.  ONCVPSP and NCPP read the same
+        folder of their own libraries.  A basis that names its own
+        ``directory`` option keeps it.  Not ASE's working directory: the
+        calculator's ``directory`` attribute is left to ASE.
     h : float
         Grid spacing in Angstrom (default ``0.20``), used both for the
         per-geometry grid built from ``atoms.cell`` and for the frozen force
@@ -486,6 +495,7 @@ class Mandacaru(Calculator):
                               "charges", "magmoms", "magmom"]
 
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="HAO",
+                 directory: str = DEFAULT_LIBRARY_FOLDER,
                  h: float = DEFAULT_GRID_SPACING, grid=None,
                  include_pulay: bool = True, force_method: str = "rdm",
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
@@ -504,6 +514,12 @@ class Mandacaru(Calculator):
                 and solver_kwargs.get("evolution", "exact") != "trotter":
             raise ValueError("HVA circuit measurement requires "
                              "evolution='trotter'")
+        # The library folder, stored under its own name: ASE's `directory`
+        # attribute is the calculator's working directory.
+        self.library_folder = str(directory)
+        if self.library_folder != DEFAULT_LIBRARY_FOLDER:
+            from ._hamiltonian_from_atoms import with_library_folder
+            basis = with_library_folder(basis, self.library_folder)
         self.basis = basis
         self.h = float(h)
         self.include_pulay = bool(include_pulay)

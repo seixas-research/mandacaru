@@ -218,8 +218,39 @@ class TestAtomic:
 #: ghosted (PAW-LCAO only, both families, ONCVPSP only, first rows, d, f, p).
 GHOST_SWEEP = ["B", "Na", "Cl", "Fe", "Cu", "Ga", "Ba", "La", "W", "Bi"]
 
+# Occupied valence channels of the NIST neutral references that differ from
+# simple Aufbau filling or previously lacked an occupied d channel.
+NEUTRAL_VALENCE = {
+    "Cr": {(3, 2): 5, (4, 0): 1},
+    "Cu": {(3, 2): 10, (4, 0): 1},
+    "Nb": {(4, 2): 4, (5, 0): 1},
+    "Mo": {(4, 2): 5, (5, 0): 1},
+    "Ru": {(4, 2): 7, (5, 0): 1},
+    "Rh": {(4, 2): 8, (5, 0): 1},
+    "Ag": {(4, 2): 10, (5, 0): 1},
+    "Ce": {(4, 3): 1, (5, 2): 1, (6, 0): 2},
+    "Gd": {(4, 3): 7, (5, 2): 1, (6, 0): 2},
+    "Pt": {(5, 2): 9, (6, 0): 1},
+    "Au": {(5, 2): 10, (6, 0): 1},
+    "Pa": {(5, 3): 2, (6, 2): 1, (7, 0): 2},
+    "U": {(5, 3): 3, (6, 2): 1, (7, 0): 2},
+}
+
 
 class TestLibrary:
+    @pytest.mark.parametrize("symbol, occupied", NEUTRAL_VALENCE.items())
+    def test_neutral_reference_has_occupied_valence_channels(self, symbol,
+                                                             occupied):
+        """Observed neutral states must be represented with their occupancy.
+
+        Reference: NIST Atomic Reference Data, Electronic Configurations of
+        the Elements (H through U). Pd and Th require separate semicore work.
+        """
+        pp = get_oncv(symbol)
+        actual = {(channel.n, l): int(channel.occupation)
+                  for l, channel in pp.channels.items() if channel.occupation}
+        assert actual == occupied
+
     def test_shipped_elements(self):
         # The mandacaru-oncvpsp checkout ($MANDACARU_ONCVPSP_PATH/lda, all
         # 92 elements); at least the six generated in-repo must be there.
@@ -530,6 +561,47 @@ class TestConstruction:
         assert oncv.generation_points(1) == 6000
         assert oncv.generation_points(8) == 12000
         assert generated("O").r.size == 12000 and generated("H").r.size == 6000
+
+    def test_frozen_highest_l_gets_positive_scattering_channel(self, tmp_path):
+        """A filled subshell moves to the core without losing its l response."""
+        pp = generate_oncv("O", frozen_subshells=((2, 1),), ghosts="keep")
+        assert pp.valence_charge == 2.0
+        assert pp.frozen_subshells == ((2, 1),)
+        assert pp.channels[1].occupation == 0.0
+        assert pp.channels[1].reference_energies == [0.25, 1.25]
+        assert pp.channels[1].residual_kinetic[1] < oncv.MAX_RESIDUAL_KINETIC
+        assert 1 in oncv.scattering_errors(pp, oncv.log_derivative_ps)
+        path = save_pseudopotential(pp, tmp_path / "O.parquet")
+        loaded = load_pseudopotential(path)
+        assert loaded.frozen_subshells == ((2, 1),)
+        assert loaded.scattering_energy == 0.25
+        assert loaded.valence_charge == 2.0
+
+    def test_frozen_subshells_must_be_occupied_valence(self):
+        """Freezing a core shell or the entire valence is a usage error."""
+        with pytest.raises(ValueError, match="not an occupied valence"):
+            generate_oncv("O", frozen_subshells=((1, 0),), ghosts="keep")
+        with pytest.raises(ValueError, match="at least one occupied"):
+            generate_oncv("H", frozen_subshells=((1, 0),), ghosts="keep")
+
+    def test_frozen_scattering_channel_cannot_bind_extra_state(self):
+        """A positive scattering reference does not excuse a bound ghost."""
+        pp = generate_oncv("O", frozen_subshells=((2, 1),), ghosts="keep")
+        ghosts = oncv.ghost_errors(pp, oncv._oncv_levels)
+        assert ghosts[1] < 0.0
+
+    def test_divergent_residual_is_rejected_and_legacy_file_warns(self,
+                                                                 tmp_path):
+        """Old deep negative-energy references must not load silently."""
+        pp = copy.deepcopy(generated("H"))
+        pp.channels[0].residual_kinetic[1] = 1e8
+        with pytest.raises(ValueError, match="residual kinetic energy"):
+            oncv._check_oncv_residual_kinetic({0: pp.channels[0]})
+        path = save_pseudopotential(pp, tmp_path / "H.parquet")
+        with pytest.warns(oncv.GhostStateWarning,
+                          match="divergent projector residuals"):
+            loaded = load_pseudopotential(path)
+        assert loaded.defects["residuals"] == {0: 1e8}
 
     def test_cached_partial_waves_rebuild_shifted_projectors(self):
         """Reusing radial optimization leaves a shifted Hamiltonian exact."""

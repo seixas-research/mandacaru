@@ -97,7 +97,6 @@ class TestAdaptOutputProtocol:
         for index, it in enumerate(parsed["iterations"], start=1):
             assert it["index"] == index
             assert it["selected_operator"]                 # 3. selected operator
-            assert it["operator_kind"]
             assert it["expressivity_E"] != "-"             # 4. expressivity E
             assert it["energy_unit"] == "eV"               # 1. eV default
             assert it["max_gradient"] is not None          # 2. gradient
@@ -330,7 +329,7 @@ class TestBlockIndentation:
     @pytest.mark.parametrize("key", ["step:", "units:", "n_atoms:", "geometry:",
                                      "cell_present:", "cell_vectors:",
                                      "cell_lengths:", "classical_optimizer:",
-                                     "energy_unit:", "initial_ansatz:",
+                                     "energy_unit:",
                                      "converged:", "num_operators:",
                                      "forces:", "max_force:", "net_force:"])
     def test_a_blocks_keys_are_indented_one_level(self, log, key):
@@ -561,6 +560,8 @@ class TestBasisBlock:
         assert "Bohr^-1" in block["filter_cutoff"]
         assert block["local_potential"].startswith("range-separated")
         assert block["dataset_xc"].startswith("LDA")
+        # The folder is stated once, by name and path; the table names files.
+        assert block["directory"].startswith("lda (")
         assert block["basis_functions"] == "4"
 
     def test_the_tables_read_back_typed(self, paw):
@@ -571,7 +572,7 @@ class TestBasisBlock:
         block = parse_output(out)["basis"]
         (dataset,) = block["datasets"]
         assert dataset["symbol"] == "H" and dataset["Z_ion"] == 1
-        assert dataset["source"].endswith(("H.parquet", "H.json"))
+        assert dataset["source"] in ("H.parquet", "H.json")
         (orbital,) = block["orbitals"]
         expected = confined_orbital(get_paw("H"), 0, 0.1)
         assert orbital["l"] == 0 and orbital["zetas"] == 2
@@ -655,7 +656,7 @@ class TestOptimizationSetupBlock:
               "reoptimize_all_parameters", "state_vector_backend", "device",
               "backend_provider", "circuit_execution", "shots",
               "circuit_profiling",
-              "energy_unit", "reference_energy_eV", "initial_ansatz")
+              "energy_unit", "reference_energy_eV")
 
     def _log(self, hamiltonian, tmp_path, **kwargs):
         out = str(tmp_path / "output.txt")
@@ -765,13 +766,14 @@ class TestOptimizationSetupBlock:
 
         setup = parse_output(out)["setup"]
         assert setup["gradient_method"] == "finite_difference"
-        assert setup["initial_ansatz"].startswith("resumed")
+        # The starting ansatz is the lineage's to state, not a second line.
+        assert "initial_ansatz" not in setup
         keys = list(setup)
         # The four groups stay contiguous and lineage stays last.
         assert keys[:len(self.FIELDS)] == list(self.FIELDS)
         assert keys[len(self.FIELDS):] == [
-            "resumed_from", "restored_operators", "restored_energy_eV",
-            "resume_same_hamiltonian"]
+            "resumed_from", "restored_operators", "restored_parameters",
+            "restored_energy_eV", "resume_same_hamiltonian"]
 
     def test_the_trace_uses_the_same_vocabulary(self, h2_hamiltonian, capsys):
         """A reader who saw the terminal recognizes the file, and vice versa.
@@ -1335,9 +1337,10 @@ class TestVerbosePauliOutput:
         heading = next(line for line in lines if line.split()[:1] == ["iter"])
         # "energy (eV)" is one column but two whitespace-separated tokens.
         columns = heading.replace("energy (eV)", "energy").split()
-        for column in ("iter", "|grad|", "expr", "cnot", "1q", "depth",
-                       "type", "operator"):
+        for column in ("iter", "time", "dE", "|grad|", "expr", "cnot", "1q",
+                       "depth", "operator"):
             assert column in columns
+        assert "type" not in columns
 
         index = lines.index(heading)
         # One line per grown operator, each carrying every column.
@@ -1352,11 +1355,6 @@ class TestVerbosePauliOutput:
             # never abbreviates what a reader would have to guess at.
             assert fields[-1] in result.operators
             cell = dict(zip(columns, fields))
-            # The `type` cell is the pool's own kind, verbatim: the log
-            # protocol does not strip the prefix the way the old terminal
-            # table did, because the column is wide enough for it.
-            step = result.iterations[index - 1]
-            assert cell["type"] == step.operator_kind
             assert float(cell["expr"]) >= 0.0
             assert int(cell["1q"]) > 0
             assert int(cell["cnot"]) > 0 and int(cell["depth"]) > 0
@@ -1389,8 +1387,8 @@ class TestVerbosePauliOutput:
         assert headings["80"] == headings["200"]
         assert set(" ".join(headings["80"]).replace("energy (eV)",
                                                     "energy").split()) == {
-            "iter", "|grad|", "energy", "expr", "steps", "cnot", "1q",
-            "depth", "type", "operator"}
+            "iter", "time", "energy", "expr", "dE", "|grad|", "steps", "cnot",
+            "1q", "depth", "operator"}
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
@@ -1513,7 +1511,6 @@ class TestParserPreservesData:
         path, _cell = written
         entry = parse_output(path)["iterations"][0]
         assert entry["selected_operator"] == "custom operator with spaces"
-        assert entry["operator_kind"] == "double"
         assert entry["energy"] == pytest.approx(-1.5)
 
     def test_an_unrecorded_field_is_not_invented(self, written):
@@ -1545,5 +1542,53 @@ class TestGradientProvenance:
         assert setup["resumed_from"] == state
         assert int(setup["restored_operators"]) == 1
         assert setup["resume_same_hamiltonian"] == "True"
-        # And the block no longer claims the run started from |HF>.
-        assert setup["initial_ansatz"].startswith("resumed")
+        # The lineage, not a separate line, says what the run started from.
+        assert int(setup["restored_parameters"]) >= 1
+        assert "initial_ansatz" not in setup
+
+
+
+# --------------------------------------------------------------------------- #
+# The [ITERATIONS] columns: time, dE and the gradient's fixed-point format.
+# --------------------------------------------------------------------------- #
+
+class TestIterationColumns:
+    """``iter`` then ``time`` (``HH:MM:SS``), ``dE`` from the previous row (the
+    first from the reference energy), ``|grad|`` to six decimals, no ``type``."""
+
+    @pytest.fixture
+    def rows(self, tmp_path):
+        import re
+
+        path = str(tmp_path / "output.txt")
+        pool = [SimpleNamespace(label="D(0,2->1,3)", kind="double",
+                                generator=PauliSum({"XXXY": 0.5j}))]
+        with AdaptOutputLogger(path, n_qubits=4) as logger:
+            logger.write_optimizer_setup("BFGS", reference_energy=-1.0)
+            logger.write_iteration(1, pool, [0.25], 0, None, -1.25, 1)
+            logger.write_iteration(2, pool, [3.2e-7], 0, None, -1.5, 2)
+        text = open(path, encoding="utf-8").read()
+        table = text.split("[ITERATIONS]", 1)[1].splitlines()
+        heading = table[1].split()
+        assert re.fullmatch(r"\d\d:\d\d:\d\d", table[3].split()[1])
+        return heading, parse_output(path)["iterations"], table
+
+    def test_the_order_puts_the_time_second_and_drops_the_type(self, rows):
+        heading, _entries, _table = rows
+        assert heading[:2] == ["iter", "time"]
+        assert heading.index("dE") < heading.index("|grad|")
+        assert "type" not in heading
+
+    def test_de_is_from_the_previous_row_and_first_from_the_reference(
+            self, rows):
+        _heading, entries, _table = rows
+        assert entries[0]["delta_energy"] == pytest.approx(-0.25)
+        assert entries[1]["delta_energy"] == pytest.approx(-0.25)
+        assert entries[0]["time"] and entries[1]["time"]
+
+    def test_the_gradient_has_six_decimals(self, rows):
+        _heading, entries, table = rows
+        cells = [line.split() for line in table[3:5]]
+        column = rows[0].index("|grad|") - 1   # "energy (eV)": two heading tokens
+        assert [row[column] for row in cells] == ["0.250000", "0.000000"]
+        assert entries[0]["max_gradient"] == pytest.approx(0.25)

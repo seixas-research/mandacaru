@@ -2,7 +2,7 @@
 import pytest
 
 from mandacaru.pseudopotentials.build_cli import (
-    FAMILIES, _reference_occupations, build_parser, main)
+    FAMILIES, _frozen_subshells, _reference_occupations, build_parser, main)
 from mandacaru.pseudopotentials.io import load_pseudopotential
 
 
@@ -54,6 +54,23 @@ def test_oncv_reference_occupations_survive_the_file(tmp_path, capsys):
     assert code == 0, capsys.readouterr().out
     loaded = load_pseudopotential(tmp_path / "oncvpsp" / "H.parquet")
     assert loaded.reference_configuration == {(1, 0): 1.0}
+
+
+def test_oncv_frozen_subshell_option_is_validated(capsys):
+    """The CLI accepts subshell labels for selected ONCV atoms only."""
+    assert _frozen_subshells(["4f"]) == ((4, 3),)
+    with pytest.raises(ValueError, match="invalid frozen subshell"):
+        _frozen_subshells(["4g"])
+    with pytest.raises(SystemExit):
+        main(["--pp", "PAW", "--element", "Bi", "--freeze-subshell", "4f"])
+    assert "requires --pp ONCV" in capsys.readouterr().err
+    args = build_parser().parse_args(
+        ["--pp", "ONCV", "--element", "Bi", "Pb",
+         "--freeze-subshell", "4f"])
+    assert args.element == ["Bi", "Pb"]
+    with pytest.raises(SystemExit):
+        main(["--pp", "ONCV", "--all", "--freeze-subshell", "4f"])
+    assert "requires --pp ONCV and --element" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("spelling, family", [
