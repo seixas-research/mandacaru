@@ -82,8 +82,23 @@ TM = {"H2": {"rhf": -1.061096245397, "adapt": -1.075333384673},
 #: Hydrogen moves by under a milliHartree -- it has no core for the
 #: correction to act on, and its relativistic shift is 6.7e-6 Ha.  Lithium
 #: moves by 0.010 Ha (0.27 eV), which is the 1s core it does have.
-ONCV = {"H2": {"rhf": -1.043772, "adapt": -1.058151},
-        "LiH": {"rhf": -0.764921, "adapt": -0.772577}}
+#:
+#: Re-pinned when the confined first zeta (``energy_shift`` 0.1 eV, as for
+#: PAW-LCAO) became the ONCVPSP default:
+#:
+#:   H2  rhf  -1.043772 -> -1.060917   adapt  -1.058151 -> -1.075703
+#:   LiH rhf  -0.764921 -> -0.764877   adapt  -0.772577 -> -0.773264
+#:
+#: ``{"energy_shift": None}`` still reproduces the old values (H2 RHF
+#: -1.043774, LiH -0.764915): only the trial function changed.
+#: Atom-centered projector integration removes the grid quadrature error from
+#: the nonlocal operator (at h=0.25 A, H2's projector overlaps are still
+#: ~0.008 off).  These are the resulting energies on the same grids:
+#:
+#:   H2  rhf  -1.060917 -> -1.082754   adapt  -1.075703 -> -1.097211
+#:   LiH rhf  -0.764877 -> -0.750308   adapt  -0.773264 -> -0.759527
+ONCV = {"H2": {"rhf": -1.082754, "adapt": -1.097211},
+        "LiH": {"rhf": -0.750308, "adapt": -0.759527}}
 PIN_TOL = 2e-3
 TM_TOL = 0.05
 
@@ -118,6 +133,19 @@ CHANNELS = [("H", 0), ("Li", 0), ("O", 0), ("O", 1)]
 
 @pytest.mark.slow
 class TestAtomic:
+    def test_lanthanum_empty_bound_4f_gets_a_projector(self):
+        """The neutral 4f reference is bound, but adds no valence electrons."""
+        from mandacaru.pseudopotentials.oncv import missing_bound_states
+        from mandacaru.pseudopotentials.orbitals import pseudo_basis
+
+        pp = generate_oncv("La", ghosts="keep")
+        assert pp.extra_l == 1
+        assert pp.channels[3].reference_energies[0] < -0.01
+        assert pp.channels[3].occupation == 0.0
+        assert 3 not in missing_bound_states(pp)
+        functions, _owners = pseudo_basis(["La"], [np.zeros(3)], {"La": pp})
+        assert len(functions) == 6            # one s + five d, no f orbital
+
     @pytest.mark.parametrize("symbol, l", CHANNELS)
     def test_channel_reproduces_the_reference(self, symbol, l):
         pp = generated(symbol)
@@ -399,6 +427,89 @@ class TestResolution:
 # --------------------------------------------------------------------------- #
 
 class TestMolecular:
+    def test_projector_quadrature_splits_at_the_channel_cutoff(self):
+        """An extended projector changes formula at its own radial cutoff."""
+        from scipy.integrate import quad
+        from mandacaru.pseudopotentials.paw import atom_centered_projections
+
+        cutoff = 0.7
+
+        class Constant:
+            def evaluate(self, x, y, z):
+                return np.ones_like(x)
+
+        class ExtendedProjector:
+            r_cut = 2.0
+            channel_r_cut = cutoff
+            center = np.zeros(3)
+
+            def evaluate(self, x, y, z):
+                r = np.sqrt(x*x + y*y + z*z)
+                return np.where(r <= cutoff, 1.0 - r*r,
+                                (1.0 - cutoff*cutoff)
+                                * np.exp(-2.0 * (r - cutoff)))
+
+        projector = ExtendedProjector()
+        exact = 4.0 * np.pi * (
+            quad(lambda r: r*r * (1.0 - r*r), 0.0, cutoff)[0]
+            + quad(lambda r: r*r * (1.0 - cutoff*cutoff)
+                   * np.exp(-2.0 * (r - cutoff)), cutoff, 2.0)[0])
+        whole = atom_centered_projections([Constant()], [projector])[0, 0]
+        split = atom_centered_projections(
+            [Constant()], [projector], split_radial=True)[0, 0]
+        assert abs(split - exact) < 1e-10
+        assert abs(whole - exact) > 1e-6
+
+    def test_projector_overlap_is_translation_invariant(self):
+        """A rigid shift on a fixed grid leaves the ONCV projector matrix.
+
+        The grid quadrature is deliberately compared with the same centered
+        integral: the former still changes under a sub-grid shift, which is
+        the nonlocal contribution to the ONCV egg-box.
+        """
+        from mandacaru.algorithms._hamiltonian_from_atoms import grid_from_cell
+        from mandacaru.integrals import _backend
+
+        atoms = h2()
+        grid = grid_from_cell(atoms, H2_H)
+        exact, sampled = [], []
+        for shift in (0.0, 0.06):
+            moved = atoms.copy()
+            moved.positions += shift
+            ints = build_basis_hamiltonian(moved, "oncv", grid, H2_H,
+                                            0, None)[4]["integrals"]
+            exact.append(ints.projections())
+            chi = np.stack([p.evaluate(grid.X, grid.Y, grid.Z).ravel()
+                            for p in ints.kb_projectors])
+            sampled.append(_backend.kb_projections(ints._engine._psi, chi,
+                                                    grid.dV))
+        assert np.allclose(exact[0], exact[1], atol=1e-10)
+        assert np.max(np.abs(sampled[0] - sampled[1])) > 1e-4
+
+    def test_projector_force_matches_the_discretized_energy(self):
+        """The atom-centered projector's force differentiates its energy."""
+        from mandacaru.algorithms._hamiltonian_from_atoms import grid_from_cell
+
+        atoms = h2()
+        grid = grid_from_cell(atoms, H2_H)
+
+        def calculator():
+            return Mandacaru(method="adapt-vqe", basis="oncv", grid=grid,
+                             h=H2_H, pool="fermionic", max_iterations=12,
+                             project_translation=False, profile=False)
+
+        atoms.calc = calculator()
+        force = atoms.get_forces()[1, 2]
+        assert atoms.calc.force_result.details["exact_projections"]
+        energies = []
+        for sign in (+1.0, -1.0):
+            moved = atoms.copy()
+            moved.positions[1, 2] += sign * 0.005
+            moved.calc = calculator()
+            energies.append(moved.get_potential_energy())
+        numerical = -(energies[0] - energies[1]) / 0.01
+        assert force == pytest.approx(numerical, abs=0.02)
+
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
     def test_hardness_on_the_coarse_grid(self, name):
         oncv_ints = _build(name, "oncv")[4]["integrals"]
@@ -480,14 +591,32 @@ class TestMolecular:
         print(f"\nH2 RHF: SZ {e_sz:.6f}  DZP {e_dzp:.6f} Ha")
         assert e_dzp < e_sz
 
-    def test_first_zeta_is_the_bound_pseudo_wave(self):
-        _H, _p, _n, _pr, context = _build("H2", "oncv")
+    def test_unconfined_first_zeta_is_the_bound_pseudo_wave(self):
+        _H, _p, _n, _pr, context = _build("H2", {"name": "oncv",
+                                                 "energy_shift": None})
         fn = context["integrals"].basis[0]
         pp = get_oncv("H")
         r = np.linspace(0.05, 4.0, 50)
         assert np.allclose(fn.radial(r), np.interp(r, pp.r,
                                                    pp.channels[0].pseudo_radial),
                            atol=2e-4)
+
+    def test_default_first_zeta_is_the_confined_orbital(self):
+        from mandacaru.pseudopotentials.confinement import (
+            DEFAULT_ENERGY_SHIFT, confined_orbital)
+
+        _H, _p, _n, _pr, context = _build("H2", "oncv")
+        fn = context["integrals"].basis[0]
+        orbital = confined_orbital(get_oncv("H"), 0, DEFAULT_ENERGY_SHIFT)
+        assert orbital.achieved_shift == pytest.approx(DEFAULT_ENERGY_SHIFT,
+                                                       abs=1e-6)
+        r = np.linspace(0.05, 0.99 * orbital.r_c, 50)
+        pp = get_oncv("H")
+        assert np.allclose(fn.radial(r), np.interp(r, pp.r, orbital.radial),
+                           atol=2e-4)
+        # Zero beyond the wall, up to the spline the basis function is
+        # sampled with (2.8e-11 measured).
+        assert abs(fn.radial(np.array([orbital.r_c + 0.1]))[0]) < 1e-8
 
 
 # --------------------------------------------------------------------------- #
@@ -571,6 +700,10 @@ class TestConstruction:
         assert pp.channels[1].reference_energies == [0.25, 1.25]
         assert pp.channels[1].residual_kinetic[1] < oncv.MAX_RESIDUAL_KINETIC
         assert 1 in oncv.scattering_errors(pp, oncv.log_derivative_ps)
+        from mandacaru.pseudopotentials.orbitals import pseudo_basis
+        functions, owners = pseudo_basis(["O"], [np.zeros(3)], {"O": pp})
+        assert len(functions) == 1 and functions[0].l == 0
+        assert owners == [0]
         path = save_pseudopotential(pp, tmp_path / "O.parquet")
         loaded = load_pseudopotential(path)
         assert loaded.frozen_subshells == ((2, 1),)
@@ -589,6 +722,20 @@ class TestConstruction:
         pp = generate_oncv("O", frozen_subshells=((2, 1),), ghosts="keep")
         ghosts = oncv.ghost_errors(pp, oncv._oncv_levels)
         assert ghosts[1] < 0.0
+
+    def test_missing_bound_state_in_unconstructed_channel_is_detected(
+            self, monkeypatch):
+        """A clean constructed s channel cannot excuse a missing O p state."""
+        from mandacaru.pseudopotentials.oncv import missing_bound_states
+
+        pp = copy.copy(generated("O"))
+        assert missing_bound_states(pp) == {}
+        pp.channels = {0: pp.channels[0]}
+        pp.v_local_screened = np.zeros_like(pp.v_local_screened)
+        assert missing_bound_states(pp)[1] == (1, 0)
+        monkeypatch.setattr(oncv, "ghost_free", lambda *_args, **_kw: pp)
+        with pytest.raises(oncv.MissingStateError, match="l=1: 0/1"):
+            generate_oncv("O")
 
     def test_divergent_residual_is_rejected_and_legacy_file_warns(self,
                                                                  tmp_path):

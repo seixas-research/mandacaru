@@ -146,7 +146,7 @@ from ..basis.xc import xc_potential
 from ..basis.atomic_solver import (AtomicResult, hartree_potential,
                                     solve_atom)
 from ..core.hamiltonian import MolecularIntegrals, projector_blocks
-from .confinement import DEFAULT_ENERGY_SHIFT
+from .confinement import CONFINEMENT_DEFAULT_OPTIONS, CONFINEMENT_OPTIONS
 from .generation import Channel, PseudoPotential, _valence_configuration
 from .oncv import (INNER_POINTS, Q_MAX, Q_STEP,
                    PseudoWaves, _bessel_table, _bessel_transform_table,
@@ -775,6 +775,11 @@ class PAWDataset(PseudoPotential):
     def has_spin_orbit(self) -> bool:
         """Whether this dataset carries a spin-orbit term."""
         return bool(self.spin_orbit)
+
+    def channel_operator_on(self, l: int, r):
+        """``(r, v, p_u, D^scr, q)`` of channel ``l`` on the uniform grid ``r``
+        (:mod:`~.confinement` solves its confined orbital with it)."""
+        return _channel_operator_on(self, int(l), r)
 
     def local_potential(self, radius) -> np.ndarray:
         r"""The ionic local potential at arbitrary radii (Bohr), **C\ :sup:`2`**.
@@ -1566,7 +1571,7 @@ def paw_overlap_blocks(projectors, symbols, datasets) -> dict:
     return _blocks(projectors, symbols, datasets, "overlap")
 
 
-def _projector_sphere(projector):
+def _projector_sphere(projector, *, split_radial: bool = False):
     """Quadrature points (Bohr, a coordinate triple) and weights over the
     sphere of radius ``projector.r_cut`` around ``projector.center``."""
     x, wx = np.polynomial.legendre.leggauss(PROJECTION_RADIAL_POINTS)
@@ -1579,22 +1584,36 @@ def _projector_sphere(projector):
                            np.repeat(t, n_phi)])
     angular = np.repeat(wt, n_phi) * (2.0 * np.pi / n_phi)
     r_cut = float(projector.r_cut)
-    radii = 0.5 * r_cut * (x + 1.0)
-    weights = (0.5 * r_cut * wx * radii * radii)[:, None] * angular[None, :]
+    channel_cut = float(getattr(projector, "channel_r_cut", r_cut))
+    # An ONCV projector continued from its own cutoff to the local radius
+    # changes formula at channel_cut.  Put that junction on a panel boundary
+    # so the radial rule sees smooth functions on both sides.
+    edges = ([0.0, channel_cut, r_cut]
+             if split_radial and 0.0 < channel_cut < r_cut else [0.0, r_cut])
+    radii, radial_weights = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        half = 0.5 * (hi - lo)
+        nodes = lo + half * (x + 1.0)
+        radii.append(nodes)
+        radial_weights.append(half * wx * nodes * nodes)
+    radii = np.concatenate(radii)
+    weights = np.concatenate(radial_weights)[:, None] * angular[None, :]
     center = np.asarray(projector.center, dtype=float)
     points = tuple(center[i] + radii[:, None] * directions[i][None, :]
                    for i in range(3))
     return points, weights
 
 
-def atom_centered_projections(basis, projectors) -> np.ndarray:
+def atom_centered_projections(basis, projectors, *,
+                              split_radial: bool = False) -> np.ndarray:
     r"""``C[mu, p] = <phi_mu|p_p>`` by quadrature over each projector's sphere.
 
     See :meth:`PAWIntegrals.projections`.  Returns an ``(M, P)`` array.
     """
     C = np.zeros((len(basis), len(projectors)), dtype=complex)
     for p, projector in enumerate(projectors):
-        points, weights = _projector_sphere(projector)
+        points, weights = _projector_sphere(projector,
+                                            split_radial=split_radial)
         values = projector.evaluate(*points) * weights
         for mu, fn in enumerate(basis):
             C[mu, p] = np.sum(np.conj(fn.evaluate(*points)) * values)
@@ -1602,7 +1621,8 @@ def atom_centered_projections(basis, projectors) -> np.ndarray:
 
 
 def atom_centered_projection_gradients(basis, projectors,
-                                       delta: float = 1e-3) -> np.ndarray:
+                                       delta: float = 1e-3, *,
+                                       split_radial: bool = False) -> np.ndarray:
     r"""``G[mu, p, k] = <d phi_mu / d R_k | p_p>``, the basis function moving.
 
     Same quadrature as :func:`atom_centered_projections`; the orbital
@@ -1613,7 +1633,8 @@ def atom_centered_projection_gradients(basis, projectors,
     """
     G = np.zeros((len(basis), len(projectors), 3), dtype=complex)
     for p, projector in enumerate(projectors):
-        points, weights = _projector_sphere(projector)
+        points, weights = _projector_sphere(projector,
+                                            split_radial=split_radial)
         values = projector.evaluate(*points) * weights
         for mu, fn in enumerate(basis):
             for k in range(3):
@@ -2404,20 +2425,15 @@ def from_payload(payload: dict) -> PAWDataset:
 #: the unfiltered basis exactly.
 #:
 #: ``energy_shift = 0.1`` eV makes the default PAW-LCAO basis a
-#: **confined** one, GPAW's default recipe; the polarization shell then
-#: defaults to GPAW's quasi-Gaussian (:func:`~.confinement.
-#: resolve_polarization` -- derived from the confinement, so it is not listed
-#: here).  ``{"energy_shift": None}`` restores the free-atom orbitals and, with
-#: them, the ``"orbital"`` polarization shell.
-PAW_DEFAULT_OPTIONS = {"filter": True, "energy_shift": DEFAULT_ENERGY_SHIFT}
+#: **confined** one, GPAW's default recipe, as for every pseudopotential
+#: family (:data:`~.confinement.CONFINEMENT_DEFAULT_OPTIONS`); the
+#: polarization shell then defaults to GPAW's quasi-Gaussian.
+PAW_DEFAULT_OPTIONS = {"filter": True, **CONFINEMENT_DEFAULT_OPTIONS}
 
-#: What a PAW-LCAO / UPAW-LCAO basis dict may say beyond the family-independent options:
-#: which projector set is sampled; the ``energy_shift`` (eV) that confines the
-#: first zeta and the ``confinement`` potential's ``(amplitude, r_i / r_c)``
-#: (:mod:`~.confinement`; off, and GPAW's, by default); and the
-#: ``polarization`` shell, ``"orbital"`` (default) or GPAW's ``"gaussian"``.
-PAW_EXTRA_OPTIONS = ("projector_basis", "energy_shift", "confinement",
-                     "polarization")
+#: What a PAW-LCAO / UPAW-LCAO basis dict may say beyond the family-independent
+#: options: which projector set is sampled, and the confinement options every
+#: pseudopotential family shares (:data:`~.confinement.CONFINEMENT_OPTIONS`).
+PAW_EXTRA_OPTIONS = ("projector_basis",) + CONFINEMENT_OPTIONS
 
 
 def _register():

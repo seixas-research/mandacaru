@@ -264,10 +264,15 @@ class TestPlumbing:
             Mandacaru(method="adapt-vqe",
                       basis={"name": "PAW-LCAO", "energy_shift": -1})
 
-    def test_norm_conserving_families_do_not_have_it(self):
-        with pytest.raises(ValueError, match="unknown option.*energy_shift"):
+    @pytest.mark.parametrize("name", ["NCPP", "ONCVPSP"])
+    def test_norm_conserving_families_have_it_too(self, name):
+        Mandacaru(method="adapt-vqe",
+                  basis={"name": name, "energy_shift": 0.2,
+                         "polarization": "gaussian"})
+        # What stays PAW's own is the projector set it samples.
+        with pytest.raises(ValueError, match="unknown option.*projector_basis"):
             Mandacaru(method="adapt-vqe",
-                      basis={"name": "NCPP", "energy_shift": 0.1})
+                      basis={"name": name, "projector_basis": "raw"})
 
     def test_upaw_has_it(self):
         Mandacaru(method="adapt-vqe",

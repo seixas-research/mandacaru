@@ -83,8 +83,8 @@ How the pieces are evaluated
   derivative is the same quadrature of :math:`\partial\phi_\mu/\partial\mathbf R`,
   :math:`G_{\mu p}`: the Pulay part (basis function moving) is :math:`+G` and
   the Hellmann-Feynman part (projector moving) is :math:`-G`, so the total is
-  exactly translation invariant.  ONCVPSP keeps grid projections, whose
-  derivatives are sampled on the grid like everything else.
+  exactly translation invariant.  ONCVPSP uses the same atom-centered
+  projection rule and its derivative.
 * PAW-LCAO's **local potential** is range-separated
   (:meth:`~mandacaru.pseudopotentials.paw.PAWIntegrals.short_range_local`): the
   grid samples only the long-range Gaussian-ion half, and the short-range half
@@ -447,7 +447,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     if exact_projections:
         from ..pseudopotentials.paw import atom_centered_projection_gradients
         projection_gradients = atom_centered_projection_gradients(
-            basis, projectors, delta)
+            basis, projectors, delta,
+            split_radial=bool(getattr(integrals, "projection_split_radial", False)))
     orbital_atoms = np.asarray(atom_of_orbital)
 
     # `sr_gradients[A][p, q, k]` = the integral of phi_p^* phi_q v^sr_A with

@@ -112,9 +112,11 @@ class TestEstimate:
     def test_pseudopotentials_count_valence_only(self):
         est = estimate_qubits(_boxed("H2O"), basis="NCPP")
         assert est.n_electrons == 8 and est.n_frozen_orbitals == 0
-        # The label always names the filter, so a reader need not know each
-        # family's default: NCPP leaves it off, PAW-LCAO/UPAW-LCAO turn it on.
-        assert est.basis == "NCPP (SZ, unfiltered, pseudopotentials)"
+        # The label always names the filter and the confinement, so a reader
+        # need not know each family's defaults: NCPP leaves the filter off
+        # (PAW-LCAO/UPAW-LCAO turn it on), and every family confines at 0.1 eV.
+        assert est.basis == ("NCPP (SZ, unfiltered, energy_shift 0.1 eV, "
+                             "gaussian polarization, pseudopotentials)")
         assert est.per_atom == [("O", 4), ("H", 1), ("H", 1)]
         assert est.n_qubits == 12
         assert any("pseudopotentials" in n for n in est.notes)
@@ -128,7 +130,7 @@ class TestEstimate:
          [("O", 8), ("H", 2), ("H", 2)],
          "PAW-LCAO (DZ, unfiltered, energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
         ({"name": "ONCVPSP", "size": "DZP"}, 46, [("O", 13), ("H", 5), ("H", 5)],
-         "ONCVPSP (DZP, unfiltered, pseudopotentials)"),
+         "ONCVPSP (DZP, unfiltered, energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
         ({"O": {"name": "PAW-LCAO", "size": "DZP"}, "H": "PAW-LCAO"}, 30,
          [("O", 13), ("H", 1), ("H", 1)],
          'PAW-LCAO (per-element sizes {"H": "SZ", "O": "DZP"}, '

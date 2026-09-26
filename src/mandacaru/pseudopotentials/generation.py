@@ -352,6 +352,44 @@ class PseudoPotential:
         # At r below the first grid point the potential is flat (finite).
         return np.where(radius < self.r[0], self.v_local[0], out)
 
+    def channel_operator_on(self, l: int, r):
+        """``(r, v, p_u, D, q)`` of channel ``l`` on the uniform grid ``r``.
+
+        The channel's screened semilocal potential, with no projectors: its
+        free eigenstate is the stored pseudo wave, which is what
+        :mod:`~.confinement` confines.  (The Kleinman-Bylander form the
+        Hamiltonian uses reproduces that state at the reference energy.)
+        """
+        from scipy.interpolate import CubicSpline
+
+        l = int(l)
+        v = (CubicSpline(self.r, self.screened_potential(l))(r)
+             + l * (l + 1) / (2.0 * r * r))
+        return r, v, [], np.zeros((0, 0)), np.zeros((0, 0))
+
+    def screened_potential(self, l: int) -> np.ndarray:
+        """Channel ``l``'s screened semilocal potential on :attr:`r`.
+
+        A library file does not store it (only ``v_ionic``), so it is
+        rescreened the way the generator unscreened it:
+        ``v_ionic + v_H[rho_v] + v_xc[rho_v + rho_core]`` with the stored
+        valence and partial-core densities and the dataset's functional.
+        """
+        channel = self.channels[int(l)]
+        if np.any(channel.v_screened):
+            return np.asarray(channel.v_screened, dtype=float)
+        from ..basis.xc import xc_potential
+
+        screening = self.__dict__.get("_screening")
+        if screening is None:
+            valence = np.asarray(self.valence_density, dtype=float)
+            core = (np.zeros_like(valence) if self.core_density is None
+                    else np.asarray(self.core_density, dtype=float))
+            _e_xc, v_xc = xc_potential(self.r, valence + core, self.xc)
+            screening = hartree_potential(self.r, valence) + v_xc
+            self.__dict__["_screening"] = screening
+        return np.asarray(channel.v_ionic, dtype=float) + screening
+
     def projector_radius(self, l: int) -> float:
         r"""Radius beyond which the KB projector of channel ``l`` vanishes:
         :math:`\chi_l = (V_l - V_{loc}) R^{ps}_l` is nonzero out to the larger

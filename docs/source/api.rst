@@ -221,7 +221,8 @@ Families and Registry
 Confined Orbitals
 ~~~~~~~~~~~~~~~~~
 
-The ``energy_shift`` of a PAW-LCAO basis: the first zeta solved in a smooth
+The ``energy_shift`` of a pseudopotential basis (PAW-LCAO, UPAW-LCAO, ONCVPSP,
+NCPP): the first zeta solved in a smooth
 confining potential, its cutoff radius fixed by the eigenvalue shift.  See
 :doc:`guide/pseudopotentials`.
 

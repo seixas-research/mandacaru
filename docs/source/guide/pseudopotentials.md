@@ -79,8 +79,8 @@ from mandacaru.pseudopotentials import (
 family_names()      # ['ncpp', 'oncvpsp', 'paw-lcao', 'upaw-lcao', 'ncpp-tm', 'oncv', 'tm', 'unitary-paw-lcao']
 spec = resolve_family("TM")            # -> PSEUDO_FAMILIES["ncpp"]
 spec.name, spec.aliases, spec.label    # "ncpp", ("tm", "ncpp-tm"), "NCPP"
-spec.options       # ("size", "split_norm", "tail_norm", "directory", "filter")
-spec.default_options       # {} -- PAW-LCAO/UPAW-LCAO declare {"filter": True, "energy_shift": 0.1}
+spec.options       # (..., "filter", "energy_shift", "confinement", "polarization")
+spec.default_options       # {"energy_shift": 0.1} -- PAW-LCAO/UPAW-LCAO also {"filter": True}
 spec.resolved_options({"size": "DZ"})  # the defaults with the user's options on top
 spec.norm_conserving                   # True
 spec.generate("O")                     # generate_pseudopotential("O")
@@ -278,7 +278,7 @@ calculation that later reads it.
 | `relativity` | `"scalar"` | `"none"`, `"scalar"` (Koelling–Harmon) or `"dirac"` (each $j$ separately) |
 | `xc` | `"lda"` | `"lda"` or `"pbe"`; screens the atom and unscreens the potential with the same functional |
 | `nlcc` | `True` | Partial core density; `True` matches where $\rho_c = \rho_v$, a float sets the radius |
-| `extra_l` | `0` | Channels above the highest valence $l$, two scattering references each |
+| `extra_l` | `0`, La: `1` | Empty channels above the highest occupied valence $l$; a bound non-core atom level is the first reference when present, otherwise both references scatter |
 | `points`, `r_max` | per element | The radial grid of the reference atom |
 | `reference_configuration` | selected neutral configuration | Explicit complete occupation map `{(n, l): electrons}` for the reference atom |
 | `frozen_subshells` | none | Move selected occupied subshells into the pseudopotential core; add a scattering channel when needed |
@@ -341,6 +341,13 @@ only the widest cutoff or targeted expansions of a compact highest-$l$ cutoff,
 including absolute radii for exceptionally small semicore channels, then
 balanced cutoffs. These focused adjustments can restore an $f$-channel
 phase match without stretching it to the diffuse $s$ cutoff.
+After ghost and phase repair, `missing_bound_states` also counts non-core
+all-electron and pseudo bound levels on the same 24-Bohr box through one
+angular momentum above the highest channel. A deficit below -0.01 Ha raises
+`MissingStateError` and prevents the file from being written. The cutoff
+excludes very shallow, box-sensitive levels, so a full library audit must
+still check those separately. La is a concrete case: its neutral atom has an
+empty but bound 4f level, while its old local f channel binds none.
 Use `--check` to print the diagnostics, and inspect any `FLAGGED` dataset
 before installing it. A clean atomic check should be followed by tests of
 other atomic configurations and representative bonded systems before treating
@@ -1031,9 +1038,10 @@ Every family's nonlocal potential enters through one formula,
 H^{NL} = C\,D\,C^\dagger, \qquad C_{\mu p} = \langle\phi_\mu|\chi_p\rangle ,
 ```
 
-where $C$ (`MolecularIntegrals.projections()`, an $M\times P$ matrix) is the
-only object that touches the grid (the C-accelerated `kb_projections` kernel)
-and $D$ is a **block-diagonal** $P\times P$ coupling matrix. Each projector
+where $C$ (`MolecularIntegrals.projections()`, an $M\times P$ matrix) contains
+the basis–projector overlaps and $D$ is a **block-diagonal** $P\times P$
+coupling matrix. ONCVPSP and PAW-LCAO integrate $C$ on atom-centered spheres;
+NCPP uses the C-accelerated grid quadrature. Each projector
 carries three labels — `atom_index`, `channel = (l, m)` and a radial `index`
 within that channel — and $D$ has one block per `(atom, l, m)`, of size
 $n\times n$ for $n$ radial projectors in that channel. The family supplies the
@@ -1250,7 +1258,7 @@ $ mandacaru H2O --cell 8 --basis PAW-LCAO --basis-option size=DZP --dry-run
 
 ## Confined orbitals: `energy_shift`
 
-Without further instruction the first zeta of a PAW-LCAO basis is the dataset's
+Without confinement the first zeta of a pseudopotential basis is the dataset's
 bound smooth partial wave: the valence orbital of the **free** atom. It has no
 range of its own -- a lithium 2s still carries 10⁻⁴ of its norm beyond 14 Bohr
 -- and it is more diffuse than the same orbital inside a molecule. LCAO codes
@@ -1267,8 +1275,12 @@ Mandacaru(method="adapt-vqe",
 ```
 
 `energy_shift` is in **eV** (as in GPAW and as for [the NAO
-family](basis_sets.md)) and is accepted by `"PAW-LCAO"` and `"UPAW-LCAO"`. **The default
-is 0.1 eV**, GPAW's default -- so a plain `basis="PAW-LCAO"` is a confined basis.
+family](basis_sets.md)) and is accepted by every pseudopotential family:
+`"PAW-LCAO"`, `"UPAW-LCAO"`, `"ONCVPSP"` and `"NCPP"`, together with
+`confinement` and `polarization`. **The default is 0.1 eV** for all four,
+GPAW's default -- so a plain `basis="PAW-LCAO"` or `basis="ONCVPSP"` is a
+confined basis, and an ONCVPSP and a PAW-LCAO calculation of the same molecule
+use bases built by the same recipe.
 `None`, `False` or `0` switch the confinement off and restore the free-atom
 orbitals; every PAW-LCAO energy quoted in this guide outside this section was
 computed that way, with confinement off rather than at the default. A `{symbol: eV}`
@@ -1290,7 +1302,28 @@ problem the stored wave solves, with a confining potential added,
 ```
 
 and the radius `r_c` found by a root search on
-`ε(r_c) − ε_free = energy_shift`. The extra zetas and the polarization shell
+`ε(r_c) − ε_free = energy_shift`. For the norm-conserving families the overlap
+is the identity (`q = 0`): ONCVPSP solves with its own local potential and
+projectors, and NCPP with the screened semilocal potential of the channel,
+rebuilt from the file's ionic potential, valence density and partial core the
+way the generator unscreened it. The radii agree across families to a few
+hundredths of a Bohr (O 2p at 0.1 eV: 5.340 PAW-LCAO, 5.345 ONCVPSP, 5.353
+NCPP), because the recipe is the same and the potentials nearly so.
+
+The Fourier filter stays **off** by default for ONCVPSP and NCPP. Before
+atom-centered ONCVPSP projector integration, measured on
+water (SZ, 3.5 Å of vacuum), the net force on the free molecule is PAW-LCAO's
+0.43 / 0.079 / 0.0083 eV/Å at h = 0.25 / 0.20 / 0.16 Å without the filter and
+0.043 / 0.0003 / 0.0001 with it; ONCVPSP's is 115 / 15.9 / 4.5 without it and
+124 / 16.4 / 4.5 with it. The filter cures PAW-LCAO's egg-box and does nothing
+for ONCVPSP's: the grid-sampled projectors and local potential of a harder
+dataset dominated. ONCVPSP now integrates its projectors on atom-centered
+spheres. The local potential, kinetic energy and Coulomb terms remain on the
+grid. On a right-angle water check at h = 0.25 Å the net force is still
+7.72 eV/Å without the filter and 7.00 eV/Å with it, while the energy changes
+by 3.38 Ha. ONCVPSP calculations therefore still need grid-convergence
+checks. The extra
+zetas and the polarization shell
 are then split from the confined orbital, so the whole basis of an atom shares
 its range.
 

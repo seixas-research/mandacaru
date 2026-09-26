@@ -130,12 +130,15 @@ class TestFamilyResolution:
         assert set(spec.aliases) == {"tm", "ncpp-tm"}
         assert spec.label == "NCPP"
         assert spec.options == ("size", "split_norm", "tail_norm",
-                                "directory", "filter")
+                                "directory", "filter", "energy_shift",
+                                "confinement", "polarization")
         # A norm-conserving family leaves the Fourier filter opt-in: its
-        # orbitals are not built band-limited the way PAW-LCAO's partial waves are.
-        assert spec.default_options == {}
-        assert spec.resolved_options() == {}
-        assert spec.resolved_options({"filter": True}) == {"filter": True}
+        # orbitals are not built band-limited the way PAW-LCAO's partial waves
+        # are.  The confined first zeta is on, as for every family.
+        assert spec.default_options == {"energy_shift": 0.1}
+        assert spec.resolved_options() == {"energy_shift": 0.1}
+        assert spec.resolved_options({"filter": True}) == {
+            "filter": True, "energy_shift": 0.1}
         assert callable(spec.generate) and callable(spec.get) \
             and callable(spec.build)
         assert spec.get("H").symbol == "H"

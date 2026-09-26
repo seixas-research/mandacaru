@@ -416,9 +416,11 @@ class TestBasisArgumentIsHonored:
 
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
-        with pytest.raises(ValueError, match="unknown option.*energy_shift"):
+        # `projector_basis` belongs to PAW-LCAO alone (the confinement
+        # options are shared by every pseudopotential family).
+        with pytest.raises(ValueError, match="unknown option.*projector_basis"):
             build_basis_hamiltonian(atoms, {"name": "NCPP",
-                                            "energy_shift": 0.03},
+                                            "projector_basis": "raw"},
                                     grid, 0.30, 0, None)
 
 

@@ -77,6 +77,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .confinement import CONFINEMENT_DEFAULT_OPTIONS, CONFINEMENT_OPTIONS
+
 #: The canonical name of the Troullier-Martins family (library:
 #: ``$MANDACARU_NCPP_PATH``).
 DEFAULT_FAMILY = "ncpp"
@@ -462,4 +464,6 @@ NCPP_FAMILY = register_family(FamilySpec(
     build=_build_tm,
     norm_conserving=True,
     aliases=("tm", "ncpp-tm"),
+    options=COMMON_OPTIONS + CONFINEMENT_OPTIONS,
+    default_options=dict(CONFINEMENT_DEFAULT_OPTIONS),
 ))

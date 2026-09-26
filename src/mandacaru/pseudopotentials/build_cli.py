@@ -120,6 +120,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ONCV: place occupied subshells in each "
                              "selected element's pseudopotential core, "
                              "for example 4f for Bi")
+    parser.add_argument("--extra-l", type=int, default=None, metavar="COUNT",
+                        help="ONCV: add unoccupied projector channels above "
+                             "the highest occupied angular momentum")
     parser.add_argument("--backend", default="auto",
                         choices=["auto", "c", "python"],
                         help="radial kernels: C when available (auto), C or "
@@ -354,6 +357,9 @@ def main(argv=None) -> int:
             frozen_subshells = _frozen_subshells(args.freeze_subshell)
         except ValueError as error:
             parser.error(str(error))
+    if args.extra_l is not None:
+        if family != "oncvpsp" or args.extra_l < 0:
+            parser.error("--extra-l requires --pp ONCV and a nonnegative count")
 
     # Without --ghosts each family keeps its own default: repair for
     # PAW/UPAW/ONCV, flag for NCPP (a single-channel atom has nothing to try).
@@ -364,6 +370,8 @@ def main(argv=None) -> int:
         options["reference_configuration"] = configuration
     if args.freeze_subshell:
         options["frozen_subshells"] = frozen_subshells
+    if args.extra_l is not None:
+        options["extra_l"] = args.extra_l
     try:
         directory = _directory(family, args.output, args.install, args.xc)
     except FileNotFoundError as error:

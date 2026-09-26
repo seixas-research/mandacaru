@@ -510,6 +510,11 @@ def _warn_unresolved(integrals, basis_fns, h):
     """Warn about basis functions / projectors the grid does not resolve."""
     import warnings
     functions, projectors = integrals.unresolved()
+    # PAW-LCAO and ONCVPSP integrate the projector overlaps on atom-centered
+    # spheres. Their grid norm ratios remain useful diagnostics, but an
+    # unresolved grid projector no longer enters the nonlocal Hamiltonian.
+    if getattr(integrals, "exact_projections", False):
+        projectors = []
     if not functions and not projectors:
         return
     parts = []

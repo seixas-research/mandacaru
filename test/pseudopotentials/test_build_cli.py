@@ -73,6 +73,18 @@ def test_oncv_frozen_subshell_option_is_validated(capsys):
     assert "requires --pp ONCV and --element" in capsys.readouterr().err
 
 
+def test_oncv_extra_channel_option_is_validated(capsys):
+    args = build_parser().parse_args(
+        ["--pp", "ONCV", "--element", "La", "--extra-l", "1"])
+    assert args.extra_l == 1
+    with pytest.raises(SystemExit):
+        main(["--pp", "PAW", "--element", "La", "--extra-l", "1"])
+    assert "requires --pp ONCV" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["--pp", "ONCV", "--element", "La", "--extra-l", "-1"])
+    assert "nonnegative" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("spelling, family", [
     ("PAW", "paw-lcao"), ("paw-lcao", "paw-lcao"), ("UPAW", "upaw-lcao"),
     ("ONCV", "oncvpsp"), ("ONCVPSP", "oncvpsp"), ("NCPP", "ncpp"), ("TM", "ncpp")])

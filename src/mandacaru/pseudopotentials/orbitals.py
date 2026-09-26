@@ -133,6 +133,8 @@ class KBProjector(_RadialTabulated):
         #: Radial projector index within the ``(atom, l, m)`` channel.
         self.index = int(index)
         channel = pseudopotential.channels.get(int(l))
+        self.channel_r_cut = (float("nan") if channel is None
+                              else float(channel.r_cut))
         # The projector's support: a PAW-LCAO projector reaches out to the
         # local potential's radius when that exceeds the channel's cutoff.
         radius = getattr(pseudopotential, "projector_radius", None)
@@ -293,10 +295,15 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     functions, owners = [], []
     for index, (symbol, position) in enumerate(zip(symbols, positions)):
         pp = potentials[symbol]
+        # Empty scattering or bound-reference channels improve the nonlocal
+        # operator without adding electrons. They supply projectors, not
+        # minimal valence basis functions (or a new polarization parent).
+        occupied_channels = [l for l, channel in sorted(pp.channels.items())
+                             if channel.occupation > 0.0]
         n_zeta, n_polarization = resolve_zeta(size_of(symbol))
         if n_zeta == 1 and n_polarization == 0:
             # Minimal valence set: the original path, unchanged.
-            for l in sorted(pp.channels):
+            for l in occupied_channels:
                 radial = first_radial(symbol, pp, l)
                 if k_c is None and first_zeta is None:
                     radial = None          # the stored table, byte for byte
@@ -309,8 +316,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             continue
 
         tables = []
-        l_max = max(pp.channels)
-        for l in sorted(pp.channels):
+        l_max = max(occupied_channels)
+        for l in occupied_channels:
             channel = pp.channels[l]
             for table in zeta_tables(pp.r, first_radial(symbol, pp, l),
                                      int(channel.n), l, n_zeta,

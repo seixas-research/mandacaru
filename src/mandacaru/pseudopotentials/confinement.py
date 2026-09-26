@@ -6,9 +6,10 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Confined pseudo-atomic orbitals: the ``energy_shift`` of a PAW-LCAO basis.
+r"""Confined pseudo-atomic orbitals: the ``energy_shift`` of a pseudopotential
+basis (PAW-LCAO, UPAW-LCAO, ONCVPSP and NCPP).
 
-Without this module the first zeta of a PAW-LCAO basis is the dataset's bound smooth
+Without this module the first zeta of such a basis is the dataset's bound smooth
 partial wave -- the valence orbital of the **free** atom, which has no range of
 its own (a lithium 2s still carries 1e-4 of its norm beyond 14 Bohr).  LCAO
 codes (SIESTA, GPAW) instead use the orbital of the atom inside a confining
@@ -52,10 +53,17 @@ from the GPAW source, not recalled), chosen on purpose: with the same
 with.  (The *datasets* still differ -- each code pseudizes its own atom -- so
 the radii agree closely, not identically.)
 
+For the norm-conserving families the overlap is the identity (``q = 0``):
+ONCVPSP solves with its own local potential and projectors, NCPP with the
+screened semilocal potential of the channel, whose free eigenstate is the
+stored pseudo wave.  Each dataset supplies its operator through
+``channel_operator_on(l, r)``, which returns the grid, the potential, the
+``u``-form projectors, ``D`` and ``q``.
+
 ``energy_shift`` is in **eV**, like GPAW's ``energysplit`` and like the
-``energy_shift`` of the all-electron ``"NAO"`` family.  It is off by default:
-``None`` / ``False`` / ``0`` keep the free-atom orbital and every pinned
-energy.
+``energy_shift`` of the all-electron ``"NAO"`` family.  It is on by default at
+:data:`DEFAULT_ENERGY_SHIFT` for every family that offers it; ``None`` /
+``False`` / ``0`` keep the free-atom orbital.
 """
 
 from __future__ import annotations
@@ -73,12 +81,19 @@ CONFINEMENT_AMPLITUDE = 12.0
 #: default.  Below it the atom is untouched.
 CONFINEMENT_INNER_FRACTION = 0.6
 
-#: The ``energy_shift`` (eV) a PAW-LCAO / UPAW-LCAO basis uses when the basis dict does
-#: not say: GPAW's ``energysplit`` default.  ``"energy_shift": None`` restores
-#: the unconfined free-atom orbital.
+#: The ``energy_shift`` (eV) a pseudopotential basis uses when the basis dict
+#: does not say: GPAW's ``energysplit`` default.  ``"energy_shift": None``
+#: restores the unconfined free-atom orbital.
 DEFAULT_ENERGY_SHIFT = 0.1
 
-#: Which polarization shell a PAW-LCAO basis builds (``polarization=`` option).
+#: The basis options this module provides, shared by every family whose
+#: datasets define ``channel_operator_on`` -- PAW-LCAO, UPAW-LCAO, ONCVPSP and
+#: NCPP -- and their defaults (the polarization shell is derived from the
+#: confinement, :func:`resolve_polarization`, so it has none of its own).
+CONFINEMENT_OPTIONS = ("energy_shift", "confinement", "polarization")
+CONFINEMENT_DEFAULT_OPTIONS = {"energy_shift": DEFAULT_ENERGY_SHIFT}
+
+#: Which polarization shell a pseudopotential basis builds (``polarization=``).
 #: ``"gaussian"``: GPAW's quasi-Gaussian, :func:`gaussian_polarization` -- the
 #: default **wherever the orbital is confined**, since the Gaussian takes its
 #: cutoff from the confined orbital.  ``"orbital"``: :math:`r^k R_{outer}(r)`,
@@ -263,12 +278,12 @@ def _solve(pp, l: int, r_c: float, amplitude: float, inner_fraction: float,
     """Lowest generalized eigenpair on the fine and the coarse grid."""
     from scipy.linalg import eigh
 
-    from .paw import _channel_operator_on, _generalized_matrices
+    from .paw import _generalized_matrices
 
     out = []
     for doubling in (0, 1):
         r = _grid(r_c, doubling)
-        r, v, p_u, D, q = _channel_operator_on(pp, l, r)
+        r, v, p_u, D, q = pp.channel_operator_on(l, r)
         v = v + confinement_potential(r, r_c, amplitude, inner_fraction)
         H, S = _generalized_matrices(r, v, p_u, D, q)
         if not vectors:
@@ -315,8 +330,13 @@ def confined_eigenstate(pp, l: int, r_c: float, *,
 
 
 def free_energy(pp, l: int) -> float:
-    """Eigenvalue (Hartree) of the free atom's bound state in channel ``l``."""
-    return float(pp.channels[int(l)].reference_energies[0])
+    """Eigenvalue (Hartree) of the free atom's bound state in channel ``l``:
+    the first reference energy, or the channel's eigenvalue for a family that
+    stores one reference (NCPP)."""
+    channel = pp.channels[int(l)]
+    references = getattr(channel, "reference_energies", None)
+    return float(references[0] if references is not None and len(references)
+                 else channel.eigenvalue)
 
 
 def confinement_radius(pp, l: int, energy_shift: float, *,
@@ -327,7 +347,7 @@ def confinement_radius(pp, l: int, energy_shift: float, *,
     ``energy_shift`` (**eV**) above the free atom's.
 
     The eigenvalue falls monotonically as the wall recedes, so the radius is
-    bracketed by scanning outward from the augmentation sphere and then
+    bracketed by scanning outward from the channel's cutoff radius and then
     refined with Brent's method.  A shift too large to reach without cutting
     into the sphere, or too small to reach inside the radial table, is
     refused with the range that *is* reachable.
@@ -352,7 +372,8 @@ def confinement_radius(pp, l: int, energy_shift: float, *,
         raise ValueError(
             f"energy_shift = {shift:g} eV is too large for the {pp.symbol} "
             f"l = {l} channel: it would put the confinement inside the "
-            f"augmentation sphere (r_cut = {pp.channels[l].r_cut:.2f} Bohr); "
+            f"channel's cutoff radius (r_cut = {pp.channels[l].r_cut:.2f} "
+            f"Bohr); "
             f"the largest usable value is about {largest:.2f} eV")
     r_hi = r_lo
     while True:

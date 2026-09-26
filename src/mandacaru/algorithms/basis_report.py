@@ -63,7 +63,7 @@ def _per_element(spec, symbol, default):
 def _pseudo_report(name, context, symbols, fields, tables):
     from ..basis.filtering import cutoff_energy_ev, filter_label
     from ..basis.multizeta import DEFAULT_SPLIT_NORM, resolve_zeta
-    from ..pseudopotentials.confinement import (energy_shift_label,
+    from ..pseudopotentials.confinement import (energy_shift_label, free_energy,
                                                 resolve_polarization,
                                                 validate_confinement)
     from ..pseudopotentials.families import (pseudo_basis_arguments,
@@ -169,10 +169,7 @@ def _pseudo_report(name, context, symbols, fields, tables):
         l_max = max(pp.channels)
         for l in sorted(pp.channels):
             orbital = confined.get(symbol, {}).get(int(l))
-            channel = pp.channels[l]
-            energies = (getattr(channel, "reference_energies", None)
-                        or [getattr(channel, "energy", float("nan"))])
-            free = float(energies[0]) * HARTREE_TO_EV
+            free = free_energy(pp, l) * HARTREE_TO_EV
             polarization = n_polarization if l == l_max else 0
             if orbital is None:
                 row = ("unconfined", "unconfined", f"{free:.6f}",
