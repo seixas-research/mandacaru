@@ -531,6 +531,30 @@ class TestConstruction:
         assert oncv.generation_points(8) == 12000
         assert generated("O").r.size == 12000 and generated("H").r.size == 6000
 
+    def test_cached_partial_waves_rebuild_shifted_projectors(self):
+        """Reusing radial optimization leaves a shifted Hamiltonian exact."""
+        atom = generated("H").atom
+        cache: dict = {}
+        unshifted = generate_oncv("H", atom=atom, ghosts="keep",
+                                  _channel_cache=cache)
+        cached = generate_oncv("H", atom=atom, ghosts="keep",
+                               local_shift=5.0, _channel_cache=cache)
+        direct = generate_oncv("H", atom=atom, ghosts="keep",
+                               local_shift=5.0)
+        assert len(cache) == 1
+        assert not np.allclose(unshifted.v_local_screened,
+                               cached.v_local_screened)
+        np.testing.assert_allclose(cached.v_local_screened,
+                                   direct.v_local_screened, rtol=0, atol=0)
+        np.testing.assert_allclose(cached.channels[0].coupling,
+                                   direct.channels[0].coupling, rtol=0, atol=0)
+        for left, right in zip(cached.projectors[0], direct.projectors[0]):
+            np.testing.assert_allclose(left, right, rtol=0, atol=0)
+        phase_cache: dict = {}
+        assert (oncv.scattering_errors(cached, oncv.log_derivative_ps,
+                                       phase_cache)
+                == oncv.scattering_errors(direct, oncv.log_derivative_ps))
+
     def test_asymmetric_b_is_refused(self):
         pp = generated("H")
         pw = copy.deepcopy(oncv.optimize_pseudo_waves(
@@ -578,7 +602,8 @@ class TestGhostSearch:
         from mandacaru.pseudopotentials import oncv
         self.phases = {}
         monkeypatch.setattr(oncv, "scattering_errors",
-                            lambda pp, _ld: self.phases.get(id(pp), {}))
+                            lambda pp, _ld, _cache=None:
+                            self.phases.get(id(pp), {}))
 
     def _options(self, **overrides):
         options = {"r_cut": None, "r_cut_local": None, "local_shift": None,
@@ -616,6 +641,63 @@ class TestGhostSearch:
         generate, calls = self._generator([wrong, right])
         assert self._run(generate, overrides={"norm_deficit": 0.0}) is right
         assert calls[1]["norm_deficit"] == 0.0
+
+    def test_oncv_contracts_only_the_widest_cutoff_before_balancing(self):
+        """A shorter diffuse channel can clean an f phase without stretching f."""
+        from mandacaru.pseudopotentials.oncv import OWN_CUTOFF_SHIFTS
+
+        first = self._Dataset(self.GHOST)
+        first.family = "oncvpsp"
+        failed = [self._Dataset(self.GHOST)
+                  for _ in range(len(OWN_CUTOFF_SHIFTS) + 1)]
+        clean = self._Dataset(self.CLEAN)
+        generate, calls = self._generator([first] + failed + [clean])
+        assert self._run(generate) is clean
+        contracted = calls[-1]["r_cut"]
+        assert contracted == {0: pytest.approx(2.7), 2: 1.0}
+        assert calls[-1]["local_shift"] == OWN_CUTOFF_SHIFTS[0]
+
+    def test_oncv_expands_a_compact_highest_l_channel_before_balancing(self):
+        """A small f cutoff can be repaired without making it s-sized."""
+        from mandacaru.pseudopotentials.oncv import OWN_CUTOFF_SHIFTS
+
+        first = self._Dataset(self.GHOST)
+        first.family = "oncvpsp"
+        n_before_expansion = (len(OWN_CUTOFF_SHIFTS)
+                              + 2 * (len(OWN_CUTOFF_SHIFTS) + 1))
+        failed = [self._Dataset(self.GHOST)
+                  for _ in range(n_before_expansion)]
+        clean = self._Dataset(self.CLEAN)
+        generate, calls = self._generator([first] + failed + [clean])
+        assert self._run(generate) is clean
+        assert calls[-1]["r_cut"] == {0: 3.0, 2: pytest.approx(1.5)}
+        assert calls[-1]["local_shift"] == 0.0
+
+    def test_oncv_can_expand_an_exceptionally_small_semicore_cutoff(self):
+        """An absolute radius can repair a compact f shell below 0.5 Bohr."""
+        from mandacaru.pseudopotentials.oncv import OWN_CUTOFF_SHIFTS
+
+        first = self._Dataset(self.GHOST, r_cuts=(3.0, 0.5))
+        first.family = "oncvpsp"
+        n_before_absolute = (len(OWN_CUTOFF_SHIFTS)
+                             + 5 * (len(OWN_CUTOFF_SHIFTS) + 1))
+        failed = [self._Dataset(self.GHOST)
+                  for _ in range(n_before_absolute)]
+        clean = self._Dataset(self.CLEAN)
+        generate, calls = self._generator([first] + failed + [clean])
+        assert self._run(generate) is clean
+        assert calls[-1]["r_cut"] == {0: 3.0, 2: 1.5}
+        assert calls[-1]["local_shift"] == 0.0
+
+    def test_oncv_repair_shares_one_channel_cache(self):
+        """Local-shift retries reuse the first candidate's radial waves."""
+        first = self._Dataset(self.GHOST)
+        first.family = "oncvpsp"
+        clean = self._Dataset(self.CLEAN)
+        generate, calls = self._generator([first, clean])
+        assert self._run(generate, _channel_cache=None) is clean
+        assert isinstance(calls[0]["_channel_cache"], dict)
+        assert calls[0]["_channel_cache"] is calls[1]["_channel_cache"]
 
     def test_flag_keeps_the_least_defective_attempt_and_records_it(self):
         """No remedy works: ``flag`` returns the attempt with the shallowest

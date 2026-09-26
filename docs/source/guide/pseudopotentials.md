@@ -168,17 +168,20 @@ general separable form.
    Moré–Sorensen branch (`constrained_minimum`). No SLSQP; the norm matrix is
    satisfied to 1e-14.
 3. **Local potential.** An even polynomial continuation of the screened AE
-   potential inside $r_{cl} = 0.9\,\min_l r_c$ (value and four derivatives
+   potential inside $r_{cl} = 0.9\,\max_l r_c$ (value and four derivatives
    matched, `polynomial_local_potential`; Hamann's `dvloc0` shift of the
    origin value is available as `local_shift`, default 0), unscreened with
    the Hartree and LDA xc potentials of the pseudo valence density using the
    TM machinery.
-4. **Projectors and coupling.** Because $T_l\,j_l(qr) = \tfrac12 q^2 j_l(qr)$
-   the projectors are analytic, $\chi_i = \sum_n c_{in}(\varepsilon_i -
-   \tfrac12 q_n^2 - V^{scr}_{loc})\,j_l(q_n r)$, zero beyond $r_c$.
+4. **Projectors and coupling.** Inside $r_c$, because
+   $T_l\,j_l(qr) = \tfrac12 q^2 j_l(qr)$, the projectors are analytic:
+   $\chi_i = \sum_n c_{in}(\varepsilon_i -
+   \tfrac12 q_n^2 - V^{scr}_{loc})\,j_l(q_n r)$. Where $r_{cl}>r_c$,
+   the matched all-electron wave and the local potential continue each
+   projector through $r_{cl}$; it vanishes beyond the larger radius.
    $B_{ij} = \langle\tilde\varphi_i|\chi_j\rangle$ must be symmetric by
    generalized norm conservation — the generator asserts an asymmetry below
-   1e-6 Ha (achieved: 7e-11 H, 3e-10 Li, 1e-9 O) — and $D = B^{-1}$
+   1e-5 Ha (achieved: 7e-11 H, 3e-10 Li, 1e-9 O) — and $D = B^{-1}$
    symmetrized is the $2\times2$ block passed as `nonlocal_coupling` for
    every `(atom, l, m)`. The raw Vanderbilt form is what is stored and used
    (its off-diagonal coupling is real and asserted nonzero);
@@ -277,6 +280,39 @@ calculation that later reads it.
 | `nlcc` | `True` | Partial core density; `True` matches where $\rho_c = \rho_v$, a float sets the radius |
 | `extra_l` | `0` | Channels above the highest valence $l$, two scattering references each |
 | `points`, `r_max` | per element | The radial grid of the reference atom |
+| `reference_configuration` | selected neutral configuration | Explicit complete occupation map `{(n, l): electrons}` for the reference atom |
+
+For an element whose occupied valence channels differ from the automatically
+selected configuration, supply the neutral configuration explicitly. For
+example, [Ce's observed configuration](https://www.nist.gov/pml/atomic-reference-data-electronic-structure-calculations/atomic-reference-data-electronic-8)
+is $4f^1 5d^1 6s^2$ and includes an occupied 5d
+channel that an Aufbau $4f^2 6s^2$ reference omits:
+
+```shell
+mandacaru-build --pp ONCV --element Ce --relativistic --xc LDA \
+  --occupations 4f=1 5d=1 6s=2 --check --output staging
+```
+
+`--occupations` is available for one ONCV element at a time. The command
+starts with the neutral configuration, applies the listed subshell changes,
+and checks orbital capacities and total electron count. The complete
+reference occupation map is saved with each newly generated dataset so it
+can be audited after loading. A missing occupied channel requires a new
+reference atom and regenerated projectors; adding an `extra_l` scattering
+channel alone does not supply the missing occupied state. The generator also
+checks that the reference SCF converged before pseudizing its orbitals.
+
+The generator checks both bound levels and scattering phases. If the initial
+dataset fails, ONCV repair tries local shifts, then modest contractions of
+only the widest cutoff or targeted expansions of a compact highest-$l$ cutoff,
+including absolute radii for exceptionally small semicore channels, then
+balanced cutoffs. These focused adjustments can restore an $f$-channel
+phase match without stretching it to the diffuse $s$ cutoff.
+Use `--check` to print the diagnostics, and inspect any `FLAGGED` dataset
+before installing it. A clean atomic check should be followed by tests of
+other atomic configurations and representative bonded systems before treating
+a new dataset as transferable, as in the
+[ONCVPSP users' guide](https://oncvpsp.github.io/oncvpsp/users_guide/).
 
 **`relativity="none"` with `nlcc=False` reproduces the pre-relativistic
 construction bit for bit.** Both new defaults change every generated dataset.

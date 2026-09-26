@@ -1,7 +1,8 @@
 """``mandacaru-build`` (:mod:`mandacaru.pseudopotentials.build_cli`)."""
 import pytest
 
-from mandacaru.pseudopotentials.build_cli import FAMILIES, build_parser, main
+from mandacaru.pseudopotentials.build_cli import (
+    FAMILIES, _reference_occupations, build_parser, main)
 from mandacaru.pseudopotentials.io import load_pseudopotential
 
 
@@ -19,6 +20,40 @@ def test_the_example_command_parses():
     assert FAMILIES[args.pp.lower()] == "paw-lcao"
     assert args.relativity == "scalar" and args.xc == "lda"
     assert args.element == ["Fe"]
+
+
+def test_oncv_reference_occupations_are_explicit_and_validated(capsys):
+    """A targeted neutral reference may add a bound d channel."""
+    from mandacaru.pseudopotentials.oncv import _validate_reference_configuration
+
+    configuration = _reference_occupations(
+        "Ce", ["4f=1", "5d=1", "6s=2"])
+    assert configuration[(4, 3)] == 1
+    assert configuration[(5, 2)] == 1
+    assert _validate_reference_configuration(58, configuration) == configuration
+    with pytest.raises(SystemExit):
+        main(["--pp", "ONCV", "--element", "Ce", "--occupations", "4f=0"])
+    assert "exactly 58 electrons" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["--pp", "PAW", "--element", "Ce", "--occupations", "4f=1"])
+    assert "requires --pp ONCV" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["--pp", "ONCV", "--all", "--z-max", "1",
+              "--occupations", "1s=1"])
+    assert "one --element" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["--pp", "ONCV", "--element", "Ce",
+              "--occupations", "4f=15", "5d=1"])
+    assert "invalid occupation" in capsys.readouterr().err
+
+
+def test_oncv_reference_occupations_survive_the_file(tmp_path, capsys):
+    """The build command records the reference used for its channels."""
+    code = main(["--pp", "ONCV", "--element", "H", "--occupations", "1s=1",
+                 "--output", str(tmp_path)])
+    assert code == 0, capsys.readouterr().out
+    loaded = load_pseudopotential(tmp_path / "oncvpsp" / "H.parquet")
+    assert loaded.reference_configuration == {(1, 0): 1.0}
 
 
 @pytest.mark.parametrize("spelling, family", [

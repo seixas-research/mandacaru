@@ -48,15 +48,19 @@ For a spherical density the divergence is radial, so with
     v_{xc} = \frac{\partial f}{\partial\rho}
            - \frac{1}{r^2}\frac{d}{dr}\Big(r^2\frac{\partial f}{\partial\sigma}\Big).
 
-**The two partial derivatives are taken numerically**, by central differences of
-:func:`xc_energy_density` in each of its two arguments, and only the radial
-derivative of the resulting flux is taken on the grid.  Differentiating the
-closed forms of :math:`F_x(s)` and :math:`H(r_s, t)` by hand is where a GGA
-implementation normally goes wrong -- a dropped chain-rule factor gives a
-potential that is not the derivative of the energy, which shows up as an SCF
-that converges to the wrong answer rather than as a crash.  Doing it this way
-makes the potential correct *by construction* given the energy, and
-``test/basis/test_xc.py`` certifies it directly: for a random perturbation
+**The two partial derivatives are taken in closed form** (:func:`pbe_partials`),
+and only the radial derivative of the resulting flux is taken on the grid.
+They were first taken by central differences of :func:`xc_energy_density`,
+which is correct by construction but not smooth: a relative step of
+:math:`10^{-6}` leaves about :math:`10^{-10}` of cancellation noise in
+:math:`\partial f/\partial\sigma`, the divergence amplifies it by
+:math:`1/h` and :math:`1/r^2`, and on the 100500-point grid of a holmium
+reference atom the SCF never converged -- it stalled at a residual of
+:math:`10^{-6}` from an LDA start and wandered at 0.1-30 from the
+Thomas-Fermi one.  A dropped chain-rule factor is the usual way a closed-form
+GGA potential goes wrong, so ``test/basis/test_xc.py`` certifies it twice:
+the partials against central differences of :func:`xc_energy_density`, and
+the potential against the energy -- for a random perturbation
 :math:`\delta\rho`, :math:`E[\rho+\delta\rho]-E[\rho]` must equal
 :math:`\int v_{xc}\,\delta\rho` to the order of the perturbation.
 
@@ -78,8 +82,9 @@ FUNCTIONALS = ("lda", "pbe")
 #: Densities below this are treated as the uniform-gas limit (no gradient term).
 DENSITY_FLOOR = 1e-12
 
-#: Relative step of the numerical functional derivatives.
-DERIVATIVE_STEP = 1e-6
+#: Relative spacing :math:`\Delta` of the points a GGA's radial derivatives are
+#: taken on, :math:`\max(h, \Delta r)` (see :func:`derivative_nodes`).
+GGA_DERIVATIVE_STEP = 0.01
 
 # -- Perdew-Wang 1992 -------------------------------------------------------- #
 #: ``(A, alpha1, beta1, beta2, beta3, beta4)`` of the unpolarized correlation
@@ -116,6 +121,12 @@ def pw92_correlation(rho):
     """
     rho = np.maximum(np.asarray(rho, dtype=float), 1e-30)
     rs = (3.0 / (4.0 * np.pi * rho)) ** (1.0 / 3.0)
+    ec, dec = _pw92(rs)
+    return ec, ec - (rs / 3.0) * dec
+
+
+def _pw92(rs):
+    """``(eps_c, d eps_c / d r_s)`` of Perdew-Wang (1992), unpolarized."""
     sqrt_rs = np.sqrt(rs)
     b1, b2, b3, b4 = PW92_BETA
     A, a1 = PW92_A, PW92_ALPHA1
@@ -128,7 +139,7 @@ def pw92_correlation(rho):
     # d/drs of the logarithm is -Q1' / (2A Q1^2 + Q1).
     dec = (-2.0 * A * a1 * log_term
            + 2.0 * A * (1.0 + a1 * rs) * Q1_prime / (2.0 * A * Q1 * Q1 + Q1))
-    return ec, ec - (rs / 3.0) * dec
+    return ec, dec
 
 
 def _reduced_gradients(rho, gradient):
@@ -189,6 +200,75 @@ def pbe_correlation(rho, gradient):
     return ec_unif + np.where(dense, H, 0.0)
 
 
+def pbe_partials(rho, gradient):
+    r"""``(df/drho, df/dsigma)`` of the PBE energy density, in closed form.
+
+    :math:`f = \rho\,\varepsilon_{xc}(\rho, |\sigma|)` with
+    :math:`\sigma = d\rho/dr`.  With :math:`s \propto |\sigma|\rho^{-4/3}`
+    and :math:`t \propto |\sigma|\rho^{-7/6}`,
+
+    .. math::
+
+        \frac{\partial f_x}{\partial\rho} = \tfrac43\varepsilon_x^{\rm unif}
+            (F_x - s F_x'), \qquad
+        \frac{\partial f_x}{\partial|\sigma|} =
+            \frac{\varepsilon_x^{\rm unif} F_x'}{2k_F},
+
+    and for correlation :math:`\partial(\rho\varepsilon_c^{\rm PW92})/\partial\rho
+    = v_c^{\rm PW92}` plus :math:`H + \rho\,\partial H/\partial\rho`, where
+    :math:`H` depends on :math:`\rho` through :math:`t` and through
+    :math:`A(\varepsilon_c^{\rm PW92})`.  Below :data:`DENSITY_FLOOR` both
+    gradient terms vanish, as they do in the energy.
+    """
+    rho = np.asarray(rho, dtype=float)
+    gradient = np.asarray(gradient, dtype=float)
+    dense = rho > DENSITY_FLOOR
+    safe = np.maximum(rho, DENSITY_FLOOR)
+    g = np.abs(gradient)
+    sign = np.sign(gradient)
+
+    # -- exchange ----------------------------------------------------------- #
+    k_fermi = (3.0 * np.pi ** 2 * safe) ** (1.0 / 3.0)
+    ex_unif = -3.0 * k_fermi / (4.0 * np.pi)
+    s = g / (2.0 * k_fermi * safe)
+    denominator = 1.0 + PBE_MU * s * s / PBE_KAPPA
+    fx = 1.0 + PBE_KAPPA - PBE_KAPPA / denominator
+    dfx = 2.0 * PBE_MU * s / (denominator * denominator)
+    dx_drho = np.where(dense, (4.0 / 3.0) * ex_unif * (fx - s * dfx),
+                       (4.0 / 3.0) * ex_unif)
+    dx_dg = np.where(dense, ex_unif * dfx / (2.0 * k_fermi), 0.0)
+
+    # -- correlation -------------------------------------------------------- #
+    rs = (3.0 / (4.0 * np.pi * safe)) ** (1.0 / 3.0)
+    ec, dec_drs = _pw92(rs)
+    vc = ec - (rs / 3.0) * dec_drs
+    k_screen = np.sqrt(4.0 * k_fermi / np.pi)
+    t = g / (2.0 * k_screen * safe)
+    ratio = PBE_BETA / PBE_GAMMA
+    growth = np.expm1(-ec / PBE_GAMMA)
+    A = ratio / growth
+    # dA/d eps_c, and d eps_c/d rho = d eps_c/d r_s * (-r_s / 3 rho).
+    dA_dec = A * A * (growth + 1.0) / (ratio * PBE_GAMMA)
+    dA_drho = dA_dec * dec_drs * (-rs / (3.0 * safe))
+    u = t * t
+    Au = A * u
+    D = 1.0 + Au + Au * Au
+    Q = u * (1.0 + Au) / D
+    dQ_du = ((1.0 + 2.0 * Au) * D - u * (1.0 + Au) * (A + 2.0 * A * Au)) / (D * D)
+    dQ_dA = (u * u * D - u * (1.0 + Au) * (u + 2.0 * Au * u)) / (D * D)
+    X = ratio * Q
+    H = PBE_GAMMA * np.log1p(X)
+    dH_dX = PBE_GAMMA / (1.0 + X)
+    # u = t^2 with t ~ g rho^(-7/6): du/drho = -(7/3) u / rho, du/dg = 2t dt/dg.
+    dH_drho = dH_dX * ratio * (dQ_du * (-7.0 / 3.0) * u / safe
+                               + dQ_dA * dA_drho)
+    dH_dg = dH_dX * ratio * dQ_du * 2.0 * t / (2.0 * k_screen * safe)
+    dc_drho = vc + np.where(dense, H + safe * dH_drho, 0.0)
+    dc_dg = np.where(dense, safe * dH_dg, 0.0)
+
+    return dx_drho + dc_drho, (dx_dg + dc_dg) * sign
+
+
 def xc_energy_density(rho, gradient, functional: str = "pbe"):
     r"""The energy *per unit volume*, :math:`f = \rho\,\varepsilon_{xc}`.
 
@@ -240,27 +320,77 @@ def xc_potential(r, rho, functional: str = "lda", gradient=None):
     if key == "lda":
         return lda_xc(rho)
 
+    nodes = derivative_nodes(r)
     if gradient is None:
-        gradient = np.gradient(rho, r, edge_order=2)
+        gradient = _radial_derivative(r, rho, nodes)
     gradient = np.asarray(gradient, dtype=float)
 
     e_xc = pbe_exchange(rho, gradient) + pbe_correlation(rho, gradient)
 
-    # Numerical partials of f(rho, sigma).  The steps are relative, with an
-    # absolute floor so a vanishing density or a flat point still gets a
-    # meaningful difference.
-    d_rho = DERIVATIVE_STEP * np.maximum(np.abs(rho), DENSITY_FLOOR)
-    scale = max(float(np.max(np.abs(gradient))), DENSITY_FLOOR)
-    d_sigma = DERIVATIVE_STEP * np.maximum(np.abs(gradient),
-                                           DERIVATIVE_STEP * scale)
-
-    df_drho = (xc_energy_density(rho + d_rho, gradient, key)
-               - xc_energy_density(rho - d_rho, gradient, key)) / (2.0 * d_rho)
-    df_dsigma = (xc_energy_density(rho, gradient + d_sigma, key)
-                 - xc_energy_density(rho, gradient - d_sigma, key)
-                 ) / (2.0 * d_sigma)
+    df_drho, df_dsigma = pbe_partials(rho, gradient)
 
     # -(1/r^2) d/dr (r^2 df/dsigma).
     flux = r * r * df_dsigma
-    divergence = np.gradient(flux, r, edge_order=2) / (r * r)
+    divergence = _radial_derivative(r, flux, nodes) / (r * r)
     return e_xc, df_drho - divergence
+
+
+def derivative_nodes(r) -> np.ndarray | None:
+    r"""Indices of the grid points the GGA's radial derivatives are taken on,
+    or ``None`` for all of them.
+
+    **Why not every point.**  A gradient-corrected potential differentiates
+    the density twice, which multiplies whatever noise the density carries by
+    about :math:`1/h^2`.  On the fine uniform grid of a heavy reference atom
+    (100500 points for holmium, :math:`h = 3\times10^{-4}` Bohr) the orbitals
+    are accurate only to the eigensolver's :math:`\epsilon\lVert T\rVert/
+    \Delta \sim 10^{-8}`, and that broadband noise (not a checkerboard: its
+    lag-1 autocorrelation is -0.33) came out of the two derivatives as a
+    relative ripple of :math:`5\times10^{-3}` in :math:`v_{xc}` in the
+    valence.  The scalar-relativistic Darwin term then differentiated it twice
+    more: spurious classically allowed points out to 4.2 Bohr for the 4f, a
+    PAW local potential whose derivative-matched polynomial dived to -4691
+    Hartree at the origin for antimony, and an SCF that fed on its own ripple.
+
+    So the derivatives are taken on a subset whose spacing is
+    :math:`\max(h, \Delta\,r)` with :math:`\Delta` =
+    :data:`GGA_DERIVATIVE_STEP` -- logarithmic where the grid is finer than
+    the physics needs, every point near the nucleus where it is not -- and
+    splined back.  :math:`\Delta` is set by the most demanding consumer, a
+    PAW or ONCVPSP local potential matched through its *fourth* derivative at
+    :math:`r_{cl}`.  For PBE antimony at :math:`r_{cl}` = 2.74 Bohr,
+    :math:`V^{(4)}` read over windows of 0.01-0.2 Bohr scattered from +11 to
+    -80 at :math:`\Delta` = 0.002 and 0.005, and agreed from 0.01 up (-2.1 to
+    -4.4; LDA gives -1.64).  The price at 0.01: antimony's 5p level moves by
+    5 microhartree and its total energy by 1.2 mHa out of 6493 Hartree.  On a
+    grid already coarser than :math:`\Delta r` everywhere it matters, and on
+    a non-uniform grid, every point is used.
+    """
+    r = np.asarray(r, dtype=float)
+    if r.size < 8:
+        return None
+    step = r[1:] - r[:-1]
+    h = float(step[0])
+    if not np.allclose(step, h, rtol=1e-6, atol=0.0):
+        return None
+    stride = np.maximum(1, np.floor(GGA_DERIVATIVE_STEP * r / h).astype(int))
+    if stride.max() <= 1:
+        return None
+    nodes = [0]
+    while True:
+        nxt = nodes[-1] + int(stride[nodes[-1]])
+        if nxt >= r.size - 1:
+            break
+        nodes.append(nxt)
+    nodes.append(r.size - 1)
+    return np.asarray(nodes)
+
+
+def _radial_derivative(r, y, nodes):
+    """``dy/dr`` on the ``nodes`` subset, splined back onto ``r``."""
+    if nodes is None:
+        return np.gradient(y, r, edge_order=2)
+    from scipy.interpolate import CubicSpline
+
+    derivative = np.gradient(y[nodes], r[nodes], edge_order=2)
+    return CubicSpline(r[nodes], derivative)(r)

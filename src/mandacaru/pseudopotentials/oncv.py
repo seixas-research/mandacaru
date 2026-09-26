@@ -157,6 +157,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -202,7 +203,7 @@ DEFAULT_NLCC = True
 #: real improvement for an atom whose unoccupied l matters chemically, and
 #: dead weight otherwise, so it is asked for rather than assumed.
 DEFAULT_EXTRA_L = 0
-#: Local-potential radius as a multiple of the smallest channel cutoff.
+#: Local-potential radius as a multiple of the largest channel cutoff.
 DEFAULT_LOCAL_FACTOR = 0.9
 #: Per-element cutoff radii (Bohr) overriding the factor heuristic -- close to
 #: Hamann's choices for the first row.  Lithium is *not* pushed further out:
@@ -266,6 +267,10 @@ PHASE_WINDOW, PHASE_STEP = 0.5, 0.05
 RESONANCE_WINDOW, RESONANCE_TOLERANCE = 1.0, 0.3
 #: Upper wave vector and spacing of the Fourier grid of the residual energy.
 Q_MAX, Q_STEP = 60.0, 0.1
+#: A residual above this value signals an unstable reference wave, not a
+#: usable plane-wave hardness estimate. Deep negative-energy second
+#: references in the old W-Hg 4f datasets reach 1e4-1e18 Ha.
+MAX_RESIDUAL_KINETIC = 1e4  # Hartree
 #: Points of the fine quadrature grid inside ``r_c``.
 INNER_POINTS = 801
 #: Finest spacing (Bohr) of the tail quadrature of the residual energy.
@@ -547,8 +552,15 @@ def bound_state(r: np.ndarray, potential: np.ndarray, l: int,
     def mismatch(energy):
         f, sqrt_M, power = _relativistic_arrays(r0, v0, l, energy,
                                                 treatment, kappa, z_eff)
-        # Outermost classical turning point of the effective potential.
-        turning = np.nonzero(f[10:] < 0)[0]
+        # Outermost classical turning point of the effective potential, read
+        # off the non-relativistic f.  The relativistic one carries V'' in
+        # its Darwin term, and a gradient-corrected potential puts grid-scale
+        # spikes there: PBE holmium's 4f saw isolated "allowed" points out to
+        # 4.2 Bohr, well past its real turning point at 0.84, and matching
+        # out there -- where the compact 4f has tunnelled to nothing --
+        # never bracketed.  The relativistic shift of a turning point is
+        # negligible, and the eigenvalue does not depend on where it matches.
+        turning = np.nonzero(_radial_f(r0, v0, l, energy)[10:] < 0)[0]
         match = int(turning[-1]) + 10 if turning.size else r0.size // 2
         match = min(max(match, 20), r0.size - 20)
         seed = (power if power is not None
@@ -661,14 +673,25 @@ def constrained_minimum(K: np.ndarray, k: np.ndarray, A: np.ndarray,
 
 
 def check_reference_atom(atom, xc: str, relativity: str) -> None:
-    """Refuse a caller's all-electron ``atom`` solved differently from the
-    dataset being asked for.
+    """Refuse an all-electron ``atom`` that did not converge, or that was
+    solved differently from the dataset being asked for.
+
+    An unconverged atom is not a reference: PBE holmium stopped at
+    ``converged=False`` with its 4f at -0.075 Hartree spread out to 5.7 Bohr
+    (converged: -0.103), and the generator failed much later, on a bound
+    state that the wrong potential did not hold.
 
     The generator records ``xc`` and ``relativity`` from its arguments, and it
     unscreens with ``xc``; an atom solved otherwise would give a dataset whose
     record is false and, for a different functional, whose ionic potential is
     wrong (a PBE-screened potential unscreened with LDA).
     """
+    if not getattr(atom, "converged", True):
+        raise RuntimeError(
+            f"the all-electron reference atom Z={atom.atomic_number} "
+            f"(xc={atom.xc!r}, relativity={atom.relativity!r}) did not "
+            f"converge in {atom.iterations} iterations; a dataset built on "
+            "it would pseudize the wrong orbitals")
     solved = (str(atom.xc).lower(), str(atom.relativity).lower())
     wanted = (str(xc).lower(), str(relativity).lower())
     if solved != wanted:
@@ -761,6 +784,9 @@ def local_potential_ghosts(pp) -> dict:
     h = float(r[1] - r[0])
     _valence, core = _valence_configuration(
         int(pp.atomic_number), configuration=pp.atom.occupations)
+    core = dict(core)
+    for orbital in getattr(pp, "frozen_subshells", ()):
+        core[orbital] = pp.atom.occupations[orbital]
     off = np.full(r.size - 1, -0.5 / h ** 2)
 
     def bound(v, l):
@@ -807,13 +833,18 @@ def ghost_errors(pp, levels) -> dict:
     return out
 
 
-def scattering_errors(pp, log_derivative) -> dict:
+def scattering_errors(pp, log_derivative,
+                      ae_cache: dict[tuple, float] | None = None) -> dict:
     r"""``{l: (near, far)}``: the largest phase error
-    :math:`|\arctan L_{ps} - \arctan L_{ae}|` at each bound channel's
+    :math:`|\arctan L_{ps} - \arctan L_{ae}|` at each channel's
     :math:`r_c`, within :math:`\varepsilon_{ref} \pm` :data:`PHASE_WINDOW`
     (``near``) and :data:`RESONANCE_WINDOW` (``far``) Hartree, wrapped
     modulo :math:`\pi` so a pole of :math:`L` is not an error.  Needs the
-    all-electron atom on ``pp``.
+    all-electron atom on ``pp``. Scattering-only channels representing a
+    frozen subshell are evaluated at positive energies in the same windows.
+    ``ae_cache`` reuses all-electron
+    logarithmic derivatives at the same channel, energy and matching radius across
+    ghost-repair attempts; it is local to one reference atom.
     """
     treatment = getattr(pp, "relativity", "none")
     # A family may judge "near" over a narrower window (the single-projector
@@ -825,16 +856,24 @@ def scattering_errors(pp, log_derivative) -> dict:
     out = {}
     for l, channel in pp.channels.items():
         reference = float(channel.reference_energies[0])
-        if reference >= 0.0:
+        if reference >= 0.0 and not getattr(pp, "frozen_subshells", ()):
             continue
         r_match = float(radius(l)) if radius is not None else channel.r_cut
         near = far = 0.0
         for offset in np.arange(-RESONANCE_WINDOW,
                                 RESONANCE_WINDOW + 0.5 * PHASE_STEP, PHASE_STEP):
             energy = reference + offset
-            l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, l, energy,
-                                     r_match, float(pp.atomic_number),
-                                     treatment)
+            if reference >= 0.0 and energy <= 0.0:
+                continue
+            key = (id(pp.atom), l, float(energy), r_match, treatment)
+            if ae_cache is not None and key in ae_cache:
+                l_ae = ae_cache[key]
+            else:
+                l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, l, energy,
+                                         r_match, float(pp.atomic_number),
+                                         treatment)
+                if ae_cache is not None:
+                    ae_cache[key] = l_ae
             l_ps = log_derivative(pp, l, energy, r_match)
             d = np.arctan(l_ps) - np.arctan(l_ae)
             error = abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi)
@@ -845,20 +884,23 @@ def scattering_errors(pp, log_derivative) -> dict:
     return out
 
 
-def _least_defective(candidates):
-    """The attempt a ``flag`` build keeps, with ``pp.defects`` recorded.
+def _defect_badness(candidate: tuple) -> tuple[int, float, int]:
+    """Rank one failed construction, preferring a phase-only defect.
 
-    An attempt without a ghost (only scattering off tolerance) beats every
-    ghosted one, the smaller phase error winning; among ghosted attempts the
-    shallowest deepest ghost wins, and fewer ghosted channels breaks a tie.
+    Among phase-only defects the smaller maximum error wins. Among ghosted
+    candidates the shallowest deepest ghost wins, then the one with fewer
+    affected channels. The same ranking is used while searching and when
+    returning a flagged dataset.
     """
-    def badness(candidate):
-        _pp, ghosts, wrong = candidate
-        if not ghosts:
-            return (0, max(max(near, far) for near, far in wrong.values()), 0)
-        return (1, -min(ghosts.values()), len(ghosts))
+    _pp, ghosts, wrong = candidate
+    if not ghosts:
+        return (0, max(max(near, far) for near, far in wrong.values()), 0)
+    return (1, -min(ghosts.values()), len(ghosts))
 
-    pp, ghosts, wrong = min(candidates, key=badness)
+
+def _least_defective(candidates: list[tuple]):
+    """Return the least defective attempt with its diagnostic record set."""
+    pp, ghosts, wrong = min(candidates, key=_defect_badness)
     pp.defects = {"ghosts": {int(l): float(e) for l, e in ghosts.items()},
                   "phases": {int(l): (float(a), float(b))
                              for l, (a, b) in wrong.items()}}
@@ -879,24 +921,21 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
                mode: str, overrides=None):
     r"""``generate(symbol, **options)``, rebuilt until no channel holds a ghost.
 
-    **Why a ghost appears.**  The local potential is the all-electron one
-    beyond :math:`r_{cl}`, and :math:`r_{cl}` is set by the *smallest*
-    channel cutoff.  For a transition metal that is the compact 3d at about
-    0.9 Bohr, while the 4s channel extends to 3 Bohr, so between the two the
-    s channel's local potential is the deep well around the core.  On its own
-    that well binds an s state far below the valence reference -- 13 Hartree
-    deep for iron, 27 for lanthanum -- and the two projectors have to lift it
-    out.  When they do not quite, the level left behind is the ghost.  In
-    PAW-LCAO the norm deficit adds a second route: iron is ghost-free at a
-    deficit of exactly 0 and ghosted at every deficit from 0.005 up.
+    A deep local well can bind an extra level that the nonlocal projectors do
+    not lift. The local radius now follows the *largest* channel cutoff, and
+    each projector continues through that radius; the older minimum-cutoff
+    construction produced widespread ghosts. A phase error can remain even
+    when the bound spectrum is clean.
 
     **What is done about it.**  ``overrides`` go into every attempt, and when
     there are any they are first tried alone with the construction otherwise
     unchanged -- PAW-LCAO passes ``norm_deficit=0``, which is all iron needs.
     Next the local potential is raised by each of :data:`OWN_CUTOFF_SHIFTS`
-    with the cutoffs untouched.  Then every channel is given the largest
-    cutoff, so :math:`r_{cl}` can move out with them, and the local
-    potential is raised by each of
+    with the cutoffs untouched. ONCVPSP also tries modest contractions of
+    only the widest channel, then targeted expansions of a compact highest-l
+    channel. Finally every
+    channel is given the largest cutoff and the local potential is raised by
+    each of
     :data:`GHOST_REMEDY_SHIFTS` in turn (Hamann's ``dvloc0``).  A construction is
     accepted when it has no ghost **and** every bound channel scatters like the
     atom -- to :data:`PHASE_TOLERANCE` near its reference and
@@ -912,15 +951,21 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     """
     if mode not in GHOST_MODES:
         raise ValueError(f"ghosts must be one of {GHOST_MODES}, not {mode!r}")
+    if "_channel_cache" in options and options["_channel_cache"] is None:
+        # ONCV channel optimization depends on the atom and cutoffs, but not
+        # on the local-potential shift. Reuse it across repair attempts.
+        options = dict(options, _channel_cache={})
     first = generate(symbol, **options, ghosts="keep")
     if mode == "keep":
         return first
+    phase_cache: dict[tuple, float] = {}
     errors = ghost_errors(first, levels)
     if not errors:
         # No ghost is not enough: the first construction has to scatter like
         # the atom too, or it is repaired like a ghosted one.  (Aluminum's p
         # channel was once returned 0.95 rad off, untested.)
-        wrong = _wrong_phases(scattering_errors(first, log_derivative))
+        wrong = _wrong_phases(scattering_errors(first, log_derivative,
+                                                phase_cache))
         if not wrong:
             return first
     problem = (f"ghost state below the reference ({_describe(errors)})"
@@ -946,12 +991,61 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     attempts += [(f"own cutoffs, shift {shift:g}",
                   dict(overrides, local_shift=float(shift)))
                  for shift in OWN_CUTOFF_SHIFTS]
+    if getattr(first, "family", None) == "oncvpsp":
+        # A diffuse outer channel can make r_cl much larger than a compact
+        # d/f cutoff.  Raising V_loc alone leaves its phase error, while
+        # balancing every channel destroys the compact one's transferability.
+        # Contract only the widest cutoff; Ce's 6s/4f/5d reference has a
+        # clean interval around 0.9 times its original 6s cutoff.
+        for factor in (0.9, 0.85):
+            contracted = {
+                int(l): float(channel.r_cut) *
+                (factor if abs(channel.r_cut - radius) < 1e-8 else 1.0)
+                for l, channel in first.channels.items()}
+            for shift in (0.0,) + OWN_CUTOFF_SHIFTS:
+                attempts.append((f"widest cutoff x {factor:g}, shift {shift:g}",
+                                 dict(overrides, r_cut=contracted,
+                                      local_shift=float(shift))))
+        highest_l = max(first.channels)
+        compact_radius = float(first.channels[highest_l].r_cut)
+        if compact_radius < 0.6 * radius:
+            # A deeply bound d/f reference can be too compact for its own
+            # scattering window. Gd 4f at 0.74 Bohr remains phase-wrong at
+            # every own-cutoff shift; 1.2 Bohr is clean without stretching
+            # that channel all the way to its 4.8 Bohr s cutoff.
+            for factor in (1.5, 1.75, 2.0):
+                expanded = {
+                    int(l): float(channel.r_cut) *
+                    (factor if l == highest_l else 1.0)
+                    for l, channel in first.channels.items()}
+                for shift in (0.0,) + OWN_CUTOFF_SHIFTS:
+                    attempts.append((f"l={highest_l} cutoff x {factor:g}, "
+                                     f"shift {shift:g}",
+                                     dict(overrides, r_cut=expanded,
+                                          local_shift=float(shift))))
+            # A filled, deep semicore f shell can start below 0.5 Bohr.
+            # Multiplicative changes then remain too small: Bi's 4f phase
+            # falls from 0.55 rad at 0.89 Bohr to 0.004 rad at 2 Bohr on a
+            # 60000-point reference, without creating a bound ghost.
+            for target in (1.5, 1.75, 2.0):
+                if target <= 2.0 * compact_radius or target >= radius:
+                    continue
+                expanded = {
+                    int(l): (target if l == highest_l else float(channel.r_cut))
+                    for l, channel in first.channels.items()}
+                for shift in (0.0,) + OWN_CUTOFF_SHIFTS:
+                    attempts.append((f"l={highest_l} cutoff {target:g} Bohr, "
+                                     f"shift {shift:g}",
+                                     dict(overrides, r_cut=expanded,
+                                          local_shift=float(shift))))
     attempts += [(f"balanced at {radius:.3f} Bohr, shift {shift:g}",
                   dict(overrides, **balanced, local_shift=float(shift)))
                  for shift in GHOST_REMEDY_SHIFTS]
     tried = []
-    # (pp, ghosts, wrong phases) of every attempt that built, for ``flag``.
-    candidates = [(first, errors, {} if errors else wrong)]
+    # Keep only the best failed construction. A heavy ONCV dataset contains
+    # many full-grid arrays; retaining every trial until the search ends can
+    # exhaust memory when several elements are built in parallel.
+    best = (first, errors, {} if errors else wrong) if mode == "flag" else None
     for label, remedy in attempts:
         trial = dict(options, atom=first.atom, **remedy)
         try:
@@ -962,18 +1056,25 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         remaining = ghost_errors(pp, levels)
         if remaining:
             tried.append(f"{label}: ghost {_describe(remaining)}")
-            candidates.append((pp, remaining, {}))
+            candidate = (pp, remaining, {})
+            if best is not None and _defect_badness(candidate) < \
+                    _defect_badness(best):
+                best = candidate
             continue
-        wrong = _wrong_phases(scattering_errors(pp, log_derivative))
+        wrong = _wrong_phases(scattering_errors(pp, log_derivative,
+                                                phase_cache))
         if wrong:
-            candidates.append((pp, {}, wrong))
+            candidate = (pp, {}, wrong)
+            if best is not None and _defect_badness(candidate) < \
+                    _defect_badness(best):
+                best = candidate
             tried.append(f"{label}: phase " + ", ".join(
                 f"l={l} {near:.3f}/{far:.3f} rad"
                 for l, (near, far) in sorted(wrong.items())))
             continue
         return pp
     if mode == "flag":
-        return _least_defective(candidates)
+        return _least_defective([best])
     raise GhostStateError(
         f"{symbol}: {problem} and "
         f"no remedy removed it while keeping the scattering "
@@ -1466,6 +1567,14 @@ class ONCVPseudoPotential(PseudoPotential):
     local_shift: float = 0.0
     q_cut: float = DEFAULT_Q_CUT
     energy_offset: float = DEFAULT_ENERGY_OFFSET
+    #: Full neutral reference-atom occupations, retained so a stored dataset
+    #: can be audited for missing occupied angular-momentum channels.
+    reference_configuration: dict[tuple[int, int], float] = field(default_factory=dict)
+    #: Occupied reference subshells moved into the frozen pseudopotential core.
+    frozen_subshells: tuple[tuple[int, int], ...] = ()
+    #: First reference energy of added scattering-only channels, when chosen
+    #: explicitly to represent a frozen highest-l shell.
+    scattering_energy: float | None = None
     #: How the reference atom was solved.  These default to the *pre-
     #: relativistic* construction rather than to :data:`DEFAULT_RELATIVITY`
     #: on purpose: a record that does not say how it was made was made the
@@ -1651,7 +1760,8 @@ def reference_bound_state(r, potential, l, n_nodes, energy_guess, z_eff,
 
 def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
                     energy_offset, defaults=None, treatment: str = "none",
-                    kappa: int | None = None, extra_l: int = 0):
+                    kappa: int | None = None, extra_l: int = 0,
+                    extra_energy: float | None = None):
     """``(per_l, cutoffs, references)`` -- the all-electron input of a channel.
 
     ``per_l[l]`` lists every occupied valence state ``(n, energy, R, occupancy)``
@@ -1675,7 +1785,8 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
     state to anchor it, so *both* its references are scattering states, at the
     highest occupied valence eigenvalue and ``energy_offset`` above it; that
     places the pair in the energy window where an atom in a molecule actually
-    samples these channels.
+    samples these channels. ``extra_energy`` overrides the first reference
+    with a positive scattering energy when a deep occupied shell was frozen.
     """
     r, v_ae = atom.r, atom.v_effective
 
@@ -1729,16 +1840,19 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
 
     if int(extra_l) > 0:
         _add_unbound_channels(r, v_ae, z_eff, per_l, cutoffs, references,
-                              int(extra_l), float(energy_offset), treatment)
+                              int(extra_l), float(energy_offset), treatment,
+                              extra_energy=extra_energy)
     return per_l, cutoffs, references
 
 
 def _add_unbound_channels(r, v_ae, z_eff, per_l, cutoffs, references,
-                          extra_l, energy_offset, treatment):
+                          extra_l, energy_offset, treatment,
+                          extra_energy: float | None = None):
     """Append ``extra_l`` scattering-only channels above the valence l."""
     highest = max(per_l)
-    anchor = max(energies[0] for energies in
-                 (e for _w, e in references.values()))
+    anchor = (max(energies[0] for energies in
+                  (e for _w, e in references.values()))
+              if extra_energy is None else float(extra_energy))
     widest = max(cutoffs.values())
     for l in range(highest + 1, highest + extra_l + 1):
         energies = [anchor, anchor + energy_offset]
@@ -1757,6 +1871,95 @@ def _add_unbound_channels(r, v_ae, z_eff, per_l, cutoffs, references,
         per_l[l] = [(l + 1, energies[0], waves[0], 0.0)]
 
 
+def _validate_reference_configuration(
+        atomic_number: int,
+        configuration: dict[tuple[int, int], int]
+) -> dict[tuple[int, int], int]:
+    """Validate a neutral reference atom without importing a configuration table.
+
+    Orbital labels must be physically possible and occupations integral and
+    within their spin-degenerate capacity. Zero-occupation entries are dropped
+    so the result compares directly with ``AtomicResult.occupations``.
+    """
+    from numbers import Integral
+
+    if not isinstance(configuration, dict) or not configuration:
+        raise TypeError("reference_configuration must be a nonempty dict")
+    result: dict[tuple[int, int], int] = {}
+    for orbital, occupation in configuration.items():
+        if (not isinstance(orbital, tuple) or len(orbital) != 2
+                or any(isinstance(x, bool) or not isinstance(x, Integral)
+                       for x in orbital)):
+            raise ValueError("reference_configuration keys must be (n, l) "
+                             "integer pairs")
+        n, l = (int(x) for x in orbital)
+        if n < 1 or l < 0 or l > 3 or l >= n:
+            raise ValueError(f"invalid reference subshell {(n, l)}")
+        if (isinstance(occupation, bool)
+                or not isinstance(occupation, Integral)
+                or not 0 <= occupation <= 2*(2*l+1)):
+            raise ValueError(f"invalid occupation of subshell {(n, l)}")
+        if occupation:
+            result[(n, l)] = int(occupation)
+    if sum(result.values()) != int(atomic_number):
+        raise ValueError("reference_configuration must contain exactly "
+                         f"{atomic_number} electrons")
+    return result
+
+
+def _validate_frozen_subshells(
+        valence: dict[tuple[int, int], float],
+        frozen_subshells: Sequence[tuple[int, int]] | None
+) -> tuple[tuple[int, int], ...]:
+    """Validate occupied valence subshells selected for the frozen core.
+
+    The full neutral atom is still solved. Only the pseudopotential's
+    valence/core partition changes, so a deep filled shell such as Bi 4f14
+    can remain in the nonlinear core correction while its f channel is
+    represented by positive-energy scattering projectors.
+    """
+    from numbers import Integral
+
+    if frozen_subshells is None:
+        return ()
+    if not isinstance(frozen_subshells, (tuple, list)):
+        raise TypeError("frozen_subshells must be a list of (n, l) pairs")
+    result: set[tuple[int, int]] = set()
+    for orbital in frozen_subshells:
+        if (not isinstance(orbital, tuple) or len(orbital) != 2
+                or any(isinstance(x, bool) or not isinstance(x, Integral)
+                       for x in orbital)):
+            raise ValueError("frozen_subshells must contain (n, l) "
+                             "integer pairs")
+        key = (int(orbital[0]), int(orbital[1]))
+        if key not in valence:
+            raise ValueError(f"{key} is not an occupied valence subshell")
+        if key in result:
+            raise ValueError(f"duplicate frozen subshell {key}")
+        result.add(key)
+    if len(result) == len(valence):
+        raise ValueError("at least one occupied valence subshell must remain")
+    return tuple(sorted(result))
+
+
+def _check_oncv_residual_kinetic(waves: dict[int, PseudoWaves]) -> None:
+    """Reject an ONCV partial wave whose high-q residual has diverged.
+
+    Deep negative-energy second references can grow exponentially outside
+    the core, giving a deceptively clean phase match but an unusable
+    projector. The cutoff is deliberately far above ordinary residuals; it
+    only detects this numerical pathology.
+    """
+    for l, record in waves.items():
+        for index, residual in enumerate(record.residual_kinetic, start=1):
+            if not np.isfinite(residual) or residual > MAX_RESIDUAL_KINETIC:
+                raise ValueError(
+                    f"l={l} reference {index}: residual kinetic energy "
+                    f"{residual:.3g} Ha exceeds {MAX_RESIDUAL_KINETIC:g} Ha; "
+                    "choose a positive-energy scattering reference or "
+                    "freeze a deep semicore shell")
+
+
 def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTOR,
                   r_cut_local: float | None = None,
                   local_factor: float = DEFAULT_LOCAL_FACTOR,
@@ -1766,10 +1969,14 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
                   n_bessel: int = DEFAULT_N_BESSEL,
                   points: int | None = None, r_max: float = 30.0,
                   atom: AtomicResult | None = None,
+                  reference_configuration: dict[tuple[int, int], int] | None = None,
+                  frozen_subshells: Sequence[tuple[int, int]] | None = None,
+                  scattering_energy: float | None = None,
                   xc: str = DEFAULT_XC,
                   relativity: str = DEFAULT_RELATIVITY,
                   nlcc: bool | float = DEFAULT_NLCC,
                   extra_l: int = DEFAULT_EXTRA_L,
+                  _channel_cache: dict | None = None,
                   ghosts: str = "repair") -> ONCVPseudoPotential:
     r"""Generate an ONCVPSP pseudopotential for ``symbol``.
 
@@ -1781,7 +1988,7 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         outermost maximum of the bound partial wave.
     r_cut_local : float, optional
         Radius of the polynomial local potential (default ``local_factor``
-        times the smallest channel cutoff).
+        times the largest channel cutoff).
     local_shift : float, optional
         Raise of the local potential at the origin (Hartree, Hamann's
         ``dvloc0``), a knob against ghost states; zero by default.
@@ -1821,6 +2028,23 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         :func:`generation_points` (finer for heavier atoms, so the Numerov
         partial waves satisfy the radial equation to the ~1e-7 needed for a
         symmetric Vanderbilt matrix).
+    reference_configuration : dict, optional
+        Complete neutral-atom occupation map ``{(n, l): electrons}`` used for
+        the all-electron SCF. This makes a bound but chemically incomplete
+        Aufbau reference explicit; for example, Ce may be generated with an
+        occupied 5d channel. The occupations must sum to the atomic number.
+        When ``atom`` is supplied, its occupations must agree.
+    frozen_subshells : sequence of (n, l), optional
+        Occupied reference subshells moved from valence to the frozen core.
+        A scattering-only channel is automatically added when this removes
+        the highest angular momentum, for example Bi 4f14.
+    scattering_energy : float, optional
+        First energy (Hartree) of an added scattering-only channel. With a
+        frozen subshell the default is +0.25 Ha, keeping the references
+        out of a deep, exponentially growing negative-energy region.
+    _channel_cache : dict, optional
+        Internal cache shared by the ghost-repair attempts. Partial-wave
+        optimization is reused when only ``local_shift`` changes.
     ghosts : str
         ``"repair"`` (the default) rebuilds a channel set that binds a ghost
         state with balanced cutoffs and a raised local potential;
@@ -1841,30 +2065,74 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
 
     atomic_number = int(atomic_numbers[symbol])
     relativity = _resolve_relativity(relativity)
-    if atom is None:
+    if reference_configuration is not None:
+        reference_configuration = _validate_reference_configuration(
+            atomic_number, reference_configuration)
+    supplied = atom is not None
+    if not supplied:
         atom = solve_atom(atomic_number,
                           points=(generation_points(atomic_number)
                                   if points is None else int(points)),
                           r_max=r_max, tolerance=1e-7, mixing=0.25,
-                          xc=xc, relativity=relativity)
-    else:
-        check_reference_atom(atom, xc, relativity)
+                          xc=xc, relativity=relativity,
+                          configuration=reference_configuration)
+    check_reference_atom(atom, xc, relativity)
+    if supplied:
+        if reference_configuration is not None and dict(atom.occupations) != \
+                reference_configuration:
+            raise ValueError("the ONCV reference_configuration disagrees "
+                             "with the supplied atom")
     valence_config, core_config = _valence_configuration(
         atomic_number, configuration=atom.occupations)
+    frozen = _validate_frozen_subshells(valence_config, frozen_subshells)
+    for orbital in frozen:
+        core_config[orbital] = valence_config.pop(orbital)
     if not valence_config:
         raise ValueError(f"{symbol} has no valence subshells to pseudize")
+    highest_valence_l = max(l for _n, l in valence_config)
+    effective_extra_l = max(int(extra_l),
+                            max((l for _n, l in frozen), default=highest_valence_l)
+                            - highest_valence_l)
+    if scattering_energy is None and frozen and effective_extra_l:
+        scattering_energy = 0.25
+    if scattering_energy is not None and not scattering_energy > 0:
+        raise ValueError("scattering_energy must be positive")
     valence_charge = float(sum(valence_config.values()))
     r, v_ae = atom.r, atom.v_effective
     z_eff = float(atomic_number)
     shift = 0.0 if local_shift is None else float(local_shift)
 
     def channel_set(kappa_map):
-        """Every channel of one j branch (or the only branch)."""
+        """Every optimized channel of one j branch, cached across shifts."""
+        cutoff_key = (tuple(sorted((int(l), float(rc))
+                                   for l, rc in r_cut.items()))
+                      if isinstance(r_cut, dict)
+                      else None if r_cut is None else float(r_cut))
+        branch_key = (tuple(sorted(kappa_map.items()))
+                      if kappa_map is not None else None)
+        cache_key = (id(atom), branch_key, cutoff_key, float(rc_factor),
+                     float(energy_offset), effective_extra_l,
+                     scattering_energy, float(q_cut), int(n_bessel),
+                     relativity)
+        if _channel_cache is not None and cache_key in _channel_cache:
+            return _channel_cache[cache_key]
         per_l, cutoffs, references = reference_waves(
             symbol, atom, valence_config, z_eff, r_cut, rc_factor,
             energy_offset, treatment=relativity, kappa=kappa_map,
-            extra_l=extra_l)
-        return per_l, cutoffs, references
+            extra_l=effective_extra_l,
+            extra_energy=scattering_energy)
+        waves_of_l = {
+            l: optimize_pseudo_waves(r, v_ae, l, waves, energies,
+                                     cutoffs[l], q_cut=q_cut,
+                                     n_bessel=n_bessel, treatment=relativity,
+                                     kappa=(kappa_map or {}).get(l),
+                                     z_eff=z_eff)
+            for l, (waves, energies) in references.items()}
+        _check_oncv_residual_kinetic(waves_of_l)
+        result = (per_l, cutoffs, waves_of_l)
+        if _channel_cache is not None:
+            _channel_cache[cache_key] = result
+        return result
 
     if relativity == "dirac":
         # One full construction per j.  `kappa_values(l)` is ordered
@@ -1876,7 +2144,7 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         branches = [None]
 
     built = [channel_set(branch) for branch in branches]
-    per_l, cutoffs, references = built[0]
+    per_l, cutoffs, _waves = built[0]
     # The local potential follows the *largest* cutoff; a compact channel's
     # projectors reach out to r_cl instead (assemble_channel).
     r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
@@ -1884,15 +2152,7 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
     v_loc = polynomial_local_potential(r, v_ae, r_local, shift)
 
     branch_channels = []
-    for branch, (branch_per_l, branch_cutoffs, branch_references) in zip(
-            branches, built):
-        waves_of_l = {
-            l: optimize_pseudo_waves(r, v_ae, l, waves, energies,
-                                     branch_cutoffs[l], q_cut=q_cut,
-                                     n_bessel=n_bessel, treatment=relativity,
-                                     kappa=(branch or {}).get(l),
-                                     z_eff=z_eff)
-            for l, (waves, energies) in branch_references.items()}
+    for branch_per_l, _branch_cutoffs, waves_of_l in built:
         branch_channels.append({
             l: assemble_channel(
                 r, waves_of_l[l], v_loc, n=states[0][0],
@@ -1937,8 +2197,10 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         coupling={l: np.array(c.coupling) for l, c in channels.items()},
         v_local_screened=v_loc, r_cut_local=r_local, local_shift=float(shift),
         q_cut=float(q_cut), energy_offset=float(energy_offset),
+        reference_configuration=dict(atom.occupations),
+        frozen_subshells=frozen, scattering_energy=scattering_energy,
         xc=str(xc), relativity=relativity, core_density=core_density,
-        nlcc=dict(nlcc_details), extra_l=int(extra_l),
+        nlcc=dict(nlcc_details), extra_l=effective_extra_l,
         channels_j=channels_j, spin_orbit=spin_orbit)
 
 
@@ -2417,6 +2679,14 @@ def to_payload(pp: ONCVPseudoPotential, stride: int = 1) -> dict:
             "r_cut_local": float(pp.r_cut_local),
             "local_shift": float(pp.local_shift), "q_cut": float(pp.q_cut),
             "energy_offset": float(pp.energy_offset),
+            "reference_configuration": [
+                [int(n), int(l), float(occupation)]
+                for (n, l), occupation in sorted(pp.reference_configuration.items())
+                if occupation],
+            "frozen_subshells": [[int(n), int(l)]
+                                  for n, l in pp.frozen_subshells],
+            "scattering_energy": (None if pp.scattering_energy is None
+                                  else float(pp.scattering_energy)),
             "xc": str(pp.xc), "relativity": str(pp.relativity),
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
             "spin_orbit": spin_orbit, "defects": defects_record(pp.defects),
@@ -2471,6 +2741,13 @@ def from_payload(payload: dict) -> ONCVPseudoPotential:
         q_cut=float(payload.get("q_cut", DEFAULT_Q_CUT)),
         energy_offset=float(payload.get("energy_offset",
                                         DEFAULT_ENERGY_OFFSET)),
+        reference_configuration={
+            (int(n), int(l)): float(occupation)
+            for n, l, occupation in payload.get("reference_configuration", [])},
+        frozen_subshells=tuple((int(n), int(l)) for n, l in
+                                payload.get("frozen_subshells", [])),
+        scattering_energy=(None if payload.get("scattering_energy") is None
+                           else float(payload["scattering_energy"])),
         # A payload without these keys predates them, and a record written
         # before relativity was an option is non-relativistic with no core
         # correction.  Defaulting to the *current* defaults here would label

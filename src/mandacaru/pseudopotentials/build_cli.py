@@ -4,6 +4,8 @@ r"""``mandacaru-build``: generate pseudopotential datasets from the command line
 
     mandacaru-build --pp PAW --relativistic --xc LDA --element Fe
     mandacaru-build --pp ONCV --element Fe Cu Ga --workers 3
+    mandacaru-build --pp ONCV --element Ce --occupations 4f=1 5d=1 6s=2
+    mandacaru-build --pp ONCV --element Bi --freeze-subshell 4f
     mandacaru-build --pp PAW --all --workers 7 --output staging/
     mandacaru-build --build-backend
 
@@ -36,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 import warnings
@@ -63,6 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="examples:\n"
                "  mandacaru-build --pp PAW --relativistic --xc LDA --element Fe\n"
                "  mandacaru-build --pp ONCV --element Fe Cu --workers 2\n"
+               "  mandacaru-build --pp ONCV --element Ce "
+               "--occupations 4f=1 5d=1 6s=2\n"
+               "  mandacaru-build --pp ONCV --element Bi "
+               "--freeze-subshell 4f\n"
                "  mandacaru-build --pp PAW --all --workers 7 --output staging/\n"
                "  mandacaru-build --build-backend\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -105,6 +112,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="store_true",
                         help="also compare every channel's scattering phase "
                              "with the all-electron atom")
+    parser.add_argument("--occupations", nargs="+", metavar="NL=COUNT",
+                        help="ONCV, one element only: override neutral-atom "
+                             "subshell occupations, for example "
+                             "4f=1 5d=1 6s=2 for Ce")
+    parser.add_argument("--freeze-subshell", nargs="+", metavar="NL",
+                        help="ONCV, one element only: place occupied "
+                             "subshells in the pseudopotential core, for "
+                             "example 4f for Bi")
     parser.add_argument("--backend", default="auto",
                         choices=["auto", "c", "python"],
                         help="radial kernels: C when available (auto), C or "
@@ -159,6 +174,46 @@ def _generate(family: str, symbol: str, options: dict):
         return generate_oncv(symbol, **options)
     from .generation import generate_pseudopotential
     return generate_pseudopotential(symbol, **options)
+
+
+def _reference_occupations(symbol: str,
+                           entries: list[str]) -> dict[tuple[int, int], int]:
+    """Apply explicit subshell occupations to the neutral Aufbau reference.
+
+    The total electron count and orbital capacities are checked by the ONCV
+    generator. This parser only handles the concise command-line notation.
+    """
+    from ase.data import atomic_numbers
+    from ..basis._config import ground_state_config
+
+    result = ground_state_config(atomic_numbers[symbol])
+    labels = {letter: l for l, letter in enumerate("spdf")}
+    for entry in entries:
+        match = re.fullmatch(r"([1-9][0-9]*)([spdf])=([0-9]+)", entry)
+        if match is None:
+            raise ValueError(f"invalid occupation {entry!r}; use 4f=1")
+        n, letter, count = match.groups()
+        key = (int(n), labels[letter])
+        if key[0] <= key[1]:
+            raise ValueError(f"invalid subshell {n}{letter}")
+        result[key] = int(count)
+    return {key: value for key, value in result.items() if value}
+
+
+def _frozen_subshells(entries: list[str]) -> tuple[tuple[int, int], ...]:
+    """Parse occupied core subshell labels from ``--freeze-subshell``."""
+    labels = {letter: l for l, letter in enumerate("spdf")}
+    result: set[tuple[int, int]] = set()
+    for entry in entries:
+        match = re.fullmatch(r"([1-9][0-9]*)([spdf])", entry)
+        if match is None:
+            raise ValueError(f"invalid frozen subshell {entry!r}; use 4f")
+        n, letter = match.groups()
+        key = (int(n), labels[letter])
+        if key[0] <= key[1] or key in result:
+            raise ValueError(f"invalid or repeated frozen subshell {entry!r}")
+        result.add(key)
+    return tuple(sorted(result))
 
 
 def _levels_and_phase(family: str):
@@ -280,12 +335,35 @@ def main(argv=None) -> int:
             parser.error(f"unknown element(s): {', '.join(unknown)}")
     else:
         parser.error("give --element SYMBOL ... or --all")
+    if args.occupations:
+        if family != "oncvpsp" or args.all or len(symbols) != 1:
+            parser.error("--occupations requires --pp ONCV and one --element")
+        try:
+            from ase.data import atomic_numbers
+            from .oncv import _validate_reference_configuration
+            configuration = _reference_occupations(symbols[0],
+                                                    args.occupations)
+            _validate_reference_configuration(
+                int(atomic_numbers[symbols[0]]), configuration)
+        except (TypeError, ValueError) as error:
+            parser.error(str(error))
+    if args.freeze_subshell:
+        if family != "oncvpsp" or args.all or len(symbols) != 1:
+            parser.error("--freeze-subshell requires --pp ONCV and one --element")
+        try:
+            frozen_subshells = _frozen_subshells(args.freeze_subshell)
+        except ValueError as error:
+            parser.error(str(error))
 
     # Without --ghosts each family keeps its own default: repair for
     # PAW/UPAW/ONCV, flag for NCPP (a single-channel atom has nothing to try).
     ghosts = args.ghosts or ("flag" if family == "ncpp" else "repair")
     options = ({"xc": args.xc, "relativity": relativity,
                 "ghosts": ghosts} if family in MODERN else {})
+    if args.occupations:
+        options["reference_configuration"] = configuration
+    if args.freeze_subshell:
+        options["frozen_subshells"] = frozen_subshells
     try:
         directory = _directory(family, args.output, args.install, args.xc)
     except FileNotFoundError as error:

@@ -918,8 +918,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
         ADAPT-VQE's greedy rule: the largest-magnitude gradient.  This is the
         single **selection hook** subclasses override to change *which* operator
-        grows the ansatz -- a subclass may, for instance, sample
-        it stochastically from a softmax of the gradients.  Convergence
+        grows the ansatz.  Convergence
         (``max|grad| < tol``) is decided by the caller, independently of the
         selection, so overriding this never changes the stopping criterion.
         """

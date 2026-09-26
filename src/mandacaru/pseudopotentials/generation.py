@@ -493,9 +493,8 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
                                   if points is None else int(points)),
                           r_max=r_max, tolerance=1e-7, mixing=0.25, xc=xc,
                           relativity=relativity)
-    else:
-        from .oncv import check_reference_atom
-        check_reference_atom(atom, xc, relativity)
+    from .oncv import check_reference_atom
+    check_reference_atom(atom, xc, relativity)
 
     valence_config, core_config = _valence_configuration(
         atomic_number, configuration=atom.occupations)

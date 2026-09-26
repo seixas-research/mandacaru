@@ -1030,9 +1030,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                                   if points is None else int(points)),
                           r_max=r_max, tolerance=1e-7, mixing=0.25,
                           xc=xc, relativity=relativity)
-    else:
-        from .oncv import check_reference_atom
-        check_reference_atom(atom, xc, relativity)
+    from .oncv import check_reference_atom
+    check_reference_atom(atom, xc, relativity)
     valence_config, core_config = _valence_configuration(
         atomic_number, configuration=atom.occupations)
     if not valence_config:
