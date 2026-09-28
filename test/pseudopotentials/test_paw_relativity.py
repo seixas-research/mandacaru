@@ -32,7 +32,9 @@ import numpy as np
 import pytest
 
 from mandacaru.pseudopotentials.paw import (from_payload, generate_paw,
-                                            paw_spin_orbit_blocks, to_payload)
+                                            paw_spin_orbit_blocks,
+                                            paw_spin_orbit_projectors,
+                                            to_payload)
 
 HARTREE_EV = 27.211386245988
 
@@ -274,12 +276,32 @@ class TestSpinOrbitCoupling:
         with pytest.raises(ValueError, match="first-order spin-orbit"):
             from_payload(payload)
 
-    def test_the_molecular_hamiltonian_refuses_it_until_phase_2(
+    def test_a_strided_payload_keeps_the_projectors_on_its_grid(
             self, oxygen_dirac):
-        from types import SimpleNamespace
-        projector = SimpleNamespace(atom_index=0, l=1)
-        with pytest.raises(NotImplementedError, match="phase 2"):
-            paw_spin_orbit_blocks([projector], ["O"], {"O": oxygen_dirac})
+        """The union projectors are radial tables like every other, stored
+        on the dataset's stride; they were once written at full length."""
+        back = from_payload(to_payload(oxygen_dirac, stride=4))
+        for entry in back.spin_orbit.values():
+            assert all(p.size == back.r.size for p in entry["projectors"])
+
+    def test_projectors_off_the_grid_are_refused(self, oxygen_dirac):
+        payload = to_payload(oxygen_dirac, stride=4)
+        entry = payload["spin_orbit"]["1"]
+        entry["projectors"] = [p + p for p in entry["projectors"]]
+        with pytest.raises(ValueError, match="radial grid"):
+            from_payload(payload)
+
+    def test_the_blocks_act_through_the_union_projectors(self, oxygen_dirac):
+        position = np.zeros((1, 3))
+        projectors = paw_spin_orbit_projectors(["O"], position,
+                                               {"O": oxygen_dirac})
+        n = len(oxygen_dirac.spin_orbit[1]["projectors"])
+        assert len(projectors) == 3 * n and {p.l for p in projectors} == {1}
+        blocks = paw_spin_orbit_blocks(projectors, ["O"], {"O": oxygen_dirac})
+        assert set(blocks) == {(0, 1)}
+        assert np.allclose(blocks[(0, 1)],
+                           oxygen_dirac.spin_orbit[1]["coupling"])
+
 
     def test_a_dataset_without_the_fields_is_not_relabelled(self):
         """A payload written before these options existed is what it was."""
@@ -289,3 +311,56 @@ class TestSpinOrbitCoupling:
         back = from_payload(payload)
         assert back.relativity == "none" and back.xc == "lda"
         assert not back.nlcc.get("applied") and not back.has_spin_orbit
+
+
+class TestSpinOrbitInTheMolecularHamiltonian:
+    """Option (a) of DIRAC.md: the scalar Hamiltonian plus the L.S term
+    through the union projectors, on an O atom."""
+
+    @pytest.fixture(scope="class")
+    def integrals(self, oxygen_dirac):
+        from ase import Atoms
+
+        from mandacaru.pseudopotentials.paw import build_paw
+
+        atoms = Atoms("O", positions=[[0.0, 0.0, 0.0]], cell=[6.0] * 3)
+        atoms.center()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _h, _n, _m, _p, context = build_paw(
+                atoms, None, 0.25, 0, None, {"size": "SZ"},
+                loader=lambda symbol, directory: oxygen_dirac)
+        return context["integrals"]
+
+    def _p_block(self, integrals, matrix):
+        l = np.array([f.l for f in integrals.basis])
+        p = np.where(l == 1)[0]
+        index = np.concatenate([p, p + l.size])
+        return index, matrix[np.ix_(index, index)]
+
+    def test_the_term_conserves_j_z(self, integrals):
+        m = np.array([f.m for f in integrals.basis], dtype=float)
+        index, block = self._p_block(integrals,
+                                     integrals.spin_orbit_matrix())
+        jz = np.concatenate([m + 0.5, m - 0.5])[index]
+        commutator = block * (jz[None, :] - jz[:, None])
+        # Only the cubic grid mixes m (6e-5 here at h = 0.25 Angstrom); a
+        # wrong L.S or basis would break it at order one.
+        assert np.linalg.norm(commutator) < 1e-3 * np.linalg.norm(block)
+
+    def test_the_p_shell_splits_into_its_two_j_levels(self, integrals):
+        """Doublet below quartet, centered on the scalar level: the term is
+        in the basis the scalar one-body matrix is in (Loewdin)."""
+        h = integrals.one_body()
+        M = h.shape[0]
+        full = np.zeros((2 * M, 2 * M), dtype=complex)
+        full[:M, :M] = full[M:, M:] = h
+        full += integrals.spin_orbit_matrix()
+        index, block = self._p_block(integrals, full)
+        levels = np.linalg.eigvalsh(block)
+        assert np.allclose(levels[:2], levels[0], atol=1e-9)
+        assert np.allclose(levels[2:], levels[2], atol=1e-9)
+        assert levels[2] > levels[0]
+        _i, scalar = self._p_block(integrals, full - integrals.spin_orbit_matrix())
+        assert levels.mean() == pytest.approx(
+            np.linalg.eigvalsh(scalar).mean(), abs=1e-9)

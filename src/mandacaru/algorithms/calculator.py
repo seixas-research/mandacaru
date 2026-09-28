@@ -89,7 +89,7 @@ DEFAULT_METHOD = "adapt-vqe"
 #: Stable method names accepted by ``method=``.
 #: The periodic names are declared by the module that implements them, so
 #: there is one place to change them.
-STABLE_METHODS = ("rhf", "uhf", "vqe", "adapt-vqe",
+STABLE_METHODS = ("rhf", "uhf", "ghf", "vqe", "adapt-vqe",
                   "subspace-vqe", "subspace-adapt-vqe",
                   *BLOCH_METHODS)
 
@@ -143,10 +143,10 @@ def resolve_method(name: str):
         # they are reached from, and ``Mandacaru(method=...)`` the one way in.
         from .adapt_vqe import ADAPTVQE
         from .bloch import _bloch_drivers
-        from .mean_field import RHFDriver, UHFDriver
+        from .mean_field import GHFDriver, RHFDriver, UHFDriver
         from .subspace import SubspaceADAPTVQE, SubspaceVQE
         from .vqe import VQE
-        classes = {"rhf": RHFDriver, "uhf": UHFDriver,
+        classes = {"rhf": RHFDriver, "uhf": UHFDriver, "ghf": GHFDriver,
                    "vqe": VQE, "adapt-vqe": ADAPTVQE,
                    "subspace-vqe": SubspaceVQE,
                    "subspace-adapt-vqe": SubspaceADAPTVQE}
@@ -350,7 +350,9 @@ class Mandacaru(Calculator):
     ----------
     method : str
         Which solver evaluates the energy -- ``"adapt-vqe"`` (the default),
-        classical ``"rhf"`` / ``"uhf"``, ``"vqe"`` (a fixed ansatz, chosen by
+        classical ``"rhf"`` / ``"uhf"`` / ``"ghf"`` (generalized spinor
+        Hartree-Fock, the mean field with spin-orbit coupling), ``"vqe"`` (a
+        fixed ansatz, chosen by
         ``ansatz=``: ``"uccsd"`` or the Hamiltonian variational ansatz
         ``"hva"``), or the subspace-search variants
         ``"subspace-vqe"`` / ``"subspace-adapt-vqe"``.  ADAPT-VQE is the
@@ -508,8 +510,10 @@ class Mandacaru(Calculator):
                  population=None, **solver_kwargs):
         Calculator.__init__(self)
         self.method, self._solver_class = resolve_method(method)
-        if self.method in ("rhf", "uhf") and measurement_provider is not None:
-            raise ValueError("classical RHF/UHF has no quantum state to measure; "
+        if self.method in ("rhf", "uhf", "ghf") \
+                and measurement_provider is not None:
+            raise ValueError("classical RHF/UHF/GHF has no quantum state to "
+                             "measure; "
                              "omit measurement_provider=")
         if measurement_provider is not None:
             spec = resolve_ansatz(solver_kwargs.get("ansatz"))

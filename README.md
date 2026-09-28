@@ -62,7 +62,7 @@ atoms = Atoms("LiH",
                          [0.0, 0.0, 1.6]],          # H
               cell=[10.0, 10.0, 10.0])
 
-atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "vqe" (ansatz="uccsd"|"hva"), subspace methods
+atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "ghf", "vqe" (ansatz="uccsd"|"hva"), subspace methods
                        basis="HAO",                          # Basis set
                        h=0.10,                               # real-space grid spacing (Å)
                        pool="fermionic",                     # "fermionic" | "qubit" | "qeb" | "ceo" | "ceo-ovp"
@@ -117,7 +117,7 @@ df.to_csv("lih_dissociation.csv", index=False)
 
 ## Theory
 
-**Classical mean field.** `method="rhf"` and `method="uhf"` run restricted or unrestricted Hartree–Fock without building a circuit. Their results export the molecular-orbital Hamiltonian and reference occupation through `result.as_quantum_problem()`, ready for a direct `Mandacaru(method="adapt-vqe", **options)` run. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html).
+**Classical mean field.** `method="rhf"`, `method="uhf"` and `method="ghf"` run restricted, unrestricted or generalized (spinor) Hartree–Fock without building a circuit. GHF is the one that puts spin-orbit coupling into its Fock operator. Their results export the molecular-orbital Hamiltonian and reference occupation through `result.as_quantum_problem()`, ready for a direct `Mandacaru(method="adapt-vqe", **options)` run. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html).
 
 **VQE.** The variational quantum eigensolver prepares a parameterized state |ψ(θ)⟩ = U(θ)|Φ<sub>HF</sub>⟩ on a quantum processor, measures the energy ⟨ψ(θ)|H|ψ(θ)⟩, and lets a classical optimizer update θ to minimize it. By the variational principle the minimum is an upper bound to the ground-state energy, reached exactly when the ansatz can represent the ground state. Mandacaru starts from the Hartree–Fock determinant in the molecular-orbital basis; the circuit is chosen with `ansatz=`, spelled like `basis=`. The default, `ansatz="uccsd"`, is UCCSD.
 

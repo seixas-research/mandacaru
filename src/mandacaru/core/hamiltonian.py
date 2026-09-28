@@ -147,6 +147,13 @@ class MolecularIntegrals(MeanFieldMixin):
         given, the basis overlap used for the Loewdin orthogonalization becomes
         :math:`S + C Q C^\dagger` (PAW-LCAO-type augmented overlap).  ``None`` (the
         norm-conserving case) leaves :math:`S` alone.
+    spin_orbit_coupling : dict, optional
+        ``{(atom_index, l): (n, n) array}``, the radial part of the spin-orbit
+        term of each channel (:mod:`mandacaru.core.spin_orbit`).
+    spin_orbit_projectors : sequence, optional
+        The projectors that term acts through, when they are not
+        ``kb_projectors`` (PAW-LCAO: the union of each channel's two j
+        branches).
     """
 
     def __init__(self, nuclei: Sequence[tuple[float, np.ndarray]],
@@ -155,7 +162,7 @@ class MolecularIntegrals(MeanFieldMixin):
                  pseudos=None, kb_projectors=None,
                  kinetic: str = "fd", nonlocal_coupling=None,
                  nonlocal_overlap=None, periodic: bool = False,
-                 spin_orbit_coupling=None):
+                 spin_orbit_coupling=None, spin_orbit_projectors=None):
         if kinetic not in ("fd", "spectral"):
             raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
                              "'fd' or 'spectral'")
@@ -189,9 +196,21 @@ class MolecularIntegrals(MeanFieldMixin):
         #: ``relativity="dirac"`` -- see :mod:`mandacaru.core.spin_orbit`.
         self.spin_orbit_coupling = (dict(spin_orbit_coupling)
                                     if spin_orbit_coupling else {})
+        #: The projectors the spin-orbit term acts through: the same as the
+        #: nonlocal term's for ONCVPSP (whose channels are the j branches),
+        #: their own set for PAW-LCAO (the union of each channel's two j
+        #: branches, :func:`~mandacaru.pseudopotentials.paw.j_resolved_spin_orbit`).
+        self._own_spin_orbit_projectors = spin_orbit_projectors is not None
+        self.spin_orbit_projectors = (list(spin_orbit_projectors)
+                                      if spin_orbit_projectors is not None
+                                      else self.kb_projectors)
+        self._C_so: np.ndarray | None = None
+        #: ``<chi|chi>_grid / <chi|chi>_radial`` per spin-orbit projector,
+        #: filled with their projections (only for a set of their own).
+        self.spin_orbit_resolution_ratios: np.ndarray | None = None
         if self.nonlocal_overlap is not None and not self.kb_projectors:
             raise ValueError("nonlocal_overlap needs projectors to act on")
-        if self.spin_orbit_coupling and not self.kb_projectors:
+        if self.spin_orbit_coupling and not self.spin_orbit_projectors:
             raise ValueError("spin_orbit_coupling needs projectors to act on")
         self._potentials = Potentials(self.nuclei, softening=softening,
                                       units=units,
@@ -383,10 +402,37 @@ class MolecularIntegrals(MeanFieldMixin):
         """Whether a spin-orbit term will be added to the Hamiltonian."""
         return bool(self.spin_orbit_coupling)
 
+    def spin_orbit_projections(self) -> np.ndarray:
+        r"""``C[mu, p] = <phi_mu|chi_p>`` on the spin-orbit projectors.
+
+        :meth:`projections` itself when the term shares the nonlocal
+        projectors (ONCVPSP); otherwise computed the same way, once, with
+        :attr:`spin_orbit_resolution_ratios` filled alongside.
+        """
+        if not self._own_spin_orbit_projectors:
+            return self.projections()
+        if self._C_so is None:
+            from ..integrals import _backend
+
+            chi = np.stack([p.evaluate(self.grid.X, self.grid.Y,
+                                       self.grid.Z).ravel()
+                            for p in self.spin_orbit_projectors])
+            grid_norm = np.real(np.einsum("pg,pg->p", np.conj(chi), chi)) \
+                * self.grid.dV
+            radial_norm = np.array([_radial_norm(p)
+                                    for p in self.spin_orbit_projectors])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                self.spin_orbit_resolution_ratios = grid_norm / radial_norm
+            self._C_so = _backend.kb_projections(self._engine._psi, chi,
+                                                 self.grid.dV)
+        return self._C_so
+
     def spin_orbit_matrix(self) -> np.ndarray:
         r"""The ``(2M, 2M)`` spin-orbital matrix of the spin-orbit term.
 
-        Zero (and still ``(2M, 2M)``) when no channel carries one.  See
+        In the basis :meth:`one_body` is in -- Loewdin-orthonormal unless
+        ``orthogonalize=False`` -- so the two add.  Zero (and still
+        ``(2M, 2M)``) when no channel carries one.  See
         :func:`mandacaru.core.spin_orbit.spin_orbit_one_body`; the result is
         complex Hermitian and, unlike every other one-body term here, is
         **not** block-diagonal in spin.
@@ -396,8 +442,19 @@ class MolecularIntegrals(MeanFieldMixin):
         M = len(self.basis)
         if not self.spin_orbit_coupling:
             return np.zeros((2 * M, 2 * M), dtype=complex)
-        return spin_orbit_one_body(self.projections(), self.kb_projectors,
-                                   self.spin_orbit_coupling)
+        h = spin_orbit_one_body(self.spin_orbit_projections(),
+                                self.spin_orbit_projectors,
+                                self.spin_orbit_coupling)
+        if self.orthogonalize:
+            # The same spatial X = S^(-1/2) on each spin quadrant, as the
+            # scalar one-body matrix gets in _compute_one_body.
+            X = self._lowdin_x()
+            for sigma in (0, 1):
+                for tau in (0, 1):
+                    rows = slice(sigma * M, (sigma + 1) * M)
+                    cols = slice(tau * M, (tau + 1) * M)
+                    h[rows, cols] = X.conj().T @ h[rows, cols] @ X
+        return h
 
     def _spin_orbit_in_mo_basis(self) -> np.ndarray:
         r"""The spin-orbit matrix rotated into the molecular-orbital basis.

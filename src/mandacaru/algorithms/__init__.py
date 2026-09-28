@@ -8,7 +8,7 @@
 
 """Variational quantum algorithms.
 
-The stable solvers -- classical RHF/UHF, VQE (whose circuit, UCCSD or the
+The stable solvers -- classical RHF/UHF/GHF, VQE (whose circuit, UCCSD or the
 Hamiltonian variational ansatz, is its ``ansatz=`` option), **ADAPT-VQE**
 (the default method everywhere), and the subspace-search variants -- are
 reached **only** through :class:`Mandacaru` with their
@@ -42,7 +42,8 @@ from .expressivity import (
 from .active_space import (ACTIVE_SPACE_METHODS, ActiveSpace, ActiveSpaceSpec,
                            resolve_active_space, resolve_active_space_spec)
 from .mp2 import MP2Result, mp2_energy, mp2_natural_orbitals
-from .hartree_fock import (RHF, RHFResult, UHF, UHFResult, natural_orbitals,
+from .hartree_fock import (GHF, GHFResult, RHF, RHFResult, UHF, UHFResult,
+                           natural_orbitals, spinor_integrals,
                            transform_integrals)
 from .mean_field import MeanFieldResult
 from .subspace import SubspaceADAPTVQEResult, SubspaceVQEResult
@@ -80,6 +81,8 @@ __all__ = [
     "QPEMemoryEstimate",
     "phase_estimation",
     "qpe_memory_estimate",
+    "GHF",
+    "GHFResult",
     "RHF",
     "RHFResult",
     "UHF",
@@ -94,6 +97,7 @@ __all__ = [
     "MP2Result",
     "mp2_energy",
     "mp2_natural_orbitals",
+    "spinor_integrals",
     "transform_integrals",
     "ADAPTVQEResult",
     "AdaptIteration",

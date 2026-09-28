@@ -88,6 +88,23 @@ class TestAgainstTheClosedFormDiracSpectrum:
         exact = hydrogenic_dirac_energy(Z, n, kappa)
         assert eps == pytest.approx(exact, rel=1e-5)
 
+    @pytest.mark.parametrize("Z, n, l, r_max", [
+        (50, 2, 1, 10.0), (50, 3, 2, 10.0), (80, 2, 1, 6.0), (80, 3, 2, 6.0)])
+    def test_the_heavy_atom_splitting_is_exact(self, Z, n, l, r_max):
+        """The splitting itself, not the level: a small error in the
+        spin-orbit coefficient of the rewritten radial equation (a units slip,
+        say) would hide inside the energy tolerance above -- 5 % of the Fe 3d
+        splitting is as large as 1e-5 of its level -- but not here."""
+        r = np.arange(1, 80001) * (r_max / 80001)
+        levels = {}
+        for kappa in (l, -(l + 1)):
+            _P, levels[kappa] = solve_radial_relativistic(
+                r, -Z / r, l, n - l - 1, kappa=kappa, treatment="dirac",
+                atomic_number=Z)
+        exact = (hydrogenic_dirac_energy(Z, n, -(l + 1))
+                 - hydrogenic_dirac_energy(Z, n, l))
+        assert levels[-(l + 1)] - levels[l] == pytest.approx(exact, rel=1e-4)
+
     def test_the_dirac_degeneracy_holds(self):
         """2s(1/2) and 2p(1/2) share an energy: Dirac depends on n and j only."""
         assert hydrogenic_dirac_energy(20, 2, -1) == pytest.approx(

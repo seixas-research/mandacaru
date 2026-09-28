@@ -11,9 +11,9 @@
 H2 and LiH in ``basis={"name": "PAW-LCAO", "size": "DZP"}`` have 10 basis
 functions, i.e. 20 qubits, solved exactly in the (1, 1) particle-number sector.
 
-The VASP numbers are a *qualitative* guide only: VASP is PBE-DFT in plane
-waves, Mandacaru is ADAPT-VQE in a localized basis, so the curves differ in
-detail (Mandacaru's H2 minimum is 0.712 A against VASP's 0.750 A).
+The reference numbers are a *qualitative* guide only: they are PBE-DFT in
+plane waves, Mandacaru is ADAPT-VQE in a localized basis, so the curves differ
+in detail (Mandacaru's H2 minimum is 0.712 A against the reference's 0.750 A).
 """
 
 from types import SimpleNamespace
@@ -34,12 +34,12 @@ LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-8)
 
 BASIS = {"name": "PAW-LCAO", "size": "DZP"}
 
-# VASP 6, PBE PAW-LCAO (H 15Jun2001, Li 17Jan2003), ENCUT 520 eV, 10 A box, Gamma:
+# A plane-wave PBE PAW reference (520 eV cutoff, 10 A box, Gamma point):
 # bond-projected force on atom 0 (eV/A, + = attractive) at the ionic steps of
 # the dimer relaxations.
-VASP_H2 = {0.59263: -9.65602, 0.72042: -1.13367, 0.87607: 2.96966,
+PLANE_WAVE_H2 = {0.59263: -9.65602, 0.72042: -1.13367, 0.87607: 2.96966,
            1.00000: 4.22206}
-VASP_LIH = {1.00000: -12.36098, 2.19265: 1.35493, 3.21539: 0.90887}
+PLANE_WAVE_LIH = {1.00000: -12.36098, 2.19265: 1.35493, 3.21539: 0.90887}
 
 
 def dimer(symbols, distance, cell):
@@ -116,7 +116,7 @@ def test_hellmann_feynman_and_pulay(h2):
     # 0.75 A is just *outside* the PAW-LCAO-DZP minimum, which sits at 0.733 A with
     # the family's default basis since 2026-09-20 -- confined (0.1 eV), GPAW's
     # split-valence scheme, GPAW's Gaussian polarization -- against 0.741
-    # (experiment) and 0.750 (VASP-PBE).  The history of this line is the
+    # (experiment) and 0.750 (plane-wave PBE).  The history of this line is the
     # history of the basis: 0.807 A before the compensation charge gained its
     # electron-ion attraction (< -1), 0.712 A with the SIESTA-style split and
     # free-atom orbitals (> 1.0; kept reproducible below), 0.760 A with GPAW's
@@ -132,16 +132,16 @@ def test_the_siesta_split_is_still_available():
     assert bond_force(atoms.get_forces()) > 1.0
 
 
-def test_h2_force_curve_follows_vasp():
+def test_h2_force_curve_follows_the_plane_wave_reference():
     """Sign and rough magnitude away from the minimum.
 
-    The two minima are 0.04 A apart (Mandacaru 0.712, VASP-PBE 0.750), so a
+    The two minima are 0.04 A apart (Mandacaru 0.712, plane-wave PBE 0.750), so a
     sampled distance between them legitimately has opposite signs in the two
     methods -- the sign is only asked for where the reference force is well
     away from zero.  Near the minimum the force is merely required to be
     small, which is the real content there.
     """
-    for distance, reference in VASP_H2.items():
+    for distance, reference in PLANE_WAVE_H2.items():
         atoms = dimer("H2", distance, 8.0)
         atoms.calc = calculator(h=0.25)
         force = bond_force(atoms.get_forces())
@@ -152,8 +152,8 @@ def test_h2_force_curve_follows_vasp():
             assert abs(force) < 3.0, distance
 
 
-def test_lih_force_curve_follows_vasp():
-    for distance, reference in VASP_LIH.items():
+def test_lih_force_curve_follows_the_plane_wave_reference():
+    for distance, reference in PLANE_WAVE_LIH.items():
         atoms = dimer("LiH", distance, 10.0)
         atoms.calc = calculator(h=0.25)
         force = bond_force(atoms.get_forces())

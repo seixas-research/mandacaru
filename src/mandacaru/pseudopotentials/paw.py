@@ -1645,24 +1645,45 @@ def _blocks(projectors, symbols, datasets, which) -> dict:
     return blocks
 
 
+def paw_spin_orbit_projectors(symbols, positions, datasets,
+                              units: str = "angstrom"):
+    """The projectors the spin-orbit term acts through: for every atom with a
+    Dirac dataset, every ``(l, m)`` of each channel that carries the term and
+    every function of its union of the two j branches
+    (:func:`j_resolved_spin_orbit`, j = l-1/2 first), in the dual basis they
+    are stored in.  Empty for scalar datasets."""
+    from .orbitals import KBProjector
+
+    projectors = []
+    for index, (symbol, position) in enumerate(zip(symbols, positions)):
+        pp = datasets[symbol]
+        for l, entry in sorted((getattr(pp, "spin_orbit", None) or {}).items()):
+            for m in range(-l, l + 1):
+                for i, p in enumerate(entry["projectors"]):
+                    projectors.append(KBProjector(
+                        pp, l, m, center=position, units=units,
+                        atom_index=index, index=i, radial=p, kb_energy=0.0))
+    return projectors
+
+
 def paw_spin_orbit_blocks(projectors, symbols, datasets) -> dict:
-    """The spin-orbit blocks of the molecular Hamiltonian: empty for scalar
-    datasets, and a refusal for a Dirac one, whose j-resolved term
-    (:func:`j_resolved_spin_orbit`) acts through projectors the molecular
-    basis does not carry yet (DIRAC.md, phase 2)."""
+    r"""``{(atom, l): D_SO}`` over :func:`paw_spin_orbit_projectors`.
+
+    The L.S part of the j-resolved term, unscreened like the scalar
+    :math:`D^{ion}` (the molecule screens both).  Its (2j+1) average is not
+    used: the scalar channel stands in for it (DIRAC.md, option (a)), which
+    keeps the overlap, the compensation charges and the forces spin-free, at
+    the price of the gap between the scalar-relativistic level and the Dirac
+    atom's j average (1-7 mHa for 5d and 6p; HISTORY.md, 2026-09-28).
+    """
+    blocks: dict = {}
     for projector in projectors:
-        dataset = datasets[symbols[projector.atom_index]]
-        if getattr(dataset, "spin_orbit", None):
-            # The j-resolved term acts through its own union of projectors
-            # (j_resolved_spin_orbit), which the molecular basis does not yet
-            # carry; and a Hamiltonian with it has no (n_alpha, n_beta)
-            # sector for the builders to fix (DIRAC.md, phase 2).
-            raise NotImplementedError(
-                f"the {dataset.symbol} dataset is Dirac-relativistic: its "
-                "j-resolved spin-orbit term does not enter the molecular "
-                "Hamiltonian yet (DIRAC.md, phase 2).  Use a scalar dataset "
-                "(directory='lda' or 'pbe').")
-    return {}
+        key = (projector.atom_index, projector.l)
+        if key not in blocks:
+            table = datasets[symbols[projector.atom_index]].spin_orbit
+            blocks[key] = np.asarray(table[projector.l]["coupling"],
+                                     dtype=complex)
+    return blocks
 
 
 def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
@@ -2365,6 +2386,7 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
                                      DEFAULT_PROJECTOR_BASIS)),
         coupling=paw_coupling_blocks, overlap=paw_overlap_blocks,
         spin_orbit=paw_spin_orbit_blocks,
+        spin_orbit_projectors=paw_spin_orbit_projectors,
         integrals_class=PAWIntegrals, potentials_keyword="datasets")
 
 
@@ -2435,26 +2457,32 @@ def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
             "frozen_subshells": [list(o) for o in pp.frozen_subshells],
             "defects": defects_record(pp.defects),
-            "spin_orbit": {str(l): _spin_orbit_payload(entry)
+            "spin_orbit": {str(l): _spin_orbit_payload(entry, stride)
                            for l, entry in (pp.spin_orbit or {}).items()},
             "channels": channels, "radial_tables": tables}
 
 
-def _spin_orbit_payload(entry: dict) -> dict:
-    """One channel of :func:`j_resolved_spin_orbit` as JSON-ready lists."""
+def _spin_orbit_payload(entry: dict, stride: int = 1) -> dict:
+    """One channel of :func:`j_resolved_spin_orbit` as JSON-ready lists; the
+    projectors are radial tables, stored on the same ``stride`` as every other
+    (``_table``), so they share the dataset's grid when loaded."""
+    from .io import _table
+
     out = {}
     for key, value in entry.items():
         if key == "projectors":
-            out[key] = [np.asarray(p, dtype=float).tolist() for p in value]
+            out[key] = [_table(p, stride) for p in value]
         else:
             out[key] = np.asarray(value, dtype=float).tolist()
     return out
 
 
-def _spin_orbit_entry(entry, symbol) -> dict:
+def _spin_orbit_entry(entry, symbol, n_points: int) -> dict:
     """The inverse of :func:`_spin_orbit_payload`.  A bare matrix is the
-    first-order term datasets carried before 2026-09-27; it is refused rather
-    than read as something it is not."""
+    first-order term datasets carried before 2026-09-27, and projectors off
+    the dataset's ``n_points`` radial grid were written before they shared its
+    stride (2026-09-28); both are refused rather than read as something they
+    are not."""
     if not isinstance(entry, dict):
         raise ValueError(
             f"the {symbol} dataset carries the first-order spin-orbit term, "
@@ -2464,6 +2492,11 @@ def _spin_orbit_entry(entry, symbol) -> dict:
     for key, value in entry.items():
         if key == "projectors":
             out[key] = [np.asarray(p, dtype=float) for p in value]
+            if any(p.size != n_points for p in out[key]):
+                raise ValueError(
+                    f"the {symbol} dataset's spin-orbit projectors are not on "
+                    f"its {n_points}-point radial grid: regenerate it with "
+                    "mandacaru-build --pp PAW --dirac")
         else:
             out[key] = np.asarray(value, dtype=float)
     return out
@@ -2601,7 +2634,8 @@ def from_payload(payload: dict) -> PAWDataset:
         nlcc=dict(payload.get("nlcc") or {"applied": False, "r_nlcc": None,
                                           "reason": "written before the "
                                                     "core correction"}),
-        spin_orbit={int(l): _spin_orbit_entry(entry, payload.get("symbol"))
+        spin_orbit={int(l): _spin_orbit_entry(entry, payload.get("symbol"),
+                                              r.size)
                     for l, entry in (payload.get("spin_orbit") or {}).items()},
         defects=read_defects(payload.get("defects")))
     warn_defects(dataset, FAMILY)

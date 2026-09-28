@@ -137,3 +137,52 @@ def test_classical_options_cannot_silently_request_quantum_work(option):
     """Quantum-only controls are rejected at calculator construction."""
     with pytest.raises(ValueError, match="classical|full SCF"):
         Mandacaru(method="rhf", trace=False, **option)
+
+
+def test_ghf_is_rhf_for_a_closed_shell_and_exports_its_spinor_problem():
+    """Without spin-orbit coupling GHF finds the RHF determinant; its export
+    is written in the spinors, whose reference is that determinant."""
+    energies = {}
+    for method in ("rhf", "ghf"):
+        atoms = h2()
+        atoms.calc = Mandacaru(method=method, h=0.35, trace=False)
+        energies[method] = atoms.get_potential_energy()
+    result = atoms.calc.result
+    assert energies["ghf"] == pytest.approx(energies["rhf"], abs=1e-7)
+    assert result.scf.kramers_pairing < 1e-8
+    assert "JimenezHoyos2011" in atoms.calc.citation_keys()
+    operator = result.qubit_hamiltonian("jordan_wigner")
+    state = result.reference_state("jordan_wigner")
+    expectation = np.vdot(state, operator.to_sparse_matrix() @ state).real
+    assert from_hartree(expectation, "eV") == pytest.approx(energies["ghf"],
+                                                            abs=1e-6)
+    with pytest.raises(ValueError, match="alpha-parity"):
+        result.qubit_hamiltonian("parity_reduced")
+
+
+@pytest.mark.slow
+def test_ghf_finds_the_spin_orbit_ground_configuration_of_lead():
+    """Pb 6p^2 with a Dirac dataset: GHF lies 85 mHa below the RHF
+    determinant in the same spin-orbit Hamiltonian (6p1/2^2), and its
+    occupied spinors come out in Kramers pairs without being forced to."""
+    from mandacaru.algorithms import GHF
+
+    atom = Atoms("Pb", positions=[[0, 0, 0]], cell=[9.0] * 3)
+    atom.center()
+    atom.calc = Mandacaru(method="ghf", h=0.25, directory="lda-dirac",
+                          basis={"name": "PAW-LCAO", "size": "SZ"},
+                          trace=False)
+    energy = atom.get_potential_energy()
+    result = atom.calc.result
+    integrals = atom.calc.solver._gradient_context["integrals"]
+    M = integrals.n_orbitals
+    h = np.zeros((2 * M, 2 * M), dtype=complex)
+    h[:M, :M] = h[M:, M:] = integrals.one_body()
+    h += integrals.spin_orbit_matrix()
+    rhf = integrals.hartree_fock(14)
+    determinant = GHF(h, integrals.two_body(), 14).energy_of(
+        GHF.collinear_spinors(rhf.mo_coefficients, rhf.mo_coefficients, 7, 7))
+    constant = integrals.constant_energy + integrals.nuclear_repulsion
+    below = from_hartree(determinant + constant, "eV") - energy
+    assert result.success and below > from_hartree(0.08, "eV")
+    assert result.scf.kramers_pairing < 1e-8

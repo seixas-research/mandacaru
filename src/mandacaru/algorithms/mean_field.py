@@ -6,12 +6,16 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Classical RHF and UHF drivers behind ``Mandacaru(method=...)``.
+"""Classical RHF, UHF and GHF drivers behind ``Mandacaru(method=...)``.
 
 The common geometry builder produces molecular integrals and an MO-basis
 fermionic Hamiltonian.  It also performs the SCF that chooses that basis.
 These drivers reuse its converged SCF result and never build a quantum ansatz,
 operator pool, circuit, qubit Hamiltonian or state vector.
+
+``method="ghf"`` is the one mean field with spin-orbit coupling in its Fock
+operator (:class:`~mandacaru.algorithms.hartree_fock.GHF`): its orbitals are
+two-component spinors, and its exported Hamiltonian is written in them.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from ..core.sector import ParticleSector
 from ..units import convert_energy
 from .base import VariationalDriver
 from .dry_run import QubitEstimate
-from .hartree_fock import RHFResult, UHFResult
+from .hartree_fock import GHF, GHFResult, RHFResult, UHFResult
 
 
 @dataclass(frozen=True)
@@ -34,18 +38,24 @@ class MeanFieldResult:
     """Classical SCF energy and the matching post-HF problem.
 
     Energies use ``energy_unit`` (eV by default).  ``scf`` retains the detailed
-    RHF or UHF orbitals and electronic energy in Hartree.  The exported
+    RHF, UHF or GHF orbitals and electronic energy in Hartree.  The exported
     ``fermion_hamiltonian`` uses the same MO basis and active space as the
     quantum drivers.  :meth:`as_quantum_problem` supplies their direct-mode
     constructor options; the default quantum reference occupies the first
     ``n_alpha`` and ``n_beta`` orbitals in that basis.  For UHF this is the
     natural-orbital determinant, whose energy can differ from the UHF energy.
+    For GHF the modes are spinors, not spin-orbitals of one spatial basis
+    (:meth:`~mandacaru.algorithms.hartree_fock.GHF.mode_order`): the reference
+    is the GHF determinant itself, and ``model_orbitals`` holds the
+    ``(2M, 2M)`` spinor coefficients in mode order.  The spinor Hamiltonian
+    does not conserve :math:`S_z` mode by mode even without spin-orbit
+    coupling, so its quantum calculation needs ``pool="spin-orbit"``.
     """
 
     method: str
     optimal_energy: float
     reference_energy: float
-    scf: RHFResult | UHFResult
+    scf: RHFResult | UHFResult | GHFResult
     model_orbitals: np.ndarray
     fermion_hamiltonian: Fermion
     num_particles: tuple[int, int]
@@ -83,9 +93,17 @@ class MeanFieldResult:
                 "n_spatial_orbitals": self.n_spatial_orbitals,
                 "initial_state": "hartree-fock"}
 
+    def _check_mapping(self, mapping: str) -> str:
+        canonical = resolve_mapping(mapping)
+        if canonical == "parity_reduced" and isinstance(self.scf, GHFResult):
+            raise ValueError(
+                "the GHF spinor Hamiltonian has no alpha-parity qubit to "
+                "remove; use 'jordan_wigner', 'parity' or 'bravyi_kitaev'")
+        return canonical
+
     def qubit_hamiltonian(self, mapping: str = "jordan_wigner") -> PauliSum:
         """Map the saved MO Hamiltonian for a post-HF quantum calculation."""
-        canonical = resolve_mapping(mapping)
+        canonical = self._check_mapping(mapping)
         return self.fermion_hamiltonian.map_to_qubits(
             canonical, n_modes=2 * self.n_spatial_orbitals,
             num_particles=self.num_particles if canonical == "parity_reduced"
@@ -98,7 +116,7 @@ class MeanFieldResult:
         natural-orbital reference used by the post-HF Hamiltonian; the true
         unrestricted determinant has different alpha and beta orbital sets.
         """
-        canonical = resolve_mapping(mapping)
+        canonical = self._check_mapping(mapping)
         m = self.n_spatial_orbitals
         occupied = (tuple(range(self.num_particles[0]))
                     + tuple(range(m, m + self.num_particles[1])))
@@ -119,7 +137,7 @@ class MeanFieldResult:
         and beta overlap minors.  The full state vector is allocated only on
         request, for consumers such as Quantum Echoes.
         """
-        if isinstance(self.scf, RHFResult):
+        if isinstance(self.scf, (RHFResult, GHFResult)):
             return self.reference_state(mapping)
         canonical = resolve_mapping(mapping)
         m = self.n_spatial_orbitals
@@ -186,7 +204,7 @@ class _MeanFieldDriver(VariationalDriver):
         super().__init__(**driver_kwargs)
         self.ansatz = None
         self.fermion_hamiltonian: Fermion | None = None
-        self._scf: RHFResult | UHFResult | None = None
+        self._scf: RHFResult | UHFResult | GHFResult | None = None
 
     def _configure(
             self, hamiltonian: Fermion, num_particles: tuple[int, int],
@@ -248,10 +266,13 @@ class _MeanFieldDriver(VariationalDriver):
         total = self._scf.electronic_energy + constant
         reference = (self._scf.reference_energy + constant
                      if isinstance(self._scf, UHFResult) else total)
+        orbitals = (self._scf.mo_coefficients[:, self._mode_order]
+                    if isinstance(self._scf, GHFResult)
+                    else integrals.mo_coefficients)
         result = MeanFieldResult(
             method=self._kind, optimal_energy=self._to_energy_units(total),
             reference_energy=self._to_energy_units(reference), scf=self._scf,
-            model_orbitals=np.asarray(integrals.mo_coefficients).copy(),
+            model_orbitals=np.asarray(orbitals).copy(),
             fermion_hamiltonian=self.fermion_hamiltonian,
             num_particles=self.num_particles,
             n_spatial_orbitals=self.n_spatial_orbitals,
@@ -273,3 +294,65 @@ class UHFDriver(_MeanFieldDriver):
     """Unrestricted Hartree-Fock baseline for any spin occupation."""
 
     _kind = "uhf"
+
+
+class GHFDriver(_MeanFieldDriver):
+    """Generalized (spinor) Hartree-Fock, with spin-orbit coupling in the
+    self-consistent Fock operator when the basis carries it.
+
+    Started from the core guess, the screened core guess, and the RHF
+    (closed shell) and UHF determinants written as spinors, so the result is
+    at or below those determinants' energies in the same Hamiltonian.
+    """
+
+    _kind = "ghf"
+
+    def _configure(
+            self, hamiltonian: Fermion, num_particles: tuple[int, int],
+            n_orbitals: int) -> None:
+        """Solve GHF on the builder's integrals and export the spinor-basis
+        Hamiltonian."""
+        context = self._gradient_context or {}
+        integrals = context.get("integrals")
+        if integrals is None:
+            raise ValueError(
+                "method='ghf' needs molecular integrals from a geometry and "
+                "basis; a cached or custom qubit Hamiltonian does not contain "
+                "the spatial integrals needed for SCF")
+        if self.mapping == "parity_reduced":
+            raise ValueError(
+                "the GHF spinor Hamiltonian has no alpha-parity qubit to "
+                "remove; use 'jordan_wigner', 'parity' or 'bravyi_kitaev'")
+        full_particles = tuple(int(n) for n in num_particles)
+        n_electrons = sum(full_particles)
+        M = integrals.n_orbitals
+        h_so = np.zeros((2 * M, 2 * M), dtype=complex)
+        h_so[:M, :M] = h_so[M:, M:] = integrals.one_body()
+        if getattr(integrals, "spin_orbit_coupling", None):
+            h_so = h_so + integrals.spin_orbit_matrix()
+        solver = GHF(h_so, integrals.two_body(), n_electrons)
+        guesses = []
+        if full_particles[0] == full_particles[1]:
+            rhf = integrals.hartree_fock(n_electrons)
+            guesses.append(GHF.collinear_spinors(
+                rhf.mo_coefficients, rhf.mo_coefficients, *full_particles))
+        uhf = integrals.open_shell_hartree_fock(*full_particles)
+        guesses.append(GHF.collinear_spinors(
+            uhf.mo_coefficients_alpha, uhf.mo_coefficients_beta,
+            *full_particles))
+        self._scf = solver.solve(guesses=guesses)
+        self._mode_order = solver.mode_order()
+        hamiltonian = Fermion.from_integrals(self._scf.h_mo, self._scf.eri_mo)
+        # The same constant molecular_hamiltonian carries, so the exported
+        # problem's energies are total energies like RHF's and UHF's.
+        constant = complex(integrals.constant_energy
+                           + integrals.nuclear_repulsion)
+        self.fermion_hamiltonian = hamiltonian + Fermion(
+            {(): constant}, n_modes=2 * M)
+        self.hamiltonian = self.fermion_hamiltonian
+        # The GHF determinant fills the first ceil(N/2) modes of the first
+        # half and floor(N/2) of the second (GHF.mode_order).
+        self.num_particles = ((n_electrons + 1) // 2, n_electrons // 2)
+        self.n_spatial_orbitals = int(M)
+        self.n_qubits = 2 * M
+        self._configured = True

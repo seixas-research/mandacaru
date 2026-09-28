@@ -43,6 +43,42 @@ its expectation of `mean_field.qubit_hamiltonian(mapping)` is
 `mean_field.optimal_energy` (converted to Hartree). The full state vector is
 allocated only when requested.
 
+## GHF: the mean field with spin-orbit coupling
+
+`method="ghf"` solves generalized Hartree–Fock: one determinant of complex
+two-component spinors, with no assumption that an orbital has a definite
+$S_z$. It is the one mean field that puts spin-orbit coupling into its
+self-consistent Fock operator, so it is the reference for a Dirac dataset
+(`directory="lda-dirac"`). Without spin-orbit coupling a closed shell gives
+the RHF determinant back; an open shell ends at or below UHF, since GHF may
+break collinearity. The SCF starts from the core and screened-core guesses and
+from the RHF and UHF determinants written as spinors, so its energy is at or
+below theirs in the same Hamiltonian.
+
+```python
+atoms = Atoms("Pb", positions=[[0, 0, 0]], cell=[9, 9, 9])
+atoms.calc = Mandacaru(method="ghf", basis={"name": "PAW-LCAO", "size": "SZ"},
+                       directory="lda-dirac", h=0.25)
+ghf = atoms.calc.result
+correlated = Mandacaru(method="adapt-vqe", pool="spin-orbit",
+                       **ghf.as_quantum_problem()).run()
+```
+
+For Pb this determinant is 85 mHa below the RHF one in the same spin-orbit
+Hamiltonian: GHF finds the $6p_{1/2}^2$ occupation. `ghf.scf.kramers_pairing`
+measures how far the occupied spinors are from degenerate time-reversal
+pairs. The pairing is not imposed, and it comes out at $10^{-15}$ Ha for a
+closed shell.
+
+The exported Hamiltonian is written in the GHF spinors, so it has no
+spin-orbital structure. Spinor $2i$ is mode $i$ and spinor $2i+1$ is mode
+$M+i$, so the reference of $(\lceil N/2\rceil, \lfloor N/2\rfloor)$ particles
+is the GHF determinant itself. Because the spinors do not have a definite
+$S_z$, the quantum calculation takes `pool="spin-orbit"`, and the
+`parity_reduced` mapping is refused. On a Bi atom (SZ), ADAPT-VQE from this
+reference is 0.09 mHa above the exact ground state after 100 operators; from
+the scalar reference it is 1.7 mHa above.
+
 HVA can start from the actual unrestricted determinant without constructing
 that full vector in advance:
 `Mandacaru(method="vqe", ansatz={"name": "hva", "reference": mean_field})`

@@ -750,7 +750,7 @@ solved exactly in their (1, 1) particle-number sector (`core.sector`, 100
 states).
 
 On H₂ (h = 0.25 Å) the analytic force agrees with a central difference of the
-energy to 1e-4 eV/Å. Against VASP (PBE, plane waves, PAW-LCAO) the force curves
+energy to 1e-4 eV/Å. Against a plane-wave PBE PAW calculation the force curves
 agree qualitatively: the H₂ minimum is near 0.81 Å instead of 0.750 Å — mostly
 from the H augmentation radius, 1.30 bohr, which two atoms 0.75 Å apart overlap
 almost entirely — while the LiH bond forces from 2.1 to 3.2 Å match within
@@ -849,23 +849,34 @@ higher channels.
 
 Two things differ from ONCVPSP, and both follow from PAW-LCAO's overlap operator.
 
-**A Dirac PAW-LCAO dataset is scalar-relativistic partial waves plus a spin-orbit
-term, not a $j$-resolved augmentation sphere.** $S = 1 + \sum|\tilde p\rangle q
-\langle\tilde p|$ is the *metric* of the generalized eigenproblem, so a
-$j$-dependent $q$ would give that metric an $\mathbf{L}\cdot\mathbf{S}$
-structure and every consumer of $S$ — the Löwdin orthogonalization above all —
-would have to learn about spin. Keeping one partial-wave set per $l$ leaves
-$q$, $\Delta T$ and the compensation charges untouched, and carries spin-orbit
-coupling where it belongs: as a one-center difference in the *Hamiltonian*,
+**A Dirac PAW-LCAO dataset is scalar-relativistic partial waves plus a
+$j$-resolved spin-orbit term, not a $j$-resolved augmentation sphere.**
+$S = 1 + \sum|\tilde p\rangle q\langle\tilde p|$ is the *metric* of the
+generalized eigenproblem, so a $j$-dependent $q$ would give that metric an
+$\mathbf{L}\cdot\mathbf{S}$ structure and every consumer of $S$ — the Löwdin
+orthogonalization above all — would have to learn about spin. The scalar
+channels, $q$, $\Delta T$ and the compensation charges therefore stay as they
+are. Next to them, each $l \geq 1$ gets two unitary branches, one per
+$j = l \mp 1/2$, built from the Dirac atom's own reference waves with their
+own $\kappa$. Any $j$-dependent separable operator is two terms,
+$V_j = V^{avg} + V^{SO}\,\mathbf{L}\cdot\mathbf{S}$, so the dataset stores
+the $(2j+1)$ average and the $\mathbf{L}\cdot\mathbf{S}$ difference on the
+union of the two branches' projectors (`spin_orbit`). Each $j$ is then exact:
+on O, Ar, Kr, I, Xe, Au, Tl, Pb, Bi and U every valence level is within
+0.05 mHa of the Dirac atom's and every splitting within 0.3 % (the 6p of
+Tl–Bi within 0.01 %, where a first-order $\int\xi\varphi\varphi$ term was
+19–20 % short, because one $j$-averaged partial wave cannot hold the
+$p_{1/2}$ contraction).
 
-$$D^{SO}_{ij} = \int_0^{r_c}\Big[\xi(r)\varphi_i\varphi_j
-  - \tilde\xi(r)\tilde\varphi_i\tilde\varphi_j\Big]r^2\,dr,
-\qquad \xi = \frac{1}{2c^2M^2 r}\frac{dV}{dr},$$
-
-built exactly the way $D$ and $q$ are. For oxygen $\langle\xi\rangle(2l+1)/2$
-reproduces the Dirac atom's own 2p splitting — 0.03675 eV against 0.03674 —
-and 99.7 % of it sits inside $r_c$, which is why a one-center term captures
-it. The smooth part is 0.5 % and is subtracted rather than assumed away.
+In a calculation the $\mathbf{L}\cdot\mathbf{S}$ term acts through that union
+of projectors, added to the scalar Hamiltonian; the scalar channel stands in
+for the $j$ average. Both $j$ levels are then shifted together by the gap
+between the scalar-relativistic level and the Dirac atom's $j$ average: below
+0.5 mHa for light and 4d/5f shells, 1–2 mHa for 5p and 5d, 3.7–6.8 mHa for the
+6p of Tl–Bi. The splitting itself is kept. The installed Dirac datasets are
+read with `directory="lda-dirac"`; the term breaks $S_z$, so only ADAPT-VQE
+with `pool="spin-orbit"` runs it, without a frozen core, a truncated virtual
+space or the `parity_reduced` mapping.
 
 **The overlap correction is built from the conserved norm, not the plain
 overlap.** Relativistically they differ at $O(c^{-2})$, and the choice is not
@@ -1435,7 +1446,7 @@ in its `zeta_split:` line.
 The scheme is part of the model. H₂ in PAW-LCAO-DZP (h = 0.25), with free-atom
 orbitals and the `r · R_outer` shell on both sides: GPAW's split gives an
 equilibrium distance of **0.760 Å** and the SIESTA-style one **0.711 Å**
-(experiment 0.741, VASP-PBE 0.750), while the SIESTA-style basis is about
+(experiment 0.741, plane-wave PBE 0.750), while the SIESTA-style basis is about
 0.5 eV lower in absolute energy -- its tighter second zeta adds more freedom
 near the nucleus. The full default basis (GPAW's split, the 0.1 eV confinement
 and the Gaussian polarization shell) lands at **0.733 Å**. Every DZ/DZP/TZP energy quoted in this guide outside

@@ -41,7 +41,7 @@ it is refused with a message pointing at `trace=`.
 ```{note}
 `txt=` is accepted only by a method whose `run()` goes through this protocol —
 `"adapt-vqe"` today — and refused with a message by the others rather than
-leaving an empty file. `"rhf"` and `"uhf"` print an SCF summary;
+leaving an empty file. `"rhf"`, `"uhf"` and `"ghf"` print an SCF summary;
 `"vqe"` (including `ansatz="hva"`), `"subspace-vqe"` and
 `"subspace-adapt-vqe"` print their own run header, which is not this one.
 

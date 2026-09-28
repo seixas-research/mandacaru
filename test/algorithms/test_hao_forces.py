@@ -23,7 +23,8 @@ problem -- while the energy, the RDMs and the orbital-response residual all look
 healthy.  ``Mandacaru`` warns about exactly that
 (:data:`~mandacaru.algorithms.calculator.TRANSLATIONAL_RESIDUAL_TOLERANCE`), and
 the same geometry in the PAW-LCAO basis, which removes the core instead of sampling
-it, gives a net force of ~0.03 eV/Angstrom and a bond force that matches VASP.
+it, gives a net force of ~0.03 eV/Angstrom and a bond force that matches a
+plane-wave PBE reference.
 """
 
 import warnings
@@ -44,9 +45,10 @@ from mandacaru.optimizers import Optimizer
 # and 1e-12 costs 15x the wall time here for no change in what is measured.
 LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-8)
 
-# VASP 6 PBE PAW: bond-projected force on atom 0 (eV/A, + = toward atom 1).
-VASP_LIH_2_19 = 1.35493
-VASP_H2_1_00 = 4.22206
+# Plane-wave PBE PAW reference: bond-projected force on atom 0 (eV/A,
+# + = toward atom 1).
+PLANE_WAVE_LIH_2_19 = 1.35493
+PLANE_WAVE_H2_1_00 = 4.22206
 
 PAW = {"name": "PAW-LCAO", "size": "DZP"}
 
@@ -133,9 +135,10 @@ class TestH2:
         assert stretched[0, 2] == pytest.approx(-stretched[1, 2], abs=1e-9)
 
     def test_a_stretched_bond_pulls_back(self, stretched):
-        """Same sign as VASP, and the same order of magnitude."""
+        """Same sign as the plane-wave reference, and the same order of
+        magnitude."""
         assert bond_force(stretched) > 0
-        assert bond_force(stretched) == pytest.approx(VASP_H2_1_00, rel=0.8)
+        assert bond_force(stretched) == pytest.approx(PLANE_WAVE_H2_1_00, rel=0.8)
 
     def test_a_compressed_bond_pushes_apart(self):
         forces, _ = forces_of("H2", 0.60, "HAO", cell=7.0)
@@ -197,7 +200,7 @@ class TestLiHCoreArtifact:
         forces, details, _ = paw
         assert net_force(forces) < 0.2
         assert details["translational_residual"] < 0.2
-        assert bond_force(forces) == pytest.approx(VASP_LIH_2_19, rel=0.3)
+        assert bond_force(forces) == pytest.approx(PLANE_WAVE_LIH_2_19, rel=0.3)
 
     def test_no_warning_for_the_pseudopotential_basis(self, paw):
         assert not [m for m in paw[2] if "do not sum to zero" in m]

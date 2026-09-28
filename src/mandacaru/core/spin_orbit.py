@@ -14,9 +14,11 @@ that offer it: :func:`mandacaru.pseudopotentials.oncv.generate_oncv` and
 :func:`mandacaru.pseudopotentials.paw.generate_paw` construct the two ``j``
 branches of each :math:`l` separately and store their (2j+1) average and
 their difference on the union of the two branches' projectors
-(:func:`~mandacaru.pseudopotentials.paw.j_resolved_spin_orbit`).  Only the
-ONCVPSP term reaches this module so far; the PAW-LCAO one needs the union
-projectors in the molecular basis (DIRAC.md, phase 2).  Each :math:`l` has a
+(:func:`~mandacaru.pseudopotentials.paw.j_resolved_spin_orbit`).  ONCVPSP's
+term acts through its ordinary projectors, whose channels are the j branches;
+PAW-LCAO's through a projector set of its own, the union of each channel's two
+branches (:func:`~mandacaru.pseudopotentials.paw.paw_spin_orbit_projectors`),
+added to the scalar Hamiltonian.  Each :math:`l` has a
 separable radial part and the angular operator
 :math:`\mathbf{L}\cdot\mathbf{S}`,
 
@@ -125,11 +127,12 @@ def spin_orbit_one_body(projections, projectors, blocks) -> np.ndarray:
     Parameters
     ----------
     projections : ndarray
-        ``C[mu, p] = <phi_mu|chi_p>``, the same ``(M, P)`` array
-        :meth:`~.hamiltonian.MolecularIntegrals.projections` returns.  The
-        spin-orbit projectors must be *these* projectors: for ONCVPSP the
-        radial parts of the two ``j`` branches, in the order
-        :func:`~mandacaru.pseudopotentials.oncv.oncv_projectors` emits them.
+        ``C[mu, p] = <phi_mu|chi_p>`` on the spin-orbit projectors, the
+        ``(M, P)`` array
+        :meth:`~.hamiltonian.MolecularIntegrals.spin_orbit_projections`
+        returns: for ONCVPSP the ordinary projectors (the radial parts of the
+        two ``j`` branches), for PAW-LCAO the union set of
+        :func:`~mandacaru.pseudopotentials.paw.paw_spin_orbit_projectors`.
     projectors : list
         The :class:`~mandacaru.pseudopotentials.orbitals.KBProjector` list, for
         the ``(atom, l, m, index)`` labels.

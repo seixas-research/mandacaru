@@ -328,6 +328,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                               active_space=None,
                               family: str, load, projectors, coupling,
                               overlap=None, spin_orbit=None,
+                              spin_orbit_projectors=None,
                               integrals_class=None,
                               potentials_keyword: str = "pseudos"):
     """The driver 5-tuple of a pseudopotential family -- the part every family
@@ -337,7 +338,10 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     directory)``), which projectors it samples (``projectors(symbols, positions,
     potentials, options)``), their coupling blocks (``coupling(projectors,
     symbols, potentials)``), an optional overlap correction (``overlap``, same
-    signature; PAW-LCAO) and the integral class (``integrals_class``, default
+    signature; PAW-LCAO), the spin-orbit blocks (``spin_orbit``, same
+    signature) with, when that term has projectors of its own,
+    ``spin_orbit_projectors(symbols, positions, potentials)`` (PAW-LCAO) and
+    the integral class (``integrals_class``, default
     :class:`~mandacaru.core.MolecularIntegrals`; ``potentials_keyword`` names
     its datasets argument).  The basis (with its ``size`` hierarchy and its
     optional ``filter``), the grid, the electron count, the spin state and the
@@ -383,8 +387,12 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                       else overlap(kb, symbols, potentials))
     # Spin-orbit blocks, keyed by (atom, l) rather than (atom, l, m): the
     # term couples different m, so it is not part of the block-diagonal D.
+    so_projectors = (None if spin_orbit_projectors is None
+                     else spin_orbit_projectors(symbols, positions, potentials))
     spin_orbit_blocks = (None if spin_orbit is None
-                         else spin_orbit(kb, symbols, potentials))
+                         else spin_orbit(kb if so_projectors is None
+                                         else so_projectors,
+                                         symbols, potentials))
     nuclei = [(potentials[symbol].valence_charge, position)
               for symbol, position in zip(symbols, positions)]
 
@@ -395,6 +403,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
         kb_projectors=kb, nonlocal_coupling=coupling_blocks,
         nonlocal_overlap=overlap_blocks,
         spin_orbit_coupling=spin_orbit_blocks,
+        spin_orbit_projectors=so_projectors or None,
         kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"],
         **{potentials_keyword: [potentials[s] for s in symbols]})
     hamiltonian = integrals.molecular_hamiltonian(

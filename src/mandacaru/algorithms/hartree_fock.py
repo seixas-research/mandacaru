@@ -500,3 +500,215 @@ class UHF:
             natural_occupations=occ, natural_orbitals=C_no,
             h_mo=np.real_if_close(h_mo), eri_mo=np.real_if_close(eri_mo),
             converged=converged, n_iterations=it, reference_energy=reference)
+
+
+@dataclass
+class GHFResult:
+    """Outcome of a generalized (spinor) Hartree-Fock calculation.
+
+    The orbitals are two-component spinors: column ``k`` of
+    ``mo_coefficients`` is ``(alpha part; beta part)`` over the ``M`` spatial
+    functions, so the array is ``(2M, 2M)``.  ``h_mo`` / ``eri_mo`` are the
+    spin-orbital integrals in the spinor basis, in the **mode order** of the
+    exported Hamiltonian (:meth:`GHF.mode_order`), not the energy order.
+    """
+
+    electronic_energy: float          # <GHF| H_elec |GHF> (no nuclear repulsion)
+    n_electrons: int
+    mo_energies: np.ndarray           # spinor energies, ascending
+    mo_coefficients: np.ndarray       # (2M, 2M): spinors in the input basis
+    h_mo: np.ndarray                  # (2M, 2M) in the spinor basis, mode order
+    eri_mo: np.ndarray                # (2M)^4 <PQ|RS> in the spinor basis, mode order
+    converged: bool
+    n_iterations: int = 0
+    #: Largest splitting within the energy-ordered pairs (0-1, 2-3, ...) of
+    #: occupied spinors: zero for a Kramers-paired (time-reversal
+    #: symmetric) closed shell.  Measured, not imposed.
+    kramers_pairing: float = 0.0
+
+    def __repr__(self) -> str:
+        return (f"GHFResult(E_elec={self.electronic_energy:.6f}, "
+                f"n_electrons={self.n_electrons}, converged={self.converged})")
+
+
+def spinor_integrals(h: np.ndarray, eri: np.ndarray, C: np.ndarray
+                     ) -> tuple[np.ndarray, np.ndarray]:
+    r"""``(h', g')`` in the spinor basis ``C`` (``(2M, K)``).
+
+    ``h`` is the ``(2M, 2M)`` spin-orbital one-body matrix and ``eri`` the
+    spin-free ``(M, M, M, M)`` physicists' tensor, so
+    :math:`\langle PQ|RS\rangle' = \sum_{\sigma\tau}\sum_{pqrs}
+    C^*_{p\sigma,P}C^*_{q\tau,Q}C_{r\sigma,R}C_{s\tau,S}\langle pq|rs\rangle`:
+    electron 1 keeps its spin between ``P`` and ``R``, electron 2 between
+    ``Q`` and ``S``.  The result has ``K^4`` complex entries.
+    """
+    M = eri.shape[0]
+    h_new = C.conj().T @ h @ C
+    parts = (C[:M], C[M:])
+    g = 0
+    for Cs in parts:
+        for Ct in parts:
+            g = g + np.einsum("ap,bq,cr,ds,abcd->pqrs", Cs.conj(), Ct.conj(),
+                              Cs, Ct, eri, optimize=True)
+    return h_new, g
+
+
+class GHF:
+    r"""Generalized Hartree-Fock: one determinant of complex two-component
+    spinors, on an orthonormal spatial basis.
+
+    The orbitals are not assumed to have a definite :math:`S_z`, so a
+    one-body term that couples the spins -- spin-orbit coupling
+    (:mod:`mandacaru.core.spin_orbit`) -- enters the self-consistent Fock
+    operator itself.  With a spin-diagonal ``h`` the GHF solutions include the
+    RHF and UHF ones.
+
+    The Fock matrix of the spinor density
+    :math:`D_{PQ} = \sum_i^{occ} C_{Pi}C^*_{Qi}` is
+    :math:`F = h + J - K`: the Coulomb term is the spatial one of
+    :math:`D_{\alpha\alpha} + D_{\beta\beta}` on both diagonal blocks, and the
+    exchange of each spin block :math:`(\sigma, \tau)` is the spatial exchange
+    of :math:`D_{\sigma\tau}` -- so the off-diagonal blocks carry exchange
+    only.  Both use the ``D_sr`` contraction :class:`RHF` explains.
+
+    Parameters
+    ----------
+    h : (2M, 2M) array
+        Spin-orbital one-body Hamiltonian, alpha block first (the layout of
+        :func:`~mandacaru.core.hamiltonian.spin_block_integrals`).
+    eri : (M, M, M, M) array
+        Spatial two-electron integrals ``<pq|rs>`` in physicists' notation.
+    n_electrons : int
+        Total electron count.
+
+    """
+
+    def __init__(self, h: np.ndarray, eri: np.ndarray, n_electrons: int):
+        self.h = np.asarray(h, dtype=complex)
+        self.eri = np.asarray(eri, dtype=complex)
+        self.M = self.eri.shape[0]
+        if self.h.shape != (2 * self.M, 2 * self.M):
+            raise ValueError(f"h must be ({2 * self.M}, {2 * self.M}) for "
+                             f"{self.M} spatial orbitals, got {self.h.shape}")
+        self.n = int(n_electrons)
+        if not 0 < self.n <= 2 * self.M:
+            raise ValueError(f"{n_electrons} electrons do not fit "
+                             f"{2 * self.M} spin-orbitals")
+
+    def _density(self, C: np.ndarray) -> np.ndarray:
+        Cocc = C[:, :self.n]
+        return Cocc @ Cocc.conj().T
+
+    def _fock(self, D: np.ndarray) -> np.ndarray:
+        M = self.M
+        blocks = [[D[s * M:(s + 1) * M, t * M:(t + 1) * M] for t in (0, 1)]
+                  for s in (0, 1)]
+        J = np.einsum("sr,prqs->pq", blocks[0][0] + blocks[1][1], self.eri,
+                      optimize=True)
+        F = self.h.copy()
+        for s in (0, 1):
+            for t in (0, 1):
+                K = np.einsum("sr,prsq->pq", blocks[s][t], self.eri,
+                              optimize=True)
+                F[s * M:(s + 1) * M, t * M:(t + 1) * M] -= K
+                if s == t:
+                    F[s * M:(s + 1) * M, t * M:(t + 1) * M] += J
+        return 0.5 * (F + F.conj().T)
+
+    def _energy(self, D: np.ndarray, F: np.ndarray) -> float:
+        return float(np.real(0.5 * np.sum(D * (self.h + F).T)))
+
+    def energy_of(self, C: np.ndarray) -> float:
+        """The energy of the determinant of the first ``n_electrons`` columns
+        of ``C`` -- e.g. an RHF or UHF determinant written as spinors, in a
+        Hamiltonian with spin-orbit coupling."""
+        D = self._density(np.asarray(C, dtype=complex))
+        return self._energy(D, self._fock(D))
+
+    def solve(self, max_iter: int = 300, tol: float = 1e-9,
+              guesses=()) -> GHFResult:
+        r"""Run the SCF and return the lowest converged :class:`GHFResult`.
+
+        Starts from the core guess, the screened core guess, and every
+        ``(2M, 2M)`` spinor matrix in ``guesses`` (e.g. the RHF or UHF
+        orbitals, :meth:`collinear_spinors`) -- so a GHF started from a
+        converged RHF/UHF determinant can only end at or below its energy in
+        this Hamiltonian.
+        """
+        _eps, C = np.linalg.eigh(self.h)
+        starts = [C]
+        D0 = self._density(C)
+        F1 = self.h + 0.5 * (self._fock(D0) - self.h)
+        starts.append(np.linalg.eigh(0.5 * (F1 + F1.conj().T))[1])
+        starts.extend(np.asarray(g, dtype=complex) for g in guesses)
+        best = None
+        for C0 in starts:
+            result = self._scf(C0, max_iter, tol)
+            if best is None or (result.converged and not best.converged) or (
+                    result.converged == best.converged
+                    and result.electronic_energy < best.electronic_energy - 1e-12):
+                best = result
+        return best
+
+    @staticmethod
+    def collinear_spinors(Ca: np.ndarray, Cb: np.ndarray, n_alpha: int,
+                          n_beta: int) -> np.ndarray:
+        """Spatial alpha and beta orbitals as a ``(2M, 2M)`` spinor matrix
+        whose first ``n_alpha + n_beta`` columns are the occupied ones."""
+        M = Ca.shape[0]
+        alpha = np.vstack([Ca, np.zeros_like(Ca)])
+        beta = np.vstack([np.zeros_like(Cb), Cb])
+        occupied = [alpha[:, :n_alpha], beta[:, :n_beta]]
+        virtual = [alpha[:, n_alpha:], beta[:, n_beta:]]
+        out = np.hstack(occupied + virtual)
+        if out.shape != (2 * M, 2 * M):
+            raise ValueError("alpha and beta orbitals must be square")
+        return out
+
+    def mode_order(self) -> np.ndarray:
+        """Spinor index of each exported mode: spinor ``2i`` goes to mode
+        ``i`` (the first half) and ``2i + 1`` to mode ``M + i``, so the
+        reference that fills the first ``ceil(N/2)`` modes of the first half
+        and ``floor(N/2)`` of the second is the GHF determinant."""
+        M = self.M
+        order = np.empty(2 * M, dtype=int)
+        order[:M] = np.arange(0, 2 * M, 2)
+        order[M:] = np.arange(1, 2 * M, 2)
+        return order
+
+    def _scf(self, C: np.ndarray, max_iter: int, tol: float) -> GHFResult:
+        D = self._density(C)
+        energy = np.inf
+        converged = False
+        it = 0
+        mixer = DIIS()
+        shift = 0.0
+        for it in range(1, max_iter + 1):
+            F = self._fock(D)
+            current = self._energy(D, F)
+            if current > energy + 1e-10 and shift == 0.0:
+                shift = LEVEL_SHIFT
+            F_iter = mixer.extrapolate(F, D)
+            if shift:
+                F_iter = _level_shifted(F_iter, D, shift)
+            _eps, C = np.linalg.eigh(F_iter)
+            D_new = self._density(C)
+            if abs(current - energy) < tol and np.max(np.abs(D_new - D)) < tol:
+                D, energy = D_new, current
+                converged = True
+                break
+            D, energy = D_new, current
+
+        F = self._fock(D)
+        eps, C = np.linalg.eigh(F)                 # canonical spinors
+        energy = self._energy(D, F)
+        occupied = eps[:self.n]
+        pairs = occupied[:self.n - self.n % 2].reshape(-1, 2)
+        pairing = float(np.max(pairs[:, 1] - pairs[:, 0])) if len(pairs) else 0.0
+        ordered = C[:, self.mode_order()]
+        h_mo, eri_mo = spinor_integrals(self.h, self.eri, ordered)
+        return GHFResult(
+            electronic_energy=energy, n_electrons=self.n,
+            mo_energies=np.real(eps), mo_coefficients=C, h_mo=h_mo,
+            eri_mo=eri_mo, converged=converged, n_iterations=it,
+            kramers_pairing=pairing)

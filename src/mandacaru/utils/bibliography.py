@@ -83,6 +83,18 @@ _ALGORITHMS = [
   doi     = {10.1063/1.1740120}
 }""", "unrestricted Hartree-Fock for open shells", verified=False,
          topics=("uhf", "scf")),
+    _ref("JimenezHoyos2011", """
+@article{JimenezHoyos2011,
+  author  = {Jim{\\'e}nez-Hoyos, Carlos A. and Henderson, Thomas M. and
+             Scuseria, Gustavo E.},
+  title   = {Generalized {Hartree-Fock} description of molecular dissociation},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {7},
+  pages   = {2667--2674},
+  year    = {2011},
+  doi     = {10.1021/ct200345a}
+}""", "generalized (spinor) Hartree-Fock", verified=True,
+         topics=("ghf", "scf")),
     _ref("Wecker2015", """
 @article{Wecker2015,
   author  = {Wecker, Dave and Hastings, Matthew B. and Troyer, Matthias},
