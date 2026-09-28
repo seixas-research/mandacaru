@@ -216,15 +216,28 @@ def partial_waves(dataset, l: int):
     so nothing has to be regenerated; :func:`radial_moments` at ``L = 0``
     reproduces the stored ``overlap_correction`` to ~1e-8, which is the check
     that the reconstruction is faithful.
+
+    The Bessel expansion describes the smooth wave only inside the channel's
+    own ``r_cut``; beyond it the smooth wave *is* the all-electron one (they
+    are matched there in value and three derivatives), and that is what is
+    returned.  The expansion itself diverges outside: copper's 3d, cut at
+    0.77 Bohr, reaches -35 at 1.5 Bohr.  Every integral over a sphere wider
+    than the channel -- a cross moment with the 2.78-Bohr s channel, the
+    one-center Coulomb tables -- read that divergence until 2026-09-27, and
+    the s-d moments of the 3d elements came out ~100x too large.
     """
     from .oncv import _bessel_table
 
     channel = dataset.channels[int(l)]
     r = np.asarray(dataset.r, dtype=float)
+    inside = r <= float(channel.r_cut)
     ae = [np.asarray(w, dtype=float) for w in channel.ae_waves]
-    smooth = [np.asarray(c, dtype=float)
-              @ _bessel_table(int(l), np.asarray(q, dtype=float), r)
-              for c, q in zip(channel.wave_coefficients, channel.wavevectors)]
+    smooth = [np.where(inside,
+                       np.asarray(c, dtype=float)
+                       @ _bessel_table(int(l), np.asarray(q, dtype=float), r),
+                       wave)
+              for c, q, wave in zip(channel.wave_coefficients,
+                                    channel.wavevectors, ae)]
     return ae, smooth
 
 

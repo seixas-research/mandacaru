@@ -244,3 +244,21 @@ def test_the_pbe_folder_loads_pbe_datasets(tmp_path):
     block = parse_output(str(tmp_path / "run.txt"))["basis"]
     assert block["directory"].startswith("pbe (")
     assert block["dataset_xc"].startswith("PBE")
+
+
+def test_a_dataset_in_the_wrong_functional_folder_is_refused(tmp_path):
+    """An LDA file copied into ``pbe/`` would otherwise run silently as the
+    PBE dataset ``directory="pbe"`` asked for."""
+    import shutil
+
+    from mandacaru.pseudopotentials.paw import get_paw
+
+    try:
+        source = get_paw("H", xc="lda").source
+    except (LibraryPathError, FileNotFoundError):
+        pytest.skip("no PAW-LCAO library with an lda/ folder")
+    folder = tmp_path / "pbe"
+    folder.mkdir()
+    shutil.copy(source, folder / "H.parquet")
+    with pytest.raises(ValueError, match="LDA dataset in the pbe/ folder"):
+        get_paw("H", directory=str(folder))

@@ -490,7 +490,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
     def _subspace_optimize(self, refs, weights, initial_parameters, timings):
         k = self.num_states
         max_iterations = self.max_iterations
-        gradient_tol = self.gradient_tolerance
+        convergence = self.convergence
 
         ansatz = self._new_ansatz()
         params = (np.asarray(initial_parameters, float).ravel()
@@ -501,6 +501,9 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
         max_grad = np.inf
         energy = min(self.energy(ansatz.evolve(params, refs)[:, j])
                      for j in range(k))
+        # The energy change of the last growth step (the trace's dE, on the
+        # lowest level), for the energy criterion; None before the first.
+        delta_energy: float | None = None
         if self.verbose:
             self._print_iteration_heading(self._energy_unit_label())
 
@@ -509,7 +512,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
                 evolved = ansatz.evolve(params, refs)
                 grads = self._weighted_gradients(evolved, weights)
             max_grad = _max_abs(grads)
-            if max_grad < gradient_tol:
+            if convergence.reached(max_grad, delta_energy):
                 converged = True
                 break
             idx = self._select_operator(grads, len(selected))
@@ -536,6 +539,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
             total_evals += result.nfev
             energy = min(self.energy(ansatz.evolve(params, refs)[:, j])
                          for j in range(k))
+            delta_energy = energy - previous_energy
 
             if self.verbose:
                 self._print_iteration(len(selected), op, max_grad, energy,
@@ -558,7 +562,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
             # Otherwise a stationary start with a zero growth budget reports a
             # gradient of 0.0 against a tolerance of 1e3 and `converged=False`.
             max_grad = _max_abs(self._weighted_gradients(evolved, weights))
-            converged = bool(max_grad < gradient_tol)
+            converged = convergence.reached(max_grad, delta_energy)
 
         extra = {"converged": converged, "final_max_gradient": max_grad,
                  "operators": selected, "metrics": metrics,

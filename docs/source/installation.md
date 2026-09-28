@@ -35,6 +35,12 @@ The `/en/latest/` manual follows the development sources. If an option in that
 manual is unavailable in an older installed release, use a matching source
 checkout or select the documentation version for your release.
 
+To also run the test suite from that checkout, install the `dev` extra
+instead, and keep the `-e`: `python -m pip install -e ".[dev]"`. Without `-e`,
+`import mandacaru` resolves to whatever was last installed into
+`site-packages`, not the checkout — so a subsequent edit to `src/` is silently
+not what the tests, or a calculation, actually run.
+
 ## Pseudopotential datasets
 
 None of the generated families ships with the package: **NCPP**, **ONCVPSP**,
@@ -82,6 +88,9 @@ Without this, `basis="NCPP"`, `basis="PAW-LCAO"` and `basis="ONCVPSP"` raise a
 `LibraryPathError` that repeats the matching `--set-*` command; the all-electron
 bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. A
 basis option `directory=...` (a full path) overrides the variable for one run.
+An ONCVPSP or PAW-LCAO dataset whose own recorded functional disagrees with
+the `lda/` or `pbe/` folder it was loaded from is refused, so a file cannot be
+read as the wrong functional by being copied into the wrong folder.
 
 `basis="UPAW-LCAO"` needs nothing either: `MANDACARU_UPAW_PATH` is the one
 optional variable, and without it a missing dataset is generated on demand
@@ -121,6 +130,15 @@ found automatically on Linux, and on macOS comes from `brew install libomp`.
 `MANDACARU_BACKEND=auto` selects the default policy. Use `MANDACARU_BACKEND=c` to
 require the compiled backend (it raises rather than falling back), or
 `MANDACARU_BACKEND=numpy` to select NumPy.
+
+The same variable also selects the backend for a second, separate compiled
+library: the radial kernels (tridiagonal eigenpairs and Numerov recursions)
+behind atom and pseudopotential generation
+(`mandacaru.basis.radial_backend`). `mandacaru-build --build-backend` builds
+and reports on that one; `mandacaru-build --backend {auto,c,python}` selects
+it for one generation run (`python` there maps to `MANDACARU_BACKEND=numpy`).
+The [pseudopotentials guide](guide/pseudopotentials.md) shows `mandacaru-build`
+in use.
 
 The shared library is written into `src/mandacaru/integrals/csrc/build` and
 detected automatically; set `MANDACARU_INTEGRALS_LIB` to point at one built

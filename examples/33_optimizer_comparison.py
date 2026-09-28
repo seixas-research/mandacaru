@@ -96,7 +96,7 @@ def run(method):
                            optimizer={"method": method,
                                       "maxiter": MAXITER,
                                       "tol": TOL},
-                           gradient_tolerance=1e-4,
+                           convergence={"gradient": 1e-4},
                            trace=False,
                            **SETUPS[SYSTEM])
     start = time.perf_counter()

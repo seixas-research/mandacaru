@@ -101,7 +101,7 @@ def _ss_adapt(h2_hamiltonian, k, **kwargs):
                      pool="fermionic", num_states=k, num_particles=(1, 1),
                      n_spatial_orbitals=2,
                      optimizer=LBFGS,
-                     trace=False, profile=False, gradient_tolerance=1e-6,
+                     trace=False, profile=False, convergence={"gradient": 1e-6},
                      max_iterations=30, **kwargs)
 
 
@@ -226,7 +226,7 @@ class TestSubspaceADAPTVQE:
         atoms.calc = Mandacaru(method="subspace-adapt-vqe", basis="HAO",
                                h=0.30, num_states=2, pool="fermionic",
                                trace=False, profile=False,
-                               gradient_tolerance=1e-4, max_iterations=20)
+                               convergence={"gradient": 1e-4}, max_iterations=20)
         atoms.get_potential_energy()
         assert isinstance(atoms.calc.result, SubspaceADAPTVQEResult)
         assert atoms.calc.result.num_states == 2
@@ -256,7 +256,7 @@ class TestSubspaceConvergence:
         solver = Mandacaru(method="subspace-adapt-vqe",
                            hamiltonian=PauliSum({"ZIII": 1.0, "IZII": 0.5}),
                            pool="fermionic", num_states=2, max_iterations=0,
-                           gradient_tolerance=1e3, **DIRECT)
+                           convergence={"gradient": 1e3}, **DIRECT)
         result = solver.run()
         # The verdict follows the final screening, as ordinary ADAPT's does.
         assert result.final_max_gradient < 1e3

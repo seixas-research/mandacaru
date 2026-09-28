@@ -329,20 +329,35 @@ def confined_eigenstate(pp, l: int, r_c: float, *,
     return r_c_grid, (4.0 * u_f[1::2] - u_c) / 3.0, (4.0 * e_f - e_c) / 3.0
 
 
+#: ``(id(dataset), l) -> (dataset, free level)``, as for :data:`_CACHE`.
+_FREE_CACHE: dict = {}
+
+
 def free_energy(pp, l: int) -> float:
-    """Eigenvalue (Hartree) of the free atom's bound state in channel ``l``:
-    the first reference energy, or the channel's eigenvalue for a family that
-    stores one reference (NCPP)."""
-    channel = pp.channels[int(l)]
-    references = getattr(channel, "reference_energies", None)
-    return float(references[0] if references is not None and len(references)
-                 else channel.eigenvalue)
+    """Eigenvalue (Hartree) of channel ``l``'s free bound state **in the
+    dataset's own operator**, solved exactly as a confined one is but with the
+    wall at the end of the radial table.
+
+    Not the all-electron reference level: a dataset reproduces it to 1e-7 Ha
+    for the first rows but only to 1-6 mHa for a deep semicore channel (gold's
+    4f: -3.1036 against -3.1075 Ha), which is more than a 0.1 eV shift -- the
+    confinement radius was then measured from the wrong level and could not be
+    found.  Solving both levels with one discretization also cancels its
+    error from the shift.
+    """
+    l = int(l)
+    entry = _FREE_CACHE.get((id(pp), l))
+    if entry is not None and entry[0] is pp:
+        return entry[1]
+    energy = confined_energy(pp, l, TABLE_FRACTION * float(pp.r[-1]))
+    _FREE_CACHE[(id(pp), l)] = (pp, energy)
+    return energy
 
 
 def confinement_radius(pp, l: int, energy_shift: float, *,
                        amplitude: float = CONFINEMENT_AMPLITUDE,
-                       inner_fraction: float = CONFINEMENT_INNER_FRACTION
-                       ) -> float:
+                       inner_fraction: float = CONFINEMENT_INNER_FRACTION,
+                       tightest: bool = False) -> float:
     """Cutoff radius ``r_c`` (Bohr) at which channel ``l``'s eigenvalue lies
     ``energy_shift`` (**eV**) above the free atom's.
 
@@ -350,7 +365,11 @@ def confinement_radius(pp, l: int, energy_shift: float, *,
     bracketed by scanning outward from the channel's cutoff radius and then
     refined with Brent's method.  A shift too large to reach without cutting
     into the sphere, or too small to reach inside the radial table, is
-    refused with the range that *is* reachable.
+    refused with the range that *is* reachable -- unless ``tightest``, when a
+    shift too large returns the tightest wall the sphere allows instead.  That
+    is the case of a deep semicore channel (the 4f of Lu-Hg, 1-3.5 Ha deep in
+    a 2.9-3.9 Bohr sphere): its orbital lies inside the sphere, so no wall
+    outside it can move its energy by 0.1 eV, and it needs no confining.
     """
     from scipy.optimize import brentq
 
@@ -367,6 +386,8 @@ def confinement_radius(pp, l: int, energy_shift: float, *,
     r_lo = float(pp.channels[l].r_cut) / float(inner_fraction)
     r_end = TABLE_FRACTION * float(pp.r[-1])
     f_lo = excess(r_lo)
+    if f_lo <= 0.0 and tightest:
+        return float(r_lo)
     if f_lo <= 0.0:
         largest = (f_lo + shift * EV_TO_HARTREE) * HARTREE_TO_EV
         raise ValueError(
@@ -437,8 +458,11 @@ def confined_orbital(pp, l: int, energy_shift: float,
     if entry is not None and entry[0] is pp:
         return entry[1]
 
+    # A channel whose orbital already lies inside its sphere (a deep semicore
+    # shell) takes the tightest wall; `achieved_shift` then reports the
+    # smaller shift it actually got.
     r_c = confinement_radius(pp, l, shift, amplitude=amplitude,
-                             inner_fraction=inner)
+                             inner_fraction=inner, tightest=True)
     r, u, energy = confined_eigenstate(pp, l, r_c, amplitude=amplitude,
                                        inner_fraction=inner)
     # u(0) = u(r_c) = 0 close the table; R = u / r is then regular at the

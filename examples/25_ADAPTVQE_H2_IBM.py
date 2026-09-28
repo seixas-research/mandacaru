@@ -73,7 +73,7 @@ def calculator():
                                 "tol": 1e-12},
                      gradient="finite_difference",
                      max_iterations=14,
-                     gradient_tolerance=1e-3,
+                     convergence={"gradient": 1e-3},
                      quenching=True,
                      sparse="auto",
                      device="AER_simulator",

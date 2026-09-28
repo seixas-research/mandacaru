@@ -297,7 +297,7 @@ class TestGridPathologyIsCured:
         atoms = lone_atom("O", grid)
         atoms.calc = Mandacaru(
             method="adapt-vqe", basis="NCPP" if pseudo else "HAO",
-            grid=grid, frozen_core=not pseudo, pool="qeb", max_iterations=6, gradient_tolerance=1e-3,
+            grid=grid, frozen_core=not pseudo, pool="qeb", max_iterations=6, convergence={"gradient": 1e-3},
             profile=False)
         atoms.get_potential_energy()
         return float(np.abs(atoms.get_forces()).max())

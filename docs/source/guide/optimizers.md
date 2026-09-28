@@ -54,7 +54,7 @@ families:
 | family | methods |
 | :--- | :--- |
 | derivative-free | `"COBYLA"`, `"Nelder-Mead"` |
-| quasi-Newton / gradient | `"SLSQP"` (the default, {data}`~mandacaru.optimizers.DEFAULT_OPTIMIZER`), `"BFGS"`, `"L-BFGS"`, `"NLCG-PR"` |
+| quasi-Newton / gradient | `"SLSQP"` (the default, {data}`~mandacaru.optimizers.DEFAULT_OPTIMIZER`), `"BFGS"`, `"L-BFGS"`, `"CG"` |
 | stochastic | `"SPSA"` |
 
 Everything but SPSA is dispatched to `scipy.optimize.minimize`; SPSA is
@@ -65,12 +65,11 @@ limited-memory BFGS without bounds, which is exactly what SciPy's `"L-BFGS-B"`
 reduces to when no bounds are given — a variational ansatz's parameters are
 unbounded angles, so the driver never passes any. SciPy's bounded spelling is
 not offered under its own name: it was, and it ran the same code for the same
-cost, which is a second name for one thing. **`"NLCG-PR"`** is the nonlinear
-conjugate gradient in its Polak–Ribière variant, which is what SciPy implements
-under the bare name `"CG"`.
+cost, which is a second name for one thing. **`"CG"`** is SciPy's nonlinear
+conjugate gradient, in its Polak–Ribière variant.
 
 ```{note}
-For `"BFGS"` and `"NLCG-PR"`, SciPy reads `tol` as a **gradient norm**, not as a
+For `"BFGS"` and `"CG"`, SciPy reads `tol` as a **gradient norm**, not as a
 function-value change. Handing those two the default `1e-12` asks for something
 a finite-difference gradient cannot deliver — its own accuracy is about `1e-8`
 — so every line search ends in "precision loss" and the run reports
@@ -134,7 +133,7 @@ and `tol=1e-12` (`examples/33_optimizer_comparison.py`; FCI = −162.953987 eV):
 | **SLSQP** | **76** | **632** | **10** | **7.2e-07** | **60** | **0.1** | **yes** |
 | BFGS | 80 | 1066 | 10 | 7.2e-07 | 60 | 0.2 | yes |
 | L-BFGS | 85 | 844 | 10 | 7.2e-07 | 60 | 0.1 | yes |
-| NLCG-PR | 137 | 2339 | 10 | 7.2e-07 | 60 | 0.3 | yes |
+| CG | 137 | 2339 | 10 | 7.2e-07 | 60 | 0.3 | yes |
 
 **SLSQP wins on every axis**: the exact ground state of the qubit Hamiltonian,
 the shortest circuit anyone found, and it gets there in 76 parameter updates and
@@ -143,7 +142,7 @@ the shortest circuit anyone found, and it gets there in 76 parameter updates and
 **Read the rest this way.** The whole quasi-Newton family lands on the same
 answer and the same 60-CNOT circuit within a factor of four of each other:
 **L-BFGS** costs a third more evaluations than SLSQP, **BFGS** a few hundred
-more for its dense Hessian approximation, and **NLCG-PR** about three times
+more for its dense Hessian approximation, and **CG** about three times
 SLSQP's — a conjugate gradient stores no curvature, so it needs more
 directions. **Nelder-Mead** reaches the same energy and the same circuit on 9×
 the evaluations. **COBYLA** stops two operators short of the best circuit.
@@ -160,7 +159,7 @@ COBYLA `tol` is a *function-value* criterion, so it must be tighter than a
 gradient method's to leave an equally small gradient — and ADAPT's own
 convergence test reads exactly that residual gradient. At `tol=1e-8` on
 H₂/HAO, SLSQP reaches the ground state to 1e-10 eV but leaves `max|g| = 4.6e-06`
-against a `gradient_tolerance` of `1e-6`, so the growth loop never stops and
+against a gradient convergence threshold of `1e-6`, so the growth loop never stops and
 piles up 50 redundant operators; at `1e-12` the same run converges after one
 operator in 4 steps and 9 evaluations. If you override `tol`, keep it tight.
 ```
@@ -170,7 +169,7 @@ operator in 4 steps and 9 evaluations. If you override `tol`, keep it tight.
 The same comparison on water — H₂O, `basis={"name": "PAW-LCAO", "size": "SZ"}`,
 `h=0.25`, `pool="qubit"`, Jordan-Wigner (12 qubits, a 640-operator pool, sector
 dimension 225), ADAPT-VQE to `max_iterations=40`; sector FCI = −492.521982 eV.
-No run reaches `gradient_tolerance` here, so all seven stop on ADAPT's
+No run reaches the gradient threshold here, so all seven stop on ADAPT's
 `max_iterations=40` and the comparison is at equal circuit length:
 
 | optimizer | steps | evaluations | E − E(FCI) (eV) | CNOTs | s | uncertified steps |
@@ -181,7 +180,7 @@ No run reaches `gradient_tolerance` here, so all seven stop on ADAPT's
 | **SLSQP** | **471** | **13424** | **9.64e-03** | 488 | **16.7** | **0** |
 | BFGS | 819 | 45672 | 9.64e-03 | **486** | 59.4 | 19 |
 | **L-BFGS** | **444** | 15342 | **9.64e-03** | 488 | 22.6 | **0** |
-| NLCG-PR | 963 | 75309 | 9.64e-03 | 490 | 94.0 | 13 |
+| CG | 963 | 75309 | 9.64e-03 | 490 | 94.0 | 13 |
 
 Every gradient method reaches the same energy on effectively the same circuit —
 486 to 490 CNOTs — so again the choice is cost, and **SLSQP is cheapest on both
@@ -189,7 +188,7 @@ currencies**: half COBYLA's evaluations, a third of Nelder-Mead's, and the
 fastest wall-clock of the seven.
 
 ```{note}
-**BFGS and NLCG-PR stop certifying here** (19 and 13 uncertified growth steps),
+**BFGS and CG stop certifying here** (19 and 13 uncertified growth steps),
 where they certified every step on LiH. With 40 parameters the
 finite-difference gradient's own accuracy no longer reaches the `sqrt(tol)`
 gradient criterion, and the line search ends in "precision loss". The energy is
@@ -198,8 +197,8 @@ function-value criterion, are unaffected — which is the practical reason to
 prefer them.
 ```
 
-The same molecule with `pool="qeb"`, which *does* converge on
-`gradient_tolerance`, as operators / evaluations / CNOTs at the same energy
+The same molecule with `pool="qeb"`, which *does* converge on the
+gradient threshold, as operators / evaluations / CNOTs at the same energy
 (−492.508772 eV):
 
 | optimizer | operators | evaluations | CNOTs | s | uncertified steps |
@@ -210,7 +209,7 @@ The same molecule with `pool="qeb"`, which *does* converge on
 | **SLSQP** | **30** | **4308** | **1168** | 5.6 | **0** |
 | BFGS | 30 | 12478 | 1168 | 9.7 | 6 |
 | **L-BFGS** | **30** | 4871 | **1168** | **5.5** | **0** |
-| NLCG-PR | 30 | 13131 | 1168 | 10.3 | 4 |
+| CG | 30 | 13131 | 1168 | 10.3 | 4 |
 
 Every method but SPSA and Nelder-Mead builds the identical 30-operator,
 1168-CNOT circuit; SLSQP gets there on a quarter of COBYLA's evaluations and an
@@ -235,7 +234,7 @@ section is the measurement behind that decision.
 | :--- | :--- | :--- |
 | `"SLSQP"` | internal, on the merit function | none exposed by SciPy |
 | `"BFGS"` | Wolfe | `c1`, `c2`, `xrtol` |
-| `"NLCG-PR"` | Wolfe | `c1`, `c2` |
+| `"CG"` | Wolfe | `c1`, `c2` |
 | `"L-BFGS"` | bounded Moré–Thuente | `maxls` (default 20) |
 | `"COBYLA"` | none — trust region on a linear model | — |
 | `"Nelder-Mead"` | none — simplex reflection | — |
@@ -253,7 +252,7 @@ optimizer={"method": "BFGS", "maxiter": 1000, "tol": 1e-12,
 evaluations to the same energy: `L-BFGS` with `maxls` at 5, 20 and 50 is
 **identical** (580 each — the line search never exhausts its budget on a cost
 this smooth); `BFGS` tightened from the default `(c1, c2) = (1e-4, 0.9)` to
-`(1e-2, 0.1)` costs **21 % more** (725 → 877); only `NLCG-PR` improves, 1283 →
+`(1e-2, 0.1)` costs **21 % more** (725 → 877); only `CG` improves, 1283 →
 1083 (−16 %), and it is still twice SLSQP's cost afterwards. There is no
 setting here that beats picking a better method.
 
@@ -297,7 +296,7 @@ method are the levers that matter.
 ## A rule of thumb
 
 * **State-vector simulation** — the `"SLSQP"` default, or any of the
-  quasi-Newton family (`"L-BFGS"`, `"BFGS"`, `"NLCG-PR"`): one to
+  quasi-Newton family (`"L-BFGS"`, `"BFGS"`, `"CG"`): one to
   two orders of magnitude fewer steps and evaluations than anything else, and
   the only ones that certified convergence at every growth step of the water
   run. Keep `tol` tight; that is what turns them from the worst circuit in the

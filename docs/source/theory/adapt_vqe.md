@@ -46,9 +46,19 @@ The outer loop stops when
 \max_i |g_i| < \varepsilon,
 ```
 
-or when the growth budget is exhausted. `gradient_tolerance` specifies
-$\varepsilon$ in the internal Hartree convention. `max_iterations` limits the
-number of growth steps; it is distinct from the inner optimizer's `maxiter`.
+or when the growth budget is exhausted. `convergence={"gradient": ...}`
+specifies $\varepsilon$ in the internal Hartree convention. The option also
+stops on the energy change of the last growth step,
+$|E_k - E_{k-1}| < \delta$, with `convergence={"energy": ...}` (Hartree;
+$E_0$ is the reference state). The default is
+`{"gradient": 1e-3, "energy": 1e-3}`. A criterion set to `None` or left out
+is not used, and when both are given both must hold: a small energy change
+alone can be a plateau the next operator leaves, and a small gradient alone a
+flat saddle. A gradient that has vanished ($< 10^{-5}$) stops the growth
+whatever the criteria: appending an operator then lowers the energy by about
+$g^2/2\kappa \sim 10^{-10}$ Ha, so a system one step makes exact does not
+grow a redundant second operator. `max_iterations` limits the number of growth steps; it is distinct
+from the inner optimizer's `maxiter`.
 
 A small gradient means the state is locally stationary along the available pool
 directions. It does not prove global optimality, sufficient pool expressivity

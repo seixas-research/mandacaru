@@ -68,7 +68,7 @@ e_vqe = make("bloch-vqe", optimizer=opt).get_potential_energy()
 print(f"bloch-vqe        E/cell = {e_vqe:+.4f} eV   (fixed UCCSD)")
 
 adapt = make("bloch-adapt-vqe", optimizer=opt, max_iterations=10,
-             gradient_tolerance=1e-3)
+             convergence={"gradient": 1e-3})
 e_adapt = adapt.get_potential_energy()
 print(f"bloch-adapt-vqe  E/cell = {e_adapt:+.4f} eV   "
       f"({adapt.calc.result.num_operators} operators grown)")

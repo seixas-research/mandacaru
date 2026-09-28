@@ -64,7 +64,7 @@ def forces_of(symbols, distance, basis, cell=9.0, h=0.25, **options):
     atoms = dimer(symbols, distance, cell)
     atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, h=h, pool="fermionic",
                            optimizer=LBFGS, max_iterations=60,
-                           gradient_tolerance=1e-6, profile=False,
+                           convergence={"gradient": 1e-6}, profile=False,
                            **options)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -169,7 +169,7 @@ class TestLiHCoreArtifact:
         atoms = dimer("LiH", 2.19265)
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.25,
                                pool="fermionic", optimizer=LBFGS,
-                               max_iterations=60, gradient_tolerance=1e-6, profile=False)
+                               max_iterations=60, convergence={"gradient": 1e-6}, profile=False)
         with pytest.warns(RuntimeWarning, match="do not sum to zero"):
             atoms.get_forces()
 
@@ -185,7 +185,7 @@ class TestLiHCoreArtifact:
         atoms = dimer("LiH", 2.19265)
         atoms.calc = Mandacaru(method="adapt-vqe", basis=PAW, h=0.25,
                                pool="fermionic", optimizer=LBFGS,
-                               max_iterations=60, gradient_tolerance=1e-6, profile=False)
+                               max_iterations=60, convergence={"gradient": 1e-6}, profile=False)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             forces = atoms.get_forces()
@@ -252,7 +252,7 @@ class TestTranslationProjectionPolicy:
         atoms = dimer("H2", 0.74, 8.0)
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
                                pool="fermionic", max_iterations=4,
-                               gradient_tolerance=1e-4, profile=False,
+                               convergence={"gradient": 1e-4}, profile=False,
                                **options)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -280,7 +280,7 @@ class TestTranslationProjectionPolicy:
         atoms.pbc = True
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
                                pool="fermionic", max_iterations=4,
-                               gradient_tolerance=1e-4, profile=False)
+                               convergence={"gradient": 1e-4}, profile=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             forces = atoms.get_forces()
@@ -299,7 +299,7 @@ class TestTranslationProjectionPolicy:
         atoms.pbc = True
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
                                pool="fermionic", max_iterations=4,
-                               gradient_tolerance=1e-4, profile=False,
+                               convergence={"gradient": 1e-4}, profile=False,
                                project_translation=True)
         with pytest.warns(RuntimeWarning, match="ignored for a periodic"):
             atoms.get_forces()

@@ -45,6 +45,7 @@ from __future__ import annotations
 import shutil
 import warnings
 from collections import namedtuple
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -58,6 +59,7 @@ from ..optimizers.optim import DEFAULT_OPTIMIZER
 from ..units import ANGSTROM_TO_BOHR, convert_energy, to_hartree
 from .base import VariationalDriver
 from .calculator import _method_key
+from .convergence import Convergence
 from .deflation import DeflationMixin, deflation_penalty
 
 if TYPE_CHECKING:
@@ -403,9 +405,14 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     max_iterations : int
         Maximum number of operators to append before stopping (default ``50``).
         Used as the default for :meth:`run` / the ASE-calculator evaluation.
-    gradient_tolerance : float
-        Convergence threshold on the largest pool gradient (default ``1e-3``).
-        Used as the default for :meth:`run` / the ASE-calculator evaluation.
+    convergence : dict, optional
+        When growth stops: ``{"gradient": ..., "energy": ...}``, thresholds in
+        Hartree on the largest pool gradient and on the energy change of the
+        last growth step (the log's ``dE``).  A criterion set to ``None`` or
+        left out is not used; with both set, both must hold, and a vanished
+        gradient (below ``1e-5``) stops the growth regardless.  Default
+        ``{"gradient": 1e-3, "energy": 1e-3}``
+        (:mod:`~mandacaru.algorithms.convergence`).
     txt : str, optional
         Path of the structured runtime log (``txt="output.txt"`` by
         convention).  The default, ``None``, writes no file -- a verbose run
@@ -533,7 +540,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         Extra keyword arguments forwarded to :meth:`run` on each calculator
         evaluation (e.g. ``{"log_expressivity": False}``).  Only arguments that
         :meth:`run` accepts are valid here -- the stopping controls
-        (``max_iterations`` / ``gradient_tolerance``), ``txt`` and ``verbose``
+        (``max_iterations`` / ``convergence``), ``txt`` and ``verbose``
         are constructor arguments, not ``run`` arguments.
     """
 
@@ -554,7 +561,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                  gradient: str = "analytic",
                  device: str = "AER_simulator",
                  max_iterations: int = 50,
-                 gradient_tolerance: float = 1e-3,
+                 convergence: Convergence | Mapping[str, float | None]
+                 | None = None,
                  profile: bool = True,
                  verbose: bool = True,
                  sparse: bool | str = "auto",
@@ -589,7 +597,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
-        self.gradient_tolerance = float(gradient_tolerance)
+        self.convergence = Convergence.resolve(convergence)
 
         self._pool_spec = pool
         # Seeded RNG for reproducible expressivity logging (the run log).
@@ -1199,7 +1207,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     # -- the run log ------------------------------------------------------ #
 
     def _make_logger(self, targets, geometry, cell, ref_energy,
-                     max_iterations, gradient_tol, restored=None):
+                     max_iterations, convergence, restored=None):
         """Create an :class:`AdaptOutputLogger` and write the header blocks.
 
         ``targets`` is what
@@ -1240,7 +1248,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         logger.write_electrons(self._electron_fields())
         # The screening gradient is an expectation value of the Hamiltonian's
         # commutator, so it is in Hartree whatever unit the energy columns use
-        # -- worth stating, since `gradient_tol` is compared against it.
+        # -- worth stating, since the gradient criterion is compared against it.
         gradient_method, gradient_formula = self._gradient_description()
         logger.write_optimizer_setup(
             optimizer_method=self.optimizer.method,
@@ -1248,7 +1256,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             energy_unit=self._energy_unit_label(),
             gradient_method=gradient_method,
             gradient_formula=gradient_formula,
-            gradient_tol=gradient_tol, gradient_units="Hartree",
+            convergence=convergence, gradient_units="Hartree",
+            energy_scale=self._to_energy_units(1.0),
             max_iterations=max_iterations,
             # The first row's dE: from the reference state, or from the energy
             # a resumed run's restored ansatz already had.
@@ -1416,7 +1425,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """Grow and optimize the ansatz until convergence.
 
         Everything that also lives on the constructor -- the stopping controls
-        (``max_iterations`` / ``gradient_tolerance``), the ``output`` log path and
+        (``max_iterations`` / ``convergence``), the ``output`` log path and
         the ``verbose`` flag -- is taken from the instance, so a configured
         :class:`ADAPTVQE` is driven with a bare ``.run()``.  ``run`` only accepts
         arguments that the constructor does not already carry.
@@ -1461,7 +1470,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
         # Stopping / logging controls come straight from the constructor.
         max_iterations = self.max_iterations
-        gradient_tol = self.gradient_tolerance
+        convergence = self.convergence
         # One report, written to every destination `log_targets` names: the
         # `txt=` file, standard output, or both.  There is no second renderer.
         targets = self.log_targets
@@ -1495,7 +1504,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         self._show_banner()
 
         logger = self._make_logger(targets, geometry, cell, ref_energy,
-                                   max_iterations, gradient_tol,
+                                   max_iterations, convergence,
                                    restored=restored)
         e_unit = self._energy_unit_label()
 
@@ -1509,6 +1518,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         pruned: list[tuple[int, str]] = []
         max_grad = np.inf
         energy = ref_energy
+        # The energy change of the last growth step (the log's dE), for the
+        # energy criterion; None until a step has been taken.
+        delta_energy: float | None = None
         metrics: CircuitMetrics | None = None
         final_expr: float | None = None
         if restored is not None:
@@ -1547,7 +1559,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                         ansatz.reference_state()
                     grads = self._gradients(psi)
                 max_grad = _max_abs(grads)
-                if max_grad < gradient_tol:
+                if convergence.reached(max_grad, delta_energy):
                     converged = True
                     break
                 # `op` is what the screening *selected* and what the iteration
@@ -1573,6 +1585,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                         lambda t: self.ansatz_energy(ansatz, t), params,
                         n_new=n_new)
                 params = np.asarray(result.x, dtype=float)
+                previous_energy = energy
                 energy = float(result.fun)
                 total_evals += result.nfev
                 total_steps += result.nit or 0
@@ -1587,6 +1600,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                             selected.remove(dropped)
                         pruned.append((len(iterations) + 1, dropped))
                         energy = float(self.ansatz_energy(ansatz, params))
+                delta_energy = energy - previous_energy
                 if not result.success:
                     # The inner optimizer did not certify convergence; the
                     # growth continues from its best point, but the run says so.
@@ -1652,7 +1666,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                     psi = ansatz.state(params) if ansatz.num_parameters else \
                         ansatz.reference_state()
                     max_grad = _max_abs(self._gradients(psi))
-                converged = bool(max_grad < gradient_tol)
+                converged = convergence.reached(max_grad, delta_energy)
 
             # The final state, whether or not periodic checkpoints were asked
             # for -- this is what another algorithm (QPE) starts from.
@@ -1713,20 +1727,22 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
     def _deflated_ground(self, states, beta, *, state_index: int = 0,
                          max_iterations: int | None = None,
-                         gradient_tolerance: float | None = None):
+                         convergence: Convergence | Mapping[str, float | None]
+                         | None = None):
         r"""Grow a fresh deflated ADAPT ansatz orthogonal to ``states``.
 
         Both the pool-screening gradient and the inner re-optimization carry the
         overlap penalty, so the adaptive ansatz grows toward the next excited
         state; the reported energy is the bare expectation value.  Called per level
         by :meth:`~mandacaru.algorithms.deflation.DeflationMixin.energy_levels`
-        (which also accepts ``max_iterations`` / ``gradient_tolerance``).
+        (which also accepts ``max_iterations`` / ``convergence``).
         """
         max_it = (self.max_iterations if max_iterations is None
                   else int(max_iterations))
-        gtol = (self.gradient_tolerance if gradient_tolerance is None
-                else float(gradient_tolerance))
-        energy, psi, n_ops, nev = self._grow_deflated(states, beta, max_it, gtol)
+        criteria = (self.convergence if convergence is None
+                    else Convergence.resolve(convergence))
+        energy, psi, n_ops, nev = self._grow_deflated(states, beta, max_it,
+                                                      criteria)
         return energy, psi, nev, n_ops
 
     def _deflated_gradients(self, psi: np.ndarray, states, beta: float
@@ -1750,7 +1766,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             grads[i] += extra
         return grads
 
-    def _grow_deflated(self, states, beta, max_iterations, gradient_tol):
+    def _grow_deflated(self, states, beta, max_iterations,
+                       convergence: Convergence):
         """Grow one deflated ADAPT ansatz; return ``(energy, psi, n_ops, nfev)``.
 
         With ``states`` empty this is an ordinary ADAPT ground-state growth.  A
@@ -1760,11 +1777,17 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         ansatz = self._new_ansatz()
         params = np.zeros(0)
         total_evals = 0
+        # The energy criterion reads the deflated cost -- what this growth
+        # minimizes -- from the reference state on.
+        reference = ansatz.reference_state()
+        cost_now = self.energy(reference) + deflation_penalty(reference, states,
+                                                              beta)
+        delta_energy: float | None = None
         for _ in range(int(max_iterations)):
             psi = (ansatz.state(params) if ansatz.num_parameters
                    else ansatz.reference_state())
             grads = self._deflated_gradients(psi, states, beta)
-            if _max_abs(grads) < gradient_tol:
+            if convergence.reached(_max_abs(grads), delta_energy):
                 break
             idx = self._select_operator(grads, ansatz.num_parameters)
 
@@ -1789,6 +1812,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             result = self._optimize_grown(cost, params, n_new=n_new)
             params = np.asarray(result.x, dtype=float)
             total_evals += result.nfev
+            delta_energy = float(result.fun) - cost_now
+            cost_now = float(result.fun)
         psi = (ansatz.state(params) if ansatz.num_parameters
                else ansatz.reference_state())
         return self.energy(psi), psi, ansatz.num_parameters, total_evals
@@ -1982,7 +2007,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         return str(basis)
 
     def _header_rows(self, ref_energy: float, e_unit: str,
-                     max_iterations=None, gradient_tol=None) -> list:
+                     max_iterations=None, convergence=None) -> list:
         """``(label, value)`` pairs -- one option per line -- and ``None`` rules.
 
         Grouped by what the option controls: the problem, the qubit register,
@@ -2027,8 +2052,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             ("optimizer", str(self.optimizer.method)),
             ("max operators", str(max_iterations)
              if max_iterations is not None else None),
-            ("gradient tolerance", f"{gradient_tol:g}"
-             if gradient_tol is not None else None),
+            ("convergence", convergence.describe(
+                self._to_energy_units(1.0), e_unit)
+             if convergence is not None else None),
             ("circuit profiling", str(self.profile)),
             None,
             ("device", str(self.device)),
@@ -2042,7 +2068,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         return [r for r in rows if r is None or r[1] is not None]
 
     def _print_header(self, ref_energy: float, e_unit: str,
-                      max_iterations=None, gradient_tol=None) -> None:
+                      max_iterations=None, convergence=None) -> None:
         """Print the run configuration, **one option per line**.
 
         The qubit Hamiltonian's Pauli expansion is deliberately not printed --
@@ -2056,7 +2082,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         print("ADAPT-VQE")
         print(rule)
         for row in self._header_rows(ref_energy, e_unit, max_iterations,
-                                     gradient_tol):
+                                     convergence):
             if row is None:
                 print("-" * 70)
             else:

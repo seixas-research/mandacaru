@@ -77,13 +77,23 @@ def lih():
 # rounded cube constant 2.3800756.  Every value moved by ~1e-8 Ha, five orders
 # of magnitude below this grid's own discretization error; the previous values
 # are kept alongside so the shift stays visible.
+# Re-pinned on 2026-09-27 for two changes, both outside the code under test:
+# the mandacaru-ncpp library regenerated on 2026-09-25 (H2 RHF -1.061096237
+# -> -1.060594179 with confinement off) and the 0.1 eV energy_shift default
+# the norm-conserving families took on 2026-09-26 (-> -1.078493627).  Old ->
+# new: H2 rhf -1.061096237 -> -1.078493627, fci -1.075333378 -> -1.093127206;
+# LiH rhf -0.729555401 -> -0.722599704, fci -0.740838978 -> -0.734640220.
+# And the same day again, when the confinement shift became measured from the
+# dataset's own free level instead of the stored reference (3e-6 Ha apart for
+# H): H2 rhf -1.078493627 -> -1.078502821, fci -1.093127206 -> -1.093136721;
+# LiH rhf -0.722599704 -> -0.722599738, fci -0.734640220 -> -0.734641016.
 PINNED = {
-    "H2": {"h": H2_H, "rhf": -1.061096237049, "fci": -1.075333378284,
-           "adapt": -1.075333378229,
+    "H2": {"h": H2_H, "rhf": -1.078502821428, "fci": -1.093136721049,
+           "adapt": -1.093136721049,
            "before_exact_self_energy": {"rhf": -1.061096245397,
                                         "fci": -1.075333384728}},
-    "LiH": {"h": LIH_H, "rhf": -0.729555400740, "fci": -0.740838978397,
-            "adapt": -0.740838977840,
+    "LiH": {"h": LIH_H, "rhf": -0.722599737757, "fci": -0.734641016368,
+            "adapt": -0.734641016368,
             "before_exact_self_energy": {"rhf": -0.729555411706,
                                          "fci": -0.740838986301}},
 }

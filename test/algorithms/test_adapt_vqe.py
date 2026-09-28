@@ -68,14 +68,14 @@ def h2_exact_ev(h2_exact):
     return h2_exact * HARTREE_TO_EV
 
 
-def _adapt(hamiltonian, pool_name, max_iterations=50, gradient_tol=1e-6):
+def _adapt(hamiltonian, pool_name, max_iterations=50, gradient=1e-6):
     # Stopping controls now live on the constructor (run() takes no duplicates).
     return Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
                      pool=pool_name, num_particles=(1, 1),
                      n_spatial_orbitals=2,
                      optimizer=LBFGS,
                      max_iterations=max_iterations,
-                     gradient_tolerance=gradient_tol)
+                     convergence={"gradient": gradient})
 
 
 # --------------------------------------------------------------------------- #
@@ -254,7 +254,7 @@ class TestDriver:
         pool = build_pool("ceo", 2, (1, 1))
         res = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                         pool=pool, num_particles=(1, 1),
-                        gradient_tolerance=1e-6).run()
+                        convergence={"gradient": 1e-6}).run()
         assert abs(res.optimal_energy - h2_exact_ev) < 1e-6 * HARTREE_TO_EV
 
     def test_named_pool_requires_shape(self, h2_hamiltonian):
@@ -297,7 +297,7 @@ class TestADAPTVQECalculator:
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo",
                                hamiltonian_builder=builder, max_iterations=6,
-                               gradient_tolerance=1e-4)
+                               convergence={"gradient": 1e-4})
         energy_ev = atoms.get_total_energy()
         result = atoms.calc.result
 
@@ -317,7 +317,7 @@ class TestADAPTVQECalculator:
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                                grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.30),
-                               max_iterations=6, gradient_tolerance=1e-3)
+                               max_iterations=6, convergence={"gradient": 1e-3})
         energy = atoms.get_total_energy()
         assert np.isfinite(energy)
         assert atoms.calc.n_qubits == 4        # H2 in HAO -> 2 orbitals
@@ -335,7 +335,7 @@ class TestADAPTVQECalculator:
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                                h=0.30, max_iterations=6,
-                               gradient_tolerance=1e-3)
+                               convergence={"gradient": 1e-3})
         assert np.isfinite(atoms.get_total_energy())
         assert atoms.calc.n_qubits == 4
 
@@ -344,7 +344,7 @@ class TestADAPTVQECalculator:
         # is impossible -> a clear error.
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])  # no cell
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                               max_iterations=4, gradient_tolerance=1e-3)
+                               max_iterations=4, convergence={"gradient": 1e-3})
         with pytest.raises(ValueError, match="no unit cell"):
             atoms.get_total_energy()
 
@@ -355,7 +355,7 @@ class TestArgumentSurface:
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = Mandacaru(method="adapt-vqe", pool=pool, basis="HAO",
                                grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.3),
-                               max_iterations=8, gradient_tolerance=1e-3)
+                               max_iterations=8, convergence={"gradient": 1e-3})
         assert np.isfinite(atoms.get_total_energy())
 
     @pytest.mark.parametrize("mapping",
@@ -365,7 +365,7 @@ class TestArgumentSurface:
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
                                basis="HAO", mapping=mapping,
                                grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.25),
-                               max_iterations=8, gradient_tolerance=1e-3)
+                               max_iterations=8, convergence={"gradient": 1e-3})
         energy_ev = atoms.get_total_energy()
         h = atoms.calc.hamiltonian.to_matrix()
         exact = float(np.linalg.eigvalsh(0.5 * (h + h.conj().T)).min())
@@ -373,14 +373,15 @@ class TestArgumentSurface:
         assert abs(energy_ev - exact_ev) < 1e-3, mapping
 
     def test_run_defaults_come_from_constructor(self, h2_hamiltonian):
-        # max_iterations / gradient_tolerance / output are constructor args and
+        # max_iterations / convergence / output are constructor args and
         # supply the defaults for run().
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
-                          max_iterations=3, gradient_tolerance=1e-2)
+                          max_iterations=3, convergence={"gradient": 1e-2})
         assert adapt.max_iterations == 3
-        assert adapt.gradient_tolerance == 1e-2
+        assert adapt.convergence.gradient == 1e-2
+        assert adapt.convergence.energy is None
         res = adapt.run()                       # no args -> uses the defaults
         assert res.num_operators <= 3
 
@@ -390,7 +391,7 @@ class TestArgumentSurface:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="fermionic", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
-                          max_iterations=4, gradient_tolerance=1e-3,
+                          max_iterations=4, convergence={"gradient": 1e-3},
                           txt=out)
         adapt.run()                             # output taken from constructor
         parsed = parse_output(out)
@@ -402,7 +403,7 @@ class TestArgumentSurface:
         atoms = Atoms("LiH", positions=[[0, 0, -0.8], [0, 0, 0.8]])
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                                grid=Grid(center=[0, 0, 0], box_size=7.0, h=0.3),
-                               max_iterations=4, gradient_tolerance=1e-2)
+                               max_iterations=4, convergence={"gradient": 1e-2})
         atoms.get_total_energy()
         assert atoms.calc.n_qubits == 6
         assert atoms.calc.num_particles == (2, 2)

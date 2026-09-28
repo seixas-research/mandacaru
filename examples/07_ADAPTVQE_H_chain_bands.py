@@ -83,7 +83,7 @@ for n_k in MESH_SERIES:
     # The mesh IS the supercell, so each member needs its own calculator.
     chain.calc = Mandacaru(method="bloch-adapt-vqe",
                            kpts={"size": (n_k, 1, 1), "gamma": True},
-                           h=0.35, max_iterations=10, gradient_tolerance=1e-3,
+                           h=0.35, max_iterations=10, convergence={"gradient": 1e-3},
                            trace=False, **settings)
     e_cell = chain.get_potential_energy()
     result = chain.calc.result
@@ -99,7 +99,7 @@ print("  (the finite supercells converge toward the bulk total energy.)")
 band_atoms = primitive()
 band_atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                             kpts={"size": (BAND_MESH, 1, 1), "gamma": True},
-                            h=0.35, max_iterations=10, gradient_tolerance=1e-3,
+                            h=0.35, max_iterations=10, convergence={"gradient": 1e-3},
                             trace=False, **settings)
 band_atoms.get_potential_energy()
 spectral = band_atoms.calc.get_spectral_function()

@@ -31,7 +31,7 @@ atoms.calc = Mandacaru(
     mapping="jordan_wigner",
     optimizer=Optimizer("L-BFGS", maxiter=1000),
     gradient="analytic",
-    gradient_tolerance=1e-5,
+    convergence={"gradient": 1e-5},
     max_iterations=40,
     execute_circuits=False,
     profile=False,
@@ -58,10 +58,10 @@ g_i = \left.\frac{\mathrm{d}}{\mathrm{d}\theta}
 ```
 
 The largest gradient magnitude identifies the next generator. Mandacaru adds it
-and reoptimizes all circuit parameters. The loop stops when the largest pool
-gradient is below `gradient_tolerance`, or when it reaches `max_iterations`.
-The screening threshold uses the internal Hamiltonian's **Hartree** units,
-although the returned energies use eV.
+and reoptimizes all circuit parameters. The loop stops when the `convergence`
+criteria hold -- by default, the largest pool gradient below `1e-3` and the
+last step's energy change below `1e-3` -- or when it reaches `max_iterations`. The thresholds use the internal Hamiltonian's
+**Hartree** units, although the returned energies use eV.
 
 There are two optimization loops: `max_iterations` limits circuit growth;
 `Optimizer(..., maxiter=1000)` limits each classical parameter optimization.
@@ -96,7 +96,7 @@ for pool in ("fermionic", "qubit", "qeb", "ceo"):
         pool=pool,
         load_hamiltonian="lih_sto3g_r1p6.json",
         optimizer=Optimizer("L-BFGS", maxiter=1000),
-        gradient_tolerance=1e-5,
+        convergence={"gradient": 1e-5},
         max_iterations=40,
         execute_circuits=False,
         profile=False)

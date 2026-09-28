@@ -402,7 +402,7 @@ class TestIntegration:
         atoms.calc = Mandacaru(method="adapt-vqe", basis="STO-4G",
                                        pool="qeb", h=0.35,
                                        profile=False, optimizer=LBFGS,
-                                       gradient_tolerance=1e-5)
+                                       convergence={"gradient": 1e-5})
         atoms.get_potential_energy()
         calc = atoms.calc
         h = calc.hamiltonian.to_matrix()

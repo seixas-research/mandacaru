@@ -828,7 +828,7 @@ _OPTIMIZERS = [
   year    = {1969},
   doi     = {10.1051/m2an/196903R100351}
 }""", "the Polak-Ribiere nonlinear conjugate gradient", verified=False,
-         topics=("optimizer", "nlcg-pr")),
+         topics=("optimizer", "cg")),
 ]
 
 # --------------------------------------------------------------------------- #

@@ -148,6 +148,11 @@ calculation that later uses it.
     angular momenta to the local potential; La defaults to one extra channel
     because its empty 4f is bound and the local channel misses it.
 
+``frozen_subshells``
+    W through Rn freeze their filled 4f shell by default, as in the existing
+    library. An empty positive-energy f scattering channel represents its
+    response without treating fourteen semicore electrons as valence.
+
 Defaults note
 -------------
 
@@ -208,6 +213,13 @@ DEFAULT_NLCC = True
 #: all-electron atom but absent from its projector-free local channel.
 DEFAULT_EXTRA_L = 0
 DEFAULT_EXTRA_LS = {"La": 1}
+#: The filled 4f shell is a core shell from W through Rn in the established
+#: ONCV library. Keeping it in valence adds 14 electrons and produces a very
+#: hard f projector; a positive-energy scattering f channel remains after
+#: freezing it, so the f response is still represented.
+DEFAULT_FROZEN_SUBSHELLS = {
+    symbol: ((4, 3),) for symbol in
+    ("W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn")}
 #: Local-potential radius as a multiple of the largest channel cutoff.
 DEFAULT_LOCAL_FACTOR = 0.9
 #: Per-element cutoff radii (Bohr) overriding the factor heuristic -- close to
@@ -866,43 +878,65 @@ def ghost_errors(pp, levels) -> dict:
     return out
 
 
-def missing_bound_states(pp, energy_floor: float = -0.01) -> dict[int, tuple[int, int]]:
+def missing_bound_states(pp, energy_floor: float = -0.01, *,
+                         record_reference: bool = False
+                         ) -> dict[int, tuple[int, int]]:
     """Non-core bound-level count deficits through one above the highest ``l``.
 
     The all-electron and pseudo spectra use the same 24-Bohr radial box and
     the same energy floor. Deep occupied core levels are subtracted from the
     all-electron count; their absence from a pseudopotential is intentional.
     A floor of -0.01 Ha avoids classifying box-sensitive threshold states as
-    missing. This is a generation-time check because a library file does not
-    carry the all-electron atom.
+    missing. A generated dataset can retain the expected counts for the same
+    audit after it is saved and loaded. Older files without those counts need
+    the all-electron atom supplied separately.
     """
     from scipy.interpolate import CubicSpline
     from scipy.linalg import eigvalsh_tridiagonal
 
-    if getattr(pp, "atom", None) is None:
-        raise ValueError("a missing-state audit needs the all-electron atom")
-    r_max = min(24.0, float(pp.atom.r[-1]), float(pp.r[-1]))
-    r = np.asarray(pp.atom.r, dtype=float)
-    r = r[r <= r_max]
+    atom = getattr(pp, "atom", None)
+    audit = getattr(pp, "bound_state_audit", None) or {}
+    if atom is None and not audit:
+        raise ValueError("a missing-state audit needs the all-electron atom "
+                         "or recorded reference counts")
+    if atom is None and not np.isclose(energy_floor, audit["energy_floor"]):
+        raise ValueError("the saved bound-state counts use energy_floor="
+                         f"{audit['energy_floor']:g} Ha")
+    r_max = (min(24.0, float(atom.r[-1]), float(pp.r[-1]))
+             if atom is not None else float(audit["r_max"]))
+    if atom is not None:
+        r = np.asarray(atom.r, dtype=float)
+        r = r[r <= r_max]
+    else:
+        h_saved = float(pp.r[1] - pp.r[0])
+        r = np.arange(1, int(np.floor(r_max / h_saved)) + 1) * h_saved
     h = float(r[1] - r[0])
     off = np.full(r.size - 1, -0.5 / h ** 2)
-    _valence, core = _valence_configuration(
-        int(pp.atomic_number), configuration=pp.atom.occupations)
-    core = dict(core)
-    for orbital in getattr(pp, "frozen_subshells", ()):
-        core[orbital] = pp.atom.occupations[orbital]
+    if atom is not None:
+        _valence, core = _valence_configuration(
+            int(pp.atomic_number), configuration=atom.occupations)
+        core = dict(core)
+        for orbital in getattr(pp, "frozen_subshells", ()):
+            core[orbital] = atom.occupations[orbital]
 
     missing = {}
-    for l in range(max(pp.channels) + 2):
+    expected_counts = {}
+    highest_audited_l = max((int(l) for l in audit.get("expected", {})),
+                            default=-1)
+    for l in range(max(max(pp.channels), highest_audited_l) + 2):
         centrifugal = l * (l + 1) / (2.0 * r * r)
-        v_ae = np.asarray(pp.atom.v_effective[:r.size]) + centrifugal
-        ae = eigvalsh_tridiagonal(
-            1.0 / h ** 2 + v_ae, off, select="v",
-            select_range=(float(v_ae.min()) - 1.0, energy_floor))
-        n_core = sum(1 for _n, lc in core if lc == l)
-        expected = max(0, ae.size - n_core)
+        if atom is not None:
+            v_ae = np.asarray(atom.v_effective[:r.size]) + centrifugal
+            ae = eigvalsh_tridiagonal(
+                1.0 / h ** 2 + v_ae, off, select="v",
+                select_range=(float(v_ae.min()) - 1.0, energy_floor))
+            n_core = sum(1 for _n, lc in core if lc == l)
+            expected = max(0, ae.size - n_core)
+        else:
+            expected = int(audit["expected"].get(str(l), 0))
         if not expected:
             continue
+        expected_counts[str(l)] = expected
         if l in pp.channels:
             levels = radial_spectrum(pp, l, n_states=expected,
                                      r_max=r_max)
@@ -916,6 +950,12 @@ def missing_bound_states(pp, energy_floor: float = -0.01) -> dict[int, tuple[int
             actual = int(levels.size)
         if actual < expected:
             missing[int(l)] = (expected, actual)
+    if record_reference:
+        if atom is None:
+            raise ValueError("recording reference counts needs the all-electron atom")
+        pp.bound_state_audit = {"energy_floor": float(energy_floor),
+                                "r_max": float(r_max),
+                                "expected": expected_counts}
     return missing
 
 
@@ -932,7 +972,16 @@ def scattering_errors(pp, log_derivative,
     logarithmic derivatives at the same channel, energy and matching radius across
     ghost-repair attempts; it is local to one reference atom.
     """
-    treatment = getattr(pp, "relativity", "none")
+    from ..basis.relativity import _resolve as _resolve_relativity
+
+    treatment = _resolve_relativity(getattr(pp, "relativity", "none"))
+    # A Dirac dataset's ordinary channels are the j average -- PAW-LCAO's
+    # partial waves solve the scalar (kappa = -1) equation outright -- and
+    # its spin-orbit part is a separate term this check does not see.  So
+    # its phases are compared with the scalar all-electron wave; a Dirac
+    # log-derivative would need a kappa this per-l check does not have.
+    if treatment == "dirac":
+        treatment = "scalar"
     # A family may judge "near" over a narrower window (the single-projector
     # NCPP: first-order transferability, KBView.phase_window).
     window = float(getattr(pp, "phase_window", PHASE_WINDOW))
@@ -1682,6 +1731,9 @@ class ONCVPseudoPotential(PseudoPotential):
     #: ``l -> {"projectors": [...], "coupling": D}`` of the ``L . S`` term.
     #: Empty unless the pseudopotential was generated with ``"dirac"``.
     spin_orbit: dict = field(default_factory=dict)
+    #: AE non-core bound-level counts, box and energy floor used by the
+    #: missing-state gate. Retained so a loaded file can repeat that gate.
+    bound_state_audit: dict = field(default_factory=dict)
 
     #: What its generator could not remove (``ghosts="flag"``), as for
     #: PAW-LCAO: ``{"ghosts": {l: depth}, "phases": {l: (near, far)}}``.
@@ -1863,7 +1915,8 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
                     energy_offset, defaults=None, treatment: str = "none",
                     kappa: int | None = None, extra_l: int = 0,
                     extra_energy: float | None = None,
-                    bound_extra: bool = False):
+                    bound_extra: bool = False,
+                    bound_gap_l: Sequence[int] = ()):
     """``(per_l, cutoffs, references)`` -- the all-electron input of a channel.
 
     ``per_l[l]`` lists every occupied valence state ``(n, energy, R, occupancy)``
@@ -1882,7 +1935,9 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
     ``extra_l`` adds that many unoccupied channels above the highest valence
     :math:`l`. With ``bound_extra=True`` (ONCVPSP), a bound non-core
     all-electron state becomes the first reference; otherwise both references
-    are scattering states. Without these channels
+    are scattering states. ``bound_gap_l`` similarly adds bound references
+    inside a gap in the occupied angular momenta, when the neutral atom has
+    such a level. Without these channels
     those angular momenta see the local potential
     alone -- which is the right answer only if the local potential happens to
     scatter them correctly, and it does not, because it was built to be smooth
@@ -1943,25 +1998,28 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
             energies.append(energy_2)
         references[l] = (waves[:2], energies[:2])
 
-    if int(extra_l) > 0:
+    if int(extra_l) > 0 or bound_gap_l:
         _add_extra_channels(symbol, atom, valence_config, z_eff, per_l,
                             cutoffs, references, int(extra_l),
                             float(energy_offset), treatment, r_cut,
                             rc_factor, defaults, bound_extra,
-                            extra_energy=extra_energy)
+                            extra_energy=extra_energy,
+                            bound_gap_l=bound_gap_l, kappa=kappa)
     return per_l, cutoffs, references
 
 
 def _add_extra_channels(symbol, atom, valence_config, z_eff, per_l,
                         cutoffs, references, extra_l, energy_offset,
                         treatment, r_cut, rc_factor, defaults, bound_extra,
-                        extra_energy: float | None = None):
+                        extra_energy: float | None = None,
+                        bound_gap_l: Sequence[int] = (), kappa=None):
     """Append unoccupied channels, using a bound reference when one exists.
 
     La's neutral atom has an empty but bound 4f at -0.155 Ha. A positive
     scattering f projector does not restore that level when the local
     potential misses it; use the actual bound wave without occupying 4f or
-    changing the valence charge.
+    changing the valence charge. The same issue occurs in the empty d shell
+    of several f-block atoms, between their occupied s and f channels.
     """
     from scipy.linalg import eigvalsh_tridiagonal
 
@@ -1971,9 +2029,14 @@ def _add_extra_channels(symbol, atom, valence_config, z_eff, per_l,
                   (e for _w, e in references.values()))
               if extra_energy is None else float(extra_energy))
     widest = max(cutoffs.values())
-    for l in range(highest + 1, highest + extra_l + 1):
+    targets = sorted(set(int(l) for l in bound_gap_l)
+                     | set(range(highest + 1, highest + extra_l + 1)))
+    for l in targets:
+        if l in per_l:
+            continue
+        k = kappa.get(l) if isinstance(kappa, dict) else kappa
         guess = float("inf")
-        if bound_extra and extra_energy is None:
+        if bound_extra and (extra_energy is None or l <= highest):
             n_core = sum(1 for orbital in atom.occupations
                          if orbital[1] == l and orbital not in valence_config)
             h = float(r[1] - r[0])
@@ -1982,9 +2045,10 @@ def _add_extra_channels(symbol, atom, valence_config, z_eff, per_l,
             off = np.full(r.size - 1, -0.5 / h ** 2)
             guess = float(eigvalsh_tridiagonal(
                 diagonal, off, select="i", select_range=(n_core, n_core))[0])
+        if l <= highest and guess >= -0.01:
+            continue                # an interior gap needs a bound reference
         if guess < -0.01:
             n = l + 1 + n_core
-            k = -(l + 1) if treatment == "dirac" else None
             u, energy = reference_bound_state(r, v_ae, l, n_core, guess,
                                               z_eff, treatment, k)
             wave = u / r
@@ -2004,7 +2068,6 @@ def _add_extra_channels(symbol, atom, valence_config, z_eff, per_l,
             inside = r <= widest
             waves = []
             for energy in energies:
-                k = -(l + 1) if treatment == "dirac" else None
                 u = scattering_wave(r, v_ae, l, energy, z_eff, treatment, k)
                 u = u / np.sqrt(np.trapezoid(u[inside] ** 2, r[inside]))
                 waves.append(u / r)
@@ -2199,6 +2262,8 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         to the frozen core.
         A scattering-only channel is automatically added when this removes
         the highest angular momentum, for example Bi 4f14.
+        By default W through Rn freeze 4f, as in the established library;
+        pass an empty sequence to keep it in valence deliberately.
     scattering_energy : float, optional
         First energy (Hartree) of an added scattering-only channel. With a
         frozen subshell the default is +0.25 Ha, keeping the references
@@ -2217,7 +2282,7 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
                    if k not in ("symbol", "ghosts")}
         pp = ghost_free(generate_oncv, _oncv_levels, log_derivative_ps,
                         symbol, options, ghosts)
-        missing = missing_bound_states(pp)
+        missing = missing_bound_states(pp, record_reference=True)
         if missing:
             detail = ", ".join(f"l={l}: {actual}/{expected} non-core levels"
                                for l, (expected, actual) in sorted(missing.items()))
@@ -2254,12 +2319,20 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
                              "with the supplied atom")
     valence_config, core_config = _valence_configuration(
         atomic_number, configuration=atom.occupations)
-    frozen = _validate_frozen_subshells(valence_config, frozen_subshells)
+    requested_frozen = (DEFAULT_FROZEN_SUBSHELLS.get(symbol, ())
+                        if frozen_subshells is None else frozen_subshells)
+    frozen = _validate_frozen_subshells(valence_config, requested_frozen)
     for orbital in frozen:
         core_config[orbital] = valence_config.pop(orbital)
     if not valence_config:
         raise ValueError(f"{symbol} has no valence subshells to pseudize")
     highest_valence_l = max(l for _n, l in valence_config)
+    # A neutral f-block atom can occupy f while leaving a *bound* d shell
+    # empty. The local d potential often misses it (Ce--Yb, Pa, U), so supply
+    # a zero-occupation bound d projector when that shell really exists.
+    bound_gap_l = ((2,) if highest_valence_l >= 3
+                   and not any(l == 2 for _n, l in valence_config)
+                   and not any(l == 2 for _n, l in frozen) else ())
     requested_extra_l = (DEFAULT_EXTRA_LS.get(symbol, DEFAULT_EXTRA_L)
                          if extra_l is None else int(extra_l))
     effective_extra_l = max(requested_extra_l,
@@ -2284,6 +2357,7 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
                       if kappa_map is not None else None)
         cache_key = (id(atom), branch_key, cutoff_key, float(rc_factor),
                      float(energy_offset), effective_extra_l,
+                     bound_gap_l,
                      scattering_energy, float(q_cut), int(n_bessel),
                      relativity)
         if _channel_cache is not None and cache_key in _channel_cache:
@@ -2292,7 +2366,8 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
             symbol, atom, valence_config, z_eff, r_cut, rc_factor,
             energy_offset, treatment=relativity, kappa=kappa_map,
             extra_l=effective_extra_l,
-            extra_energy=scattering_energy, bound_extra=True)
+            extra_energy=scattering_energy, bound_extra=True,
+            bound_gap_l=bound_gap_l)
         waves_of_l = {
             l: optimize_pseudo_waves(r, v_ae, l, waves, energies,
                                      cutoffs[l], q_cut=q_cut,
@@ -2884,6 +2959,7 @@ def to_payload(pp: ONCVPseudoPotential, stride: int = 1) -> dict:
             "xc": str(pp.xc), "relativity": str(pp.relativity),
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
             "spin_orbit": spin_orbit, "defects": defects_record(pp.defects),
+            "bound_state_audit": dict(pp.bound_state_audit),
             "channels": channels, "radial_tables": tables}
 
 
@@ -2963,6 +3039,7 @@ def from_payload(payload: dict) -> ONCVPseudoPotential:
                     for i in range(len(block))],
             }
             for l, block in (payload.get("spin_orbit") or {}).items()},
+        bound_state_audit=dict(payload.get("bound_state_audit") or {}),
         defects=read_defects(payload.get("defects")))
     warn_defects(dataset, FAMILY)
     return dataset

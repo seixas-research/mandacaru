@@ -737,6 +737,18 @@ class TestConstruction:
         with pytest.raises(oncv.MissingStateError, match="l=1: 0/1"):
             generate_oncv("O")
 
+    def test_saved_bound_state_audit_detects_missing_channel(self, tmp_path):
+        """The loaded dataset retains the AE count used by generation."""
+        pp = generated("O")
+        assert pp.bound_state_audit["expected"]["1"] == 1
+        path = save_pseudopotential(pp, tmp_path / "O.parquet")
+        loaded = load_pseudopotential(path)
+        assert loaded.atom is None
+        assert oncv.missing_bound_states(loaded) == {}
+        loaded.channels = {0: loaded.channels[0]}
+        loaded.v_local_screened = np.zeros_like(loaded.v_local_screened)
+        assert oncv.missing_bound_states(loaded)[1] == (1, 0)
+
     def test_divergent_residual_is_rejected_and_legacy_file_warns(self,
                                                                  tmp_path):
         """Old deep negative-energy references must not load silently."""

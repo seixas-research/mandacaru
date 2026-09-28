@@ -262,7 +262,7 @@ class TestSolvers:
         driver = Mandacaru(method="adapt-vqe", hamiltonian=H, pool="fermionic",
                            num_particles=(2, 1), n_spatial_orbitals=3,
                            trace=False, profile=False, optimizer=LBFGS,
-                           gradient_tolerance=1e-6, max_iterations=30)
+                           convergence={"gradient": 1e-6}, max_iterations=30)
         result = driver.run()
         assert result.in_units("Ha") == pytest.approx(exact, abs=1e-5)
         # Singles carry gradient from a non-stationary reference: allowed.
@@ -331,7 +331,7 @@ class TestPlaneWaves:
                                        basis={"name": "PW", "energy_cutoff": 8},
                                        charge=1, profile=False,
                                        optimizer=LBFGS,
-                                       gradient_tolerance=1e-6)
+                                       convergence={"gradient": 1e-6})
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (1, 0) and calc.n_qubits == 6

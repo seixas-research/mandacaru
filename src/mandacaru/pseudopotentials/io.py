@@ -515,7 +515,8 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
     ``folder`` comes from :func:`.environment.library_directory`, which has
     already refused an unset or wrong variable.  An **empty** folder gets the
     recipe to fill it; one that lacks the element names what it does hold.  A
-    file of another family is refused.
+    file of another family is refused, and so is one whose functional is not
+    the one its ``lda/`` or ``pbe/`` folder names.
     """
     key = f"{symbol}@{folder}"
     cached = cache.get(key)
@@ -539,6 +540,16 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
     if str(getattr(pp, "family", "")).lower() != family:
         raise ValueError(f"{path!r} belongs to family {pp.family!r}, not "
                          f"{family!r}")
+    # A library folder named for a functional holds only that functional's
+    # datasets: `directory="pbe"` must not silently run an LDA file copied
+    # into it.  Folders with any other name are the caller's own.
+    from .environment import FUNCTIONALS
+    folder_xc = os.path.basename(os.path.normpath(folder)).lower()
+    dataset_xc = str(getattr(pp, "xc", "") or "").lower()
+    if folder_xc in FUNCTIONALS and dataset_xc and dataset_xc != folder_xc:
+        raise ValueError(f"{path!r} is a {dataset_xc.upper()} dataset in the "
+                         f"{folder_xc}/ folder; regenerate it with --xc "
+                         f"{folder_xc} or move it to {dataset_xc}/")
     # Where the dataset came from: the run log's [BASIS] block names it, since
     # a library is a checkout an environment variable points at, anywhere.
     pp.source = os.path.realpath(path)

@@ -172,11 +172,16 @@ class TestTransform:
     def test_normalization_is_preserved(self):
         """Rescaled to the table's *own* norm, not to 1: the tables do not all
         arrive normalized (PAW-LCAO hydrogen 1s carries 0.979) and forcing them to
-        1 would make the filter change a function even as k_c -> infinity."""
+        1 would make the filter change a function even as k_c -> infinity.
+
+        ``rel=1e-6``: since the 2026-09-25 library the stored grid starts at
+        ``4h`` (PAW_SAGA.md section 6.4), and the radial quadrature over its
+        first interval leaves the O 2s second zeta at 3.0e-7 (1e-7 before).
+        """
         for table in paw_tables("O"):
             out, _info = filter_radial(table.r, table.values, table.l, 7.5)
             assert radial_norm(table.r, out) == pytest.approx(
-                radial_norm(table.r, table.values), rel=1e-7)
+                radial_norm(table.r, table.values), rel=1e-6)
 
     @pytest.mark.parametrize("l", [1, 2])
     def test_the_origin_keeps_its_r_to_the_l(self, l):
@@ -239,11 +244,13 @@ class TestTransform:
         documented caveat, measured.  ``"switch"`` matches ``"plain"`` on a
         long-ranged function and keeps a compact one compact.
 
-        Measured on the PAW-LCAO hydrogen 1s at k_c = 7.5: 1.20e-6 of the norm
-        above the cutoff to begin with, 4.89e-7 after ``"plain"`` or
-        ``"switch"`` (they coincide -- the switch-off lands where the function
-        is already 1e-7 of its peak) and **5.28e-5 after ``"mask"``**, 44x
-        worse than doing nothing.
+        Measured on the PAW-LCAO hydrogen 1s at k_c = 7.5 with the library
+        regenerated on 2026-09-25: 7.1e-7 of the norm above the cutoff to
+        begin with, 1.2e-15 after ``"plain"``, 1.6e-13 after ``"switch"``
+        and **2.8e-8 after ``"mask"``**, five orders of magnitude worse than
+        the default.  (With the previous hydrogen, whose tail was rougher,
+        ``"mask"`` was 44x worse than doing nothing at all; on the new one it
+        no longer is, so that is not asserted.)
         """
         assert DEFAULT_FILTER_METHOD == "switch"
         assert set(FILTER_METHODS) == {"plain", "switch", "mask"}
@@ -257,8 +264,7 @@ class TestTransform:
             results[method] = info["residual_after"]
         assert results["switch"] < before
         assert results["switch"] == pytest.approx(results["plain"], rel=0.05)
-        assert results["mask"] > 10 * before
-        assert results["mask"] > 10 * results["switch"]
+        assert results["mask"] > 1e3 * results["switch"]
         with pytest.raises(ValueError, match="unknown filter method"):
             filter_radial(table.r, table.values, table.l, k_c, method="nope")
 

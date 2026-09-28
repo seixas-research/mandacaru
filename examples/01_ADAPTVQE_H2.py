@@ -55,7 +55,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        device="AER_simulator",
                        h=0.10,
                        max_iterations=15,
-                       gradient_tolerance=1e-4,
+                       convergence={"gradient": 1e-4},
                        txt=os.path.join(DATA, "output_H2.txt"))
 
 energy_ev = atoms.get_total_energy()               # eV, like every result

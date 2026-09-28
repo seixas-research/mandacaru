@@ -159,7 +159,7 @@ class TestInteractionEnergy:
         result = interaction_energy(atoms, [[0, 1], [2]], charges=[0, 1],
                                     charge=1, method="adapt-vqe", h=0.4,
                                     profile=False, optimizer=LBFGS,
-                                    gradient_tolerance=1e-5)
+                                    convergence={"gradient": 1e-5})
         assert result.charges == [0, 1]
         # A bare proton has no electrons: its "energy" is exactly zero.
         assert result.fragment_energies[1] == pytest.approx(0.0, abs=1e-12)

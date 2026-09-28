@@ -167,13 +167,13 @@ e_cell = atoms.get_potential_energy()
 atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                        kpts={"size": (4, 1, 1), "gamma": True},
                        basis="HAO", h=0.20,
-                       max_iterations=10, gradient_tolerance=1e-3)
+                       max_iterations=10, convergence={"gradient": 1e-3})
 e_cell = atoms.get_potential_energy()
 print(atoms.calc.result.num_operators, "operators grown")
 ```
 
 The remaining options are the selected solver's own, so which are valid depends on
-the method (`optimizer`/`h` for all; `pool`/`max_iterations`/`gradient_tolerance` for
+the method (`optimizer`/`h` for all; `pool`/`max_iterations`/`convergence` for
 the adaptive ones). This is a finite-supercell estimate
 that converges to the bulk total energy as the mesh is refined (exact in the
 infinite-mesh limit), and how tightly it settles depends on the gap. An

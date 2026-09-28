@@ -72,7 +72,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                                   "maxiter": 2000,
                                   "tol": 1e-12},
                        max_iterations=10,
-                       gradient_tolerance=1e-5,
+                       convergence={"gradient": 1e-5},
                        measurement_provider=provider,
                        txt=os.path.join(DATA, "h2_relax_ibm_output.txt"))
 

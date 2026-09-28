@@ -197,7 +197,7 @@ water.calc = Mandacaru(method="adapt-vqe",
                        frozen_core=True,
                        pool="qeb",
                        max_iterations=12,
-                       gradient_tolerance=1e-3,
+                       convergence={"gradient": 1e-3},
                        profile=False)
 
 energy = water.get_potential_energy()
@@ -235,7 +235,7 @@ for shift in shifts:
                            frozen_core=True,
                            pool="qeb",
                            max_iterations=8,
-                           gradient_tolerance=1e-3,
+                           convergence={"gradient": 1e-3},
                            profile=False)
     energies.append(probe.get_potential_energy())
 amplitude = float(np.max(energies) - np.min(energies))

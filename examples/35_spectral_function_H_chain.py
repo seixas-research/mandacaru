@@ -79,7 +79,7 @@ atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                        h=SPACING_GRID,
                        optimizer=OPTIMIZER,
                        max_iterations=12,
-                       gradient_tolerance=1e-3,
+                       convergence={"gradient": 1e-3},
                        trace=False)
 
 energy_per_cell = atoms.get_potential_energy()

@@ -53,7 +53,7 @@ def dimer(symbols, distance, cell):
 def calculator(h, basis=BASIS):
     return Mandacaru(method="adapt-vqe", basis=basis, h=h, pool="fermionic",
                      optimizer=LBFGS, max_iterations=80,
-                     gradient_tolerance=1e-5, profile=False)
+                     convergence={"gradient": 1e-5}, profile=False)
 
 
 def bond_force(forces):
@@ -170,7 +170,7 @@ def test_two_qubit_register_forces_exact_and_measured(tmp_path):
         atoms = dimer("H2", 1.0, 8.0)
         atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", h=0.25,
                                pool="fermionic", optimizer=LBFGS,
-                               max_iterations=10, gradient_tolerance=1e-6,
+                               max_iterations=10, convergence={"gradient": 1e-6},
                                profile=False, **options)
         return atoms.get_forces(), atoms.get_potential_energy(), atoms.calc
 
@@ -198,7 +198,7 @@ def test_reduced_active_space_force_tracks_optimized_energy(taper):
         method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
         grid=grid, h=0.35, active_orbitals=2, active_selection="mp2",
         taper=taper, pool="fermionic", optimizer=LBFGS,
-        max_iterations=20, gradient_tolerance=1e-6,
+        max_iterations=20, convergence={"gradient": 1e-6},
         project_translation=False, profile=False)
     force = atoms.get_forces()[1, 2]
     assert len(atoms.calc.solver._gradient_context["deleted"]) == 2
@@ -223,7 +223,7 @@ def test_reduced_active_space_force_tracks_optimized_energy(taper):
             method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
             grid=grid, h=0.35, active_orbitals=2, active_selection="mp2",
             taper=True, pool="fermionic", optimizer=LBFGS,
-            max_iterations=20, gradient_tolerance=1e-6,
+            max_iterations=20, convergence={"gradient": 1e-6},
             project_translation=False, profile=False,
             measurement_provider=QiskitProvider(device="statevector", shots=0))
         assert measured.get_forces()[1, 2] == pytest.approx(force, abs=1e-5)
@@ -252,7 +252,7 @@ def water(cell=8.0):
 def water_calculator(h=0.25):
     return Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "SZ"},
                      h=h, pool="fermionic", optimizer=LBFGS,
-                     max_iterations=60, gradient_tolerance=1e-4, profile=False)
+                     max_iterations=60, convergence={"gradient": 1e-4}, profile=False)
 
 
 @pytest.fixture(scope="module")

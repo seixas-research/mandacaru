@@ -393,7 +393,7 @@ class TestInertElsewhere:
 def water_calculator(h=0.25):
     return Mandacaru(method="adapt-vqe", basis=SZ, h=h, pool="fermionic",
                      optimizer=LBFGS, max_iterations=60,
-                     gradient_tolerance=1e-4, profile=False)
+                     convergence={"gradient": 1e-4}, profile=False)
 
 
 @pytest.fixture(scope="module")
@@ -457,7 +457,7 @@ class TestForces:
                 atoms.calc = Mandacaru(method="adapt-vqe", basis=SZ, h=0.25,
                                        pool="fermionic", optimizer=LBFGS,
                                        max_iterations=10,
-                                       gradient_tolerance=1e-6,
+                                       convergence={"gradient": 1e-6},
                                        project_translation=False,
                                        profile=False)
                 atoms.get_forces()

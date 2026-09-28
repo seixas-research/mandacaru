@@ -68,7 +68,7 @@ def run(atoms, optimizer=LBFGS, max_iterations=40, **options):
     work = atoms.copy()
     work.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35, pool="qeb",
                           optimizer=optimizer, max_iterations=max_iterations,
-                          gradient_tolerance=1e-5, profile=True, trace=False,
+                          convergence={"gradient": 1e-5}, profile=True, trace=False,
                           **options)
     energy = work.get_potential_energy()
     return energy, work.calc.result

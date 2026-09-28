@@ -41,7 +41,7 @@ METHODS = ["bloch-vqe", "bloch-adapt-vqe"]
 _RESULT_TYPES = {"bloch-vqe": VQEResult, "bloch-adapt-vqe": ADAPTVQEResult}
 #: ADAPT has adaptive controls VQE does not take.
 _EXTRA = {"bloch-vqe": {}, "bloch-adapt-vqe": dict(max_iterations=10,
-                                                   gradient_tolerance=1e-3)}
+                                                   convergence={"gradient": 1e-3})}
 
 # ---- the reference values ------------------------------------------------- #
 # 1-D H chain, a = 2.0 A, HAO, h = 0.35, SLSQP(tol=1e-12), in eV per primitive

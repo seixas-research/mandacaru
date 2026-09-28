@@ -45,7 +45,7 @@ def _adapt(hamiltonian, **options):
     return Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
                      pool="fermionic", num_particles=(1, 1),
                      n_spatial_orbitals=2, profile=False, max_iterations=2,
-                     gradient_tolerance=1e-4, **options)
+                     convergence={"gradient": 1e-4}, **options)
 
 
 class TestPathResolution:

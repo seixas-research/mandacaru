@@ -108,7 +108,7 @@ class TestADAPTEnergyLevels:
                          pool="fermionic", num_particles=(1, 1),
                          n_spatial_orbitals=2,
                          optimizer=LBFGS,
-                         trace=False, profile=False, gradient_tolerance=1e-6)
+                         trace=False, profile=False, convergence={"gradient": 1e-6})
 
     def test_ground_level_matches_exact(self, h2_hamiltonian, h2_spectrum):
         levels = self._adapt(h2_hamiltonian).energy_levels(1)

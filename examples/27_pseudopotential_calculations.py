@@ -191,7 +191,7 @@ def isolated_force(spacing, use_pseudopotentials):
                            frozen_core=not use_pseudopotentials,
                            pool="qeb",
                            max_iterations=6,
-                           gradient_tolerance=1e-3,
+                           convergence={"gradient": 1e-3},
                            profile=False)
     atoms.get_potential_energy()
     return float(np.abs(atoms.get_forces()).max())
@@ -234,7 +234,7 @@ water.calc = Mandacaru(method="adapt-vqe",
                        grid=water_grid,
                        pool="qeb",
                        max_iterations=12,
-                       gradient_tolerance=1e-3,
+                       convergence={"gradient": 1e-3},
                        profile=False)
 energy = water.get_potential_energy()
 print(f"  E = {energy:.4f} eV   {water.calc.n_qubits} qubits   "

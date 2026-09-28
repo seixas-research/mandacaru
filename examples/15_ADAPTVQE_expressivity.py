@@ -149,7 +149,7 @@ calc = Mandacaru(method="adapt-vqe",
                             "maxiter": 2000,
                             "tol": 1e-12},
                  max_iterations=MAX_ITERATIONS,
-                 gradient_tolerance=1e-6)
+                 convergence={"gradient": 1e-6})
 result = calc.run(callback=record)
 
 print(f"{'step':>5}  {'#params':>8}  {'E (eV)':>15}  {'E - FCI':>11}  "

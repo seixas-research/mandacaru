@@ -78,7 +78,7 @@ _OPTIMIZER_KEYS = {
     # actually calls into (with no bounds) is Byrd et al.
     "l-bfgs": ("Liu1989", "Byrd1995"),
     "bfgs": ("Fletcher1970",),
-    "nlcg-pr": ("Polak1969",),
+    "cg": ("Polak1969",),
 }
 
 #: Pseudopotential family -> the papers its datasets are generated from.

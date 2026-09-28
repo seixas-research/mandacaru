@@ -185,7 +185,7 @@ class TestPlacementInvariance:
                           cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=True)
             atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                                    h=0.35, trace=False, max_iterations=6,
-                                   gradient_tolerance=1e-3)
+                                   convergence={"gradient": 1e-3})
             return atoms.get_total_energy()
 
         corner = energy([[0, 0, -0.37], [0, 0, 0.37]])

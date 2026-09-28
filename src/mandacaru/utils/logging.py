@@ -457,7 +457,8 @@ class AdaptOutputLogger:
 
     def write_optimizer_setup(self, optimizer_method: str,
                               reference_energy: float, energy_unit: str = "eV",
-                              gradient_tol: float | None = None,
+                              convergence=None,
+                              energy_scale: float = 1.0,
                               max_iterations: int | None = None,
                               start_energy: float | None = None,
                               extra: dict | None = None,
@@ -474,11 +475,17 @@ class AdaptOutputLogger:
 
         The block is written in four groups, each contiguous so that a reader
         (and a diff between two runs) finds a fact where the fact it qualifies
-        is: the **classical optimizer** and its budget, the **screening
-        gradient** -- how it is computed, against which tolerance and in which
-        unit -- then the driver's own settings (``extra``; for ADAPT-VQE the
-        operator pool), the **loop's starting point**, and last the run's
-        **lineage** (``lineage``; what a resumed run was restored from).
+        is: the **classical optimizer** and its budget, the **convergence
+        criteria** and the **screening gradient** -- how it is computed,
+        against which threshold and in which unit -- then the driver's own
+        settings (``extra``; for ADAPT-VQE the operator pool), the **loop's
+        starting point** with the energy threshold in its unit, and last the
+        run's **lineage** (``lineage``; what a resumed run was restored from).
+
+        ``convergence`` is a
+        :class:`~mandacaru.algorithms.convergence.Convergence`;
+        ``energy_scale`` converts its energy threshold from Hartree into
+        ``energy_unit``, so it reads against the ``dE`` column.
         """
         # The first iteration's dE is measured from here: the reference state,
         # or the restored ansatz of a resumed run (``start_energy``).
@@ -488,16 +495,23 @@ class AdaptOutputLogger:
         self._emit_body(f"classical_optimizer: {optimizer_method}")
         if max_iterations is not None:
             self._emit_body(f"max_iterations: {max_iterations}")
+        if convergence is not None:
+            # Which criteria stop the growth; each threshold is written once,
+            # beside the unit it is read in.
+            used = [name for name, value in convergence.as_dict().items()
+                    if value is not None]
+            self._emit_body(f"convergence: {' and '.join(used)}"
+                            + (" (both required)" if len(used) > 1 else ""))
 
         # The gradient group.  `gradient_method` says how the number in the
-        # `|grad|` column was obtained, and it sits next to the tolerance it is
+        # `|grad|` column was obtained, and it sits next to the threshold it is
         # compared against -- the two are one fact read together.
         if gradient_method is not None:
             self._emit_body(f"gradient_method: {gradient_method}")
         if gradient_formula is not None:
             self._emit_body(f"gradient_formula: {gradient_formula}")
-        if gradient_tol is not None:
-            self._emit_body(f"gradient_tol: {gradient_tol:g}")
+        if convergence is not None and convergence.gradient is not None:
+            self._emit_body(f"convergence_gradient: {convergence.gradient:g}")
         if gradient_units is not None:
             self._emit_body(f"gradient_units: {gradient_units}")
 
@@ -508,8 +522,11 @@ class AdaptOutputLogger:
         # Where the loop starts: the unit the energies below are in and the
         # reference energy in it.  The reference state itself is the
         # [ELECTRONS] block's; a resumed run's starting ansatz is the lineage's.
+        self._emit_body(f"energy_unit: {energy_unit}")
+        if convergence is not None and convergence.energy is not None:
+            self._emit_body(f"convergence_energy_{energy_unit}: "
+                            f"{convergence.energy * energy_scale:g}")
         self._emit_body(
-            f"energy_unit: {energy_unit}",
             f"reference_energy_{energy_unit}: {reference_energy:.10f}")
 
         if lineage:
@@ -537,7 +554,7 @@ class AdaptOutputLogger:
                          ("dE", "dE", 18, "+.10f"),
                          # Fixed-point, six decimals: a gradient below
                          # 5e-7 reads as 0.000000 -- far below any
-                         # gradient_tolerance the loop stops on.
+                         # gradient threshold the loop stops on.
                          ("grad", "|grad|", 13, ".6f"),
                          # Classical effort of this growth step: how many
                          # parameter updates the optimizer made to re-optimize

@@ -173,6 +173,33 @@ UPAW_FAMILY = "upaw-lcao"
 
 #: Spherical Bessel functions per smooth partial wave.
 DEFAULT_N_BESSEL = 8
+#: Per-dataset exceptions to :data:`DEFAULT_N_BESSEL`, keyed by element and
+#: functional.  The norm-constrained minimization that shapes the smooth
+#: waves (:func:`~.oncv.constrained_minimum`) has two nearly degenerate
+#: minima for lithium's 2s pair, one nodeless and one with a node inside
+#: ``r_cut``, and which one it lands on turns on details of the reference
+#: atom.  At 8 functions the LDA pair is nodeless and the PBE pair has a
+#: node at 1.22 Bohr (both waves); with 9 the PBE pair is nodeless too.  The
+#: nodal PBE lithium passed every atomic check and still broke molecules:
+#: LiH (SZ, RHF, h = 0.15 Angstrom) had its minimum at 2.4 Angstrom instead
+#: of 1.6, and was 4 eV too high at 1.6.  LDA stays at 8, where it is
+#: nodeless and where the shipped library and its pinned energies were taken
+#: (HISTORY.md, 2026-09-27).
+#:
+#: Fe, Co and Ni take 9 in both functionals, and Sn 10, for a related reason.  At 8
+#: their s pair represents a hydrogen orbital entering the sphere badly -- the
+#: projector expansion of a 1s tail at the sphere edge misses it by 2.4-13
+#: times its own norm (Sn: 150) -- and the hydride collapses: CoH (RHF SZ,
+#: h = 0.20) fell 360 eV from 2.8 to 1.3 Angstrom, with 25-31 electrons in
+#: cobalt's one-center density matrix of a 10-electron molecule.  At 9 the
+#: miss is 0.4-0.9 (Sn: 8.5) and CoH stays within 7 eV over the same range.
+DEFAULT_N_BESSEL_BY_DATASET = {
+    ("Li", "pbe"): 9,
+    **{(symbol, xc): 9 for symbol in ("Fe", "Co", "Ni")
+       for xc in ("lda", "pbe")},
+    # With its s cutoff shortened to 2.33 Bohr (DEFAULT_CUTOFFS).
+    ("Sn", "lda"): 10, ("Sn", "pbe"): 10,
+}
 #: Wave-vector cutoff of the residual kinetic energy (Bohr^-1).
 DEFAULT_Q_CUT = 5.0
 #: Second reference energy above the bound state (Hartree).
@@ -188,16 +215,28 @@ DEFAULT_ENERGY_OFFSET = 1.0
 #: deficit above ~0.2 (0.1 for Li) is not reachable by the Bessel expansion.
 DEFAULT_NORM_DEFICIT = 0.1
 #: Per-element norm deficits (H, Li kept small: a larger deficit grows a
-#: ghost state in their s channel).
+#: ghost state in their s channel).  Copper is built unitary: at the default
+#: 0.1 its PBE dataset passed every atomic check and still collapsed CuH (RHF
+#: SZ, h = 0.20 Angstrom: -1555 eV at 1.30 Angstrom, falling 155 eV to 1.75
+#: with no minimum), while at 0 it binds like the LDA one (minimum at 1.6,
+#: HISTORY.md 2026-09-27).  The LDA copper already had deficit 0, reached
+#: through the ghost repair; built directly it differs by 1e-6 Ha.  Cobalt
+#: and nickel are unitary for the same reason: at 0.1 the PBE nickel passed
+#: every check and its s projectors missed an intruding hydrogen 1s by 0.27x
+#: its norm but its hydride did not bind in range, and the PBE cobalt needed
+#: the repair's 10 Ha local shift (miss 1.46); at 0, with cobalt's s cutoff
+#: shortened (DEFAULT_CUTOFFS), the misses are 0.41 and 0.59 with no shift.
 DEFAULT_NORM_DEFICITS = {"H": 0.05, "Li": 0.02, "C": 0.10, "N": 0.15,
-                         "O": 0.15, "F": 0.15}
+                         "O": 0.15, "F": 0.15, "Fe": 0.0, "Co": 0.0,
+                         "Ni": 0.0, "Cu": 0.0, "Zn": 0.0}
 #: Per-element second reference energy above the bound state (Hartree);
 #: elements without an entry use :data:`DEFAULT_ENERGY_OFFSET`.  Lithium's
 #: scattering wave at +1 Ha sits at a pole of the logarithmic derivative
 #: (L = +24 at r_c) and the smooth pair then grows nodes and a ghost; for
 #: hydrogen +0.5 Ha gives a softer second projector (grid norm ratio 0.78
 #: instead of 0.75 at 0.25 Angstrom) and better logarithmic derivatives.
-DEFAULT_ENERGY_OFFSETS = {"H": 0.5, "Li": 0.5}
+DEFAULT_ENERGY_OFFSETS = {"H": 0.5, "Li": 0.5, "Co": 2.0, "Ni": 2.0,
+                          "Cu": 2.0, "Zn": 2.0}
 #: Default augmentation radius as a multiple of the outermost maximum of rR.
 DEFAULT_RC_FACTOR = 1.3
 #: Local-potential radius as a multiple of the smallest augmentation radius.
@@ -211,6 +250,30 @@ DEFAULT_CUTOFFS = {
     "N": {0: 1.45, 1: 1.45},
     "O": {0: 1.45, 1: 1.45},
     "F": {0: 1.40, 1: 1.40},
+    # Tin's s sphere at its default 2.59 Bohr: the partial waves and projectors
+    # miss an intruding hydrogen 1s by 6.6 times its norm even at 9 Bessel
+    # functions (LDA; SnH's one-center density reached 96 electrons at 1.44
+    # Angstrom).  At 2.33 with 10 functions the miss is 1.04 (PBE 0.37), no
+    # ghost, phases 0.001 rad; the p and d channels keep their own cutoffs.
+    "Sn": {0: 2.33},
+    # Cobalt's s sphere at 0.95 of its default (2.98 LDA / 3.01 PBE Bohr):
+    # the PBE build no longer needs a ghost repair, and the s projectors miss
+    # an intruding hydrogen 1s by 0.48-0.63 instead of 1.46.  The d spheres of
+    # Co and Ni at 1.2-1.3x their defaults (0.86 / 0.82 Bohr), with the second
+    # reference energy at +2 Ha (DEFAULT_ENERGY_OFFSETS): at the defaults the
+    # LDA d projectors reach 17 and turn the Fourier filter's 3 % change of a
+    # 3d basis function at h = 0.20 Angstrom into a 32-40 % error in its
+    # projection (a d-shell occupation of 11 in a 10-electron CoH); now
+    # 2-5 % at h = 0.20 in both functionals (HISTORY.md, 2026-09-27).
+    "Co": {0: 2.85, 2: 1.04},
+    "Ni": {0: 2.88, 2: 1.06},
+    # Fe, Cu and Zn the same way (1.2x, 1.45x, 1.45x their defaults): the 3D
+    # projection of a filtered 3d basis function at h = 0.20 Angstrom was off
+    # by 0.18 / 0.42 (Fe LDA / PBE), 0.54 / 0.59 (Cu), 0.66 / 2.5 (Zn); now
+    # 0.02, 0.09-0.10 and 0.04-0.05.
+    "Fe": {2: 1.10},
+    "Cu": {2: 1.12},
+    "Zn": {2: 1.06},
 }
 #: Per-element raise of the local potential at the origin (Hartree, Hamann's
 #: ``dvloc0``).  The polynomial continuation of the screened all-electron
@@ -219,7 +282,22 @@ DEFAULT_CUTOFFS = {
 #: near-singular ONCVPSP coupling, the PAW-LCAO projector term does not push it
 #: away, so the local potential is raised until the s spectrum has nothing
 #: between the bound state and the box states.
-DEFAULT_LOCAL_SHIFTS = {"C": 12.0, "N": 10.0, "O": 6.0, "F": 8.0}
+#: Fe and Zn at 10 Ha: their PBE local potentials otherwise bind a p-channel
+#: ghost (-1.2 / -1.5 Ha) the repair used to remove at 5 Ha, and at 10 Ha the d
+#: projectors shrink from 13-25 to 4-8 in both functionals.
+DEFAULT_LOCAL_SHIFTS = {"C": 12.0, "N": 10.0, "O": 6.0, "F": 8.0,
+                        "Fe": 10.0, "Zn": 10.0}
+#: Filled subshells moved into the frozen core by default.  The 6p block's
+#: 4f14 sits 4-8 Ha deep inside a 2.9-3.9 Bohr sphere: in valence it could not
+#: be made to scatter like the atom (0.49-0.65 rad, the flag every Tl-Rn
+#: dataset carried) and its Dirac branches missed the 4f levels by 7-15 mHa.
+#: Frozen, it joins the nonlinear core correction and an empty f channel
+#: scattering at :data:`FROZEN_SCATTERING_ENERGY` represents the f response,
+#: as ONCVPSP does (:data:`~.oncv.DEFAULT_FROZEN_SUBSHELLS`).
+DEFAULT_FROZEN_SUBSHELLS = {symbol: ((4, 3),) for symbol in
+                            ("Tl", "Pb", "Bi", "Po", "At", "Rn")}
+#: First reference energy (Hartree) of the empty channel a frozen shell leaves.
+FROZEN_SCATTERING_ENERGY = 0.25
 #: Largest tolerated deviation of ``<p_i|phi_j>`` from the identity.
 DUALITY_TOLERANCE = 1e-8
 #: Largest tolerated asymmetry of the screened coupling matrix (Hartree).
@@ -746,6 +824,9 @@ class PAWDataset(PseudoPotential):
     #: highest valence l.
     nlcc: dict = field(default_factory=dict)
     extra_l: int = 0
+    #: Occupied valence subshells generated into the frozen core instead
+    #: (``(n, l)`` pairs); their channel scatters at positive energy.
+    frozen_subshells: tuple = ()
     #: ``l -> D_SO``, the one-center spin-orbit difference of the channel.
     #: Empty unless the dataset was generated with ``relativity="dirac"``.
     #: Unlike the ONCVPSP family, these multiply the dataset's **own**
@@ -899,57 +980,112 @@ class PAWDataset(PseudoPotential):
 # Generation.
 # --------------------------------------------------------------------------- #
 
-def spin_orbit_blocks(r, channels, v_ae, v_smooth, atomic_number,
-                      mass_corrected: bool = True, r_local: float = 0.0):
-    r"""``{l: D_SO}`` -- the one-center spin-orbit difference of each channel.
+def j_resolved_spin_orbit(symbol, atom, valence_config, cutoffs, rc_factor,
+                          energy_offset, v_loc, r_local, q_cut, n_bessel,
+                          hartree_screening, extra_l: int = 0,
+                          extra_energy: float | None = None) -> dict:
+    r"""``{l: {...}}`` -- the spin-orbit term of each channel, exact per j.
 
-    Spin-orbit coupling enters a PAW-LCAO dataset exactly the way every other
-    one-center term does: as the difference between what the all-electron
-    system has inside the augmentation sphere and what the smooth system has
-    there,
+    Each :math:`l \geq 1` gets two **unitary** branches (norm deficit 0),
+    one per :math:`j = l \mp 1/2`: reference waves from the Dirac atom with
+    their own :math:`\kappa`, smooth partial waves matched at the channel's
+    own cutoff, projectors and one-center matrices in the same screened local
+    potential.  Any :math:`j`-dependent separable operator is two terms,
+    :math:`V_j = V^{avg} + V^{SO}\,\mathbf{L}\cdot\mathbf{S}`, because
+    :math:`\mathbf{L}\cdot\mathbf{S}` is :math:`l/2` on :math:`j = l+1/2`
+    and :math:`-(l+1)/2` on :math:`j = l-1/2`; both are built on the union of
+    the two branches' projectors, the average with the :math:`(2j+1)` weights
+    and the difference scaled by :math:`2/(2l+1)`, so each :math:`j` is
+    recovered exactly (ONCVPSP stores its branches the same way,
+    :func:`~.oncv._combine_j_channels`).
 
-    .. math::
+    The branches are unitary so that the overlap stays spin-free: their
+    overlap corrections are ~1e-4, where a j-dependent :math:`q` would give the
+    metric of the generalized problem an :math:`\mathbf{L}\cdot\mathbf{S}`
+    structure.  This replaced a first-order term, :math:`\int\xi(r)
+    \varphi\varphi`, on the scalar partial waves, which was within 2 % for d,
+    f and light p shells but 7 % short for 5p and 19-20 % for 6p: the
+    j-averaged partial wave cannot hold the p1/2 contraction (6p1/2 has 27-29 %
+    more of its norm inside the sphere than 6p3/2; HISTORY.md, 2026-09-27).
 
-        D^{SO}_{ij} = \int_0^{r_c}\Big[\xi(r)\varphi_i\varphi_j
-            - \tilde\xi(r)\tilde\varphi_i\tilde\varphi_j\Big] r^2\,dr ,
-
-    with :math:`\xi = \frac{1}{2c^2M^2 r}\frac{dV}{dr}` from the respective
-    potentials (:func:`~mandacaru.basis.relativity.spin_orbit_radial`).  The
-    operator it multiplies is :math:`\mathbf{L}\cdot\mathbf{S}`, so an
-    ``l = 0`` channel has none.
-
-    The smooth term is not a rounding detail to be dropped: without it the
-    correction would double-count whatever spin-orbit coupling the smooth
-    Hamiltonian already carries through :math:`\tilde V`.  It is small,
-    because :math:`dV/dr` is where the nucleus is and the smooth potential has
-    no nucleus -- but "small" is measured, not assumed.
+    Each entry holds ``projectors`` (the union, j = l-1/2 first),
+    ``average`` / ``average_screened`` and ``coupling`` / ``coupling_screened``
+    (the (2j+1) average and the L.S difference of the unscreened and screened
+    one-center matrices), ``overlap_average`` and ``overlap_coupling`` (the same
+    split of the branches' overlap corrections), ``reference_energies`` (per
+    branch) and ``level_errors``: each branch's lowest level against the Dirac
+    atom's (Hartree).
     """
-    from ..basis.relativity import spin_orbit_radial
+    from scipy.interpolate import CubicSpline
+    from scipy.linalg import block_diag
 
-    r = np.asarray(r, dtype=float)
-    xi_ae = spin_orbit_radial(r, v_ae, atomic_number=float(atomic_number),
-                              mass_corrected=mass_corrected)
-    xi_ps = spin_orbit_radial(r, v_smooth, atomic_number=0.0,
-                              mass_corrected=mass_corrected)
-    blocks = {}
-    for l, channel in channels.items():
+    from ase.data import atomic_numbers
+
+    from .oncv import reference_waves
+
+    r, v_ae = atom.r, atom.v_effective
+    z_eff = float(atomic_numbers[symbol])
+    grid = np.arange(1, int(22.0 / 0.004)) * 0.004
+    v_grid = CubicSpline(r, v_loc)(grid)
+    out: dict = {}
+    for l in sorted(cutoffs):
         if int(l) == 0:
             continue
-        # The smooth and all-electron waves agree beyond r_cut, but the two
-        # spin-orbit radial factors do not until v_smooth meets v_AE at r_cl.
-        inside = r <= max(float(channel.r_cut), float(r_local))
-        n = len(channel.ae_waves)
-        D = np.zeros((n, n), dtype=float)
-        weight = r * r
-        for i in range(n):
-            for j in range(n):
-                ae = (xi_ae * channel.ae_waves[i] * channel.ae_waves[j]
-                      * weight)[inside]
-                ps = (xi_ps * channel.pseudo_waves[i] * channel.pseudo_waves[j]
-                      * weight)[inside]
-                D[i, j] = float(np.trapezoid(ae - ps, r[inside]))
-        blocks[int(l)] = 0.5 * (D + D.T)
-    return blocks
+        branches = []
+        for kappa in (int(l), -(int(l) + 1)):            # j = l-1/2, l+1/2
+            per_l, _cut, references = reference_waves(
+                symbol, atom, valence_config, z_eff, dict(cutoffs), rc_factor,
+                energy_offset, defaults=DEFAULT_CUTOFFS, treatment="dirac",
+                kappa={ll: (kappa if ll == l else -(ll + 1))
+                       for ll in cutoffs},
+                extra_l=extra_l, extra_energy=extra_energy)
+            waves, energies = references[l]
+            smooth = smooth_partial_waves(
+                r, v_ae, l, waves, energies, cutoffs[l], q_cut=q_cut,
+                n_bessel=n_bessel, norm_deficit=0.0, treatment="dirac",
+                kappa=kappa, z_eff=z_eff)
+            channel = assemble_paw_channel(
+                r, smooth, v_ae, v_loc, n=per_l[l][0][0], occupation=0.0,
+                strict=False, r_local=r_local)
+            q = np.asarray(channel.overlap_correction, dtype=float)
+            screened = np.asarray(channel.coupling_screened, dtype=float)
+            p_u = [CubicSpline(r, np.asarray(p))(grid) * grid
+                   for p in channel.projectors]
+            level = float(_generalized_spectrum(
+                grid, v_grid + l * (l + 1) / (2.0 * grid * grid), p_u,
+                screened, q, 1)[0])
+            branches.append({
+                "projectors": [np.asarray(p, dtype=float)
+                               for p in channel.projectors],
+                "screened": screened,
+                "ionic": screened - q * hartree_screening,
+                "overlap": q,
+                "energies": [float(e) for e in energies],
+                "error": level - float(energies[0])})
+        down, up = branches
+        w_down, w_up = 2.0 * l, 2.0 * l + 2.0
+        total = w_down + w_up
+        factor = 2.0 / (2 * l + 1)
+
+        def average(key):
+            return block_diag(down[key] * (w_down / total),
+                              up[key] * (w_up / total))
+
+        def difference(key):
+            return block_diag(-factor * down[key], factor * up[key])
+
+        out[int(l)] = {
+            "projectors": down["projectors"] + up["projectors"],
+            "average": average("ionic"),
+            "average_screened": average("screened"),
+            "coupling": difference("ionic"),
+            "coupling_screened": difference("screened"),
+            "overlap_average": average("overlap"),
+            "overlap_coupling": difference("overlap"),
+            "reference_energies": [down["energies"], up["energies"]],
+            "level_errors": [down["error"], up["error"]],
+        }
+    return out
 
 
 def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTOR,
@@ -958,7 +1094,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                  local_shift: float | None = None,
                  q_cut: float = DEFAULT_Q_CUT,
                  energy_offset: float | None = None,
-                 n_bessel: int = DEFAULT_N_BESSEL,
+                 n_bessel: int | None = None,
                  norm_deficit="default",
                  points: int | None = None, r_max: float = 30.0,
                  atom: AtomicResult | None = None,
@@ -966,6 +1102,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                  relativity: str = DEFAULT_RELATIVITY,
                  nlcc: bool | float = DEFAULT_NLCC,
                  extra_l: int = DEFAULT_EXTRA_L,
+                 frozen_subshells=None,
                  ghosts: str = "repair") -> PAWDataset:
     r"""Generate a PAW-LCAO dataset for ``symbol`` (see the module docstring).
 
@@ -992,7 +1129,16 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         Second reference energy above the bound state (Hartree); defaults to
         :data:`DEFAULT_ENERGY_OFFSETS` for the element, else
         :data:`DEFAULT_ENERGY_OFFSET`.
-    q_cut, n_bessel, points, r_max, atom, ghosts
+    frozen_subshells : sequence of (n, l), optional
+        Occupied valence subshells to generate into the frozen core instead;
+        defaults to :data:`DEFAULT_FROZEN_SUBSHELLS` (the 4f of Tl-Rn).  A
+        frozen shell above the remaining valence keeps an empty channel,
+        scattering at :data:`FROZEN_SCATTERING_ENERGY`.
+    n_bessel : int, optional
+        Spherical Bessel functions per smooth partial wave; defaults to
+        :data:`DEFAULT_N_BESSEL_BY_DATASET` for the element and functional,
+        else :data:`DEFAULT_N_BESSEL`.
+    q_cut, points, r_max, atom, ghosts
         As in :func:`~.oncv.generate_oncv`; the ghost search is
         :func:`~.oncv.ghost_free`, with the spectrum of the generalized
         problem (:func:`paw_spectrum`).
@@ -1039,21 +1185,36 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     check_reference_atom(atom, xc, relativity)
     valence_config, core_config = _valence_configuration(
         atomic_number, configuration=atom.occupations)
+    from .oncv import _validate_frozen_subshells
+    frozen = _validate_frozen_subshells(
+        valence_config, DEFAULT_FROZEN_SUBSHELLS.get(symbol, ())
+        if frozen_subshells is None else frozen_subshells)
+    for orbital in frozen:
+        core_config[orbital] = valence_config.pop(orbital)
     if not valence_config:
         raise ValueError(f"{symbol} has no valence subshells to pseudize")
     valence_charge = float(sum(valence_config.values()))
+    # A frozen shell above the highest remaining valence l keeps a channel of
+    # its own, empty and scattering at a positive energy.
+    highest_l = max(l for _n, l in valence_config)
+    extra_l = max(int(extra_l),
+                  max((l for _n, l in frozen), default=highest_l) - highest_l)
+    extra_energy = (FROZEN_SCATTERING_ENERGY if frozen and extra_l else None)
     r, v_ae = atom.r, atom.v_effective
     z_eff = float(atomic_number)
     shell = 4.0 * np.pi * r * r
     if isinstance(norm_deficit, str):
         norm_deficit = DEFAULT_NORM_DEFICITS.get(symbol, DEFAULT_NORM_DEFICIT)
+    if n_bessel is None:
+        n_bessel = DEFAULT_N_BESSEL_BY_DATASET.get(
+            (symbol, str(xc).strip().lower()), DEFAULT_N_BESSEL)
     energy_offset = float(DEFAULT_ENERGY_OFFSETS.get(symbol, DEFAULT_ENERGY_OFFSET)
                           if energy_offset is None else energy_offset)
 
     per_l, cutoffs, references = reference_waves(
         symbol, atom, valence_config, z_eff, r_cut, rc_factor, energy_offset,
         defaults=DEFAULT_CUTOFFS, treatment=partial_wave_treatment,
-        extra_l=extra_l)
+        extra_l=extra_l, extra_energy=extra_energy)
     # The local potential follows the *largest* cutoff: a compact channel's
     # projector reaches out to r_cl instead (assemble_paw_channel).
     r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
@@ -1137,12 +1298,14 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     _e_xc, v_xc = xc_potential(r, smooth_valence + xc_core, xc)
     v_local_ionic = v_loc - v_hartree - v_xc
     hartree_screening = float(np.trapezoid(v_hartree * g * shell, r))
-    # Spin-orbit coupling, when asked for: a one-center difference like every
-    # other PAW-LCAO matrix.  `v_loc` is the *screened* smooth potential, which is
-    # what the smooth Hamiltonian actually carries inside the sphere.
-    spin_orbit = (spin_orbit_blocks(r, channels, v_ae, v_loc, atomic_number,
-                                    r_local=r_local)
-                  if relativity == "dirac" else {})
+    # Spin-orbit coupling, when asked for: two unitary branches per l >= 1,
+    # exact per j, in the same screened local potential and unscreened with
+    # the same Hartree term as the scalar channels.
+    spin_orbit = (j_resolved_spin_orbit(
+        symbol, atom, valence_config, cutoffs, rc_factor, energy_offset,
+        v_loc, r_local, q_cut, n_bessel, hartree_screening,
+        extra_l=extra_l, extra_energy=extra_energy)
+        if relativity == "dirac" else {})
     for channel in channels.values():
         channel.v_ionic = v_local_ionic
         channel.coupling = (channel.coupling_screened
@@ -1196,7 +1359,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         energy_offset=float(energy_offset),
         norm_deficit=None if norm_deficit is None else float(norm_deficit),
         xc=str(xc), relativity=relativity, nlcc=dict(nlcc_details),
-        extra_l=int(extra_l), spin_orbit=spin_orbit)
+        extra_l=int(extra_l), frozen_subshells=tuple(frozen),
+        spin_orbit=spin_orbit)
 
 
 # --------------------------------------------------------------------------- #
@@ -1481,23 +1645,23 @@ def _blocks(projectors, symbols, datasets, which) -> dict:
 
 
 def paw_spin_orbit_blocks(projectors, symbols, datasets) -> dict:
-    """``{(atom, l): D_SO}`` -- the spin-orbit blocks, empty without them.
-
-    Keyed by ``(atom, l)`` and not ``(atom, l, m)``: the spin-orbit term is
-    the one part of the nonlocal potential that couples different ``m``, so it
-    cannot be a block of the same block-diagonal matrix
-    (:func:`mandacaru.core.spin_orbit.spin_orbit_one_body` consumes it).
-    """
-    blocks: dict = {}
+    """The spin-orbit blocks of the molecular Hamiltonian: empty for scalar
+    datasets, and a refusal for a Dirac one, whose j-resolved term
+    (:func:`j_resolved_spin_orbit`) acts through projectors the molecular
+    basis does not carry yet (DIRAC.md, phase 2)."""
     for projector in projectors:
         dataset = datasets[symbols[projector.atom_index]]
-        table = getattr(dataset, "spin_orbit", None)
-        if not table or projector.l not in table:
-            continue
-        key = (projector.atom_index, projector.l)
-        if key not in blocks:
-            blocks[key] = np.asarray(table[projector.l], dtype=complex)
-    return blocks
+        if getattr(dataset, "spin_orbit", None):
+            # The j-resolved term acts through its own union of projectors
+            # (j_resolved_spin_orbit), which the molecular basis does not yet
+            # carry; and a Hamiltonian with it has no (n_alpha, n_beta)
+            # sector for the builders to fix (DIRAC.md, phase 2).
+            raise NotImplementedError(
+                f"the {dataset.symbol} dataset is Dirac-relativistic: its "
+                "j-resolved spin-orbit term does not enter the molecular "
+                "Hamiltonian yet (DIRAC.md, phase 2).  Use a scalar dataset "
+                "(directory='lda' or 'pbe').")
+    return {}
 
 
 def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
@@ -2268,10 +2432,40 @@ def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
             "norm_deficit": pp.norm_deficit,
             "xc": str(pp.xc), "relativity": str(pp.relativity),
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
+            "frozen_subshells": [list(o) for o in pp.frozen_subshells],
             "defects": defects_record(pp.defects),
-            "spin_orbit": {str(l): np.asarray(D).real.tolist()
-                           for l, D in (pp.spin_orbit or {}).items()},
+            "spin_orbit": {str(l): _spin_orbit_payload(entry)
+                           for l, entry in (pp.spin_orbit or {}).items()},
             "channels": channels, "radial_tables": tables}
+
+
+def _spin_orbit_payload(entry: dict) -> dict:
+    """One channel of :func:`j_resolved_spin_orbit` as JSON-ready lists."""
+    out = {}
+    for key, value in entry.items():
+        if key == "projectors":
+            out[key] = [np.asarray(p, dtype=float).tolist() for p in value]
+        else:
+            out[key] = np.asarray(value, dtype=float).tolist()
+    return out
+
+
+def _spin_orbit_entry(entry, symbol) -> dict:
+    """The inverse of :func:`_spin_orbit_payload`.  A bare matrix is the
+    first-order term datasets carried before 2026-09-27; it is refused rather
+    than read as something it is not."""
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"the {symbol} dataset carries the first-order spin-orbit term, "
+            "which the j-resolved construction replaced (HISTORY.md, "
+            "2026-09-27): regenerate it with mandacaru-build --pp PAW --dirac")
+    out = {}
+    for key, value in entry.items():
+        if key == "projectors":
+            out[key] = [np.asarray(p, dtype=float) for p in value]
+        else:
+            out[key] = np.asarray(value, dtype=float)
+    return out
 
 
 def from_payload(payload: dict) -> PAWDataset:
@@ -2401,11 +2595,13 @@ def from_payload(payload: dict) -> PAWDataset:
         xc=str(payload.get("xc", "lda")),
         relativity=str(payload.get("relativity", "none")),
         extra_l=int(payload.get("extra_l", 0)),
+        frozen_subshells=tuple(tuple(int(x) for x in o)
+                               for o in payload.get("frozen_subshells", [])),
         nlcc=dict(payload.get("nlcc") or {"applied": False, "r_nlcc": None,
                                           "reason": "written before the "
                                                     "core correction"}),
-        spin_orbit={int(l): np.asarray(D, dtype=float)
-                    for l, D in (payload.get("spin_orbit") or {}).items()},
+        spin_orbit={int(l): _spin_orbit_entry(entry, payload.get("symbol"))
+                    for l, entry in (payload.get("spin_orbit") or {}).items()},
         defects=read_defects(payload.get("defects")))
     warn_defects(dataset, FAMILY)
     return dataset

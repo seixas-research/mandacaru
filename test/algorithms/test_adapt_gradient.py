@@ -98,7 +98,7 @@ class TestGradientStrategies:
                               pool="ceo", num_particles=(1, 1),
                               n_spatial_orbitals=2, profile=False,
                               gradient=grad, max_iterations=10,
-                              gradient_tolerance=1e-4)
+                              convergence={"gradient": 1e-4})
             res = adapt.run()
             assert abs(res.in_units("Ha") - exact) < 1e-4, grad
 

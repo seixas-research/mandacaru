@@ -39,7 +39,7 @@ def h2_checkpoint(tmp_path_factory):
     atoms.center()
     atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="HAO",
                            h=0.4, trace=False, profile=False, max_iterations=6,
-                           gradient_tolerance=1e-8, checkpoint=path)
+                           convergence={"gradient": 1e-8}, checkpoint=path)
     atoms.get_total_energy()
     return load_checkpoint(path)
 

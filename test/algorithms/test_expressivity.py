@@ -152,7 +152,7 @@ class TestADAPTTracking:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="fermionic", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
-                          max_iterations=3, gradient_tolerance=1e-8)
+                          max_iterations=3, convergence={"gradient": 1e-8})
         tracker = ADAPTExpressivityTracker(4, num_particles=(1, 1),
                                            num_samples=200, bins=50,
                                            rng=np.random.default_rng(7))
@@ -167,7 +167,7 @@ class TestADAPTTracking:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="fermionic", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
-                          max_iterations=2, gradient_tolerance=1e-8)
+                          max_iterations=2, convergence={"gradient": 1e-8})
         result, history = track_adapt_expressivity(
             adapt, num_samples=200, rng=np.random.default_rng(8))
         assert result.num_operators == len(history)

@@ -256,7 +256,7 @@ class TestCEOGrouping:
                                   mapping="jordan_wigner",
                                   basis={"name": "GTO", "n_gaussians": 3},
                                   h=0.15, optimizer=COBYLA_OPT,
-                                  max_iterations=14, gradient_tolerance=1e-3,
+                                  max_iterations=14, convergence={"gradient": 1e-3},
                                   profile=True, trace=False)
             energy = work.get_potential_energy()
             counts[pool] = (energy, work.calc.result.metrics.cnot_count)
@@ -275,7 +275,7 @@ class TestSamePhysicsEverywhere:
                                pool=pool, mapping=("parity_reduced"
                                                    if reduction else mapping),
                                trace=False,
-                               profile=False, gradient_tolerance=1e-7,
+                               profile=False, convergence={"gradient": 1e-7},
                                max_iterations=12)
         energy = atoms.get_potential_energy()
         matrix = atoms.calc._h_matrix

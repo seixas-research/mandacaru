@@ -52,7 +52,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        optimizer={"method": "L-BFGS",
                                   "maxiter": 2000,
                                   "tol": 1e-12},
-                       gradient_tolerance=1e-6,
+                       convergence={"gradient": 1e-6},
                        checkpoint=CHECKPOINT)       # written after every operator
 energy = atoms.get_potential_energy()
 print(f"ADAPT-VQE: E = {energy:.6f} eV with "

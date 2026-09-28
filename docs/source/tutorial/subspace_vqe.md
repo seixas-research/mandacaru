@@ -80,7 +80,7 @@ atoms.calc = Mandacaru(method="subspace-adapt-vqe",
                        h=0.20,
                        pool="fermionic",
                        num_states=2,
-                       gradient_tolerance=1e-4,
+                       convergence={"gradient": 1e-4},
                        max_iterations=20)
 atoms.get_potential_energy()
 

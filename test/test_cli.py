@@ -28,6 +28,18 @@ class TestCommandLineOptions:
                                 "--max-iterations", "0")
         assert options["txt"] == "out.txt" and options["max_iterations"] == 0
 
+    @pytest.mark.parametrize("argv, expected", [
+        ([], None),
+        (["--convergence-gradient", "1e-4"], {"gradient": 1e-4}),
+        (["--convergence-energy", "1e-6"], {"energy": 1e-6}),
+        (["--convergence-gradient", "1e-3", "--convergence-energy", "1e-6"],
+         {"gradient": 1e-3, "energy": 1e-6}),
+    ])
+    def test_the_convergence_flags_build_the_dictionary(self, argv, expected):
+        """The flags given are the criteria used; none leaves the default."""
+        options = self._options("--method", "adapt-vqe", *argv)
+        assert options.get("convergence") == expected
+
     def test_an_adaptive_method_gets_the_default_pool(self):
         assert self._options("--method", "adapt-vqe")["pool"] == "fermionic"
         assert "pool" not in self._options("--method", "vqe")
@@ -59,7 +71,11 @@ class TestLibraryVariables:
         monkeypatch.setenv("SHELL", "/bin/zsh")
         for variable in ("MANDACARU_PAW_PATH", "MANDACARU_NCPP_PATH",
                          "MANDACARU_ONCVPSP_PATH", "MANDACARU_UPAW_PATH"):
-            monkeypatch.delenv(variable, raising=False)
+            # setenv first so monkeypatch records the original state, even
+            # when unset: `--set-*` writes os.environ itself, and a bare
+            # delenv of an unset variable would not undo that at teardown.
+            monkeypatch.setenv(variable, "")
+            monkeypatch.delenv(variable)
         return tmp_path
 
     def _checkout(self, home, name):

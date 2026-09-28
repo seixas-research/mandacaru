@@ -115,7 +115,7 @@ def solve(distance, pool, mapping):
                                       "tol": 1e-12},
                            profile=False,
                            max_iterations=MAX_ITERATIONS,
-                           gradient_tolerance=1e-5)
+                           convergence={"gradient": 1e-5})
     atoms.get_total_energy()
     result = atoms.calc.result
     return result.optimal_energy, result.num_operators

@@ -12,6 +12,17 @@ Algorithms & Drivers
    :undoc-members:
    :show-inheritance:
 
+Convergence Criteria
+~~~~~~~~~~~~~~~~~~~~
+
+When an adaptive solver stops growing its ansatz: the ``convergence`` option,
+``{"gradient": ..., "energy": ...}``.
+
+.. automodule:: mandacaru.algorithms.convergence
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Interaction Energies
 ~~~~~~~~~~~~~~~~~~~~
 

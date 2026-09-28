@@ -18,7 +18,7 @@ history so a convergence trace is always available:
 * **Nelder-Mead** -- SciPy simplex;
 * **SLSQP** (Sequential Least Squares Programming) -- SciPy, **the default**;
 * **BFGS**, **L-BFGS** -- SciPy quasi-Newton;
-* **NLCG-PR** -- SciPy nonlinear conjugate gradient, Polak-Ribiere.
+* **CG** -- SciPy nonlinear conjugate gradient, Polak-Ribiere.
 
 Everything but SPSA is dispatched to ``scipy.optimize.minimize``; SPSA is
 implemented natively (SciPy has no equivalent) but shares the same
@@ -57,7 +57,7 @@ class OptimizeResult:
 # The optimization methods exposed by name to the variational drivers
 # (VQE, ADAPTVQE).
 NAMED_OPTIMIZERS = ("SPSA", "COBYLA", "Nelder-Mead", "SLSQP",
-                    "BFGS", "L-BFGS", "NLCG-PR")
+                    "BFGS", "L-BFGS", "CG")
 
 #: Default method everywhere (drivers included).  Measured on H2O/PAW-LCAO-SZ with
 #: the qubit pool, where it reaches the same energy on the same circuit as
@@ -82,8 +82,8 @@ DEFAULT_OPTIMIZER = "SLSQP"
 #: gradient behind.  That matters because **ADAPT-VQE's own convergence test
 #: reads that residual gradient**: at ``1e-8`` SLSQP reaches the H2/HAO ground
 #: state to 1e-10 eV but leaves ``max|g| = 4.6e-06``, just above a
-#: ``gradient_tolerance`` of ``1e-6``, so the growth loop never stops and piles
-#: up 50 redundant operators.  At ``1e-12`` the same run converges after one
+#: gradient convergence threshold of ``1e-6``, so the growth loop never stops
+#: and piles up 50 redundant operators.  At ``1e-12`` the same run converges after one
 #: operator in 4 steps and 9 evaluations.
 #:
 #: It also gives the native SPSA a criterion to certify convergence against,
@@ -93,11 +93,11 @@ DEFAULT_TOL = 1e-12
 
 # Methods routed to scipy.optimize.minimize vs. implemented natively below.
 _SCIPY_METHODS = ("COBYLA", "Nelder-Mead", "SLSQP", "BFGS", "L-BFGS",
-                  "NLCG-PR")
+                  "CG")
 _CUSTOM_METHODS = ("SPSA",)
 
 #: Mandacaru name -> the name ``scipy.optimize.minimize`` knows it by, for the
-#: methods whose usual name in the quantum-chemistry literature is not SciPy's.
+#: methods whose Mandacaru name is not SciPy's.
 #:
 #: ``"L-BFGS"`` is limited-memory BFGS *without* bounds, which is exactly what
 #: SciPy's ``"L-BFGS-B"`` reduces to when no bounds are given -- and a
@@ -106,10 +106,10 @@ _CUSTOM_METHODS = ("SPSA",)
 #: method: it was, and it ran the same code for the same cost (LiH: 85 steps
 #: and 844 evaluations either way), which is a second name for one thing.
 #:
-#: ``"NLCG-PR"`` is the nonlinear conjugate gradient in its Polak-Ribiere
-#: variant, which is what SciPy implements under the bare name ``"CG"``
-#: (with the ``max(0, beta)`` restart of Polak-Ribiere+).
-_SCIPY_ALIASES = {"L-BFGS": "L-BFGS-B", "NLCG-PR": "CG"}
+#: ``"CG"`` needs no entry: it is SciPy's own name for its nonlinear conjugate
+#: gradient, the Polak-Ribiere variant with the ``max(0, beta)`` restart of
+#: Polak-Ribiere+.
+_SCIPY_ALIASES = {"L-BFGS": "L-BFGS-B"}
 
 #: Methods for which SciPy reads ``tol`` as a **gradient norm** (``gtol``)
 #: rather than a function-value change.
@@ -122,10 +122,10 @@ _SCIPY_ALIASES = {"L-BFGS": "L-BFGS-B", "NLCG-PR": "CG"}
 #: Near one, ``f - f* ~ |g|^2 / (2 lambda)``, so the gradient criterion of
 #: equal strength is **the square root** of the function-value one, and that is
 #: what is passed.  Measured on LiH/HAO with the qubit pool: at ``gtol =
-#: sqrt(1e-12) = 1e-6`` BFGS and NLCG-PR certify every step and reach the same
+#: sqrt(1e-12) = 1e-6`` BFGS and CG certify every step and reach the same
 #: energy as SLSQP to 1e-6 eV in a third of the cost evaluations.  An explicit
 #: ``options={"gtol": ...}`` is left alone.
-_GRADIENT_NORM_METHODS = ("BFGS", "NLCG-PR")
+_GRADIENT_NORM_METHODS = ("BFGS", "CG")
 
 
 #: Keys a ``dict`` form of ``optimizer=`` may carry -- the :class:`Optimizer`
@@ -197,7 +197,7 @@ class Optimizer:
 
         * **derivative-free** -- ``"COBYLA"``, ``"Nelder-Mead"``;
         * **quasi-Newton / gradient** -- ``"SLSQP"``, ``"BFGS"``, ``"L-BFGS"``,
-          ``"NLCG-PR"`` (nonlinear conjugate gradient,
+          ``"CG"`` (nonlinear conjugate gradient,
           Polak-Ribiere variant).  None is given an analytic gradient, so each
           builds its own by finite differences;
         * **stochastic** -- ``"SPSA"``.

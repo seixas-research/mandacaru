@@ -74,7 +74,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        frozen_orbitals=[0, 1, 2, 3, 4],   # compact active space (tractable)
                        h=0.25,
                        max_iterations=12,
-                       gradient_tolerance=1e-3,
+                       convergence={"gradient": 1e-3},
                        txt=os.path.join(DATA, "output_O2.txt"))
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.

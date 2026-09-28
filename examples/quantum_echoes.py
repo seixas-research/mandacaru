@@ -50,7 +50,7 @@ def build_h2_problem(txt: str | None = None) -> tuple[
     atoms.calc = Mandacaru(
         method="adapt-vqe", basis={"name": "HAO"}, pool="fermionic",
         mapping="jordan_wigner", device="AER_simulator",
-        grid=grid, h=grid.h, max_iterations=8, gradient_tolerance=1e-6,
+        grid=grid, h=grid.h, max_iterations=8, convergence={"gradient": 1e-6},
         optimizer={"method": "BFGS", "maxiter": 100, "tol": 1e-12,
                    "options": {"gtol": 1e-8}},
         txt=txt,

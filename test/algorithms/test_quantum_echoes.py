@@ -92,7 +92,7 @@ def test_adapt_ground_state_handoff(mapping, tmp_path):
     calc = Mandacaru(method="adapt-vqe", hamiltonian=h, pool="fermionic",
                      num_particles=(1, 1), n_spatial_orbitals=2,
                      mapping=mapping, profile=False, max_iterations=8,
-                     gradient_tolerance=1e-7,
+                     convergence={"gradient": 1e-7},
                      optimizer={"method": "BFGS", "maxiter": 100, "tol": 1e-10})
     result = calc.run()
     assert result.num_operators > 0

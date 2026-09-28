@@ -561,7 +561,7 @@ class TestProjectedForcesAreQualified:
         # documented pandas/pyarrow interaction).  The forces need no circuits.
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.45, charge=1,
                                pool="fermionic", max_iterations=3, profile=False,
-                               gradient_tolerance=1e-3, txt=out)
+                               convergence={"gradient": 1e-3}, txt=out)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             atoms.get_forces()

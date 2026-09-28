@@ -30,7 +30,7 @@ class TestSparsePool:
     def _energy(self, atoms, sparse):
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
                                basis="HAO", h=0.5, sparse=sparse, trace=False,
-                               max_iterations=6, gradient_tolerance=1e-4)
+                               max_iterations=6, convergence={"gradient": 1e-4})
         return atoms.get_total_energy()
 
     def test_sparse_matches_dense(self, lih):

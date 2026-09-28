@@ -58,7 +58,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        device="AER_simulator",
                        h=0.10,
                        max_iterations=25,
-                       gradient_tolerance=1e-3,
+                       convergence={"gradient": 1e-3},
                        txt=os.path.join(DATA, "output_LiH.txt"))
 
 # 2. Asking ASE for the energy runs the whole ADAPT-VQE simulation.

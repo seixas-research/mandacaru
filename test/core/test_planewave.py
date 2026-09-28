@@ -168,7 +168,7 @@ class TestPlaneWaveDrivers:
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo",
                                basis={"name": "PW", "energy_cutoff": 8},
                                trace=False, max_iterations=6,
-                               gradient_tolerance=1e-3)
+                               convergence={"gradient": 1e-3})
         assert np.isfinite(atoms.get_total_energy())
         assert atoms.calc.result.integration_profile is not None
 

@@ -88,7 +88,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        frozen_core=True,   # freeze the oxygen 1s core
                        h=0.30,
                        max_iterations=20,
-                       gradient_tolerance=1e-3,
+                       convergence={"gradient": 1e-3},
                        txt=os.path.join(DATA, "output_H2O.txt"))
 # (expressibility sampling is off by default -- it is a diagnostic whose cost
 #  grows quadratically over a run.  Pass run_options={"log_expressivity": True}

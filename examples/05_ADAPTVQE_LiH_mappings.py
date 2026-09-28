@@ -54,7 +54,7 @@ for mapping in ("jordan_wigner", "parity", "parity_reduced",
                            gradient="parameter_shift",
                            h=0.10,
                            max_iterations=25,
-                           gradient_tolerance=1e-3)                    # keep the loop output compact
+                           convergence={"gradient": 1e-3})                    # keep the loop output compact
 
     energy_ev = atoms.get_total_energy()            # eV (ASE convention)
     result = atoms.calc.result                      # result.optimal_energy is eV

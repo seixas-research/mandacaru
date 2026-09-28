@@ -44,7 +44,8 @@ mandacaru --pseudo-status             # each variable, where it points, and how 
 Datasets sit one folder per exchange-correlation functional inside each
 checkout (`<checkout>/lda/<Symbol>.parquet`; PAW-LCAO also has `pbe/`). A
 calculation reads `lda/` by default and another folder with
-`Mandacaru(..., directory="pbe")`. The all-electron bases
+`Mandacaru(..., directory="pbe")`; a dataset whose own functional disagrees
+with the folder it is loaded from is refused. The all-electron bases
 (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need none of this. See the
 [pseudopotentials guide](https://mandacaru.readthedocs.io/en/latest/guide/pseudopotentials.html)
 for the full setup and the [installation guide](https://mandacaru.readthedocs.io/en/latest/installation.html)
@@ -66,11 +67,11 @@ atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf"
                        h=0.10,                               # real-space grid spacing (Å)
                        pool="fermionic",                     # "fermionic" | "qubit" | "qeb" | "ceo" | "ceo-ovp"
                        mapping="jordan_wigner",              # "jordan_wigner" | "parity" | "parity_reduced" | "bravyi_kitaev"
-                       optimizer={"method": "SLSQP",         # "SLSQP" | "BFGS" | "L-BFGS" | "NLCG-PR" | "COBYLA" | "Nelder-Mead" | "SPSA"
+                       optimizer={"method": "SLSQP",         # "SLSQP" | "BFGS" | "L-BFGS" | "CG" | "COBYLA" | "Nelder-Mead" | "SPSA"
                                   "maxiter": 2000,
                                   "tol": 1e-12},
                        max_iterations=300,                   # at most 300 operators
-                       gradient_tolerance=1e-3,              # stop when every pool gradient is smaller
+                       convergence={"gradient": 1e-3},              # stop when every pool gradient is smaller
                        device="AER_simulator",               # or an IBM Quantum / Amazon Braket device
                        txt="output.txt")                     # the run log; without it the same blocks are printed
 
@@ -106,7 +107,7 @@ for d in distances:
                                       "maxiter": 2000,
                                       "tol": 1e-12},
                            max_iterations=300,
-                           gradient_tolerance=1e-4,
+                           convergence={"gradient": 1e-4},
                            txt=f"output_{d:.2f}.txt")
     energies.append(atoms.get_potential_energy())
 
@@ -123,11 +124,11 @@ df.to_csv("lih_dissociation.csv", index=False)
 **HVA.** `method="hva"` uses VQE optimization with fixed, ordered Hamiltonian-group layers. It supports exact local evolution and explicit first- or second-order product-formula circuits (`evolution="trotter"`), checkpoint/resume, Z₂ tapering, spin-resolved grouping, and actual UHF Slater references. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html) for the distinct exact and finite-step states.
 
 
-**ADAPT-VQE.** ADAPT-VQE builds the ansatz during the calculation instead of fixing it in advance. At each iteration it evaluates the energy gradient ⟨ψ|[H, A<sub>k</sub>]|ψ⟩ of every generator A<sub>k</sub> in an operator pool, appends exp(θ<sub>k</sub>A<sub>k</sub>) for the largest one, and re-optimizes all parameters. It stops when every gradient falls below `gradient_tolerance`, producing compact circuits tailored to the molecule.
+**ADAPT-VQE.** ADAPT-VQE builds the ansatz during the calculation instead of fixing it in advance. At each iteration it evaluates the energy gradient ⟨ψ|[H, A<sub>k</sub>]|ψ⟩ of every generator A<sub>k</sub> in an operator pool, appends exp(θ<sub>k</sub>A<sub>k</sub>) for the largest one, and re-optimizes all parameters. It stops on `convergence`, `{"gradient": 1e-3, "energy": 1e-3}` by default (Hartree): when every gradient is below the first threshold and the last growth step changed the energy by less than the second — producing compact circuits tailored to the molecule.
 
 **Operator pools.** The pool is the set of anti-Hermitian generators ADAPT-VQE chooses from, and it sets the trade-off between circuit depth and the number of iterations. `fermionic` holds spin-adapted single and double excitations; `qubit` splits them into individual Pauli strings (the shallowest gates, more iterations); `qeb` uses qubit excitations — the same occupation moves without the fermionic sign; `ceo` couples the qubit excitations that act on the same spin-orbitals, and `ceo-ovp` keeps that coupling to one parameter per step, roughly halving the two-qubit gate count of `qeb`. Every pool is built in the encoding you ask for (Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev) and reaches the same ground state. The fermionic and qubit-excitation pools conserve the particle number; the individual Pauli strings of `qubit` do not, by design.
 
-**Classical optimization.** The parameters are updated by the optimizer in `optimizer=` — a method name, a dict `{"method": ..., "maxiter": ..., "tol": ...}`. SLSQP (the default), BFGS, L-BFGS and NLCG-PR use gradients and stop in one to two orders of magnitude fewer steps on exact simulators; Nelder–Mead and COBYLA are gradient-free and more robust on a small, nearly-converged problem; SPSA (two energy evaluations per step, whatever the number of parameters) tolerates the statistical noise of shot-based hardware.
+**Classical optimization.** The parameters are updated by the optimizer in `optimizer=` — a method name, a dict `{"method": ..., "maxiter": ..., "tol": ...}`. SLSQP (the default), BFGS, L-BFGS and CG use gradients and stop in one to two orders of magnitude fewer steps on exact simulators; Nelder–Mead and COBYLA are gradient-free and more robust on a small, nearly-converged problem; SPSA (two energy evaluations per step, whatever the number of parameters) tolerates the statistical noise of shot-based hardware.
 
 ## Beyond the ground state
 

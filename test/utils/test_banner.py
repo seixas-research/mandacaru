@@ -61,7 +61,7 @@ class TestBannerInRun:
         out_file = str(tmp_path / "output.txt")
         Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian, pool="ceo",
                   num_particles=(1, 1), n_spatial_orbitals=2, profile=False,
-                  trace=True, max_iterations=2, gradient_tolerance=1e-6,
+                  trace=True, max_iterations=2, convergence={"gradient": 1e-6},
                   txt=out_file).run()
         assert "Dependencies:" in capsys.readouterr().out
 

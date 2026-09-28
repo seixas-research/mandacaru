@@ -144,7 +144,7 @@ class DeflationMixin:
         **solver_kwargs
             Forwarded to the driver's :meth:`_deflated_ground` -- e.g. ``restarts``
             / ``seed`` / ``initial_parameters`` (VQE) or ``max_iterations`` /
-            ``gradient_tolerance`` (ADAPT-VQE).
+            ``convergence`` (ADAPT-VQE).
 
         Returns
         -------

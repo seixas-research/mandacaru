@@ -366,7 +366,7 @@ def track_adapt_expressivity(adapt_vqe, dim: int | None = None,
     ``dim`` (or the number-conserving sector inferred from
     ``adapt_vqe.num_particles``).  Extra keyword arguments are forwarded to
     :meth:`ADAPTVQE.run <mandacaru.algorithms.adapt_vqe.ADAPTVQE.run>`; note the
-    stopping controls (``max_iterations`` / ``gradient_tolerance``) live on the
+    stopping controls (``max_iterations`` / ``convergence``) live on the
     ``ADAPTVQE`` object, not on ``run``.
     """
     tracker = ADAPTExpressivityTracker(

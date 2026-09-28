@@ -32,7 +32,10 @@
     2.560000000000004,
     2.8000000000000047
   ],
-  "gradient_tolerance_Ha": 1e-05,
+  "convergence_Ha": {
+    "gradient": 1e-05,
+    "energy": null
+  },
   "max_iterations": 40,
   "optimizer": "L-BFGS-B",
   "optimizer_maxiter": 1000,

@@ -57,13 +57,13 @@ class TestAdaptConvergenceFlag:
     def test_reports_convergence_after_the_final_screening(self):
         """A loose threshold is met at the last step, not before it."""
         result = driver(pool="qeb", max_iterations=0,
-                        gradient_tolerance=1e3).run()
+                        convergence={"gradient": 1e3}).run()
         assert result.converged
         assert np.isfinite(result.final_max_gradient)
 
     def test_an_unconverged_run_reports_a_finite_final_gradient(self):
         result = driver(pool="qeb", max_iterations=1,
-                        gradient_tolerance=1e-12).run()
+                        convergence={"gradient": 1e-12}).run()
         assert not result.converged
         assert np.isfinite(result.final_max_gradient)
 
@@ -71,7 +71,7 @@ class TestAdaptConvergenceFlag:
         """Inner optimizations that never certify convergence are reported."""
         with pytest.warns(RuntimeWarning, match="no convergence"):
             result = driver(pool="qeb", max_iterations=2,
-                            gradient_tolerance=1e-12,
+                            convergence={"gradient": 1e-12},
                             optimizer=UNCERTIFIABLE).run()
         assert result.optimizer_failures
         assert all(isinstance(step, int) for step, _ in result.optimizer_failures)
@@ -86,7 +86,7 @@ class TestSectorGuard:
         monkeypatch.setattr(resolve_method("adapt-vqe")[1],
                             "SECTOR_AUTO_QUBITS", 4)
         solver = driver(pool="qubit", sector="auto", max_iterations=1,
-                        gradient_tolerance=1e-6)
+                        convergence={"gradient": 1e-6})
         # The problem is configured on first use, which is where the sector is
         # resolved and the fallback announced.
         with pytest.warns(RuntimeWarning, match="full register"):
@@ -134,7 +134,7 @@ class TestAdaptEndToEndStillWorks:
                       cell=[8.0] * 3)
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.4,
                                pool="fermionic", trace=False, profile=False,
-                               gradient_tolerance=1e-6)
+                               convergence={"gradient": 1e-6})
         energy = atoms.get_potential_energy()
         exact = np.linalg.eigvalsh(atoms.calc._h_matrix if isinstance(
             atoms.calc._h_matrix, np.ndarray)

@@ -1606,9 +1606,9 @@ class Mandacaru(Calculator):
                     f"zero for the exact ground state of the same orbital "
                     f"space, so it measures how far the ansatz stopped short "
                     f"of that state -- and it is first order in that error "
-                    f"where the energy is second, so tightening "
-                    f"gradient_tolerance moves it very little once the run "
-                    f"reports converged.  What moves it is expressivity: a "
+                    f"where the energy is second, so tightening the "
+                    f"convergence thresholds moves it very little once the "
+                    f"run reports converged.  What moves it is expressivity: a "
                     f"different `pool`, or a growth that has not stalled "
                     f"(check result.converged against the final screening "
                     f"gradient).",
@@ -1978,11 +1978,11 @@ class Mandacaru(Calculator):
                 f"the forces do not sum to zero (net |sum F| = {residual:.3g} "
                 f"eV/Angstrom against a largest force of {largest:.3g}): a "
                 f"free molecule feels no net force, so this is grid artifact, "
-                f"not physics.  The energy is not translation invariant on "
-                f"this grid -- typically a basis function too sharp for the "
-                f"spacing (an all-electron core).  Refine h, or use a "
-                f"pseudopotential basis (PAW-LCAO / ONCVPSP / NCPP), which removes "
-                f"the core rather than trying to sample it.",
+                f"not physics. The frozen-grid energy is not translation "
+                f"invariant at this spacing. Refine h and check both energy "
+                f"and forces across grid spacings and molecular positions; "
+                f"a pseudopotential can reduce, but does not eliminate, "
+                f"this sampling error.",
                 RuntimeWarning, stacklevel=3)
         return residual
 

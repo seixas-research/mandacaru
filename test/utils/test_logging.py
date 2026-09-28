@@ -27,6 +27,7 @@ from mandacaru.algorithms import Mandacaru
 from mandacaru.core import MolecularIntegrals, minimal_hao_basis
 from mandacaru.integrals import Grid
 from mandacaru.optimizers import DEFAULT_OPTIMIZER
+from mandacaru.units import HARTREE_TO_EV
 from mandacaru.utils import AdaptOutputLogger, parse_output
 import os
 from mandacaru.core.mapping import PauliSum
@@ -75,7 +76,7 @@ class TestAdaptOutputProtocol:
                      cell=[[6, 0, 0], [1, 7, 0], [0, 0, 5]], pbc=True)
         out = str(tmp_path / "output.txt")
         adapt = _h2_adapt(h2_hamiltonian, max_iterations=6,
-                          gradient_tolerance=1e-4, txt=out)
+                          convergence={"gradient": 1e-4}, txt=out)
         result = adapt.run(geometry=geom, log_expressivity=True)
 
         parsed = parse_output(out)
@@ -112,7 +113,7 @@ class TestAdaptOutputProtocol:
         # `verbose_operators=True` writes that to pool.json instead.
         out = str(tmp_path / "output.txt")
         adapt = _h2_adapt(h2_hamiltonian, max_iterations=4,
-                          gradient_tolerance=1e-4, txt=out)
+                          convergence={"gradient": 1e-4}, txt=out)
         result = adapt.run()
         text = open(out, encoding="utf-8").read()
         setup, table = text.split("[ITERATIONS]", 1)
@@ -134,7 +135,7 @@ class TestAdaptOutputProtocol:
 
         pool_file = tmp_path / "pool.json"
         adapt = _h2_adapt(h2_hamiltonian, max_iterations=2,
-                          gradient_tolerance=1e-4,
+                          convergence={"gradient": 1e-4},
                           verbose_operators=str(pool_file))
         adapt.run()
         payload = json.loads(pool_file.read_text())
@@ -155,7 +156,7 @@ class TestAdaptOutputProtocol:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="fermionic", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=True, max_iterations=4,
-                          gradient_tolerance=1e-4, txt=out)
+                          convergence={"gradient": 1e-4}, txt=out)
         result = adapt.run(log_expressivity=True)  # the expressivity is opt-in
         summary = parse_output(out)["summary"]
         for key in ("optimal_energy_eV", "reference_energy_eV", "num_operators",
@@ -174,7 +175,7 @@ class TestAdaptOutputProtocol:
         out = str(tmp_path / "output.txt")
         geom = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         adapt = _h2_adapt(h2_hamiltonian, atomic_units=True, max_iterations=4,
-                          gradient_tolerance=1e-4, txt=out)
+                          convergence={"gradient": 1e-4}, txt=out)
         adapt.run(geometry=geom)
         parsed = parse_output(out)
         assert parsed["system"]["units"] == "Bohr"
@@ -184,7 +185,7 @@ class TestAdaptOutputProtocol:
     def test_runs_without_geometry(self, h2_hamiltonian, tmp_path):
         # The protocol must still write cleanly when no geometry is supplied.
         out = str(tmp_path / "output.txt")
-        _h2_adapt(h2_hamiltonian, max_iterations=4, gradient_tolerance=1e-4,
+        _h2_adapt(h2_hamiltonian, max_iterations=4, convergence={"gradient": 1e-4},
                   txt=out).run()
         parsed = parse_output(out)
         assert parsed["system"]["cell_present"] == "False"
@@ -455,7 +456,7 @@ class TestElectronsBlock:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
                                pool="fermionic", max_iterations=2,
-                               gradient_tolerance=1e-3, txt=out)
+                               convergence={"gradient": 1e-3}, txt=out)
         atoms.get_potential_energy()
         return out, atoms.calc
 
@@ -638,15 +639,15 @@ class TestOptimizationSetupBlock:
     The ADAPT screening gradient can be computed three ways and the choice
     changes both the cost and the truncation error of the ``|grad|`` column, so
     it is a first-class line of the block -- ``gradient_method``, next to the
-    ``gradient_tol`` it is compared against -- and not, as it was, the last of
+    ``convergence_gradient`` it is compared against -- and not, as it was, the last of
     the pool lines under the name ``screening_gradient``.
     """
 
     #: The block's lines, in the order they are written: the classical
-    #: optimizer and its budget, the gradient group, the pool, the loop's
-    #: starting point.  Lineage (a resumed run) closes it.
-    FIELDS = ("classical_optimizer", "max_iterations",
-              "gradient_method", "gradient_formula", "gradient_tol",
+    #: optimizer, its budget and the convergence criteria, the gradient group,
+    #: the pool, the loop's starting point.  Lineage (a resumed run) closes it.
+    FIELDS = ("classical_optimizer", "max_iterations", "convergence",
+              "gradient_method", "gradient_formula", "convergence_gradient",
               "gradient_units",
               "pool", "pool_class", "pool_size",
               # How the ansatz grows, how a growth step is optimized and where
@@ -663,7 +664,7 @@ class TestOptimizationSetupBlock:
         Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
                   pool="fermionic", num_particles=(1, 1),
                   n_spatial_orbitals=2, profile=False, max_iterations=2,
-                  gradient_tolerance=1e-3, txt=out, trace=False,
+                  convergence={"gradient": 1e-3}, txt=out, trace=False,
                   **kwargs).run()
         return out
 
@@ -698,7 +699,33 @@ class TestOptimizationSetupBlock:
         text = open(self._log(h2_hamiltonian, tmp_path),
                     encoding="utf-8").read()
         assert text.index("gradient_method:") < text.index("gradient_formula:") \
-            < text.index("gradient_tol:") < text.index("gradient_units:")
+            < text.index("convergence_gradient:") \
+            < text.index("gradient_units:")
+
+    def test_a_criterion_not_used_has_no_line(self, h2_hamiltonian,
+                                              tmp_path):
+        setup = parse_output(self._log(h2_hamiltonian, tmp_path))["setup"]
+        assert setup["convergence"] == "gradient"
+        assert float(setup["convergence_gradient"]) == 1e-3
+        assert not any(key.startswith("convergence_energy") for key in setup)
+
+    def test_the_energy_threshold_is_in_the_unit_of_the_de_column(
+            self, h2_hamiltonian, tmp_path):
+        """Written once, converted from Hartree into the log's energy unit,
+        beside ``energy_unit`` -- so it reads against ``dE`` directly."""
+        out = str(tmp_path / "both.txt")
+        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                  pool="fermionic", num_particles=(1, 1),
+                  n_spatial_orbitals=2, profile=False, max_iterations=2,
+                  convergence={"gradient": 1e-3, "energy": 1e-6}, txt=out,
+                  trace=False).run()
+        setup = parse_output(out)["setup"]
+        assert setup["convergence"] == "gradient and energy (both required)"
+        assert float(setup["convergence_energy_eV"]) == pytest.approx(
+            1e-6 * HARTREE_TO_EV, rel=1e-5)
+        keys = list(setup)
+        assert keys.index("energy_unit") < keys.index("convergence_energy_eV") \
+            < keys.index("reference_energy_eV")
 
     @pytest.mark.parametrize("gradient", ["analytic", "finite_difference",
                                           "parameter_shift"])
@@ -725,7 +752,7 @@ class TestOptimizationSetupBlock:
         old = tmp_path / "old_output.txt"
         old.write_text("[OPTIMIZATION SETUP]\n"
                        "    classical_optimizer: COBYLA\n"
-                       "    gradient_tol: 0.001\n"
+                       "    convergence_gradient: 0.001\n"
                        "    gradient_units: Hartree\n"
                        "    screening_gradient: parameter-shift\n",
                        encoding="utf-8")
@@ -762,7 +789,8 @@ class TestOptimizationSetupBlock:
         Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                   pool="fermionic", num_particles=(1, 1), n_spatial_orbitals=2,
                   profile=False, max_iterations=3, gradient="finite-difference",
-                  resume=checkpoint, txt=out, trace=False).run()
+                  convergence={"gradient": 1e-3}, resume=checkpoint, txt=out,
+                  trace=False).run()
 
         setup = parse_output(out)["setup"]
         assert setup["gradient_method"] == "finite_difference"
@@ -925,7 +953,7 @@ class TestPerformanceBlock:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
                                pool="fermionic", max_iterations=4,
-                               gradient_tolerance=1e-3, txt=out)
+                               convergence={"gradient": 1e-3}, txt=out)
         BFGS(atoms, logfile=None).run(fmax=0.05, steps=1)
         return out
 
@@ -979,7 +1007,7 @@ class TestPerformanceBlock:
     def test_a_direct_run_writes_its_own_block(self, h2_hamiltonian, tmp_path):
         # With no calculator to defer to, the solver writes the block itself.
         out = str(tmp_path / "output.txt")
-        _h2_adapt(h2_hamiltonian, max_iterations=2, gradient_tolerance=1e-4,
+        _h2_adapt(h2_hamiltonian, max_iterations=2, convergence={"gradient": 1e-4},
                   txt=out).run()
         performance = parse_output(out)["performance"]
         assert "parameter optimization" in performance["stages_s"]
@@ -1060,7 +1088,7 @@ class TestRelaxationLog:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
                                pool="fermionic", max_iterations=4,
-                               gradient_tolerance=1e-3, txt=out)
+                               convergence={"gradient": 1e-3}, txt=out)
         opt = BFGS(atoms, logfile=None)
         opt.run(fmax=0.05, steps=2)
         return out, atoms, opt
@@ -1121,7 +1149,7 @@ class TestGeometryOptimizationSummary:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
                                pool="fermionic", max_iterations=4,
-                               gradient_tolerance=1e-3, txt=out)
+                               convergence={"gradient": 1e-3}, txt=out)
         opt = BFGS(atoms, logfile=None)
         opt.run(fmax=0.05, steps=2)
         assert atoms.calc.write_optimization_summary(optimizer=opt) is True
@@ -1191,7 +1219,7 @@ class TestGeometryOptimizationSummary:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
                                pool="fermionic", max_iterations=2,
-                               gradient_tolerance=1e-3, txt=out)
+                               convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()
         # One geometry is not a trajectory; there is nothing to summarize.
         assert atoms.calc.write_optimization_summary() is False
@@ -1216,7 +1244,7 @@ class TestStandardOutputIsTheASETable:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
                                pool="fermionic", max_iterations=2,
-                               gradient_tolerance=1e-3, **options)
+                               convergence={"gradient": 1e-3}, **options)
         atoms.get_potential_energy()
         return capsys.readouterr().out
 
@@ -1303,7 +1331,7 @@ class TestVerbosePauliOutput:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False, trace=True,
-                          max_iterations=3, gradient_tolerance=1e-6)
+                          max_iterations=3, convergence={"gradient": 1e-6})
         adapt.run()
         out = capsys.readouterr().out
         # The Hamiltonian is summarized by size only -- its Pauli expansion runs
@@ -1325,7 +1353,7 @@ class TestVerbosePauliOutput:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=True, trace=True,
-                          max_iterations=3, gradient_tolerance=1e-6)
+                          max_iterations=3, convergence={"gradient": 1e-6})
         result = adapt.run(log_expressivity=True)   # the `expr` column is opt-in
         out = capsys.readouterr().out
 
@@ -1379,7 +1407,7 @@ class TestVerbosePauliOutput:
             adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                               pool="ceo", num_particles=(1, 1),
                               n_spatial_orbitals=2, profile=True, trace=True,
-                              max_iterations=2, gradient_tolerance=1e-6)
+                              max_iterations=2, convergence={"gradient": 1e-6})
             adapt.run(log_expressivity=True)     # the `expr` column is opt-in
             out = capsys.readouterr().out
             headings[columns] = next(line.split() for line in out.splitlines()
@@ -1394,7 +1422,7 @@ class TestVerbosePauliOutput:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False, trace=False,
-                          max_iterations=3, gradient_tolerance=1e-6)
+                          max_iterations=3, convergence={"gradient": 1e-6})
         adapt.run()
         assert capsys.readouterr().out == ""
 
@@ -1407,7 +1435,7 @@ class TestMeasurementBlock:
         atoms = h2()
         atoms.calc = Mandacaru(
             method="adapt-vqe", basis="HAO", h=0.45, pool="fermionic",
-            max_iterations=2, gradient_tolerance=1e-3, txt=out, profile=False,
+            max_iterations=2, convergence={"gradient": 1e-3}, txt=out, profile=False,
             measurement_provider=QiskitProvider(device="statevector", shots=0))
         energy = atoms.get_potential_energy()
         block = parse_output(out)["measurement"]
@@ -1423,7 +1451,7 @@ class TestCompletionIsNotAssumed:
         atoms = h2()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
-                               gradient_tolerance=1e-3, txt=out)
+                               convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()
         atoms.positions[1, 2] += 0.03
         atoms.get_forces()
@@ -1447,7 +1475,7 @@ class TestCompletionIsNotAssumed:
         atoms = h2()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
-                               gradient_tolerance=1e-3, txt=out)
+                               convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()
         atoms.positions[1, 2] += 0.03
         atoms.get_forces()

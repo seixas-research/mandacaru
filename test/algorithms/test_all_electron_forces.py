@@ -58,7 +58,7 @@ def analytic_and_numerical(atoms, basis, grid, h, step=0.002, **options):
     """
     atoms = atoms.copy()
     atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, grid=grid, h=h, profile=False,
-                           gradient_tolerance=1e-6, **options)
+                           convergence={"gradient": 1e-6}, **options)
     atoms.get_forces()
     forces = atoms.calc.force_result.unprojected
     solver = atoms.calc.solver
@@ -154,7 +154,7 @@ class TestOrbitalResponseResidual:
     does not report an unconverged optimizer -- it reports an ansatz that
     stopped short of that exact state.  Measured on H2O / PAW-LCAO-SZ: 1.2e-9 Ha for
     the HF determinant, 1.8e-9 for the sector FCI, 1.0e-2 for an ADAPT state
-    5.4e-4 Ha above it, where tightening ``gradient_tolerance`` tenfold moved
+    5.4e-4 Ha above it, where tightening the gradient convergence tenfold moved
     the energy by 1e-6 eV and the residual by 0.6 %.
     """
 
@@ -178,7 +178,7 @@ class TestOrbitalResponseResidual:
                                        [4.3, 4.8, 4.0]], cell=[8.0, 8.0, 8.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid=grid, h=0.3,
                                charge=1, pool="fermionic", profile=False,
-                               trace=False, gradient_tolerance=1e-8)
+                               trace=False, convergence={"gradient": 1e-8})
         atoms.get_potential_energy()
         forces = atoms.get_forces()
         solver = atoms.calc.solver

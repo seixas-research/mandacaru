@@ -80,7 +80,7 @@ Each iteration is one row, one column per property computed at that step:
 | `energy (eV)` | Energy after the inner re-optimization (Hartree with `atomic_units=True`). |
 | `expr` | Expressivity of the grown ansatz: KL divergence from the Haar distribution over the number-conserving sector. It falls as the ansatz specializes. **Off by default** and the column is then absent rather than blank; `run(log_expressivity=True)` adds it. It is a diagnostic, not a result, and not cheap: `2 x 400` state preparations per iteration, each applying every operator in the ansatz, so the cost is linear in the ansatz and quadratic over a run (0.010 / 0.031 / 0.059 / 0.125 s at 1 / 4 / 8 / 16 operators, 6 qubits). |
 | `dE` | Energy change from the previous row, signed, in the energy column's unit; the first row's is from the reference state (`reference_energy_<unit>` in `[OPTIMIZATION SETUP]`), and a resumed run's from the energy its restored ansatz had. |
-| `\|grad\|` | Largest pool gradient, to six decimals; the operator with this gradient is the one selected. Convergence is when it falls below `gradient_tolerance`. A gradient below 5e-7 reads `0.000000`. |
+| `\|grad\|` | Largest pool gradient, to six decimals; the operator with this gradient is the one selected. It is compared against `convergence_gradient`. A gradient below 5e-7 reads `0.000000`. |
 | `steps` | **Steps the classical optimizer took** to re-optimize the grown ansatz — parameter updates, not cost evaluations. The two differ by the method: L-BFGS spends several evaluations per step on a finite-difference gradient and a line search, SPSA two or three, while COBYLA evaluates once per trial point. `-` when a method reports neither a count nor a per-iteration callback. |
 | `cnot` | CNOT gates after compiling to the native gate set. |
 | `1q` | Single-qubit gates in the same compilation. |
@@ -217,9 +217,10 @@ read off the left margin:
 [OPTIMIZATION SETUP]
     classical_optimizer: SLSQP
     max_iterations: 50
+    convergence: gradient and energy (both required)
     gradient_method: analytic
     gradient_formula: exact derivative, g = 2 Re<H psi|A psi>
-    gradient_tol: 0.001
+    convergence_gradient: 0.001
     gradient_units: Hartree
     pool: ceo
     pool_class: CEOPool
@@ -232,6 +233,7 @@ read off the left margin:
     shots: 0 (exact expectation values)
     circuit_profiling: True
     energy_unit: eV
+    convergence_energy_eV: 0.0272114
     reference_energy_eV: -476.8628634829
 
 [ITERATIONS]
@@ -308,11 +310,11 @@ settings:
 
 | Group | Lines |
 | :--- | :--- |
-| classical optimizer | `classical_optimizer`, `max_iterations` |
-| screening gradient | `gradient_method`, `gradient_formula`, `gradient_tol`, `gradient_units` |
+| classical optimizer | `classical_optimizer`, `max_iterations`, `convergence` |
+| screening gradient | `gradient_method`, `gradient_formula`, `convergence_gradient`, `gradient_units` |
 | operator pool | `pool`, `pool_class`, `pool_size` |
 | growth and execution | `reoptimize_all_parameters`, `state_vector_backend`, `device`, `backend_provider`, `circuit_execution`, `shots`, `circuit_profiling` |
-| the loop's starting point | `energy_unit`, `reference_energy_<unit>` |
+| the loop's starting point | `energy_unit`, `convergence_energy_<unit>`, `reference_energy_<unit>` |
 
 A fresh run starts from the reference state that `[ELECTRONS]` names, with an
 empty ansatz; the block does not repeat it. A **resumed** run closes the block
@@ -324,10 +326,20 @@ of the grown ansatz it started from.
 
 `gradient_method` is the `gradient=` option of the driver: how the pool
 screening gradients in the `|grad|` column were computed. It sits directly above
-`gradient_tol`, which is compared against those numbers, and `gradient_formula`
-says in one line what was evaluated. `gradient_units` is `Hartree` whatever unit
-the energy columns are in -- the gradient is an expectation value of the
-Hamiltonian's commutator, not an energy in the reported unit.
+`convergence_gradient`, which is compared against those numbers, and
+`gradient_formula` says in one line what was evaluated. `gradient_units` is
+`Hartree` whatever unit the energy columns are in -- the gradient is an
+expectation value of the Hamiltonian's commutator, not an energy in the reported
+unit.
+
+#### The convergence criteria
+
+`convergence` names the criteria the `convergence=` option set: `gradient`,
+`energy`, or `gradient and energy (both required)`. Each threshold is written
+once, beside the unit it is read in: `convergence_gradient` in Hartree, next to
+the gradient group, and `convergence_energy_<unit>` converted into the log's
+energy unit, next to `energy_unit`, so it reads directly against the `dE`
+column. A criterion the run does not use has no line.
 
 | `gradient_method` | What it computes | What it costs |
 | :--- | :--- | :--- |

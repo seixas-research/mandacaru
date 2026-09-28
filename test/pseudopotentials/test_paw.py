@@ -21,6 +21,7 @@ overlap correction makes these the first runs through the augmented overlap
 
 from __future__ import annotations
 
+import os
 import warnings
 
 import numpy as np
@@ -111,22 +112,35 @@ ONCV = {"H2": {"rhf": -1.044179, "adapt": -1.058561},
 #: overlap correction was the M-weighted norm where the charge belongs
 #: (6.4e-5 for H).  Every number here moves by ~5 uHa, and only through
 #: hydrogen -- lithium's dataset is unchanged.
-PAW = {"H2": {"rhf": -1.094865, "adapt": -1.108616},
-       "LiH": {"rhf": -0.769928, "adapt": -0.777671}}
+#:
+#: Re-measured 2026-09-27 against the library regenerated on 2026-09-25 (all
+#: four tables below move together, H2 by ~8 uHa and LiH by ~11 uHa; the
+#: old pins described files no current generator reproduces, PAW_SAGA.md
+#: section 7).  Old -> new, rhf / adapt:
+#:   PAW                      H2 -1.094865 / -1.108616 -> -1.094873 / -1.108624
+#:                            LiH -0.769928 / -0.777671 -> -0.769939 / -0.777683
+#:   PAW_FILTER_ONLY          H2 -1.094911 / -1.108663 -> -1.094919 / -1.108671
+#:                            LiH -0.769909 / -0.777653 -> -0.769921 / -0.777665
+#:   PAW_EXACT_LOCAL_ONLY     H2 -1.094880 / -1.108646 -> -1.094887 / -1.108652
+#:                            LiH -0.770388 / -0.778105 -> -0.770399 / -0.778117
+#:   PAW_BEFORE_BASIS_FILTER  H2 -1.094874 / -1.108638 -> -1.094880 / -1.108644
+#:                            LiH -0.770427 / -0.778141 -> -0.770438 / -0.778153
+PAW = {"H2": {"rhf": -1.094873, "adapt": -1.108624},
+       "LiH": {"rhf": -0.769939, "adapt": -0.777683}}
 #: The filter alone (``exact_local_potential = False``).
 PAW_FILTER_ONLY = {
-    "H2": {"rhf": -1.094911, "adapt": -1.108663},
-    "LiH": {"rhf": -0.769909, "adapt": -0.777653}}
+    "H2": {"rhf": -1.094919, "adapt": -1.108671},
+    "LiH": {"rhf": -0.769921, "adapt": -0.777665}}
 #: The exact local potential alone (``filter=False``).
 PAW_EXACT_LOCAL_ONLY = {
-    "H2": {"rhf": -1.094880, "adapt": -1.108646},
-    "LiH": {"rhf": -0.770388, "adapt": -0.778105}}
+    "H2": {"rhf": -1.094887, "adapt": -1.108652},
+    "LiH": {"rhf": -0.770399, "adapt": -0.778117}}
 #: Neither: ``filter=False`` and ``exact_local_potential = False`` -- the
 #: pre-2026-09-20 model.  Not wrong, just grid-sampled throughout; pinned so
 #: both flips are auditable.
 PAW_BEFORE_BASIS_FILTER = {
-    "H2": {"rhf": -1.094874, "adapt": -1.108638},
-    "LiH": {"rhf": -0.770427, "adapt": -0.778141}}
+    "H2": {"rhf": -1.094880, "adapt": -1.108644},
+    "LiH": {"rhf": -0.770438, "adapt": -0.778153}}
 #: The family's **default basis** since 2026-09-20: the four tables above with
 #: the first zeta *confined* (``energy_shift = 0.1`` eV, GPAW's recipe; H 1s at
 #: 6.68 Bohr, Li 2s at 11.20).  A mild confinement lowers a minimal basis's
@@ -134,8 +148,12 @@ PAW_BEFORE_BASIS_FILTER = {
 #: for H2 and 1.5 mHa for LiH.  ``{"energy_shift": None}`` reproduces ``PAW``.
 #: Re-measured 2026-09-23 with the rebuilt library (see ``PAW`` above):
 #:   H2  adapt -1.128495 -> -1.127975   LiH adapt -0.781824 -> -0.779022
-PAW_DEFAULT = {"H2": {"rhf": -1.118043, "adapt": -1.127975},
-               "LiH": {"rhf": -0.773118, "adapt": -0.779022}}
+#: and 2026-09-27 (regenerated library, as above):
+#:   H2  adapt -1.127975 -> -1.128000   LiH adapt -0.779022 -> -0.779032
+#: and when the confinement shift became measured from the dataset's own free
+#: level:  H2 adapt -1.128000 -> -1.127986   LiH adapt -0.779032 -> -0.779033
+PAW_DEFAULT = {"H2": {"rhf": -1.118043, "adapt": -1.127986},
+               "LiH": {"rhf": -0.773118, "adapt": -0.779033}}
 #: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
 PAW_BEFORE_COMPENSATION_ATTRACTION = {
     "H2": {"rhf": -1.053292, "adapt": -1.067402},
@@ -471,8 +489,10 @@ class TestAtomic:
         (4p: -0.05); with r_cl at the 4s cutoff it binds nothing extra."""
         from mandacaru.pseudopotentials import oncv, paw
         atom = generated("Fe").atom
+        # The historical construction: the compact local radius and no raise
+        # of the local potential (iron's default is now 10 Ha).
         old = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
-                           r_cut_local=0.828)
+                           r_cut_local=0.828, local_shift=0.0)
         assert old.unconstructed_ghosts()[1] < -4.0
         assert 1 in oncv.ghost_errors(old, paw._paw_levels)
         new = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom)
@@ -533,6 +553,152 @@ class TestLibrary:
         census found ghosted.  The whole library is the slow test below."""
         from mandacaru.pseudopotentials import oncv
         assert oncv.ghost_errors(get_paw(symbol), paw._paw_levels) == {}
+
+    @pytest.mark.parametrize("xc", ["lda", "pbe"])
+    def test_lithium_smooth_waves_are_nodeless(self, xc):
+        """The PBE lithium shipped until 2026-09-27 had both 2s partial waves
+        cross zero at 1.22 Bohr, inside r_c = 2.60: a legitimate minimum of
+        the norm-constrained fit, invisible to every atomic check, and fatal
+        in a molecule (``DEFAULT_N_BESSEL_BY_DATASET``)."""
+        pp = get_paw("Li", xc=xc)
+        r = np.asarray(pp.r)
+        channel = pp.channels[0]
+        inside = (r > 0.0) & (r < channel.r_cut)
+        for wave in channel.pseudo_waves:
+            values = np.asarray(wave)[inside]
+            signs = np.sign(values[np.abs(values) > 1e-3 * np.abs(values).max()])
+            assert np.all(signs == signs[0])
+
+    @pytest.mark.slow
+    def test_lih_binds_alike_with_either_functional(self):
+        """With the nodal PBE lithium, LiH (SZ, RHF) was 4 eV too high at
+        1.6 Angstrom and had its minimum at 2.4.  Slow (4 s of setup) because
+        the default run sits at its session budget; the nodeless-wave test
+        above guards the dataset itself."""
+        energies = {}
+        for xc, distance in (("lda", 1.6), ("pbe", 1.6), ("pbe", 2.4)):
+            atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, distance]],
+                          cell=[7.0] * 3)
+            atoms.center()
+            atoms.calc = Mandacaru(method="rhf", h=0.30, directory=xc,
+                                   basis={"name": "PAW-LCAO", "size": "SZ"})
+            energies[xc, distance] = atoms.get_potential_energy()
+        assert energies["pbe", 1.6] < energies["pbe", 2.4]
+        assert energies["pbe", 1.6] == pytest.approx(energies["lda", 1.6],
+                                                     abs=0.5)
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("xc", ["lda", "pbe"])
+    def test_copper_binds_hydrogen(self, xc):
+        """The PBE copper built at deficit 0.1 collapsed CuH as the hydrogen
+        entered its sphere: -1555 eV at 1.30 Angstrom, 108 eV below 1.60 (RHF
+        SZ, h = 0.20).  At deficit 0, like the LDA one, 1.60 is the lower of
+        the two, by a fraction of an eV."""
+        energies = {}
+        for distance in (1.3, 1.6):
+            atoms = Atoms("CuH", positions=[[0, 0, 0], [0, 0, distance]],
+                          cell=[8.0] * 3)
+            atoms.center()
+            atoms.calc = Mandacaru(method="rhf", h=0.20, directory=xc,
+                                   basis={"name": "PAW-LCAO", "size": "SZ"})
+            energies[distance] = atoms.get_potential_energy()
+        assert energies[1.6] < energies[1.3] < energies[1.6] + 5.0
+
+    @pytest.mark.parametrize("xc", ["lda", "pbe"])
+    @pytest.mark.parametrize("symbol", ["Fe", "Co", "Ni", "Cu", "Sn"])
+    def test_the_s_projectors_represent_an_intruding_hydrogen(self, symbol,
+                                                              xc):
+        """Expand the l = 0 part of a hydrogen 1s centered at the sphere's
+        edge in the s channel's partial waves and projectors, and compare with
+        the function itself inside the sphere.  At 8 Bessel functions (and for
+        copper at deficit 0.1) the expansion missed it by 2.4-13 times its own
+        norm (tin: 150), the metal's one-center density held two to three
+        times the molecule's electrons, and the hydride collapsed by 150-580 eV
+        (DEFAULT_N_BESSEL_BY_DATASET, DEFAULT_CUTOFFS, DEFAULT_NORM_DEFICITS);
+        now it is under one."""
+        pp = get_paw(symbol, xc=xc)
+        r = np.asarray(pp.r)
+        channel = pp.channels[0]
+        inside = (r > 0.0) & (r <= channel.r_cut)
+        radius, step = r[inside], r[1] - r[0]
+        distance = channel.r_cut + 0.2
+
+        def primitive(s):
+            return -(s + 1.0) * np.exp(-s)
+        target = ((primitive(radius + distance)
+                   - primitive(np.abs(radius - distance)))
+                  / (2.0 * radius * distance * np.sqrt(np.pi)))
+        waves = np.array([np.asarray(w)[inside] for w in channel.pseudo_waves])
+        projectors = np.array([np.asarray(p)[inside]
+                               for p in channel.projectors])
+        coefficients = (projectors * target * radius ** 2).sum(axis=1) * step
+        miss = target - coefficients @ waves
+
+        def norm(f):
+            return np.sqrt((f * f * radius ** 2).sum() * step)
+        # LDA tin's best construction (s cutoff 2.33 Bohr, 10 functions) sits
+        # at 1.05: every scanned cutoff from 2.20 to 2.59 and 8-10 functions
+        # gave 1.04-2.0 (at the default 2.59, 6.6-156).  Its hydride holds
+        # 13.7-15.2 one-center electrons of SnH's 15, so it no longer collapses.
+        bound = 1.1 if (symbol, xc) == ("Sn", "lda") else 1.0
+        assert norm(miss) < bound * norm(target)
+
+    @pytest.mark.parametrize("xc", ["lda", "pbe"])
+    @pytest.mark.parametrize("symbol", ["Fe", "Co", "Ni", "Cu", "Zn"])
+    def test_a_filtered_3d_function_still_projects_onto_its_own_wave(
+            self, symbol, xc):
+        """On a 0.20 Angstrom grid the Fourier filter changes a 3d basis
+        function by a few percent; with the default d spheres (0.82-0.86 Bohr)
+        the LDA projectors turned that into a 32-40 % error in its projection,
+        (1.31, -0.31) for Co instead of (1, 0), and an 11-electron d shell in
+        a 10-electron CoH (Fe, Cu, Zn 18-250 %).  With the d cutoffs, second
+        reference energies and local shifts of DEFAULT_CUTOFFS /
+        DEFAULT_ENERGY_OFFSETS / DEFAULT_LOCAL_SHIFTS it is under 10 %."""
+        atoms = Atoms(symbol, positions=[[3.5, 3.5, 3.5]], cell=[7.0] * 3)
+        pp = get_paw(symbol, xc=xc)
+        _H, _p, _n, _profile, context = build_basis_hamiltonian(
+            atoms, {"name": "PAW-LCAO", "size": "SZ",
+                    "projector_basis": "dual",
+                    "directory": os.path.dirname(pp.source)},
+            None, 0.20, 0, None, spin=True)
+        integrals = context["integrals"]
+        C = np.asarray(integrals.projections())
+        columns = {(q.m, q.index): k for k, q in
+                   enumerate(integrals.kb_projectors) if q.l == 2}
+        row = int(np.argmax(np.abs(C[:, columns[0, 0]])))
+        assert C[row, columns[0, 0]].real == pytest.approx(1.0, abs=0.1)
+        assert abs(C[row, columns[0, 1]]) < 0.1
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("xc", ["lda", "pbe"])
+    def test_iron_hydride_does_not_collapse(self, xc):
+        """FeH fell 154 eV between 2.93 and 1.39 Angstrom with the 8-function
+        LDA iron (UHF SZ, h = 0.20).  A bound, not a bond curve -- the 3d shell
+        is not resolved on this grid -- and the UHF is solved to 1e-6 in up to
+        1000 iterations, which every point of both functionals reaches (the
+        drivers' 1e-9 in 200 misses one PBE point by oscillation)."""
+        from mandacaru.algorithms.hartree_fock import UHF
+
+        pp = get_paw("Fe", xc=xc)
+        energies = []
+        for distance in (1.39, 2.93):
+            atoms = Atoms("FeH", positions=[[3.5, 3.5, 3.5],
+                                            [3.5, 3.5, 3.5 + distance]],
+                          cell=[7.0] * 3)
+            _H, _p, _n, _profile, context = build_basis_hamiltonian(
+                atoms, {"name": "PAW-LCAO", "size": "SZ",
+                        "directory": os.path.dirname(pp.source)},
+                None, 0.20, 0, None, spin=True)
+            integrals = context["integrals"]
+            electrons = context["n_electrons"]
+            result = UHF(integrals.one_body(), integrals.two_body(),
+                         electrons // 2 + 1, electrons // 2).solve(
+                             max_iter=1000, tol=1e-6)
+            assert result.converged
+            energies.append(result.electronic_energy
+                            + integrals.nuclear_repulsion
+                            + integrals.constant_energy)
+        assert abs(energies[0] - energies[1]) * HARTREE_TO_EV < 30.0
 
     @pytest.mark.slow
     @pytest.mark.parametrize("symbol", library_elements())

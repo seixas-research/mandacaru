@@ -70,7 +70,7 @@ def lih(distance=1.6):
 
 def adapt(**options):
     return Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO", h=0.4,
-                     trace=False, profile=False, gradient_tolerance=1e-6,
+                     trace=False, profile=False, convergence={"gradient": 1e-6},
                      **options)
 
 

@@ -194,7 +194,7 @@ class TestCalculatorPath:
         atoms = h2()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="UPAW-LCAO", h=0.3,
                                pool="fermionic", max_iterations=8,
-                               gradient_tolerance=1e-5, profile=False,
+                               convergence={"gradient": 1e-5}, profile=False,
                                trace=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

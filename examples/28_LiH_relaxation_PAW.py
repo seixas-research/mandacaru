@@ -38,7 +38,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                                   "maxiter": 2000,
                                   "tol": 1e-12},
                        max_iterations=80,
-                       gradient_tolerance=1e-5,
+                       convergence={"gradient": 1e-5},
                        txt='output.txt')
 
 opt = BFGS(atoms, trajectory=os.path.join(DATA, "relax.traj"))

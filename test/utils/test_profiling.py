@@ -110,7 +110,7 @@ class TestADAPTProfiling:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False, trace=False,
-                          max_iterations=3, gradient_tolerance=1e-6)
+                          max_iterations=3, convergence={"gradient": 1e-6})
         res = adapt.run()
         t = res.timings
         assert t is not None
@@ -123,7 +123,7 @@ class TestADAPTProfiling:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False, trace=True,
-                          max_iterations=3, gradient_tolerance=1e-6)
+                          max_iterations=3, convergence={"gradient": 1e-6})
         adapt.run()
         out = capsys.readouterr().out
         assert "[PERFORMANCE]" in out
@@ -137,7 +137,7 @@ class TestADAPTProfiling:
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                                h=0.4, trace=True, max_iterations=4,
-                               gradient_tolerance=1e-3)
+                               convergence={"gradient": 1e-3})
         atoms.get_total_energy()
         out = capsys.readouterr().out
         assert "integration:" in out

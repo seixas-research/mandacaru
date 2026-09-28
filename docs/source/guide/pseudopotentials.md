@@ -281,7 +281,7 @@ calculation that later reads it.
 | `extra_l` | `0`, La: `1` | Empty channels above the highest occupied valence $l$; a bound non-core atom level is the first reference when present, otherwise both references scatter |
 | `points`, `r_max` | per element | The radial grid of the reference atom |
 | `reference_configuration` | selected neutral configuration | Explicit complete occupation map `{(n, l): electrons}` for the reference atom |
-| `frozen_subshells` | none | Move selected occupied subshells into the pseudopotential core; add a scattering channel when needed |
+| `frozen_subshells` | W–Rn: `4f`; otherwise none | Move selected occupied subshells into the pseudopotential core; add a scattering channel when needed |
 | `scattering_energy` | `0.25` Ha when freezing the highest angular momentum | Positive first reference for the added scattering channel |
 
 For an element whose occupied valence channels differ from the automatically
@@ -348,6 +348,14 @@ angular momentum above the highest channel. A deficit below -0.01 Ha raises
 excludes very shallow, box-sensitive levels, so a full library audit must
 still check those separately. La is a concrete case: its neutral atom has an
 empty but bound 4f level, while its old local f channel binds none.
+Newly generated files retain the expected non-core counts, box radius and
+energy floor. `missing_bound_states` can repeat this count after loading a
+file; older files without the record still require the all-electron atom.
+The f-block can also have an empty bound d level between occupied s and f
+channels. ONCVPSP adds a zero-occupation bound d projector in that case;
+cerium's repaired 5d level is -0.0813 Ha. These extra projector channels do
+not enlarge the minimal valence basis.
+
 Use `--check` to print the diagnostics, and inspect any `FLAGGED` dataset
 before installing it. A clean atomic check should be followed by tests of
 other atomic configurations and representative bonded systems before treating
@@ -1322,10 +1330,18 @@ spheres. The local potential, kinetic energy and Coulomb terms remain on the
 grid. On a right-angle water check at h = 0.25 Å the net force is still
 7.72 eV/Å without the filter and 7.00 eV/Å with it, while the energy changes
 by 3.38 Ha. ONCVPSP calculations therefore still need grid-convergence
-checks. The extra
-zetas and the polarization shell
-are then split from the confined orbital, so the whole basis of an atom shares
-its range.
+checks. In a matched four-iteration water calculation the raw net force at
+h = 0.16 Å happened to fall to 0.0083 eV/Å, but rose to 1.17 eV/Å at
+h = 0.12 Å while the energy moved by 4.51 eV; the low force was a grid-phase
+cancellation. On a frozen 0.16 Å grid, rigidly shifting the same molecule by
+0.08 Å in two directions changed its energy by 0.067 eV. A frozen-density
+term check at h = 0.25 Å found large, opposing local-potential and
+two-electron changes under a rigid shift, so refining the local integration
+alone cannot ensure reliable forces. Even at h = 0.08 Å the water net force
+is 0.162 eV/Å and its energy is 1.50 eV above the h = 0.10 Å result.
+
+The extra zetas and the polarization shell are then split from the confined
+orbital, so the whole basis of an atom shares its range.
 
 ### The same recipe as GPAW
 

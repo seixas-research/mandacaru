@@ -31,9 +31,8 @@ import warnings
 import numpy as np
 import pytest
 
-from mandacaru.basis.relativity import spin_orbit_radial
 from mandacaru.pseudopotentials.paw import (from_payload, generate_paw,
-                                            spin_orbit_blocks, to_payload)
+                                            paw_spin_orbit_blocks, to_payload)
 
 HARTREE_EV = 27.211386245988
 
@@ -176,7 +175,28 @@ class TestTheOptions:
         assert 1e-6 < np.abs(scalar.overlap_correction[2]).max() < 1e-3
 
 
+def _level_with_spin_orbit(pp, l, lz_s):
+    """Lowest level of channel ``l`` with ``<L.S> = lz_s``, built only from
+    what the dataset stores: the union projectors, the average plus the
+    L.S difference, and the overlap split the same way."""
+    from scipy.interpolate import CubicSpline
+
+    from mandacaru.pseudopotentials.paw import _generalized_spectrum
+
+    entry = pp.spin_orbit[l]
+    h = 0.004
+    r = np.arange(1, int(22.0 / h)) * h
+    v = CubicSpline(pp.r, pp.v_local_screened)(r) + l * (l + 1) / (2 * r * r)
+    p_u = [CubicSpline(pp.r, p)(r) * r for p in entry["projectors"]]
+    D = entry["average_screened"] + lz_s * entry["coupling_screened"]
+    q = entry["overlap_average"] + lz_s * entry["overlap_coupling"]
+    return float(_generalized_spectrum(r, v, p_u, D, q, 1)[0])
+
+
 class TestSpinOrbitCoupling:
+    """The j-resolved term: two unitary branches per l, stored as their
+    (2j+1) average and L.S difference on the union of their projectors."""
+
     def test_it_is_off_unless_asked_for(self, oxygen_scalar):
         assert not oxygen_scalar.has_spin_orbit
         assert oxygen_scalar.spin_orbit == {}
@@ -189,70 +209,77 @@ class TestSpinOrbitCoupling:
     def test_an_s_channel_has_none(self, oxygen_dirac):
         assert 0 not in oxygen_dirac.spin_orbit
 
-    def test_the_blocks_are_symmetric_and_the_right_size(self, oxygen_dirac):
-        for l, D in oxygen_dirac.spin_orbit.items():
-            n = len(oxygen_dirac.channels[l].ae_waves)
-            assert D.shape == (n, n)
-            assert np.allclose(D, D.T, atol=1e-14)
+    def test_the_union_holds_both_branches(self, oxygen_dirac):
+        for l, entry in oxygen_dirac.spin_orbit.items():
+            n = 2 * len(oxygen_dirac.channels[l].projectors)
+            assert len(entry["projectors"]) == n
+            for key in ("average", "average_screened", "coupling",
+                        "coupling_screened", "overlap_average",
+                        "overlap_coupling"):
+                assert entry[key].shape == (n, n)
+                assert np.allclose(entry[key], entry[key].T, atol=1e-10)
 
-    def test_the_partial_waves_stay_one_set_per_l(self, oxygen_dirac,
-                                                  oxygen_scalar):
-        """A Dirac PAW-LCAO dataset is scalar partial waves plus a term, so its
-        projector count -- and therefore its overlap operator -- is unchanged.
+    def test_each_j_is_the_dirac_atoms_level(self, oxygen_dirac):
+        """Solved per j from the stored terms, not from the branches."""
+        pp = oxygen_dirac
+        for l, entry in pp.spin_orbit.items():
+            down, up = entry["reference_energies"]
+            assert _level_with_spin_orbit(pp, l, -(l + 1) / 2) == \
+                pytest.approx(down[0], abs=1e-4)
+            assert _level_with_spin_orbit(pp, l, l / 2) == \
+                pytest.approx(up[0], abs=1e-4)
+            assert np.all(np.abs(entry["level_errors"]) < 1e-4)
 
-        The overlap correction is *nearly*, not exactly, the same: asking for
-        ``"dirac"`` also solves the reference **atom** with the Dirac equation,
-        and its (2j+1) average differs from what Koelling-Harmon gives at
-        ``O(c^-4)``.  The partial waves are built in that slightly different
-        potential, which moves ``q`` by 6e-6.  What must not change is the
-        *structure*.
-        """
+    def test_the_splitting_is_the_dirac_atoms(self, oxygen_dirac):
+        """0.28 % here; the first-order term it replaced was 0.8 % off for
+        oxygen and 19-20 % for the 6p of Tl-Bi."""
+        pp = oxygen_dirac
+        split = (_level_with_spin_orbit(pp, 1, 0.5)
+                 - _level_with_spin_orbit(pp, 1, -1.0))
+        assert split == pytest.approx(pp.atom.spin_orbit_splitting(2, 1),
+                                      rel=0.01)
+
+    def test_the_overlap_stays_spin_free(self, oxygen_dirac):
+        """Unitary branches: a j-dependent q would give the metric an L.S
+        structure."""
+        for entry in oxygen_dirac.spin_orbit.values():
+            assert np.abs(entry["overlap_average"]).max() < 1e-3
+            assert np.abs(entry["overlap_coupling"]).max() < 1e-3
+
+    def test_the_scalar_channels_are_untouched(self, oxygen_dirac,
+                                              oxygen_scalar):
+        """The spin-free part -- density, compensation, overlap -- is the
+        scalar construction's; the Dirac atom's (2j+1) average differs from
+        Koelling-Harmon's at O(c^-4), which moves q by 6e-6."""
         for l in oxygen_scalar.channels:
             assert (len(oxygen_dirac.channels[l].projectors)
                     == len(oxygen_scalar.channels[l].projectors))
             assert np.allclose(oxygen_dirac.overlap_correction[l],
                                oxygen_scalar.overlap_correction[l], atol=1e-4)
 
-    def test_the_all_electron_term_reproduces_the_atom_splitting(self,
-                                                                 oxygen_dirac):
-        """<xi> (2l+1)/2 must be the Dirac atom's own 2p splitting."""
-        pp = oxygen_dirac
-        xi = spin_orbit_radial(pp.r, pp.atom.v_effective,
-                               atomic_number=pp.atomic_number)
-        phi = pp.channels[1].ae_waves[0]
-        mean = np.trapezoid(xi * phi * phi * pp.r * pp.r, pp.r)
-        predicted = mean * (2 * 1 + 1) / 2.0
-        assert predicted * HARTREE_EV == pytest.approx(
-            pp.atom.spin_orbit_splitting(2, 1) * HARTREE_EV, rel=0.01)
-
-    def test_most_of_it_lives_inside_the_augmentation_sphere(self,
-                                                             oxygen_dirac):
-        """Which is why a one-center term captures it at all."""
-        pp = oxygen_dirac
-        xi = spin_orbit_radial(pp.r, pp.atom.v_effective,
-                               atomic_number=pp.atomic_number)
-        phi = pp.channels[1].ae_waves[0]
-        weight = xi * phi * phi * pp.r * pp.r
-        inside = pp.r <= pp.channels[1].r_cut
-        fraction = (np.trapezoid(weight[inside], pp.r[inside])
-                    / np.trapezoid(weight, pp.r))
-        assert fraction > 0.95
-
-    def test_the_smooth_part_is_subtracted_and_is_small(self, oxygen_dirac):
-        """Small, but not assumed away: leaving it in would double-count."""
-        pp = oxygen_dirac
-        with_smooth = pp.spin_orbit[1]
-        ae_only = spin_orbit_blocks(pp.r, pp.channels, pp.atom.v_effective,
-                                    np.zeros_like(pp.r), pp.atomic_number)[1]
-        difference = np.abs(ae_only - with_smooth).max()
-        assert difference > 0.0
-        assert difference < 0.05 * np.abs(ae_only).max()
-
     def test_it_survives_a_payload_round_trip(self, oxygen_dirac):
         back = from_payload(to_payload(oxygen_dirac))
         assert back.has_spin_orbit and back.relativity == "dirac"
-        for l, D in oxygen_dirac.spin_orbit.items():
-            assert np.allclose(back.spin_orbit[l], D)
+        for l, entry in oxygen_dirac.spin_orbit.items():
+            for key, value in entry.items():
+                if key == "projectors":
+                    assert all(np.allclose(a, b) for a, b in
+                               zip(back.spin_orbit[l][key], value))
+                else:
+                    assert np.allclose(back.spin_orbit[l][key], value)
+
+    def test_the_first_order_format_is_refused(self, oxygen_dirac):
+        payload = to_payload(oxygen_dirac)
+        payload["spin_orbit"] = {"1": [[0.01, 0.0], [0.0, 0.01]]}
+        with pytest.raises(ValueError, match="first-order spin-orbit"):
+            from_payload(payload)
+
+    def test_the_molecular_hamiltonian_refuses_it_until_phase_2(
+            self, oxygen_dirac):
+        from types import SimpleNamespace
+        projector = SimpleNamespace(atom_index=0, l=1)
+        with pytest.raises(NotImplementedError, match="phase 2"):
+            paw_spin_orbit_blocks([projector], ["O"], {"O": oxygen_dirac})
 
     def test_a_dataset_without_the_fields_is_not_relabelled(self):
         """A payload written before these options existed is what it was."""

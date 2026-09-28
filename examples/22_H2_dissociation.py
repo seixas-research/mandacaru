@@ -62,7 +62,7 @@ METHOD_OPTIONS = {
     "adapt-vqe": {},
 }
 SOLVER = dict(pool="qeb", basis="HAO", profile=False, max_iterations=10,
-              gradient_tolerance=1e-5,
+              convergence={"gradient": 1e-5},
               optimizer={"method": "L-BFGS", "maxiter": 2000, "tol": 1e-12})
 
 

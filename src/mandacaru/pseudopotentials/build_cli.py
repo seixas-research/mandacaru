@@ -119,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--freeze-subshell", nargs="+", metavar="NL",
                         help="ONCV: place occupied subshells in each "
                              "selected element's pseudopotential core, "
-                             "for example 4f for Bi")
+                             "for example 4f for Bi (W-Rn freeze 4f by default)")
     parser.add_argument("--extra-l", type=int, default=None, metavar="COUNT",
                         help="ONCV: add unoccupied projector channels above "
                              "the highest occupied angular momentum")
