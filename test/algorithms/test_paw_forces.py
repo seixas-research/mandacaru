@@ -196,7 +196,7 @@ def test_reduced_active_space_force_tracks_optimized_energy(taper):
     grid = grid_from_cell(atoms, 0.35)
     atoms.calc = Mandacaru(
         method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
-        grid=grid, h=0.35, active_orbitals=2, active_selection="mp2",
+        grid=grid, h=0.35, active_space={"orbitals": 2, "method": "mp2"},
         taper=taper, pool="fermionic", optimizer=LBFGS,
         max_iterations=20, convergence={"gradient": 1e-6},
         project_translation=False, profile=False)
@@ -221,7 +221,7 @@ def test_reduced_active_space_force_tracks_optimized_energy(taper):
         measured = dimer("H2", 0.92, 8.0)
         measured.calc = Mandacaru(
             method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
-            grid=grid, h=0.35, active_orbitals=2, active_selection="mp2",
+            grid=grid, h=0.35, active_space={"orbitals": 2, "method": "mp2"},
             taper=True, pool="fermionic", optimizer=LBFGS,
             max_iterations=20, convergence={"gradient": 1e-6},
             project_translation=False, profile=False,

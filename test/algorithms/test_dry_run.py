@@ -91,13 +91,13 @@ class TestEstimate:
     def test_frozen_core_shrinks_the_register(self):
         water = _boxed("H2O")
         full = estimate_qubits(water)
-        frozen = estimate_qubits(water, frozen_core=True)
+        frozen = estimate_qubits(water, active_space={"frozen": "auto"})
         assert full.n_qubits == 14
         assert frozen.n_qubits == 12 and frozen.n_frozen_orbitals == 1
         assert frozen.n_electrons == 8 and frozen.num_particles == (4, 4)
-        explicit = estimate_qubits(water, frozen_orbitals=[0])
+        explicit = estimate_qubits(water, active_space={"frozen": [0]})
         assert explicit.n_qubits == 12
-        by_count = estimate_qubits(water, frozen_core=1)
+        by_count = estimate_qubits(water, active_space={"frozen": 1})
         assert by_count.n_qubits == 12
 
     def test_charge_and_magmoms_set_the_occupation(self):
@@ -176,7 +176,7 @@ class TestEstimate:
         assert est.per_atom == []           # not atom-centered
         with pytest.raises(NotImplementedError):
             estimate_qubits(atoms, basis={"name": "PW", "energy_cutoff": 60.0},
-                            frozen_core=True)
+                            active_space={"frozen": "auto"})
 
     def test_count_basis_functions_labels(self):
         per_atom, label = count_basis_functions(_boxed("LiH"), "HAO")
@@ -201,7 +201,7 @@ class TestEstimate:
 class TestDevices:
     def test_qpu_capacity_is_compared(self):
         water = _boxed("H2O")
-        small = estimate_qubits(water, frozen_core=True,
+        small = estimate_qubits(water, active_space={"frozen": "auto"},
                                 device="braket-ionq-aria")
         assert small.device_qubits == 25 and small.fits_device is True
         big = estimate_qubits(water, basis={"name": "NAO", "size": "DZP"},
@@ -268,12 +268,12 @@ class TestAgainstRealRuns:
 
     def test_frozen_core_estimate_equals_the_active_space(self):
         lih = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7.0] * 3)
-        est = estimate_qubits(lih, frozen_core=True)
+        est = estimate_qubits(lih, active_space={"frozen": "auto"})
         assert est.n_qubits == 4 and est.n_frozen_orbitals == 1
         from mandacaru.algorithms._hamiltonian_from_atoms import \
             build_basis_hamiltonian
         h, particles, n_orb, _profile, _ctx = build_basis_hamiltonian(
-            lih, "HAO", None, 0.4, 0, None, frozen_core=True)
+            lih, "HAO", None, 0.4, 0, None, active_space={"frozen": "auto"})
         assert n_orb == est.n_spatial_orbitals == 2
         assert particles == est.num_particles == (1, 1)
         assert h.n_modes() == est.n_qubits
@@ -413,7 +413,7 @@ class TestEarlyStop:
 
     def test_calculator_dry_run_method_is_one_off(self, monkeypatch):
         _forbid_execution(monkeypatch)
-        calc = Mandacaru(frozen_core=True)
+        calc = Mandacaru(active_space={"frozen": "auto"})
         est = calc.dry_run(_boxed("H2O"))
         assert est.n_qubits == 12
         assert calc.dry_run_result is est and calc.result is None
@@ -429,7 +429,7 @@ class TestEarlyStop:
 class TestCLI:
     def test_dry_run_flag(self, capsys, monkeypatch):
         _forbid_execution(monkeypatch)
-        assert main(["H2O", "--cell", "8", "--frozen-core", "--dry-run",
+        assert main(["H2O", "--cell", "8", "--frozen", "--dry-run",
                      "--quiet"]) == 0
         out = capsys.readouterr().out
         assert "QUBITS REQUIRED   : 12" in out

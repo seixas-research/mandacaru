@@ -32,7 +32,7 @@ complex_.center(vacuum=4.0)
 result = interaction_energy(complex_, fragments=[[0, 1, 2], [3]],
                             charges=[0, 1], charge=1,
                             method="adapt-vqe", basis="HAO",
-                            frozen_core=True, h=0.25)
+                            active_space={"frozen": "auto"}, h=0.25)
 result.energy              # eV (every Mandacaru result is eV)
 result.in_units("Ha")      # the atomic-unit view
 result.fragment_energies   # one per fragment, eV
@@ -44,7 +44,7 @@ result.results             # the per-fragment run results
 - Spin states follow the geometry's magnetic moments, per fragment.
 - `method="rhf"` returns the mean-field interaction energy with no circuit,
   a cheap way to check a setup before the variational runs.
-- Every other keyword (`basis`, `frozen_core`, `pool`, `optimizer`, ...) is
+- Every other keyword (`basis`, `active_space`, `pool`, `optimizer`, ...) is
   forwarded to every run, so the three energies are strictly comparable.
 
 The same helper is available on a configured calculator, reusing its method,
@@ -53,7 +53,7 @@ basis and options:
 ```python
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
-                 frozen_core=True,
+                 active_space={"frozen": "auto"},
                  h=0.25)
 calc.interaction_energy(complex_, [[0, 1, 2], [3]], charges=[0, 1], charge=1)
 ```

@@ -518,3 +518,51 @@ class TestWhatItRefuses:
         estimate = Mandacaru(basis="STO-3G", taper=True, dry_run=True,
                              trace=False).estimate_qubits(atoms)
         assert any("UPPER BOUND" in note for note in estimate.notes)
+
+
+class TestUntaperState:
+    """``TaperedRegister.untaper_state`` inverts the taper for a state."""
+
+    @pytest.fixture(scope="class")
+    def problem(self):
+        from mandacaru.core.hamiltonian import spin_block_integrals
+        from mandacaru.core.mapping import Fermion
+        from mandacaru.core.tapering import taper_problem
+
+        rng = np.random.default_rng(3)
+        M = 3
+        h = rng.normal(size=(M, M))
+        b = rng.normal(size=(M, M))
+        eri = 0.2 * np.einsum("pr,qs->pqrs", b + b.T, b + b.T)
+        fermion = Fermion.from_integrals(*spin_block_integrals(h + h.T, eri))
+        hamiltonian = fermion.map_to_qubits("jordan_wigner", n_modes=2 * M)
+        reference = [1, 0, 0, 1, 0, 0]                    # (1, 1) electrons
+        info = taper_problem(hamiltonian, [], reference)
+        return hamiltonian, info
+
+    def test_every_expectation_value_is_kept(self, problem):
+        hamiltonian, info = problem
+        assert info is not None and info.removed >= 1
+        rng = np.random.default_rng(4)
+        tapered = rng.normal(size=2 ** info.n_qubits) \
+            + 1j * rng.normal(size=2 ** info.n_qubits)
+        tapered /= np.linalg.norm(tapered)
+        full = info.untaper_state(tapered)
+        assert np.linalg.norm(full) == pytest.approx(1.0, abs=1e-12)
+        on_tapered = np.vdot(tapered,
+                             info.hamiltonian.to_sparse_matrix() @ tapered)
+        on_full = np.vdot(full, hamiltonian.to_sparse_matrix() @ full)
+        assert on_full == pytest.approx(on_tapered, abs=1e-12)
+
+    def test_the_tapered_reference_lifts_to_the_determinant(self, problem):
+        hamiltonian, info = problem
+        tapered = np.zeros(2 ** info.n_qubits, dtype=complex)
+        tapered[sum(1 << (info.n_qubits - 1 - q) for q in info.occupied)] = 1
+        full = info.untaper_state(tapered)
+        determinant = int("100100", 2)
+        assert abs(full[determinant]) == pytest.approx(1.0, abs=1e-12)
+
+    def test_a_wrong_size_is_refused(self, problem):
+        _hamiltonian, info = problem
+        with pytest.raises(ValueError, match="amplitudes"):
+            info.untaper_state(np.ones(3))

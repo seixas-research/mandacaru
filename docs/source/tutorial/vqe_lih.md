@@ -52,8 +52,8 @@ to the Hamiltonian and total energy.
 
 ```{important}
 Neutral LiH has four electrons. Setting `n_electrons=2` alone would describe a
-different charged system. Use `frozen_core=True` to remove the core pair from
-the variational search consistently.
+different charged system. Use `active_space={"frozen": "auto"}` to remove the
+core pair from the variational search consistently.
 ```
 
 Mandacaru's minimal `STO-3G` construction contains Li 1s and 2s functions and an
@@ -67,15 +67,14 @@ published basis tables; see [basis sets](../guide/basis_sets.md).
 
 ```python
 from mandacaru.algorithms import Mandacaru
-from mandacaru.optimizers import Optimizer
 
 atoms.calc = Mandacaru(
     method="vqe",
     basis="STO-3G",
-    frozen_core=True,
+    active_space={"frozen": "auto"},
     mapping="jordan_wigner",
     grid=grid,
-    optimizer=Optimizer(method="L-BFGS", maxiter=500, tol=1e-12),
+    optimizer={"method": "L-BFGS", "maxiter": 500, "tol": 1e-12},
     execute_circuits=False)
 
 print(atoms.calc.dry_run(atoms))

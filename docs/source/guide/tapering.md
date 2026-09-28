@@ -114,7 +114,7 @@ calling it one is better than printing a width the run will not use.
 
 ## Composing with an active space
 
-`taper=True` and `active_orbitals=` are independent and multiply: the active
+`taper=True` and `active_space=` are independent and multiply: the active
 space decides which orbitals reach the register, tapering removes the qubits the
 resulting Hamiltonian does not use. Force and density observables are mapped
 from that reduced orbital space to the tapered register. See

@@ -131,7 +131,7 @@ def test_classical_force_request_is_refused_before_scf():
 
 
 @pytest.mark.parametrize("option", [
-    {"shots": 100}, {"taper": True}, {"active_orbitals": 2},
+    {"shots": 100}, {"taper": True}, {"active_space": {"orbitals": 2}},
     {"load_hamiltonian": "unused.json"}])
 def test_classical_options_cannot_silently_request_quantum_work(option):
     """Quantum-only controls are rejected at calculator construction."""

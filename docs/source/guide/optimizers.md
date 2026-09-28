@@ -34,13 +34,11 @@ on a shorter budget. `options` and `seed` are accepted too
 ({data}`~mandacaru.optimizers.optim.OPTIMIZER_KEYS`), and an unknown key is
 refused as the typo it is.
 
-An {class}`~mandacaru.optimizers.Optimizer` is what the dict builds, and is
-worth importing when the same configuration is reused across runs:
+The dict builds an {class}`~mandacaru.optimizers.Optimizer`; to reuse one
+configuration across runs, reuse the dict:
 
 ```python
-from mandacaru.optimizers import Optimizer
-
-spsa = Optimizer(method="SPSA", maxiter=500, tol=1e-6, options={"a": 0.1})
+spsa = {"method": "SPSA", "maxiter": 500, "tol": 1e-6, "options": {"a": 0.1}}
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
                  h=0.30,
@@ -314,8 +312,8 @@ method are the levers that matter.
   per step of any method, and by far the most steps.
 * **Do not reach for the line search.** Its knobs are tunable through
   `options=` and measure as noise; see [above](#line-search).
-* **Whatever you choose, write it out.** `optimizer=Optimizer(method=...,
-  maxiter=..., tol=...)` is what the examples and the test suite do, so a run
+* **Whatever you choose, write it out.** `optimizer={"method": ...,
+  "maxiter": ..., "tol": ...}` is what the examples and the test suite do, so a run
   that pins an energy records what produced it.
 
 An inner optimization that does not certify its own convergence is not silently

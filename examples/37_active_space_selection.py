@@ -16,12 +16,14 @@ molecule.  The way out is a **large basis with a small active space**: the
 basis-set quality lives in the shape of the orbitals, the correlation lives in
 the few of them the wavefunction actually mixes.
 
-This script shows the three things that decide which those are.
+This script shows the three things that decide which those are, all through
+the single ``active_space`` option.
 
-1. **How many orbitals**, by count (``active_orbitals``) or by an occupation
-   criterion on the natural orbitals (``active_threshold``).
-2. **Which ones**, by ``active_selection``: canonical orbital energy, or the
-   frozen natural orbitals of the MP2 density.
+1. **How many orbitals**, by count (``active_space={"orbitals": ...}``) or by
+   an occupation criterion on the natural orbitals
+   (``active_space={"threshold": ...}``).
+2. **Which ones**, by ``active_space={"method": ...}``: canonical orbital
+   energy, or the frozen natural orbitals of the MP2 density.
 3. **What it costs**, measured against the untruncated answer.
 
 The headline is part 2.  Ranking virtuals by orbital energy asks "which is
@@ -58,11 +60,12 @@ def lih() -> Atoms:
     return atoms
 
 
-def solve(**active) -> tuple[float, int, int, object]:
+def solve(active_space=None) -> tuple[float, int, int, object]:
     """``(energy_eV, n_qubits, n_operators, ActiveSpace|None)`` for one spec."""
     atoms = lih()
     atoms.calc = Mandacaru(method="adapt-vqe", basis=BASIS, h=GRID,
-                           optimizer=OPTIMIZER, trace=False, **active)
+                           optimizer=OPTIMIZER, trace=False,
+                           active_space=active_space)
     energy = atoms.get_potential_energy()
     solver = atoms.calc.solver
     space = (getattr(solver, "_gradient_context", None) or {}).get(
@@ -98,7 +101,7 @@ print("=" * 74)
 
 # Any truncation runs the selector, so this is how to see the spectrum: ask for
 # one orbital more than the occupied count and read the occupations back.
-_e, _q, _ops, space = solve(active_orbitals=2, active_selection="mp2")
+_e, _q, _ops, space = solve(active_space={"orbitals": 2, "method": "mp2"})
 n_occupied = len(space.active) - 1
 occupations = np.sort(np.asarray(space.occupations)[n_occupied:])[::-1]
 total = float(occupations.sum())
@@ -136,10 +139,10 @@ print(f"  {'spec':34} {'qubits':>6} {'ops':>5} {'error vs. full':>16}")
 
 for width in (4, 8):
     for selection in ("energy", "mp2"):
-        energy, qubits, operators, space = solve(active_orbitals=width,
-                                                active_selection=selection)
+        energy, qubits, operators, space = solve(
+            active_space={"orbitals": width, "method": selection})
         error = (energy - reference) * 1000.0
-        print(f"  active_orbitals={width}, {selection:<14} {qubits:>6} "
+        print(f"  orbitals={width}, method={selection:<14} {qubits:>6} "
               f"{operators:>5} {error:>13.2f} meV")
 
 print()
@@ -156,7 +159,7 @@ print("  by two orders of magnitude and not by a few percent.")
 
 print()
 print("=" * 74)
-print("Choosing by occupation: active_threshold")
+print("Choosing by occupation: active_space's 'threshold'")
 print("=" * 74)
 print("  A count says how wide a register you are willing to pay for; a")
 print("  threshold says which orbitals are worth paying for and lets the width")
@@ -167,21 +170,22 @@ print(f"  {'threshold':>12} {'qubits':>7} {'active':>7} {'ops':>6} "
       f"{'error vs. full':>16}")
 
 for threshold in (1e-3, 1e-4, 1e-5):
-    energy, qubits, operators, space = solve(active_threshold=threshold,
-                                            active_selection="mp2")
+    energy, qubits, operators, space = solve(
+        active_space={"threshold": threshold, "method": "mp2"})
     error = (energy - reference) * 1000.0
     print(f"  {threshold:12.0e} {qubits:>7} {space.n_active:>7} "
           f"{operators:>6} {error:>13.2f} meV")
 
 print()
-print("  `active_threshold=True` takes the default, 1e-3 -- the knee of the")
-print("  curve above, past which each orbital costs two qubits and returns a")
-print("  few parts per thousand of the correlation.")
+print("  `active_space={\"threshold\": True, ...}` takes the default, 1e-3 --")
+print("  the knee of the curve above, past which each orbital costs two qubits")
+print("  and returns a few parts per thousand of the correlation.")
 print()
-print("  The two compose: active_orbitals caps the register and")
-print("  active_threshold decides what earns a place inside it, so")
-print("  `active_orbitals=8, active_threshold=1e-5` means 'the orbitals worth")
-print("  keeping, but never more than eight'.")
+print("  'orbitals' and 'threshold' compose inside the same dict: the count")
+print("  caps the register and the threshold decides what earns a place")
+print("  inside it, so `active_space={\"orbitals\": 8, \"threshold\": 1e-5,")
+print("  \"method\": \"mp2\"}` means 'the orbitals worth keeping, but never")
+print("  more than eight'.")
 
 # --------------------------------------------------------------------------- #
 # 5. A caveat worth more than the numbers above.
@@ -205,8 +209,9 @@ print("  come out negative without anything being wrong.  Compare truncations")
 print("  by exact diagonalization, or with a convergence tolerance tight")
 print("  enough that the solver is not the largest error in the comparison.")
 print()
-print("  Also: nuclear forces and the stress are refused with a truncated")
-print("  virtual space.  The selection moves with the nuclei, and that")
-print("  response is not in the Hellmann-Feynman and Pulay sums, so the")
-print("  gradient would be the derivative of a different energy than the one")
-print("  reported.  Relax with the full virtual space.")
+print("  Also: molecular nuclear forces with a truncated virtual space need")
+print("  force_method=\"rdm\" and include_pulay=True -- the force path rebuilds")
+print("  the reduced Hamiltonian at displaced geometries and contracts it with")
+print("  the converged active-space RDMs, so the selection's own motion is")
+print("  included rather than assumed frozen.  Periodic stress, and periodic")
+print("  active-space forces, remain unavailable with deleted virtual orbitals.")

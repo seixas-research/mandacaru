@@ -13,7 +13,6 @@ Save this complete example as `lih_adapt.py` and run `python lih_adapt.py`.
 from ase import Atoms
 from mandacaru.algorithms import Mandacaru
 from mandacaru.integrals import Grid
-from mandacaru.optimizers import Optimizer
 
 atoms = Atoms(
     "LiH",
@@ -26,10 +25,10 @@ atoms.calc = Mandacaru(
     method="adapt-vqe",
     pool="fermionic",
     basis="STO-3G",
-    frozen_core=True,
+    active_space={"frozen": "auto"},
     grid=grid,
     mapping="jordan_wigner",
-    optimizer=Optimizer("L-BFGS", maxiter=1000),
+    optimizer={"method": "L-BFGS", "maxiter": 1000},
     gradient="analytic",
     convergence={"gradient": 1e-5},
     max_iterations=40,
@@ -64,7 +63,7 @@ last step's energy change below `1e-3` -- or when it reaches `max_iterations`. T
 **Hartree** units, although the returned energies use eV.
 
 There are two optimization loops: `max_iterations` limits circuit growth;
-`Optimizer(..., maxiter=1000)` limits each classical parameter optimization.
+`optimizer={..., "maxiter": 1000}` limits each classical parameter optimization.
 Check both the outer convergence flag and `optimizer_failures`.
 
 ## 2. Understand the available pools
@@ -95,7 +94,7 @@ for pool in ("fermionic", "qubit", "qeb", "ceo"):
         method="adapt-vqe",
         pool=pool,
         load_hamiltonian="lih_sto3g_r1p6.json",
-        optimizer=Optimizer("L-BFGS", maxiter=1000),
+        optimizer={"method": "L-BFGS", "maxiter": 1000},
         convergence={"gradient": 1e-5},
         max_iterations=40,
         execute_circuits=False,

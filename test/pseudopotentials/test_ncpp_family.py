@@ -228,8 +228,9 @@ class TestFamilyResolution:
         assert Mandacaru(method=method, basis="ncpp-tm").basis == "ncpp-tm"
         with pytest.raises(ValueError, match="unknown option.*'tier'.*NCPP"):
             Mandacaru(method=method, basis={"name": "NCPP", "tier": 1})
-        with pytest.raises(ValueError, match="frozen_core is redundant"):
-            Mandacaru(method=method, basis="NCPP", frozen_core=True)
+        with pytest.raises(ValueError, match="'frozen' core is redundant"):
+            Mandacaru(method=method, basis="NCPP",
+                      active_space={"frozen": "auto"})
         with pytest.raises(ValueError, match="no longer a basis name"):
             Mandacaru(method=method, basis="PP")
 
@@ -529,18 +530,15 @@ class TestDispatch:
         sentinel = ("H", (1, 1), 2, {}, {"family": "dummy"})
 
         def build(atoms, grid, h, charge, spin, options, kinetic,
-                  active_orbitals=None, active_selection="energy",
-                  active_threshold=None):
-            # The active-space keywords are part of the protocol: they are
-            # always passed, so a family that cannot honor a truncation has to
-            # refuse it rather than quietly return the full register.  Recorded
-            # as a mapping, not a positional tuple, so that extending the
-            # protocol again does not turn this assertion into a puzzle -- the
-            # *named* parameters above are what pin it.
+                  active_space):
+            # The active-space keyword is part of the protocol: it is always
+            # passed, so a family that cannot honor a truncation has to refuse
+            # it rather than quietly return the full register.  Recorded as a
+            # mapping, not a positional tuple, so that extending the protocol
+            # again does not turn this assertion into a puzzle -- the *named*
+            # parameter above is what pins it.
             calls.append({"options": options, "kinetic": kinetic,
-                          "active_orbitals": active_orbitals,
-                          "active_selection": active_selection,
-                          "active_threshold": active_threshold})
+                          "active_space": active_space})
             return sentinel
 
         register_family(FamilySpec(
@@ -557,9 +555,7 @@ class TestDispatch:
             assert calls == [{"options": {"directory": "/nowhere",
                                           "size": "DZ"},
                               "kinetic": "spectral",
-                              "active_orbitals": None,
-                              "active_selection": "energy",
-                              "active_threshold": None}]
+                              "active_space": None}]
             with pytest.raises(ValueError, match="unknown option.*'tier'"):
                 build_basis_hamiltonian(h2(), {"name": "dmy", "tier": 1},
                                         None, H2_H, 0, None)

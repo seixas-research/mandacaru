@@ -14,7 +14,7 @@ that is *only* natural on the command line is the **dry run**:
 
 .. code-block:: console
 
-    $ mandacaru water.xyz --frozen-core --dry-run
+    $ mandacaru water.xyz --frozen --dry-run
     $ mandacaru H2O --cell 8 --basis NAO --basis-option size=DZP --device ibm-quantum --dry-run
     $ mandacaru --load-hamiltonian lih.parquet --dry-run --json
 
@@ -25,7 +25,7 @@ Without it the full variational run is performed:
 
 .. code-block:: console
 
-    $ mandacaru water.xyz --method adapt-vqe --basis HAO --h 0.25 --frozen-core
+    $ mandacaru water.xyz --method adapt-vqe --basis HAO --h 0.25 --frozen
     $ mandacaru LiH --cell 10 --basis PAW-LCAO --h 0.25
 
 The geometry is any file :func:`ase.io.read` understands (``.xyz``, ``.cif``,
@@ -69,18 +69,32 @@ def _key_value(text: str):
     return key.strip(), value
 
 
-def _frozen_core(text: str):
-    """``--frozen-core`` value: ``auto`` / ``true`` / an integer / ``false``."""
-    key = str(text).strip().lower()
+def _frozen(text: str):
+    """``--frozen`` value: ``auto``, a count, a JSON list, or ``none``.
+
+    The ``active_space`` ``"frozen"`` key: ``auto`` is the chemical
+    (noble-gas) core, an integer that many lowest MOs, ``[0,1]`` explicit
+    spatial-MO indices.
+    """
+    raw = str(text).strip()
+    key = raw.lower()
     if key in ("auto", "true", "yes", "on"):
-        return True
+        return "auto"
     if key in ("false", "no", "off", "0", "none"):
-        return False
+        return None
+    if raw.startswith("["):
+        try:
+            return [int(i) for i in json.loads(raw)]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raise argparse.ArgumentTypeError(
+                f"--frozen got {text!r}: a bracketed value must be a JSON "
+                "list of integers, e.g. '[0,1]'")
     try:
         return int(key)
     except ValueError:
         raise argparse.ArgumentTypeError(
-            f"--frozen-core takes 'auto', an integer or 'false', not {text!r}")
+            f"--frozen takes 'auto', an integer, a JSON list of indices or "
+            f"'none', not {text!r}")
 
 
 def _active_orbitals(text: str):
@@ -121,7 +135,7 @@ def _active_orbitals(text: str):
 
 def build_parser() -> argparse.ArgumentParser:
     """The ``mandacaru`` argument parser."""
-    from .algorithms.active_space import ACTIVE_SELECTIONS
+    from .algorithms.active_space import ACTIVE_SPACE_METHODS
     from .algorithms.ansatz_spec import ANSATZ_NAMES
     from .algorithms.calculator import DEFAULT_METHOD, STABLE_METHODS
     from .backends.hardware import available_devices
@@ -134,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Mandacaru -- variational quantum simulation of molecules "
                     "and crystals (ADAPT-VQE by default).",
         epilog="Examples:\n"
-               "  mandacaru water.xyz --frozen-core --dry-run\n"
+               "  mandacaru water.xyz --frozen --dry-run\n"
                "  mandacaru H2O --cell 8 --basis NAO --basis-option size=DZP --dry-run\n"
                "  mandacaru H2O --cell 8 --basis PAW-LCAO --basis-option size=DZP --dry-run\n"
                "  mandacaru --load-hamiltonian lih.parquet --dry-run --json\n"
@@ -232,20 +246,19 @@ def build_parser() -> argparse.ArgumentParser:
     basis.add_argument("--h", type=float, default=DEFAULT_GRID_SPACING,
                        help="real-space grid spacing in Angstrom "
                             f"(default {DEFAULT_GRID_SPACING:.2f})")
-    basis.add_argument("--frozen-core", nargs="?", const=True, default=False,
-                       type=_frozen_core, metavar="N|auto",
-                       help="frozen-core approximation: 'auto' (the noble-gas "
-                            "core; also the bare flag) or an integer number "
-                            "of lowest MOs")
-    basis.add_argument("--frozen-orbitals", type=int, nargs="+", default=None,
-                       help="explicit spatial-MO indices to freeze")
+    basis.add_argument("--frozen", nargs="?", const="auto", default=None,
+                       type=_frozen, metavar="auto|N|[i,j,...]",
+                       help="active_space 'frozen': the frozen-core "
+                            "approximation -- 'auto' (the noble-gas core; also "
+                            "the bare flag), an integer number of lowest MOs, "
+                            "or a JSON list of spatial-MO indices")
     basis.add_argument("--active-orbitals", type=_active_orbitals, default=None,
                        metavar="N|n,m|[i,j,...]",
-                       help="truncate the virtual space to fit a register: N "
-                            "spatial orbitals in total, 'occupied,virtual' as "
-                            "a split, or a JSON list of spatial-MO indices. "
-                            "Unlike --frozen-core this applies to a "
-                            "pseudopotential basis too")
+                       help="active_space 'orbitals': truncate the virtual "
+                            "space to fit a register -- N spatial orbitals in "
+                            "total, 'occupied,virtual' as a split, or a JSON "
+                            "list of spatial-MO indices. Unlike --frozen this "
+                            "applies to a pseudopotential basis too")
     basis.add_argument("--taper", action="store_true",
                        help="remove one qubit per Z2 symmetry of the "
                             "Hamiltonian, found from its Pauli terms rather "
@@ -256,18 +269,19 @@ def build_parser() -> argparse.ArgumentParser:
                             "register")
     basis.add_argument("--active-threshold", type=float, default=None,
                        metavar="OCCUPATION",
-                       help="keep the virtual natural orbitals whose occupation "
-                            "is at least this, instead of counting them. Needs "
-                            "--active-selection mp2 (or natural). Virtual "
+                       help="active_space 'threshold': keep the virtual "
+                            "natural orbitals whose occupation is at least "
+                            "this, instead of counting them. Needs "
+                            "--active-method mp2 (or natural). Virtual "
                             "occupations are small by construction, so the "
                             "useful range is about 1e-3 to 1e-5; 1e-3 keeps "
                             "~95%% of the promoted charge on the systems "
                             "measured. May be combined with --active-orbitals, "
                             "which then caps the register")
-    basis.add_argument("--active-selection", default="energy",
-                       choices=ACTIVE_SELECTIONS,
-                       help="how the virtual orbitals are ranked for "
-                            "--active-orbitals: 'energy' (canonical order), "
+    basis.add_argument("--active-method", default=None,
+                       choices=ACTIVE_SPACE_METHODS,
+                       help="active_space 'method': how the virtual orbitals "
+                            "are ranked -- 'energy' (canonical order), "
                             "'mp2' (frozen natural orbitals of the "
                             "second-order density) or 'natural' (the "
                             "open-shell reference's own occupations). "
@@ -309,10 +323,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="adaptive methods: stop when max|grad| falls "
                              "below this (Hartree)")
     solver.add_argument("--convergence-energy", type=float, default=None,
-                        metavar="HA",
+                        metavar="EV",
                         help="adaptive methods: stop when the last growth "
                              "step changed the energy by less than this "
-                             "(Hartree).  The criteria given are the ones "
+                             "(eV).  The criteria given are the ones "
                              "used, both required when both are given; with "
                              "neither, both at 1e-3")
     solver.add_argument("--num-states", type=int, default=None,
@@ -398,11 +412,6 @@ def solver_options(args) -> dict:
         {"name": args.basis, **dict(args.basis_option)}
     options = dict(method=args.method, basis=basis, h=args.h,
                    charge=args.charge, spin=args.spin,
-                   frozen_core=args.frozen_core,
-                   frozen_orbitals=args.frozen_orbitals,
-                   active_orbitals=args.active_orbitals,
-                   active_selection=args.active_selection,
-                   active_threshold=args.active_threshold,
                    taper=args.taper,
                    mapping=args.mapping, optimizer=args.optimizer,
                    device=args.device, shots=args.shots,
@@ -420,6 +429,14 @@ def solver_options(args) -> dict:
         value = getattr(args, name)
         if value is not None:
             options[name] = value
+    # The active_space dict holds the flags that were given, so the option
+    # reaches the calculator only when something was asked of it.
+    active = {key: getattr(args, flag) for key, flag in (
+        ("method", "active_method"), ("orbitals", "active_orbitals"),
+        ("threshold", "active_threshold"), ("frozen", "frozen"))
+        if getattr(args, flag) is not None}
+    if active:
+        options["active_space"] = active
     criteria = {name: getattr(args, f"convergence_{name}")
                 for name in ("gradient", "energy")
                 if getattr(args, f"convergence_{name}") is not None}

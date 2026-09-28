@@ -242,7 +242,7 @@ class TestHamiltonianAndDrivers:
         grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
         with pytest.raises(ValueError, match="redundant with the NCPP basis"):
             build_basis_hamiltonian(atoms, "NCPP", grid, 0.30, 0, None,
-                                    frozen_core=True)
+                                    active_space={"frozen": "auto"})
 
     def test_end_to_end_energy(self):
         """H2 with pseudopotentials: two valence electrons, four qubits."""
@@ -297,7 +297,9 @@ class TestGridPathologyIsCured:
         atoms = lone_atom("O", grid)
         atoms.calc = Mandacaru(
             method="adapt-vqe", basis="NCPP" if pseudo else "HAO",
-            grid=grid, frozen_core=not pseudo, pool="qeb", max_iterations=6, convergence={"gradient": 1e-3},
+            grid=grid,
+            active_space=None if pseudo else {"frozen": "auto"},
+            pool="qeb", max_iterations=6, convergence={"gradient": 1e-3},
             profile=False)
         atoms.get_potential_energy()
         return float(np.abs(atoms.get_forces()).max())

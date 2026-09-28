@@ -56,6 +56,7 @@ def test_output_log_omits_the_operator_label_above_twenty_qubits(tmp_path,
     path = tmp_path / "output.txt"
     with AdaptOutputLogger(str(path), n_qubits=n_qubits) as log:
         log.write_system()
+        log.write_electrons({"qubits": n_qubits})
         log.write_optimizer_setup("COBYLA", -1.0,
                                   extra={"pool_size": len(pool)})
         log.write_iteration(1, pool, [0.1, 0.3, 0.2], 1, None, -1.0, 1)
@@ -78,7 +79,9 @@ def test_output_log_omits_the_operator_label_above_twenty_qubits(tmp_path,
     # The pool's size is stated once, in the setup block.
     assert "pool_size: 3" in text
     if not detailed:
-        assert "operator_details: omitted" in text
+        # Stated next to the register width it follows from.
+        electrons = text.split("[ELECTRONS]")[1].split("[")[0]
+        assert "operator_details: omitted" in electrons
 
 
 def test_log_pool_restores_the_listing(tmp_path):

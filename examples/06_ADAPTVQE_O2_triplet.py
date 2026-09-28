@@ -20,8 +20,8 @@ sector.
 
 O2 with Hydrogenic Atomic Orbitals is 10 spatial orbitals / 16 electrons; to keep the
 exact state-vector simulation tractable it is run in a compact active space
-(``frozen_orbitals`` removes the lowest molecular orbitals, leaving a 5-orbital /
-10-qubit ``(4, 2)`` triplet with 6 active electrons).
+(``active_space={"frozen": [...]}`` removes the lowest molecular orbitals, leaving a
+5-orbital / 10-qubit ``(4, 2)`` triplet with 6 active electrons).
 
 .. note::
 
@@ -71,7 +71,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="fermionic",
                        basis={"name": "HAO"},
                        mapping="jordan_wigner",
-                       frozen_orbitals=[0, 1, 2, 3, 4],   # compact active space (tractable)
+                       active_space={"frozen": [0, 1, 2, 3, 4]},   # compact active space (tractable)
                        h=0.25,
                        max_iterations=12,
                        convergence={"gradient": 1e-3},

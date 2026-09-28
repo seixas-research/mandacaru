@@ -176,8 +176,7 @@ class _MeanFieldDriver(VariationalDriver):
             raise ValueError(
                 f"method={self._kind!r} is classical and does not take "
                 + ", ".join(f"{name}=" for name in used))
-        reductions = ("frozen_core", "frozen_orbitals", "active_orbitals",
-                      "active_threshold")
+        reductions = ("active_space",)
         reduced = [name for name in reductions if driver_kwargs.get(name)]
         if reduced:
             raise ValueError(

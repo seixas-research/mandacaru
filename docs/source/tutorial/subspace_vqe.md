@@ -142,7 +142,11 @@ triplet = Mandacaru(method="subspace-vqe", ansatz="hva", multiplicity=3,
 
 The references are $\hat S^2$ eigenvectors built within each orbital
 configuration, taken by excitation level from Hartree-Fock. For H2 they give
-all three singlets and the triplet exactly.
+all three singlets and the triplet exactly. Larger systems need depth: on a
+linear H4 chain (8 qubits), 16 layers reach both triplets exactly but leave
+the lowest two singlets 3-5 mHa high and the third 0.13 Ha high. The default
+HVA has only two angles per layer, and the finer groupings that would add
+angles break $\hat S^2$.
 
 Three limits come with the construction:
 

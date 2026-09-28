@@ -69,7 +69,8 @@ class TestTripletReference:
                       cell=[8, 8, 8], pbc=True, magmoms=[1.0, 1.0])
         # A compact active space keeps this cheap; the spin state is what matters.
         _, num_particles, _, _, _ctx = build_basis_hamiltonian(
-            atoms, "HAO", None, 0.5, 0, None, frozen_orbitals=[0, 1, 2, 3, 4])
+            atoms, "HAO", None, 0.5, 0, None,
+            active_space={"frozen": [0, 1, 2, 3, 4]})
         na, nb = num_particles
         assert na - nb == 2                 # two unpaired electrons (triplet)
 

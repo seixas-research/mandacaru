@@ -335,7 +335,7 @@ class TestTheNaturalOrbitals:
 
     def test_it_leaves_the_occupied_block_alone(self, h2):
         # The deliberate half of the frozen-natural-orbital scheme: rotating the
-        # occupied block would rename the orbitals `frozen_core="auto"`
+        # occupied block would rename the orbitals `"frozen": "auto"`
         # identifies by index.
         h_mo, _eri, n_occ = h2
         result = mp2_natural_orbitals(*h2)

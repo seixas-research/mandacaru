@@ -49,7 +49,7 @@ The outer loop stops when
 or when the growth budget is exhausted. `convergence={"gradient": ...}`
 specifies $\varepsilon$ in the internal Hartree convention. The option also
 stops on the energy change of the last growth step,
-$|E_k - E_{k-1}| < \delta$, with `convergence={"energy": ...}` (Hartree;
+$|E_k - E_{k-1}| < \delta$, with `convergence={"energy": ...}` (eV;
 $E_0$ is the reference state). The default is
 `{"gradient": 1e-3, "energy": 1e-3}`. A criterion set to `None` or left out
 is not used, and when both are given both must hold: a small energy change

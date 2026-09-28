@@ -1,7 +1,7 @@
 # Fitting a large basis on a small register
 
 A basis set buys accuracy with virtual orbitals, and a qubit register pays for
-them at two qubits each. Those are not the same currency, and `active_orbitals`
+them at two qubits each. Those are not the same currency, and `active_space`
 is where they are exchanged.
 
 Water in PAW-LCAO-TZP has 29 spatial orbitals — 4 occupied and 25 virtual —
@@ -15,17 +15,18 @@ actually mixes.
 ```{code-block} python
 calc = Mandacaru(method="adapt-vqe",
                  basis={"name": "PAW-LCAO", "size": "TZP"},
-                 active_orbitals=8, active_selection="mp2")
+                 active_space={"orbitals": 8, "method": "mp2"})
 ```
 
 ```text
-H2O / PAW-LCAO-TZP        29 spatial orbitals    56 qubits
-  + active_orbitals=10    10 spatial orbitals    18 qubits
+H2O / PAW-LCAO-TZP                     29 spatial orbitals    56 qubits
+  + active_space={"orbitals": 10}      10 spatial orbitals    18 qubits
 ```
 
-Unlike `frozen_core`, this works with a pseudopotential basis. A valence-only
-basis has no core left to freeze — `frozen_core` is refused for it — but it has
-plenty of virtual orbitals to drop, and dropping them is what fits the register.
+Unlike a `"frozen"` core, dropping virtuals works with a pseudopotential basis.
+A valence-only basis has no core left to freeze — `active_space`'s `"frozen"`
+is refused for it — but it has plenty of virtual orbitals to drop, and dropping
+them is what fits the register.
 
 ## The three places an orbital can go
 
@@ -42,21 +43,38 @@ carried and nothing else.
 
 An **occupied** orbital is never deleted. It would take its electrons with it,
 which is a different molecule rather than a smaller correlation treatment, so
-that request is refused by name and points at `frozen_orbitals` instead.
+that request is refused by name and points at `active_space`'s `"frozen"` key
+instead (e.g. `"frozen": [0, 1]`).
 
-## Saying how many
+## One option, four keys
 
-`active_orbitals` takes one meaning per type, so there is nothing to
+`active_space` is a single dict with up to four keys:
+
+| key | meaning |
+|---|---|
+| `"frozen"` | the frozen-core approximation (below) |
+| `"orbitals"` | how many orbitals reach the register, by count |
+| `"threshold"` | how many virtual orbitals to keep, by an occupation criterion |
+| `"method"` | how the kept virtuals are ranked |
+
+Omitting `active_space` (the default, `None`) keeps every orbital. At least one
+of `"orbitals"`, `"threshold"` or `"frozen"` is required when the option is
+given — `"method"` alone ranks the virtuals but does not say how many to keep,
+so it is refused on its own.
+
+## Saying how many: `"orbitals"`
+
+`active_space`'s `"orbitals"` takes one meaning per type, so there is nothing to
 disambiguate:
 
 | spec | meaning |
 |---|---|
-| `None` | every orbital on the register (the default) |
+| *(key absent)* | every orbital on the register (subject to `"frozen"` / `"threshold"`) |
 | `12` | twelve spatial orbitals in total. Never removes an occupied orbital: the virtuals take whatever is left |
 | `{"occupied": 3, "virtual": 9}` | keep three doubly occupied and nine virtual orbitals; the rest of the occupied space is frozen |
 | `[0, 1, 4, 7]` | exactly these spatial MO indices |
 
-## Saying which are worth keeping: `active_threshold`
+## Saying which are worth keeping: `"threshold"`
 
 A count fixes the register width. The other way round is to fix the *criterion*
 and let the width follow, which is what you want when the question is "how small
@@ -65,19 +83,20 @@ can this get" rather than "what fits my processor":
 ```{code-block} python
 calc = Mandacaru(method="adapt-vqe",
                  basis={"name": "PAW-LCAO", "size": "TZP"},
-                 active_threshold=1e-3,        # or True, for the default
-                 active_selection="mp2")
+                 active_space={"threshold": 1e-3,   # or True, for the default
+                              "method": "mp2"})
 ```
 
-`active_threshold` keeps the virtual natural orbitals whose **occupation number**
+`"threshold"` keeps the virtual natural orbitals whose **occupation number**
 (NOON) is at least the value given. `True` takes the default, `1e-3`. It needs a
-selector that computes occupations, so it is refused with
-`active_selection="energy"` — orbital energies are not occupations.
+`"method"` that computes occupations, so it is refused with
+`"method": "energy"` (the default) — orbital energies are not occupations.
 
-The two compose. Given both, the threshold decides which orbitals earn a place
-and the count caps how many there is room for, and whichever binds first wins:
-`active_orbitals=8, active_threshold=1e-5` means "the orbitals worth keeping, but
-never more than eight".
+`"orbitals"` and `"threshold"` compose. Given both, the threshold decides which
+orbitals earn a place and the count caps how many there is room for, and
+whichever binds first wins:
+`active_space={"orbitals": 8, "threshold": 1e-5, "method": "mp2"}` means "the
+orbitals worth keeping, but never more than eight".
 
 ### Pick the number from the spectrum, not from intuition
 
@@ -113,23 +132,24 @@ threshold can be chosen from the data rather than guessed again.
 A dry run cannot resolve a threshold — how many orbitals clear it is a property
 of the second-order density, which a dry run does not compute. It therefore
 reports the untruncated width as an explicit **upper bound** and says so, rather
-than printing a number the run will not use. Pass `active_orbitals` as well if
+than printing a number the run will not use. Pass `"orbitals"` as well if
 you need the width known in advance.
 
 On the command line:
 
 ```bash
 mandacaru H2O --cell 12 --basis PAW-LCAO --basis-option size=TZP \
-    --active-orbitals 10 --active-selection mp2 --dry-run
+    --active-orbitals 10 --active-method mp2 --dry-run
 ```
 
 `--active-orbitals` reads `10` as a total, `3,9` as the `occupied,virtual`
 split, and `'[0,1,4,7]'` as an explicit list. `--active-threshold 1e-3` uses the
-occupation criterion instead.
+occupation criterion instead. These two flags and `--active-method` are combined
+by `mandacaru` into the single `active_space` dict the calculator sees.
 
 ## Saying which — and why energy ordering is the wrong answer
 
-`active_selection` ranks the **virtual** orbitals.
+`active_space`'s `"method"` ranks the **virtual** orbitals.
 
 `"energy"` (the default)
 : Canonical order, lowest orbital energy first. Free. It asks *which orbital is
@@ -219,7 +239,7 @@ the comparison.
 ```
 
 ```{warning}
-`active_selection="natural"` carries **no information** for a closed-shell
+`active_space={"method": "natural", ...}` carries **no information** for a closed-shell
 reference and is refused for one. The RHF density is idempotent, so its natural
 occupations are exactly 2 and 0 and every ordering of the virtuals is as good as
 every other; returning the energy ordering under another name would be a no-op
@@ -234,11 +254,11 @@ selection.
 
 ## Occupied orbitals are ranked by energy, always
 
-`active_selection` does not touch the occupied space, and the MP2 selector
-deliberately leaves the occupied block of its rotation as the identity. Two
-things depend on that.
+`active_space`'s `"method"` does not touch the occupied space, and the MP2
+selector deliberately leaves the occupied block of its rotation as the
+identity. Two things depend on that.
 
-The first is bookkeeping with teeth: `frozen_core="auto"` resolves to "the
+The first is bookkeeping with teeth: `"frozen": "auto"` resolves to "the
 lowest so many MOs", which is only the chemical core while the orbitals are
 energy-ordered. A selector that reordered the occupied block would leave those
 indices naming different orbitals, and the run would silently freeze the wrong
@@ -247,9 +267,9 @@ selection is refused rather than applied to labels it cannot trust.)
 
 The second is physics: removing an occupied orbital is a far coarser
 approximation than removing a virtual one, and it belongs to an explicit request
-— `frozen_core`, `frozen_orbitals`, or the `{"occupied": ...}` form — not to an
-automatic selector. This is the classic frozen-natural-orbital scheme, and it is
-deliberately the conservative half of it.
+— `"frozen": "auto"`, `"frozen": [i, j]`, or the `"orbitals": {"occupied": ...}`
+form — not to an automatic selector. This is the classic frozen-natural-orbital
+scheme, and it is deliberately the conservative half of it.
 
 ## Forces and remaining limits
 

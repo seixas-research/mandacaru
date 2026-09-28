@@ -388,7 +388,8 @@ class MeasurementPlan:
                 f"{NOMINAL_2Q_ERROR:g} error per gate: the result will be "
                 f"noise, and zero-noise extrapolation has nothing to "
                 f"extrapolate from. Reduce the register (a smaller basis "
-                f"size, mapping='parity_reduced', frozen_core) or the circuit "
+                f"size, mapping='parity_reduced', an active_space) or the "
+                f"circuit "
                 f"(pool='ceo-ovp', tetris=True, prune=True).")
         return notes
 

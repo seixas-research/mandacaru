@@ -23,7 +23,8 @@ smooth pseudo-atomic orbitals — with the same `size` hierarchy as the
 potential is replaced by a bounded local channel plus the family's projectors.
 Every driver, `interaction_energy`, the periodic methods, the dry run and the
 command line (`mandacaru H2O --cell 8 --basis PAW-LCAO --basis-option size=DZP`)
-accept the names; `frozen_core` is refused with them as redundant. There is no
+accept the names; `active_space`'s `"frozen"` is refused with them as
+redundant. There is no
 separate switch: the family is the basis, and the retired `"PP"` basis name
 raises an error that names the families instead of aliasing to one.
 

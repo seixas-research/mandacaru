@@ -58,12 +58,12 @@ def calculate(output: Path, spacing: float, half_width: float,
         "scipy_version": scipy.__version__,
         "ase_version": ase.__version__,
         "basis_sets": list(BASES), "pools": list(POOLS),
-        "mapping": "jordan_wigner", "frozen_core": True,
+        "mapping": "jordan_wigner", "active_space": {"frozen": "auto"},
         "charge": 0, "active_electrons": 2,
         "box_half_width_A": half_width,
         "requested_spacing_A": spacing, "actual_spacing_A": actual_spacing,
         "distances_A": distances.tolist(),
-        "convergence_Ha": {"gradient": 1e-5, "energy": None},
+        "convergence": {"gradient": 1e-5, "energy": None},
         "max_iterations": max_iterations,
         "optimizer": "L-BFGS", "optimizer_maxiter": 1000,
         "execute_circuits": False, "profile": False,
@@ -103,7 +103,7 @@ def calculate(output: Path, spacing: float, half_width: float,
                         if pool == POOLS[0]:
                             calc = Mandacaru(
                                 **settings, basis=basis, grid=grid, h=spacing,
-                                frozen_core=True, mapping="jordan_wigner",
+                                active_space={"frozen": "auto"}, mapping="jordan_wigner",
                                 save_hamiltonian=cache, hamiltonian_format="json",
                             )
                             atoms.calc = calc

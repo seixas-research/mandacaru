@@ -26,8 +26,8 @@ Every spatial molecular orbital ends up in exactly one of three places.
 **Frozen** orbitals are doubly occupied and are replaced by their mean field:
 a constant core energy plus an effective one-body potential on what is left
 (:func:`~mandacaru.core.hamiltonian.freeze_core_integrals`).  This is the
-frozen-core approximation, and it is what ``frozen_core`` / ``frozen_orbitals``
-have always done.
+frozen-core approximation, and it is what the ``active_space`` option's
+``"frozen"`` does.
 
 **Deleted** orbitals are virtual and are simply dropped.  Nothing has to be
 folded in: an orbital that is empty in the reference contributes neither to the
@@ -40,9 +40,10 @@ it is the half that reduces the register.
 Occupied and virtual are ranked differently, on purpose
 -------------------------------------------------------
 
-``active_selection`` ranks the **virtual** orbitals only.  Occupied truncation
+The ``active_space`` option's ``"method"`` ranks the **virtual** orbitals
+only.  Occupied truncation
 is always by orbital energy, which is to say it is always the chemical core,
-because an index-based core (``frozen_core="auto"`` resolves to "the lowest so
+because an index-based core (``"frozen": "auto"`` resolves to "the lowest so
 many MOs") stops meaning the core the moment the occupied orbitals are
 reordered, and because removing an occupied orbital is a far coarser
 approximation than removing a virtual one -- it belongs to an explicit request,
@@ -78,11 +79,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-#: Recognized values of ``active_selection``.
-ACTIVE_SELECTIONS = ("energy", "mp2", "natural")
+#: Recognized values of the ``active_space`` option's ``"method"``.
+ACTIVE_SPACE_METHODS = ("energy", "mp2", "natural")
+#: Keys the ``active_space`` option accepts.
+ACTIVE_SPACE_KEYS = ("method", "orbitals", "threshold", "frozen")
 
 #: Occupation below which a virtual natural orbital is dropped by
-#: ``active_threshold=True``.  Measured MP2 spectra put the useful range between
+#: ``active_space={..., "threshold": True}``.  Measured MP2 spectra put the useful range between
 #: 1e-3 and 1e-4: on LiH / PAW-LCAO-TZP, 1e-3 keeps 4 of 11 virtuals and 94.8 %
 #: of the promoted charge while 1e-4 keeps 8 and 99.88 %; on H2O / PAW-LCAO-DZP,
 #: 1e-3 keeps 9 of 19 and 96.1 %.  1e-3 is the default because it is the knee of
@@ -111,8 +114,8 @@ class ActiveSpace:
         when it fills the reference determinant.
     deleted : tuple of int
         Virtual spatial MOs dropped from the problem.
-    selection : str
-        Which ranking chose the virtuals (:data:`ACTIVE_SELECTIONS`).
+    method : str
+        Which ranking chose the virtuals (:data:`ACTIVE_SPACE_METHODS`).
     rotation : ndarray or None
         ``(M, M)`` orthogonal matrix taking the incoming MO basis to the one
         ``active`` / ``deleted`` index, or ``None`` when the basis is unchanged.
@@ -132,7 +135,7 @@ class ActiveSpace:
     frozen: tuple[int, ...] = ()
     active: tuple[int, ...] = ()
     deleted: tuple[int, ...] = ()
-    selection: str = "energy"
+    method: str = "energy"
     rotation: np.ndarray | None = None
     occupations: np.ndarray | None = field(default=None, repr=False)
     correlation_energy: float | None = None
@@ -161,23 +164,132 @@ class ActiveSpace:
             parts.append(f"{len(self.deleted)} deleted")
         line = f"{', '.join(parts)} of {self.n_orbitals} spatial orbitals"
         if self.truncated:
-            line += f" (virtuals ranked by {self.selection})"
+            line += f" (virtuals ranked by {self.method})"
         return line
 
 
-def resolve_selection(selection) -> str:
-    """Normalize an ``active_selection`` spec, or raise."""
-    name = str(selection if selection is not None else "energy")
-    name = name.strip().lower().replace("_", "-")
-    if name not in ACTIVE_SELECTIONS:
+@dataclass(frozen=True)
+class ActiveSpaceSpec:
+    """A resolved ``active_space`` option.
+
+    Attributes
+    ----------
+    method : str
+        How the virtual orbitals are ranked (:data:`ACTIVE_SPACE_METHODS`).
+    orbitals : None, int, dict or tuple of int
+        The register's size (:func:`normalize_orbitals`); ``None`` when the
+        threshold alone decides.
+    threshold : float or None
+        Occupation a virtual natural orbital must reach to stay active.
+    frozen : None, "auto", int or tuple of int
+        The frozen core (:func:`normalize_frozen`): ``"auto"`` for the
+        chemical (noble-gas) core, a count of the lowest molecular orbitals,
+        or explicit spatial orbital indices.  The builder resolves it to
+        indices once the atoms and the orbitals exist.
+    """
+
+    method: str = "energy"
+    orbitals: int | dict | tuple | None = None
+    threshold: float | None = None
+    frozen: str | int | tuple | None = None
+
+    @property
+    def truncates(self) -> bool:
+        """Whether virtual orbitals may be deleted (a count or a threshold)."""
+        return self.orbitals is not None or self.threshold is not None
+
+    def as_dict(self) -> dict:
+        """The option as it was resolved, JSON-writable."""
+        def plain(value):
+            return list(value) if isinstance(value, tuple) else value
+        return {"method": self.method, "orbitals": plain(self.orbitals),
+                "threshold": self.threshold, "frozen": plain(self.frozen)}
+
+
+def resolve_active_space_spec(spec) -> ActiveSpaceSpec | None:
+    """Validate the ``active_space`` option, or raise.
+
+    ``None`` keeps every orbital.  Otherwise a dictionary with keys from
+    :data:`ACTIVE_SPACE_KEYS`: ``"method"`` (default ``"energy"``) ranks the
+    virtual orbitals, ``"orbitals"`` sizes the register, ``"threshold"``
+    keeps the virtuals whose occupation reaches it and ``"frozen"`` folds a
+    core into the mean field.  At least one of the last three is needed,
+    since a ranking alone changes nothing.  Checked when the calculator is
+    constructed, before any integral.
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, ActiveSpaceSpec):
+        return spec
+    if not isinstance(spec, dict):
+        raise TypeError(
+            "active_space must be a dict such as {'method': 'mp2', "
+            f"'orbitals': 8}}, not {type(spec).__name__}")
+    unknown = sorted(set(spec) - set(ACTIVE_SPACE_KEYS))
+    if unknown:
+        raise ValueError(f"unknown active_space key(s) {unknown}; it takes "
+                         f"{list(ACTIVE_SPACE_KEYS)}")
+    method = resolve_method(spec.get("method"))
+    orbitals = normalize_orbitals(spec.get("orbitals"))
+    threshold = resolve_threshold(spec.get("threshold"))
+    frozen = normalize_frozen(spec.get("frozen"))
+    if orbitals is None and threshold is None and frozen is None:
         raise ValueError(
-            f"unknown active_selection {selection!r}; use one of "
-            f"{ACTIVE_SELECTIONS}")
+            "active_space needs 'orbitals', 'threshold' or 'frozen': a method "
+            "only ranks the virtual orbitals, it does not say which to keep.  "
+            "Omit active_space to keep every orbital.")
+    if threshold is not None and method == "energy":
+        raise ValueError(
+            f"an active_space threshold ({threshold:g}) needs occupation "
+            f"numbers to compare against, and the 'energy' method ranks the "
+            f"virtual orbitals by orbital energy instead -- it never computes "
+            f"an occupation.  Use 'method': 'mp2' (or 'natural' for an "
+            f"open-shell reference) with the threshold, or select by "
+            f"'orbitals'.")
+    return ActiveSpaceSpec(method=method, orbitals=orbitals,
+                           threshold=threshold, frozen=frozen)
+
+
+def normalize_frozen(spec):
+    """Canonical form of the ``active_space`` ``"frozen"``, or raise.
+
+    ``None`` / ``False`` / ``0`` freeze nothing; ``True`` and ``"auto"`` mean
+    the chemical (noble-gas) core, resolved per atom by the builder; an
+    ``int`` is that many lowest molecular orbitals; a list is explicit
+    spatial orbital indices -- one meaning per type, as for ``"orbitals"``.
+    """
+    if spec is None or spec is False:
+        return None
+    if spec is True or (isinstance(spec, str)
+                        and spec.strip().lower() == "auto"):
+        return "auto"
+    if isinstance(spec, (int, np.integer)):
+        if int(spec) < 0:
+            raise ValueError(f"the active_space 'frozen' count must be >= 0, "
+                             f"got {int(spec)}")
+        return int(spec) or None
+    if isinstance(spec, (list, tuple, set, frozenset, np.ndarray)):
+        indices = tuple(sorted({int(i) for i in np.asarray(list(spec)).ravel()}))
+        return indices or None
+    raise TypeError(
+        f"unknown active_space 'frozen' {spec!r}; use 'auto' (the chemical "
+        "core), a count of the lowest molecular orbitals, or a list of "
+        "spatial orbital indices")
+
+
+def resolve_method(method) -> str:
+    """Normalize the ``active_space`` ``"method"``, or raise."""
+    name = str(method if method is not None else "energy")
+    name = name.strip().lower().replace("_", "-")
+    if name not in ACTIVE_SPACE_METHODS:
+        raise ValueError(
+            f"unknown active_space method {method!r}; use one of "
+            f"{ACTIVE_SPACE_METHODS}")
     return name
 
 
 def resolve_threshold(threshold):
-    """Normalize an ``active_threshold`` spec to a float or ``None``.
+    """Normalize the ``active_space`` ``"threshold"`` to a float or ``None``.
 
     ``None`` / ``False`` means no threshold (the count decides), ``True`` takes
     :data:`DEFAULT_OCCUPATION_THRESHOLD`, and a number is used as given.  A
@@ -191,27 +303,28 @@ def resolve_threshold(threshold):
     value = float(threshold)
     if not value > 0.0:
         raise ValueError(
-            f"active_threshold must be a positive occupation number, got "
-            f"{threshold!r}.  Zero keeps every virtual orbital, which is not a "
-            f"truncation; use active_threshold=None to select by count instead.")
+            f"the active_space threshold must be a positive occupation number, "
+            f"got {threshold!r}.  Zero keeps every virtual orbital, which is "
+            f"not a truncation; give 'orbitals' instead to select by count.")
     if value >= 2.0:
         raise ValueError(
-            f"active_threshold={value} is not an occupation number: a natural "
+            f"an active_space threshold of {value} is not an occupation "
+            f"number: a natural "
             f"orbital's occupation lies in [0, 2], and a *virtual* one's is the "
             f"small charge correlation promotes into it -- of order 1e-2 at the "
             f"very most.  A threshold at or above 2 keeps nothing.")
     return value
 
 
-def _count_above(occupations, threshold: float, selection: str) -> int:
+def _count_above(occupations, threshold: float, method: str) -> int:
     """How many ranked virtual orbitals clear ``threshold``, or raise."""
     occupations = np.asarray(occupations, dtype=float)
     kept = int(np.count_nonzero(occupations >= threshold))
     if kept == 0:
         largest = float(np.max(occupations)) if occupations.size else 0.0
         raise ValueError(
-            f"active_threshold={threshold:g} keeps no virtual orbital at all: "
-            f"the largest {selection} occupation in this problem is "
+            f"the active_space threshold {threshold:g} keeps no virtual orbital "
+            f"at all: the largest {method} occupation in this problem is "
             f"{largest:.3e}.  An active space with no virtual orbital cannot "
             f"correlate anything -- it would return the Hartree-Fock energy "
             f"through a variational solver.  Virtual natural occupations are "
@@ -221,8 +334,9 @@ def _count_above(occupations, threshold: float, selection: str) -> int:
     return kept
 
 
-def normalize_active_orbitals(spec):
-    """Canonical, JSON-writable form of an ``active_orbitals`` spec, or raise.
+def normalize_orbitals(spec):
+    """Canonical, JSON-writable form of the ``active_space`` ``"orbitals"``,
+    or raise.
 
     ``None`` stays ``None``, a count stays an ``int``, a dict becomes a plain
     ``{str: int}`` and any sequence becomes a sorted ``tuple`` of ``int``.  Done
@@ -236,58 +350,58 @@ def normalize_active_orbitals(spec):
         unknown = sorted(set(spec) - {"occupied", "virtual"})
         if unknown:
             raise ValueError(
-                f"unknown active_orbitals key(s) {unknown}; the dict form takes "
-                "'occupied' and 'virtual'")
+                f"unknown key(s) {unknown} in the active_space 'orbitals'; its "
+                "dict form takes 'occupied' and 'virtual'")
         return {str(k): int(v) for k, v in spec.items()}
     if isinstance(spec, bool):
         raise TypeError(
-            "active_orbitals is a number of spatial orbitals, not a flag; use "
-            "an int, {'occupied': n, 'virtual': m}, a list of orbital indices, "
-            "or None")
+            "the active_space 'orbitals' is a number of spatial orbitals, not "
+            "a flag; use an int, {'occupied': n, 'virtual': m} or a list of "
+            "orbital indices")
     if isinstance(spec, (int, np.integer)):
         return int(spec)
     if isinstance(spec, (list, tuple, set, frozenset, np.ndarray)):
         return tuple(sorted({int(i) for i in np.asarray(list(spec)).ravel()}))
     raise TypeError(
-        f"unknown active_orbitals spec {spec!r}; use an int (total spatial "
-        "orbitals), {'occupied': n, 'virtual': m}, an explicit list of spatial "
-        "orbital indices, or None")
+        f"unknown active_space 'orbitals' {spec!r}; use an int (total "
+        "spatial orbitals), {'occupied': n, 'virtual': m} or an explicit list "
+        "of spatial orbital indices")
 
 
-def _resolve_counts(active_orbitals, n_doubly: int, n_singly: int,
+def _resolve_counts(orbitals, n_doubly: int, n_singly: int,
                     n_virtual: int, n_frozen: int):
     """``(n_doubly_active, n_virtual_active)`` from a count spec.
 
-    ``n_frozen`` is how many doubly occupied orbitals an explicit
-    ``frozen_orbitals`` / ``frozen_core`` already removed; a count spec is read
-    as the register the user wants *after* that.
+    ``n_frozen`` is how many doubly occupied orbitals the ``"frozen"`` core
+    already removed; a count spec is read as the register the user wants
+    *after* that.
     """
     available_doubly = n_doubly - n_frozen
-    if isinstance(active_orbitals, dict):
-        unknown = sorted(set(active_orbitals) - {"occupied", "virtual"})
+    if isinstance(orbitals, dict):
+        unknown = sorted(set(orbitals) - {"occupied", "virtual"})
         if unknown:
             raise ValueError(
-                f"unknown active_orbitals key(s) {unknown}; the dict form "
-                "takes 'occupied' (doubly occupied spatial orbitals kept "
-                "active) and 'virtual'")
-        n_occ_active = int(active_orbitals.get("occupied", available_doubly))
-        n_virt_active = int(active_orbitals.get("virtual", n_virtual))
+                f"unknown key(s) {unknown} in the active_space 'orbitals'; "
+                "its dict form takes 'occupied' (doubly occupied spatial "
+                "orbitals kept active) and 'virtual'")
+        n_occ_active = int(orbitals.get("occupied", available_doubly))
+        n_virt_active = int(orbitals.get("virtual", n_virtual))
         if not 0 <= n_occ_active <= available_doubly:
             raise ValueError(
-                f"active_orbitals asks for {n_occ_active} active doubly "
+                f"the active_space asks for {n_occ_active} active doubly "
                 f"occupied orbitals, but only {available_doubly} are available "
                 f"({n_doubly} doubly occupied, {n_frozen} already frozen)")
         if not 0 <= n_virt_active <= n_virtual:
             raise ValueError(
-                f"active_orbitals asks for {n_virt_active} active virtual "
+                f"the active_space asks for {n_virt_active} active virtual "
                 f"orbitals of {n_virtual}")
         return n_occ_active, n_virt_active
 
-    total = int(active_orbitals)
+    total = int(orbitals)
     if total <= 0:
         raise ValueError(
-            f"active_orbitals must be a positive number of spatial orbitals, "
-            f"got {total}")
+            f"the active_space 'orbitals' must be a positive number of "
+            f"spatial orbitals, got {total}")
     # The integer form never touches the occupied space: an occupied orbital is
     # removed only when it is asked for by name.  So the count it fixes is the
     # register width, and the virtuals take whatever is left.
@@ -295,23 +409,23 @@ def _resolve_counts(active_orbitals, n_doubly: int, n_singly: int,
     n_virt_active = total - occupied_kept
     if n_virt_active < 0:
         raise ValueError(
-            f"active_orbitals={total} is smaller than the {occupied_kept} "
+            f"'orbitals': {total} is smaller than the {occupied_kept} "
             f"occupied spatial orbitals that would stay active "
             f"({available_doubly} doubly occupied"
             + (f" + {n_singly} singly occupied" if n_singly else "")
-            + "). The integer form of active_orbitals never removes an "
-              "occupied orbital, because that changes the electron count "
-              "rather than the correlation treatment: raise it, freeze a core "
-              "with frozen_core=, or name the split explicitly with "
-              "active_orbitals={'occupied': n, 'virtual': m}.")
+            + "). The integer form of 'orbitals' never removes an occupied "
+              "orbital, because that changes the electron count rather than "
+              "the correlation treatment: raise it, freeze a core with "
+              "'frozen', or name the split explicitly with "
+              "'orbitals': {'occupied': n, 'virtual': m}.")
     if n_virt_active > n_virtual:
         raise ValueError(
-            f"active_orbitals={total} exceeds the {occupied_kept + n_virtual} "
+            f"'orbitals': {total} exceeds the {occupied_kept + n_virtual} "
             f"spatial orbitals the basis has (after freezing {n_frozen})")
     return available_doubly, n_virt_active
 
 
-def _virtual_ranking(selection: str, h_mo, eri_mo, n_doubly: int,
+def _virtual_ranking(method: str, h_mo, eri_mo, n_doubly: int,
                      first_virtual: int, n_orbitals: int,
                      reference_occupations=None, open_shell: bool = False):
     """``(rotation, occupations, correlation_energy)`` ranking the virtuals.
@@ -321,10 +435,10 @@ def _virtual_ranking(selection: str, h_mo, eri_mo, n_doubly: int,
     when the ranking is by orbital energy.  ``open_shell`` selects the
     open-shell MP2 expression for ``"mp2"``.
     """
-    if selection == "energy":
+    if method == "energy":
         return None, None, None
 
-    if selection == "mp2":
+    if method == "mp2":
         from .mp2 import mp2_natural_orbitals, open_shell_mp2_natural_orbitals
 
         # An open-shell Hamiltonian is built in the UHF natural orbitals, which
@@ -341,13 +455,14 @@ def _virtual_ranking(selection: str, h_mo, eri_mo, n_doubly: int,
                                       result.virtual_occupations])
         return result.rotation, occupations, result.correlation_energy
 
-    # selection == "natural": the reference's own natural occupations.  The
+    # method == "natural": the reference's own natural occupations.  The
     # orbitals are already the natural orbitals (that is the basis an open-shell
     # Hamiltonian is built in), so only the order of the virtuals is at stake.
     occupations = np.asarray(reference_occupations, dtype=float).ravel()
     if occupations.size != n_orbitals:
         raise ValueError(
-            f"active_selection='natural' needs one occupation per spatial "
+            f"the 'natural' active_space method needs one occupation per "
+            f"spatial "
             f"orbital ({n_orbitals}), got {occupations.size}")
     virtual = occupations[first_virtual:]
     order = np.argsort(-virtual)                 # most populated first
@@ -361,11 +476,10 @@ def _virtual_ranking(selection: str, h_mo, eri_mo, n_doubly: int,
 
 
 def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
-                         num_particles, active_orbitals=None,
-                         selection="energy", frozen=(),
+                         num_particles,
+                         spec: ActiveSpaceSpec | None = None, frozen=(),
                          reference_occupations=None,
-                         open_shell: bool = False,
-                         threshold=None) -> ActiveSpace:
+                         open_shell: bool = False) -> ActiveSpace:
     """Partition the spatial MOs into frozen / active / deleted.
 
     Parameters
@@ -379,44 +493,35 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
         ``(n_alpha, n_beta)`` of the reference **before** any freezing.  The
         doubly occupied orbitals are ``0 .. n_beta - 1``, the singly occupied
         ones ``n_beta .. n_alpha - 1``, and the virtuals start at ``n_alpha``.
-    active_orbitals : None, int, dict or sequence of int
-        ``None`` keeps everything.  An ``int`` is the total number of spatial
-        orbitals the register should carry.  A ``dict`` with keys ``"occupied"``
-        and ``"virtual"`` names the two counts.  A **list or tuple** is read as
-        explicit spatial MO indices -- never as an ``(occupied, virtual)`` pair,
-        so there is one meaning per type.
-    selection : str
-        How the virtuals are ranked (:data:`ACTIVE_SELECTIONS`).
+    spec : ActiveSpaceSpec, optional
+        The ``active_space`` option (:func:`resolve_active_space_spec`);
+        ``None`` keeps every orbital.  Its ``orbitals`` sizes the register: an
+        ``int`` is the total number of spatial orbitals it should carry, a
+        ``dict`` with keys ``"occupied"`` and ``"virtual"`` names the two
+        counts, and a **list or tuple** is explicit spatial MO indices -- never
+        an ``(occupied, virtual)`` pair, so there is one meaning per type.  Its
+        ``method`` ranks the virtuals (:data:`ACTIVE_SPACE_METHODS`) and its
+        ``threshold`` is an occupation criterion on the virtual natural
+        orbitals: keep those whose occupation is at least that.  It needs a
+        method that *has* occupations, so it is refused for ``"energy"``, and
+        it composes with ``orbitals``, which then acts as a hard cap on the
+        register: the threshold says which orbitals are worth keeping and the
+        count says how many there is room for, and whichever binds first wins.
     frozen : sequence of int
-        Doubly occupied spatial MOs already frozen by ``frozen_core`` /
-        ``frozen_orbitals``.
+        Doubly occupied spatial MOs already frozen -- the spec's ``frozen``,
+        resolved to indices by the builder.
     reference_occupations : sequence of float, optional
-        Natural occupations of the reference, for ``selection="natural"``.
+        Natural occupations of the reference, for the ``"natural"`` method.
     open_shell : bool
         Whether the reference is the open-shell (UHF natural orbital) one.
-    threshold : float, True or None
-        Occupation criterion on the virtual natural orbitals: keep those whose
-        occupation is at least ``threshold``.  ``True`` takes
-        :data:`DEFAULT_OCCUPATION_THRESHOLD`.  Needs a selector that *has*
-        occupations, so it is refused for ``selection="energy"``.  It composes
-        with ``active_orbitals``, which then acts as a hard cap on the register:
-        the threshold says which orbitals are worth keeping and the count says
-        how many there is room for, and whichever binds first wins.
     """
     M = int(n_orbitals)
     n_alpha, n_beta = int(num_particles[0]), int(num_particles[1])
     n_doubly, n_singly = min(n_alpha, n_beta), abs(n_alpha - n_beta)
     first_virtual = n_doubly + n_singly
     n_virtual = M - first_virtual
-    selection = resolve_selection(selection)
-    threshold = resolve_threshold(threshold)
-    if threshold is not None and selection == "energy":
-        raise ValueError(
-            f"active_threshold={threshold:g} needs occupation numbers to "
-            f"compare against, and active_selection='energy' ranks the virtual "
-            f"orbitals by orbital energy instead -- it never computes an "
-            f"occupation.  Use active_selection='mp2' (or 'natural' for an "
-            f"open-shell reference) with the threshold, or select by count.")
+    spec = spec if spec is not None else ActiveSpaceSpec()
+    method, orbitals, threshold = spec.method, spec.orbitals, spec.threshold
     frozen = tuple(sorted({int(i) for i in frozen}))
     for i in frozen:
         if not 0 <= i < n_doubly:
@@ -424,35 +529,35 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
                 f"frozen spatial orbital {i} is not doubly occupied "
                 f"(indices 0..{n_doubly - 1} are)")
 
-    if active_orbitals is None and threshold is None:
+    if orbitals is None and threshold is None:
         active = tuple(p for p in range(M) if p not in set(frozen))
         return ActiveSpace(n_orbitals=M, frozen=frozen, active=active,
-                           deleted=(), selection=selection)
+                           deleted=(), method=method)
 
-    if selection == "natural" and not open_shell:
+    if method == "natural" and not open_shell:
         raise ValueError(
-            "active_selection='natural' carries no information for a "
+            "the 'natural' active_space method carries no information for a "
             "closed-shell reference: the RHF density is idempotent, so its "
             "natural occupations are exactly 2 and 0 and every ordering of the "
             "virtual orbitals is as good as every other.  Use "
-            "active_selection='mp2', which ranks the virtuals by the charge "
+            "'method': 'mp2', which ranks the virtuals by the charge "
             "second-order correlation actually puts in them, or "
             "'energy' if the canonical order is what you meant.")
 
     # -- explicit index list ------------------------------------------------ #
-    if isinstance(active_orbitals, (list, tuple, set, frozenset, np.ndarray)):
-        if selection != "energy":
+    if isinstance(orbitals, (list, tuple, set, frozenset, np.ndarray)):
+        if method != "energy":
             raise ValueError(
-                f"an explicit active_orbitals list cannot be combined with "
-                f"active_selection={selection!r}: that selector rotates the "
-                f"virtual orbitals, so the indices would refer to a basis "
-                f"chosen by the selector rather than the canonical one.  Give "
-                f"a count (an int, or {{'occupied': n, 'virtual': m}}) and let "
-                f"the selector choose, or keep the canonical basis with "
-                f"active_selection='energy'.")
-        active = tuple(sorted({int(i) for i in active_orbitals}))
+                f"an explicit 'orbitals' list cannot be combined with the "
+                f"{method!r} active_space method: it rotates the virtual "
+                f"orbitals, so the indices would refer to a basis chosen by "
+                f"the method rather than the canonical one.  Give a count (an "
+                f"int, or {{'occupied': n, 'virtual': m}}) and let the method "
+                f"choose, or keep the canonical basis with 'method': "
+                f"'energy'.")
+        active = tuple(sorted({int(i) for i in orbitals}))
         if not active:
-            raise ValueError("active_orbitals is an empty orbital list")
+            raise ValueError("the active_space 'orbitals' is an empty list")
         for p in active:
             if not 0 <= p < M:
                 raise ValueError(
@@ -469,26 +574,26 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
                 f"frozen.  An occupied orbital that is dropped takes its "
                 f"electrons with it, which is a different system rather than a "
                 f"smaller correlation treatment; freeze it instead "
-                f"(frozen_orbitals={missing!r}) if the intent was the "
-                f"frozen-core approximation.")
+                f"('frozen': {missing!r}) if the intent was the frozen-core "
+                f"approximation.")
         deleted = tuple(p for p in range(first_virtual, M)
                         if p not in set(active))
         return ActiveSpace(n_orbitals=M, frozen=frozen, active=active,
-                           deleted=deleted, selection=selection)
+                           deleted=deleted, method=method)
 
     # -- the selector ranks, then the criteria cut -------------------------- #
     rotation, occupations, correlation = _virtual_ranking(
-        selection, h_mo, eri_mo, n_doubly, first_virtual, M,
+        method, h_mo, eri_mo, n_doubly, first_virtual, M,
         reference_occupations, open_shell=open_shell)
-    if active_orbitals is None:
+    if orbitals is None:
         # A threshold on its own is a complete criterion: it names how many
         # virtual orbitals are worth keeping, so no count is needed.
         n_occ_active = n_doubly - len(frozen)
         n_virt_active = _count_above(occupations[first_virtual:], threshold,
-                                    selection)
+                                    method)
     else:
         n_occ_active, n_virt_active = _resolve_counts(
-            active_orbitals, n_doubly, n_singly, n_virtual, len(frozen))
+            orbitals, n_doubly, n_singly, n_virtual, len(frozen))
         if threshold is not None:
             # Both given: the threshold says which orbitals earn their place and
             # the count says how many there is room for.  Whichever binds first
@@ -496,14 +601,14 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
             # it is the cap.
             n_virt_active = min(
                 n_virt_active,
-                _count_above(occupations[first_virtual:], threshold, selection))
+                _count_above(occupations[first_virtual:], threshold, method))
     if rotation is not None:
         rotation = np.asarray(rotation, dtype=float)
         residual = float(np.max(np.abs(
             rotation.T @ rotation - np.eye(M)))) if M else 0.0
         if residual > ROTATION_TOLERANCE:
             raise ValueError(
-                f"the {selection} selector returned a non-orthogonal rotation "
+                f"the {method} selector returned a non-orthogonal rotation "
                 f"(|R^T R - 1| = {residual:.2e}); the orbitals it defines "
                 f"would not be orthonormal and every integral built from them "
                 f"would be wrong")
@@ -511,7 +616,7 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
             rotation[:first_virtual, first_virtual:]))) if n_virtual else 0.0
         if coupling > ROTATION_TOLERANCE:
             raise ValueError(
-                f"the {selection} selector mixes occupied and virtual orbitals "
+                f"the {method} selector mixes occupied and virtual orbitals "
                 f"(largest coupling {coupling:.2e}); that changes the reference "
                 f"determinant, so the Hartree-Fock energy and the occupation "
                 f"the ansatz prepares would no longer be the ones reported")
@@ -528,14 +633,14 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
             - np.eye(first_virtual)))) if first_virtual else 0.0
         if occupied_shift > ROTATION_TOLERANCE:
             raise NotImplementedError(
-                f"the {selection} selector had to rotate the occupied orbitals "
+                f"the {method} selector had to rotate the occupied orbitals "
                 f"(|R_oo - 1| = {occupied_shift:.2e}), which means the incoming "
                 f"molecular orbitals did not diagonalize the Fock matrix.  The "
                 f"frozen-core indices were resolved against the old labels and "
                 f"would now name different orbitals, so the selection is "
                 f"refused instead of applied to the wrong ones.  Use "
-                f"active_selection='energy' with an explicit "
-                f"active_orbitals=[...] for such a basis.")
+                f"'method': 'energy' with an explicit 'orbitals' list for such "
+                f"a basis.")
 
     # The ranking is now the index order, so "keep the best m" is "keep the
     # first m".  Occupied truncation stays energy-ordered: the core is the
@@ -549,5 +654,5 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
     return ActiveSpace(
         n_orbitals=M, frozen=frozen,
         active=tuple(active_occupied + active_virtual), deleted=deleted,
-        selection=selection, rotation=rotation, occupations=occupations,
+        method=method, rotation=rotation, occupations=occupations,
         correlation_energy=correlation)

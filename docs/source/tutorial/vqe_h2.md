@@ -13,7 +13,6 @@ spatial orbitals give four spin orbitals and four Jordan–Wigner qubits.
 from ase import Atoms
 from mandacaru.algorithms import Mandacaru
 from mandacaru.integrals import Grid
-from mandacaru.optimizers import Optimizer
 
 bond_length = 0.74  # Å
 atoms = Atoms(
@@ -27,7 +26,7 @@ atoms.calc = Mandacaru(
     basis="HAO",
     grid=grid,
     mapping="jordan_wigner",
-    optimizer=Optimizer(method="L-BFGS", maxiter=500, tol=1e-12),
+    optimizer={"method": "L-BFGS", "maxiter": 500, "tol": 1e-12},
     execute_circuits=False)
 energy_ev = atoms.get_potential_energy()
 print(f"Molecular total energy: {energy_ev:.6f} eV")

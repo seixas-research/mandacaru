@@ -175,7 +175,8 @@ class TestLiHCoreArtifact:
 
     def test_freezing_the_core_does_not_cure_it(self):
         """The core leaves the active space, not the density or the grid."""
-        forces, _ = forces_of("LiH", 2.19265, "HAO", frozen_core=True)
+        forces, _ = forces_of("LiH", 2.19265, "HAO",
+                              active_space={"frozen": "auto"})
         assert net_force(forces) > 10.0
 
     @pytest.fixture(scope="class")

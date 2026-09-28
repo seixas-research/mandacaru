@@ -6,7 +6,7 @@
 
 End to end on LiH (HAO, qubit pool, 6 qubits), where the two criteria stop the
 growth at different places: the gradient at 1e-3 after nine operators, the
-energy change at 1e-4 Ha after five; and on H2, which one operator makes
+energy change at 3e-3 eV after five; and on H2, which one operator makes
 exact.
 """
 
@@ -60,20 +60,27 @@ class TestResolve:
 
 
 class TestReached:
-    BOTH = Convergence(gradient=1e-3, energy=1e-6)
+    BOTH = Convergence(gradient=1e-3, energy=1e-6)      # Hartree, eV
 
+    # The drivers pass dE in Hartree: 1e-8 Ha is 2.7e-7 eV, 1e-6 Ha 2.7e-5 eV.
     @pytest.mark.parametrize("gradient, delta, expected", [
-        (1e-4, 1e-7, True),
-        (1e-4, -1e-7, True),          # |dE|: a step may raise the energy
-        (1e-2, 1e-7, False),          # the energy alone is not enough
-        (1e-4, 1e-5, False),          # nor is the gradient
+        (1e-4, 1e-8, True),
+        (1e-4, -1e-8, True),          # |dE|: a step may raise the energy
+        (1e-2, 1e-8, False),          # the energy alone is not enough
+        (1e-4, 1e-6, False),          # nor is the gradient
         (1e-4, None, False),          # no step taken yet
     ])
     def test_both_must_hold(self, gradient, delta, expected):
         assert self.BOTH.reached(gradient, delta) is expected
 
+    def test_the_energy_threshold_is_in_ev(self):
+        criteria = Convergence(gradient=None, energy=1e-3)
+        assert criteria.energy_hartree == pytest.approx(1e-3 / HARTREE_TO_EV)
+        assert criteria.reached(np.inf, 0.9e-3 / HARTREE_TO_EV)
+        assert not criteria.reached(np.inf, 1.1e-3 / HARTREE_TO_EV)
+
     def test_an_unused_criterion_is_ignored(self):
-        assert Convergence(gradient=None, energy=1e-6).reached(np.inf, 1e-7)
+        assert Convergence(gradient=None, energy=1e-6).reached(np.inf, 1e-8)
         assert Convergence(gradient=1e-3, energy=None).reached(1e-4, None)
 
     def test_the_threshold_is_strict(self):
@@ -91,7 +98,9 @@ class TestReached:
 
     def test_described_in_the_unit_of_the_de_column(self):
         text = self.BOTH.describe(HARTREE_TO_EV, "eV")
-        assert text == f"max|grad| < 0.001 Ha and |dE| < {1e-6 * HARTREE_TO_EV:g} eV"
+        assert text == "max|grad| < 0.001 Ha and |dE| < 1e-06 eV"
+        assert self.BOTH.describe() == \
+            f"max|grad| < 0.001 Ha and |dE| < {1e-6 / HARTREE_TO_EV:g} Ha"
 
 
 def _lih(**options):
@@ -116,7 +125,7 @@ class TestGrowth:
         assert default_run.converged
         assert default_run.final_max_gradient < 1e-3
         energies = [step.energy for step in default_run.iterations]
-        assert abs(energies[-1] - energies[-2]) / HARTREE_TO_EV < 1e-3
+        assert abs(energies[-1] - energies[-2]) < 1e-3        # eV
 
     def test_an_exact_first_step_is_not_followed_by_a_redundant_one(self):
         """H2 is exact after one operator; its large first dE must not make the
@@ -132,12 +141,12 @@ class TestGrowth:
         assert result.final_max_gradient < VANISHED_GRADIENT
 
     def test_the_energy_alone_stops_on_the_last_step(self, default_run):
-        threshold = 1e-4
+        threshold = 3e-3                                          # eV
         result = _lih(convergence={"energy": threshold})
         assert result.converged
         energies = [step.energy for step in result.iterations]   # eV
-        last = abs(energies[-1] - energies[-2]) / HARTREE_TO_EV
-        before = abs(energies[-2] - energies[-3]) / HARTREE_TO_EV
+        last = abs(energies[-1] - energies[-2])
+        before = abs(energies[-2] - energies[-3])
         assert last < threshold <= before
         # It stops earlier than the gradient does here, with the gradient
         # still well above the default threshold -- the criterion really was
@@ -150,7 +159,7 @@ class TestGrowth:
         assert result.converged
         assert result.final_max_gradient < 1e-3
         energies = [step.energy for step in result.iterations]
-        assert abs(energies[-1] - energies[-2]) / HARTREE_TO_EV < 1e-6
+        assert abs(energies[-1] - energies[-2]) < 1e-6        # eV
         assert len(result.operators) >= len(default_run.operators)
 
     def test_an_unmet_energy_criterion_is_not_converged(self):

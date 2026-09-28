@@ -214,13 +214,13 @@ class TestMagneticMoments:
 class TestElectronsAreAllAccountedFor:
     def test_a_frozen_core_is_refilled(self):
         """The core is not in the RDM but is in the molecule."""
-        frozen = solved(lih(), h=0.20, frozen_core=True)
+        frozen = solved(lih(), h=0.20, active_space={"frozen": "auto"})
         assert frozen.atomic_partition("hirshfeld").grid_electrons == \
             pytest.approx(4.0, abs=1e-8)
 
     def test_freezing_barely_moves_the_charges(self):
         full = solved(lih(), h=0.20).atomic_partition("hirshfeld").charges
-        frozen = solved(lih(), h=0.20, frozen_core=True)
+        frozen = solved(lih(), h=0.20, active_space={"frozen": "auto"})
         assert frozen.atomic_partition("hirshfeld").charges == \
             pytest.approx(full, abs=0.05)
 

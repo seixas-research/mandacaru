@@ -202,7 +202,7 @@ class TestElectronCount:
 
     def test_frozen_core_is_refilled(self):
         atoms = _molecule("LiH", [[0, 0, 0], [0, 0, 1.6]], [8, 8, 8])
-        calc = _solved(atoms, frozen_core=True)
+        calc = _solved(atoms, active_space={"frozen": "auto"})
         assert calc.solver._gradient_context["frozen"] == (0,)
         assert calc.num_particles == (1, 1)          # the *active* space
         field = calc.volumetric_field("density")
@@ -266,7 +266,7 @@ class TestDensityFromTheDeterminant:
     def test_the_frozen_core_reference_is_the_ansatz_reference(self):
         """With a core, the reference is core + lowest *active* of each spin."""
         atoms = _molecule("LiH", [[0, 0, 0], [0, 0, 1.6]], [8, 8, 8])
-        calc = _solved(atoms, frozen_core=True)
+        calc = _solved(atoms, active_space={"frozen": "auto"})
         integrals = calc.solver._gradient_context["integrals"]
         frozen = calc.solver._gradient_context["frozen"]
         n_act = len(integrals.basis) - len(frozen)

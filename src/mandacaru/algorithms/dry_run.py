@@ -120,8 +120,8 @@ class QubitEstimate:
         Doubly occupied spatial orbitals removed by the frozen core, plus any
         the active-space selector folded into the mean field on top of it.
     n_deleted_orbitals : int
-        Virtual spatial orbitals dropped by ``active_orbitals``.
-    active_selection : str
+        Virtual spatial orbitals dropped by the ``active_space`` ``"orbitals"``.
+    active_method : str
         How the virtuals were ranked.  Only the *count* is a dry-run quantity --
         which orbitals a selector picks needs the integrals this run does not
         compute -- so the register width below is exact and the identity of its
@@ -169,7 +169,7 @@ class QubitEstimate:
     n_basis_functions: int = 0
     n_frozen_orbitals: int = 0
     n_deleted_orbitals: int = 0
-    active_selection: str = "energy"
+    active_method: str = "energy"
     per_atom: list[tuple[str, int]] = field(default_factory=list)
     basis: str = "HAO"
     mapping: str = "jordan_wigner"
@@ -266,7 +266,7 @@ class QubitEstimate:
         if self.n_deleted_orbitals:
             lines.append(f"  deleted virtuals  : {self.n_deleted_orbitals} "
                          f"spatial orbital(s), ranked by "
-                         f"{self.active_selection}")
+                         f"{self.active_method}")
         lines.append(f"  active orbitals   : {self.n_spatial_orbitals} spatial "
                      f"/ {self.n_spin_orbitals} spin")
         lines.append(f"  active electrons  : {self.n_electrons}  "
@@ -435,9 +435,7 @@ def _device_fields(device, notes):
 
 def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                     charge: int = 0, n_electrons=None, spin: bool = False,
-                    frozen_core=False, frozen_orbitals=None,
-                    active_orbitals=None, active_selection: str = "energy",
-                    active_threshold=None, taper: bool = False,
+                    active_space=None, taper: bool = False,
                     load_hamiltonian=None,
                     hamiltonian=None, num_particles=None,
                     n_spatial_orbitals=None, method: str = "adapt-vqe",
@@ -459,7 +457,9 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
     Every keyword mirrors the driver argument of the same name.
     """
     from ..core.mapping import Fermion, PauliSum, _canonical_method
+    from .active_space import resolve_active_space_spec
 
+    spec = resolve_active_space_spec(active_space)
     notes: list[str] = []
     canon_device, capacity = _device_fields(device, notes)
     method = str(method)
@@ -547,7 +547,7 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
         raise ValueError("estimate_qubits needs atoms, load_hamiltonian or an "
                          "explicit hamiltonian")
     from ._hamiltonian_from_atoms import (_num_particles, resolve_basis,
-                                          resolve_frozen_core,
+                                          resolve_frozen,
                                           resolve_num_unpaired,
                                           resolve_pseudo_basis)
 
@@ -557,10 +557,11 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
     family, options = resolve_pseudo_basis(name, options, symbols)
 
     if family is not None:
-        if frozen_core or frozen_orbitals:
+        if spec is not None and spec.frozen is not None:
             raise ValueError(
-                f"frozen_core is redundant with the {family.label} basis -- "
-                "the core is already absent from the valence-only pseudo basis")
+                f"an active_space 'frozen' core is redundant with the "
+                f"{family.label} basis -- the core is already absent from the "
+                f"valence-only pseudo basis")
         from ..pseudopotentials.orbitals import valence_electrons
 
         per_atom, label, potentials = _pseudo_basis_count(atoms, family, options)
@@ -576,7 +577,7 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
         n_el = (int(n_electrons) if n_electrons is not None
                 else int(sum(int(z) for z in numbers)) - int(charge))
         if per_atom and per_atom[0][0] == "PW":
-            if frozen_core or frozen_orbitals:
+            if spec is not None and spec.frozen is not None:
                 raise NotImplementedError(
                     "the frozen-core approximation is not supported for the "
                     "plane-wave (PW) basis")
@@ -585,8 +586,8 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                          "count grows steeply with the cutoff and cell")
             per_atom = []          # not atom-centered
         else:
-            frozen = resolve_frozen_core(frozen_core, frozen_orbitals, numbers,
-                                         n_el, n_basis)
+            frozen = resolve_frozen(spec.frozen if spec is not None else None,
+                                    numbers, n_el, n_basis)
 
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
     n_deleted = 0
@@ -599,51 +600,46 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
             "symmetric molecule usually has more.  Reduced density matrices, "
             "and so forces, densities and charges, are refused on a tapered "
             "register")
-    if active_threshold is not None:
+    if spec is not None and spec.threshold is not None:
         # A count fixes the register width without any integrals; an occupation
         # threshold does not -- how many virtual orbitals clear it is a property
         # of the second-order density, which a dry run does not compute.  So the
         # width reported here is an *upper* bound, and saying so is the only
         # honest option: printing the untruncated number unqualified would have
         # a user size a job against a register the run will not use.
-        from .active_space import resolve_threshold
-
-        value = resolve_threshold(active_threshold)
         notes.append(
-            f"active_threshold={value:g}: the qubit count below is an UPPER "
-            f"BOUND.  How many virtual orbitals clear an occupation threshold "
-            f"depends on the second-order density, which a dry run does not "
-            f"compute -- run the geometry to learn the real width, or give "
-            f"active_orbitals=<count> as well, which caps it in advance")
-    if active_orbitals is not None:
+            f"active_space threshold {spec.threshold:g}: the qubit count "
+            f"below is an UPPER BOUND.  How many virtual orbitals clear an "
+            f"occupation threshold depends on the second-order density, which "
+            f"a dry run does not compute -- run the geometry to learn the real "
+            f"width, or give 'orbitals' as well, which caps it in advance")
+    if spec is not None and spec.orbitals is not None:
         # Only the counts, never the choice: which orbitals a selector keeps
         # takes the integrals, and a dry run computes none.  The register width
         # does not depend on that choice, so it is still exact here.
-        from .active_space import (_resolve_counts, normalize_active_orbitals,
-                                   resolve_selection)
+        from .active_space import _resolve_counts
 
-        active_selection = resolve_selection(active_selection)
-        spec = normalize_active_orbitals(active_orbitals)
+        orbitals = spec.orbitals
         n_alpha_full, n_beta_full = _num_particles(n_el, n_unpaired, label)
         n_doubly = min(n_alpha_full, n_beta_full)
         n_singly = abs(n_alpha_full - n_beta_full)
         n_virtual = n_basis - n_doubly - n_singly
-        if isinstance(spec, tuple):
-            kept = [p for p in spec if p not in set(frozen)]
+        if isinstance(orbitals, tuple):
+            kept = [p for p in orbitals if p not in set(frozen)]
             n_deleted = n_virtual - sum(1 for p in kept
                                         if p >= n_doubly + n_singly)
         else:
             n_occ_active, n_virt_active = _resolve_counts(
-                spec, n_doubly, n_singly, n_virtual, len(frozen))
+                orbitals, n_doubly, n_singly, n_virtual, len(frozen))
             frozen = list(frozen) + [
                 p for p in range(n_doubly) if p not in set(frozen)
             ][:n_doubly - len(frozen) - n_occ_active]
             n_deleted = n_virtual - n_virt_active
         notes.append(
-            f"active_orbitals: {n_deleted} virtual spatial orbital(s) dropped "
-            f"(ranked by {active_selection} once the integrals exist). Nuclear "
-            f"forces and the stress are refused with a truncated virtual "
-            f"space, because the selection moves with the nuclei")
+            f"active_space: {n_deleted} virtual spatial orbital(s) dropped "
+            f"(ranked by {spec.method} once the integrals exist).  Nuclear "
+            f"forces then follow the moving selection by finite differences "
+            f"of the reduced Hamiltonian; the stress is refused")
 
     n_active_el = n_el - 2 * len(frozen)
     particles = _num_particles(n_active_el, n_unpaired, label)
@@ -657,5 +653,6 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                   n_electrons=n_active_el, num_particles=particles,
                   n_basis_functions=n_basis, n_frozen_orbitals=len(frozen),
                   n_deleted_orbitals=n_deleted,
-                  active_selection=active_selection,
+                  active_method=(spec.method if spec is not None
+                                 else "energy"),
                   per_atom=per_atom, basis=label, source="geometry")

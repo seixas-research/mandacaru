@@ -10,7 +10,8 @@
 
 Water is the textbook frozen-core minimal-basis problem.  With
 ``basis={"name": "HAO"}`` each atom contributes its Hydrogenic Atomic Orbitals
-(O {1s, 2s, 2p} + 2 H {1s} = 7 spatial orbitals) and ``frozen_core=True`` freezes
+(O {1s, 2s, 2p} + 2 H {1s} = 7 spatial orbitals) and
+``active_space={"frozen": "auto"}`` freezes
 the oxygen ``1s`` core -- so oxygen enters as a frozen ``[1s^2]`` core plus an
 active ``[2s^2, 2p^4]`` valence, giving a **6-orbital / 12-qubit** active space
 with 8 active electrons (a ``(4, 4)`` closed shell).
@@ -85,7 +86,7 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="fermionic",
                        basis={"name": "HAO"},
                        mapping="jordan_wigner",
-                       frozen_core=True,   # freeze the oxygen 1s core
+                       active_space={"frozen": "auto"},   # freeze the oxygen 1s core
                        h=0.30,
                        max_iterations=20,
                        convergence={"gradient": 1e-3},

@@ -107,18 +107,16 @@ class FamilySpec:
         library loader.
     build : callable
         ``build(atoms, grid, h, charge, spin, options, kinetic, *,
-        active_orbitals=None, active_selection="energy",
-        active_threshold=None)`` returning the driver
+        active_space=None)`` returning the driver
         5-tuple ``(hamiltonian, num_particles, n_spatial_orbitals,
         integration_profile, context)`` -- exactly what
         :func:`~mandacaru.algorithms._hamiltonian_from_atoms.build_basis_hamiltonian`
-        returns for the all-electron path.  The two keyword arguments are always
-        passed, so a builder must accept them (``**kwargs`` forwarded to
+        returns for the all-electron path.  The keyword is always passed, so
+        a builder must accept it (``**kwargs`` forwarded to
         :func:`build_valence_hamiltonian` is enough, and is what every built-in
-        family does).  They arrived with virtual-orbital truncation: a
-        valence-only basis has no core to freeze but plenty of virtual orbitals
-        to drop, so unlike ``frozen_core`` this is a request a pseudopotential
-        family has to be able to honor.
+        family does): a valence-only basis has no core to freeze but plenty of
+        virtual orbitals to drop, so unlike a ``"frozen"`` core, truncation is
+        a request a pseudopotential family has to be able to honor.
     norm_conserving : bool
         Whether the family's projectors leave the basis overlap untouched
         (``True`` for TM/ONCVPSP; PAW-LCAO carries an overlap correction).
@@ -327,9 +325,7 @@ def pseudo_basis_arguments(family, options, *, confinement=None,
 
 
 def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
-                              active_orbitals=None,
-                              active_selection: str = "energy",
-                              active_threshold=None,
+                              active_space=None,
                               family: str, load, projectors, coupling,
                               overlap=None, spin_orbit=None,
                               integrals_class=None,
@@ -403,8 +399,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
         **{potentials_keyword: [potentials[s] for s in symbols]})
     hamiltonian = integrals.molecular_hamiltonian(
         mo_basis=True, n_electrons=n_el, num_particles=num_particles,
-        active_orbitals=active_orbitals, active_selection=active_selection,
-        active_threshold=active_threshold)
+        active_space=active_space)
     _warn_unresolved(integrals, basis_fns, h)
 
     # A valence-only basis has no core to freeze, but it does have virtual

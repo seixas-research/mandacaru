@@ -78,9 +78,40 @@ def align_active_orbitals(reference: MolecularIntegrals,
     if singular.min(initial=1.0) < 0.5:
         raise RuntimeError(
             "the active orbital selection changed discontinuously under a "
-            "nuclear displacement; reduce the force step or use an explicit "
-            "active_orbitals list")
+            "nuclear displacement; reduce the force step or give the "
+            "active_space an explicit 'orbitals' list")
     return left @ right
+
+
+def internal_directions(positions: np.ndarray,
+                        tolerance: float = 1e-8) -> np.ndarray:
+    r"""Orthonormal displacement directions that are not rigid motions.
+
+    The energy of an isolated molecule does not change under a rigid
+    translation or rotation, so its gradient is orthogonal to those six
+    motions (five for a linear molecule, three for a single atom) and lives in
+    the ``3N - 6`` dimensional complement.  Returns that complement as the
+    columns of a ``(3N, k)`` matrix with orthonormal columns: the translations
+    are :math:`\hat e_a` on every atom, the rotations
+    :math:`\hat e_a \times (\mathbf R_i - \mathbf R_c)` about the
+    centroid, and their rank -- five for collinear atoms -- is read off an
+    SVD, so a linear molecule needs no special case.
+    """
+    positions = np.asarray(positions, dtype=float)
+    n = positions.shape[0]
+    relative = positions - positions.mean(axis=0)
+    rigid = []
+    for axis in range(3):
+        translation = np.zeros((n, 3))
+        translation[:, axis] = 1.0
+        rigid.append(translation.ravel())
+        unit = np.zeros(3)
+        unit[axis] = 1.0
+        rigid.append(np.cross(unit, relative).ravel())
+    rigid = np.array(rigid)                                  # (6, 3N)
+    _u, singular, vt = np.linalg.svd(rigid, full_matrices=True)
+    rank = int((singular > tolerance * max(singular.max(), 1.0)).sum())
+    return vt[rank:].T                                       # (3N, 3N - rank)
 
 
 def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
@@ -94,6 +125,26 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
     selector pipeline on the force calculation's fixed grid.  The RDMs belong
     to the *active* register before any frozen orbitals are refilled.  No VQE or
     hardware job is run at the displaced geometries.
+
+    With a pseudopotential family only the internal directions are displaced
+    (:func:`internal_directions`): the gradient of an isolated molecule has
+    no component along a rigid translation or rotation, so ``3N - 6`` central
+    differences (``3N - 5`` for a linear molecule) determine it instead of
+    ``3N`` -- one, two builds, for a diatomic instead of twelve.  Each direction moves several atoms at
+    once, by at most ``step / 2`` each, so no interatomic distance changes by
+    more than ``step`` -- the bound a Cartesian step of one atom has, and so
+    the same central-difference error: on O2 the two agree to 3e-6
+    eV/Angstrom at equal bond change, while moving both atoms by the full
+    ``step`` doubled the error (1e-2 eV/Angstrom).
+
+    The shortcut rests on the invariance, which the fixed real-space grid
+    breaks (the egg-box effect).  With a smooth pseudopotential and a
+    filtered basis the break is negligible -- 1.7e-5 eV/Angstrom for O2 in
+    PAW-LCAO at h = 0.15 -- and dropping it is what the calculator's
+    translation projection does anyway.  A bare all-electron nucleus on the
+    grid breaks it badly (all-electron LiH/6-31G at h = 0.35: moving Li put
+    125 eV/Angstrom into the hydrogen's force), so an all-electron basis keeps
+    the full ``3N`` Cartesian differences, each atom moved alone.
     """
     from ._hamiltonian_from_atoms import build_basis_hamiltonian
 
@@ -103,23 +154,15 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
     reference = context["integrals"]
     active = tuple(context["active"])
     positions = np.asarray(atoms.get_positions(), dtype=float)
-    gradient = np.zeros_like(positions)
 
-    def energy(atom: int, axis: int, sign: int) -> float:
+    def energy(displacement: np.ndarray) -> float:
         shifted = atoms.copy()
-        coords = positions.copy()
-        coords[atom, axis] += sign * step
-        shifted.set_positions(coords)
+        shifted.set_positions(positions + displacement)
         _hamiltonian, particles, n_orbitals, _profile, displaced = \
             build_basis_hamiltonian(
                 shifted, solver.basis, reference.grid, solver.h,
                 solver.charge, solver.n_electrons, spin=solver.spin,
-                frozen_core=solver.frozen_core,
-                frozen_orbitals=solver.frozen_orbitals,
-                kinetic=solver.kinetic,
-                active_orbitals=solver.active_orbitals,
-                active_selection=solver.active_selection,
-                active_threshold=solver.active_threshold)
+                kinetic=solver.kinetic, active_space=solver.active_space)
         if (tuple(particles) != tuple(solver.num_particles)
                 or n_orbitals != len(active)
                 or tuple(displaced["frozen"]) != tuple(context["frozen"])):
@@ -131,9 +174,15 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
             tuple(displaced["active"]))
         return reduced_energy(displaced["integrals"], gamma, gamma2, rotation)
 
-    for atom in range(len(positions)):
-        for axis in range(3):
-            gradient[atom, axis] = (
-                energy(atom, axis, +1) - energy(atom, axis, -1)) \
-                * HARTREE_TO_EV / (2 * step)
-    return gradient
+    directions = (internal_directions(positions)
+                  if context.get("family") is not None
+                  else np.eye(positions.size))
+    gradient = np.zeros(positions.size)
+    for column in directions.T:
+        # No atom moves farther than step / 2, so no distance changes by more
+        # than `step` (see the docstring).
+        scale = 0.5 * step / np.linalg.norm(column.reshape(-1, 3), axis=1).max()
+        displacement = (scale * column).reshape(positions.shape)
+        slope = (energy(displacement) - energy(-displacement)) / (2 * scale)
+        gradient += slope * column
+    return (gradient * HARTREE_TO_EV).reshape(positions.shape)

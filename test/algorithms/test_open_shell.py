@@ -214,11 +214,12 @@ class TestGeometryPath:
         # Li: 3 electrons; freezing the 1s leaves one active electron in 2s.
         atoms = Atoms("Li", positions=[[0, 0, 0]], cell=[8.0] * 3)
         H, particles, n_orb, _p, _c = build_basis_hamiltonian(
-            atoms, "HAO", None, 0.4, 0, None, frozen_core=True)
+            atoms, "HAO", None, 0.4, 0, None, active_space={"frozen": "auto"})
         assert particles == (1, 0) and n_orb == 1 and H.n_modes() == 2
         with pytest.raises(ValueError, match="doubly"):
+            # Orbital 1 is the singly occupied 2s.
             build_basis_hamiltonian(atoms, "HAO", None, 0.4, 0, None,
-                                    frozen_orbitals=[1])   # the singly occupied 2s
+                                    active_space={"frozen": [1]})
 
     def test_charge_makes_the_count_odd(self):
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)

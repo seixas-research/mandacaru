@@ -29,7 +29,7 @@ come from a quantum variational eigensolver:
     water.calc = Mandacaru(method="adapt-vqe",
                            basis="HAO",
                            h=0.30,
-                           frozen_core=True)
+                           active_space={"frozen": "auto"})
     BFGS(water).run(fmax=0.05)
 
 The run result of the most recent evaluation is available uniformly on
@@ -471,7 +471,7 @@ class Mandacaru(Calculator):
         unknown key is refused as the typo it is.  A pre-built
         :class:`~mandacaru.optimizers.Optimizer` works as well and is what the
         dict builds.
-    charge, frozen_core, frozen_orbitals, mapping, pool, ... :
+    charge, active_space, mapping, pool, ... :
         Forwarded to the solver selected by ``method``.
     dry_run : bool
         Forwarded too: with ``dry_run=True`` every evaluation only *estimates*
@@ -1407,6 +1407,16 @@ class Mandacaru(Calculator):
             psi = self._converged_state(solver)
         n_qubits = int(solver.n_qubits)
         taper_info = getattr(solver, "_taper_info", None)
+        if taper_info is not None and solver.mapping != "parity_reduced":
+            # Lift the state back to the full Jordan-Wigner register once and
+            # read the RDMs with ladder operators.  Mapping and tapering every
+            # RDM element as its own Pauli observable (22,784 for O2 in
+            # PAW-LCAO-SZP) took 19 s of each force evaluation.
+            full = taper_info.untaper_state(psi)
+            n_modes = n_qubits + taper_info.removed
+            return (one_rdm(full, n_modes, solver.mapping),
+                    two_rdm(full, n_modes, solver.mapping)
+                    if two_body else None)
         if solver.mapping == "parity_reduced" or taper_info is not None:
             # A tapered register has no ladder operators of its own: its RDM
             # elements are expectation values of the tapered qubit operators.
@@ -1564,11 +1574,16 @@ class Mandacaru(Calculator):
             # expression the solver reported, for every atom-centered basis.
             from .pseudo_forces import (ENERGY_CHECK_TOLERANCE,
                                         pseudo_nuclear_gradient)
+            # With deleted virtuals the finite-difference gradient below is
+            # the whole answer, and the analytic Pulay term would only be
+            # overwritten: the Hellmann-Feynman part (and the energy check)
+            # is all that is kept from here.
             result = pseudo_nuclear_gradient(
                 context["integrals"], gamma, gamma2,
                 atom_of_orbital=context["atom_of_orbital"],
                 orbital_delta=self.orbital_delta,
-                include_pulay=self.include_pulay)
+                include_pulay=self.include_pulay
+                and not context.get("deleted"))
             if context.get("deleted"):
                 from .active_space_forces import (
                     ACTIVE_SPACE_STEP_ANGSTROM, active_space_gradient)
@@ -2204,17 +2219,19 @@ class Mandacaru(Calculator):
         if context.get("deleted"):
             raise NotImplementedError(
                 "the stress tensor with a truncated virtual space "
-                "(active_orbitals=) is not implemented.  Deleting a virtual "
+                "(active_space 'orbitals' or 'threshold') is not implemented.  "
+                "Deleting a virtual "
                 "orbital is exact for the energy at a fixed geometry, but the "
                 "selection itself moves with the nuclei: which orbitals are "
-                "kept, and -- for active_selection='mp2' -- the rotation that "
+                "kept, and -- for the 'mp2' method -- the rotation that "
                 "defines them, both depend on the geometry, and that "
                 "dependence is a response term the Hellmann-Feynman and Pulay "
                 "sums here do not contain.  The result would be the "
                 "derivative of a different energy than the one reported, "
                 "which is worse than not having it.  Use the full virtual "
                 "space for a relaxation, or a frozen core alone "
-                "(frozen_core=), whose orbitals are fixed by the reference.")
+                "(active_space={'frozen': ...}), whose orbitals are fixed by "
+                "the reference.")
 
         gamma, gamma2 = self._state_rdms(solver, two_body=True)
         frozen = context.get("frozen") or ()
@@ -2338,7 +2355,8 @@ class Mandacaru(Calculator):
         if scheme in ("mpc", "ccmh") and (context.get("frozen")
                                           or context.get("deleted")):
             what = ("a frozen core" if context.get("frozen")
-                    else "a truncated virtual space (active_orbitals=)")
+                    else "a truncated virtual space (active_space 'orbitals' "
+                         "or 'threshold')")
             raise NotImplementedError(
                 f"{what} is not supported by scheme {scheme!r}: the pair "
                 "density would be contracted over the active orbitals only, "

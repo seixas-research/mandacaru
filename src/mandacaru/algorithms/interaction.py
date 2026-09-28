@@ -38,7 +38,8 @@ to check the setup before the variational runs.
 
     result = interaction_energy(complex_atoms, fragments=[[0, 1, 2], [3]],
                                 charges=[0, 1], method="adapt-vqe",
-                                basis="HAO", frozen_core=True, h=0.25)
+                                basis="HAO", active_space={"frozen": "auto"},
+                                h=0.25)
     result.energy            # eV (Hartree with atomic_units=True)
     result.in_units("Ha")
 """
@@ -116,14 +117,13 @@ def _shared_grid(atoms, h, grid):
     return grid_from_cell(atoms, h)
 
 
-def _rhf_energy(atoms, charge, grid, h, basis, frozen_core, frozen_orbitals,
-                spin, kinetic=None):
+def _rhf_energy(atoms, charge, grid, h, basis, active_space, spin,
+                kinetic=None):
     """Hartree-Fock total energy of ``atoms`` on ``grid`` (Hartree)."""
     from ._hamiltonian_from_atoms import build_basis_hamiltonian
     _H, particles, _n, _profile, context = build_basis_hamiltonian(
         atoms, basis, grid, h, charge, None, spin=spin,
-        frozen_core=frozen_core, frozen_orbitals=frozen_orbitals,
-        kinetic=kinetic)
+        active_space=active_space, kinetic=kinetic)
     if context is None:
         raise NotImplementedError(
             "interaction energies need an atom-centered basis")
@@ -188,8 +188,7 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
         if method_key in ("rhf", "hf", "hartree-fock"):
             energy = _rhf_energy(
                 sub, q, shared, h, basis,
-                solver_kwargs.get("frozen_core", False),
-                solver_kwargs.get("frozen_orbitals"),
+                solver_kwargs.get("active_space"),
                 solver_kwargs.get("spin", False),
                 solver_kwargs.get("kinetic"))
             energy = float(from_hartree(energy, unit))   # RHF works in Hartree

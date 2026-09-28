@@ -563,7 +563,8 @@ class _BlochMixin:
         if context.get("deleted"):
             raise NotImplementedError(
                 "the spectral function does not support a truncated virtual "
-                "space (active_orbitals=): the addition branch puts an extra "
+                "space (active_space 'orbitals' or 'threshold'): the "
+                "addition branch puts an extra "
                 "electron into the virtual orbitals, and the ones the selector "
                 "deleted are exactly where it would go.  The peaks it found "
                 "would be those of the truncated model presented as the "

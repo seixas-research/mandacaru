@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# file: test/test_frozen_core.py
+# file: test/algorithms/test_frozen_core.py
 
 # This code is part of Mandacaru.
 # MIT License
@@ -16,7 +16,7 @@ from mandacaru.basis import BasisSet, HydrogenicAtomicOrbital
 from mandacaru.core.hamiltonian import freeze_core_integrals
 from mandacaru.algorithms.hartree_fock import RHF
 from mandacaru.algorithms._hamiltonian_from_atoms import (
-    build_basis_hamiltonian, core_electrons, resolve_frozen_core)
+    build_basis_hamiltonian, core_electrons, resolve_frozen)
 
 
 # --------------------------------------------------------------------------- #
@@ -103,30 +103,36 @@ class TestCoreElectrons:
         assert core_electrons(Z) == expected
 
 
-class TestResolveFrozenCore:
-    def test_false_freezes_nothing(self):
-        assert resolve_frozen_core(False, None, [3, 1], n_el=4, n_orbitals=3) == []
+class TestResolveFrozen:
+    """The ``active_space`` ``"frozen"`` key, resolved against the atoms."""
+
+    def test_none_freezes_nothing(self):
+        assert resolve_frozen(None, [3, 1], n_el=4, n_orbitals=3) == []
 
     def test_auto_freezes_chemical_core(self):
         # LiH: Li He-core (2 e-) -> 1 spatial orbital.
-        assert resolve_frozen_core(True, None, [3, 1], n_el=4, n_orbitals=3) == [0]
-        assert resolve_frozen_core("auto", None, [3, 1], 4, 3) == [0]
+        assert resolve_frozen("auto", [3, 1], n_el=4, n_orbitals=3) == [0]
 
     def test_integer_freezes_lowest(self):
-        assert resolve_frozen_core(2, None, [8, 1, 1], n_el=10, n_orbitals=6) \
-            == [0, 1]
+        assert resolve_frozen(2, [8, 1, 1], n_el=10, n_orbitals=6) == [0, 1]
 
-    def test_explicit_list_overrides(self):
-        assert resolve_frozen_core(True, [0, 1], [8, 1, 1], 10, 6) == [0, 1]
+    def test_explicit_indices(self):
+        assert resolve_frozen((0, 1), [8, 1, 1], 10, 6) == [0, 1]
+
+    def test_true_and_auto_are_one_request(self):
+        from mandacaru.algorithms.active_space import normalize_frozen
+        assert normalize_frozen(True) == normalize_frozen("AUTO") == "auto"
+        assert normalize_frozen(False) is None and normalize_frozen(0) is None
+        assert normalize_frozen([1, 0, 1]) == (0, 1)
 
     def test_rejects_freezing_virtual(self):
         # only doubly occupied orbitals (index < n_occ) may be frozen.
         with pytest.raises(ValueError):
-            resolve_frozen_core(None, [2], [3, 1], n_el=4, n_orbitals=3)
+            resolve_frozen((2,), [3, 1], n_el=4, n_orbitals=3)
 
     def test_rejects_out_of_range(self):
         with pytest.raises(ValueError):
-            resolve_frozen_core(None, [5], [3, 1], n_el=4, n_orbitals=3)
+            resolve_frozen((5,), [3, 1], n_el=4, n_orbitals=3)
 
 
 class TestActiveSpaceReduction:
@@ -134,9 +140,9 @@ class TestActiveSpaceReduction:
         atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]],
                       cell=[6, 6, 6], pbc=True)
         _, np_full, norb_full, _, _ctx = build_basis_hamiltonian(
-            atoms, "HAO", None, 0.5, 0, None, frozen_core=False)
+            atoms, "HAO", None, 0.5, 0, None)
         _, np_fc, norb_fc, _, _ctx2 = build_basis_hamiltonian(
-            atoms, "HAO", None, 0.5, 0, None, frozen_core=True)
+            atoms, "HAO", None, 0.5, 0, None, active_space={"frozen": "auto"})
 
         assert (norb_full, np_full) == (3, (2, 2))       # 6 qubits
         assert (norb_fc, np_fc) == (2, (1, 1))           # 4 qubits (Li 1s frozen)
@@ -147,4 +153,4 @@ class TestActiveSpaceReduction:
         with pytest.raises(NotImplementedError):
             build_basis_hamiltonian(
                 atoms, {"name": "PW", "energy_cutoff": 100}, None, 0.5, 0, None,
-                frozen_core=True)
+                active_space={"frozen": "auto"})

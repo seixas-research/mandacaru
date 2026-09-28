@@ -180,7 +180,7 @@
   "driver": "ADAPTVQE",
   "mandacaru_version": "26.9.37",
   "basis": "FAO",
-  "optimizer": "L-BFGS-B",
+  "optimizer": "L-BFGS",
   "geometry": {
    "symbols": [
     "H",

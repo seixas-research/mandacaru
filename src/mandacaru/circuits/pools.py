@@ -88,6 +88,11 @@ class PoolOperator:
         excitations it couples, which the growth step needs to decide between
         the one- and the multiple-parameter form (see :meth:`CEOPool.
         grown_operators`).
+    brief : str
+        A compact name for the one-line ``[ITERATIONS]`` table, empty when the
+        label is already short.  Only :class:`CEOPool` sets it: its labels
+        spell out the orbital set and both coupled excitations, which is what
+        ``pool.json`` should record but too wide for a table row.
     """
 
     label: str
@@ -96,6 +101,12 @@ class PoolOperator:
     kind: str
     _matrix: np.ndarray | None = field(default=None, repr=False, compare=False)
     members: tuple = field(default=(), repr=False, compare=False)
+    brief: str = field(default="", repr=False, compare=False)
+
+    @property
+    def short_label(self) -> str:
+        """The name the iteration table shows: :attr:`brief`, else the label."""
+        return self.brief or self.label
 
     @property
     def n_qubits(self) -> int:
@@ -503,8 +514,14 @@ class CEOPool(QEBPool):
                 only = excitations[0]
                 ops.append(PoolOperator(f"CEO[{orbitals}]{{{only.label}}}",
                                         only.generator, only.support, "ceo",
-                                        members=(only,)))
+                                        members=(only,), brief=only.label))
                 continue
+            # The table name: the orbital set and the sign of the combination,
+            # which is unique for an opposite-spin set (two excitations).  A
+            # same-spin set carries three, so the pair is named by letters in
+            # the order the full label and pool.json list them.
+            quad = "CEO(" + ",".join(str(m) for m in modes) + ")"
+            letters = "abc" if len(excitations) > 2 else ""
             for x in range(len(excitations)):
                 for y in range(x + 1, len(excitations)):
                     first, second = excitations[x], excitations[y]
@@ -515,9 +532,11 @@ class CEOPool(QEBPool):
                             continue
                         label = (f"CEO[{orbitals}]"
                                  f"{{{first.label}{mark}{second.label}}}")
+                        brief = (f"{quad}{letters[x]}{mark}{letters[y]}"
+                                 if letters else f"{quad}{mark}")
                         ops.append(PoolOperator(
                             label, generator, _support_of(generator), "ceo",
-                            members=(first, second)))
+                            members=(first, second), brief=brief))
         return ops
 
     def grown_operators(self, selected: PoolOperator, gradient) -> list:
@@ -651,6 +670,19 @@ def available_pools() -> list[str]:
     return list(_POOLS)
 
 
+def pool_class(name: str) -> type:
+    """The pool class ``name`` (or one of its aliases) builds, without
+    building it -- all a run log's title needs before the Hamiltonian exists."""
+    key = str(name).strip().lower()
+    key = _POOL_ALIASES.get(key, key)
+    try:
+        return _POOLS[key]
+    except KeyError:
+        raise ValueError(
+            f"unknown pool {name!r}; choose from {sorted(_POOLS)} "
+            f"(or aliases {sorted(_POOL_ALIASES)})") from None
+
+
 def build_pool(name: str, n_spatial_orbitals: int,
                num_particles: tuple[int, int],
                mapping: str = "jordan_wigner") -> PoolBase:
@@ -667,12 +699,5 @@ def _build_pool(name: str, n_spatial_orbitals: int,
     n_beta)`` define the qubit count and Hartree-Fock reference; ``mapping`` is
     the fermion-to-qubit mapping for the fermionic pool.
     """
-    key = name.lower()
-    key = _POOL_ALIASES.get(key, key)
-    try:
-        cls = _POOLS[key]
-    except KeyError:
-        raise ValueError(
-            f"unknown pool {name!r}; choose from {sorted(_POOLS)} "
-            f"(or aliases {sorted(_POOL_ALIASES)})") from None
+    cls = pool_class(name)
     return cls(n_spatial_orbitals, num_particles, mapping=mapping)

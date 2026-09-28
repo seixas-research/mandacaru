@@ -22,7 +22,7 @@ v_\text{basis}(r) = v_\text{free}(r) + v_\text{cut}(r).
 ```
 
 Oxygen therefore brings its own 1s, 2s and 2p; nothing is pseudized and nothing
-is frozen at the basis level (the `frozen_core` approximation still applies
+is frozen at the basis level (`active_space`'s `"frozen"` still applies
 afterwards, at the Hamiltonian level, exactly as for `HAO`).
 
 ## Localization by a smooth wall
@@ -100,9 +100,9 @@ print(bset.describe("O"))
   of energy (polarization and radial breathing) and is the sensible default.
 - The core functions are as sharp as the atom's own core (the oxygen 1s has
   $\langle r\rangle \approx 0.2\,a_0$). The uniform real-space grid resolves them
-  no better than it resolves the `HAO` core. `frozen_core=True` reduces the
-  variational state space, but does not remove the need to resolve the core
-  integrals. Refine the grid and check convergence, or consider a suitable
-  pseudopotential model.
+  no better than it resolves the `HAO` core. `active_space={"frozen": "auto"}`
+  reduces the variational state space, but does not remove the need to resolve
+  the core integrals. Refine the grid and check convergence, or consider a
+  suitable pseudopotential model.
 
 See `examples/23_NAO_AE_basis.py` and {mod}`mandacaru.basis.nao_ae`.

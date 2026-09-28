@@ -313,7 +313,8 @@ def test_hva_force_path_uses_its_optimized_state(reduction):
 def test_hva_respects_active_orbital_reduction():
     """Group mapping uses the reduced fermionic model and particle counts."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="vqe", ansatz="hva", active_orbitals=1,
+    atoms.calc = Mandacaru(method="vqe", ansatz="hva",
+                           active_space={"orbitals": 1},
                            h=0.35, trace=False)
     energy = atoms.get_potential_energy()
     assert np.isfinite(energy)

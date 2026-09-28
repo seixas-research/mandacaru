@@ -8,7 +8,7 @@ integral, mapping a Hamiltonian, or executing a circuit.
 ## On the command line
 
 ```console
-$ mandacaru water.xyz --frozen-core --dry-run
+$ mandacaru water.xyz --frozen --dry-run
 Dry run -- no integrals computed, no circuits executed.
 
   method            : adapt-vqe
@@ -28,7 +28,7 @@ Dry run -- no integrals computed, no circuits executed.
 ```
 
 Every solver option is a flag (`--basis`, `--basis-option size=DZP`,
-`--charge`, `--magmoms`, `--frozen-core`, `--mapping`,
+`--charge`, `--magmoms`, `--frozen`, `--mapping`,
 `--device`, ...), so the estimate is for exactly the run you would launch by
 dropping `--dry-run`. The geometry can be a file (`.xyz`, `.cif`, `POSCAR`, ...)
 or an ASE `g2` molecule name (`H2O`, `LiH`, `NH3`, ...). With
@@ -57,13 +57,13 @@ from mandacaru.algorithms import Mandacaru, estimate_qubits
 water = molecule("H2O"); water.center(vacuum=3.0)
 
 # One-off, on an existing calculator:
-calc = Mandacaru(frozen_core=True)
+calc = Mandacaru(active_space={"frozen": "auto"})
 estimate = calc.dry_run(water)          # -> QubitEstimate
 print(estimate.n_qubits)                # 12
 
 # Or make every evaluation a dry run (energies come back as NaN):
 water.calc = Mandacaru(method="adapt-vqe",
-                       frozen_core=True,
+                       active_space={"frozen": "auto"},
                        dry_run=True)
 water.get_potential_energy()            # nan
 water.calc.dry_run_result.summary()

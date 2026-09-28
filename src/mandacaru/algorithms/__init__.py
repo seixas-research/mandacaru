@@ -39,8 +39,8 @@ from .expressivity import (
     sample_pqc_fidelities,
     track_adapt_expressivity,
 )
-from .active_space import (ACTIVE_SELECTIONS, ActiveSpace,
-                           resolve_active_space)
+from .active_space import (ACTIVE_SPACE_METHODS, ActiveSpace, ActiveSpaceSpec,
+                           resolve_active_space, resolve_active_space_spec)
 from .mp2 import MP2Result, mp2_energy, mp2_natural_orbitals
 from .hartree_fock import (RHF, RHFResult, UHF, UHFResult, natural_orbitals,
                            transform_integrals)
@@ -86,9 +86,11 @@ __all__ = [
     "UHFResult",
     "MeanFieldResult",
     "natural_orbitals",
-    "ACTIVE_SELECTIONS",
+    "ACTIVE_SPACE_METHODS",
+    "ActiveSpaceSpec",
     "ActiveSpace",
     "resolve_active_space",
+    "resolve_active_space_spec",
     "MP2Result",
     "mp2_energy",
     "mp2_natural_orbitals",

@@ -415,6 +415,55 @@ class TaperedRegister:
              if label not in bad}, num_qubits=operator.num_qubits)
         return self.taper_operator(projected)
 
+    def untaper_state(self, state) -> np.ndarray:
+        r"""The full-register state a tapered state stands for.
+
+        Tapering conjugates the operators by :math:`U = U_k \cdots U_1`, with
+        each :math:`U_i = (\tau_i + X_{q_i})/\sqrt2` Hermitian and unitary,
+        and fixes each anchor :math:`q_i` in the :math:`X` eigenstate of its
+        sector sign.  So the tapered state :math:`\varphi` is
+        :math:`U|\Phi\rangle` with the anchors in :math:`|\pm\rangle`
+        deleted, and :math:`|\Phi\rangle = U_1 \cdots U_k
+        (\varphi \otimes_i |\pm\rangle_{q_i})`: every expectation value on
+        the full register equals the tapered one.  Used to read the RDMs of a
+        simulated tapered state with ladder operators, instead of mapping and
+        tapering every RDM element as a separate Pauli observable.
+
+        ``state`` has ``2**n_qubits`` amplitudes (qubit 0 the most significant
+        bit); the result has ``2**(n_qubits + removed)``.
+        """
+        from .matrix_free import PauliOperator
+
+        state = np.asarray(state, dtype=complex).ravel()
+        kept_width = self.n_qubits
+        if state.size != 1 << kept_width:
+            raise ValueError(f"expected {1 << kept_width} amplitudes, got "
+                             f"{state.size}")
+        width = kept_width + self.removed
+        anchors = [int(q) for q in self.anchors]
+        kept = [q for q in range(width) if q not in set(anchors)]
+        # Full-register index of every tapered basis state, anchors cleared.
+        tapered = np.arange(state.size, dtype=np.int64)
+        base = np.zeros_like(tapered)
+        for position, qubit in enumerate(kept):
+            bit = (tapered >> (kept_width - 1 - position)) & 1
+            base |= bit << (width - 1 - qubit)
+        full = np.zeros(1 << width, dtype=complex)
+        root = 1.0 / np.sqrt(2.0)
+        # |+> = (|0> + |1>)/sqrt2 and |-> = (|0> - |1>)/sqrt2 on each anchor.
+        for pattern in range(1 << len(anchors)):
+            index, factor = base.copy(), 1.0
+            for i, (qubit, sign) in enumerate(zip(anchors, self.signs)):
+                if (pattern >> i) & 1:
+                    index |= np.int64(1) << (width - 1 - qubit)
+                    factor *= root * sign
+                else:
+                    factor *= root
+            full[index] = factor * state
+        for tau, qubit in reversed(list(zip(self.symmetries, anchors))):
+            full = PauliOperator(_clifford(tau, qubit), cache_bytes=0) @ full
+        return full
+
     def summary(self) -> str:
         """One line for the run log."""
         line = (f"{self.removed} qubit(s) removed by Z2 symmetry "

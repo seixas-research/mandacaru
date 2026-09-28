@@ -11,7 +11,7 @@ from mandacaru.algorithms import Mandacaru
 oh = molecule("OH"); oh.center(vacuum=3.0)          # 9 electrons: a doublet
 oh.calc = Mandacaru(method="adapt-vqe",
                     basis="HAO",
-                    frozen_core=True)
+                    active_space={"frozen": "auto"})
 oh.get_potential_energy()
 oh.calc.num_particles                                 # (4, 3) after freezing the O 1s
 ```

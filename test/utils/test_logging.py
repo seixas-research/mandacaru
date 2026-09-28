@@ -647,6 +647,8 @@ class TestOptimizationSetupBlock:
     #: optimizer, its budget and the convergence criteria, the gradient group,
     #: the pool, the loop's starting point.  Lineage (a resumed run) closes it.
     FIELDS = ("classical_optimizer", "max_iterations", "convergence",
+              # How the [ITERATIONS] table marks a value meeting its threshold.
+              "convergence_marker",
               "gradient_method", "gradient_formula", "convergence_gradient",
               "gradient_units",
               "pool", "pool_class", "pool_size",
@@ -711,8 +713,8 @@ class TestOptimizationSetupBlock:
 
     def test_the_energy_threshold_is_in_the_unit_of_the_de_column(
             self, h2_hamiltonian, tmp_path):
-        """Written once, converted from Hartree into the log's energy unit,
-        beside ``energy_unit`` -- so it reads against ``dE`` directly."""
+        """Written once, beside ``energy_unit``, in the unit it was given in
+        (eV) -- so it reads against ``dE`` directly."""
         out = str(tmp_path / "both.txt")
         Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                   pool="fermionic", num_particles=(1, 1),
@@ -722,7 +724,7 @@ class TestOptimizationSetupBlock:
         setup = parse_output(out)["setup"]
         assert setup["convergence"] == "gradient and energy (both required)"
         assert float(setup["convergence_energy_eV"]) == pytest.approx(
-            1e-6 * HARTREE_TO_EV, rel=1e-5)
+            1e-6, rel=1e-5)
         keys = list(setup)
         assert keys.index("energy_unit") < keys.index("convergence_energy_eV") \
             < keys.index("reference_energy_eV")
@@ -1379,9 +1381,12 @@ class TestVerbosePauliOutput:
             fields = row.split()
             assert int(fields[0]) == index
             assert len(fields) == len(columns)
-            # The label is written in full: this is the log protocol, which
-            # never abbreviates what a reader would have to guess at.
-            assert fields[-1] in result.operators
+            # The row names the operator by the pool's short name (a CEO
+            # label is too wide for a row); it maps back to exactly one
+            # operator the result records in full.
+            short = {op.short_label: op.label for op in adapt.solver._pool_ops}
+            assert short[fields[-1]] in result.operators
+            assert fields[-1].startswith("CEO(")
             cell = dict(zip(columns, fields))
             assert float(cell["expr"]) >= 0.0
             assert int(cell["1q"]) > 0
@@ -1620,3 +1625,68 @@ class TestIterationColumns:
         column = rows[0].index("|grad|") - 1   # "energy (eV)": two heading tokens
         assert [row[column] for row in cells] == ["0.250000", "0.000000"]
         assert entries[0]["max_gradient"] == pytest.approx(0.25)
+
+
+class TestConvergenceMarkers:
+    """A ``*`` after each ``|grad|`` / ``dE`` that meets its threshold."""
+
+    POOL = [SimpleNamespace(label="op0", kind="double")]
+
+    def _log(self, tmp_path, convergence, rows, final_gradient):
+        from mandacaru.algorithms.convergence import Convergence
+
+        path = tmp_path / "output.txt"
+        with AdaptOutputLogger(str(path), n_qubits=4) as logger:
+            logger.write_system()
+            # An eV log, the default: the energy threshold is given in eV,
+            # so it is read against dE as given.
+            logger.write_optimizer_setup(
+                "SLSQP", -1.0, energy_unit="eV", energy_scale=HARTREE_TO_EV,
+                convergence=Convergence.resolve(convergence))
+            for index, (energy, gradient) in enumerate(rows, start=1):
+                logger.write_iteration(index, self.POOL, [gradient], 0, None,
+                                       energy, index, energy_unit="eV")
+            logger.write_summary(True, rows[-1][0], len(rows),
+                                 final_max_gradient=final_gradient)
+        return path
+
+    def test_only_values_below_their_threshold_are_marked(self, tmp_path):
+        # dE: -0.5, -1e-2, -1e-4; |grad|: 0.3, 2e-3, 5e-4 against 1e-3 each.
+        rows = [(-1.5, 0.3), (-1.51, 2e-3), (-1.5101, 5e-4)]
+        path = self._log(tmp_path, {"gradient": 1e-3, "energy": 1e-3},
+                         rows, final_gradient=1e-4)
+        parsed = parse_output(str(path))
+        assert [r["energy_met"] for r in parsed["iterations"]] == \
+            [False, False, True]
+        assert [r["gradient_met"] for r in parsed["iterations"]] == \
+            [False, False, True]
+        # The marker is stripped: the numbers still parse.
+        assert parsed["iterations"][2]["max_gradient"] == pytest.approx(5e-4)
+        assert parsed["iterations"][2]["delta_energy"] == pytest.approx(-1e-4)
+        assert parsed["summary"]["gradient_met"] is True
+        assert float(parsed["summary"]["final_max_gradient"]) == \
+            pytest.approx(1e-4)
+        assert "convergence_marker: *" in path.read_text()
+
+    def test_the_columns_stay_aligned(self, tmp_path):
+        rows = [(-1.5, 0.3), (-1.5101, 5e-4)]
+        path = self._log(tmp_path, {"gradient": 1e-3, "energy": 1e-3},
+                         rows, final_gradient=1e-4)
+        table = path.read_text().split("[ITERATIONS]")[1].split("=")[0]
+        heading, _rule, first, second = table.strip("\n").splitlines()[:4]
+        end = heading.index("|grad|") + len("|grad|") + 2
+        # Marked or not, every row's |grad| cell ends where the heading's
+        # marker slot does, and a marker sits one space after its value.
+        assert first[end - 2:end] == "  " and second[end - 2:end] == " *"
+        assert second[end - 3].isdigit()
+        assert len(first) == len(second)
+
+    def test_an_unused_criterion_marks_nothing(self, tmp_path):
+        rows = [(-1.5, 0.3), (-1.5101, 5e-4)]
+        path = self._log(tmp_path, {"gradient": 1e-3}, rows,
+                         final_gradient=1e-4)
+        parsed = parse_output(str(path))
+        assert not any(r["energy_met"] for r in parsed["iterations"])
+        assert parsed["iterations"][1]["gradient_met"]
+        text = path.read_text()
+        assert "after a |grad| that meets" in text

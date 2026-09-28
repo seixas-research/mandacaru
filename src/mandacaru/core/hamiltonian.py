@@ -205,6 +205,10 @@ class MolecularIntegrals(MeanFieldMixin):
         self._C: np.ndarray | None = None
         self._h1: np.ndarray | None = None
         self._eri: np.ndarray | None = None
+        #: The same tensor before the orthonormalization, augmentation
+        #: included: what the nuclear gradient differentiates.
+        self._eri_ao: np.ndarray | None = None
+        self._augmentation_ao = None
         #: Molecular-orbital coefficients (columns, in the Loewdin-orthonormal
         #: basis) of the last ``molecular_hamiltonian(mo_basis=True)``: the
         #: RHF orbitals, or the UHF natural orbitals for an open shell.
@@ -529,10 +533,7 @@ class MolecularIntegrals(MeanFieldMixin):
         """The electron-repulsion tensor only."""
         if self._eri is not None:
             return
-        eri = self._engine.two_body(method="fft", energy_units="Ha")
-        augmentation = self.two_body_augmentation()
-        if augmentation is not None:
-            eri = eri + np.asarray(augmentation)
+        eri, augmentation = self._ao_two_body_terms()
         if self.orthogonalize:
             # Lowdin-orthonormalize the basis; the second-quantized Hamiltonian
             # requires an orthonormal orbital set.
@@ -626,6 +627,27 @@ class MolecularIntegrals(MeanFieldMixin):
             self._compute_one_body()
         return self._h1
 
+    def _ao_two_body_terms(self):
+        """``(eri, augmentation)`` in the atomic-orbital basis, cached.
+
+        ``eri`` includes the augmentation; ``augmentation`` is the family's
+        correction alone (``None`` without one).  Kept because the nuclear
+        gradient needs the tensor before the orthonormalization, and the FFT
+        build is the most expensive step of the whole Hamiltonian.
+        """
+        if self._eri_ao is None:
+            eri = self._engine.two_body(method="fft", energy_units="Ha")
+            augmentation = self.two_body_augmentation()
+            if augmentation is not None:
+                eri = eri + np.asarray(augmentation)
+            self._eri_ao, self._augmentation_ao = eri, augmentation
+        return self._eri_ao, self._augmentation_ao
+
+    def ao_two_body(self) -> np.ndarray:
+        r"""Two-body tensor over the atomic orbitals, augmentation included
+        (Hartree, physicists' notation), computed once."""
+        return self._ao_two_body_terms()[0]
+
     def two_body(self) -> np.ndarray:
         r"""Spatial two-body tensor ``<pq|rs>`` in physicists' notation (Hartree)."""
         if self._eri is None:
@@ -668,11 +690,9 @@ class MolecularIntegrals(MeanFieldMixin):
     def molecular_hamiltonian(self, include_nuclear_repulsion: bool = True,
                               mo_basis: bool = False,
                               n_electrons: int | None = None,
-                              frozen_orbitals=None, num_particles=None,
+                              num_particles=None,
                               open_shell: bool | None = None,
-                              active_orbitals=None,
-                              active_selection: str = "energy",
-                              active_threshold=None) -> Fermion:
+                              active_space=None) -> Fermion:
         """Assemble the second-quantized :class:`Fermion` Hamiltonian.
 
         Spin-orbitals are ordered alpha-block then beta-block, so the parity
@@ -692,24 +712,30 @@ class MolecularIntegrals(MeanFieldMixin):
         :mod:`mandacaru.algorithms.hartree_fock`.  ``open_shell=False`` forces
         RHF (and rejects an odd count).
 
-        ``frozen_orbitals`` applies the **frozen-core approximation**: the given
-        (doubly occupied) spatial MO indices are removed from the active space and
-        replaced by their mean-field contribution -- a constant core energy plus an
-        effective one-body potential on the remaining orbitals (see
-        :func:`freeze_core_integrals`).  It requires ``mo_basis=True``; the returned
-        Hamiltonian acts only on the active spin-orbitals.
-
-        ``active_orbitals`` truncates the **virtual** space as well, which is
-        what makes a large basis affordable on a qubit register: a virtual
-        orbital that is dropped needs no mean field folded in, because it is
-        empty in the reference, so it costs exactly the correlation it would
-        have carried.  ``active_selection`` chooses how the virtuals are ranked
-        (``"energy"``, ``"mp2"``, ``"natural"``).  Both are resolved by
-        :func:`~mandacaru.algorithms.active_space.resolve_active_space`, whose
-        result is left on :attr:`active_space` for the density and the run log.
+        ``active_space`` (a dict or an
+        :class:`~mandacaru.algorithms.active_space.ActiveSpaceSpec`, see
+        :func:`~mandacaru.algorithms.active_space.resolve_active_space_spec`)
+        partitions the orbitals; it requires ``mo_basis=True``, and the
+        returned Hamiltonian acts only on the active spin-orbitals.  Its
+        ``"frozen"`` applies the **frozen-core approximation** -- a count of
+        the lowest MOs or their explicit indices here, since ``"auto"`` needs
+        the atoms and is resolved by the builder: those doubly occupied
+        orbitals are replaced by their mean-field contribution, a constant core
+        energy plus an effective one-body potential on the remaining orbitals
+        (see :func:`freeze_core_integrals`).  Its ``"orbitals"`` /
+        ``"threshold"`` truncate the **virtual** space as well, which is what
+        makes a large basis affordable on a qubit register: a virtual orbital
+        that is dropped needs no mean field folded in, because it is empty in
+        the reference, so it costs exactly the correlation it would have
+        carried; ``"method"`` ranks the virtuals (``"energy"``, ``"mp2"``,
+        ``"natural"``).  The partition is resolved by
+        :func:`~mandacaru.algorithms.active_space.resolve_active_space` and
+        left on :attr:`active_space` for the density and the run log.
         """
-        frozen = sorted({int(i) for i in frozen_orbitals}) if frozen_orbitals \
-            else []
+        from ..algorithms.active_space import resolve_active_space_spec
+
+        spec = resolve_active_space_spec(active_space)
+        frozen = _frozen_indices(spec)
         core_energy = 0.0
         self.active_space = None
         if mo_basis:
@@ -717,7 +743,7 @@ class MolecularIntegrals(MeanFieldMixin):
                 self, n_electrons, num_particles, open_shell)
             space = self._resolve_active_space(
                 h_mo, eri_mo, n_electrons, num_particles, open_shell,
-                frozen, active_orbitals, active_selection, active_threshold)
+                frozen, spec)
             if space is not None and space.rotation is not None:
                 from ..algorithms.mp2 import rotate_integrals
 
@@ -740,15 +766,12 @@ class MolecularIntegrals(MeanFieldMixin):
                 h_spin = self._spin_orbit_in_mo_basis()
             h_so, g_so = spin_block_integrals(h_mo, eri_mo, h_spin)
         else:
-            if frozen:
+            if spec is not None:
                 raise ValueError(
-                    "frozen_orbitals requires mo_basis=True (the frozen-core "
-                    "approximation freezes canonical molecular orbitals)")
-            if active_orbitals is not None or active_threshold is not None:
-                raise ValueError(
-                    "active_orbitals requires mo_basis=True: an active space is "
-                    "a choice among molecular orbitals, and the atomic-orbital "
-                    "Hamiltonian has none to choose from")
+                    "active_space requires mo_basis=True: an active space -- "
+                    "a frozen core included -- is a choice among molecular "
+                    "orbitals, and the atomic-orbital Hamiltonian has none to "
+                    "choose from")
             h_so, g_so = self.spin_orbital_integrals()
         H = Fermion.from_integrals(h_so, g_so)
         const = core_energy + self.constant_energy + (
@@ -765,8 +788,7 @@ class MolecularIntegrals(MeanFieldMixin):
         return H
 
     def _resolve_active_space(self, h_mo, eri_mo, n_electrons, num_particles,
-                              open_shell, frozen, active_orbitals,
-                              active_selection, active_threshold=None):
+                              open_shell, frozen, spec):
         """The :class:`ActiveSpace` this Hamiltonian is built in, or ``None``.
 
         ``None`` only when nothing is frozen and nothing is truncated, so the
@@ -774,13 +796,12 @@ class MolecularIntegrals(MeanFieldMixin):
         """
         from ..algorithms.active_space import resolve_active_space
 
-        if active_orbitals is None and active_threshold is None and not frozen:
+        if not frozen and (spec is None or not spec.truncates):
             return None
         n_el, n_alpha, n_beta, open_shell = resolve_reference(
             n_electrons, num_particles, open_shell)
         occupations = None
-        if ((active_orbitals is not None or active_threshold is not None)
-                and str(active_selection).strip().lower() == "natural"):
+        if spec is not None and spec.truncates and spec.method == "natural":
             # Only this selector needs them, and it needs the open-shell
             # reference, so the solve is paid for exactly when it is used.
             occupations = np.real(np.asarray(
@@ -788,10 +809,8 @@ class MolecularIntegrals(MeanFieldMixin):
                 .natural_occupations, dtype=float))
         space = resolve_active_space(
             h_mo, eri_mo, n_orbitals=self.n_orbitals,
-            num_particles=(n_alpha, n_beta), active_orbitals=active_orbitals,
-            selection=active_selection, frozen=frozen,
-            reference_occupations=occupations, open_shell=open_shell,
-            threshold=active_threshold)
+            num_particles=(n_alpha, n_beta), spec=spec, frozen=frozen,
+            reference_occupations=occupations, open_shell=open_shell)
         self.active_space = space
         return space
 
@@ -831,7 +850,26 @@ class MolecularIntegrals(MeanFieldMixin):
         return H
 
 
-def _refuse_spin_orbit_without_sz(frozen_orbitals, deleted=()) -> None:
+def _frozen_indices(spec) -> list[int]:
+    """The frozen core of a resolved ``active_space`` spec, as MO indices.
+
+    A count means the lowest that many molecular orbitals.  ``"auto"`` -- the
+    chemical core -- depends on the atoms, which only the builder has, so it
+    must arrive here already resolved.
+    """
+    if spec is None or spec.frozen is None:
+        return []
+    if spec.frozen == "auto":
+        raise ValueError(
+            "the active_space 'frozen': 'auto' core depends on the atoms and "
+            "is resolved by the calculator's builder; at the integrals level "
+            "give a count of the lowest orbitals or their indices")
+    if isinstance(spec.frozen, int):
+        return list(range(spec.frozen))
+    return sorted(int(i) for i in spec.frozen)
+
+
+def _refuse_spin_orbit_without_sz(frozen, deleted=()) -> None:
     r"""Refuse the reductions that assume ``S_z`` is a good quantum number.
 
     Spin-orbit coupling gives the one-body matrix an alpha-beta block, so the
@@ -843,7 +881,7 @@ def _refuse_spin_orbit_without_sz(frozen_orbitals, deleted=()) -> None:
     work in the total-N sector.  What is refused here are the reductions of the
     orbital space that pair the two spins of a spatial orbital.
     """
-    if frozen_orbitals:
+    if frozen:
         raise NotImplementedError(
             "a frozen core and spin-orbit coupling are incompatible: "
             "freezing replaces doubly occupied spatial orbitals by a mean "

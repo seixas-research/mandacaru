@@ -914,8 +914,9 @@ class TestResolution:
         assert Mandacaru(method=method, basis="paw-lcao").basis == "paw-lcao"
         sized = {"name": "paw-lcao", "size": "DZ"}
         assert Mandacaru(method=method, basis=sized).basis == sized
-        with pytest.raises(ValueError, match="frozen_core is redundant"):
-            Mandacaru(method=method, basis="PAW-LCAO", frozen_core=True)
+        with pytest.raises(ValueError, match="'frozen' core is redundant"):
+            Mandacaru(method=method, basis="PAW-LCAO",
+                      active_space={"frozen": "auto"})
 
     def test_dry_run(self):
         estimate = estimate_qubits(h2(), basis="paw-lcao")

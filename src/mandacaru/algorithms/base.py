@@ -14,7 +14,7 @@ r"""Shared base for the variational state-vector drivers.
 have in common, so a new method only writes its own optimization loop:
 
 * **problem setup** -- the ASE-calculator surface (``basis`` / ``grid`` / ``h`` /
-  ``kpts`` / ``spin`` / ``frozen_core`` / ...) and the geometry-to-Hamiltonian
+  ``kpts`` / ``spin`` / ``active_space`` / ...) and the geometry-to-Hamiltonian
   builder;
 * **the state-vector backend** -- materializing the qubit Hamiltonian as a dense
   or sparse matrix, the canonical expectation value ``energy(psi)``, and the
@@ -238,9 +238,7 @@ class VariationalDriver(Calculator):
                  basis="HAO", device: str = "AER_simulator", grid=None,
                  h: float = DEFAULT_GRID_SPACING, kpts=None, spin: bool = False,
                  initial_state: str | None = "hartree-fock", charge: int = 0,
-                 n_electrons=None, frozen_core=False, frozen_orbitals=None,
-                 active_orbitals=None, active_selection: str = "energy",
-                 active_threshold=None, taper: bool = False,
+                 n_electrons=None, active_space=None, taper: bool = False,
                  hamiltonian_builder=None,
                  run_options: dict | None = None,
                  verbose: bool = True, sparse=None,
@@ -302,18 +300,17 @@ class VariationalDriver(Calculator):
         self.grid = grid
         self.h = float(h)
         self.spin = bool(spin)
-        self.frozen_core = frozen_core
-        self.frozen_orbitals = frozen_orbitals
-        # Which spatial orbitals reach the register, and how the virtuals are
-        # ranked.  The name is normalized here so a typo fails at construction
-        # rather than after the integrals -- the selector runs late, and a run
-        # that spent an hour on a grid before rejecting 'natual' has told the
-        # user nothing it could not have said at once.
-        from .active_space import (normalize_active_orbitals,
-                                   resolve_selection, resolve_threshold)
-        self.active_orbitals = normalize_active_orbitals(active_orbitals)
-        self.active_selection = resolve_selection(active_selection)
-        self.active_threshold = resolve_threshold(active_threshold)
+        # Which spatial orbitals reach the register: the frozen core, the
+        # virtual truncation and how the virtuals are ranked.  Resolved here
+        # so a typo fails at construction rather than after the integrals --
+        # the selector runs late, and a run that spent an hour on a grid
+        # before rejecting 'natual' has told the user nothing it could not
+        # have said at once.
+        from .active_space import resolve_active_space_spec
+        #: The resolved ``active_space`` option
+        #: (:class:`~mandacaru.algorithms.active_space.ActiveSpaceSpec`), or
+        #: ``None`` when every orbital reaches the register.
+        self.active_space = resolve_active_space_spec(active_space)
         # Z2 symmetry tapering: one qubit removed per conserved parity, found
         # from the Hamiltonian rather than from a declared point group.  It sits
         # *after* the encoding rather than being one, which is why it is its own
@@ -333,20 +330,11 @@ class VariationalDriver(Calculator):
         if self.taper and not self._supports_tapering:
             raise NotImplementedError(
                 f"{type(self).__name__} does not support Z2 tapering")
-        if self.active_threshold is not None \
-                and self.active_selection == "energy":
-            raise ValueError(
-                f"active_threshold={self.active_threshold:g} needs occupation "
-                f"numbers to compare against, and the default "
-                f"active_selection='energy' ranks the virtual orbitals by "
-                f"orbital energy -- it never computes one.  Pass "
-                f"active_selection='mp2' (or 'natural' for an open-shell "
-                f"reference) alongside the threshold.")
         # A pseudopotential family is a basis name (basis="PAW-LCAO", ...); its
         # options are validated here so a typo fails at construction, not
         # after the grid.  It replaces the core + the -Z/r singularity with a
         # smooth valence-only problem and subsumes the frozen core.
-        self._check_pseudo_basis(basis, frozen_core, frozen_orbitals)
+        self._check_pseudo_basis(basis, self.active_space)
         # Laplacian discretization ("fd" / "spectral"; None = path default).
         if kinetic not in (None, "fd", "spectral"):
             raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
@@ -939,10 +927,10 @@ class VariationalDriver(Calculator):
                 # Only cited when it was asked for: the energy ordering is the
                 # canonical order the mean field already produced and borrows
                 # nothing, so an untruncated run gains no reference here.
-                "active_selection": (
-                    self.active_selection
-                    if (self.active_orbitals is not None
-                        or self.active_threshold is not None) else None),
+                "active_method": (
+                    self.active_space.method
+                    if self.active_space is not None
+                    and self.active_space.truncates else None),
                 "extras": tuple(sorted(self._citation_extras))}
 
     def citation_keys(self) -> list:
@@ -1072,10 +1060,8 @@ class VariationalDriver(Calculator):
             metadata={"driver": type(self).__name__,
                       "basis": self.basis if isinstance(self.basis, str)
                       else dict(self.basis),
-                      "frozen_core": self.frozen_core,
-                      "active_orbitals": self.active_orbitals,
-                      "active_selection": self.active_selection,
-                      "active_threshold": self.active_threshold,
+                      "active_space": (None if self.active_space is None
+                                       else self.active_space.as_dict()),
                       "taper": self.taper,
                       "n_qubits": int(self.n_qubits)})
 
@@ -1341,17 +1327,18 @@ class VariationalDriver(Calculator):
                 line += (f", MP2 E_corr {space.correlation_energy:+.6f} Ha "
                          f"in the full virtual space")
             return line
-        if self.active_orbitals is None and self.active_threshold is None:
+        spec = self.active_space
+        if spec is None or not spec.truncates:
             return "none (every orbital on the register)"
         asked = []
-        if self.active_orbitals is not None:
-            asked.append(str(self.active_orbitals))
-        if self.active_threshold is not None:
-            asked.append(f"occupation >= {self.active_threshold:g}")
-        return f"{' and '.join(asked)} by {self.active_selection}"
+        if spec.orbitals is not None:
+            asked.append(str(spec.orbitals))
+        if spec.threshold is not None:
+            asked.append(f"occupation >= {spec.threshold:g}")
+        return f"{' and '.join(asked)} by {spec.method}"
 
     @staticmethod
-    def _check_pseudo_basis(basis, frozen_core, frozen_orbitals):
+    def _check_pseudo_basis(basis, active_space):
         """Validate a pseudopotential basis spec up front (names, options,
         option *values*, no frozen core); all-electron specs pass untouched."""
         from ..basis.filtering import validate_filter
@@ -1402,10 +1389,11 @@ class VariationalDriver(Calculator):
                     "polarization='gaussian' needs an energy_shift: the "
                     "Gaussian shell takes its cutoff from the confined "
                     "orbital, and an unconfined orbital has none")
-        if frozen_core or frozen_orbitals:
+        if active_space is not None and active_space.frozen is not None:
             raise ValueError(
-                f"frozen_core is redundant with the {family.label} basis -- "
-                "the core is already absent from the valence-only pseudo basis")
+                f"an active_space 'frozen' core is redundant with the "
+                f"{family.label} basis -- the core is already absent from the "
+                f"valence-only pseudo basis")
 
     # -- dry run ---------------------------------------------------------- #
 
@@ -1424,7 +1412,7 @@ class VariationalDriver(Calculator):
         """Qubit requirements of this driver's problem, **without running it**.
 
         Uses the driver's own settings (``basis`` / ``charge`` / ``spin`` /
-        ``frozen_core`` / ``mapping`` / ``device`` /
+        ``active_space`` / ``mapping`` / ``device`` /
         ``load_hamiltonian``).  ``atoms`` is needed in calculator mode; in
         direct mode (a Hamiltonian given or loaded at construction) it is
         ignored.  Nothing is integrated, mapped or executed.
@@ -1472,10 +1460,7 @@ class VariationalDriver(Calculator):
         return estimate_qubits(
             atoms, basis=self.basis, charge=self.charge,
             n_electrons=self.n_electrons, spin=self.spin,
-            frozen_core=self.frozen_core, frozen_orbitals=self.frozen_orbitals,
-            active_orbitals=self.active_orbitals,
-            active_selection=self.active_selection,
-            active_threshold=self.active_threshold, taper=self.taper,
+            active_space=self.active_space, taper=self.taper,
             **common)
 
     def _dry_run_estimate(self, atoms=None):
@@ -1508,13 +1493,10 @@ class VariationalDriver(Calculator):
         (hamiltonian, num_particles, n_orbitals, profile,
          context) = build_basis_hamiltonian(
             atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons,
-            spin=self.spin, frozen_core=self.frozen_core,
-            frozen_orbitals=self.frozen_orbitals, kinetic=self.kinetic,
+            spin=self.spin, kinetic=self.kinetic,
             periodic=self.periodic_hamiltonian,
             commensurate=self._grid_commensurate(),
-            active_orbitals=self.active_orbitals,
-            active_selection=self.active_selection,
-            active_threshold=self.active_threshold)
+            active_space=self.active_space)
         self._integration_profile = profile
         # Kept for the nuclear gradient: the integral engine that produced this
         # Hamiltonian, and which atom each basis function belongs to.
@@ -1561,8 +1543,17 @@ class VariationalDriver(Calculator):
         self._wall_start = _perf()        # wall clock spans integration + run
 
         if not self._built_from_hamiltonian:
-            hamiltonian, num_particles, n_orbitals = self._build_hamiltonian(atoms)
-            self._configure(hamiltonian, num_particles, n_orbitals)
+            # What is known before the build (the geometry) is reported
+            # before it: building the basis and the integrals can take a
+            # minute, and the log should not stay empty meanwhile.
+            self._open_run_log(atoms)
+            try:
+                hamiltonian, num_particles, n_orbitals = \
+                    self._build_hamiltonian(atoms)
+                self._configure(hamiltonian, num_particles, n_orbitals)
+            except BaseException:
+                self._close_run_log()
+                raise
             self._maybe_write_references()
 
         result = self.run(**self._run_kwargs(atoms))
@@ -1652,6 +1643,13 @@ class VariationalDriver(Calculator):
             _BANNER_SHOWN = True
 
     # -- subclass hooks --------------------------------------------------- #
+
+    def _open_run_log(self, atoms) -> None:
+        """Start the run log before the Hamiltonian is built (a driver that
+        writes one overrides this); the base writes nothing."""
+
+    def _close_run_log(self) -> None:
+        """Close a log :meth:`_open_run_log` opened, when the build failed."""
 
     def _configure(self, hamiltonian, num_particles, n_orbitals) -> None:
         """Build the ansatz / pool for ``hamiltonian`` and materialize it."""

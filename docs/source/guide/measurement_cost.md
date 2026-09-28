@@ -234,7 +234,7 @@ rather than silently falling back.
 * **Too big to submit** → drop the forces (an energy is one observable), lower
   `resilience_level`, set `max_bases_per_job`.
 * **Too expensive in shots** → a smaller `size`, `mapping="parity_reduced"`,
-  `frozen_core`. Above about eight qubits,
+  `active_space={"frozen": "auto"}`. Above about eight qubits,
   `measurement_scheme="double-factorized"` is the structural answer.
 * **Too deep to trust** → `pool="ceo-ovp"` (about half the CNOTs of `qeb`),
   `tetris=True`, `prune=True`, and pin the layout with `physical_qubits=`.

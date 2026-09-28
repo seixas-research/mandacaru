@@ -32,7 +32,7 @@ from mandacaru.utils.citations import (DEFAULT_REFERENCES_FILE, _ANSATZ_KEYS,
                                        _FAMILY_KEYS, _MAPPING_KEYS,
                                        _METHOD_KEYS,
                                        _OPTIMIZER_KEYS, _POOL_KEYS,
-                                       _PROVENANCE_KEYS, _SELECTION_KEYS,
+                                       _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS,
                                        citation_keys,
                                        provenance_keys,
                                        resolve_references_path,
@@ -138,23 +138,23 @@ class TestEveryRegisteredChoiceIsCitable:
         for method in STABLE_METHODS:
             assert _METHOD_KEYS.get(method), method
 
-    def test_every_active_selection(self):
+    def test_every_active_space_method(self):
         # "energy" is the exception the table states outright: it is the
         # canonical orbital order the mean field already produced, so it
         # borrows nothing and cites nothing.  The other two are constructions.
-        from mandacaru.algorithms.active_space import ACTIVE_SELECTIONS
+        from mandacaru.algorithms.active_space import ACTIVE_SPACE_METHODS
 
-        for selection in ACTIVE_SELECTIONS:
-            assert selection in _SELECTION_KEYS, selection
-            if selection != "energy":
-                assert _SELECTION_KEYS[selection], selection
-                assert (citation_keys(active_selection=selection)
+        for method in ACTIVE_SPACE_METHODS:
+            assert method in _ACTIVE_METHOD_KEYS, method
+            if method != "energy":
+                assert _ACTIVE_METHOD_KEYS[method], method
+                assert (citation_keys(active_method=method)
                         != citation_keys())
 
     def test_every_key_in_every_table_exists(self):
         tables = (_POOL_KEYS, _MAPPING_KEYS, _METHOD_KEYS, _ANSATZ_KEYS,
                   _OPTIMIZER_KEYS,
-                  _FAMILY_KEYS, _PROVENANCE_KEYS, _SELECTION_KEYS)
+                  _FAMILY_KEYS, _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS)
         for table in tables:
             for name, keys in table.items():
                 bib.resolve(keys)             # raises on an unknown key

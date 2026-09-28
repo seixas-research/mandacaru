@@ -53,7 +53,7 @@ import numpy as np
 
 from ..circuits.adapt_ansatz import AdaptAnsatz
 from ..circuits.pools import (GRADIENT_FLOOR, PoolBase, PoolOperator,
-                             _support_of, build_pool)
+                             _support_of, build_pool, pool_class)
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
 from ..core.matrix_free import PauliOperator
 from ..optimizers.optim import DEFAULT_OPTIMIZER
@@ -407,9 +407,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         Maximum number of operators to append before stopping (default ``50``).
         Used as the default for :meth:`run` / the ASE-calculator evaluation.
     convergence : dict, optional
-        When growth stops: ``{"gradient": ..., "energy": ...}``, thresholds in
-        Hartree on the largest pool gradient and on the energy change of the
-        last growth step (the log's ``dE``).  A criterion set to ``None`` or
+        When growth stops: ``{"gradient": ..., "energy": ...}``, thresholds on
+        the largest pool gradient (Hartree) and on the energy change of the
+        last growth step (eV; the log's ``dE``).  A criterion set to ``None`` or
         left out is not used; with both set, both must hold, and a vanished
         gradient (below ``1e-5``) stops the growth regardless.  Default
         ``{"gradient": 1e-3, "energy": 1e-3}``
@@ -488,19 +488,21 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         Total charge, used to set the electron count in the ``basis`` builder.
     n_electrons : int, optional
         Explicit electron count for the ``basis`` builder (overrides ``charge``).
-    frozen_core : bool, str or int
-        Frozen-core approximation (default ``False``, no freezing).  ``True`` or
-        ``"auto"`` freezes the chemical noble-gas core (``He`` core for Li--Ne,
-        ``Ne`` core for Na--Ar, ...); an integer freezes that many lowest molecular
-        orbitals.  The frozen (doubly occupied) core orbitals are removed from the
-        active space and replaced by their mean-field contribution -- a constant
-        core energy plus an effective one-body potential -- so the ansatz, pool and
-        qubit count are built for the smaller active space.
-    frozen_orbitals : sequence of int, optional
-        Explicit list of (doubly occupied) spatial molecular-orbital indices to
-        freeze.  Overrides ``frozen_core`` and names exactly which electrons are
-        treated as frozen core; the remaining occupied orbitals plus the virtuals
-        form the active space.
+    active_space : dict, optional
+        Which spatial molecular orbitals reach the register (default ``None``:
+        all of them), as ``{"method": ..., "orbitals": ..., "threshold": ...,
+        "frozen": ...}`` -- see
+        :func:`~mandacaru.algorithms.active_space.resolve_active_space_spec`
+        and :doc:`/guide/active_space`.  ``"frozen"`` is the frozen-core
+        approximation: ``"auto"`` (or ``True``) the chemical noble-gas core, an
+        integer that many lowest molecular orbitals, a list those explicit
+        doubly occupied orbitals; they are replaced by their mean-field
+        contribution -- a constant core energy plus an effective one-body
+        potential.  ``"orbitals"`` (a count, ``{"occupied": n, "virtual":
+        m}`` or explicit indices) and ``"threshold"`` (an occupation) drop
+        virtual orbitals as well, ranked by ``"method"`` (``"energy"``,
+        ``"mp2"`` or ``"natural"``).  The ansatz, pool and qubit count are
+        built for what is left.
     hamiltonian_builder : callable, optional
         ``atoms -> (hamiltonian, num_particles, n_spatial_orbitals)``.  An
         explicit override for the built-in ``basis`` builder in calculator mode.
@@ -1257,6 +1259,54 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
 
     # -- the run log ------------------------------------------------------ #
 
+    def _system_logger(self, targets, geometry, cell):
+        """Open the run log and write its ``[SYSTEM]`` block.
+
+        Everything in it -- the geometry, the cell, the periodicity, the
+        initial moments, the pool named in the title -- is known before the
+        Hamiltonian is built, so a calculator run writes it first (see
+        :meth:`_open_run_log`); the register width is not, and the title
+        leaves it to ``[ELECTRONS]``.
+        """
+        from ..utils.logging import AdaptOutputLogger
+
+        resolved = _resolve_geometry(geometry)
+        symbols, positions = resolved.symbols, resolved.positions
+        cell = resolved.cell if cell is None else cell
+
+        # Geometry from ASE is in Angstrom; convert to Bohr only if requested.
+        if self.atomic_units:
+            if positions is not None:
+                positions = np.asarray(positions, float) * ANGSTROM_TO_BOHR
+            if cell is not None:
+                cell = np.asarray(cell, float) * ANGSTROM_TO_BOHR
+
+        spec = self._pool_spec
+        pool = (type(spec) if isinstance(spec, PoolBase)
+                else pool_class(spec)).__name__
+        logger = AdaptOutputLogger(targets)
+        logger.write_system(
+            symbols=symbols, positions=positions, cell=cell,
+            pbc=resolved.pbc, magmoms=resolved.magmoms,
+            units=self._length_unit_label(), title=f"ADAPT-VQE ({pool})")
+        return logger
+
+    def _open_run_log(self, atoms) -> None:
+        """Write ``[SYSTEM]`` before the build; :meth:`_make_logger` continues."""
+        targets = self.log_targets
+        if not targets or not self.writes_output_log:
+            return
+        options = self._run_kwargs(atoms)
+        # The terminal banner comes first, as it does for every run.
+        self._show_banner()
+        self._early_logger = self._system_logger(
+            targets, options.get("geometry"), options.get("cell"))
+
+    def _close_run_log(self) -> None:
+        logger = self.__dict__.pop("_early_logger", None)
+        if logger is not None:
+            logger.close()
+
     def _make_logger(self, targets, geometry, cell, ref_energy,
                      max_iterations, convergence, restored=None):
         """Create an :class:`AdaptOutputLogger` and write the header blocks.
@@ -1271,26 +1321,10 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         if not targets:
             return None
-        from ..utils.logging import AdaptOutputLogger
-
-        resolved = _resolve_geometry(geometry)
-        symbols, positions = resolved.symbols, resolved.positions
-        cell = resolved.cell if cell is None else cell
-
-        # Geometry from ASE is in Angstrom; convert to Bohr only if requested.
-        if self.atomic_units:
-            if positions is not None:
-                positions = np.asarray(positions, float) * ANGSTROM_TO_BOHR
-            if cell is not None:
-                cell = np.asarray(cell, float) * ANGSTROM_TO_BOHR
-
-        logger = AdaptOutputLogger(targets, n_qubits=self.n_qubits)
-        logger.write_system(
-            symbols=symbols, positions=positions, cell=cell,
-            pbc=resolved.pbc, magmoms=resolved.magmoms,
-            units=self._length_unit_label(),
-            title=f"ADAPT-VQE ({self.pool.__class__.__name__}, "
-                  f"{self.n_qubits} qubits)")
+        logger = self.__dict__.pop("_early_logger", None)
+        if logger is None:
+            logger = self._system_logger(targets, geometry, cell)
+        logger.set_register(self.n_qubits)
         # The basis that ran (defaults resolved, radii, dataset files) has a
         # block of its own; absent in direct mode, where no basis was built.
         report = self._basis_report()
@@ -1394,9 +1428,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         """
         orbitals = (getattr(self, "n_spatial_orbitals", None)
                     or self.pool.n_spatial_orbitals)
-        frozen = self.frozen_core if self.frozen_core else "none"
-        if self.frozen_orbitals:
-            frozen = f"orbitals {list(self.frozen_orbitals)}"
+        frozen = self._frozen_label()
         # The basis is not here: the [BASIS] block owns it.  The grid is -- the
         # requested spacing and what the cell turned it into, which is the
         # number a comparison with another real-space code needs.
@@ -2035,6 +2067,16 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             note += f" (overrides {self.gradient}: sparse pool)"
         return effective, note
 
+    def _frozen_label(self) -> str:
+        """The requested frozen core, for the header and the run log."""
+        spec = self.active_space
+        frozen = None if spec is None else spec.frozen
+        if frozen is None:
+            return "none"
+        if isinstance(frozen, tuple):
+            return f"orbitals {list(frozen)}"
+        return str(frozen)
+
     def _backend_description(self) -> str:
         """How the state vector and the pool are represented."""
         sector = getattr(self, "_sector", None)
@@ -2071,9 +2113,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         :meth:`_extra_header_lines`.
         """
         gradient, gradient_note = self._gradient_description()
-        frozen = self.frozen_core if self.frozen_core else "none"
-        if self.frozen_orbitals:
-            frozen = f"orbitals {list(self.frozen_orbitals)}"
+        frozen = self._frozen_label()
         particles = self.num_particles
         n_terms = len(self.hamiltonian.simplify().terms)
         shots = (f"{self.shots}" if self.shots

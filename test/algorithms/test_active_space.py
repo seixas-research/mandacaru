@@ -29,12 +29,13 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms.active_space import (ACTIVE_SELECTIONS,
+from mandacaru.algorithms.active_space import (ACTIVE_SPACE_METHODS,
                                                DEFAULT_OCCUPATION_THRESHOLD,
                                                ActiveSpace,
-                                               normalize_active_orbitals,
+                                               normalize_orbitals,
                                                resolve_active_space,
-                                               resolve_selection,
+                                               resolve_active_space_spec,
+                                               resolve_method,
                                                resolve_threshold)
 from mandacaru.core import MolecularIntegrals
 from mandacaru.core.hamiltonian import molecular_orbital_integrals
@@ -45,6 +46,11 @@ from mandacaru.integrals import Grid
 # --------------------------------------------------------------------------- #
 # Helpers.
 # --------------------------------------------------------------------------- #
+
+
+def spec(**options):
+    """The resolved ``active_space`` option, as the driver hands it on."""
+    return resolve_active_space_spec(options)
 
 def _integrals(formula, positions, basis, box=8.0, h=0.3):
     from mandacaru.basis import BasisSet
@@ -89,46 +95,46 @@ def h2_mo(h2):
 
 class TestNormalizingTheSpec:
     def test_none_stays_none(self):
-        assert normalize_active_orbitals(None) is None
+        assert normalize_orbitals(None) is None
 
     def test_an_integer_stays_an_integer(self):
-        assert normalize_active_orbitals(np.int64(6)) == 6
+        assert normalize_orbitals(np.int64(6)) == 6
 
     def test_a_sequence_becomes_a_sorted_tuple(self):
-        assert normalize_active_orbitals([3, 0, 1, 0]) == (0, 1, 3)
-        assert normalize_active_orbitals(np.array([2, 1])) == (1, 2)
+        assert normalize_orbitals([3, 0, 1, 0]) == (0, 1, 3)
+        assert normalize_orbitals(np.array([2, 1])) == (1, 2)
 
     def test_a_dict_is_validated(self):
-        assert normalize_active_orbitals({"occupied": 2, "virtual": 3}) == \
+        assert normalize_orbitals({"occupied": 2, "virtual": 3}) == \
             {"occupied": 2, "virtual": 3}
-        with pytest.raises(ValueError, match="unknown active_orbitals key"):
-            normalize_active_orbitals({"occupied": 2, "virtuals": 3})
+        with pytest.raises(ValueError, match="unknown key.*'orbitals'"):
+            normalize_orbitals({"occupied": 2, "virtuals": 3})
 
     def test_a_boolean_is_refused_by_name(self):
-        # `active_orbitals=True` would otherwise be read as the integer 1 and
+        # `"orbitals": True` would otherwise be read as the integer 1 and
         # silently produce a one-orbital register.
         with pytest.raises(TypeError, match="not a flag"):
-            normalize_active_orbitals(True)
+            normalize_orbitals(True)
 
     def test_an_unknown_type_is_refused(self):
-        with pytest.raises(TypeError, match="unknown active_orbitals spec"):
-            normalize_active_orbitals("all")
+        with pytest.raises(TypeError, match="unknown active_space 'orbitals'"):
+            normalize_orbitals("all")
 
 
 class TestResolvingTheSelection:
     def test_the_known_names_round_trip(self):
-        for name in ACTIVE_SELECTIONS:
-            assert resolve_selection(name) == name
+        for name in ACTIVE_SPACE_METHODS:
+            assert resolve_method(name) == name
 
     def test_none_is_the_energy_ordering(self):
-        assert resolve_selection(None) == "energy"
+        assert resolve_method(None) == "energy"
 
     def test_underscores_and_case_are_accepted(self):
-        assert resolve_selection("MP2") == "mp2"
+        assert resolve_method("MP2") == "mp2"
 
     def test_a_typo_is_refused(self):
-        with pytest.raises(ValueError, match="unknown active_selection"):
-            resolve_selection("natual")
+        with pytest.raises(ValueError, match="unknown active_space method"):
+            resolve_method("natual")
 
 
 # --------------------------------------------------------------------------- #
@@ -138,7 +144,7 @@ class TestResolvingTheSelection:
 class TestThePartition:
     def test_no_truncation_keeps_the_complement_of_the_frozen_set(self):
         space = resolve_active_space(n_orbitals=6, num_particles=(2, 2),
-                                    active_orbitals=None, frozen=(0,))
+                                     frozen=(0,))
         assert space.frozen == (0,)
         assert space.active == (1, 2, 3, 4, 5)
         assert space.deleted == ()
@@ -146,7 +152,7 @@ class TestThePartition:
 
     def test_an_integer_is_the_register_width(self):
         space = resolve_active_space(n_orbitals=10, num_particles=(2, 2),
-                                    active_orbitals=4)
+                                     spec=spec(orbitals=4))
         assert space.active == (0, 1, 2, 3)
         assert space.deleted == (4, 5, 6, 7, 8, 9)
         assert space.n_active == 4
@@ -155,22 +161,22 @@ class TestThePartition:
     def test_an_integer_never_removes_an_occupied_orbital(self):
         with pytest.raises(ValueError, match="never removes an occupied"):
             resolve_active_space(n_orbitals=10, num_particles=(3, 3),
-                                 active_orbitals=2)
+                                 spec=spec(orbitals=2))
 
     def test_an_integer_larger_than_the_basis_is_refused(self):
         with pytest.raises(ValueError, match="exceeds the"):
             resolve_active_space(n_orbitals=6, num_particles=(1, 1),
-                                 active_orbitals=7)
+                                 spec=spec(orbitals=7))
 
     def test_a_non_positive_integer_is_refused(self):
         with pytest.raises(ValueError, match="positive number of spatial"):
             resolve_active_space(n_orbitals=6, num_particles=(1, 1),
-                                 active_orbitals=0)
+                                 spec=spec(orbitals=0))
 
     def test_the_dict_form_splits_occupied_from_virtual(self):
         space = resolve_active_space(n_orbitals=10, num_particles=(3, 3),
-                                    active_orbitals={"occupied": 2,
-                                                     "virtual": 3})
+                                     spec=spec(orbitals={"occupied": 2,
+                                                         "virtual": 3}))
         # The lowest occupied orbital is folded into the mean field; the two
         # highest stay active.
         assert space.frozen == (0,)
@@ -179,8 +185,8 @@ class TestThePartition:
 
     def test_the_dict_form_composes_with_an_explicit_frozen_core(self):
         space = resolve_active_space(n_orbitals=10, num_particles=(4, 4),
-                                    active_orbitals={"occupied": 2,
-                                                     "virtual": 2},
+                                     spec=spec(orbitals={"occupied": 2,
+                                                         "virtual": 2}),
                                     frozen=(0,))
         assert space.frozen == (0, 1)
         assert space.active == (2, 3, 4, 5)
@@ -189,18 +195,18 @@ class TestThePartition:
     def test_the_dict_form_refuses_more_occupied_than_there_are(self):
         with pytest.raises(ValueError, match="active doubly occupied"):
             resolve_active_space(n_orbitals=10, num_particles=(2, 2),
-                                 active_orbitals={"occupied": 5})
+                                 spec=spec(orbitals={"occupied": 5}))
 
     def test_the_dict_form_refuses_more_virtual_than_there_are(self):
         with pytest.raises(ValueError, match="active virtual"):
             resolve_active_space(n_orbitals=6, num_particles=(2, 2),
-                                 active_orbitals={"virtual": 9})
+                                 spec=spec(orbitals={"virtual": 9}))
 
     def test_an_open_shell_keeps_its_singly_occupied_orbitals(self):
         # Orbital 2 holds one electron: it can be neither frozen (not doubly
         # occupied) nor deleted (not empty), so it has to stay active.
         space = resolve_active_space(n_orbitals=8, num_particles=(3, 2),
-                                    active_orbitals=4)
+                                     spec=spec(orbitals=4))
         assert space.active == (0, 1, 2, 3)
         assert space.frozen == ()
         assert space.deleted == (4, 5, 6, 7)
@@ -208,18 +214,18 @@ class TestThePartition:
     def test_an_open_shell_integer_width_counts_the_singly_occupied_one(self):
         with pytest.raises(ValueError, match="singly occupied"):
             resolve_active_space(n_orbitals=8, num_particles=(3, 2),
-                                 active_orbitals=2)
+                                 spec=spec(orbitals=2))
 
     def test_a_frozen_orbital_that_is_not_doubly_occupied_is_refused(self):
         with pytest.raises(ValueError, match="not doubly occupied"):
             resolve_active_space(n_orbitals=8, num_particles=(2, 2),
-                                 active_orbitals=4, frozen=(3,))
+                                 spec=spec(orbitals=4), frozen=(3,))
 
 
 class TestAnExplicitOrbitalList:
     def test_it_names_the_active_set(self):
         space = resolve_active_space(n_orbitals=8, num_particles=(2, 2),
-                                    active_orbitals=[0, 1, 5, 6])
+                                     spec=spec(orbitals=[0, 1, 5, 6]))
         assert space.active == (0, 1, 5, 6)
         assert space.deleted == (2, 3, 4, 7)
         assert space.frozen == ()
@@ -229,11 +235,12 @@ class TestAnExplicitOrbitalList:
         # not a smaller correlation treatment.
         with pytest.raises(ValueError, match="neither active nor frozen"):
             resolve_active_space(n_orbitals=8, num_particles=(2, 2),
-                                 active_orbitals=[1, 4, 5])
+                                 spec=spec(orbitals=[1, 4, 5]))
 
     def test_freezing_the_occupied_orbital_instead_is_accepted(self):
         space = resolve_active_space(n_orbitals=8, num_particles=(2, 2),
-                                    active_orbitals=[1, 4, 5], frozen=(0,))
+                                     spec=spec(orbitals=[1, 4, 5]),
+                                     frozen=(0,))
         assert space.frozen == (0,)
         assert space.active == (1, 4, 5)
         assert space.deleted == (2, 3, 6, 7)
@@ -241,24 +248,24 @@ class TestAnExplicitOrbitalList:
     def test_an_index_out_of_range_is_refused(self):
         with pytest.raises(ValueError, match="out of range"):
             resolve_active_space(n_orbitals=4, num_particles=(1, 1),
-                                 active_orbitals=[0, 9])
+                                 spec=spec(orbitals=[0, 9]))
 
     def test_an_orbital_that_is_both_frozen_and_active_is_refused(self):
         with pytest.raises(ValueError, match="both frozen and active"):
             resolve_active_space(n_orbitals=8, num_particles=(2, 2),
-                                 active_orbitals=[0, 1, 4], frozen=(0,))
+                                 spec=spec(orbitals=[0, 1, 4]), frozen=(0,))
 
     def test_an_empty_list_is_refused(self):
-        with pytest.raises(ValueError, match="empty orbital list"):
+        with pytest.raises(ValueError, match="is an empty list"):
             resolve_active_space(n_orbitals=4, num_particles=(1, 1),
-                                 active_orbitals=[])
+                                 spec=spec(orbitals=[]))
 
     def test_it_cannot_be_combined_with_a_rotating_selector(self):
         # The indices would refer to a basis the selector chose, which the user
         # never saw.
         with pytest.raises(ValueError, match="cannot be combined"):
             resolve_active_space(n_orbitals=8, num_particles=(2, 2),
-                                 active_orbitals=[0, 1, 4], selection="mp2")
+                                 spec=spec(orbitals=[0, 1, 4], method="mp2"))
 
 
 # --------------------------------------------------------------------------- #
@@ -268,7 +275,7 @@ class TestAnExplicitOrbitalList:
 class TestTheSelectors:
     def test_the_energy_selector_needs_no_integrals(self):
         space = resolve_active_space(n_orbitals=8, num_particles=(2, 2),
-                                    active_orbitals=4, selection="energy")
+                                     spec=spec(orbitals=4, method="energy"))
         assert space.rotation is None
         assert space.occupations is None
         assert space.correlation_energy is None
@@ -276,8 +283,8 @@ class TestTheSelectors:
     def test_the_mp2_selector_rotates_only_the_virtual_block(self, h2_mo):
         h_mo, eri_mo = h2_mo
         space = resolve_active_space(h_mo, eri_mo, n_orbitals=4,
-                                    num_particles=(1, 1), active_orbitals=2,
-                                    selection="mp2")
+                                    num_particles=(1, 1),
+                                    spec=spec(orbitals=2, method="mp2"))
         assert space.rotation is not None
         assert np.allclose(space.rotation[:1, :1], np.eye(1), atol=1e-12)
         assert np.allclose(space.rotation[:1, 1:], 0.0, atol=1e-12)
@@ -287,14 +294,14 @@ class TestTheSelectors:
     def test_the_mp2_selector_reports_the_full_space_correlation_energy(self, h2_mo):
         h_mo, eri_mo = h2_mo
         space = resolve_active_space(h_mo, eri_mo, n_orbitals=4,
-                                    num_particles=(1, 1), active_orbitals=2,
-                                    selection="mp2")
+                                    num_particles=(1, 1),
+                                    spec=spec(orbitals=2, method="mp2"))
         # It is the quantity the truncation is measured against, so it has to be
         # the *untruncated* one -- negative, and the same whatever is kept.
         assert space.correlation_energy < 0.0
         wider = resolve_active_space(h_mo, eri_mo, n_orbitals=4,
-                                     num_particles=(1, 1), active_orbitals=3,
-                                     selection="mp2")
+                                     num_particles=(1, 1),
+                                     spec=spec(orbitals=3, method="mp2"))
         assert wider.correlation_energy == pytest.approx(
             space.correlation_energy, rel=1e-12)
 
@@ -303,7 +310,7 @@ class TestTheSelectors:
         # and 0, so this would be the energy ordering wearing another name.
         with pytest.raises(ValueError, match="carries no information"):
             resolve_active_space(n_orbitals=8, num_particles=(2, 2),
-                                 active_orbitals=4, selection="natural",
+                                 spec=spec(orbitals=4, method="natural"),
                                  open_shell=False)
 
     def test_the_mp2_selector_ranks_an_open_shell_by_a_threshold(self):
@@ -323,7 +330,8 @@ class TestTheSelectors:
         threshold = 0.5 * (virtual[1] + virtual[2])        # keeps exactly two
         space = resolve_active_space(h_mo, eri_mo, n_orbitals=6,
                                     num_particles=(2, 1),
-                                    selection="mp2", threshold=threshold,
+                                    spec=spec(method="mp2",
+                                              threshold=threshold),
                                     open_shell=True)
         assert space.active == (0, 1, 2, 3)
         assert space.deleted == (4, 5)
@@ -333,7 +341,7 @@ class TestTheSelectors:
     def test_the_natural_selector_ranks_an_open_shell_by_occupation(self):
         occupations = np.array([2.0, 1.0, 0.01, 0.40, 0.05])
         space = resolve_active_space(n_orbitals=5, num_particles=(2, 1),
-                                    active_orbitals=3, selection="natural",
+                                     spec=spec(orbitals=3, method="natural"),
                                     reference_occupations=occupations,
                                     open_shell=True)
         # Virtuals start at index 2; the most populated of them is index 3, so
@@ -345,7 +353,7 @@ class TestTheSelectors:
     def test_the_natural_selector_checks_the_occupation_count(self):
         with pytest.raises(ValueError, match="one occupation per spatial"):
             resolve_active_space(n_orbitals=5, num_particles=(2, 1),
-                                 active_orbitals=3, selection="natural",
+                                 spec=spec(orbitals=3, method="natural"),
                                  reference_occupations=[1.0, 0.5],
                                  open_shell=True)
 
@@ -353,7 +361,7 @@ class TestTheSelectors:
 class TestTheSummary:
     def test_it_names_every_part_of_the_partition(self):
         space = ActiveSpace(n_orbitals=10, frozen=(0,), active=(1, 2, 3),
-                            deleted=(4, 5, 6, 7, 8, 9), selection="mp2")
+                            deleted=(4, 5, 6, 7, 8, 9), method="mp2")
         line = space.summary()
         assert "3 active" in line
         assert "1 frozen" in line
@@ -376,8 +384,8 @@ class TestWhatItCosts:
     def _energies(integrals, n_electrons, num_particles, width, selection):
         hamiltonian = integrals.molecular_hamiltonian(
             mo_basis=True, n_electrons=n_electrons,
-            num_particles=num_particles, active_orbitals=width,
-            active_selection=selection)
+            num_particles=num_particles,
+            active_space={"orbitals": width, "method": selection})
         return _ground_state(hamiltonian, num_particles)
 
     def test_keeping_everything_reproduces_the_untruncated_energy(self, h2):
@@ -438,7 +446,8 @@ class TestWhatItCosts:
 class TestTheRefusals:
     def test_the_atomic_orbital_hamiltonian_has_no_orbitals_to_choose(self, h2):
         with pytest.raises(ValueError, match="requires mo_basis=True"):
-            h2.molecular_hamiltonian(mo_basis=False, active_orbitals=2)
+            h2.molecular_hamiltonian(mo_basis=False,
+                                     active_space={"orbitals": 2})
 
     def test_the_plane_wave_basis_is_refused_by_name(self):
         from mandacaru.algorithms._hamiltonian_from_atoms import \
@@ -449,7 +458,7 @@ class TestTheRefusals:
         with pytest.raises(NotImplementedError, match="plane-wave"):
             build_basis_hamiltonian(
                 atoms, {"name": "PW", "energy_cutoff": 100}, None, 0.3, 0, None,
-                active_orbitals=2)
+                active_space={"orbitals": 2})
 
 
 # --------------------------------------------------------------------------- #
@@ -470,7 +479,7 @@ def truncated_paw_run():
     atoms = _lih()
     atoms.calc = Mandacaru(method="adapt-vqe",
                            basis={"name": "PAW-LCAO", "size": "TZP"}, h=0.3,
-                           active_orbitals=4, active_selection="mp2",
+                           active_space={"orbitals": 4, "method": "mp2"},
                            optimizer={"method": "SLSQP", "maxiter": 200},
                            trace=False)
     energy = atoms.get_potential_energy()
@@ -480,7 +489,7 @@ def truncated_paw_run():
 class TestThroughTheCalculator:
     def test_the_pseudopotential_basis_accepts_it(self, truncated_paw_run):
         # The point of the exercise: a valence-only basis has no core to freeze
-        # (`frozen_core` is refused for it) but plenty of virtual orbitals to
+        # (a `"frozen"` core is refused for it) but plenty of virtual orbitals to
         # drop, and dropping them is what fits the register.
         atoms, _energy = truncated_paw_run
         assert atoms.calc.solver.n_qubits == 8
@@ -490,7 +499,7 @@ class TestThroughTheCalculator:
 
         with pytest.raises(ValueError, match="redundant"):
             Mandacaru(basis={"name": "PAW-LCAO", "size": "SZ"},
-                      frozen_core=True)
+                      active_space={"frozen": "auto"})
 
     def test_the_partition_reaches_the_gradient_context(self, truncated_paw_run):
         atoms, _energy = truncated_paw_run
@@ -533,7 +542,7 @@ class TestThroughTheCalculator:
         grid = grid_from_cell(atoms, 0.35)
         atoms.calc = Mandacaru(
             method="adapt-vqe", basis="6-31G", grid=grid, h=0.35,
-            frozen_core=1, active_orbitals=2,
+            active_space={"frozen": 1, "orbitals": 2},
             optimizer={"method": "SLSQP", "maxiter": 200},
             project_translation=False, trace=False)
         force = atoms.get_forces()[1, 2]
@@ -554,14 +563,15 @@ class TestThroughTheCalculator:
         from mandacaru import Mandacaru
 
         energies = {}
-        for spec in (None, 4):
+        for width in (None, 4):
             atoms = _lih()
             atoms.calc = Mandacaru(
                 method="adapt-vqe",
                 basis={"name": "PAW-LCAO", "size": "DZP"}, h=0.3,
-                active_orbitals=spec, active_selection="mp2",
+                active_space=(None if width is None
+                              else {"orbitals": width, "method": "mp2"}),
                 optimizer={"method": "SLSQP", "maxiter": 200}, trace=False)
-            energies[spec] = atoms.get_potential_energy()
+            energies[width] = atoms.get_potential_energy()
         assert energies[4] >= energies[None] - 1e-6
 
     def test_the_dry_run_predicts_the_register_it_gets(self, truncated_paw_run):
@@ -573,12 +583,12 @@ class TestThroughTheCalculator:
         atoms, _energy = truncated_paw_run
         estimate = Mandacaru(
             method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "TZP"},
-            h=0.3, active_orbitals=4, active_selection="mp2",
+            h=0.3, active_space={"orbitals": 4, "method": "mp2"},
             dry_run=True, trace=False).estimate_qubits(atoms)
         assert estimate.n_qubits == atoms.calc.solver.n_qubits
         assert estimate.n_spatial_orbitals == 4
         assert estimate.n_deleted_orbitals == 8
-        assert estimate.active_selection == "mp2"
+        assert estimate.active_method == "mp2"
 
     def test_the_saved_hamiltonian_metadata_survives_json(self, tmp_path):
         import json
@@ -589,14 +599,15 @@ class TestThroughTheCalculator:
         atoms = _lih()
         atoms.calc = Mandacaru(
             method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZP"},
-            h=0.3, active_orbitals={"occupied": 1, "virtual": 3},
+            h=0.3, active_space={"orbitals": {"occupied": 1, "virtual": 3}},
             save_hamiltonian=str(path),
             optimizer={"method": "SLSQP", "maxiter": 50}, trace=False)
         atoms.get_potential_energy()
         record = json.loads(path.read_text())
         metadata = record["metadata"]
-        assert metadata["active_orbitals"] == {"occupied": 1, "virtual": 3}
-        assert metadata["active_selection"] == "energy"
+        assert metadata["active_space"] == {
+            "method": "energy", "orbitals": {"occupied": 1, "virtual": 3},
+            "threshold": None, "frozen": None}
 
 
 # --------------------------------------------------------------------------- #
@@ -607,7 +618,7 @@ class TestThePeriodicAndFiniteSizePaths:
     """A truncated virtual space reaches these, and they must not use it.
 
     Both were found by review rather than by a failing test: the periodic
-    Hamiltonian builder forwards ``active_orbitals`` (``PeriodicIntegrals``
+    Hamiltonian builder forwards ``active_space`` (``PeriodicIntegrals``
     subclasses ``MolecularIntegrals``, so nothing stopped it), and the
     finite-size corrections checked only for a frozen core.  A pseudopotential
     basis cannot reach either -- it has no periodic lattice sum -- so the run
@@ -624,7 +635,7 @@ class TestThePeriodicAndFiniteSizePaths:
                       cell=np.diag([4.0, 8.0, 8.0]), pbc=[True, False, False])
         atoms.calc = Mandacaru(
             method="bloch-adapt-vqe", kpts={"size": (2, 1, 1), "gamma": True},
-            basis="HAO", h=0.4, active_orbitals=3, trace=False,
+            basis="HAO", h=0.4, active_space={"orbitals": 3}, trace=False,
             optimizer={"method": "SLSQP", "maxiter": 120})
         atoms.get_potential_energy()
         return atoms
@@ -705,8 +716,8 @@ class TestTheOccupationCriterion:
         h_mo, eri_mo = h2_mo
         # Measured spectrum for this fixture: 1.06e-2, 1.63e-3, 7.0e-5.
         space = resolve_active_space(h_mo, eri_mo, n_orbitals=4,
-                                    num_particles=(1, 1), selection="mp2",
-                                    threshold=1e-3)
+                                    num_particles=(1, 1),
+                                    spec=spec(method="mp2", threshold=1e-3))
         assert len(space.active) == 3        # 1 occupied + the two above 1e-3
         assert len(space.deleted) == 1
 
@@ -715,8 +726,9 @@ class TestTheOccupationCriterion:
         widths = []
         for threshold in (3e-3, 1e-3, 1e-5):
             space = resolve_active_space(h_mo, eri_mo, n_orbitals=4,
-                                        num_particles=(1, 1), selection="mp2",
-                                        threshold=threshold)
+                                        num_particles=(1, 1),
+                                        spec=spec(method="mp2",
+                                                  threshold=threshold))
             widths.append(space.n_active)
         assert widths == sorted(widths)
         assert widths[0] < widths[-1]
@@ -726,8 +738,8 @@ class TestTheOccupationCriterion:
         # it, since the right register width is what one is trying to find out.
         h_mo, eri_mo = h2_mo
         space = resolve_active_space(h_mo, eri_mo, n_orbitals=4,
-                                    num_particles=(1, 1), selection="mp2",
-                                    active_orbitals=None, threshold=1e-3)
+                                    num_particles=(1, 1),
+                                    spec=spec(method="mp2", threshold=1e-3))
         assert space.truncated
 
     def test_a_count_given_with_it_caps_the_register(self, h2_mo):
@@ -735,15 +747,17 @@ class TestTheOccupationCriterion:
         # The threshold alone would keep two virtuals; the count leaves room for
         # one, and the count is what can make a run impossible, so it binds.
         space = resolve_active_space(h_mo, eri_mo, n_orbitals=4,
-                                    num_particles=(1, 1), selection="mp2",
-                                    active_orbitals=2, threshold=1e-5)
+                                    num_particles=(1, 1),
+                                    spec=spec(method="mp2", orbitals=2,
+                                              threshold=1e-5))
         assert space.n_active == 2
 
     def test_a_threshold_looser_than_the_count_leaves_the_count_alone(self, h2_mo):
         h_mo, eri_mo = h2_mo
         space = resolve_active_space(h_mo, eri_mo, n_orbitals=4,
-                                    num_particles=(1, 1), selection="mp2",
-                                    active_orbitals=4, threshold=1e-3)
+                                    num_particles=(1, 1),
+                                    spec=spec(method="mp2", orbitals=4,
+                                              threshold=1e-3))
         # Room for three virtuals, but only two earn a place.
         assert space.n_active == 3
 
@@ -757,18 +771,18 @@ class TestTheOccupationCriterion:
         with pytest.raises(ValueError, match="keeps no virtual orbital"):
             integrals.molecular_hamiltonian(
                 mo_basis=True, n_electrons=2, num_particles=(1, 1),
-                active_selection="mp2", active_threshold=0.02)
+                active_space={"method": "mp2", "threshold": 0.02})
 
     def test_the_energy_ranking_has_no_occupations_to_compare_against(self):
         with pytest.raises(ValueError, match="needs occupation numbers"):
             resolve_active_space(n_orbitals=8, num_particles=(2, 2),
-                                 selection="energy", threshold=1e-3)
+                                 spec=spec(method="energy", threshold=1e-3))
 
     def test_the_calculator_refuses_the_same_combination_at_construction(self):
         from mandacaru import Mandacaru
 
         with pytest.raises(ValueError, match="needs occupation numbers"):
-            Mandacaru(basis="HAO", active_threshold=1e-3)
+            Mandacaru(basis="HAO", active_space={"threshold": 1e-3})
 
     def test_the_bound_is_kept_and_tightens_as_the_threshold_falls(self, h2):
         # Exact diagonalization, not a variational run: at these widths the
@@ -783,7 +797,7 @@ class TestTheOccupationCriterion:
             energy = _ground_state(
                 h2.molecular_hamiltonian(
                     mo_basis=True, n_electrons=2, num_particles=(1, 1),
-                    active_selection="mp2", active_threshold=threshold),
+                    active_space={"method": "mp2", "threshold": threshold}),
                 (1, 1))
             assert energy >= full - 1e-10
             errors.append(energy - full)

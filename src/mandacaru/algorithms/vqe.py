@@ -152,14 +152,21 @@ class VQE(DeflationMixin, VariationalDriver):
         replaces the named templates.  ``kpts`` is a Monkhorst-Pack mesh
         resolved with ASE
         (Gamma-point only is runnable; see ``ADAPTVQE``).
-    frozen_core : bool, str or int
-        Frozen-core approximation (default ``False``, no freezing).  ``True`` /
-        ``"auto"`` freezes the chemical noble-gas core; an integer freezes that
-        many lowest molecular orbitals.  The frozen orbitals are removed from the
-        active space (see :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE`).
-    frozen_orbitals : sequence of int, optional
-        Explicit list of (doubly occupied) spatial MO indices to freeze; overrides
-        ``frozen_core`` and names exactly which electrons are core vs active.
+    active_space : dict, optional
+        Which spatial molecular orbitals reach the register (default ``None``:
+        all of them), as ``{"method": ..., "orbitals": ..., "threshold": ...,
+        "frozen": ...}`` -- see
+        :func:`~mandacaru.algorithms.active_space.resolve_active_space_spec`
+        and :doc:`/guide/active_space`.  ``"frozen"`` is the frozen-core
+        approximation: ``"auto"`` (or ``True``) the chemical noble-gas core, an
+        integer that many lowest molecular orbitals, a list those explicit
+        doubly occupied orbitals; they are replaced by their mean-field
+        contribution -- a constant core energy plus an effective one-body
+        potential.  ``"orbitals"`` (a count, ``{"occupied": n, "virtual":
+        m}`` or explicit indices) and ``"threshold"`` (an occupation) drop
+        virtual orbitals as well, ranked by ``"method"`` (``"energy"``,
+        ``"mp2"`` or ``"natural"``).  The ansatz, pool and qubit count are
+        built for what is left.
     save_hamiltonian : bool or str
         Write the qubit Hamiltonian (Pauli strings) to disk once built (default
         ``False``); ``True`` uses ``"hamiltonian"`` plus the extension of

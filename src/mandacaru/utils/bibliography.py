@@ -784,8 +784,8 @@ _OPTIMIZERS = [
   pages   = {1190--1208},
   year    = {1995},
   doi     = {10.1137/0916069}
-}""", "the L-BFGS-B optimizer", verified=False,
-         topics=("optimizer", "l-bfgs-b")),
+}""", "the limited-memory BFGS implementation behind L-BFGS",
+         verified=False, topics=("optimizer", "l-bfgs")),
     _ref("Kraft1988", """
 @techreport{Kraft1988,
   author      = {Kraft, Dieter},

@@ -14,7 +14,7 @@
     "basis": {
       "name": "FAO"
     },
-    "frozen_core": false,
+    "active_space": null,
     "n_qubits": 6
   },
   "terms": [

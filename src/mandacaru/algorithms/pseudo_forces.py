@@ -417,10 +417,9 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         one = one + np.asarray(one_body_aug)
     h0 = _hermitian(one)
     S0 = integrals.overlap()
-    g0 = integrals._engine.two_body(method="fft", energy_units="Ha")
-    augmentation = integrals.two_body_augmentation()
-    if augmentation is not None:
-        g0 = g0 + np.asarray(augmentation)
+    # The Hamiltonian build already computed it; the FFT build is the most
+    # expensive step of the whole pipeline.
+    g0, augmentation = integrals._ao_two_body_terms()
     electronic = energy(S0, h0, g0)
     total = electronic + integrals.nuclear_repulsion + integrals.constant_energy
 

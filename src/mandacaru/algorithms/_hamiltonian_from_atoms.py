@@ -27,6 +27,8 @@ the electrons; see the ``kpts`` argument of the drivers.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 
@@ -248,45 +250,29 @@ def core_electrons(atomic_number: int) -> int:
     return 86
 
 
-def _auto_frozen_count(frozen_core, numbers) -> int:
-    """Number of lowest MOs to freeze from a ``frozen_core`` spec (no explicit list).
+def resolve_frozen(frozen, numbers, n_el: int, n_orbitals: int,
+                   n_doubly=None) -> list[int]:
+    """The ``active_space`` ``"frozen"`` as a sorted list of spatial-MO indices.
 
-    ``False``/``None``/``0`` -> freeze nothing; ``True``/``"auto"`` -> the chemical
-    (noble-gas) core, ``sum(core_electrons(Z)) // 2`` spatial orbitals; an integer
-    -> that many lowest MOs.
-    """
-    if frozen_core is None or frozen_core is False:
-        return 0
-    if frozen_core is True or (isinstance(frozen_core, str)
-                              and frozen_core.strip().lower() == "auto"):
-        return sum(core_electrons(int(z)) for z in numbers) // 2
-    if isinstance(frozen_core, (int, np.integer)):
-        n = int(frozen_core)
-        if n < 0:
-            raise ValueError(f"frozen_core count must be >= 0, got {n}")
-        return n
-    raise ValueError(
-        f"unknown frozen_core spec {frozen_core!r}; use False, True/'auto', or an "
-        "integer number of core spatial orbitals")
-
-
-def resolve_frozen_core(frozen_core, frozen_orbitals, numbers, n_el: int,
-                        n_orbitals: int, n_doubly=None) -> list[int]:
-    """Resolve the frozen-core spec to a sorted list of frozen spatial-MO indices.
-
-    ``frozen_orbitals`` (an explicit list of spatial MO indices) takes precedence;
-    otherwise the lowest ``_auto_frozen_count(frozen_core, numbers)`` MOs are
-    frozen.  Every frozen orbital must be doubly occupied in the reference
-    (index ``< n_doubly``, the number of doubly occupied orbitals -- ``n_beta``,
-    defaulting to ``n_el // 2``), since the frozen-core approximation removes
-    doubly occupied core orbitals.
+    ``frozen`` is the normalized spec
+    (:func:`~mandacaru.algorithms.active_space.normalize_frozen`): ``None``
+    freezes nothing, ``"auto"`` the chemical (noble-gas) core --
+    ``sum(core_electrons(Z)) // 2`` spatial orbitals -- a count that many
+    lowest MOs, and a tuple those explicit indices.  Every frozen orbital
+    must be doubly occupied in the reference (index ``< n_doubly``, the number
+    of doubly occupied orbitals -- ``n_beta``, defaulting to ``n_el // 2``),
+    since the frozen-core approximation removes doubly occupied core orbitals.
     """
     n_occ = int(n_doubly) if n_doubly is not None else n_el // 2
-    if frozen_orbitals is not None:
-        frozen = sorted({int(i) for i in frozen_orbitals})
+    if frozen is None:
+        indices = []
+    elif frozen == "auto":
+        indices = list(range(sum(core_electrons(int(z)) for z in numbers) // 2))
+    elif isinstance(frozen, (int, np.integer)):
+        indices = list(range(int(frozen)))
     else:
-        frozen = list(range(_auto_frozen_count(frozen_core, numbers)))
-    for i in frozen:
+        indices = sorted({int(i) for i in frozen})
+    for i in indices:
         if not (0 <= i < n_orbitals):
             raise ValueError(
                 f"frozen orbital index {i} is out of range [0, {n_orbitals})")
@@ -294,7 +280,7 @@ def resolve_frozen_core(frozen_core, frozen_orbitals, numbers, n_el: int,
             raise ValueError(
                 f"cannot freeze spatial orbital {i}: only the {n_occ} doubly "
                 f"occupied orbitals (indices 0..{n_occ - 1}) may be frozen")
-    return frozen
+    return indices
 
 
 def resolve_num_unpaired(atoms, spin, n_el: int) -> int:
@@ -540,9 +526,7 @@ def _warn_unresolved(integrals, basis_fns, h):
 
 
 def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
-                                 options, kinetic=None, active_orbitals=None,
-                                 active_selection: str = "energy",
-                                 active_threshold=None):
+                                 options, kinetic=None, active_space=None):
     """Valence-only Hamiltonian from a pseudopotential **family**.
 
     A thin dispatcher: ``family`` is the
@@ -553,8 +537,8 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
     5-tuple as :func:`build_basis_hamiltonian`.  A new family is registered
     with ``register_family`` and needs nothing here.
 
-    ``active_orbitals`` / ``active_selection`` are always forwarded as keywords,
-    which is part of the ``build`` protocol
+    ``active_space`` is always forwarded as a keyword, which is part of the
+    ``build`` protocol
     (:class:`~mandacaru.pseudopotentials.families.FamilySpec`): a builder that
     does not accept them raises ``TypeError`` here.  That is deliberate -- a
     family silently dropping an active-space request would return the full
@@ -569,18 +553,13 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
             f"unknown option(s) {unknown} for the {family.label} basis; it "
             f"accepts {list(family.options)}")
     return family.build(atoms, grid, h, charge, spin, dict(options), kinetic,
-                        active_orbitals=active_orbitals,
-                        active_selection=active_selection,
-                        active_threshold=active_threshold)
+                        active_space=active_space)
 
 
 def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                             n_electrons, spin: bool = False,
-                            frozen_core=False, frozen_orbitals=None,
                             kinetic=None, periodic: bool = False,
-                            commensurate=None, active_orbitals=None,
-                            active_selection: str = "energy",
-                            active_threshold=None):
+                            commensurate=None, active_space=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
@@ -608,17 +587,18 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     **UHF natural-orbital** basis, even counts in the closed-shell RHF basis --
     see :meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.molecular_hamiltonian`.
 
-    ``frozen_core`` / ``frozen_orbitals`` apply the frozen-core approximation (see
-    :func:`resolve_frozen_core`): the resolved core spatial MOs are removed from
-    the active space, so the returned ``num_particles`` and ``n_spatial_orbitals``
-    describe the reduced active space.
-
-    ``active_orbitals`` / ``active_selection`` additionally truncate the
-    **virtual** space (see
-    :func:`~mandacaru.algorithms.active_space.resolve_active_space`), which is
-    how a large basis is made to fit a qubit register.  Unlike ``frozen_core``
-    they apply to a pseudopotential family too: the core is already gone from a
-    valence-only basis, but its virtual orbitals are not.
+    ``active_space`` (see
+    :func:`~mandacaru.algorithms.active_space.resolve_active_space_spec`)
+    partitions the orbitals.  Its ``"frozen"`` applies the frozen-core
+    approximation (see :func:`resolve_frozen`): the resolved core spatial MOs
+    are removed from the active space, so the returned ``num_particles`` and
+    ``n_spatial_orbitals`` describe the reduced active space.  Its
+    ``"orbitals"`` / ``"threshold"`` additionally truncate the **virtual**
+    space (see :func:`~mandacaru.algorithms.active_space.resolve_active_space`),
+    which is how a large basis is made to fit a qubit register.  Unlike
+    ``"frozen"`` they apply to a pseudopotential family too: the core is
+    already gone from a valence-only basis, but its virtual orbitals are
+    not.
 
     ``kinetic`` selects the Laplacian discretization (``"fd"`` or
     ``"spectral"``); ``None`` takes :data:`DEFAULT_KINETIC` for the path.  After
@@ -626,6 +606,9 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     (see :meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.unresolved`) raise a
     :class:`RuntimeWarning` naming them.
     """
+    from .active_space import resolve_active_space_spec
+
+    spec = resolve_active_space_spec(active_space)
     name, options = resolve_basis(basis)
     symbols = atoms.get_chemical_symbols()
     family, options = resolve_pseudo_basis(name, options, symbols)
@@ -642,11 +625,11 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                 "supercell instead of a crystal.  Use an all-electron basis "
                 "(HAO, NAO, GTO, a named Gaussian family) for a periodic "
                 "calculation, or a molecular method for this basis.")
-        if frozen_core or frozen_orbitals:
+        if spec is not None and spec.frozen is not None:
             raise ValueError(
-                f"frozen_core is redundant with the {family.label} basis -- "
-                "the core is already absent from the valence-only pseudo "
-                "basis")
+                f"an active_space 'frozen' core is redundant with the "
+                f"{family.label} basis -- the core is already absent from the "
+                f"valence-only pseudo basis")
         if n_electrons is not None:
             # The valence count follows the datasets' valence charges; an
             # explicit count would silently disagree with the projectors and
@@ -657,9 +640,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                 "themselves.  Use `charge` to add or remove electrons.")
         return _pseudopotential_hamiltonian(
             atoms, grid, h, charge, spin, family, options, kinetic=kinetic,
-            active_orbitals=active_orbitals,
-            active_selection=active_selection,
-            active_threshold=active_threshold)
+            active_space=spec)
 
     numbers = atoms.get_atomic_numbers()
     n_el = (int(n_electrons) if n_electrons is not None
@@ -667,8 +648,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
 
     if _is_plane_wave(name):
         return _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
-                                       frozen_core, frozen_orbitals,
-                                       active_orbitals, active_threshold)
+                                       spec)
 
     from ..basis import BasisSet
     from ..core import MolecularIntegrals
@@ -703,8 +683,8 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
 
     n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
     n_alpha, n_beta = _num_particles(n_el, n_unpaired, name)
-    frozen = resolve_frozen_core(frozen_core, frozen_orbitals, numbers, n_el,
-                                 len(basis_fns), n_doubly=n_beta)
+    frozen = resolve_frozen(spec.frozen if spec is not None else None,
+                            numbers, n_el, len(basis_fns), n_doubly=n_beta)
 
     # Soften the -Z/r cusp to half a grid step (Bohr): a nucleus that lands on a
     # grid node would otherwise sample -Z/r at r->0 and produce a ~1e12 garbage
@@ -724,14 +704,15 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         integrals = MolecularIntegrals(
             nuclei, basis_fns, g, softening=softening,
             kinetic=kinetic or DEFAULT_KINETIC["all-electron"])
+    # The core arrives at the integrals as explicit indices: "auto" needed the
+    # atoms, which only this layer has.
     hamiltonian = integrals.molecular_hamiltonian(
         mo_basis=True, n_electrons=n_el, num_particles=(n_alpha, n_beta),
-        frozen_orbitals=frozen if frozen else None,
-        active_orbitals=active_orbitals, active_selection=active_selection,
-        active_threshold=active_threshold)
+        active_space=(None if spec is None
+                      else replace(spec, frozen=tuple(frozen) or None)))
     _warn_unresolved(integrals, basis_fns, h)
-    # The selector may freeze more than `resolve_frozen_core` did (the dict form
-    # of `active_orbitals` names a count of active occupied orbitals), so the
+    # The selector may freeze more than `resolve_frozen` did (the dict form of
+    # the 'orbitals' names a count of active occupied orbitals), so the
     # active electron count is read back from the partition it actually built
     # rather than from the request.
     space = integrals.active_space
@@ -751,19 +732,18 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
 
 
 def _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
-                            frozen_core=False, frozen_orbitals=None,
-                            active_orbitals=None, active_threshold=None):
+                            spec=None):
     """Build the periodic plane-wave (PW) MO Hamiltonian from ``atoms``."""
     from ..core import PlaneWaveIntegrals
 
-    if frozen_core or frozen_orbitals:
+    if spec is not None and spec.frozen is not None:
         raise NotImplementedError(
             "the frozen-core approximation is not supported for the plane-wave "
             "(PW) basis: plane waves are delocalized and have no localized core "
             "to freeze.  Use a localized basis (HAO / GTO / 6-31G(d) / NAO).")
-    if active_orbitals is not None or active_threshold is not None:
+    if spec is not None and spec.truncates:
         raise NotImplementedError(
-            "active_orbitals is not supported for the plane-wave (PW) basis: "
+            "an active_space is not supported for the plane-wave (PW) basis: "
             "the register is the plane-wave cutoff, which is what "
             "`energy_cutoff` sets.  Truncating the mean-field orbitals on top "
             "of it would be a second, hidden cutoff with no convergence "

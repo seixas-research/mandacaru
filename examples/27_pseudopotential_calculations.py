@@ -188,7 +188,8 @@ def isolated_force(spacing, use_pseudopotentials):
     atoms.calc = Mandacaru(method="adapt-vqe",
                            basis="NCPP" if use_pseudopotentials else "HAO",
                            grid=box,
-                           frozen_core=not use_pseudopotentials,
+                           active_space=(None if use_pseudopotentials
+                                        else {"frozen": "auto"}),
                            pool="qeb",
                            max_iterations=6,
                            convergence={"gradient": 1e-3},

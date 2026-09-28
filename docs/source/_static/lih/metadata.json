@@ -16,7 +16,7 @@
     "ceo"
   ],
   "mapping": "jordan_wigner",
-  "frozen_core": true,
+  "active_space": {"frozen": "auto"},
   "charge": 0,
   "active_electrons": 2,
   "box_half_width_A": 4.8,
@@ -32,12 +32,12 @@
     2.560000000000004,
     2.8000000000000047
   ],
-  "convergence_Ha": {
+  "convergence": {
     "gradient": 1e-05,
     "energy": null
   },
   "max_iterations": 40,
-  "optimizer": "L-BFGS-B",
+  "optimizer": "L-BFGS",
   "optimizer_maxiter": 1000,
   "execute_circuits": false,
   "profile": false,

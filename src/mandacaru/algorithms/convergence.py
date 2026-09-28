@@ -18,7 +18,8 @@ states) appends one operator per growth step.  It stops on the
     no pool operator can lower the energy to first order.
 ``"energy"``
     the energy change of the last growth step, :math:`|\Delta E|`
-    (Hartree), must fall below this value -- the ``dE`` column of the run
+    (**eV**, whatever unit the run reports energies in), must fall below this
+    value -- the ``dE`` column of the run
     log's ``[ITERATIONS]`` table, the first step measured from the reference
     state.  It says growth has stopped paying.
 
@@ -44,10 +45,12 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from ..units import EV_TO_HARTREE
+
 #: Largest pool gradient (Hartree) below which growth stops by default.
 DEFAULT_GRADIENT_CONVERGENCE = 1e-3
-#: Energy change of the last growth step (Hartree) below which growth stops
-#: by default.
+#: Energy change of the last growth step (eV) below which growth stops by
+#: default.
 DEFAULT_ENERGY_CONVERGENCE = 1e-3
 #: Largest pool gradient (Hartree) at which growth stops under any criteria.
 #: Appending an operator with screening gradient g lowers the energy by about
@@ -63,7 +66,7 @@ CRITERIA = ("gradient", "energy")
 @dataclass(frozen=True)
 class Convergence:
     """The resolved ``convergence`` option: a threshold, or ``None``, per
-    criterion (both in Hartree)."""
+    criterion (``gradient`` in Hartree, ``energy`` in eV)."""
 
     gradient: float | None = DEFAULT_GRADIENT_CONVERGENCE
     energy: float | None = DEFAULT_ENERGY_CONVERGENCE
@@ -81,7 +84,7 @@ class Convergence:
         if self.gradient is None and self.energy is None:
             raise ValueError(
                 "convergence needs at least one criterion: give 'gradient' "
-                "and/or 'energy' a threshold (Hartree); with neither, only "
+                "and/or 'energy' a threshold (Hartree and eV); with neither, only "
                 "max_iterations would stop the growth")
 
     @classmethod
@@ -104,13 +107,19 @@ class Convergence:
                              f"available: {list(CRITERIA)}")
         return cls(gradient=spec.get("gradient"), energy=spec.get("energy"))
 
+    @property
+    def energy_hartree(self) -> float | None:
+        """The energy threshold in Hartree, the unit the drivers work in."""
+        return None if self.energy is None else self.energy * EV_TO_HARTREE
+
     def reached(self, max_gradient: float | None,
                 delta_energy: float | None) -> bool:
         """Whether every criterion that is set holds, or the gradient has
         vanished (:data:`VANISHED_GRADIENT`).
 
-        ``delta_energy`` is ``None`` before the first growth step, and then the
-        energy criterion does not hold.
+        ``delta_energy`` is in Hartree, as the drivers compute it, and is
+        ``None`` before the first growth step, when the energy criterion does
+        not hold.
         """
         if max_gradient is not None and max_gradient < VANISHED_GRADIENT:
             return True
@@ -118,7 +127,8 @@ class Convergence:
                 max_gradient is not None and max_gradient < self.gradient):
             return False
         if self.energy is not None and not (
-                delta_energy is not None and abs(delta_energy) < self.energy):
+                delta_energy is not None
+                and abs(delta_energy) < self.energy_hartree):
             return False
         return True
 
@@ -128,14 +138,15 @@ class Convergence:
 
     def describe(self, energy_scale: float = 1.0,
                  energy_unit: str = "Ha") -> str:
-        """One line, e.g. ``max|grad| < 0.001 Ha and |dE| < 2.72e-05 eV``;
-        ``energy_scale`` converts the energy threshold from Hartree into
-        ``energy_unit`` so it reads against the ``dE`` column."""
+        """One line, e.g. ``max|grad| < 0.001 Ha and |dE| < 0.001 eV``;
+        ``energy_scale`` converts Hartree into ``energy_unit`` (1 for
+        Hartree), so the energy threshold reads against the ``dE`` column."""
         parts = []
         if self.gradient is not None:
             parts.append(f"max|grad| < {self.gradient:g} Ha")
         if self.energy is not None:
-            parts.append(f"|dE| < {self.energy * energy_scale:g} {energy_unit}")
+            parts.append(f"|dE| < {self.energy_hartree * energy_scale:g} "
+                         f"{energy_unit}")
         return " and ".join(parts)
 
 

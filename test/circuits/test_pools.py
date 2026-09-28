@@ -337,6 +337,26 @@ class TestCEOLabels:
             assert all(lbl.startswith("CEO[o") for lbl in labels)
             assert all("{" in lbl and lbl.endswith("}") for lbl in labels)
 
+    def test_ceo_short_labels_are_unique_and_fit_a_table_row(self):
+        from mandacaru.circuits import build_pool
+        ops = build_pool("ceo", 6, (3, 3)).operators()
+        short = [op.short_label for op in ops]
+        # The iteration table names each operator by this, so it must still
+        # tell every pool member apart -- and be as narrow as a D(...) label.
+        assert len(short) == len(set(short))
+        assert max(map(len, short)) <= 17
+        by_label = {op.label: op.short_label for op in ops}
+        assert by_label["CEO[o0,o1]{S(0->1)}"] == "S(0->1)"
+        assert by_label["CEO[o0,o1,o6,o7]{D(0,6->1,7)+D(0,7->1,6)}"] \
+            == "CEO(0,1,6,7)+"
+        assert by_label["CEO[o0,o1,o2,o3]{D(0,1->2,3)-D(0,3->1,2)}"] \
+            == "CEO(0,1,2,3)a-c"
+
+    def test_other_pools_show_their_label(self):
+        from mandacaru.circuits import build_pool
+        for op in build_pool("qeb", 3, (2, 2)).operators():
+            assert op.short_label == op.label
+
 
 class TestCommutingTermsOnly:
     def test_the_pairwise_rule(self):

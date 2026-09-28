@@ -86,6 +86,14 @@ _RULE = "-" * 72
 INDENT = "    "
 #: Widest register whose log lists the operator pool and the selected operator.
 DETAILED_LOG_MAX_QUBITS = 20
+#: Written one space after an ``[ITERATIONS]`` ``|grad|`` or ``dE`` value
+#: that meets its convergence threshold, so the step that satisfied a criterion
+#: stands out.  Stripped (and reported as a flag) by :func:`parse_output`.
+MARKER = "*"
+#: A value and its marker, or the blank slot of a value without one: every
+#: marked column keeps this width, so the rows stay aligned.
+MARKED = f" {MARKER}"
+UNMARKED = " " * len(MARKED)
 
 #: The destination meaning **standard output** wherever this module takes a
 #: path.  A run without a ``txt=`` file still has a report to make, and it is
@@ -235,6 +243,10 @@ class AdaptOutputLogger:
         #: (or a resumed run's restored one) until the first row, then each
         #: row's own.  ``None`` until the setup block has been written.
         self._previous_energy: float | None = None
+        #: Convergence thresholds the table's ``|grad|`` (Hartree) and ``dE``
+        #: (energy unit) cells are marked against; ``None`` for a criterion
+        #: that is not used, whose column then carries no marker slot.
+        self._thresholds: dict[str, float | None] = {"grad": None, "dE": None}
 
         targets = _targets(path)
         if not targets:
@@ -293,6 +305,16 @@ class AdaptOutputLogger:
             # Appending under an earlier block, which closed with a rule: one
             # blank line separates the two instead of stacking the rules.
             self._emit("")
+
+    def set_register(self, n_qubits: int) -> None:
+        """Record the register width once it is known.
+
+        A calculator run opens its log -- and writes ``[SYSTEM]`` -- before
+        the Hamiltonian is built, so the width that decides how much of each
+        operator is listed arrives afterwards, in time for ``[ELECTRONS]``.
+        """
+        self.n_qubits = int(n_qubits)
+        self.detailed = self.n_qubits <= DETAILED_LOG_MAX_QUBITS
 
     # -- low-level helpers ------------------------------------------------- #
 
@@ -360,9 +382,6 @@ class AdaptOutputLogger:
 
         # Geometry of this step.
         self._emit_body(f"units: {units}")
-        if not self.detailed:
-            self._emit_body(f"operator_details: omitted ({self.n_qubits} qubits "
-                            f"> {DETAILED_LOG_MAX_QUBITS})")
         if symbols is not None and positions is not None:
             positions = np.asarray(positions, dtype=float)
             self._emit_body(f"n_atoms: {len(symbols)}", "geometry:")
@@ -451,6 +470,10 @@ class AdaptOutputLogger:
         for key, value in fields.items():
             if value is not None:
                 self._emit_body(f"{key}: {value}")
+        if not self.detailed:
+            # Next to the register width it follows from.
+            self._emit_body(f"operator_details: omitted ({self.n_qubits} qubits "
+                            f"> {DETAILED_LOG_MAX_QUBITS})")
         self._emit("")
 
     # -- optimization setup block ------------------------------------------ #
@@ -484,8 +507,9 @@ class AdaptOutputLogger:
 
         ``convergence`` is a
         :class:`~mandacaru.algorithms.convergence.Convergence`;
-        ``energy_scale`` converts its energy threshold from Hartree into
-        ``energy_unit``, so it reads against the ``dE`` column.
+        its energy threshold is given in eV; ``energy_scale`` converts
+        Hartree into ``energy_unit``, so the threshold is written in the unit
+        of the ``dE`` column (as given, for an eV log).
         """
         # The first iteration's dE is measured from here: the reference state,
         # or the restored ansatz of a resumed run (``start_energy``).
@@ -502,6 +526,15 @@ class AdaptOutputLogger:
                     if value is not None]
             self._emit_body(f"convergence: {' and '.join(used)}"
                             + (" (both required)" if len(used) > 1 else ""))
+            self._thresholds = {
+                "grad": convergence.gradient,
+                "dE": (None if convergence.energy is None
+                       else convergence.energy_hartree * energy_scale)}
+            marked = [heading for key, heading in (("grad", "|grad|"),
+                                                   ("dE", "dE"))
+                      if self._thresholds[key] is not None]
+            self._emit_body(f"convergence_marker: {MARKER} after a "
+                            f"{' or '.join(marked)} that meets its threshold")
 
         # The gradient group.  `gradient_method` says how the number in the
         # `|grad|` column was obtained, and it sits next to the threshold it is
@@ -525,7 +558,7 @@ class AdaptOutputLogger:
         self._emit_body(f"energy_unit: {energy_unit}")
         if convergence is not None and convergence.energy is not None:
             self._emit_body(f"convergence_energy_{energy_unit}: "
-                            f"{convergence.energy * energy_scale:g}")
+                            f"{convergence.energy_hartree * energy_scale:g}")
         self._emit_body(
             f"reference_energy_{energy_unit}: {reference_energy:.10f}")
 
@@ -543,7 +576,10 @@ class AdaptOutputLogger:
     #: state), the screening gradient, the optimizer steps and the circuit
     #: cost, with the operator's label last (the only variable-width field).
     #: The operator's kind is not a column: the label already says it
-    #: (``D(0,2->1,3)``), and the pool is named in the setup block.
+    #: (``D(0,2->1,3)``), and the pool is named in the setup block.  A pool
+    #: whose labels are too wide for a row gives a short name
+    #: (``PoolOperator.short_label``, e.g. ``CEO(0,1,6,7)+``); the full label
+    #: stays on the result, in checkpoints and in ``pool.json``.
     #:
     #: This is a **file**, so nothing is dropped to fit a terminal.
     ITERATION_COLUMNS = (("iter", "iter", 4, "d"),
@@ -575,8 +611,11 @@ class AdaptOutputLogger:
         for key, heading, width, _fmt in (self._columns
                                           or self.ITERATION_COLUMNS):
             label = f"energy ({energy_unit})" if key == "energy" else heading
-            cells.append(label if key == "operator"
-                         else f"{label:>{max(width, len(label))}}")
+            cell = (label if key == "operator"
+                    else f"{label:>{max(width, len(label))}}")
+            if self._thresholds.get(key) is not None:
+                cell += UNMARKED            # the marker slot of the rows
+            cells.append(cell)
         return " ".join(cells).rstrip()
 
     def write_iteration(self, iteration: int, pool_operators: Sequence,
@@ -654,7 +693,8 @@ class AdaptOutputLogger:
             "cnot": count(getattr(metrics, "cnot_count", None)),
             "depth": count(getattr(metrics, "depth", None)),
             "1q": count(getattr(metrics, "num_1q_gates", None)),
-            "operator": selected.label if self.detailed else "(omitted)",
+            "operator": (getattr(selected, "short_label", selected.label)
+                         if self.detailed else "(omitted)"),
         }
         cells = []
         for key, heading, width, fmt in (self._columns
@@ -673,6 +713,12 @@ class AdaptOutputLogger:
                 cells.append(f"{value:>+{width}{fmt[1:]}}")
             else:
                 cells.append(f"{value:>{width}{fmt}}")
+            threshold = self._thresholds.get(key)
+            if threshold is not None:
+                # The same strict test the loop applies
+                # (Convergence.reached); a dash never meets it.
+                met = value is not None and abs(value) < threshold
+                cells[-1] += MARKED if met else UNMARKED
         self._emit_body(" ".join(cells).rstrip())
 
         if self.log_pool:
@@ -730,7 +776,12 @@ class AdaptOutputLogger:
         if expressivity is not None:
             self._emit_body(f"final_expressivity_E: {expressivity:.6f}")
         if final_max_gradient is not None:
-            self._emit_body(f"final_max_gradient: {final_max_gradient:.6e}")
+            # The screening after the last row, the one that stopped the loop:
+            # marked like the table, since no row carries it.
+            threshold = self._thresholds.get("grad")
+            met = threshold is not None and final_max_gradient < threshold
+            self._emit_body(f"final_max_gradient: {final_max_gradient:.6e}"
+                            + (MARKED if met else ""))
         if num_evaluations is not None:
             self._emit_body(f"cost_evaluations: {num_evaluations}")
         # The classical effort, in the optimizer's own currency: the `steps`
@@ -1575,7 +1626,11 @@ def parse_output(path: str) -> dict:
                     step[section][key] = value
             elif section == "summary" and ":" in stripped:
                 key, _, value = stripped.partition(":")
-                step["summary"][key.strip()] = value.strip()
+                key, value = key.strip(), value.strip()
+                if key == "final_max_gradient":
+                    step["summary"]["gradient_met"] = value.endswith(MARKER)
+                    value = value.rstrip(MARKER).rstrip()
+                step["summary"][key] = value
             elif section == "forces":
                 forces = step["forces"]
                 fields = stripped.split()
@@ -1648,7 +1703,12 @@ def parse_output(path: str) -> dict:
                 # `operator` is the last column and may contain spaces, so the
                 # row is split into exactly as many fields as there are columns
                 # -- an unbounded split truncated a label at its first space.
-                fields = stripped.split(None, len(columns) - 1)
+                # A marker is its own whitespace-separated token: join it
+                # back to its value so the fields line up with the columns.
+                fields = stripped.replace(MARKED + " ", MARKER + " ")
+                if fields.endswith(MARKED):
+                    fields = fields[:-len(MARKED)] + MARKER
+                fields = fields.split(None, len(columns) - 1)
                 record = dict(zip(columns, fields))
                 entry: dict[str, Any] = {
                     "index": int(record["iter"]),
@@ -1658,10 +1718,14 @@ def parse_output(path: str) -> dict:
                     "operator_kind": record.get("type", ""),
                     "time": record.get("time"),
                     "energy": number(record.get("energy", "")),
-                    "delta_energy": number(record.get("dE", "")),
+                    "delta_energy": number(
+                        record.get("dE", "").rstrip(MARKER)),
+                    "energy_met": record.get("dE", "").endswith(MARKER),
                     "energy_unit": energy_unit,
                     "expressivity_E": record.get("expr", "-"),
-                    "max_gradient": number(record.get("|grad|", "")),
+                    "max_gradient": number(
+                        record.get("|grad|", "").rstrip(MARKER)),
+                    "gradient_met": record.get("|grad|", "").endswith(MARKER),
                     # Not serialized by the writer: reported as unknown rather
                     # than inferred from the growth index, which they coincide
                     # with for ADAPT but not by construction.

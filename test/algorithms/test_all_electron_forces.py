@@ -74,7 +74,7 @@ def analytic_and_numerical(atoms, basis, grid, h, step=0.002, **options):
     algebra = AlgebraicEnergy(integrals.mo_coefficients,
                               *spatial_rdms(gamma, gamma2,
                                             integrals.n_orbitals))
-    build = {k: v for k, v in options.items() if k == "frozen_core"}
+    build = {k: v for k, v in options.items() if k == "active_space"}
 
     numerical = np.zeros_like(forces)
     for atom in range(len(atoms)):
@@ -106,9 +106,9 @@ class TestAllElectronGradient:
                     units="angstrom")
         atoms = Atoms("LiH", positions=[[4.013, 3.979, 3.207],
                                         [4.013, 3.979, 4.807]], cell=[8.0] * 3)
-        forces, numerical = analytic_and_numerical(atoms, "HAO", grid, 0.45,
-                                                    frozen_core=True,
-                                                    max_iterations=6)
+        forces, numerical = analytic_and_numerical(
+            atoms, "HAO", grid, 0.45, active_space={"frozen": "auto"},
+            max_iterations=6)
         scale = np.abs(numerical).max()
         assert np.abs(forces - numerical).max() < 1e-3 * scale
 

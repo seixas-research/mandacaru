@@ -287,7 +287,7 @@ basis = {"O": {"name": "NAO", "size": "DZP"},
          "*": "HAO"}                              # every other element
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis=basis,
-                       frozen_core=True)
+                       active_space={"frozen": "auto"})
 ```
 
 Every driver, the dry run and `BasisSet.build(mapping)` accept it; an element

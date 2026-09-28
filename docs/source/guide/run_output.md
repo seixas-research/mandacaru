@@ -57,12 +57,12 @@ The block every run is read through, whichever destination it went to:
 
 ```text
 [ITERATIONS]
-    iter     time        energy (eV)                 dE        |grad|   steps      1q    cnot   depth operator
-    ----------------------------------------------------------------------------------------------------------
-       1 13:45:10     -33.1720283176      -0.1939118279      0.225802       3      38     104     121 D(0,4->3,7)
-       2 13:45:10     -33.2886620234      -0.1166337058      0.158793       4      73     176     209 D(0,4->1,7)
-       3 13:45:10     -33.3953428910      -0.1066808676      0.151665       5     108     256     304 D(0,4->3,5)
-       4 13:45:10     -33.4961593720      -0.1008164810      0.134065       7     143     304     368 D(0,4->1,5)
+    iter     time        energy (eV)                 dE         |grad|    steps      1q    cnot   depth operator
+    ------------------------------------------------------------------------------------------------------------
+       1 13:45:10     -33.1720283176      -0.1939118279       0.225802        3      38     104     121 D(0,4->3,7)
+       2 13:45:10     -33.2886620234      -0.1166337058       0.158793        4      73     176     209 D(0,4->1,7)
+       3 13:45:10     -33.3953428910      -0.1066808676       0.151665        5     108     256     304 D(0,4->3,5)
+       4 13:45:10     -33.4961593720      -0.1008164810       0.134065        7     143     304     368 D(0,4->1,5)
 ```
 
 The **pool's type and size** and the Hamiltonian's **term count** are in the
@@ -79,17 +79,18 @@ Each iteration is one row, one column per property computed at that step:
 | `time` | Wall-clock time the step finished, `HH:MM:SS`. |
 | `energy (eV)` | Energy after the inner re-optimization (Hartree with `atomic_units=True`). |
 | `expr` | Expressivity of the grown ansatz: KL divergence from the Haar distribution over the number-conserving sector. It falls as the ansatz specializes. **Off by default** and the column is then absent rather than blank; `run(log_expressivity=True)` adds it. It is a diagnostic, not a result, and not cheap: `2 x 400` state preparations per iteration, each applying every operator in the ansatz, so the cost is linear in the ansatz and quadratic over a run (0.010 / 0.031 / 0.059 / 0.125 s at 1 / 4 / 8 / 16 operators, 6 qubits). |
-| `dE` | Energy change from the previous row, signed, in the energy column's unit; the first row's is from the reference state (`reference_energy_<unit>` in `[OPTIMIZATION SETUP]`), and a resumed run's from the energy its restored ansatz had. |
-| `\|grad\|` | Largest pool gradient, to six decimals; the operator with this gradient is the one selected. It is compared against `convergence_gradient`. A gradient below 5e-7 reads `0.000000`. |
+| `dE` | Energy change from the previous row, signed, in the energy column's unit; the first row's is from the reference state (`reference_energy_<unit>` in `[OPTIMIZATION SETUP]`), and a resumed run's from the energy its restored ansatz had. A `*` follows a value whose magnitude is below `convergence_energy_<unit>`. |
+| `\|grad\|` | Largest pool gradient, to six decimals; the operator with this gradient is the one selected. It is compared against `convergence_gradient`, and a `*` follows a value below it. A gradient below 5e-7 reads `0.000000`. |
 | `steps` | **Steps the classical optimizer took** to re-optimize the grown ansatz — parameter updates, not cost evaluations. The two differ by the method: L-BFGS spends several evaluations per step on a finite-difference gradient and a line search, SPSA two or three, while COBYLA evaluates once per trial point. `-` when a method reports neither a count nor a per-iteration callback. |
 | `cnot` | CNOT gates after compiling to the native gate set. |
 | `1q` | Single-qubit gates in the same compilation. |
 | `depth` | Circuit depth in the same compilation. |
-| `operator` | The selected operator's label, e.g. `D(0,4->3,7)`; the label names its kind, and the pool is named in `[OPTIMIZATION SETUP]`. |
+| `operator` | The selected operator's label, e.g. `D(0,4->3,7)`; the label names its kind, and the pool is named in `[OPTIMIZATION SETUP]`. A CEO operator is shown by a short name: a single excitation as itself (`S(0->4)`), a coupled pair as its spin-orbital set and the sign of the combination (`CEO(0,1,6,7)+`). A same-spin set carries three excitations, so the pair is named by letters in the order its full label lists them (`CEO(0,1,2,3)a-c`). The full label, `CEO[o0,o1,o6,o7]{D(0,6->1,7)+D(0,7->1,6)}`, stays on the result, in checkpoints and in `pool.json`. |
 
 **The table does not depend on the terminal.** It is the same width whether it
 is printed or written, because it is the same table: no column is dropped and no
-operator label is abbreviated, so a narrow terminal wraps a row rather than
+operator label is cut at the terminal's width (only the CEO pool's labels have a
+fixed short form, above), so a narrow terminal wraps a row rather than
 quietly losing a number. `expr` is the one optional column — absent unless
 `run(log_expressivity=True)` asked for it, rather than present and blank.
 
@@ -120,7 +121,7 @@ of blocks -- energies then forces, one pair per step -- in one file:
 ```text
 <banner: version, host, interpreter, dependencies>       (once, at the top)
 ========================================================================
-    ADAPT-VQE (CEOPool, 12 qubits)
+    ADAPT-VQE (CEOPool)
 ========================================================================
 [SYSTEM]                        step: 1, this geometry, its cell and spins
 [BASIS]                         the basis that ran: options, radii, datasets
@@ -133,7 +134,7 @@ of blocks -- energies then forces, one pair per step -- in one file:
 ========================================================================
 
 ========================================================================
-    ADAPT-VQE (CEOPool, 12 qubits) -- geometry step 2
+    ADAPT-VQE (CEOPool) -- geometry step 2
 ========================================================================
 [SYSTEM]                        step: 2, the geometry BFGS moved to
 ...
@@ -233,13 +234,13 @@ read off the left margin:
     shots: 0 (exact expectation values)
     circuit_profiling: True
     energy_unit: eV
-    convergence_energy_eV: 0.0272114
+    convergence_energy_eV: 0.001
     reference_energy_eV: -476.8628634829
 
 [ITERATIONS]
-    iter     time        energy (eV)                 dE        |grad|   steps      1q    cnot   depth operator
-    ----------------------------------------------------------------------------------------------------------
-       1 13:45:10     -33.1720283176      -0.1939118279      0.225802       3      38     104     121 D(0,4->3,7)
+    iter     time        energy (eV)                 dE         |grad|    steps      1q    cnot   depth operator
+    ------------------------------------------------------------------------------------------------------------
+       1 13:45:10     -33.1720283176      -0.1939118279       0.225802        3      38     104     121 D(0,4->3,7)
 ========================================================================
 [VARIATIONAL QUANTUM SUMMARY]
     converged: True
@@ -310,7 +311,7 @@ settings:
 
 | Group | Lines |
 | :--- | :--- |
-| classical optimizer | `classical_optimizer`, `max_iterations`, `convergence` |
+| classical optimizer | `classical_optimizer`, `max_iterations`, `convergence`, `convergence_marker` |
 | screening gradient | `gradient_method`, `gradient_formula`, `convergence_gradient`, `gradient_units` |
 | operator pool | `pool`, `pool_class`, `pool_size` |
 | growth and execution | `reoptimize_all_parameters`, `state_vector_backend`, `device`, `backend_provider`, `circuit_execution`, `shots`, `circuit_profiling` |
@@ -337,9 +338,19 @@ unit.
 `convergence` names the criteria the `convergence=` option set: `gradient`,
 `energy`, or `gradient and energy (both required)`. Each threshold is written
 once, beside the unit it is read in: `convergence_gradient` in Hartree, next to
-the gradient group, and `convergence_energy_<unit>` converted into the log's
-energy unit, next to `energy_unit`, so it reads directly against the `dE`
-column. A criterion the run does not use has no line.
+the gradient group, and `convergence_energy_<unit>` next to `energy_unit`, so
+it reads directly against the `dE` column. The option's energy threshold is
+given in eV, so an eV log writes it as given; a Hartree log
+(`atomic_units=True`) writes it converted. A criterion the run does not use has no line.
+
+`convergence_marker` says how the `[ITERATIONS]` table shows them: a `*`, one
+space after each `|grad|` or `dE` value that meets its own threshold (strictly below
+it, the test the loop applies). A column whose criterion is not used carries no
+marker. Each row's `|grad|` is the screening that *selected* that row's
+operator, so the gradient that finally stops the run is the screening after the
+last row: it is `final_max_gradient` in `[VARIATIONAL QUANTUM SUMMARY]`, marked
+the same way. With both criteria required, the run stops at the first
+screening whose gradient is marked while the last row's `dE` is.
 
 | `gradient_method` | What it computes | What it costs |
 | :--- | :--- | :--- |

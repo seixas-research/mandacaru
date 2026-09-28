@@ -506,3 +506,27 @@ class TestSpinOrbitCoupling:
                       pool="spin-orbit", num_particles=(1, 1),
                       n_spatial_orbitals=self.M, atomic_units=True,
                       trace=False, profile=False, max_iterations=1).run()
+
+
+class TestTheLogOpensBeforeTheBuild:
+    """``[SYSTEM]`` is written before the basis and integrals are built."""
+
+    def test_the_geometry_is_logged_even_when_the_build_fails(
+            self, tmp_path, monkeypatch):
+        import mandacaru.algorithms._hamiltonian_from_atoms as builder
+        from mandacaru.utils.logging import parse_output
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("stop before the integrals")
+
+        monkeypatch.setattr(builder, "build_basis_hamiltonian", fail)
+        path = tmp_path / "output.txt"
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6] * 3)
+        atoms.calc = Mandacaru(method="adapt-vqe", h=0.35, pool="qeb",
+                               txt=str(path))
+        with pytest.raises(RuntimeError, match="stop before"):
+            atoms.get_potential_energy()
+        text = path.read_text()
+        assert "ADAPT-VQE (QEBPool)" in text and "[SYSTEM]" in text
+        assert "[ELECTRONS]" not in text
+        assert parse_output(str(path))["system"]["n_atoms"] == "2"

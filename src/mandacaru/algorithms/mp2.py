@@ -160,8 +160,8 @@ def _real(array, what: str) -> np.ndarray:
         raise ValueError(
             f"the {what} has an imaginary part of {imaginary:.2e} Ha: the "
             f"orbitals are genuinely complex, and the MP2 natural orbitals are "
-            f"built as a real rotation.  Use active_selection='energy' for a "
-            f"complex basis.")
+            f"built as a real rotation.  Use the 'energy' active_space method for "
+            f"a complex basis.")
     return np.ascontiguousarray(array.real)
 
 
@@ -294,8 +294,9 @@ def _denominators(energies: np.ndarray, n_occ: int) -> np.ndarray:
             f"Hartree-Fock reference has an (almost) vanishing gap, so the "
             f"perturbation series has no small parameter and its amplitudes "
             f"are not an approximation to anything.  Such a system needs a "
-            f"multireference active space chosen by hand "
-            f"(active_orbitals=[...]) rather than by perturbation theory.")
+            f"multireference active space chosen by hand (an explicit "
+            f"active_space 'orbitals' list) rather than by perturbation "
+            f"theory.")
     return d
 
 
@@ -363,7 +364,7 @@ def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
     The reference determinant and the occupation the ansatz prepares are
     defined by *which* orbitals are occupied, and a rotation inside the
     occupied block leaves the determinant invariant but renames its orbitals --
-    so anything that identifies a core orbital by its index, ``frozen_core=
+    so anything that identifies a core orbital by its index, ``"frozen":
     "auto"`` above all (the noble-gas core is "the lowest so many MOs", which
     is only the chemical core while the orbitals are energy-ordered), would
     silently freeze the wrong ones.  And truncating the occupied space is a far
@@ -440,8 +441,9 @@ def _check_denominators(d: np.ndarray, what: str) -> np.ndarray:
             f"{smallest:.3e} Ha: the reference has an (almost) vanishing gap, "
             f"so the perturbation series has no small parameter and its "
             f"amplitudes are not an approximation to anything.  Such a system "
-            f"needs a multireference active space chosen by hand "
-            f"(active_orbitals=[...]) rather than by perturbation theory.")
+            f"needs a multireference active space chosen by hand (an explicit "
+            f"active_space 'orbitals' list) rather than by perturbation "
+            f"theory.")
     return d
 
 

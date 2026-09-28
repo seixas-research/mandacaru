@@ -69,7 +69,6 @@ def calculator():
                      h=0.15,
                      charge=0,
                      spin=False,
-                     frozen_core=False,
                      initial_state="hartree-fock",
                      optimizer={"method": "COBYLA",
                                 "maxiter": 2000,
