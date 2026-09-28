@@ -28,8 +28,9 @@ from mandacaru.core.mapping import MAPPINGS
 from mandacaru.optimizers.optim import NAMED_OPTIMIZERS
 from mandacaru.pseudopotentials.families import PSEUDO_FAMILIES
 from mandacaru.utils import bibliography as bib
-from mandacaru.utils.citations import (DEFAULT_REFERENCES_FILE, _FAMILY_KEYS,
-                                       _MAPPING_KEYS, _METHOD_KEYS,
+from mandacaru.utils.citations import (DEFAULT_REFERENCES_FILE, _ANSATZ_KEYS,
+                                       _FAMILY_KEYS, _MAPPING_KEYS,
+                                       _METHOD_KEYS,
                                        _OPTIMIZER_KEYS, _POOL_KEYS,
                                        _PROVENANCE_KEYS, _SELECTION_KEYS,
                                        citation_keys,
@@ -126,6 +127,12 @@ class TestEveryRegisteredChoiceIsCitable:
         for family in canonical:
             assert _FAMILY_KEYS.get(family), family
 
+    def test_every_ansatz(self):
+        from mandacaru.algorithms.ansatz_spec import ANSATZ_NAMES
+        for name in ANSATZ_NAMES:
+            assert _ANSATZ_KEYS.get(name), name
+            assert citation_keys(ansatz=name) != citation_keys()
+
     def test_every_stable_method(self):
         from mandacaru.algorithms.calculator import STABLE_METHODS
         for method in STABLE_METHODS:
@@ -145,7 +152,8 @@ class TestEveryRegisteredChoiceIsCitable:
                         != citation_keys())
 
     def test_every_key_in_every_table_exists(self):
-        tables = (_POOL_KEYS, _MAPPING_KEYS, _METHOD_KEYS, _OPTIMIZER_KEYS,
+        tables = (_POOL_KEYS, _MAPPING_KEYS, _METHOD_KEYS, _ANSATZ_KEYS,
+                  _OPTIMIZER_KEYS,
                   _FAMILY_KEYS, _PROVENANCE_KEYS, _SELECTION_KEYS)
         for table in tables:
             for name, keys in table.items():

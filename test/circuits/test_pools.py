@@ -384,3 +384,43 @@ class TestCommutingTermsOnly:
         assert pauli_rotations(PauliSum({"XY": 0.5j, "YX": 0.5j}))
         with pytest.raises(ValueError, match="commut"):
             pauli_rotations(PauliSum({"XX": 0.5j, "XY": 0.5j}))
+
+
+class TestSpinOrbitPool:
+    """Every occupied -> virtual excitation, any spins, real and imaginary."""
+
+    @pytest.fixture(scope="class")
+    def pool(self):
+        return build_pool("spin-orbit", 3, (1, 1))
+
+    def test_the_size_counts_both_rotations_of_every_excitation(self, pool):
+        occupied, virtual = 2, 4
+        pairs = (occupied * (occupied - 1) // 2) * (virtual * (virtual - 1) // 2)
+        assert len(pool) == 2 * (occupied * virtual + pairs)
+
+    def test_generators_are_anti_hermitian_and_conserve_n(self, pool):
+        n = pool.n_qubits
+        number = Fermion({((p, True), (p, False)): 1.0 for p in range(n)},
+                         n_modes=n).map_to_qubits("jordan_wigner", n_modes=n)
+        for op in pool.operators():
+            a = op.generator.to_matrix()
+            assert np.allclose(a, -a.conj().T, atol=1e-12)
+            assert not number.commutator(op.generator).simplify().terms
+
+    def test_it_changes_s_z_where_the_spin_blocked_pools_cannot(self, pool):
+        n = pool.n_qubits
+        half = n // 2
+        s_z = Fermion({((p, True), (p, False)): (0.5 if p < half else -0.5)
+                       for p in range(n)}, n_modes=n).map_to_qubits(
+                           "jordan_wigner", n_modes=n)
+        flips = [op for op in pool.operators()
+                 if s_z.commutator(op.generator).simplify().terms]
+        assert flips and not pool.conserves_spin_projection
+        assert build_pool("fermionic", 3, (1, 1)).conserves_spin_projection
+
+    def test_the_parity_reduction_is_refused(self):
+        with pytest.raises(ValueError):
+            build_pool("spin-orbit", 3, (1, 1), mapping="parity_reduced")
+
+    def test_the_alias(self):
+        assert build_pool("soc", 2, (1, 1)).name == "spin-orbit"

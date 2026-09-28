@@ -34,6 +34,17 @@ from ..core.sector import pauli_masks
 from ..core.tapering import SymmetryLeakError, TaperedRegister, taper_problem
 
 
+#: Default starting value of every logical HVA angle.  For a real Hamiltonian
+#: and a real determinant the energy derivatives of ``exp(-i theta H_j)``
+#: vanish at all-zero angles, so the optimizer is started off that stationary
+#: point, deterministically.
+DEFAULT_SEED_ANGLE = 0.1
+#: Key of the HVA block in a checkpoint's ``metadata`` and of its logical
+#: angles in ``status``.
+CHECKPOINT_KEY = "hva"
+LOGICAL_PARAMETERS_KEY = "hva_logical_parameters"
+
+
 @dataclass(frozen=True, slots=True)
 class HVAEvolution:
     """Immutable exact or finite product-formula evolution policy.
@@ -98,7 +109,8 @@ def hamiltonian_groups(
     if grouping not in ("body_order", "spin_resolved"):
         raise ValueError("HVA grouping must be 'body_order' or 'spin_resolved'")
     if groups is not None and grouping != "body_order":
-        raise ValueError("choose either explicit hva_groups or a grouping preset")
+        raise ValueError("choose either explicit HVA groups or a grouping "
+                         "preset")
     _group_terms(Fermion({term: coeff for term, coeff in
                           hamiltonian.terms.items() if term}, n_modes=n_modes),
                  n_modes, separate_spins)
@@ -111,8 +123,8 @@ def hamiltonian_groups(
             if len(term) not in (2, 4):
                 raise ValueError(
                     "default HVA groups support one- and two-body "
-                    "number-conserving Hamiltonians; pass hva_groups= for "
-                    "another decomposition")
+                    "number-conserving Hamiltonians; pass explicit HVA "
+                    "groups for another decomposition")
             spins = tuple(sorted(int(mode >= n_modes // 2)
                                  for mode, dagger in term if dagger))
             if grouping == "spin_resolved":
@@ -128,7 +140,7 @@ def hamiltonian_groups(
     else:
         groups = tuple(groups)
         if not groups:
-            raise ValueError("hva_groups must contain at least one operator")
+            raise ValueError("HVA groups must contain at least one operator")
 
     combined: dict[FermionTerm, complex] = {}
     for group in groups:
@@ -255,6 +267,9 @@ class HamiltonianVariationalAnsatz:
     occupied_coefficients : tuple[ndarray, ndarray], optional
         Occupied alpha and beta UHF columns in the Hamiltonian's spatial basis.
         A spin-resolved Givens network prepares this actual Slater determinant.
+    seed_angle : float
+        Every logical angle's default starting value
+        (:meth:`initial_parameters`, default ``0.1``).
 
     Notes
     -----
@@ -271,12 +286,15 @@ class HamiltonianVariationalAnsatz:
                  evolution: str | HVAEvolution = "exact", order: int = 2,
                  steps: int = 1,
                  taper: bool = False, provider: object | None = None,
-                 occupied_coefficients: tuple[np.ndarray, np.ndarray] | None = None
-                 ) -> None:
+                 occupied_coefficients: tuple[np.ndarray, np.ndarray] | None = None,
+                 seed_angle: float = DEFAULT_SEED_ANGLE) -> None:
         """Validate the model, map fixed groups, and prepare its reference."""
         if isinstance(layers, bool) or not isinstance(layers, Integral) or layers < 1:
             raise ValueError("HVA layers must be a positive integer")
+        if not np.isfinite(seed_angle):
+            raise ValueError("HVA seed_angle must be finite")
         self.layers = int(layers)
+        self.seed_angle = float(seed_angle)
         self.mapping = resolve_mapping(mapping)
         self.n_modes = hamiltonian.n_modes()
         if self.n_modes < 2 or self.n_modes % 2:
@@ -327,6 +345,8 @@ class HamiltonianVariationalAnsatz:
         occupied = (tuple(range(self.num_particles[0]))
                     + tuple(range(self.n_spatial_orbitals,
                                   self.n_spatial_orbitals + self.num_particles[1])))
+        #: Occupied spin-orbitals of the occupation determinant (spin-blocked).
+        self.occupied = occupied
         bits = reference_qubit_bits(self.mapping, self.n_modes, occupied)
         self.taper_info: TaperedRegister | None = None
         if taper:
@@ -543,3 +563,87 @@ class HamiltonianVariationalAnsatz:
                 else factors[:, None] * out[source]
             out = np.cos(phase) * out - 1j * np.sin(phase) * action
         return out
+
+    # -- hooks the VQE solver calls on the ansatz it runs ------------------ #
+
+    def initial_parameters(self) -> np.ndarray:
+        """Default starting angles: :attr:`seed_angle` for every group."""
+        return np.full(self.num_parameters, self.seed_angle)
+
+    def describe(self) -> tuple[str, ...]:
+        """Configuration lines for the run header."""
+        policy = ("exact sparse groups" if self.evolution == "exact"
+                  else f"product formula order {self.order}, "
+                       f"{self.steps} step(s)")
+        reference = ("actual UHF Slater determinant"
+                     if self.preparation_angles else "occupation determinant")
+        return (f"HVA: {self.layers} layer(s)  |  {self.grouping} grouping  |  "
+                f"{policy}",
+                f"group order: {', '.join(self.group_labels)}",
+                f"HVA reference: {reference}")
+
+    def checkpoint_parameters(self, theta: np.ndarray) -> np.ndarray:
+        """The angles of :attr:`pauli_generators` for logical angles ``theta``.
+
+        What a checkpoint stores as ``parameters``, so that any consumer --
+        QPE included -- prepares the state from the generators alone: the
+        fixed UHF preparation angles first, then one angle per exact group
+        or per compiled rotation.
+        """
+        logical = np.asarray(theta, dtype=float).ravel()
+        if self.evolution == "exact":
+            return np.asarray(list(self.preparation_angles) + logical.tolist())
+        return self.circuit_parameters(logical)
+
+    def checkpoint_labels(self) -> list[str]:
+        """One label per entry of :meth:`checkpoint_parameters`."""
+        preparation = [f"prepare_{i + 1}"
+                       for i in range(len(self.preparation_angles))]
+        return preparation + list(self.parameter_names
+                                  if self.evolution == "exact"
+                                  else self.rotation_names)
+
+    def checkpoint_metadata(self, hamiltonian: PauliSum) -> dict:
+        """What a resumed run must share with this one: the ``"hva"`` block.
+
+        ``hamiltonian`` is the qubit Hamiltonian the solver optimizes (tapered
+        when the ansatz is).
+        """
+        from ..core.checkpoint import fingerprint
+
+        info = self.taper_info
+        return {
+            "evolution": self.evolution, "order": self.order,
+            "steps": self.steps, "layers": self.layers,
+            "grouping": self.grouping,
+            "groups": [fingerprint(group) for group in self.mapped_groups],
+            "hamiltonian": fingerprint(hamiltonian),
+            "reference_preparation": [fingerprint(generator) for generator
+                                      in self.preparation_generators],
+            "reference_angles": list(self.preparation_angles),
+            "taper_symmetries": list(info.symmetries) if info else [],
+            "taper_signs": list(info.signs) if info else [],
+        }
+
+    def parameters_from_checkpoint(self, record,
+                                   hamiltonian: PauliSum) -> np.ndarray:
+        """The logical angles a checkpoint of this same ansatz holds.
+
+        Refuses a record written by a different HVA -- Hamiltonian, groups,
+        evolution policy, reference or layers -- or by another ansatz, and one
+        whose stored gate angles disagree with its logical angles.
+        """
+        if record.metadata.get(CHECKPOINT_KEY) != \
+                self.checkpoint_metadata(hamiltonian):
+            raise ValueError("HVA checkpoint differs in Hamiltonian, groups, "
+                             "evolution policy, reference sector, or layers")
+        logical = np.asarray(record.status.get(LOGICAL_PARAMETERS_KEY),
+                             dtype=float).ravel()
+        if logical.size != self.num_parameters:
+            raise ValueError("HVA checkpoint has the wrong logical angle count")
+        if not np.allclose(record.parameters,
+                           self.checkpoint_parameters(logical),
+                           atol=1e-12, rtol=0):
+            raise ValueError("HVA checkpoint gate angles disagree with its "
+                             "logical parameters")
+        return logical

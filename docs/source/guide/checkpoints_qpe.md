@@ -88,7 +88,7 @@ combined**, so the file records it as `preparation`:
 
 | `preparation` | state | written by |
 | :--- | :--- | :--- |
-| `"product"` | $\prod_k e^{\theta_k A_k}\,\vert\mathrm{ref}\rangle$ | ADAPT-VQE, UCCSD with `trotter=True`, and HVA |
+| `"product"` | $\prod_k e^{\theta_k A_k}\,\vert\mathrm{ref}\rangle$ | ADAPT-VQE, UCCSD with `trotter=True`, and `ansatz="hva"` |
 | `"sum"` | $e^{\sum_k \theta_k A_k}\,\vert\mathrm{ref}\rangle$ | the default, exact UCCSD of `method="vqe"` |
 
 The two coincide only when the generators commute (on a three-angle H₂ example
@@ -99,14 +99,16 @@ into a run that prepares a product; run the ansatz with `trotter=True` when the
 state is meant for hardware. Files written before this field existed held
 products only and load as such.
 
-For `method="hva"`, the checkpoint also records the ordered Hamiltonian
-groups, layer count, evolution policy, product-formula order and steps, taper
-sector, and any fixed UHF preparation. Exact-group HVA checkpoints reproduce
+For `method="vqe"` with `ansatz="hva"` (or an `ansatz={"name": "hva", ...}`
+dictionary), the checkpoint records `method: "vqe"` plus an `"hva"` metadata
+block: the ordered Hamiltonian groups, layer count, evolution policy,
+product-formula order and steps, taper sector, and any fixed UHF preparation.
+Exact-group HVA checkpoints reproduce
 the local state through `state_vector()` and can initialize QPE or Quantum
 Echoes, but their `problem()` and `circuit()` methods refuse generic circuit
 export: a noncommuting group exponential is not a list of Pauli rotations.
-`evolution="trotter"` checkpoints store the compiled rotation stream and can
-be exported as circuits. Both modes resume only with the same Hamiltonian,
+`"evolution": "trotter"` checkpoints store the compiled rotation stream and
+can be exported as circuits. Both modes resume only with the same Hamiltonian,
 groups, reference, mapping, and evolution policy.
 
 A checkpoint also needs an ansatz that can be *described* — generators and a

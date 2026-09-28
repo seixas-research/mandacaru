@@ -42,8 +42,8 @@ it is refused with a message pointing at `trace=`.
 `txt=` is accepted only by a method whose `run()` goes through this protocol —
 `"adapt-vqe"` today — and refused with a message by the others rather than
 leaving an empty file. `"rhf"` and `"uhf"` print an SCF summary;
-`"hva"`, `"vqe"`, `"subspace-vqe"` and `"subspace-adapt-vqe"` print their own
-run header, which is not this one.
+`"vqe"` (including `ansatz="hva"`), `"subspace-vqe"` and
+`"subspace-adapt-vqe"` print their own run header, which is not this one.
 
 There is one standard output per process, so consecutive printed runs number
 their blocks `step: 1`, `step: 2`, … just as consecutive runs sharing one
@@ -364,7 +364,11 @@ calc = Mandacaru(method="adapt-vqe",
                  txt="output.txt")
 ```
 
-The block reports **what ran**, not what was asked for. A sparse or
+The block reports **what ran**, not what was asked for.
+`state_vector_backend` says how the run held its states and operators:
+`dense matrices` or `sparse matrices` on the full register, `particle-number
+sector` when the states were restricted to one, and `matrix-free Pauli
+products` when no operator matrix was stored ({doc}`scalability`). A sparse, matrix-free or
 sector-restricted run never forms the eigendecompositions the shift estimators
 need and screens analytically whatever was requested, so it logs
 `gradient_method: analytic` with the override named in the formula line:

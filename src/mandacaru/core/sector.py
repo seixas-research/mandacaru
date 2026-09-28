@@ -158,6 +158,13 @@ class ParticleSector:
     mapping : str
         One of ``"jordan_wigner"``, ``"parity"``, ``"parity_reduced"`` or
         ``"bravyi_kitaev"``.
+    spin_conserving : bool
+        ``False`` for a Hamiltonian that conserves the particle number but not
+        :math:`S_z` (spin-orbit coupling): the sector is then every state with
+        :math:`N = n_\alpha + n_\beta` electrons in the :math:`2M`
+        spin-orbitals, :math:`\binom{2M}{N}` of them, and ``num_particles``
+        only fixes that total.  The parity reduction tapers the alpha-parity
+        qubit and is refused.
     Attributes
     ----------
     indices : numpy.ndarray
@@ -168,11 +175,19 @@ class ParticleSector:
     """
 
     def __init__(self, n_qubits: int, num_particles,
-                 mapping: str = "jordan_wigner"):
+                 mapping: str = "jordan_wigner",
+                 spin_conserving: bool = True):
         self.n_qubits = int(n_qubits)
         n_alpha, n_beta = (int(v) for v in num_particles)
         self.num_particles = (n_alpha, n_beta)
         self.mapping = resolve_mapping(mapping)
+        self.spin_conserving = bool(spin_conserving)
+        if not self.spin_conserving and self.mapping == "parity_reduced":
+            raise ValueError(
+                "the parity reduction tapers the alpha-parity qubit, which a "
+                "Hamiltonian that does not conserve S_z (spin-orbit coupling) "
+                "does not leave fixed; use 'jordan_wigner', 'parity' or "
+                "'bravyi_kitaev'")
         if self.n_qubits > MAX_SECTOR_QUBITS:
             raise ValueError(f"a {self.n_qubits}-qubit register exceeds the "
                              f"{MAX_SECTOR_QUBITS}-qubit index range")
@@ -185,21 +200,28 @@ class ParticleSector:
         if not (0 <= n_alpha <= M and 0 <= n_beta <= M):
             raise ValueError(f"num_particles {self.num_particles} does not fit "
                              f"{M} spatial orbitals")
-        dim = comb(M, n_alpha) * comb(M, n_beta)
+        n_total = n_alpha + n_beta
+        dim = (comb(M, n_alpha) * comb(M, n_beta) if self.spin_conserving
+               else comb(2 * M, n_total))
         if dim > MAX_SECTOR_DIMENSION:
             raise ValueError(
                 f"the {self.num_particles} sector of {M} orbitals has {dim} "
                 f"states (limit {MAX_SECTOR_DIMENSION})")
 
-        alpha = np.zeros((comb(M, n_alpha), M), dtype=np.int64)
-        for i, occupied in enumerate(combinations(range(M), n_alpha)):
-            alpha[i, list(occupied)] = 1
-        beta = np.zeros((comb(M, n_beta), M), dtype=np.int64)
-        for i, occupied in enumerate(combinations(range(M), n_beta)):
-            beta[i, list(occupied)] = 1
-        occupations = np.concatenate(
-            [np.repeat(alpha, beta.shape[0], axis=0),
-             np.tile(beta, (alpha.shape[0], 1))], axis=1)
+        if self.spin_conserving:
+            alpha = np.zeros((comb(M, n_alpha), M), dtype=np.int64)
+            for i, occupied in enumerate(combinations(range(M), n_alpha)):
+                alpha[i, list(occupied)] = 1
+            beta = np.zeros((comb(M, n_beta), M), dtype=np.int64)
+            for i, occupied in enumerate(combinations(range(M), n_beta)):
+                beta[i, list(occupied)] = 1
+            occupations = np.concatenate(
+                [np.repeat(alpha, beta.shape[0], axis=0),
+                 np.tile(beta, (alpha.shape[0], 1))], axis=1)
+        else:
+            occupations = np.zeros((dim, 2 * M), dtype=np.int64)
+            for i, occupied in enumerate(combinations(range(2 * M), n_total)):
+                occupations[i, list(occupied)] = 1
 
         # Qubit register q = beta_matrix . x (mod 2), as reference_qubit_bits.
         encoding = _encoding_matrix(self.mapping, self.n_modes).astype(np.int64)

@@ -27,11 +27,14 @@ def main() -> None:
     rhf_energy = atoms.get_potential_energy()
     problem = atoms.calc.result.as_quantum_problem()
 
-    exact = Mandacaru(method="hva", layers=2, trace=False, **problem)
+    exact = Mandacaru(method="vqe", ansatz={"name": "hva", "layers": 2},
+                      trace=False, **problem)
     exact_energy = exact.run().optimal_energy
 
     circuit = Mandacaru(
-        method="hva", layers=2, evolution="trotter", order=2, steps=2,
+        method="vqe",
+        ansatz={"name": "hva", "layers": 2, "evolution": "trotter",
+                "order": 2, "steps": 2},
         checkpoint=str(data / "h2_hva.json"), trace=False, **problem)
     circuit_energy = circuit.run().optimal_energy
 

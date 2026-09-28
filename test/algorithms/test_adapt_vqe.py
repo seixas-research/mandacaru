@@ -34,7 +34,7 @@ from mandacaru.optimizers import DEFAULT_OPTIMIZER
 # optimized with.
 LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-12)
 
-POOL_NAMES = ["fermionic", "qubit", "qeb", "ceo", "ceo-ovp"]
+POOL_NAMES = ["fermionic", "qubit", "qeb", "ceo", "ceo-ovp", "spin-orbit"]
 
 
 # --------------------------------------------------------------------------- #
@@ -437,3 +437,72 @@ class TestOptimizerOption:
             Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                       pool="ceo", num_particles=(1, 1), n_spatial_orbitals=2,
                       optimizer="nope")
+
+
+class TestSpinOrbitCoupling:
+    """A Hamiltonian that conserves N but not S_z (spin-orbit coupling)."""
+
+    M = 3
+
+    @pytest.fixture(scope="class")
+    def problem(self):
+        from mandacaru.core.hamiltonian import spin_block_integrals
+        from mandacaru.core.mapping import Fermion
+
+        M = self.M
+        rng = np.random.default_rng(11)
+        a, b = rng.normal(size=(M, M)), rng.normal(size=(M, M))
+        eri = 0.2 * np.einsum("pr,qs->pqrs", b + b.T, b + b.T)
+        coupling = rng.normal(size=(2 * M, 2 * M)) \
+            + 1j * rng.normal(size=(2 * M, 2 * M))
+        coupling = 0.2 * (coupling + coupling.conj().T)
+        coupling[:M, :M] = coupling[M:, M:] = 0.0
+        fermion = Fermion.from_integrals(*spin_block_integrals(a + a.T, eri,
+                                                               coupling))
+        # Exact ground state among all two-electron states, any S_z.
+        matrix = fermion.map_to_qubits("jordan_wigner",
+                                       n_modes=2 * M).to_matrix()
+        states = [i for i in range(4 ** M) if bin(i).count("1") == 2]
+        exact = np.linalg.eigvalsh(matrix[np.ix_(states, states)])[0]
+        return fermion, exact
+
+    def _run(self, fermion, **options):
+        return Mandacaru(method="adapt-vqe", hamiltonian=fermion,
+                         num_particles=(1, 1), n_spatial_orbitals=self.M,
+                         atomic_units=True, trace=False, profile=False,
+                         **options).run()
+
+    @pytest.mark.parametrize("options", [
+        {}, {"sector": True}, {"sector": True, "sparse": "matrix-free"}])
+    def test_the_spin_orbit_pool_reaches_the_exact_ground_state(
+            self, problem, options):
+        fermion, exact = problem
+        result = self._run(fermion, pool="spin-orbit", max_iterations=40,
+                           convergence={"gradient": 1e-6, "energy": None},
+                           **options)
+        assert result.in_units("Ha") == pytest.approx(exact, abs=1e-9)
+
+    def test_a_spin_conserving_pool_is_refused(self, problem):
+        fermion, _ = problem
+        with pytest.raises(ValueError, match="pool='spin-orbit'"):
+            self._run(fermion, pool="fermionic", max_iterations=1)
+
+    # Their ansatz and references conserve S_z: they would settle in a sector
+    # the Hamiltonian does not keep.
+
+    def test_vqe_refuses_it(self, problem):
+        from mandacaru.circuits import UCCSD
+
+        fermion, _ = problem
+        with pytest.raises(NotImplementedError, match="spin-orbit"):
+            Mandacaru(method="vqe", hamiltonian=fermion,
+                      ansatz=UCCSD(self.M, (1, 1)), atomic_units=True,
+                      trace=False).run()
+
+    def test_subspace_adapt_refuses_it(self, problem):
+        fermion, _ = problem
+        with pytest.raises(NotImplementedError, match="spin-orbit"):
+            Mandacaru(method="subspace-adapt-vqe", hamiltonian=fermion,
+                      pool="spin-orbit", num_particles=(1, 1),
+                      n_spatial_orbitals=self.M, atomic_units=True,
+                      trace=False, profile=False, max_iterations=1).run()

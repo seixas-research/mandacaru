@@ -37,6 +37,9 @@ REFERENCES_CHOICES = (True, False, None, "auto")
 #: excitations of :cite:`Yordanov2021`, so it cites both.
 _POOL_KEYS = {
     "fermionic": ("Grimsley2019",),
+    # The fermionic pool with the S_z filter and the reality of the
+    # generators lifted; no separate source introduces it.
+    "spin-orbit": ("Grimsley2019",),
     "qubit": ("Tang2021",),
     "qeb": ("Yordanov2021",),
     "ceo": ("Yordanov2021", "Ramoa2025"),
@@ -53,19 +56,27 @@ _MAPPING_KEYS = {
 _METHOD_KEYS = {
     "rhf": ("Roothaan1951",),
     "uhf": ("PopleNesbet1954",),
-    "vqe": ("Peruzzo2014", "Romero2019"),
-    "hva": ("Peruzzo2014", "Wecker2015"),
+    # The circuit a fixed-ansatz VQE optimizes -- here and in subspace-vqe
+    # and bloch-vqe -- is cited through _ANSATZ_KEYS.
+    "vqe": ("Peruzzo2014",),
     "adapt-vqe": ("Peruzzo2014", "Grimsley2019"),
-    "subspace-vqe": ("Peruzzo2014", "Romero2019", "Nakanishi2019"),
+    "subspace-vqe": ("Peruzzo2014", "Nakanishi2019"),
     "subspace-adapt-vqe": ("Peruzzo2014", "Grimsley2019", "Nakanishi2019"),
     "qpe": ("Kitaev1995", "AspuruGuzik2005"),
     # The periodic pair cite their variational method plus the machinery that
     # makes it a crystal: the Born-von Karman supercell the mesh realizes, the
     # Monkhorst-Pack sampling, and the Ewald sum the electrostatics use.
-    "bloch-vqe": ("Peruzzo2014", "Romero2019", "BornKarman1912",
+    "bloch-vqe": ("Peruzzo2014", "BornKarman1912",
                   "MonkhorstPack1976", "Ewald1921"),
     "bloch-adapt-vqe": ("Peruzzo2014", "Grimsley2019", "BornKarman1912",
                         "MonkhorstPack1976", "Ewald1921"),
+}
+
+#: Circuit template of ``method="vqe"`` (``ansatz=``) -> the papers that
+#: define it.
+_ANSATZ_KEYS = {
+    "uccsd": ("Romero2019",),
+    "hva": ("Wecker2015",),
 }
 
 _OPTIMIZER_KEYS = {
@@ -168,7 +179,8 @@ def _pseudo_keys(family, options) -> list:
     return keys
 
 
-def citation_keys(*, method=None, pool=None, mapping=None, basis=None,
+def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
+                  basis=None,
                   family=None, basis_options=None, optimizer=None,
                   backend_provider=None, shots=0, execute_circuits=False,
                   profile=False, tetris=False, prune=False,
@@ -191,6 +203,7 @@ def citation_keys(*, method=None, pool=None, mapping=None, basis=None,
         keys.append("Larsen2017")
 
     keys += list(_METHOD_KEYS.get(_dashed(method), ()))
+    keys += list(_ANSATZ_KEYS.get(_key(ansatz), ()))
     keys += list(_POOL_KEYS.get(_dashed(pool), ()))
     if tetris:
         keys.append("Anastasiou2024")

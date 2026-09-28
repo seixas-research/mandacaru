@@ -45,6 +45,15 @@ DIRECT = dict(num_particles=(1, 1), n_spatial_orbitals=2, atomic_units=True,
 # optimized with.
 COBYLA_OPT = Optimizer(method="COBYLA", maxiter=2000, tol=1e-12)
 LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-12)
+#: The warm-start comparison certifies on the gradient.  SciPy reads ``tol`` as
+#: L-BFGS-B's ``gtol`` too, and 1e-12 is below the ~1e-8 gradient a converged
+#: optimum retains: the resumed run then line-searches away from the optimum
+#: it started on, for 4, 16 or 84 evaluations depending only on the order the
+#: Hamiltonian's terms were summed.  A gradient test above that floor makes
+#: "starting at the optimum costs less" a property of the resume, not of the
+#: rounding.
+LBFGS_CERTIFIED = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-12,
+                            options={"gtol": 1e-6})
 
 
 def h2(distance=0.74):
@@ -316,12 +325,13 @@ class TestVQEResume:
 
         cold = h2()
         cold.calc = Mandacaru(method="vqe", basis="HAO", h=0.4,
-                              optimizer=LBFGS, trace=False)
+                              optimizer=LBFGS_CERTIFIED, trace=False)
         cold.get_total_energy()
 
         atoms = h2()
         atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.4,
-                               optimizer=LBFGS, trace=False, resume=path)
+                               optimizer=LBFGS_CERTIFIED, trace=False,
+                               resume=path)
         assert atoms.get_total_energy() == pytest.approx(energy, abs=1e-8)
         # Starting at the optimum costs less than starting from zero.  How
         # much less is the optimizer's tolerance to decide -- a tight one

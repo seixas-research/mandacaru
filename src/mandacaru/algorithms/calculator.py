@@ -75,6 +75,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
 
+from .ansatz_spec import resolve_ansatz
 from .bloch import BLOCH_METHODS
 from ..pseudopotentials.environment import DEFAULT_XC as DEFAULT_LIBRARY_FOLDER
 from ..units import BOHR_TO_ANGSTROM, DEFAULT_GRID_SPACING
@@ -88,7 +89,7 @@ DEFAULT_METHOD = "adapt-vqe"
 #: Stable method names accepted by ``method=``.
 #: The periodic names are declared by the module that implements them, so
 #: there is one place to change them.
-STABLE_METHODS = ("rhf", "uhf", "vqe", "hva", "adapt-vqe",
+STABLE_METHODS = ("rhf", "uhf", "vqe", "adapt-vqe",
                   "subspace-vqe", "subspace-adapt-vqe",
                   *BLOCH_METHODS)
 
@@ -142,12 +143,11 @@ def resolve_method(name: str):
         # they are reached from, and ``Mandacaru(method=...)`` the one way in.
         from .adapt_vqe import ADAPTVQE
         from .bloch import _bloch_drivers
-        from .hva import HVA
         from .mean_field import RHFDriver, UHFDriver
         from .subspace import SubspaceADAPTVQE, SubspaceVQE
         from .vqe import VQE
         classes = {"rhf": RHFDriver, "uhf": UHFDriver,
-                   "vqe": VQE, "hva": HVA, "adapt-vqe": ADAPTVQE,
+                   "vqe": VQE, "adapt-vqe": ADAPTVQE,
                    "subspace-vqe": SubspaceVQE,
                    "subspace-adapt-vqe": SubspaceADAPTVQE}
         # The periodic drivers are these same solvers over the Born-von Karman
@@ -350,8 +350,9 @@ class Mandacaru(Calculator):
     ----------
     method : str
         Which solver evaluates the energy -- ``"adapt-vqe"`` (the default),
-        classical ``"rhf"`` / ``"uhf"``, fixed-layer ``"hva"``, ``"vqe"``,
-        or the subspace-search variants
+        classical ``"rhf"`` / ``"uhf"``, ``"vqe"`` (a fixed ansatz, chosen by
+        ``ansatz=``: ``"uccsd"`` or the Hamiltonian variational ansatz
+        ``"hva"``), or the subspace-search variants
         ``"subspace-vqe"`` / ``"subspace-adapt-vqe"``.  ADAPT-VQE is the
         practical choice for anything beyond a couple of orbitals: a fixed UCCSD
         ansatz becomes very slow past ~8 qubits.  A method registered through
@@ -510,10 +511,11 @@ class Mandacaru(Calculator):
         if self.method in ("rhf", "uhf") and measurement_provider is not None:
             raise ValueError("classical RHF/UHF has no quantum state to measure; "
                              "omit measurement_provider=")
-        if self.method == "hva" and measurement_provider is not None \
-                and solver_kwargs.get("evolution", "exact") != "trotter":
-            raise ValueError("HVA circuit measurement requires "
-                             "evolution='trotter'")
+        if measurement_provider is not None:
+            spec = resolve_ansatz(solver_kwargs.get("ansatz"))
+            if spec is not None and spec.evolution == "exact":
+                raise ValueError("HVA circuit measurement requires "
+                                 "evolution='trotter'")
         # The library folder, stored under its own name: ASE's `directory`
         # attribute is the calculator's working directory.
         self.library_folder = str(directory)
@@ -2008,7 +2010,8 @@ class Mandacaru(Calculator):
 
         ansatz = AdaptAnsatz(solver.n_qubits, solver.pool.occupied_orbitals,
                              solver.mapping,
-                             sparse=getattr(solver, "_sparse", False))
+                             sparse=getattr(solver, "_sparse", False),
+                             matrix_free=getattr(solver, "_matrix_free", False))
         labels = {op.label: op for op in solver._pool_ops}
         for label in result.operators:
             ansatz.append(labels[label])

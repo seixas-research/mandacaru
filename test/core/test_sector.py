@@ -162,3 +162,47 @@ def test_restrict_of_nothing_is_empty():
     sector = ParticleSector(4, (1, 1), "jordan_wigner")
     empty = sector.restrict(PauliSum({}, num_qubits=4))
     assert empty.shape == (sector.dim, sector.dim) and empty.nnz == 0
+
+
+def spin_orbit_hamiltonian(seed=11, strength=0.3):
+    """A number-conserving Hamiltonian whose one-body part couples the spins."""
+    rng = np.random.default_rng(seed)
+    a = rng.normal(size=(M, M))
+    eri = np.zeros((M, M, M, M))
+    b = rng.normal(size=(M, M))
+    eri += np.einsum("pr,qs->pqrs", b + b.T, b + b.T)
+    coupling = rng.normal(size=(2 * M, 2 * M)) \
+        + 1j * rng.normal(size=(2 * M, 2 * M))
+    coupling = strength * (coupling + coupling.conj().T)
+    coupling[:M, :M] = coupling[M:, M:] = 0.0
+    return Fermion.from_integrals(*spin_block_integrals(a + a.T, eri,
+                                                        coupling))
+
+
+class TestTotalNumberSector:
+    """``spin_conserving=False``: every state with N electrons, any S_z."""
+
+    def test_the_dimension_counts_every_spin_distribution(self):
+        from math import comb
+        sector = ParticleSector(2 * M, (2, 1), spin_conserving=False)
+        assert sector.dim == comb(2 * M, 3)
+        assert np.all(sector.occupations.sum(axis=1) == 3)
+
+    @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity",
+                                         "bravyi_kitaev"])
+    def test_a_spin_orbit_hamiltonian_is_restricted_exactly(self, mapping):
+        qubit_h = spin_orbit_hamiltonian().map_to_qubits(mapping,
+                                                         n_modes=2 * M)
+        total = ParticleSector(2 * M, (1, 1), mapping, spin_conserving=False)
+        assert total.conserves(qubit_h)
+        full = qubit_h.to_sparse_matrix().toarray()
+        block = full[np.ix_(total.indices, total.indices)]
+        assert np.allclose(total.restrict(qubit_h).toarray(), block,
+                           atol=1e-12)
+        # The (n_alpha, n_beta) sector is not closed under it.
+        assert not ParticleSector(2 * M, (1, 1), mapping).conserves(qubit_h)
+
+    def test_the_parity_reduction_is_refused(self):
+        with pytest.raises(ValueError, match="S_z"):
+            ParticleSector(2 * M - 2, (1, 1), "parity_reduced",
+                           spin_conserving=False)

@@ -40,13 +40,17 @@ deflation -- see :mod:`mandacaru.algorithms.deflation`.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..core.mapping import Fermion
 from ..optimizers.optim import DEFAULT_OPTIMIZER, Optimizer
 from ..units import convert_energy
 from ..utils.profiling import Timings
+from .ansatz_spec import (HVA_REFUSED_OPTIONS, ansatz_name, build_ansatz,
+                          reference_problem, resolve_ansatz)
 from .base import VariationalDriver
 from .deflation import DeflationMixin, deflation_penalty
 
@@ -115,11 +119,18 @@ class VQE(DeflationMixin, VariationalDriver):
     hamiltonian : PauliSum or Fermion, optional
         The qubit Hamiltonian, or a fermionic Hamiltonian mapped with the
         ansatz's mapping.  Omit in calculator mode.
-    ansatz : object, optional
-        A parameterized ansatz exposing ``num_parameters``, ``n_qubits``,
-        ``state(theta)`` and ``reference_state()`` (e.g.
-        :class:`~mandacaru.circuits.ansatz.UCCSD`).  Omit in calculator mode; a
-        UCCSD ansatz is then built from the geometry.
+    ansatz : str, dict or object, optional
+        The circuit to optimize (:mod:`mandacaru.algorithms.ansatz_spec`): a
+        template name -- ``"uccsd"`` (the default) or ``"hva"``, the
+        Hamiltonian variational ansatz -- or ``{"name": ..., <options>}``, e.g.
+        ``{"name": "hva", "layers": 3, "evolution": "trotter"}``; the circuit
+        is built from the Hamiltonian once it exists.  A pre-built ansatz
+        object exposing ``num_parameters``, ``n_qubits``, ``state(theta)`` and
+        ``reference_state()`` is used as it is.
+    num_particles, n_spatial_orbitals : optional
+        ``(n_alpha, n_beta)`` and the spatial-orbital count of a direct
+        ``hamiltonian``, from which a named ansatz is built;
+        ``n_spatial_orbitals`` defaults to half the modes of a ``Fermion``.
     optimizer : str, dict or Optimizer
         A method name -- one of ``"SPSA"``, ``"COBYLA"``, ``"Nelder-Mead"``,
         ``"SLSQP"`` (default), ``"L-BFGS"``, ``"BFGS"`` -- taking the
@@ -136,8 +147,10 @@ class VQE(DeflationMixin, VariationalDriver):
         ``{"name": ..., <options>}`` dict, including the periodic ``"PW"`` plane-wave
         family ``{"name": "PW", "energy_cutoff": 300}``) and grid resolution ``h``
         build the Hamiltonian from the ASE geometry (the grid is generated from
-        ``atoms.cell`` unless ``grid`` is given), ``ansatz_builder`` overrides the
-        default UCCSD factory.  ``kpts`` is a Monkhorst-Pack mesh resolved with ASE
+        ``atoms.cell`` unless ``grid`` is given), ``ansatz_builder`` -- a
+        callable ``(n_spatial_orbitals, num_particles, mapping) -> ansatz`` --
+        replaces the named templates.  ``kpts`` is a Monkhorst-Pack mesh
+        resolved with ASE
         (Gamma-point only is runnable; see ``ADAPTVQE``).
     frozen_core : bool, str or int
         Frozen-core approximation (default ``False``, no freezing).  ``True`` /
@@ -182,12 +195,40 @@ class VQE(DeflationMixin, VariationalDriver):
     def __init__(self, hamiltonian=None, ansatz=None,
                  optimizer: str | Optimizer = DEFAULT_OPTIMIZER,
                  verbose: bool = True,
-                 *, ansatz_builder=None, **driver_kwargs):
+                 *, num_particles=None, n_spatial_orbitals=None,
+                 ansatz_builder=None, **driver_kwargs):
+        spec = resolve_ansatz(ansatz)
+        if ansatz_builder is not None and ansatz is not None:
+            raise ValueError("pass either ansatz= or ansatz_builder=, not both")
+        if spec is not None and spec.name == "hva":
+            used = [name for name in HVA_REFUSED_OPTIONS
+                    if name != "ansatz_builder" and driver_kwargs.get(name)]
+            if used:
+                raise ValueError(
+                    "the HVA needs its fermionic group decomposition and a "
+                    "local optimization; it does not take "
+                    + ", ".join(f"{name}=" for name in used))
+            # Its exact group exponentials act on sparse matrices; a dense
+            # 2^n Hamiltonian is only the default for the UCCSD's sake.
+            if driver_kwargs.get("sparse") is None:
+                driver_kwargs["sparse"] = "auto"
         # Every other keyword is a VariationalDriver option, forwarded
         # untouched so its name and default live in one place.
         super().__init__(optimizer=optimizer, verbose=verbose, **driver_kwargs)
+        # After the base resolved it: Braket and Cirq execute circuits by
+        # default, without an explicit execute_circuits=True.
+        if spec is not None and spec.evolution == "exact" \
+                and self.execute_circuits:
+            raise ValueError(
+                "exact HVA group evolution has no generic circuit; set "
+                "evolution='trotter' for circuit execution")
         self.ansatz_builder = ansatz_builder
-        self._preset_ansatz = ansatz
+        #: The named template, or ``None`` for a pre-built ansatz object.
+        self._ansatz_spec = spec
+        self._preset_ansatz = ansatz if spec is None else None
+        if spec is not None:
+            hamiltonian, num_particles, n_spatial_orbitals = reference_problem(
+                spec, hamiltonian, num_particles, n_spatial_orbitals)
 
         # A cached Hamiltonian carries num_particles / n_spatial_orbitals, so it
         # is a complete problem specification: the default UCCSD ansatz can be
@@ -200,7 +241,8 @@ class VQE(DeflationMixin, VariationalDriver):
         elif hamiltonian is None and self.load_hamiltonian is not None:
             hamiltonian, num_particles, n_orbitals = \
                 self._load_hamiltonian_record()
-            if ansatz is None and (num_particles is None or n_orbitals is None):
+            if self._preset_ansatz is None and (num_particles is None
+                                                or n_orbitals is None):
                 raise ValueError(
                     f"{self.load_hamiltonian!r} does not record num_particles / "
                     "n_spatial_orbitals, so the default UCCSD ansatz cannot be "
@@ -208,29 +250,58 @@ class VQE(DeflationMixin, VariationalDriver):
             self._configure(hamiltonian, num_particles, n_orbitals)
             self._built_from_hamiltonian = True
             self._maybe_write_references()
-        # Direct mode: a Hamiltonian and ansatz were supplied at construction.
-        elif hamiltonian is not None and ansatz is not None:
+        # Direct mode: a Hamiltonian with a pre-built ansatz, or with the
+        # particle counts a named template is built from.
+        elif hamiltonian is not None and (self._preset_ansatz is not None
+                                          or num_particles is not None):
+            if self._preset_ansatz is not None:
+                if num_particles is not None or n_spatial_orbitals is not None:
+                    raise ValueError(
+                        "a pre-built ansatz carries its own particle and "
+                        "orbital counts; omit num_particles= and "
+                        "n_spatial_orbitals=")
+                num_particles = getattr(self._preset_ansatz,
+                                        "num_particles", None)
+                n_spatial_orbitals = getattr(self._preset_ansatz,
+                                             "n_spatial_orbitals", None)
+            elif n_spatial_orbitals is None:
+                if not isinstance(hamiltonian, Fermion):
+                    raise ValueError(
+                        "a qubit Hamiltonian needs n_spatial_orbitals= to "
+                        "build a named ansatz")
+                n_spatial_orbitals = hamiltonian.n_modes() // 2
             if self.dry_run:
-                # The ansatz is not attached (no _configure), so read the
-                # occupation off the one that was handed in.
-                self._dry_run_problem = (
-                    hamiltonian, getattr(ansatz, "num_particles", None),
-                    getattr(ansatz, "n_spatial_orbitals", None))
+                self._dry_run_problem = (hamiltonian, num_particles,
+                                         n_spatial_orbitals)
             else:
-                self._configure(hamiltonian, None, None)
+                self._configure(hamiltonian, num_particles, n_spatial_orbitals)
                 self._maybe_write_references()
                 self._built_from_hamiltonian = True
+        elif num_particles is not None or n_spatial_orbitals is not None:
+            raise ValueError("num_particles= and n_spatial_orbitals= describe "
+                             "a direct hamiltonian=; pass one")
 
     # -- setup ------------------------------------------------------------ #
 
     def _configure(self, hamiltonian, num_particles, n_orbitals) -> None:
         """Adopt / build the ansatz for ``hamiltonian`` and materialize it.
 
-        In direct mode the ansatz supplied at construction is used; in calculator
-        mode a default UCCSD ansatz is built from ``num_particles`` / ``n_orbitals``.
+        A pre-built ansatz is used as it is; otherwise ``ansatz_builder`` or
+        the named template
+        (:func:`~mandacaru.algorithms.ansatz_spec.build_ansatz`) builds one from ``num_particles`` / ``n_orbitals`` -- and, for the
+        HVA, from the fermionic Hamiltonian itself.
         """
-        ansatz = (self._preset_ansatz if self._preset_ansatz is not None
-                  else self._default_ansatz(n_orbitals, num_particles))
+        if self._preset_ansatz is not None:
+            ansatz = self._preset_ansatz
+        elif self.ansatz_builder is not None:
+            ansatz = self.ansatz_builder(n_orbitals, num_particles,
+                                         self.mapping)
+        else:
+            ansatz = build_ansatz(
+                self._ansatz_spec, hamiltonian=hamiltonian,
+                num_particles=num_particles, n_spatial_orbitals=n_orbitals,
+                mapping=self.mapping, taper=self.taper,
+                provider=self.ansatz_provider(), shots=self.shots)
         self.ansatz = ansatz
         self.mapping = getattr(ansatz, "mapping", self.mapping)
         # Expose the occupation / active-space size like ADAPTVQE does, so the
@@ -240,34 +311,37 @@ class VQE(DeflationMixin, VariationalDriver):
                               else tuple(int(v) for v in particles))
         self.n_spatial_orbitals = getattr(ansatz, "n_spatial_orbitals",
                                           n_orbitals)
-        qubit_h = self._as_pauli_sum(hamiltonian, ansatz.n_qubits, particles)
+        # An ansatz that tapered its own register (the HVA, whose Z2 sector
+        # must keep every fixed group) brings the tapered Hamiltonian with it.
+        self._taper_info = getattr(ansatz, "taper_info", None)
+        if self._taper_info is not None:
+            qubit_h = self._taper_info.hamiltonian
+        else:
+            if self.taper:
+                warnings.warn(
+                    f"taper=True found no Z2 symmetry the "
+                    f"{type(ansatz).__name__} keeps; the run continues "
+                    f"untapered", RuntimeWarning, stacklevel=2)
+            qubit_h = self._as_pauli_sum(hamiltonian, ansatz.n_qubits,
+                                         particles)
         self._materialize_hamiltonian(qubit_h, ansatz.n_qubits)
-        self._maybe_save_hamiltonian(
-            getattr(ansatz, "num_particles", num_particles),
-            getattr(ansatz, "n_spatial_orbitals", n_orbitals))
-        self._maybe_dump_hamiltonian(
-            getattr(ansatz, "num_particles", num_particles),
-            getattr(ansatz, "n_spatial_orbitals", n_orbitals))
+        self._maybe_save_hamiltonian(self.num_particles,
+                                     self.n_spatial_orbitals)
+        self._maybe_dump_hamiltonian(self.num_particles,
+                                     self.n_spatial_orbitals)
         self._configured = True
 
-    def _default_ansatz(self, n_spatial_orbitals, num_particles):
-        """Build the default UCCSD ansatz for calculator mode.
+    def _default_parameters(self) -> np.ndarray:
+        """Where an optimization starts without ``initial_parameters``.
 
-        With circuit execution enabled the ansatz is built in **Trotter** form and
-        bound to the provider: a quantum circuit realizes the product of
-        single-generator exponentials, not the exact exponential of the summed
-        cluster operator.
+        The ansatz's own choice when it has one -- the HVA starts every angle
+        at its ``seed_angle``, off the stationary all-zero point -- else the
+        reference state, all zeros.
         """
-        if self.ansatz_builder is not None:
-            return self.ansatz_builder(n_spatial_orbitals, num_particles,
-                                       self.mapping)
-        from ..circuits import UCCSD
-        provider = self.ansatz_provider()
-        return UCCSD(n_spatial_orbitals, num_particles, mapping=self.mapping,
-                     # A circuit realizes the Trotter product, so the state
-                     # matches the executed circuit whenever one is run.
-                     trotter=provider is not None or bool(self.shots),
-                     provider=provider)
+        start = getattr(self.ansatz, "initial_parameters", None)
+        if start is not None:
+            return np.asarray(start(), dtype=float).ravel()
+        return np.zeros(self.ansatz.num_parameters)
 
     # -- energy ----------------------------------------------------------- #
 
@@ -300,7 +374,7 @@ class VQE(DeflationMixin, VariationalDriver):
         self._check_kpts()
 
         n = self.ansatz.num_parameters
-        x0 = (np.zeros(n) if initial_parameters is None
+        x0 = (self._default_parameters() if initial_parameters is None
               else np.asarray(initial_parameters, dtype=float).ravel())
         if x0.size != n:
             raise ValueError(f"expected {n} initial parameters, got {x0.size}")
@@ -365,6 +439,49 @@ class VQE(DeflationMixin, VariationalDriver):
             self._print_summary(vqe_result, timings)
         return vqe_result
 
+    def _checkpoint_record(self, ansatz, parameters, energy_ha, status,
+                           labels=None, kinds=None):
+        """The shared record, with an ansatz's own parameter encoding.
+
+        An ansatz whose logical angles are not its generators' angles (the
+        HVA: one angle per group, many rotations per group) stores the
+        generator angles as ``parameters`` -- what any consumer prepares the
+        state from -- and its logical angles and identity beside them.
+        """
+        encode = getattr(ansatz, "checkpoint_parameters", None)
+        if encode is None:
+            return super()._checkpoint_record(ansatz, parameters, energy_ha,
+                                              status, labels=labels,
+                                              kinds=kinds)
+        from ..circuits.hva import CHECKPOINT_KEY, LOGICAL_PARAMETERS_KEY
+
+        logical = np.asarray(parameters, dtype=float).ravel()
+        expanded = encode(logical)
+        if labels is None:
+            labels = ansatz.checkpoint_labels()
+        if kinds is None:
+            kinds = [ansatz_name(ansatz) or "custom"] * expanded.size
+        record = super()._checkpoint_record(ansatz, expanded, energy_ha,
+                                            status, labels=labels, kinds=kinds)
+        record.status[LOGICAL_PARAMETERS_KEY] = logical.tolist()
+        record.metadata[CHECKPOINT_KEY] = ansatz.checkpoint_metadata(
+            self.hamiltonian)
+        return record
+
+    def _load_resume(self, ansatz):
+        """The resumed record, decoded to the ansatz's logical angles."""
+        record = super()._load_resume(ansatz)
+        decode = getattr(ansatz, "parameters_from_checkpoint", None)
+        if record is None or decode is None:
+            return record
+        if record.num_particles != self.num_particles \
+                or record.n_spatial_orbitals != self.n_spatial_orbitals:
+            raise ValueError(
+                f"cannot resume from {self.resume_path!r}: its particle or "
+                f"orbital counts differ from this run's")
+        record.parameters = decode(record, self.hamiltonian)
+        return record
+
     def _check_resumed_generators(self, record) -> None:
         """A VQE checkpoint resumes only into the ansatz that wrote it."""
         mine = [g.simplify().terms for g in self.ansatz.pauli_generators]
@@ -392,7 +509,7 @@ class VQE(DeflationMixin, VariationalDriver):
         Called per level by :meth:`~mandacaru.algorithms.deflation.DeflationMixin.energy_levels`.
         """
         n = self.ansatz.num_parameters
-        base_x0 = (np.zeros(n) if initial_parameters is None
+        base_x0 = (self._default_parameters() if initial_parameters is None
                    else np.asarray(initial_parameters, dtype=float).ravel())
         if base_x0.size != n:
             raise ValueError(f"expected {n} initial parameters, got {base_x0.size}")
@@ -448,8 +565,20 @@ class VQE(DeflationMixin, VariationalDriver):
         print(rule)
 
     def _ansatz_details(self) -> tuple[str, ...]:
-        """Method-specific configuration lines inside the shared VQE header."""
-        return ()
+        """The ansatz's own configuration lines inside the shared VQE header."""
+        describe = getattr(self.ansatz, "describe", None)
+        lines = tuple(describe()) if describe is not None else ()
+        if getattr(self, "_taper_info", None) is not None:
+            lines += (self._taper_info.summary(),)
+        return lines
+
+    def _citation_config(self) -> dict:
+        """The shared configuration plus the template that ran."""
+        config = super()._citation_config()
+        ansatz = getattr(self, "ansatz", None)
+        config["ansatz"] = (ansatz_name(ansatz) if ansatz is not None
+                            else getattr(self._ansatz_spec, "name", None))
+        return config
 
     def _print_summary(self, result: VQEResult,
                        timings: Timings | None = None) -> None:

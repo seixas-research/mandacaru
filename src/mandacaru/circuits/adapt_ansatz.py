@@ -20,6 +20,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..core.mapping import reference_qubit_bits, resolve_mapping
+from ..core.matrix_free import MATRIX_FREE_CACHE_BYTES, PauliOperator
 from .pools import PoolOperator
 
 
@@ -34,7 +35,7 @@ class AdaptAnsatz:
 
     ``|psi(theta)> = prod_k exp(theta_k A_k) |HF>`` applied in append order.
 
-    Two evaluation backends, chosen by ``sparse``:
+    Three evaluation backends, chosen by ``sparse`` and ``matrix_free``:
 
     * **dense** (default) -- each ``exp(theta_k A_k)`` is applied via the cached
       eigendecomposition of the anti-Hermitian generator ``A_k``;
@@ -45,6 +46,10 @@ class AdaptAnsatz:
       matrix-vector products, no ``2^n x 2^n`` dense matrix.  Generators that fail
       the identity fall back to :func:`scipy.sparse.linalg.expm_multiply`.  This is
       what keeps 12+-qubit active spaces tractable.
+    * **matrix-free** (``matrix_free=True``) -- the same closed form, with ``A``
+      and ``A^2`` applied as Pauli strings
+      (:class:`~mandacaru.core.matrix_free.PauliOperator`) and ``A^2`` formed in
+      the Pauli algebra: no matrix is stored at all, only the state vectors.
 
     A third, **circuit-executing** backend is selected by passing a ``provider``
     (see :mod:`mandacaru.backends.providers`): the ansatz is then compiled to a real
@@ -61,7 +66,8 @@ class AdaptAnsatz:
 
     def __init__(self, n_qubits: int, occupied: tuple[int, ...],
                  mapping: str = "jordan_wigner", sparse: bool = False,
-                 provider=None, num_particles=None, sector=None):
+                 provider=None, num_particles=None, sector=None,
+                 matrix_free: bool = False):
         self.n_qubits = int(n_qubits)
         #: Particle-number sector the generators act in (``None``: full register).
         self.sector = sector
@@ -75,7 +81,13 @@ class AdaptAnsatz:
         self.num_particles = num_particles
         self.n_modes = self.n_qubits + (
             2 if self.mapping == "parity_reduced" else 0)
-        self.sparse = bool(sparse) or sector is not None
+        #: Apply the generators as Pauli strings
+        #: (:class:`~mandacaru.core.matrix_free.PauliOperator`), storing no
+        #: matrix; implies :attr:`sparse`.
+        self.matrix_free = bool(matrix_free)
+        #: What the matrix-free generators may still store between products.
+        self._cache_left = MATRIX_FREE_CACHE_BYTES
+        self.sparse = bool(sparse) or sector is not None or self.matrix_free
         self.provider = provider
         self._ops: list[PoolOperator] = []
         self._eig: list[tuple[np.ndarray, np.ndarray]] = []   # dense (w, V)
@@ -105,6 +117,25 @@ class AdaptAnsatz:
             # Circuit execution needs only the generator's Pauli terms; skip the
             # (expensive) dense eigendecomposition / sparse powers entirely.
             return
+        if self.matrix_free:
+            # A^2 is formed in the Pauli algebra, and A^3 = -A is checked there
+            # too: no matrix at any point.
+            generator = op.generator
+            square = generator.compose(generator)
+            residual = (generator.compose(square) + generator).simplify(1e-9)
+            pair = []
+            for operator in (generator, square.simplify()):
+                # Every evaluation applies every appended generator, so each
+                # stores its CSR block while the ansatz's shared budget lasts
+                # and is recomputed on every product after that.
+                bound = PauliOperator(operator, sector=self.sector,
+                                      cache_bytes=0).stored_bytes_bound()
+                keep = bound if bound <= self._cache_left else 0
+                self._cache_left -= keep
+                pair.append(PauliOperator(operator, sector=self.sector,
+                                          cache_bytes=keep))
+            self._sparse_ops.append((*pair, not residual.terms))
+            return
         if self.sparse:
             A = (self.sector.restrict(op.generator) if self.sector is not None
                  else op.generator.to_sparse_matrix())
@@ -130,6 +161,10 @@ class AdaptAnsatz:
         every eigendecomposition.
         """
         op = self._ops.pop(index)
+        if self.matrix_free:
+            # Its stored blocks go back to the shared budget.
+            A, A2, _ = self._sparse_ops[index]
+            self._cache_left += A._budget + A2._budget
         for cache in (self._sparse_ops, self._eig):
             if cache:
                 cache.pop(index)
@@ -188,6 +223,10 @@ class AdaptAnsatz:
                 if rodrigues:
                     out = (out + np.sin(angle) * (A @ out)
                            + (1.0 - np.cos(angle)) * (A2 @ out))
+                elif self.matrix_free:
+                    from scipy.sparse.linalg import expm_multiply
+                    out = expm_multiply(angle * A.as_linear_operator(), out,
+                                        traceA=angle * A.trace())
                 else:
                     from scipy.sparse.linalg import expm_multiply
                     out = expm_multiply(angle * A, out)

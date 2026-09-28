@@ -31,6 +31,25 @@ def single_excitation(i: int, a: int) -> Fermion:
     return t - t.dagger()
 
 
+def imaginary_single_excitation(i: int, a: int) -> Fermion:
+    r"""Anti-Hermitian single excitation with an imaginary amplitude,
+    :math:`i(a^\dagger_a a_i + a^\dagger_i a_a)`.
+
+    :func:`single_excitation` generates real rotations only; a Hamiltonian with
+    complex matrix elements (spin-orbit coupling) needs this partner too.
+    """
+    t = Fermion.creation(a) * Fermion.annihilation(i)
+    return (t + t.dagger()) * 1j
+
+
+def imaginary_double_excitation(i: int, j: int, a: int, b: int) -> Fermion:
+    r"""Anti-Hermitian double excitation with an imaginary amplitude,
+    :math:`i(a^\dagger_a a^\dagger_b a_j a_i + \text{h.c.})`."""
+    t = (Fermion.creation(a) * Fermion.creation(b)
+         * Fermion.annihilation(j) * Fermion.annihilation(i))
+    return (t + t.dagger()) * 1j
+
+
 def double_excitation(i: int, j: int, a: int, b: int) -> Fermion:
     r"""Anti-Hermitian double-excitation generator ``a+_a a+_b a_j a_i - h.c.``.
 

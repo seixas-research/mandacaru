@@ -43,9 +43,14 @@ from ..backends.hardware import (device_arn, device_provider, is_aws_device,
                                  requires_shots)
 from ..backends.providers import build_provider, normalize_provider
 from ..core.mapping import Fermion, PauliSum
+from ..core.matrix_free import (MATRIX_FREE, STORED_MEMORY_FRACTION,
+                                PauliOperator, physical_memory_bytes,
+                                refuse_unaffordable_state,
+                                stored_operator_bytes)
 from ..core.serialization import (DEFAULT_FORMAT, EXTENSION_FORMATS,
                                   load_hamiltonian, resolve_format,
                                   resolve_save_path, save_hamiltonian)
+from ..core.spin_orbit import conserves_spin_projection
 from ..optimizers.optim import (DEFAULT_OPTIMIZER, NAMED_OPTIMIZERS,
                                 OptimizeResult, resolve_optimizer)
 from ..utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
@@ -522,24 +527,66 @@ class VariationalDriver(Calculator):
 
     @staticmethod
     def _resolve_sparse(sparse, n_qubits: int) -> bool:
-        """Resolve the ``sparse`` spec to a bool.
+        """Resolve the ``sparse`` spec to a bool: whether to avoid dense matrices.
 
         ``"auto"`` enables the sparse backend for ``n_qubits >= 10`` (where a dense
-        pool would need tens of GB); ``True`` / ``False`` force it on / off.
+        pool would need tens of GB); ``True`` / ``False`` force it on / off, and
+        ``"matrix-free"`` (:mod:`mandacaru.core.matrix_free`) is never dense.
         """
         if isinstance(sparse, str):
-            if sparse.strip().lower() == "auto":
+            spec = sparse.strip().lower()
+            if spec == "auto":
                 return int(n_qubits) >= 10
+            if spec == MATRIX_FREE:
+                return True
             raise ValueError(
-                f"unknown sparse spec {sparse!r}; use True, False or 'auto'")
+                f"unknown sparse spec {sparse!r}; use True, False, 'auto' or "
+                f"{MATRIX_FREE!r}")
         return bool(sparse)
 
+    def _resolve_matrix_free(self, qubit_h: PauliSum, dim: int,
+                             operators=()) -> bool:
+        """Whether the operators are applied matrix-free rather than stored.
+
+        ``sparse="matrix-free"`` forces it.  ``sparse="auto"`` chooses it only
+        when the stored form might not fit: the CSR bound -- one entry per
+        state per flip group (:func:`stored_operator_bytes`), which the real
+        matrix never exceeds -- summed over the Hamiltonian and ``operators``
+        (the pool) has to stay under :data:`STORED_MEMORY_FRACTION` of the
+        physical memory.  Below that the stored matrices are kept, since they
+        are several times faster to apply.
+        """
+        spec = self.sparse
+        if isinstance(spec, str) and spec.strip().lower() == MATRIX_FREE:
+            return True
+        if not (isinstance(spec, str) and spec.strip().lower() == "auto"):
+            return False
+        bound = stored_operator_bytes(qubit_h, dim) + sum(
+            stored_operator_bytes(getattr(op, "generator", op), dim)
+            for op in operators)
+        return bound > STORED_MEMORY_FRACTION * physical_memory_bytes()
+
+    #: Whether this driver can run a Hamiltonian that breaks S_z (spin-orbit
+    #: coupling).  Only ADAPT-VQE can, with the ``"spin-orbit"`` pool.
+    _supports_spin_orbit = False
     #: Drivers whose reference states cannot be tapered override this.
     _supports_parity_reduced = True
     #: Whether this driver can run on a Z2-tapered register.  ``False`` for a
     #: driver whose reference states are built on the full register, the same
     #: reason ``_supports_sector`` exists.
     _supports_tapering = True
+
+    def _refuse_spin_orbit(self):
+        """Refuse a Hamiltonian that breaks S_z in a driver that cannot run one.
+
+        Its ansatz and references conserve S_z, so it would settle in the
+        ``(n_alpha, n_beta)`` sector the Hamiltonian does not keep and return
+        a plausible-looking wrong energy.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot run a Hamiltonian with spin-orbit "
+            f"coupling: it conserves N but not S_z.  Use method='adapt-vqe' "
+            f"with pool='spin-orbit'")
 
     def _as_pauli_sum(self, hamiltonian, n_qubits: int,
                       num_particles=None) -> PauliSum:
@@ -551,6 +598,9 @@ class VariationalDriver(Calculator):
         if isinstance(hamiltonian, PauliSum):
             return hamiltonian
         if isinstance(hamiltonian, Fermion):
+            if (not self._supports_spin_orbit
+                    and not conserves_spin_projection(hamiltonian)):
+                self._refuse_spin_orbit()
             if self.mapping == "parity_reduced":
                 particles = (num_particles if num_particles is not None
                              else getattr(self, "num_particles", None))
@@ -561,11 +611,15 @@ class VariationalDriver(Calculator):
         raise TypeError("hamiltonian must be a PauliSum or Fermion")
 
     def _materialize_hamiltonian(self, qubit_h: PauliSum, n_qubits: int,
-                                 sector=None) -> bool:
+                                 sector=None, operators=()) -> bool:
         """Store the (Hermitized) dense or sparse Hamiltonian matrix.
 
-        Sets :attr:`hamiltonian`, :attr:`n_qubits`, :attr:`_sparse` and
-        :attr:`_h_matrix`; returns the resolved sparse flag.  A sparse matrix is
+        Sets :attr:`hamiltonian`, :attr:`n_qubits`, :attr:`_sparse`,
+        :attr:`_matrix_free` and :attr:`_h_matrix`; returns the resolved sparse
+        flag.  ``operators`` (the pool of an adaptive driver) enter the memory
+        estimate that decides between stored and matrix-free operators
+        (:meth:`_resolve_matrix_free`).  A register whose state vectors alone
+        cannot fit is refused here, before anything is allocated.  A sparse matrix is
         used when :meth:`_resolve_sparse` selects it (large active spaces).
         With a ``sector`` (:class:`~mandacaru.core.sector.ParticleSector`) the
         matrix is the Hamiltonian restricted to that particle-number sector --
@@ -589,6 +643,16 @@ class VariationalDriver(Calculator):
         self.hamiltonian = qubit_h
         self.n_qubits = int(n_qubits)
         self._sector = sector
+        dim = sector.dim if sector is not None else 1 << int(n_qubits)
+        refuse_unaffordable_state(int(n_qubits), dim, sector is not None)
+        self._matrix_free = self._resolve_matrix_free(qubit_h, dim, operators)
+        if self._matrix_free:
+            # Only integer masks and coefficients are kept; the Hermitian part
+            # is taken on the coefficients, as 0.5 * (H + H^dagger) would.
+            self._sparse = True
+            self._h_matrix = PauliOperator(qubit_h, sector=sector,
+                                           hermitian=True)
+            return self._sparse
         if sector is not None:
             self._sparse = True
             hs = sector.restrict(qubit_h)
@@ -658,6 +722,10 @@ class VariationalDriver(Calculator):
         from ..circuits.base import is_circuit_serializable
 
         ansatz = self.ansatz
+        if getattr(ansatz, "evolution", None) == "exact":
+            raise ValueError(
+                "exact HVA group evolution has no generic Pauli-rotation "
+                "circuit; use evolution='trotter' to export or measure it")
         if not is_circuit_serializable(ansatz):
             raise TypeError(
                 f"{type(ansatz).__name__} needs SerializableAnsatz data and "
@@ -672,9 +740,14 @@ class VariationalDriver(Calculator):
                 "measure it.")
         if theta is None:
             theta = self.result.optimal_parameters
+        # An ansatz whose angles are not its generators' angles (the HVA:
+        # one angle per group, a compiled rotation per Pauli string) expands
+        # them to the generator stream itself.
+        expand = getattr(ansatz, "circuit_parameters", None)
+        angles = (expand(theta) if expand is not None
+                  else np.asarray(theta, dtype=float))
         return (ansatz.n_qubits, ansatz.reference_qubits(),
-                ansatz.pauli_generators, np.asarray(theta, dtype=float),
-                self.hamiltonian)
+                ansatz.pauli_generators, angles, self.hamiltonian)
 
     def measured_energy(self, provider, theta=None) -> float:
         """``<H>`` of the optimized ansatz evaluated on ``provider``.

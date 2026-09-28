@@ -8,9 +8,10 @@
 
 """Variational quantum algorithms.
 
-The stable solvers -- classical RHF/UHF, VQE, fixed-layer HVA,
-**ADAPT-VQE** (the default method everywhere), and the subspace-search
-variants -- are reached **only** through :class:`Mandacaru` with their
+The stable solvers -- classical RHF/UHF, VQE (whose circuit, UCCSD or the
+Hamiltonian variational ansatz, is its ``ansatz=`` option), **ADAPT-VQE**
+(the default method everywhere), and the subspace-search variants -- are
+reached **only** through :class:`Mandacaru` with their
 ``method`` names.  The solver classes themselves are
 the internal layer and are deliberately **not exported**; what is exported is
 the calculator and the result types the solvers return.  The periodic

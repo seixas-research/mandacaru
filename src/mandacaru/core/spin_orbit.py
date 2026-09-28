@@ -191,6 +191,27 @@ def spin_orbit_one_body(projections, projectors, blocks) -> np.ndarray:
     return 0.5 * (out + out.conj().T)
 
 
+def conserves_spin_projection(fermion, tolerance: float = 1e-12) -> bool:
+    r"""Whether a spin-blocked :class:`~mandacaru.core.mapping.Fermion`
+    operator commutes with :math:`S_z`: no term changes the number of alpha
+    electrons (modes ``0..M-1`` of a ``2M``-mode register, the layout of
+    :func:`~mandacaru.core.hamiltonian.spin_block_integrals`).
+
+    Read off the operator itself, so it also holds for a Hamiltonian loaded
+    from a file.
+    """
+    n_modes = fermion.n_modes()
+    half = int(n_modes) // 2
+    for term, coefficient in fermion.terms.items():
+        if abs(coefficient) <= tolerance:
+            continue
+        change = sum((1 if dagger else -1) for mode, dagger in term
+                     if mode < half)
+        if change:
+            return False
+    return True
+
+
 def breaks_spin_symmetry(h_spin_orbit, tolerance: float = 1e-12) -> bool:
     """Whether the term actually couples the two spin blocks.
 

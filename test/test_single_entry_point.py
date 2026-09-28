@@ -24,8 +24,10 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # entry point; it is listed here so the sweep fails if it ever comes back.
 SOLVER_CLASSES = ("RHFDriver", "UHFDriver", "HVA", "VQE", "ADAPTVQE",
                   "SubspaceVQE", "SubspaceADAPTVQE", "BlochCalculator")
-METHODS = {"rhf": "RHFDriver", "uhf": "UHFDriver", "hva": "HVA",
-           "vqe": "VQE", "adapt-vqe": "ADAPTVQE", "subspace-vqe": "SubspaceVQE",
+# ``HVA`` was a method until it became ``method="vqe", ansatz="hva"``; it
+# stays in SOLVER_CLASSES so the sweep fails if the class ever comes back.
+METHODS = {"rhf": "RHFDriver", "uhf": "UHFDriver", "vqe": "VQE",
+           "adapt-vqe": "ADAPTVQE", "subspace-vqe": "SubspaceVQE",
            "subspace-adapt-vqe": "SubspaceADAPTVQE",
            "bloch-vqe": "BlochVQE", "bloch-adapt-vqe": "BlochADAPTVQE"}
 

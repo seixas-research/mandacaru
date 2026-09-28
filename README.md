@@ -62,7 +62,7 @@ atoms = Atoms("LiH",
                          [0.0, 0.0, 1.6]],          # H
               cell=[10.0, 10.0, 10.0])
 
-atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "vqe", "hva", subspace methods
+atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "vqe" (ansatz="uccsd"|"hva"), subspace methods
                        basis="HAO",                          # Basis set
                        h=0.10,                               # real-space grid spacing (Å)
                        pool="fermionic",                     # "fermionic" | "qubit" | "qeb" | "ceo" | "ceo-ovp"
@@ -119,9 +119,9 @@ df.to_csv("lih_dissociation.csv", index=False)
 
 **Classical mean field.** `method="rhf"` and `method="uhf"` run restricted or unrestricted Hartree–Fock without building a circuit. Their results export the molecular-orbital Hamiltonian and reference occupation through `result.as_quantum_problem()`, ready for a direct `Mandacaru(method="adapt-vqe", **options)` run. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html).
 
-**VQE.** The variational quantum eigensolver prepares a parameterized state |ψ(θ)⟩ = U(θ)|Φ<sub>HF</sub>⟩ on a quantum processor, measures the energy ⟨ψ(θ)|H|ψ(θ)⟩, and lets a classical optimizer update θ to minimize it. By the variational principle the minimum is an upper bound to the ground-state energy, reached exactly when the ansatz can represent the ground state. Mandacaru starts from the Hartree–Fock determinant in the molecular-orbital basis; the fixed ansatz of `method="vqe"` is UCCSD.
+**VQE.** The variational quantum eigensolver prepares a parameterized state |ψ(θ)⟩ = U(θ)|Φ<sub>HF</sub>⟩ on a quantum processor, measures the energy ⟨ψ(θ)|H|ψ(θ)⟩, and lets a classical optimizer update θ to minimize it. By the variational principle the minimum is an upper bound to the ground-state energy, reached exactly when the ansatz can represent the ground state. Mandacaru starts from the Hartree–Fock determinant in the molecular-orbital basis; the circuit is chosen with `ansatz=`, spelled like `basis=`. The default, `ansatz="uccsd"`, is UCCSD.
 
-**HVA.** `method="hva"` uses VQE optimization with fixed, ordered Hamiltonian-group layers. It supports exact local evolution and explicit first- or second-order product-formula circuits (`evolution="trotter"`), checkpoint/resume, Z₂ tapering, spin-resolved grouping, and actual UHF Slater references. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html) for the distinct exact and finite-step states.
+**HVA.** `ansatz="hva"` selects the Hamiltonian variational ansatz under `method="vqe"`, with fixed, ordered Hamiltonian-group layers: `Mandacaru(method="vqe", ansatz="hva")` or `ansatz={"name": "hva", "layers": 3, "evolution": "trotter", ...}`. It supports exact local evolution and explicit first- or second-order product-formula circuits (`"evolution": "trotter"`), checkpoint/resume, Z₂ tapering, spin-resolved grouping, and actual UHF Slater references. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html) for the distinct exact and finite-step states.
 
 
 **ADAPT-VQE.** ADAPT-VQE builds the ansatz during the calculation instead of fixing it in advance. At each iteration it evaluates the energy gradient ⟨ψ|[H, A<sub>k</sub>]|ψ⟩ of every generator A<sub>k</sub> in an operator pool, appends exp(θ<sub>k</sub>A<sub>k</sub>) for the largest one, and re-optimizes all parameters. It stops on `convergence`, `{"gradient": 1e-3, "energy": 1e-3}` by default (Hartree): when every gradient is below the first threshold and the last growth step changed the energy by less than the second — producing compact circuits tailored to the molecule.

@@ -57,7 +57,8 @@ import numpy as np
 
 from ..core.mapping import (Fermion, PauliSum, qubit_excitation,
                             resolve_mapping)
-from .gates import double_excitation, single_excitation
+from .gates import (double_excitation, imaginary_double_excitation,
+                    imaginary_single_excitation, single_excitation)
 
 
 # --------------------------------------------------------------------------- #
@@ -185,6 +186,10 @@ class PoolBase:
 
     #: Whether every generator commutes with the number operators (N, Sz).
     conserves_particle_number = True
+    #: Whether every generator commutes with S_z.  A Hamiltonian with
+    #: spin-orbit coupling does not, and a pool that does cannot reach its
+    #: ground state (it stays in the reference's (n_alpha, n_beta) sector).
+    conserves_spin_projection = True
 
     def __init__(self, n_spatial_orbitals: int, num_particles: tuple[int, int],
                  mapping: str = "jordan_wigner"):
@@ -223,6 +228,23 @@ class PoolBase:
 
     def __len__(self) -> int:
         return len(self.operators())
+
+    def gradient_observables(self, hamiltonian):
+        r"""``[H, A_i]`` for every generator, as qubit operators.
+
+        The screening gradient of generator :math:`A_i` at a state
+        :math:`|\psi\rangle` is the expectation value
+        :math:`g_i = \langle\psi|[H, A_i]|\psi\rangle` -- equal to the
+        state-vector formula :math:`2\,\mathrm{Re}\langle H\psi|A_i\psi\rangle`
+        the drivers use, but measurable without the state's amplitudes.  Formed
+        in the Pauli algebra (:meth:`~mandacaru.core.mapping.PauliSum.commutator`),
+        so it costs no matrix at any register width.  Each observable is
+        Hermitian, since :math:`A_i` is anti-Hermitian.
+        """
+        if hamiltonian.num_qubits != self.n_qubits:
+            raise ValueError(f"a {hamiltonian.num_qubits}-qubit Hamiltonian for "
+                             f"a {self.n_qubits}-qubit pool")
+        return [hamiltonian.commutator(op.generator) for op in self.operators()]
 
     def __repr__(self) -> str:
         return (f"{type(self).__name__}(n_qubits={self.n_qubits}, "
@@ -545,6 +567,60 @@ class OVPCEOPool(CEOPool):
 
 
 # --------------------------------------------------------------------------- #
+# 6. Spin-orbit pool (S_z-breaking Hamiltonians).
+# --------------------------------------------------------------------------- #
+
+class SpinOrbitPool(PoolBase):
+    r"""Fermionic singles and doubles for a Hamiltonian that conserves the
+    particle number but not :math:`S_z` -- one with spin-orbit coupling.
+
+    Every excitation from the reference's occupied spin-orbitals to its
+    virtual ones, **whatever the spins**: a single may flip a spin and a double
+    may change :math:`S_z` by up to 2.  Each comes twice, as the real rotation
+    :math:`T - T^\dagger` and as its imaginary partner
+    :math:`i(T + T^\dagger)`, because the spin-orbit matrix elements are
+    complex and a real rotation alone cannot produce the relative phases they
+    require.  Particle number is conserved; :math:`S_z` is not, so the parity
+    reduction (which tapers the alpha-parity qubit) is refused.
+    """
+
+    name = "spin-orbit"
+    supports_parity_reduced = False
+    conserves_spin_projection = False
+
+    def _build(self) -> list[PoolOperator]:
+        occupied = list(self._occ)
+        virtual = [p for p in range(self.n_modes) if p not in occupied]
+        generators = []
+        for i in occupied:
+            for a in virtual:
+                generators.append((f"S({i}->{a})", single_excitation(i, a),
+                                   "fermionic-single"))
+                generators.append((f"iS({i}->{a})",
+                                   imaginary_single_excitation(i, a),
+                                   "fermionic-single"))
+        for x, i in enumerate(occupied):
+            for j in occupied[x + 1:]:
+                for y, a in enumerate(virtual):
+                    for b in virtual[y + 1:]:
+                        label = f"({i},{j}->{a},{b})"
+                        generators.append(
+                            ("D" + label, double_excitation(i, j, a, b),
+                             "fermionic-double"))
+                        generators.append(
+                            ("iD" + label,
+                             imaginary_double_excitation(i, j, a, b),
+                             "fermionic-double"))
+        ops: list[PoolOperator] = []
+        for label, gen, kind in generators:
+            pauli = gen.map_to_qubits(self.mapping,
+                                      n_modes=self.n_modes).simplify()
+            if pauli.terms:
+                ops.append(PoolOperator(label, pauli, _support_of(pauli), kind))
+        return ops
+
+
+# --------------------------------------------------------------------------- #
 # Registry.
 # --------------------------------------------------------------------------- #
 
@@ -554,6 +630,7 @@ _POOLS = {
     "qeb": QEBPool,
     "ceo": CEOPool,
     "ceo-ovp": OVPCEOPool,
+    "spin-orbit": SpinOrbitPool,
 }
 
 # Friendly aliases.
@@ -565,6 +642,7 @@ _POOL_ALIASES = {
     "qubit-excitation": "qeb",
     "ovp-ceo": "ceo-ovp",
     "coupled-exchange": "ceo",
+    "soc": "spin-orbit",
 }
 
 

@@ -734,7 +734,7 @@ class MolecularIntegrals(MeanFieldMixin):
                     h_mo, eri_mo, frozen, active)
             h_spin = None
             if self.spin_orbit_coupling:
-                _refuse_spin_orbit_without_sz(num_particles, frozen,
+                _refuse_spin_orbit_without_sz(frozen,
                                               deleted=getattr(space, "deleted",
                                                               ()))
                 h_spin = self._spin_orbit_in_mo_basis()
@@ -831,31 +831,18 @@ class MolecularIntegrals(MeanFieldMixin):
         return H
 
 
-def _refuse_spin_orbit_without_sz(num_particles, frozen_orbitals,
-                                  deleted=()) -> None:
-    r"""Refuse the machinery that assumes ``S_z`` is a good quantum number.
+def _refuse_spin_orbit_without_sz(frozen_orbitals, deleted=()) -> None:
+    r"""Refuse the reductions that assume ``S_z`` is a good quantum number.
 
     Spin-orbit coupling gives the one-body matrix an alpha-beta block, so the
     Hamiltonian conserves :math:`J_z` and particle number but **not**
-    :math:`S_z`.  Everything downstream that was written against a fixed
-    ``(n_alpha, n_beta)`` -- the particle-number sector reduction
-    (:mod:`mandacaru.core.sector`), the parity mapping's two-qubit taper, and
-    every excitation pool that pairs an alpha excitation with a beta one --
-    would then be reducing or exciting in a space the Hamiltonian does not
-    preserve, and would return a number that looks plausible.
-
-    Nothing ships a Dirac dataset today, so no ordinary run reaches this.  It
-    is here so that the day one does, it fails instead of being believed.
+    :math:`S_z`.  ``num_particles`` still chooses the orbital basis -- the
+    scalar Hartree-Fock (or UHF natural-orbital) reference the determinant is
+    built from -- and the drivers read the broken symmetry off the Hamiltonian
+    itself (:func:`~mandacaru.core.spin_orbit.conserves_spin_projection`) to
+    work in the total-N sector.  What is refused here are the reductions of the
+    orbital space that pair the two spins of a spatial orbital.
     """
-    if num_particles is not None:
-        raise NotImplementedError(
-            "spin-orbit coupling and an explicit num_particles are "
-            "incompatible: the alpha-beta block of the one-body matrix means "
-            "S_z is not conserved, so there is no (n_alpha, n_beta) sector "
-            "for the Hamiltonian to act within -- only a total particle "
-            "number.  Drop num_particles, or generate the pseudopotential "
-            "with relativity='scalar', which carries the mass-velocity and "
-            "Darwin terms without the spin-orbit one.")
     if frozen_orbitals:
         raise NotImplementedError(
             "a frozen core and spin-orbit coupling are incompatible: "

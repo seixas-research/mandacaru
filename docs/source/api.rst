@@ -23,6 +23,17 @@ When an adaptive solver stops growing its ansatz: the ``convergence`` option,
    :undoc-members:
    :show-inheritance:
 
+Ansatz Templates
+~~~~~~~~~~~~~~~~
+
+The ``ansatz=`` option of ``method="vqe"``: a name or a dictionary choosing a
+circuit template, ``"uccsd"`` (the default) or ``"hva"``, and its options.
+
+.. automodule:: mandacaru.algorithms.ansatz_spec
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Interaction Energies
 ~~~~~~~~~~~~~~~~~~~~
 
@@ -282,6 +293,28 @@ Operators and states restricted to the determinants with a fixed number of
 alpha and beta electrons.
 
 .. automodule:: mandacaru.core.sector
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Matrix-Free Operators
+~~~~~~~~~~~~~~~~~~~~~
+
+Qubit operators applied to a state vector as Pauli strings, with no matrix
+stored.  See :doc:`guide/scalability`.
+
+.. automodule:: mandacaru.core.matrix_free
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Pauli Algebra
+~~~~~~~~~~~~~
+
+Products, commutators and the fermion-to-qubit map on symplectic bit tables,
+at any register width.  See :doc:`guide/scalability`.
+
+.. automodule:: mandacaru.core.pauli_algebra
    :members:
    :undoc-members:
    :show-inheritance:

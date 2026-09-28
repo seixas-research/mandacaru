@@ -1129,8 +1129,9 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         Second reference energy above the bound state (Hartree); defaults to
         :data:`DEFAULT_ENERGY_OFFSETS` for the element, else
         :data:`DEFAULT_ENERGY_OFFSET`.
-    frozen_subshells : sequence of (n, l), optional
-        Occupied valence subshells to generate into the frozen core instead;
+    frozen_subshells : sequence of tuple, optional
+        Occupied valence subshells, as ``(n, l)`` pairs, to generate into the
+        frozen core instead;
         defaults to :data:`DEFAULT_FROZEN_SUBSHELLS` (the 4f of Tl-Rn).  A
         frozen shell above the remaining valence keeps an empty channel,
         scattering at :data:`FROZEN_SCATTERING_ENERGY`.

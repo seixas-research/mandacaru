@@ -122,6 +122,22 @@ class PauliSum:
     def identity(cls, n: int) -> "PauliSum":
         return cls({"I" * n: 1.0}, num_qubits=n)
 
+    @classmethod
+    def _from_valid_terms(cls, terms: dict[str, complex],
+                          num_qubits: int) -> "PauliSum":
+        """Wrap labels that are valid by construction, skipping the checks.
+
+        For operators decoded from bit tables
+        (:class:`~mandacaru.core.pauli_algebra.PauliTable`): every label has
+        ``num_qubits`` letters from ``IXYZ`` and every coefficient is a
+        finite complex, so re-validating them character by character -- a
+        Python pass over millions of letters for a large Hamiltonian -- would
+        only cost time.
+        """
+        out = cls(num_qubits=num_qubits)
+        out.terms = terms
+        return out
+
     def _shared_width(self, other: "PauliSum", what: str) -> int | None:
         """The common register width of two operands, or ``None`` if unknown."""
         mine, theirs = self.num_qubits, other.num_qubits
@@ -163,6 +179,17 @@ class PauliSum:
                 label = "".join(chars)
                 out.terms[label] = out.terms.get(label, 0j) + c1 * c2 * phase
         return out
+
+    def commutator(self, other: "PauliSum") -> "PauliSum":
+        """``[self, other]`` from the Pauli algebra, never from matrices.
+
+        Vectorized over bit tables
+        (:func:`~mandacaru.core.pauli_algebra.commutator`), so it is as cheap
+        on 100 qubits as on 10.  Equal to ``self.compose(other) -
+        other.compose(self)`` without the commuting pairs that cancel there.
+        """
+        from .pauli_algebra import commutator
+        return commutator(self, other)
 
     def simplify(self, atol: float = 1e-12) -> "PauliSum":
         """Drop terms with negligible coefficient, keeping the register width."""
@@ -500,22 +527,20 @@ class Fermion:
         h_pq = np.asarray(h_pq)
         m = h_pq.shape[0]
         terms: dict[FermionTerm, complex] = {}
-        for p in range(m):
-            for q in range(m):
-                c = complex(h_pq[p, q])
-                if abs(c) > tol:
-                    terms[((p, True), (q, False))] = \
-                        terms.get(((p, True), (q, False)), 0j) + c
+        # Only the entries above ``tol`` are visited: np.nonzero returns them
+        # in the same (p, q[, r, s]) lexicographic order the nested loops over
+        # every entry did, so the terms -- and every sum over them -- keep
+        # their order, but a 100-spin-orbital tensor (10^8 entries) no longer
+        # costs a Python iteration per entry.
+        for p, q in zip(*np.nonzero(np.abs(h_pq) > tol)):
+            key = ((int(p), True), (int(q), False))
+            terms[key] = terms.get(key, 0j) + complex(h_pq[p, q])
         if g_pqrs is not None:
             g = np.asarray(g_pqrs)
-            for p in range(m):
-                for q in range(m):
-                    for r in range(m):
-                        for s in range(m):
-                            c = complex(g[p, q, r, s])
-                            if abs(c) > tol:
-                                key = ((p, True), (q, True), (s, False), (r, False))
-                                terms[key] = terms.get(key, 0j) + 0.5 * c
+            for p, q, r, s in zip(*np.nonzero(np.abs(g) > tol)):
+                key = ((int(p), True), (int(q), True), (int(s), False),
+                       (int(r), False))
+                terms[key] = terms.get(key, 0j) + 0.5 * complex(g[p, q, r, s])
         return cls(terms, n_modes=m)
 
     # -- mapping to qubits ------------------------------------------------- #
@@ -539,18 +564,12 @@ class Fermion:
         reduced = method == "parity_reduced"
         base_method = _base_method(method)
         n = n_modes if n_modes is not None else self.n_modes()
-        U, P, R = _mapping_sets(base_method, n)
-
-        result = PauliSum()
-        accumulated = result.terms      # in place: `result + op` copies every term
-        for term, coeff in self.terms.items():
-            op = PauliSum.identity(n) * complex(coeff)
-            for (mode, dagger) in term:
-                op = op.compose(_ladder_pauli(n, mode, dagger,
-                                              U[mode], P[mode], R[mode]))
-            for label, value in op.terms.items():
-                accumulated[label] = accumulated.get(label, 0j) + value
-        result = result.simplify()
+        # Every term's product of ladder operators is expanded on bit tables,
+        # all terms of one length at once (pauli_algebra.map_fermion_terms):
+        # linear in the term count with a small constant, which is what keeps
+        # a 100-spin-orbital Hamiltonian's mapping in minutes.
+        from .pauli_algebra import map_fermion_terms
+        result = map_fermion_terms(self.terms, n, base_method)
 
         if reduced:
             if num_particles is None:

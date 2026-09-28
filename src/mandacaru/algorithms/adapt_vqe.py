@@ -55,6 +55,7 @@ from ..circuits.adapt_ansatz import AdaptAnsatz
 from ..circuits.pools import (GRADIENT_FLOOR, PoolBase, PoolOperator,
                              _support_of, build_pool)
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
+from ..core.matrix_free import PauliOperator
 from ..optimizers.optim import DEFAULT_OPTIMIZER
 from ..units import ANGSTROM_TO_BOHR, convert_energy, to_hartree
 from .base import VariationalDriver
@@ -432,9 +433,14 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         active space).  The sparse pool keeps the generators as sparse matrices and
         screens with the exact analytic gradient, densifying only the few
         *selected* operators; ``"auto"`` enables it for ``n_qubits >= 10``, ``True``
-        / ``False`` force it.  In sparse mode screening always uses the analytic
-        gradient (the ``gradient`` argument's estimators need the dense
-        eigendecompositions and are unavailable).
+        / ``False`` force it.  ``"matrix-free"`` stores no matrix at all: the
+        Hamiltonian, the pool and the ansatz generators are applied as Pauli
+        strings (:mod:`mandacaru.core.matrix_free`), slower per product but
+        bounded by the state vectors alone; ``"auto"`` switches to it when the
+        stored matrices might not fit in a quarter of the physical memory (see
+        :doc:`/guide/scalability`).  In sparse and matrix-free mode screening
+        always uses the analytic gradient (the ``gradient`` argument's
+        estimators need the dense eigendecompositions and are unavailable).
     sector : bool or str
         Simulate only the ``(n_alpha, n_beta)`` particle-number sector
         (default ``"auto"``).  The Hamiltonian and every pool generator are
@@ -545,6 +551,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     """
 
     _default_sparse = "auto"
+    #: The total-N sector and the ``"spin-orbit"`` pool (see
+    #: :meth:`_resolve_spin_conservation`).
+    _supports_spin_orbit = True
 
     citation_method = "adapt-vqe"
     #: ADAPT's ``run()`` writes the ``txt=`` log and honors checkpoints.
@@ -645,6 +654,7 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                                    mapping=self.mapping)
         self.num_particles = (tuple(num_particles) if num_particles is not None
                               else self.pool.num_particles)
+        self.spin_conserving = self._resolve_spin_conservation(hamiltonian)
 
         # Materialize the (dense or sparse) qubit Hamiltonian on the base; a dense
         # pool stores every operator's matrix *and* eigendecomposition (two
@@ -681,7 +691,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             qubit_h, n_register,
             sector=(None if self._taper_info is not None
                     else self._resolve_sector(n_register, qubit_h,
-                                              self._pool_ops)))
+                                              self._pool_ops)),
+            operators=self._pool_ops)
         self._maybe_save_hamiltonian(self.num_particles,
                                      self.pool.n_spatial_orbitals)
         self._maybe_dump_hamiltonian(self.num_particles,
@@ -694,7 +705,14 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         self._layout_cache = None
         self._label_width = None
 
-        if self._sector is not None:
+        if self._matrix_free:
+            # Masks and coefficients only; a generator's product is one gather
+            # (all its strings share a flip mask), so nothing is cached.
+            self._pool_matrices = [
+                PauliOperator(op.generator, sector=self._sector, cache_bytes=0)
+                for op in self._pool_ops]
+            self._pool_eig = None
+        elif self._sector is not None:
             self._pool_matrices = [self._sector.restrict(op.generator)
                                    for op in self._pool_ops]
             self._pool_eig = None
@@ -796,6 +814,9 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         rather than the operator.  Used for operators the growth step considers
         outside the pool (:meth:`CEOPool.grown_operators`).
         """
+        if getattr(self, "_matrix_free", False):
+            return PauliOperator(op.generator, sector=self._sector,
+                                 cache_bytes=0)
         if self._sector is not None:
             return self._sector.restrict(op.generator)
         if getattr(self, "_sparse", False):
@@ -999,6 +1020,33 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
         return replace(op, generator=generator, members=members, _matrix=None,
                        support=_support_of(generator))
 
+    def _resolve_spin_conservation(self, hamiltonian) -> bool:
+        """Whether the problem conserves :math:`S_z`, read off the Hamiltonian.
+
+        A spin-orbit Hamiltonian mixes the two spin blocks, so only the total
+        electron number is a good quantum number: the pool must then change
+        :math:`S_z` too (``pool="spin-orbit"``), and the sector is the total-N
+        one.  A qubit Hamiltonian carries no spin layout, so the pool decides.
+        """
+        from ..core.mapping import Fermion
+        from ..core.spin_orbit import conserves_spin_projection
+        if not isinstance(hamiltonian, Fermion):
+            return bool(self.pool.conserves_spin_projection)
+        conserving = conserves_spin_projection(hamiltonian)
+        if not conserving and not self._supports_spin_orbit:
+            self._refuse_spin_orbit()
+        if not conserving and self.pool.conserves_spin_projection:
+            raise ValueError(
+                f"the Hamiltonian couples the two spin blocks (spin-orbit), "
+                f"but the {self.pool.name!r} pool conserves S_z and cannot "
+                f"reach its ground state; use pool='spin-orbit'")
+        if not conserving and self.mapping == "parity_reduced":
+            raise ValueError(
+                "the parity_reduced mapping removes the two spin-parity "
+                "qubits, which a spin-orbit Hamiltonian does not conserve; "
+                "use 'jordan_wigner', 'parity' or 'bravyi_kitaev'")
+        return conserving
+
     def _resolve_sector(self, n_qubits: int, qubit_h=None, operators=()):
         """The :class:`~mandacaru.core.sector.ParticleSector` to simulate, or ``None``.
 
@@ -1028,7 +1076,8 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
                 "sector=True needs the internal state-vector backend; executing "
                 "the ansatz as a circuit prepares full-register states")
         from ..core.sector import ParticleSector
-        sector = ParticleSector(n_qubits, self.num_particles, self.mapping)
+        sector = ParticleSector(n_qubits, self.num_particles, self.mapping,
+                                spin_conserving=self.spin_conserving)
 
         leaking = self._sector_leak(sector, qubit_h, operators)
         if leaking is not None:
@@ -1181,10 +1230,12 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
             # and the encoding is the identity, which is what Jordan-Wigner is.
             return AdaptAnsatz(self.n_qubits, info.occupied, "jordan_wigner",
                                sparse=getattr(self, "_sparse", False),
+                               matrix_free=getattr(self, "_matrix_free", False),
                                provider=self.ansatz_provider(),
                                num_particles=None, sector=None)
         return AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                            self.mapping, sparse=getattr(self, "_sparse", False),
+                           matrix_free=getattr(self, "_matrix_free", False),
                            provider=self.ansatz_provider(),
                            num_particles=self.num_particles,
                            sector=self._sector)
@@ -1987,6 +2038,11 @@ class ADAPTVQE(DeflationMixin, VariationalDriver):
     def _backend_description(self) -> str:
         """How the state vector and the pool are represented."""
         sector = getattr(self, "_sector", None)
+        if getattr(self, "_matrix_free", False):
+            space = (f"particle-number sector, {sector.dim} states of "
+                     f"2^{self.n_qubits}" if sector is not None
+                     else f"2^{self.n_qubits} amplitudes")
+            return f"matrix-free Pauli products, {space}"
         if sector is not None:
             return (f"particle-number sector, {sector.dim} states "
                     f"of 2^{self.n_qubits}")

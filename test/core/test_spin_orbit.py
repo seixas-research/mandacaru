@@ -15,8 +15,11 @@ cannot be left to assume a fixed ``(n_alpha, n_beta)``.
 import numpy as np
 import pytest
 
+from mandacaru.core.hamiltonian import spin_block_integrals
+from mandacaru.core.mapping import Fermion
 from mandacaru.core.spin_orbit import (ALPHA, BETA, breaks_spin_symmetry,
-                                       ls_matrix, spin_orbit_one_body)
+                                       conserves_spin_projection, ls_matrix,
+                                       spin_orbit_one_body)
 
 
 class Projector:
@@ -184,3 +187,26 @@ class TestTheIntegralsHook:
         h = integrals.spin_orbit_matrix()
         assert h.shape == (2 * integrals.n_orbitals,) * 2
         assert not np.any(h)
+
+
+class TestSpinProjection:
+    """``conserves_spin_projection`` reads S_z symmetry off the operator."""
+
+    def test_a_spin_blocked_hamiltonian_conserves_it(self):
+        h = np.array([[1.0, 0.2], [0.2, -0.5]])
+        eri = np.zeros((2, 2, 2, 2))
+        eri[0, 0, 0, 0] = eri[1, 1, 1, 1] = 0.7
+        fermion = Fermion.from_integrals(*spin_block_integrals(h, eri))
+        assert conserves_spin_projection(fermion)
+
+    def test_a_spin_flip_breaks_it(self):
+        # Modes 0, 1 alpha and 2, 3 beta: a+_2 a_0 flips a spin.
+        flip = Fermion({((2, True), (0, False)): 0.1,
+                        ((0, True), (2, False)): 0.1,
+                        ((1, True), (1, False)): 1.0}, n_modes=4)
+        assert not conserves_spin_projection(flip)
+
+    def test_a_negligible_flip_is_ignored(self):
+        flip = Fermion({((2, True), (0, False)): 1e-14,
+                        ((1, True), (1, False)): 1.0}, n_modes=4)
+        assert conserves_spin_projection(flip)

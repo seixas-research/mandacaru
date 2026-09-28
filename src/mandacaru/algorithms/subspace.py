@@ -45,8 +45,9 @@ import numpy as np
 
 
 from ..circuits import CircuitMetrics
-from ..core.mapping import reference_qubit_bits
+from ..core.mapping import Fermion, reference_qubit_bits
 from .adapt_vqe import ADAPTVQE, _max_abs
+from .ansatz_spec import resolve_ansatz
 from .deflation import EnergyLevels
 from .vqe import VQE
 
@@ -105,6 +106,95 @@ def reference_matrix(mapping: str, n_qubits: int, occupied,
     dets = subspace_determinants(n_qubits, occupied, num_states)
     cols = [_determinant_vector(mapping, n_qubits, det) for det in dets]
     return np.column_stack(cols)
+
+
+def spin_squared(n_spatial_orbitals: int) -> Fermion:
+    r""":math:`S^2 = S_- S_+ + S_z^2 + S_z` on a spin-blocked register.
+
+    Spin-orbital ``p`` is alpha for ``p < M`` and ``p + M`` its beta partner,
+    so :math:`S_+ = \sum_p a^\dagger_{p\alpha} a_{p\beta}`.
+    """
+    M = int(n_spatial_orbitals)
+    n = 2 * M
+    raise_spin = Fermion({((p, True), (p + M, False)): 1.0 for p in range(M)},
+                         n_modes=n)
+    lower_spin = Fermion({((p + M, True), (p, False)): 1.0 for p in range(M)},
+                         n_modes=n)
+    s_z = Fermion({((p, True), (p, False)): (0.5 if p < M else -0.5)
+                   for p in range(n)}, n_modes=n)
+    return lower_spin * raise_spin + s_z * s_z + s_z
+
+
+def spin_adapted_references(mapping: str, n_qubits: int, num_particles,
+                            num_states: int, multiplicity: int):
+    r"""``num_states`` orthonormal references of spin ``multiplicity``.
+
+    A determinant with open shells mixes spins: the singly excited
+    :math:`|i_\alpha a_\beta\rangle` is half singlet, half triplet.  An ansatz
+    that conserves :math:`S^2` -- the Hamiltonian variational ansatz, whose
+    generators are the spin-free Hamiltonian's own parts -- keeps that mixture
+    for good, and a subspace search from such references converges to the
+    *average* of the two levels (H2: 133 mHa off both).  These references are
+    :math:`S^2` eigenvectors instead.
+
+    The determinants of the ``(n_alpha, n_beta)`` sector are grouped by
+    orbital configuration -- the doubly, singly and unoccupied spatial
+    orbitals -- and :math:`S^2` is diagonalized within each; every group is
+    closed under :math:`S^2`, and its determinants share the configuration's
+    spatial symmetry, which the references therefore keep.  Configurations
+    are taken by excitation level from Hartree-Fock, then lowest orbitals
+    first, and the eigenvectors with :math:`S(S+1)` of the requested
+    multiplicity kept until ``num_states`` are found.
+
+    Returns ``(references, configurations)``: a ``(2**n, num_states)`` matrix
+    and each column's configuration (occupation of every spatial orbital).
+    """
+    from ..core.sector import ParticleSector
+
+    n_alpha, n_beta = (int(v) for v in num_particles)
+    multiplicity = int(multiplicity)
+    spin = (multiplicity - 1) / 2
+    projection = abs(n_alpha - n_beta) / 2
+    if multiplicity < 1 or spin < projection \
+            or (multiplicity - 1) % 2 != abs(n_alpha - n_beta) % 2:
+        raise ValueError(
+            f"multiplicity {multiplicity} is not reachable with "
+            f"(n_alpha, n_beta) = ({n_alpha}, {n_beta}): it needs S >= "
+            f"|S_z| = {projection:g} and the same parity of 2S")
+    sector = ParticleSector(n_qubits, (n_alpha, n_beta), mapping)
+    M = n_qubits // 2
+    s2 = sector.restrict(spin_squared(M).map_to_qubits(mapping,
+                                                       n_modes=n_qubits))
+    spatial = sector.occupations[:, :M] + sector.occupations[:, M:]
+    hartree_fock = np.array([(p < n_alpha) + (p < n_beta) for p in range(M)])
+    groups: dict[tuple, list[int]] = {}
+    for position, pattern in enumerate(map(tuple, spatial)):
+        groups.setdefault(pattern, []).append(position)
+    orbital = np.arange(M)
+
+    def order(pattern):
+        occupation = np.asarray(pattern)
+        promoted = int(np.maximum(hartree_fock - occupation, 0).sum())
+        return promoted, int(occupation @ orbital), pattern
+
+    target = spin * (spin + 1)
+    columns, configurations = [], []
+    for pattern in sorted(groups, key=order):
+        positions = groups[pattern]
+        block = s2[positions][:, positions].toarray()
+        values, vectors = np.linalg.eigh(0.5 * (block + block.conj().T))
+        for value, vector in zip(values, vectors.T):
+            if abs(value - target) > 1e-8:
+                continue
+            amplitudes = np.zeros(sector.dim, dtype=complex)
+            amplitudes[positions] = vector
+            columns.append(sector.embed(amplitudes))
+            configurations.append(pattern)
+            if len(columns) == num_states:
+                return np.column_stack(columns), configurations
+    raise ValueError(
+        f"the ({n_alpha}, {n_beta}) sector holds only {len(columns)} states "
+        f"of multiplicity {multiplicity}; ask for fewer")
 
 
 def resolve_weights(weights, num_states: int) -> np.ndarray:
@@ -221,6 +311,9 @@ class SubspaceADAPTVQEResult(_SpectrumViews):
 class SubspaceMixin:
     #: The extra reference determinants are built untapered.
     _supports_parity_reduced = False
+    #: The reference determinants are spin-blocked; not validated with a
+    #: Hamiltonian that breaks S_z.
+    _supports_spin_orbit = False
     #: ... and on the full register, so no particle-number sector either.
     _supports_sector = False
     """Shared SSVQE scaffolding: one unitary over several orthogonal references.
@@ -246,6 +339,12 @@ class SubspaceMixin:
     def _references(self) -> np.ndarray:
         return reference_matrix(self.mapping, self.n_qubits,
                                 self._reference_occupied(), self.num_states)
+
+    def _reference_determinants(self) -> list[tuple] | None:
+        """Each reference's determinant, ``None`` when they are not single
+        determinants (spin-adapted references)."""
+        return subspace_determinants(
+            self.n_qubits, self._reference_occupied(), self.num_states)
 
     # -- shared outer loop ----------------------------------------------- #
 
@@ -286,9 +385,9 @@ class SubspaceMixin:
         # State j is U|phi_j>: sorting the levels must carry the references
         # along, or exporting "the ground state" would prepare U|HF> whichever
         # reference the lowest level actually grew from.
-        determinants = subspace_determinants(
-            self.n_qubits, self._reference_occupied(), self.num_states)
-        self.state_determinants = [determinants[i] for i in order]
+        determinants = self._reference_determinants()
+        self.state_determinants = (None if determinants is None
+                                   else [determinants[i] for i in order])
 
         self._finalize_timings(timings, run_t0)
         # The single Hartree -> output-unit boundary of the subspace search.
@@ -347,6 +446,25 @@ class SubspaceMixin:
         raise NotImplementedError
 
 
+def _check_hva_subspace(spec, multiplicity, options) -> None:
+    """What a subspace search with the HVA needs, checked at construction."""
+    from .hartree_fock import UHFResult
+
+    if multiplicity is None:
+        raise ValueError(
+            "the HVA conserves S^2, so a subspace search needs spin-adapted "
+            "references: name their spin with multiplicity= (1 singlets, 3 "
+            "triplets, ...).  From plain determinants an open-shell level "
+            "would converge to an average of a singlet and a triplet")
+    if options.get("taper"):
+        raise ValueError("the subspace references are built on the full "
+                         "register; the HVA cannot taper it here")
+    reference = spec.options.get("reference")
+    if reference is not None and isinstance(reference.scf, UHFResult):
+        raise ValueError("a UHF determinant breaks S^2, so it cannot seed "
+                         "spin-adapted references; use an RHF reference")
+
+
 # --------------------------------------------------------------------------- #
 # Subspace-search VQE (fixed ansatz).
 # --------------------------------------------------------------------------- #
@@ -366,25 +484,88 @@ class SubspaceVQE(SubspaceMixin, VQE):
     weights : sequence of float, optional
         Strictly decreasing positive SSVQE weights, one per level.  Defaults to
         ``(k, k-1, ..., 1)``.
+    multiplicity : int, optional
+        ``2S + 1`` of the levels to find, required with ``ansatz="hva"`` and
+        refused otherwise: the references are then spin-adapted
+        (:func:`spin_adapted_references`) and the result is the lowest
+        ``num_states`` levels of that spin.
 
     Notes
     -----
-    The reference determinants are the ``num_states`` lowest of the Hartree-Fock
-    particle-number sector; the ansatz must supply ``evolve(theta, references)``
-    (as :class:`~mandacaru.circuits.UCCSD` does) so one shared unitary can act on
-    all of them.  As an ASE calculator the reported energy is the ground state;
-    the full spectrum is on :attr:`result`.
+    With UCCSD the references are the ``num_states`` lowest determinants of
+    the Hartree-Fock particle-number sector.  The ansatz must supply
+    ``evolve(theta, references)`` so one shared unitary acts on all of them.
+
+    The HVA conserves :math:`S^2` and the spatial symmetry of the orbitals, so
+    each spin-adapted reference reaches only the states of its own spin and
+    spatial symmetry.  The levels are the lowest of the symmetry sectors the
+    references span -- the lowest ``num_states`` of the spin whenever those
+    sectors hold them, which the configuration order makes likely but a
+    symmetry the references miss can break.  Every generator must commute
+    with :math:`S^2` -- the default ``body_order`` grouping with
+    ``evolution="exact"`` -- or the references would leak into other spins;
+    that is checked before the search.  As an ASE calculator
+    the reported energy is the ground state; the full spectrum is on
+    :attr:`result`.
     """
 
     citation_method = "subspace-vqe"
 
     def __init__(self, hamiltonian=None, ansatz=None, *, num_states: int = 2,
-                 weights=None, **kwargs):
+                 weights=None, multiplicity: int | None = None, **kwargs):
+        spec = resolve_ansatz(ansatz)
+        if spec is not None and spec.name == "hva":
+            _check_hva_subspace(spec, multiplicity, kwargs)
+        elif multiplicity is not None:
+            raise ValueError(
+                "multiplicity= builds spin-adapted references for an ansatz "
+                "that conserves S^2 (ansatz='hva'); UCCSD's generators mix "
+                "spins, so its references are determinants")
+        #: ``2S + 1`` of the spin-adapted references, ``None`` for
+        #: determinants.
+        self.multiplicity = None if multiplicity is None else int(multiplicity)
         self._init_subspace(num_states, weights)
         super().__init__(hamiltonian, ansatz, **kwargs)
 
+    def _references(self) -> np.ndarray:
+        if self.multiplicity is None:
+            return super()._references()
+        self._check_spin_conserving_ansatz()
+        references, self.reference_configurations = spin_adapted_references(
+            self.mapping, self.n_qubits, self.num_particles, self.num_states,
+            self.multiplicity)
+        return references
+
+    def _reference_determinants(self) -> list[tuple] | None:
+        if self.multiplicity is not None:
+            return None
+        return super()._reference_determinants()
+
+    def _check_spin_conserving_ansatz(self) -> None:
+        """Refuse an ansatz with a generator that does not commute with S^2.
+
+        Spin-adapted references only help an ansatz that keeps them pure.
+        The HVA's default groups -- the whole one-body and two-body parts --
+        are spin-free, but the ``spin_resolved`` groups are not (only their
+        sum is), and neither is a product formula's single Pauli rotation.
+        With such a generator the states leak into other spins, and on H4 a
+        "singlet" level fell 0.2 Ha below the true second singlet, onto the
+        triplet.  Checked on the generators themselves, in the Pauli algebra.
+        """
+        s2 = spin_squared(self.n_qubits // 2).map_to_qubits(
+            self.mapping, n_modes=self.n_qubits)
+        for index, generator in enumerate(self.ansatz.pauli_generators):
+            if generator.commutator(s2).simplify(1e-10).terms:
+                raise ValueError(
+                    f"generator {index + 1} of the ansatz does not commute "
+                    f"with S^2, so it would mix the spin-adapted references "
+                    f"with other spins; use the HVA's default body_order "
+                    f"grouping with evolution='exact'")
+
     def _reference_occupied(self):
-        occupied = getattr(self.ansatz, "_occupied", None)
+        occupied = getattr(self.ansatz, "occupied", None)
+        if occupied is None:
+            occupied = getattr(self.ansatz, "_occupied", None)
         if occupied is None:
             raise TypeError(
                 "the ansatz does not expose its occupied orbitals; SubspaceVQE "
@@ -406,7 +587,7 @@ class SubspaceVQE(SubspaceMixin, VQE):
     def _subspace_optimize(self, refs, weights, initial_parameters, timings):
         k = self.num_states
         n = self.ansatz.num_parameters
-        x0 = (np.zeros(n) if initial_parameters is None
+        x0 = (self._default_parameters() if initial_parameters is None
               else np.asarray(initial_parameters, dtype=float).ravel())
         if x0.size != n:
             raise ValueError(f"expected {n} initial parameters, got {x0.size}")

@@ -122,6 +122,7 @@ def _active_orbitals(text: str):
 def build_parser() -> argparse.ArgumentParser:
     """The ``mandacaru`` argument parser."""
     from .algorithms.active_space import ACTIVE_SELECTIONS
+    from .algorithms.ansatz_spec import ANSATZ_NAMES
     from .algorithms.calculator import DEFAULT_METHOD, STABLE_METHODS
     from .backends.hardware import available_devices
     from .circuits.pools import available_pools
@@ -294,6 +295,9 @@ def build_parser() -> argparse.ArgumentParser:
     solver.add_argument("--pool", default=None,
                         choices=tuple(available_pools()),
                         help="ADAPT operator pool (default fermionic)")
+    solver.add_argument("--ansatz", default=None, choices=ANSATZ_NAMES,
+                        help="circuit of --method vqe: uccsd (default) or "
+                             "hva, the Hamiltonian variational ansatz")
     solver.add_argument("--optimizer", default=DEFAULT_OPTIMIZER,
                         choices=tuple(NAMED_OPTIMIZERS),
                         help=f"classical optimizer "
@@ -313,6 +317,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "neither, both at 1e-3")
     solver.add_argument("--num-states", type=int, default=None,
                         help="number of states for the subspace methods")
+    solver.add_argument("--multiplicity", type=int, default=None,
+                        help="2S+1 of the levels --method subspace-vqe "
+                             "--ansatz hva finds (1 singlets, 3 triplets)")
     solver.add_argument("--txt", metavar="PATH", default=None,
                         help="run log path (e.g. output.txt); without it the "
                              "same blocks go to standard output")
@@ -408,8 +415,8 @@ def solver_options(args) -> dict:
     # selected solver does not take is then refused by `Mandacaru` (and turned
     # into a parser error by `main`) instead of vanishing here -- `--method vqe
     # --txt run.txt` used to run and write nothing.
-    for name in ("pool", "max_iterations", "txt", "num_states",
-                 "references"):
+    for name in ("pool", "ansatz", "max_iterations", "txt", "num_states",
+                 "multiplicity", "references"):
         value = getattr(args, name)
         if value is not None:
             options[name] = value

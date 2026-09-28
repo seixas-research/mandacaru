@@ -118,5 +118,45 @@ Neither a ground-state weight nor a small optimization tolerance guarantees an
 exact spectrum. Compare the resulting states and energies with a small exact
 calculation where possible.
 
+## Subspace search with the Hamiltonian variational ansatz
+
+`method="subspace-vqe"` also runs the Hamiltonian variational ansatz. Its
+layers are the Hamiltonian's own spin-free one- and two-body parts, so it
+conserves $\hat S^2$: it cannot change the spin makeup of a reference. A
+singly excited determinant is half singlet and half triplet, and from such
+references the open-shell level of H2 converges to $-0.418716$ Ha. That is the
+average of the triplet ($-0.551998$) and the open-shell singlet ($-0.285434$),
+and it is neither level.
+
+The HVA therefore takes **spin-adapted references**, and you name the spin you
+want:
+
+```python
+from mandacaru import Mandacaru
+
+singlets = Mandacaru(method="subspace-vqe", ansatz="hva", multiplicity=1,
+                     num_states=3, **problem).run()
+triplet = Mandacaru(method="subspace-vqe", ansatz="hva", multiplicity=3,
+                    num_states=1, **problem).run()
+```
+
+The references are $\hat S^2$ eigenvectors built within each orbital
+configuration, taken by excitation level from Hartree-Fock. For H2 they give
+all three singlets and the triplet exactly.
+
+Three limits come with the construction:
+
+- **Symmetry.** Each reference reaches only the states of its own spin and
+  spatial symmetry. The result is the lowest level of each symmetry sector the
+  references span, which is the lowest `num_states` of that spin only when
+  those sectors hold them.
+- **Spin-free generators.** Every generator must commute with $\hat S^2$:
+  use the default `body_order` grouping with `evolution="exact"`. The
+  `spin_resolved` groups and a product formula's single Pauli rotations mix
+  spins, and the search refuses them before it starts.
+- **No circuits or UHF.** A spin-adapted reference is a combination of
+  determinants, so these levels are not exported as circuits. A UHF
+  reference, which breaks $\hat S^2$, is refused.
+
 A complete, runnable script (both methods, compared to exact diagonalization) is
 `examples/09_SubspaceVQE_H2.py`.

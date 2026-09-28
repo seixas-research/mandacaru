@@ -19,6 +19,8 @@ from mandacaru.algorithms import (Mandacaru, SubspaceADAPTVQEResult,
 from mandacaru.algorithms.subspace import (
     reference_matrix,
     resolve_weights,
+    spin_adapted_references,
+    spin_squared,
     subspace_determinants,
 )
 from mandacaru.circuits import UCCSD
@@ -28,6 +30,7 @@ from mandacaru.optimizers import Optimizer
 from mandacaru.units import HARTREE_TO_EV
 from mandacaru.backends.providers import QiskitProvider
 from mandacaru.core.mapping import PauliSum
+from mandacaru.core.sector import ParticleSector
 from mandacaru.optimizers.optim import OptimizeResult
 
 
@@ -308,3 +311,100 @@ class TestSubspaceExportFollowsTheSortedLevels:
         atoms.get_potential_energy()
         n, occupied, generators, theta, _h = atoms.calc.ansatz_problem()
         assert n == 4 and len(generators) == len(theta)   # it raised AttributeError
+
+
+class TestSpinAdaptedReferencesWithTheHVA:
+    """The HVA conserves S^2: its subspace search needs spin-pure references.
+
+    From plain determinants the open-shell level of H2 converges to -0.418716
+    Ha, the average of the triplet (-0.551998) and the open-shell singlet
+    (-0.285434), because the HVA cannot change a reference's spin makeup.
+    """
+
+    @pytest.fixture(scope="class")
+    def problem(self):
+        atoms = h2()
+        atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+        atoms.get_potential_energy()
+        problem = atoms.calc.result.as_quantum_problem()
+        n = 2 * problem["n_spatial_orbitals"]
+        qubit_h = problem["hamiltonian"].map_to_qubits("jordan_wigner",
+                                                       n_modes=n)
+        sector = ParticleSector(n, problem["num_particles"])
+        h = sector.restrict(qubit_h).toarray()
+        s2 = sector.restrict(spin_squared(n // 2).map_to_qubits(
+            "jordan_wigner", n_modes=n)).toarray()
+        energies, vectors = np.linalg.eigh(h)
+        spins = np.real(np.einsum("ij,ik,kj->j", vectors.conj(), s2, vectors))
+        exact = {1: energies[np.abs(spins) < 1e-6],
+                 3: energies[np.abs(spins - 2) < 1e-6]}
+        return problem, exact
+
+    def test_the_references_are_orthonormal_spin_eigenstates(self):
+        references, configurations = spin_adapted_references(
+            "jordan_wigner", 4, (1, 1), 3, multiplicity=1)
+        assert np.allclose(references.conj().T @ references, np.eye(3))
+        s2 = spin_squared(2).map_to_qubits("jordan_wigner",
+                                           n_modes=4).to_sparse_matrix()
+        assert np.allclose(references.conj().T @ (s2 @ references), 0,
+                           atol=1e-12)
+        # Hartree-Fock first, then the single excitation, then the double.
+        assert configurations == [(2, 0), (1, 1), (0, 2)]
+
+    @pytest.mark.parametrize("multiplicity, count", [(3, 2), (2, 1), (5, 1)])
+    def test_an_unavailable_spin_is_refused(self, multiplicity, count):
+        with pytest.raises(ValueError, match="multiplicity"):
+            spin_adapted_references("jordan_wigner", 4, (1, 1), count,
+                                    multiplicity=multiplicity)
+
+    @pytest.mark.parametrize("multiplicity, num_states",
+                             [(1, 3), (3, 1)])
+    def test_every_level_of_the_spin_is_exact(self, problem, multiplicity,
+                                              num_states):
+        problem, exact = problem
+        result = Mandacaru(method="subspace-vqe", ansatz="hva",
+                           multiplicity=multiplicity, num_states=num_states,
+                           atomic_units=True, trace=False, **problem).run()
+        assert np.allclose(result.energies,
+                           exact[multiplicity][:num_states], atol=1e-6)
+
+    def test_determinant_references_are_refused(self):
+        with pytest.raises(ValueError, match="multiplicity="):
+            Mandacaru(method="subspace-vqe", ansatz="hva")
+
+    def test_multiplicity_needs_the_hva(self):
+        with pytest.raises(ValueError, match="conserves S\\^2"):
+            Mandacaru(method="subspace-vqe", multiplicity=1)
+
+    def test_tapering_is_refused(self):
+        with pytest.raises(ValueError, match="full register"):
+            Mandacaru(method="subspace-vqe", ansatz="hva", multiplicity=1,
+                      taper=True)
+
+    def test_a_uhf_reference_is_refused(self):
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2.5]], cell=[8] * 3)
+        atoms.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+        atoms.get_potential_energy()
+        with pytest.raises(ValueError, match="UHF"):
+            Mandacaru(method="subspace-vqe", multiplicity=1,
+                      ansatz={"name": "hva",
+                              "reference": atoms.calc.result})
+
+    @pytest.mark.parametrize("options", [{"grouping": "spin_resolved"},
+                                         {"evolution": "trotter"}])
+    def test_a_generator_that_mixes_spins_is_refused(self, problem, options):
+        # Only the sum of the spin-resolved groups is spin-free, and a
+        # product formula's single Pauli rotations are not.
+        problem, _ = problem
+        calc = Mandacaru(method="subspace-vqe",
+                         ansatz={"name": "hva", **options}, multiplicity=1,
+                         atomic_units=True, trace=False, **problem)
+        with pytest.raises(ValueError, match="does not commute with S\\^2"):
+            calc.run()
+
+    def test_it_cites_the_hva_not_uccsd(self, problem):
+        problem, _ = problem
+        keys = Mandacaru(method="subspace-vqe", ansatz="hva", multiplicity=1,
+                         trace=False, **problem).citation_keys()
+        assert {"Nakanishi2019", "Wecker2015"} <= set(keys)
+        assert "Romero2019" not in keys
