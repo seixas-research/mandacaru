@@ -71,13 +71,17 @@ class TestMarkovChainOptions:
     def test_nothing_given_forwards_nothing(self):
         options = self._options()
         for name in ("max_steps", "max_length", "move_weights", "temperature",
-                     "length_penalty", "warm_start", "seed"):
+                     "length_penalty", "warm_start", "seed", "proposal",
+                     "proposal_temperature"):
             assert name not in options
 
     def test_every_flag_reaches_its_option(self):
         options = self._options(
             "--max-steps", "50", "--max-length", "8", "--length-penalty",
-            "0.002", "--no-warm-start", "--seed", "11", "--pool", "qeb")
+            "0.002", "--no-warm-start", "--seed", "11", "--pool", "qeb",
+            "--proposal", "uniform", "--proposal-temperature", "0.5")
+        assert options["proposal"] == "uniform"
+        assert options["proposal_temperature"] == 0.5
         assert options["max_steps"] == 50 and options["max_length"] == 8
         assert options["length_penalty"] == 0.002
         assert options["warm_start"] is False and options["seed"] == 11
@@ -109,6 +113,7 @@ class TestMarkovChainOptions:
 
     @pytest.mark.parametrize("flag", [["--max-steps", "5"], ["--seed", "1"],
                                       ["--no-warm-start"],
+                                      ["--proposal", "uniform"],
                                       ["--temperature", "0.1"]])
     def test_another_method_refuses_them(self, flag, capsys):
         with pytest.raises(SystemExit) as raised:

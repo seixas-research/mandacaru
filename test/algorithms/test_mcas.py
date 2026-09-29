@@ -16,8 +16,8 @@ import numpy as np
 import pytest
 
 from mandacaru.algorithms.mcas import (MOVES, Action, ProposalKernel,
-                                       TemperatureSchedule, log_acceptance,
-                                       metropolis_accept)
+                                       TemperatureSchedule, gradient_softmax,
+                                       log_acceptance, metropolis_accept)
 
 #: Deliberately unequal, so a symmetric-proposal shortcut would show.
 WEIGHTS = {"insert": 1.0, "delete": 2.0, "replace": 0.7, "swap": 1.3}
@@ -251,6 +251,128 @@ class TestDetailedBalance:
         # Correlated samples: a loose absolute tolerance, far above the noise
         # of this chain and far below any proposal-ratio error.
         np.testing.assert_allclose(freq, pi, atol=0.015)
+
+
+def _state_probabilities(pool_size):
+    """A deterministic, deliberately lopsided operator distribution per state.
+
+    Stands in for the gradient softmax: it depends on the architecture, so the
+    forward and reverse proposals use different distributions, which is the
+    case the Hastings ratio has to get right.
+    """
+    def probs(c):
+        g = np.array([math.sin(1.7 * (mu + 1) * (len(c) + 1)
+                               + 0.9 * sum(c)) for mu in range(pool_size)])
+        return gradient_softmax(g, 0.3)
+    return probs
+
+
+class TestGradientSoftmax:
+    def test_it_is_a_distribution_ordered_by_the_gradient(self):
+        p = gradient_softmax([0.0, -0.2, 0.1], 0.5)
+        assert p.sum() == pytest.approx(1.0, abs=1e-15)
+        assert p[1] > p[2] > p[0] > 0.0
+
+    @pytest.mark.parametrize("tau", [0.01, 0.1, 0.2, 1.0, 10.0])
+    def test_tau_divides_the_numerator_and_every_term_of_the_sum(self, tau):
+        """P(mu) = exp(|g_mu|/(tau g_max)) / sum_nu exp(|g_nu|/(tau g_max)):
+        normalized for every tau, not only for tau = 1."""
+        g = np.random.default_rng(0).normal(size=92) * 0.05
+        p = gradient_softmax(g, tau)
+        g_max = np.abs(g).max()
+        terms = np.exp((np.abs(g) - g_max) / (tau * g_max))
+        np.testing.assert_allclose(p, terms / terms.sum(), rtol=1e-12,
+                                   atol=1e-300)
+        assert p.sum() == pytest.approx(1.0, abs=1e-14)
+
+    def test_the_temperature_is_relative_to_the_largest_gradient(self):
+        p = gradient_softmax([0.0, 3.0], 0.25)
+        assert p[1] / p[0] == pytest.approx(math.exp(4.0))
+        np.testing.assert_allclose(gradient_softmax([0.0, 3e-4], 0.25), p)
+
+    def test_vanishing_gradients_give_the_uniform_proposal(self):
+        np.testing.assert_allclose(gradient_softmax([0.0, 0.0, 0.0], 0.1),
+                                   [1 / 3] * 3)
+
+    def test_a_cold_softmax_never_zeroes_an_operator(self):
+        p = gradient_softmax([1.0, 0.0, 0.5], 0.01)
+        assert np.all(p > 0.0) and p[0] > 0.999
+
+    @pytest.mark.parametrize("tau", [0.0, -1.0, math.inf, math.nan])
+    def test_a_bad_temperature_is_refused(self, tau):
+        with pytest.raises(ValueError):
+            gradient_softmax([0.1, 0.2], tau)
+
+
+class TestNonUniformOperatorProposal:
+    def test_the_uniform_distribution_is_the_default(self):
+        kernel = ProposalKernel(3, WEIGHTS, 0, 3)
+        uniform = np.full(3, 1 / 3)
+        for c in _space(3, 3):
+            for d in _space(3, 3):
+                assert kernel.log_q(d, c) == pytest.approx(
+                    kernel.log_q(d, c, uniform), abs=1e-12)
+
+    def test_rows_normalize_and_match_the_closed_form(self):
+        kernel = ProposalKernel(3, WEIGHTS, 0, 3)
+        probs = _state_probabilities(3)
+        for c in _space(3, 3):
+            row: dict = {}
+            for action, p in kernel.actions(c, probs(c)):
+                d = action.apply(c)
+                row[d] = row.get(d, 0.0) + p
+            assert sum(row.values()) == pytest.approx(1.0, abs=1e-14)
+            for d, q in row.items():
+                assert kernel.log_q(d, c, probs(c)) == pytest.approx(
+                    math.log(q), abs=1e-12)
+
+    def test_sampler_draws_from_the_stated_proposal(self):
+        kernel = ProposalKernel(3, WEIGHTS, 0, 3)
+        c = (0, 2)
+        probs = _state_probabilities(3)(c)
+        rng = np.random.default_rng(4)
+        n = 40_000
+        counts: dict = {}
+        for _ in range(n):
+            d = kernel.sample(c, rng, probs).apply(c)
+            counts[d] = counts.get(d, 0) + 1
+        for d, hits in counts.items():
+            q = math.exp(kernel.log_q(d, c, probs))
+            assert abs(hits / n - q) < 5 * math.sqrt(q * (1 - q) / n), d
+
+    @pytest.mark.parametrize("beta", [0.0, 1.7, 25.0])
+    def test_the_target_is_stationary_and_balanced(self, beta):
+        """Forward with the source's distribution, reverse with the
+        destination's: detailed balance still holds exactly."""
+        kernel = ProposalKernel(3, WEIGHTS, 0, 3)
+        space = _space(3, 3)
+        probs = _state_probabilities(3)
+        rng = np.random.default_rng(8)
+        cost = dict(zip(space, rng.normal(size=len(space))))
+        index = {c: i for i, c in enumerate(space)}
+        P = np.zeros((len(space), len(space)))
+        for c in space:
+            for action, q in kernel.actions(c, probs(c)):
+                d = action.apply(c)
+                ell = log_acceptance(beta, cost[c], cost[d],
+                                     kernel.log_q(d, c, probs(c)),
+                                     kernel.log_q(c, d, probs(d)))
+                P[index[c], index[d]] += q * math.exp(min(0.0, ell))
+            P[index[c], index[c]] += 1.0 - P[index[c]].sum()
+        pi = np.array([math.exp(-beta * cost[c]) for c in space])
+        pi /= pi.sum()
+        flow = pi[:, None] * P
+        assert np.abs(flow - flow.T).max() < 1e-15
+        assert np.abs(pi @ P - pi).max() < 1e-14
+
+    @pytest.mark.parametrize("probs, match", [
+        ([0.5, 0.5], "one probability per pool operator"),
+        ([1.0, 0.0, 0.0], "positive"),
+        ([0.2, 0.2, 0.2], "sum"),
+    ])
+    def test_bad_distributions_are_refused(self, probs, match):
+        with pytest.raises(ValueError, match=match):
+            ProposalKernel(3, None, 0, 3).log_q((0,), (), probs)
 
 
 class TestAcceptance:

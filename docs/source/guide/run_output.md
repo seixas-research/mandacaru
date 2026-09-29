@@ -106,9 +106,9 @@ row per proposal, accepted or not:
 
 ```text
 [MARKOV CHAIN]
-     step     time    move   L        energy (eV)                 dE       current (eV)          T     ln(a)  acc   steps action
-        4 03:07:38  insert   2     -27.9587157834      -0.5014556457     -27.9587157834  2.848e-02   +18.383  yes       4 insert(QD(0,2->1,3)@1)
-        5 03:07:38  delete   1     -27.4572601377      +0.5014556457     -27.9587157834  1.874e-02   -27.519   no       1 delete(1)
+     step     time    move   L    energy (eV)         dE   current (eV)          T     ln(a)  acc   steps action
+        4 05:35:17  insert   2     -27.958716  -0.501456     -27.958716  2.848e-02   +18.383  yes       4 insert(QD(0,2->1,3)@1)
+        5 05:35:17  delete   1     -27.457260  +0.501456     -27.958716  1.874e-02   -27.519   no       1 delete(1)
 ```
 
 | column | meaning |
@@ -116,8 +116,7 @@ row per proposal, accepted or not:
 | `move`, `action` | the proposed move, and its position and operator |
 | `L` | operators in the proposed ansatz |
 | `energy` | relaxed energy of the **proposed** ansatz |
-| `dE` | proposed minus **current** energy before the step: what the acceptance test weighs |
-| `dF` | the same for the cost $E + \lambda_L L$; present only when `length_penalty > 0` |
+| `dE` | proposed minus **current** energy before the step, without the length penalty |
 | `current` | the chain's energy after the decision: `energy` if accepted, unchanged if not |
 | `T` | architecture temperature |
 | `ln(a)` | log Metropolis-Hastings ratio, before $\min(0,\cdot)$ |

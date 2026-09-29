@@ -377,6 +377,16 @@ def build_parser() -> argparse.ArgumentParser:
                        help="architecture temperature: one value fixes it, "
                             "two anneal geometrically from T0 to T1 "
                             "(default 0.1 0.001 eV); 0 is the greedy limit")
+    chain.add_argument("--proposal", default=None,
+                       choices=("gradient", "uniform"),
+                       help="how insert and replace draw the new operator: "
+                            "a softmax of the pool gradients (default) or "
+                            "uniformly")
+    chain.add_argument("--proposal-temperature", type=float, default=None,
+                       metavar="TAU",
+                       help="softmax temperature relative to the largest "
+                            "gradient (default 0.2); small is greedy, large "
+                            "uniform")
     chain.add_argument("--length-penalty", type=float, default=None,
                        metavar="EV",
                        help="cost of one operator (default 0)")
@@ -472,7 +482,8 @@ def solver_options(args) -> dict:
     # --txt run.txt` used to run and write nothing.
     for name in ("pool", "ansatz", "max_iterations", "txt", "num_states",
                  "multiplicity", "references", "max_steps", "max_length",
-                 "length_penalty", "warm_start", "seed"):
+                 "length_penalty", "warm_start", "seed", "proposal",
+                 "proposal_temperature"):
         value = getattr(args, name)
         if value is not None:
             options[name] = value

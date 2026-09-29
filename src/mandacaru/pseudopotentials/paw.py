@@ -1289,7 +1289,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         # the curves agree to 0.07-0.3 eV (HISTORY.md, 2026-09-24).
         return ghost_free(generate_paw, _paw_levels, log_derivative_paw,
                           symbol, options, ghosts,
-                          overrides={"norm_deficit": 0.0})
+                          overrides={"norm_deficit": 0.0},
+                          acceptance=_intruding_s_acceptance)
 
     from ase.data import atomic_numbers
 
@@ -1752,6 +1753,56 @@ def report_paw(pp: PAWDataset) -> str:
 # --------------------------------------------------------------------------- #
 # Molecule: projectors, blocks, augmented integrals, the family builder.
 # --------------------------------------------------------------------------- #
+
+#: Largest tolerated miss of the s channel on an intruding hydrogen 1s, as a
+#: fraction of that function's norm inside the sphere
+#: (:func:`intruding_s_miss`).  Above it the s projectors cannot represent a
+#: neighbor's orbital entering the sphere, and bonds come out too long or
+#: collapse: PbO with the first Dirac Pb (miss 2.39) had no minimum out to
+#: 2.07 Angstrom, CoH and SnH collapsed at 1.5-13 (HISTORY.md, 2026-09-27
+#: and 2026-09-29).
+INTRUDING_S_TOLERANCE = 1.0
+
+
+def intruding_s_miss(pp) -> float | None:
+    r"""How badly the s channel misses a hydrogen 1s entering its sphere.
+
+    The :math:`l = 0` part of a hydrogen 1s centered just outside the sphere
+    (at :math:`r_c + 0.2` Bohr) is expanded in the channel's projectors and
+    smooth partial waves, :math:`g = \sum_i \langle p_i|f\rangle\tilde\varphi_i`,
+    and the miss is :math:`\|f - g\|/\|f\|` inside :math:`r_c` -- zero for a
+    complete set.  ``None`` for a dataset without an s channel.
+    """
+    channel = pp.channels.get(0)
+    if channel is None:
+        return None
+    r = np.asarray(pp.r)
+    inside = (r > 0.0) & (r <= channel.r_cut)
+    radius, step = r[inside], r[1] - r[0]
+    distance = channel.r_cut + 0.2
+
+    def primitive(s):
+        return -(s + 1.0) * np.exp(-s)
+    target = ((primitive(radius + distance)
+               - primitive(np.abs(radius - distance)))
+              / (2.0 * radius * distance * np.sqrt(np.pi)))
+    waves = np.array([np.asarray(w)[inside] for w in channel.pseudo_waves])
+    projectors = np.array([np.asarray(p)[inside] for p in channel.projectors])
+    coefficients = (projectors * target * radius ** 2).sum(axis=1) * step
+    miss = target - coefficients @ waves
+
+    def norm(f):
+        return np.sqrt((f * f * radius ** 2).sum() * step)
+    return float(norm(miss) / norm(target))
+
+
+def _intruding_s_acceptance(pp) -> dict:
+    """The repair search's PAW-LCAO acceptance (:func:`~.oncv.ghost_free`)."""
+    miss = intruding_s_miss(pp)
+    if miss is None or miss < INTRUDING_S_TOLERANCE:
+        return {}
+    return {"s_miss": miss}
+
 
 def paw_projectors(symbols, positions, datasets, units: str = "angstrom",
                    projector_basis: str = DEFAULT_PROJECTOR_BASIS):

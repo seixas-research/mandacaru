@@ -616,32 +616,12 @@ class TestLibrary:
         times the molecule's electrons, and the hydride collapsed by 150-580 eV
         (DEFAULT_N_BESSEL_BY_DATASET, DEFAULT_CUTOFFS, DEFAULT_NORM_DEFICITS);
         now it is under one."""
-        pp = get_paw(symbol, xc=xc)
-        r = np.asarray(pp.r)
-        channel = pp.channels[0]
-        inside = (r > 0.0) & (r <= channel.r_cut)
-        radius, step = r[inside], r[1] - r[0]
-        distance = channel.r_cut + 0.2
+        from mandacaru.pseudopotentials.paw import (INTRUDING_S_TOLERANCE,
+                                                    intruding_s_miss)
 
-        def primitive(s):
-            return -(s + 1.0) * np.exp(-s)
-        target = ((primitive(radius + distance)
-                   - primitive(np.abs(radius - distance)))
-                  / (2.0 * radius * distance * np.sqrt(np.pi)))
-        waves = np.array([np.asarray(w)[inside] for w in channel.pseudo_waves])
-        projectors = np.array([np.asarray(p)[inside]
-                               for p in channel.projectors])
-        coefficients = (projectors * target * radius ** 2).sum(axis=1) * step
-        miss = target - coefficients @ waves
-
-        def norm(f):
-            return np.sqrt((f * f * radius ** 2).sum() * step)
-        # LDA tin's best construction (s cutoff 2.33 Bohr, 10 functions) sits
-        # at 1.05: every scanned cutoff from 2.20 to 2.59 and 8-10 functions
-        # gave 1.04-2.0 (at the default 2.59, 6.6-156).  Its hydride holds
-        # 13.7-15.2 one-center electrons of SnH's 15, so it no longer collapses.
-        bound = 1.1 if (symbol, xc) == ("Sn", "lda") else 1.0
-        assert norm(miss) < bound * norm(target)
+        # The generator now refuses a construction above the tolerance
+        # (``ghost_free``'s acceptance); these five were the first repaired.
+        assert intruding_s_miss(get_paw(symbol, xc=xc)) < INTRUDING_S_TOLERANCE
 
     @pytest.mark.parametrize("xc", ["lda", "pbe"])
     @pytest.mark.parametrize("symbol", ["Fe", "Co", "Ni", "Cu", "Zn"])

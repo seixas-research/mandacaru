@@ -176,6 +176,48 @@ class TestTheEvaluator:
         assert ha.steps[-1].temperature * HARTREE_TO_EV == pytest.approx(1e-3)
 
 
+class TestTheGradientProposal:
+    def test_it_is_the_default_and_favors_the_steep_operator(
+            self, h2_hamiltonian):
+        """At the RHF reference both singles have zero gradient (Brillouin)
+        and the double does not: tau = 0.2 proposes it with probability
+        e^5 / (e^5 + 2) ~ 0.987."""
+        firsts = [_vasqa(h2_hamiltonian, max_steps=1, seed=seed).run()
+                  .steps[0].action for seed in range(10)]
+        doubles = sum(action.startswith("insert(D(") for action in firsts)
+        assert doubles >= 8, firsts
+
+    def test_the_uniform_proposal_draws_the_singles_as_often(
+            self, h2_hamiltonian):
+        firsts = [_vasqa(h2_hamiltonian, max_steps=1, seed=seed,
+                         proposal="uniform").run().steps[0].action
+                  for seed in range(30)]
+        singles = sum(action.startswith("insert(S(") for action in firsts)
+        assert 10 <= singles <= 30        # 2/3 expected, ~20
+
+    def test_one_screening_per_new_state(self, h2_hamiltonian):
+        gradient = _vasqa(h2_hamiltonian, max_steps=12).run()
+        assert gradient.num_screenings == 13      # the reference + 12
+        uniform = _vasqa(h2_hamiltonian, max_steps=12,
+                         proposal="uniform").run()
+        assert uniform.num_screenings == 0
+
+    def test_memoized_states_are_screened_once(self, h2_hamiltonian):
+        result = _vasqa(h2_hamiltonian, max_steps=40, warm_start=False).run()
+        assert result.num_screenings == result.num_architectures
+
+    def test_the_setup_block_names_it(self, h2_hamiltonian, tmp_path):
+        from mandacaru.utils.logging import parse_output, reset_log
+        path = tmp_path / "output.txt"
+        reset_log(str(path))
+        _vasqa(h2_hamiltonian, max_steps=3, txt=str(path),
+               proposal_temperature=0.5).run()
+        log = parse_output(str(path))
+        assert log["setup"]["proposal"].startswith(
+            "gradient softmax (tau 0.5 of max |grad|)")
+        assert int(log["summary"]["gradient_screenings"]) == 4
+
+
 class TestReproducibility:
     def test_the_same_seed_gives_the_same_chain(self, h2_hamiltonian):
         a = _vasqa(h2_hamiltonian, pool="qubit", max_steps=15).run()
@@ -199,6 +241,8 @@ class TestOptions:
         ({"length_penalty": -0.1}, "length_penalty"),
         ({"warm_start": "yes"}, "warm_start"),
         ({"move_weights": {"insert": 1.0}}, "insert and delete"),
+        ({"proposal": "learned"}, "unknown proposal"),
+        ({"proposal_temperature": 0.0}, "softmax temperature"),
     ])
     def test_bad_options_are_refused_by_the_constructor(self, options, error):
         with pytest.raises(ValueError, match=error):
@@ -241,9 +285,9 @@ class TestRunLog:
             assert row["accepted"] == step.accepted
             assert row["L"] == len(step.proposed)
             assert row["energy"] == pytest.approx(step.proposed_energy,
-                                                  abs=1e-9)
+                                                  abs=1e-6)
             assert row["current"] == pytest.approx(step.current_energy,
-                                                   abs=1e-9)
+                                                   abs=1e-6)
             assert row["energy_unit"] == "eV"
 
     def test_de_is_measured_from_the_state_before_the_step(
@@ -252,19 +296,17 @@ class TestRunLog:
         before = result.reference_energy
         for row, step in zip(log["markov_chain"], result.steps):
             assert row["dE"] == pytest.approx(step.proposed_energy - before,
-                                              abs=1e-9)
+                                              abs=1e-6)
             before = step.current_energy
 
-    def test_a_df_column_only_with_a_length_penalty(self, h2_hamiltonian,
-                                                    tmp_path):
-        _r, plain, _t = self._log(h2_hamiltonian, tmp_path)
-        assert "dF" not in plain["markov_chain"][0]
-        _r, penalized, _t = self._log(h2_hamiltonian, tmp_path,
-                                      length_penalty=0.01)
-        for row in penalized["markov_chain"]:
-            growth = {"insert": 1, "delete": -1}.get(row["move"], 0)
-            assert row["dF"] == pytest.approx(row["dE"] + 0.01 * growth,
-                                              abs=1e-9)
+    def test_six_decimals_and_no_cost_column(self, h2_hamiltonian, tmp_path):
+        _r, log, text = self._log(h2_hamiltonian, tmp_path,
+                                  length_penalty=0.01)
+        assert "dF" not in log["markov_chain"][0]
+        row = text.split("[MARKOV CHAIN]")[1].splitlines()[3].split()
+        # step time move L energy dE current ...: six decimals each.
+        for cell in (row[4], row[5], row[6]):
+            assert len(cell.split(".")[1]) == 6
 
     def test_setup_and_summary_blocks(self, h2_hamiltonian, tmp_path):
         result, log, _ = self._log(h2_hamiltonian, tmp_path)

@@ -852,10 +852,81 @@ class TestGhostSearch:
             return outcomes[len(calls) - 1]
         return generate, calls
 
-    def _run(self, generate, mode="repair", overrides=None, **options):
+    def _run(self, generate, mode="repair", overrides=None, acceptance=None,
+             **options):
         from mandacaru.pseudopotentials.oncv import ghost_free
         return ghost_free(generate, self._levels, None, "X",
-                          self._options(**options), mode, overrides)
+                          self._options(**options), mode, overrides,
+                          acceptance=acceptance)
+
+    @staticmethod
+    def _s_miss(pp):
+        """A stub acceptance: the dataset's own ``miss``, failing at 1."""
+        miss = getattr(pp, "miss", 0.0)
+        return {"s_miss": miss} if miss >= 1.0 else {}
+
+    def _missing(self, miss):
+        dataset = self._Dataset(self.CLEAN)
+        dataset.miss = miss
+        return dataset
+
+    def test_a_failed_acceptance_is_repaired_with_more_bessel_functions(self):
+        """Mg-LDA: clean spectrum and phases, but its s channel missed an
+        intruding hydrogen 1s by 1.5; ten Bessel functions bring it to 0.07.
+        The Bessel attempts come after the own-cutoff shifts."""
+        from mandacaru.pseudopotentials.oncv import OWN_CUTOFF_SHIFTS
+
+        first = self._missing(1.5)
+        shifts = [self._missing(1.6) for _ in OWN_CUTOFF_SHIFTS]
+        fixed = self._missing(0.07)
+        generate, calls = self._generator([first] + shifts + [fixed])
+        assert self._run(generate, acceptance=self._s_miss,
+                         n_bessel=None) is fixed
+        assert calls[-1]["n_bessel"] == 9
+        assert calls[-1]["local_shift"] == 0.0
+
+    def test_a_ghost_repair_must_also_pass_the_acceptance(self):
+        """A shift that removes the ghost but leaves the s channel
+        incomplete is not a repair."""
+        first = self._Dataset(self.GHOST)
+        incomplete = self._missing(2.4)
+        complete = self._missing(0.3)
+        generate, _calls = self._generator([first, incomplete, complete])
+        assert self._run(generate, acceptance=self._s_miss,
+                         n_bessel=None) is complete
+
+    def test_flag_mode_keeps_the_smallest_miss(self):
+        from mandacaru.pseudopotentials.oncv import OWN_CUTOFF_SHIFTS
+
+        attempts = (len(OWN_CUTOFF_SHIFTS) + 2 * (len(OWN_CUTOFF_SHIFTS) + 1)
+                    + 3 * 3 + 5)
+        outcomes = [self._missing(3.0)] + [self._missing(2.0 + 0.01 * i)
+                                           for i in range(attempts)]
+        generate, _calls = self._generator(outcomes)
+        result = self._run(generate, mode="flag", acceptance=self._s_miss,
+                           n_bessel=None)
+        assert result is outcomes[1]
+        assert result.defects["s_miss"] == pytest.approx(2.0)
+
+    def test_a_pinned_construction_is_kept_with_its_miss_recorded(self):
+        """A caller who fixed the cutoffs chose what a repair would change;
+        an incomplete s channel alone is recorded, not refused."""
+        first = self._missing(1.4)
+        generate, calls = self._generator([first])
+        result = self._run(generate, acceptance=self._s_miss,
+                           r_cut={0: 3.0, 2: 1.0})
+        assert result is first and len(calls) == 1
+        assert result.defects["s_miss"] == pytest.approx(1.4)
+
+    def test_the_miss_survives_the_file_record(self):
+        from mandacaru.pseudopotentials.oncv import (defect_message,
+                                                     defects_record,
+                                                     read_defects)
+
+        defects = {"ghosts": {}, "phases": {}, "s_miss": 1.8}
+        assert read_defects(defects_record(defects))["s_miss"] == 1.8
+        assert "incomplete s channel" in defect_message("X", "paw-lcao",
+                                                        defects)
 
     def test_a_clean_dataset_is_returned_unchanged(self):
         clean = self._Dataset(self.CLEAN)

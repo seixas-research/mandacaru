@@ -66,8 +66,9 @@ _METHOD_KEYS = {
     # The chain searches ansatz structures; each is relaxed by VQE.  The
     # annealing paper is cited with the rest because the default temperature
     # is annealed.
-    "vasqa": ("Peruzzo2014", "Metropolis1953", "Hastings1970",
-              "Kirkpatrick1983"),
+    # Grimsley2019 for the pool gradient the default proposal draws from.
+    "vasqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
+              "Hastings1970", "Kirkpatrick1983"),
     "qpe": ("Kitaev1995", "AspuruGuzik2005"),
     # The periodic pair cite their variational method plus the machinery that
     # makes it a crystal: the Born-von Karman supercell the mesh realizes, the

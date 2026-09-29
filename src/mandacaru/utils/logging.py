@@ -735,21 +735,22 @@ class AdaptOutputLogger:
     #: ``(key, heading, width, format)``.  ``energy`` is the relaxed energy of
     #: the *proposed* ansatz, ``dE`` its difference from the chain's current
     #: state before the step (the energy change the Metropolis-Hastings test
-    #: weighs), ``dF`` the same for the cost when a length penalty makes the
-    #: two differ, and ``current`` the chain's energy *after* the decision --
+    #: weighs, before any length penalty), and ``current`` the chain's energy
+    #: *after* the decision --
     #: equal to ``energy`` on an accepted row, unchanged on a rejected one.
     #: ``T`` is the architecture temperature, ``ln(a)`` the log acceptance
     #: ratio before ``min(0, .)``, ``steps`` the optimizer's parameter updates
     #: for the relaxation.  The move itself, with its position and operator,
-    #: is last: the only variable-width field.
+    #: is last: the only variable-width field.  Energies have six decimals
+    #: (micro-eV, or micro-Hartree in atomic units), which keeps the row
+    #: narrow; the result object carries them in full.
     CHAIN_COLUMNS = (("step", "step", 5, "d"),
                      ("time", "time", 8, "s"),
                      ("move", "move", 7, "s"),
                      ("L", "L", 3, "d"),
-                     ("energy", "energy", 18, ".10f"),
-                     ("dE", "dE", 18, "+.10f"),
-                     ("dF", "dF", 18, "+.10f"),
-                     ("current", "current", 18, ".10f"),
+                     ("energy", "energy", 14, ".6f"),
+                     ("dE", "dE", 10, "+.6f"),
+                     ("current", "current", 14, ".6f"),
                      ("T", "T", 10, ".3e"),
                      ("lna", "ln(a)", 9, "+.3f"),
                      ("acc", "acc", 4, "s"),
@@ -766,19 +767,16 @@ class AdaptOutputLogger:
                          current_energy: float, temperature: float,
                          log_acceptance: float, accepted: bool,
                          energy_unit: str = "eV",
-                         delta_cost: float | None = None,
                          optimizer_steps: int | None = None,
                          action: str = "") -> None:
         """Append **one row** of the ``[MARKOV CHAIN]`` table (VASQA).
 
         The counterpart of :meth:`write_iteration` for a chain: one row per
         proposal, accepted or not (:data:`CHAIN_COLUMNS`).  Energies are in
-        ``energy_unit``; the heading is written before the first row, whose
-        ``delta_cost`` decides whether the table has a ``dF`` column.
+        ``energy_unit``; the heading is written before the first row.
         """
         if not self._table_open:
-            self._columns = tuple(c for c in self.CHAIN_COLUMNS
-                                  if c[0] != "dF" or delta_cost is not None)
+            self._columns = self.CHAIN_COLUMNS
             cells = []
             for key, head, width, _fmt in self._columns:
                 label = self._chain_label(key, head, energy_unit)
@@ -793,10 +791,11 @@ class AdaptOutputLogger:
             "step": int(step),
             "time": datetime.now().strftime("%H:%M:%S"),
             "move": str(move), "L": int(length),
-            # `+ 0.0` turns a zero difference's sign bit off: "-0.000" reads
-            # as a decrease that did not happen.
-            "energy": float(energy), "dE": float(delta_energy) + 0.0,
-            "dF": None if delta_cost is None else float(delta_cost) + 0.0,
+            # Rounded to the printed precision first, then `+ 0.0` turns the
+            # sign bit of a zero off: round-off would otherwise print
+            # "-0.000000", a decrease that did not happen.
+            "energy": float(energy),
+            "dE": round(float(delta_energy), 6) + 0.0,
             "current": float(current_energy), "T": float(temperature),
             "lna": float(log_acceptance),
             "acc": "yes" if accepted else "no",

@@ -17,7 +17,11 @@ swap operators, so an early choice can be revised.
 Each step
 
 1. draws an architecture move -- ``insert``, ``delete``, ``replace`` or
-   ``swap`` -- from the uniform MCAS proposal;
+   ``swap`` -- at a uniform position; a new operator (``insert``,
+   ``replace``) is drawn from a softmax of the pool gradients
+   :math:`|\langle[H, A_\mu]\rangle|` at the current state
+   (``proposal="gradient"``, the default) or uniformly
+   (``proposal="uniform"``);
 2. rebuilds the ansatz :math:`\prod_k e^{\theta_k A_{\mu_k}}|\mathrm{HF}\rangle`
    for the proposed operator sequence and minimizes its energy with the
    classical optimizer, starting from the current angles carried over by the
@@ -36,13 +40,16 @@ zero angles, its cost is a fixed function of the sequence (memoized), and at a
 fixed ``temperature`` the chain leaves
 :math:`\pi(C) \propto e^{-\beta \widehat F(C)}` invariant -- for the optimizer's
 :math:`\widehat E(C)`, which a local optimizer does not certify to be the
-global minimum over the angles.
+global minimum over the angles.  The gradient proposal keeps that property:
+its distribution at ``C`` is computed from ``C``'s own relaxed state, so it is
+a fixed function of ``C`` too, and the reverse probability is evaluated at the
+proposed state.
 
 The reported state (``result.optimal_energy``, ``result.operators``,
 ``result.optimal_parameters`` and the solver's ``ansatz``) is the **lowest-cost**
 architecture evaluated, rejected proposals included; the lowest-energy one and
 the chain's final state are reported beside it.  Learned proposals are not
-implemented: the proposal is the uniform one.
+implemented.
 """
 
 from __future__ import annotations
@@ -58,6 +65,7 @@ from ..circuits.profiling import CircuitMetrics
 from ..optimizers.optim import DEFAULT_OPTIMIZER
 from ..units import convert_energy, to_hartree
 from .mcas import (MOVES, ProposalKernel, TemperatureSchedule,
+                   gradient_softmax,
                    log_acceptance, metropolis_accept)
 from .pool_driver import PoolDriver
 
@@ -68,6 +76,16 @@ if TYPE_CHECKING:
 #: a geometric anneal that starts where a typical correlation-energy step is
 #: accepted about half the time and ends where only sub-meV increases survive.
 DEFAULT_TEMPERATURE = {"initial": 0.1, "final": 1e-3}
+
+#: How new operators are drawn: ``"gradient"``, a softmax of the pool
+#: gradients at the current state, or ``"uniform"``.
+PROPOSALS = ("gradient", "uniform")
+
+#: Default softmax temperature of the gradient proposal, relative to the
+#: largest gradient: the steepest operator is ``e^5 ~ 150`` times as likely
+#: as one with zero gradient, which still leaves the rest of the pool within
+#: reach.
+DEFAULT_PROPOSAL_TEMPERATURE = 0.2
 
 
 @dataclass
@@ -123,6 +141,9 @@ class VASQAResult:
     steps: list[MCASStep] = field(default_factory=list)
     acceptance_by_move: dict = field(default_factory=dict)
     num_architectures: int = 0
+    #: Pool-gradient screenings the gradient proposal spent (``0`` for the
+    #: uniform one): ``len(pool)`` expectation values each.
+    num_screenings: int = 0
     num_evaluations: int = 0
     optimizer_steps: int = 0
     optimizer_failures: list = field(default_factory=list)
@@ -181,6 +202,10 @@ class _Evaluated:
     nit: int = 0
     success: bool = True
     message: str = ""
+    #: The distribution new operators are drawn from *at this state*
+    #: (``None``: uniform).  The forward move uses the current state's, the
+    #: reverse the proposed state's.
+    operator_probabilities: np.ndarray | None = None
 
 
 class VASQA(PoolDriver):
@@ -229,6 +254,24 @@ class VASQA(PoolDriver):
         move (default ``True``).  ``False`` starts every architecture from
         zero angles and memoizes its energy, which makes the cost a fixed
         function of the architecture (see the module docstring).
+    proposal : {"gradient", "uniform"}
+        How ``insert`` and ``replace`` draw their new operator (default
+        ``"gradient"``).  ``"gradient"`` is a softmax of the pool gradients
+        :math:`|g_\\mu| = |2\\,\\mathrm{Re}\\langle H\\psi|A_\\mu\\psi\\rangle|` at the
+        current state (:func:`~mandacaru.algorithms.mcas.gradient_softmax`):
+        the operators ADAPT-VQE would pick are proposed most often, and the
+        rest keep a positive probability.  The gradient is the one for
+        appending at the end of the circuit, used for every slot -- a
+        heuristic for *which* operator, not a derivative at each position --
+        and the reverse probability is evaluated at the proposed state, so
+        the Metropolis-Hastings ratio stays exact.  One pool screening per
+        proposal.  ``"uniform"`` draws every operator with ``1/M``.
+    proposal_temperature : float
+        Softmax temperature of the gradient proposal, relative to the largest
+        gradient (default :data:`DEFAULT_PROPOSAL_TEMPERATURE`): the steepest
+        operator is ``exp(1/proposal_temperature)`` times as likely as one
+        with zero gradient.  Small values approach ADAPT's greedy choice,
+        large ones the uniform proposal.
     seed : int, optional
         Seed of the chain's random stream (proposals and acceptance).
     profile : bool
@@ -265,6 +308,8 @@ class VASQA(PoolDriver):
                  temperature=None,
                  length_penalty: float = 0.0,
                  warm_start: bool = True,
+                 proposal: str = "gradient",
+                 proposal_temperature: float = DEFAULT_PROPOSAL_TEMPERATURE,
                  seed: int | None = None,
                  profile: bool = True,
                  verbose: bool = True,
@@ -302,6 +347,12 @@ class VASQA(PoolDriver):
             raise ValueError(f"warm_start must be True or False, got "
                              f"{warm_start!r}")
         self.warm_start = warm_start
+        self.proposal = str(proposal).strip().lower()
+        if self.proposal not in PROPOSALS:
+            raise ValueError(f"unknown proposal {proposal!r}; use one of "
+                             f"{PROPOSALS}")
+        self.proposal_temperature = float(proposal_temperature)
+        gradient_softmax([1.0, 0.0], self.proposal_temperature)   # validates
         self.seed = None if seed is None else int(seed)
         self._adopt_problem(hamiltonian, num_particles, n_spatial_orbitals)
 
@@ -330,7 +381,8 @@ class VASQA(PoolDriver):
                 # it costs nothing to look up.
                 return _Evaluated(cached.architecture,
                                   cached.parameters.copy(), cached.energy,
-                                  cached.cost)
+                                  cached.cost, operator_probabilities=(
+                                      cached.operator_probabilities))
         ansatz = self._ansatz_for(architecture)
         if not architecture:
             energy = self.energy(ansatz.reference_state())
@@ -346,6 +398,15 @@ class VASQA(PoolDriver):
                 self._cost(energy, len(architecture)), int(result.nfev),
                 int(result.nit or 0), bool(result.success),
                 str(result.message))
+        if self.proposal == "gradient":
+            # The proposal out of this state: a softmax of the pool gradients
+            # at its relaxed angles.  Needed whether or not it is accepted --
+            # a rejected proposal's distribution is the reverse probability.
+            psi = (ansatz.state(evaluated.parameters) if architecture
+                   else ansatz.reference_state())
+            evaluated.operator_probabilities = gradient_softmax(
+                self._analytic_gradients(psi), self.proposal_temperature)
+            self._screenings += 1
         if not self.warm_start:
             self._cache[architecture] = evaluated
         return evaluated
@@ -387,6 +448,9 @@ class VASQA(PoolDriver):
             self.max_steps)
         self._length_penalty_ha = float(to_hartree(self.length_penalty, unit))
         self._cache: dict = {}
+        #: Pool-gradient screenings, one per new state under the gradient
+        #: proposal: part of the search cost, so it is reported.
+        self._screenings = 0
         rng = np.random.default_rng(self.seed)
 
         self._show_banner()
@@ -407,7 +471,8 @@ class VASQA(PoolDriver):
         try:
             for step in range(1, n_steps + 1):
                 beta = schedule.beta(step - 1)
-                action = kernel.sample(current.architecture, rng)
+                action = kernel.sample(current.architecture, rng,
+                                       current.operator_probabilities)
                 if action is None:
                     # Unreachable while insert has weight and max_length > 0,
                     # which the kernel enforces; a silent self-loop would
@@ -426,8 +491,10 @@ class VASQA(PoolDriver):
                     failures.append((step, proposed.message))
                 seen.add(proposed.architecture)
 
-                log_forward = kernel.log_q(proposed_arch, current.architecture)
-                log_reverse = kernel.log_q(current.architecture, proposed_arch)
+                log_forward = kernel.log_q(proposed_arch, current.architecture,
+                                           current.operator_probabilities)
+                log_reverse = kernel.log_q(current.architecture, proposed_arch,
+                                           proposed.operator_probabilities)
                 log_alpha = log_acceptance(beta, current.cost, proposed.cost,
                                            log_forward, log_reverse)
                 accepted = metropolis_accept(log_alpha, rng)
@@ -464,9 +531,6 @@ class VASQA(PoolDriver):
                         energy=self._to_energy_units(proposed.energy),
                         delta_energy=self._to_energy_units(
                             proposed.energy - previous.energy),
-                        delta_cost=(self._to_energy_units(
-                            proposed.cost - previous.cost)
-                            if self.length_penalty > 0 else None),
                         current_energy=self._to_energy_units(current.energy),
                         temperature=temperature, log_acceptance=log_alpha,
                         accepted=accepted, energy_unit=unit,
@@ -501,6 +565,7 @@ class VASQA(PoolDriver):
                 acceptance_by_move={move: (taken[move], tried[move])
                                     for move in MOVES},
                 num_architectures=len(seen),
+                num_screenings=self._screenings,
                 num_evaluations=total_evals,
                 optimizer_steps=total_steps,
                 optimizer_failures=failures,
@@ -559,7 +624,11 @@ class VASQA(PoolDriver):
                 "pool": getattr(self.pool, "name", "?"),
                 "pool_class": self.pool.__class__.__name__,
                 "pool_size": len(self._pool_ops),
-                "proposal": "uniform (Metropolis-Hastings)",
+                "proposal": (
+                    f"gradient softmax (tau {self.proposal_temperature:g} of "
+                    f"max |grad|), Metropolis-Hastings"
+                    if self.proposal == "gradient"
+                    else "uniform, Metropolis-Hastings"),
                 "max_steps": self.max_steps,
                 "ansatz_length": f"{self.min_length} to {self.max_length}",
                 "move_weights": ", ".join(f"{move} {weight:g}" for move, weight
@@ -595,6 +664,7 @@ class VASQA(PoolDriver):
             **{f"accepted_{move}": f"{taken} of {tried}" for move, (taken, tried)
                in result.acceptance_by_move.items()},
             "architectures_evaluated": result.num_architectures,
+            "gradient_screenings": result.num_screenings,
             "optimizer_failures": len(result.optimizer_failures),
             # The table names each proposal, not the sequence that won, so
             # the reported ansatz is written here, in order.

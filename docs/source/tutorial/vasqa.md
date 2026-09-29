@@ -39,8 +39,10 @@ $ mandacaru H2 --cell 5.5 --h 0.25 --method vasqa --pool qeb \
 ```
 
 `--temperature` takes one value (fixed) or two (annealed from the first to
-the second), `--move-weight swap=0` changes one move's weight and leaves the
-others at 1, and `--no-warm-start` relaxes every proposal from zero angles.
+the second), `--proposal uniform` and `--proposal-temperature` choose how new
+operators are drawn, `--move-weight swap=0` changes one move's weight and
+leaves the others at 1, and `--no-warm-start` relaxes every proposal from zero
+angles.
 Energies on the command line are in eV.
 
 The pool is any of those ADAPT-VQE uses: `"fermionic"`, `"qubit"`, `"qeb"`,
@@ -72,8 +74,44 @@ Each step draws one of four moves:
 A zero-angle insertion leaves the state exactly unchanged, since
 $e^{0\cdot A}=I$. The move is picked with probability proportional to
 `move_weights` among the moves that are possible at the current length: no
-`delete` below `min_length` and no `insert` at `max_length`. Its position and
-operator are then drawn uniformly.
+`delete` below `min_length` and no `insert` at `max_length`. Its position is
+drawn uniformly.
+
+### Which operator: a softmax of the gradient
+
+The new operator of an `insert` or a `replace` is drawn from a softmax of the
+pool gradients at the current state (`proposal="gradient"`, the default),
+
+```{math}
+P(\mu) = \frac{\exp\!\left(\dfrac{|g_\mu|}{\tau\, g_{\max}}\right)}
+               {\displaystyle\sum_{\nu=1}^{M}
+                \exp\!\left(\dfrac{|g_\nu|}{\tau\, g_{\max}}\right)},
+\qquad g_\mu = 2\,\mathrm{Re}\langle H\psi|A_\mu\psi\rangle,
+\quad g_{\max} = \max_\nu |g_\nu| ,
+```
+
+with the same $\tau$ in the numerator and in every term of the sum, so
+$\sum_\mu P(\mu) = 1$ for any $\tau > 0$.
+
+the gradient ADAPT-VQE screens with. $\tau$ is `proposal_temperature`
+(default 0.2), relative to the largest gradient: the steepest operator is
+$e^{1/\tau}$ times as likely as one with zero gradient ($e^5 \approx 150$ at
+the default). A small $\tau$ approaches ADAPT's greedy choice, a large one the
+uniform draw, and every operator keeps a positive probability. A `replace`
+draws from the same distribution with the replaced operator taken out.
+
+Why it matters: most pool operators have zero gradient at a given state (at
+the Hartree-Fock reference every single excitation does, by Brillouin's
+theorem). Inserted at zero angle, such an operator starts at a stationary
+point, the optimizer leaves it there, and it occupies the ansatz without
+lowering the energy. The uniform draw (`proposal="uniform"`, each operator
+$1/M$) proposes those operators most of the time.
+
+The gradient is the one for appending at the end of the circuit; it is used
+for every slot, as a guide to *which* operator rather than a derivative at
+each position. The acceptance rule stays exact because the reverse
+probability is computed with the distribution at the proposed state. The cost
+is one pool screening per proposal, `result.num_screenings`.
 
 The proposed sequence is relaxed with the configured `optimizer`, starting
 from those angles, which gives $\widehat E(C')$. Its cost is
@@ -162,4 +200,4 @@ ratio and the decision (see {doc}`../guide/run_output`). Without `txt=` the
 same blocks are printed. Checkpoints are refused: a chain's state is more than
 one ansatz.
 
-The proposal is uniform. Learned proposal distributions are not implemented.
+Learned proposal distributions are not implemented.

@@ -743,6 +743,8 @@ def defects_record(defects) -> dict:
     if defects.get("residuals"):
         record["residuals"] = {str(l): float(e)
                                for l, e in defects["residuals"].items()}
+    if defects.get("s_miss") is not None:
+        record["s_miss"] = float(defects["s_miss"])
     return record
 
 
@@ -754,11 +756,14 @@ def read_defects(record) -> dict:
               for l, (a, b) in (record.get("phases") or {}).items()}
     residuals = {int(l): float(e) for l, e in
                  (record.get("residuals") or {}).items()}
-    if not ghosts and not phases and not residuals:
+    s_miss = record.get("s_miss")
+    if not ghosts and not phases and not residuals and s_miss is None:
         return {}
     result = {"ghosts": ghosts, "phases": phases}
     if residuals:
         result["residuals"] = residuals
+    if s_miss is not None:
+        result["s_miss"] = float(s_miss)
     return result
 
 
@@ -785,11 +790,19 @@ def defect_message(symbol: str, family: str, defects: dict) -> str:
               for l, (near, far) in sorted(defects.get("phases", {}).items())]
     parts += [f"l={l} residual kinetic energy {float(e):.3g} Ha"
               for l, e in sorted(defects.get("residuals", {}).items())]
+    if defects.get("s_miss") is not None:
+        parts.append(f"s projectors miss an intruding hydrogen 1s by "
+                     f"{float(defects['s_miss']):.2f} of its norm")
     if defects.get("ghosts"):
         what = "ghost states"
         consequence = (f"A variational calculation containing {symbol} can "
                        f"collapse into a spurious state, so its energies and "
                        f"forces are not reliable.")
+    elif defects.get("s_miss") is not None and not defects.get("phases"):
+        what = "an incomplete s channel"
+        consequence = (f"A neighbor's orbital entering the {symbol} sphere is "
+                       f"not represented, so bonds to {symbol} can be too "
+                       f"long or collapse.")
     elif defects.get("residuals"):
         what = "divergent projector residuals"
         consequence = (f"Its projectors are numerically unreliable, so "
@@ -1028,18 +1041,24 @@ def _defect_badness(candidate: tuple) -> tuple[int, float, int]:
     affected channels. The same ranking is used while searching and when
     returning a flagged dataset.
     """
-    _pp, ghosts, wrong = candidate
-    if not ghosts:
-        return (0, max(max(near, far) for near, far in wrong.values()), 0)
-    return (1, -min(ghosts.values()), len(ghosts))
+    _pp, ghosts, wrong = candidate[:3]
+    extra = candidate[3] if len(candidate) > 3 else {}
+    if ghosts:
+        return (2, -min(ghosts.values()), len(ghosts))
+    if wrong:
+        return (1, max(max(near, far) for near, far in wrong.values()), 0)
+    return (0, float(extra.get("s_miss", 0.0)), 0)
 
 
 def _least_defective(candidates: list[tuple]):
     """Return the least defective attempt with its diagnostic record set."""
-    pp, ghosts, wrong = min(candidates, key=_defect_badness)
+    best = min(candidates, key=_defect_badness)
+    pp, ghosts, wrong = best[:3]
+    extra = best[3] if len(best) > 3 else {}
     pp.defects = {"ghosts": {int(l): float(e) for l, e in ghosts.items()},
                   "phases": {int(l): (float(a), float(b))
                              for l, (a, b) in wrong.items()}}
+    pp.defects.update(extra)
     return pp
 
 
@@ -1054,7 +1073,7 @@ def _describe(errors: dict) -> str:
 
 
 def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
-               mode: str, overrides=None):
+               mode: str, overrides=None, acceptance=None):
     r"""``generate(symbol, **options)``, rebuilt until no channel holds a ghost.
 
     A deep local well can bind an extra level that the nonlocal projectors do
@@ -1080,6 +1099,13 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     self-consistent atom is solved once and shared by every attempt, and a
     dataset that was clean to begin with is returned exactly as before.
 
+    ``acceptance(pp)`` -- a family's own check of an otherwise clean
+    construction -- returns ``{}`` or the defects it found (PAW-LCAO: the
+    intruding-1s miss of its s channel, ``{"s_miss": value}``).  A failed
+    acceptance is repaired like a phase error, every repair has to pass it
+    too, and the search then also tries 9 and 10 Bessel functions with each
+    local shift, and the s cutoff at 0.95-0.85 of its value.
+
     A caller that fixed ``r_cut``, ``r_cut_local`` or ``local_shift`` has
     made the choice this search would make, so a ghost there is refused
     rather than overridden; so is one with ``mode="refuse"``, and one no
@@ -1102,14 +1128,27 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         # channel was once returned 0.95 rad off, untested.)
         wrong = _wrong_phases(scattering_errors(first, log_derivative,
                                                 phase_cache))
-        if not wrong:
+        extra = {} if wrong or acceptance is None else acceptance(first)
+        if not wrong and not extra:
             return first
-    problem = (f"ghost state below the reference ({_describe(errors)})"
-               if errors else "wrong scattering (" + ", ".join(
-                   f"l={l} {near:.3f}/{far:.3f} rad"
-                   for l, (near, far) in sorted(wrong.items())) + ")")
+    else:
+        wrong, extra = {}, {}
+    if errors:
+        problem = f"ghost state below the reference ({_describe(errors)})"
+    elif wrong:
+        problem = "wrong scattering (" + ", ".join(
+            f"l={l} {near:.3f}/{far:.3f} rad"
+            for l, (near, far) in sorted(wrong.items())) + ")"
+    else:
+        problem = ("an incomplete s channel (intruding-1s miss "
+                   f"{extra['s_miss']:.2f})")
     pinned = [name for name in ("r_cut", "r_cut_local", "local_shift")
               if options.get(name) is not None]
+    if pinned and not errors and not wrong and mode != "refuse":
+        # Only the family's acceptance failed, and the caller chose the
+        # parameters a repair would change: keep the construction and
+        # record what it misses, as a flagged dataset would.
+        return _least_defective([(first, {}, {}, extra)])
     if mode == "refuse" or pinned:
         why = (f"with {', '.join(pinned)} fixed by the caller" if pinned
                else "and ghosts='refuse'")
@@ -1127,6 +1166,26 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     attempts += [(f"own cutoffs, shift {shift:g}",
                   dict(overrides, local_shift=float(shift)))
                  for shift in OWN_CUTOFF_SHIFTS]
+    if acceptance is not None and "n_bessel" in options:
+        # Whatever failed first, a repair must also pass the acceptance, and
+        # the s channel's completeness grows with its Bessel functions; the
+        # scans that repaired the d block used 9 and 10 (HISTORY.md,
+        # 2026-09-28).  Mg-LDA misses by 1.5 at 8 and by 0.07 at 10.
+        attempts += [(f"{count} Bessel functions, shift {shift:g}",
+                      dict(overrides, n_bessel=count,
+                           local_shift=float(shift)))
+                     for count in (9, 10) for shift in (0.0,) + OWN_CUTOFF_SHIFTS]
+        # Then a shorter s sphere, the other channels as built (Tl, Po, Bi,
+        # Os, Re, Ta and V were repaired at 0.85-0.95 of their s cutoff).
+        for factor in (0.95, 0.9, 0.85):
+            shorter = {int(l): float(channel.r_cut) * (factor if l == 0
+                                                         else 1.0)
+                       for l, channel in first.channels.items()}
+            attempts += [(f"s cutoff x {factor:g}, 10 Bessel functions, "
+                          f"shift {shift:g}",
+                          dict(overrides, r_cut=shorter, n_bessel=10,
+                               local_shift=float(shift)))
+                         for shift in (0.0, 10.0, 20.0)]
     if getattr(first, "family", None) == "oncvpsp":
         # A diffuse outer channel can make r_cl much larger than a compact
         # d/f cutoff.  Raising V_loc alone leaves its phase error, while
@@ -1182,7 +1241,8 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     # Keep only the best failed construction. A heavy ONCV dataset contains
     # many full-grid arrays; retaining every trial until the search ends can
     # exhaust memory when several elements are built in parallel.
-    best = (first, errors, {} if errors else wrong) if mode == "flag" else None
+    best = ((first, errors, {} if errors else wrong, extra)
+            if mode == "flag" else None)
     for label, remedy in attempts:
         trial = dict(options, atom=first.atom, **remedy)
         try:
@@ -1208,6 +1268,14 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
             tried.append(f"{label}: phase " + ", ".join(
                 f"l={l} {near:.3f}/{far:.3f} rad"
                 for l, (near, far) in sorted(wrong.items())))
+            continue
+        found = {} if acceptance is None else acceptance(pp)
+        if found:
+            candidate = (pp, {}, {}, found)
+            if best is not None and _defect_badness(candidate) < \
+                    _defect_badness(best):
+                best = candidate
+            tried.append(f"{label}: s-miss {found['s_miss']:.2f}")
             continue
         return pp
     if mode == "flag":

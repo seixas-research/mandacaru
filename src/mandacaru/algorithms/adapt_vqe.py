@@ -584,14 +584,6 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
 
     # -- energy / gradient ------------------------------------------------ #
 
-    def _analytic_gradients(self, psi: np.ndarray) -> np.ndarray:
-        r"""Exact pool gradients ``g_i = 2 Re<H psi | A_i psi>`` (reference)."""
-        h_psi = self._h_matrix @ psi
-        grads = np.empty(len(self._pool_matrices))
-        for i, a in enumerate(self._pool_matrices):
-            grads[i] = 2.0 * np.real(np.vdot(h_psi, a @ psi))
-        return grads
-
     def _select_disjoint(self, grads: np.ndarray) -> list:
         """TETRIS-ADAPT-VQE: pool indices to grow with this iteration.
 
