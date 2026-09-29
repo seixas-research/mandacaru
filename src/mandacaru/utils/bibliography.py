@@ -163,6 +163,41 @@ _ALGORITHMS = [
   year    = {2019},
   doi     = {10.1103/PhysRevResearch.1.033062}
 }""", "the subspace-search solvers", verified=False, topics=("subspace",)),
+    _ref("Metropolis1953", """
+@article{Metropolis1953,
+  author  = {Metropolis, Nicholas and Rosenbluth, Arianna W. and
+             Rosenbluth, Marshall N. and Teller, Augusta H. and Teller, Edward},
+  title   = {Equation of state calculations by fast computing machines},
+  journal = {J. Chem. Phys.},
+  volume  = {21},
+  pages   = {1087},
+  year    = {1953},
+  doi     = {10.1063/1.1699114}
+}""", "the Metropolis acceptance of the VASQA architecture chain",
+         verified=False, topics=("mcas",)),
+    _ref("Hastings1970", """
+@article{Hastings1970,
+  author  = {Hastings, W. K.},
+  title   = {Monte {C}arlo sampling methods using {M}arkov chains and their
+             applications},
+  journal = {Biometrika},
+  volume  = {57},
+  pages   = {97},
+  year    = {1970},
+  doi     = {10.1093/biomet/57.1.97}
+}""", "the proposal-ratio correction of the VASQA architecture chain",
+         verified=False, topics=("mcas",)),
+    _ref("Kirkpatrick1983", """
+@article{Kirkpatrick1983,
+  author  = {Kirkpatrick, S. and Gelatt, C. D. and Vecchi, M. P.},
+  title   = {Optimization by simulated annealing},
+  journal = {Science},
+  volume  = {220},
+  pages   = {671},
+  year    = {1983},
+  doi     = {10.1126/science.220.4598.671}
+}""", "the annealed architecture temperature of VASQA", verified=False,
+         topics=("mcas",)),
     _ref("Kitaev1995", """
 @misc{Kitaev1995,
   author        = {Kitaev, A. Yu.},

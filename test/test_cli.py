@@ -61,6 +61,72 @@ class TestCommandLineOptions:
                      "--max-iterations", "3"]) == 0
 
 
+class TestMarkovChainOptions:
+    """The ``--method vasqa`` flags, forwarded only when given."""
+
+    def _options(self, *argv):
+        return solver_options(build_parser().parse_args(
+            ["H2", "--cell", "6", "--method", "vasqa", *argv]))
+
+    def test_nothing_given_forwards_nothing(self):
+        options = self._options()
+        for name in ("max_steps", "max_length", "move_weights", "temperature",
+                     "length_penalty", "warm_start", "seed"):
+            assert name not in options
+
+    def test_every_flag_reaches_its_option(self):
+        options = self._options(
+            "--max-steps", "50", "--max-length", "8", "--length-penalty",
+            "0.002", "--no-warm-start", "--seed", "11", "--pool", "qeb")
+        assert options["max_steps"] == 50 and options["max_length"] == 8
+        assert options["length_penalty"] == 0.002
+        assert options["warm_start"] is False and options["seed"] == 11
+        assert options["pool"] == "qeb"
+
+    def test_one_temperature_is_fixed_and_two_anneal(self):
+        assert self._options("--temperature", "0.05")["temperature"] == 0.05
+        assert self._options("--temperature", "0.1", "0.001")[
+            "temperature"] == {"initial": 0.1, "final": 0.001}
+
+    def test_three_temperatures_are_a_usage_error(self, capsys):
+        with pytest.raises(SystemExit) as raised:
+            main(["H2", "--cell", "6", "--method", "vasqa", "--dry-run",
+                  "--temperature", "1", "2", "3"])
+        assert raised.value.code == 2
+        assert "--temperature" in capsys.readouterr().err
+
+    def test_named_move_weights_keep_the_others_at_one(self):
+        options = self._options("--move-weight", "swap=0",
+                                "--move-weight", "insert=2")
+        assert options["move_weights"] == {"insert": 2.0, "delete": 1.0,
+                                           "replace": 1.0, "swap": 0.0}
+
+    @pytest.mark.parametrize("text", ["grow=1", "insert=fast", "insert"])
+    def test_a_bad_move_weight_is_a_usage_error(self, text, capsys):
+        with pytest.raises(SystemExit) as raised:
+            build_parser().parse_args(["H2", "--move-weight", text])
+        assert raised.value.code == 2
+
+    @pytest.mark.parametrize("flag", [["--max-steps", "5"], ["--seed", "1"],
+                                      ["--no-warm-start"],
+                                      ["--temperature", "0.1"]])
+    def test_another_method_refuses_them(self, flag, capsys):
+        with pytest.raises(SystemExit) as raised:
+            main(["H2", "--cell", "6", "--method", "adapt-vqe", "--dry-run",
+                  *flag])
+        assert raised.value.code == 2
+        assert "does not take" in capsys.readouterr().err
+
+    def test_a_vasqa_dry_run_accepts_them(self, capsys):
+        assert main(["H2", "--cell", "6", "--method", "vasqa", "--dry-run",
+                     "--max-steps", "5", "--seed", "3", "--temperature",
+                     "0.1", "0.01", "--move-weight", "swap=0.5"]) == 0
+
+    def test_a_short_chain_runs_end_to_end(self, capsys):
+        assert main(["H2", "--cell", "5", "--h", "0.4", "--method", "vasqa",
+                     "--max-steps", "4", "--seed", "3", "--quiet"]) == 0
+
+
 class TestLibraryVariables:
     """``--set-paw/--set-ncpp/--set-oncvpsp`` and ``--pseudo-status``, on a
     temporary home directory: the user's own shell files are never touched."""

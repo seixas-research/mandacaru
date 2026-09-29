@@ -63,6 +63,11 @@ _METHOD_KEYS = {
     "adapt-vqe": ("Peruzzo2014", "Grimsley2019"),
     "subspace-vqe": ("Peruzzo2014", "Nakanishi2019"),
     "subspace-adapt-vqe": ("Peruzzo2014", "Grimsley2019", "Nakanishi2019"),
+    # The chain searches ansatz structures; each is relaxed by VQE.  The
+    # annealing paper is cited with the rest because the default temperature
+    # is annealed.
+    "vasqa": ("Peruzzo2014", "Metropolis1953", "Hastings1970",
+              "Kirkpatrick1983"),
     "qpe": ("Kitaev1995", "AspuruGuzik2005"),
     # The periodic pair cite their variational method plus the machinery that
     # makes it a crystal: the Born-von Karman supercell the mesh realizes, the

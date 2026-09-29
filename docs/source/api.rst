@@ -34,6 +34,18 @@ circuit template, ``"uccsd"`` (the default) or ``"hva"``, and its options.
    :undoc-members:
    :show-inheritance:
 
+Markov Chain Ansatz Search
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The architecture chain behind ``method="vasqa"``: the four moves, their summed
+proposal probabilities, the Metropolis-Hastings test and the temperature
+schedule.  See :doc:`tutorial/vasqa`.
+
+.. automodule:: mandacaru.algorithms.mcas
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Interaction Energies
 ~~~~~~~~~~~~~~~~~~~~
 

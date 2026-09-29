@@ -10,7 +10,8 @@
 
 The stable solvers -- classical RHF/UHF/GHF, VQE (whose circuit, UCCSD or the
 Hamiltonian variational ansatz, is its ``ansatz=`` option), **ADAPT-VQE**
-(the default method everywhere), and the subspace-search variants -- are
+(the default method everywhere), the subspace-search variants and **VASQA**
+(``"vasqa"``, a Markov-chain search over ansatz structures) -- are
 reached **only** through :class:`Mandacaru` with their
 ``method`` names.  The solver classes themselves are
 the internal layer and are deliberately **not exported**; what is exported is
@@ -47,6 +48,7 @@ from .hartree_fock import (GHF, GHFResult, RHF, RHFResult, UHF, UHFResult,
                            transform_integrals)
 from .mean_field import MeanFieldResult
 from .subspace import SubspaceADAPTVQEResult, SubspaceVQEResult
+from .vasqa import MCASStep, VASQAResult
 from .base import format_pauli_sum
 from .calculator import (DEFAULT_METHOD, STABLE_METHODS, Mandacaru,
                          available_methods, experimental_methods,
@@ -108,6 +110,8 @@ __all__ = [
     "EnergyLevels",
     "SubspaceVQEResult",
     "SubspaceADAPTVQEResult",
+    "VASQAResult",
+    "MCASStep",
     "compute_expressibility",
     "ExpressibilityResult",
     "ExpressibilityStep",

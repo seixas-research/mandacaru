@@ -27,6 +27,7 @@ Without it the full variational run is performed:
 
     $ mandacaru water.xyz --method adapt-vqe --basis HAO --h 0.25 --frozen
     $ mandacaru LiH --cell 10 --basis PAW-LCAO --h 0.25
+    $ mandacaru LiH --cell 10 --method vasqa --pool qeb --max-steps 150 --seed 1
 
 The geometry is any file :func:`ase.io.read` understands (``.xyz``, ``.cif``,
 ``POSCAR``, ...) or the name of a molecule in ASE's ``g2`` collection
@@ -67,6 +68,20 @@ def _key_value(text: str):
     except json.JSONDecodeError:
         value = raw
     return key.strip(), value
+
+
+def _move_weight(text: str):
+    """``--move-weight`` value: ``move=weight`` for one of the chain's moves."""
+    from .algorithms.mcas import MOVES
+    key, value = _key_value(text)
+    if key not in MOVES:
+        raise argparse.ArgumentTypeError(
+            f"unknown move {key!r}; use one of {', '.join(MOVES)}")
+    try:
+        return key, float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"the weight of {key!r} must be a number, got {value!r}") from None
 
 
 def _frozen(text: str):
@@ -153,6 +168,8 @@ def build_parser() -> argparse.ArgumentParser:
                "  mandacaru H2O --cell 8 --basis PAW-LCAO --basis-option size=DZP --dry-run\n"
                "  mandacaru --load-hamiltonian lih.parquet --dry-run --json\n"
                "  mandacaru LiH --cell 10 --method adapt-vqe --pool qeb --h 0.3\n"
+               "  mandacaru LiH --cell 10 --method vasqa --pool qeb --max-steps "
+               "150 --seed 1\n"
                "  mandacaru --build-backend\n"
                "  mandacaru --set-paw ~/Repositories/mandacaru-paw\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -308,7 +325,8 @@ def build_parser() -> argparse.ArgumentParser:
     solver = parser.add_argument_group("solver")
     solver.add_argument("--pool", default=None,
                         choices=tuple(available_pools()),
-                        help="ADAPT operator pool (default fermionic)")
+                        help="operator pool of adapt-vqe and vasqa (default "
+                             "fermionic)")
     solver.add_argument("--ansatz", default=None, choices=ANSATZ_NAMES,
                         help="circuit of --method vqe: uccsd (default) or "
                              "hva, the Hamiltonian variational ansatz")
@@ -340,6 +358,34 @@ def build_parser() -> argparse.ArgumentParser:
     solver.add_argument("--references", metavar="PATH", default=None,
                         help="BibTeX of the methods and codes the run used "
                              "(default: references.bib beside --txt)")
+
+    chain = parser.add_argument_group(
+        "markov chain (--method vasqa)",
+        "Energies in eV.  Each flag is forwarded only when given, so another "
+        "method refuses it as a usage error.")
+    chain.add_argument("--max-steps", type=int, default=None,
+                       help="proposals drawn, each one VQE relaxation "
+                            "(default 200)")
+    chain.add_argument("--max-length", type=int, default=None,
+                       help="most operators in the ansatz (default 20)")
+    chain.add_argument("--move-weight", action="append", type=_move_weight,
+                       default=None, metavar="MOVE=W",
+                       help="relative weight of insert, delete, replace or "
+                            "swap (repeatable; unnamed moves keep weight 1)")
+    chain.add_argument("--temperature", type=float, nargs="+", default=None,
+                       metavar=("T0", "T1"),
+                       help="architecture temperature: one value fixes it, "
+                            "two anneal geometrically from T0 to T1 "
+                            "(default 0.1 0.001 eV); 0 is the greedy limit")
+    chain.add_argument("--length-penalty", type=float, default=None,
+                       metavar="EV",
+                       help="cost of one operator (default 0)")
+    chain.add_argument("--no-warm-start", dest="warm_start",
+                       action="store_const", const=False, default=None,
+                       help="relax every proposal from zero angles (a fixed "
+                            "cost per ansatz) instead of the current ones")
+    chain.add_argument("--seed", type=int, default=None,
+                       help="seed of the chain's random stream")
     return parser
 
 
@@ -425,7 +471,8 @@ def solver_options(args) -> dict:
     # into a parser error by `main`) instead of vanishing here -- `--method vqe
     # --txt run.txt` used to run and write nothing.
     for name in ("pool", "ansatz", "max_iterations", "txt", "num_states",
-                 "multiplicity", "references"):
+                 "multiplicity", "references", "max_steps", "max_length",
+                 "length_penalty", "warm_start", "seed"):
         value = getattr(args, name)
         if value is not None:
             options[name] = value
@@ -442,6 +489,17 @@ def solver_options(args) -> dict:
                 if getattr(args, f"convergence_{name}") is not None}
     if criteria:
         options["convergence"] = criteria
+    if args.move_weight:
+        # The chain gives an unnamed move weight 0; on the command line only
+        # the moves named change, so the rest keep the default weight.
+        from .algorithms.mcas import DEFAULT_MOVE_WEIGHTS
+        options["move_weights"] = {**DEFAULT_MOVE_WEIGHTS,
+                                   **dict(args.move_weight)}
+    if args.temperature is not None:
+        options["temperature"] = (
+            args.temperature[0] if len(args.temperature) == 1
+            else {"initial": args.temperature[0],
+                  "final": args.temperature[1]})
     _name, cls = resolve_method(args.method)
     if hasattr(cls, "_select_operator"):              # an adaptive method
         options.setdefault("pool", DEFAULT_POOL)
@@ -635,6 +693,9 @@ def main(argv=None) -> int:
         return set_library_command(settings)
     if args.pseudo_status:
         return pseudo_status_command()
+    if args.temperature is not None and len(args.temperature) > 2:
+        parser.error("--temperature takes one value (fixed) or two (T0 T1, "
+                     "annealed)")
     if args.geometry is None and args.load_hamiltonian is None:
         parser.error("a geometry (file or molecule name) is required unless "
                      "--load-hamiltonian is given")

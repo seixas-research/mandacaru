@@ -90,7 +90,7 @@ DEFAULT_METHOD = "adapt-vqe"
 #: The periodic names are declared by the module that implements them, so
 #: there is one place to change them.
 STABLE_METHODS = ("rhf", "uhf", "ghf", "vqe", "adapt-vqe",
-                  "subspace-vqe", "subspace-adapt-vqe",
+                  "subspace-vqe", "subspace-adapt-vqe", "vasqa",
                   *BLOCH_METHODS)
 
 # Methods registered by packages outside the stable API (see
@@ -145,11 +145,12 @@ def resolve_method(name: str):
         from .bloch import _bloch_drivers
         from .mean_field import GHFDriver, RHFDriver, UHFDriver
         from .subspace import SubspaceADAPTVQE, SubspaceVQE
+        from .vasqa import VASQA
         from .vqe import VQE
         classes = {"rhf": RHFDriver, "uhf": UHFDriver, "ghf": GHFDriver,
                    "vqe": VQE, "adapt-vqe": ADAPTVQE,
                    "subspace-vqe": SubspaceVQE,
-                   "subspace-adapt-vqe": SubspaceADAPTVQE}
+                   "subspace-adapt-vqe": SubspaceADAPTVQE, "vasqa": VASQA}
         # The periodic drivers are these same solvers over the Born-von Karman
         # supercell, so they are built from them rather than duplicated.
         classes.update(_bloch_drivers())
@@ -355,7 +356,11 @@ class Mandacaru(Calculator):
         fixed ansatz, chosen by
         ``ansatz=``: ``"uccsd"`` or the Hamiltonian variational ansatz
         ``"hva"``), or the subspace-search variants
-        ``"subspace-vqe"`` / ``"subspace-adapt-vqe"``.  ADAPT-VQE is the
+        ``"subspace-vqe"`` / ``"subspace-adapt-vqe"``, or ``"vasqa"`` (a
+        Markov-chain search over pool-operator sequences, each relaxed by VQE;
+        options ``max_steps``, ``min_length`` / ``max_length``,
+        ``move_weights``, ``temperature``, ``length_penalty``, ``warm_start``,
+        ``seed``).  ADAPT-VQE is the
         practical choice for anything beyond a couple of orbitals: a fixed UCCSD
         ansatz becomes very slow past ~8 qubits.  A method registered through
         :func:`register_method` is accepted by name as well.

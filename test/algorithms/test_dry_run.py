@@ -313,7 +313,7 @@ class TestEarlyStop:
         assert forces.shape == (2, 3) and np.isnan(forces).all()
 
     @pytest.mark.parametrize("method", ["vqe", "adapt-vqe", "subspace-vqe",
-                                        "subspace-adapt-vqe"])
+                                        "subspace-adapt-vqe", "vasqa"])
     def test_every_method_honors_dry_run(self, monkeypatch, method):
         _forbid_execution(monkeypatch)
         atoms = _h2()

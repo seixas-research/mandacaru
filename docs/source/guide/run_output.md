@@ -40,9 +40,9 @@ it is refused with a message pointing at `trace=`.
 
 ```{note}
 `txt=` is accepted only by a method whose `run()` goes through this protocol —
-`"adapt-vqe"` today — and refused with a message by the others rather than
-leaving an empty file. `"rhf"`, `"uhf"` and `"ghf"` print an SCF summary;
-`"vqe"` (including `ansatz="hva"`), `"subspace-vqe"` and
+`"adapt-vqe"` and `"vasqa"` today — and refused with a message by the others
+rather than leaving an empty file. `"rhf"`, `"uhf"` and `"ghf"` print an SCF
+summary; `"vqe"` (including `ansatz="hva"`), `"subspace-vqe"` and
 `"subspace-adapt-vqe"` print their own run header, which is not this one.
 
 There is one standard output per process, so consecutive printed runs number
@@ -96,6 +96,40 @@ quietly losing a number. `expr` is the one optional column — absent unless
 
 The circuit columns need `profile=True` (the default); with `profile=False`
 they read `-`.
+
+## The Markov-chain table
+
+`method="vasqa"` writes the same blocks, with one difference: its
+`[OPTIMIZATION SETUP]` holds the chain's settings (moves, temperature, length
+penalty, seed), and in place of `[ITERATIONS]` it writes `[MARKOV CHAIN]`, one
+row per proposal, accepted or not:
+
+```text
+[MARKOV CHAIN]
+     step     time    move   L        energy (eV)                 dE       current (eV)          T     ln(a)  acc   steps action
+        4 03:07:38  insert   2     -27.9587157834      -0.5014556457     -27.9587157834  2.848e-02   +18.383  yes       4 insert(QD(0,2->1,3)@1)
+        5 03:07:38  delete   1     -27.4572601377      +0.5014556457     -27.9587157834  1.874e-02   -27.519   no       1 delete(1)
+```
+
+| column | meaning |
+| :--- | :--- |
+| `move`, `action` | the proposed move, and its position and operator |
+| `L` | operators in the proposed ansatz |
+| `energy` | relaxed energy of the **proposed** ansatz |
+| `dE` | proposed minus **current** energy before the step: what the acceptance test weighs |
+| `dF` | the same for the cost $E + \lambda_L L$; present only when `length_penalty > 0` |
+| `current` | the chain's energy after the decision: `energy` if accepted, unchanged if not |
+| `T` | architecture temperature |
+| `ln(a)` | log Metropolis-Hastings ratio, before $\min(0,\cdot)$ |
+| `acc` | whether the proposal was accepted |
+| `steps` | optimizer parameter updates of the relaxation (`-` for the empty ansatz) |
+
+The summary reports the lowest-cost ansatz evaluated, its operator sequence
+(`operators:`), the lowest energy and the chain's final state, and the
+acceptance of each move. It has no `converged:` line, because a chain stops on
+its step budget, not on a criterion.
+{func}`~mandacaru.utils.logging.parse_output` returns the rows under
+`"markov_chain"`.
 
 ## The `output.txt` log
 

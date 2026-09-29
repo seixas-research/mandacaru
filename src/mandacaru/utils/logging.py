@@ -729,9 +729,99 @@ class AdaptOutputLogger:
                 self._emit_body(f"[{i:3d}] {op.label}  "
                                 f"|grad|={abs(grads[i]):.6e}{marker}", level=2)
 
+    # -- Markov-chain table (VASQA) ---------------------------------------- #
+
+    #: Columns of the ``[MARKOV CHAIN]`` table, one row per proposal:
+    #: ``(key, heading, width, format)``.  ``energy`` is the relaxed energy of
+    #: the *proposed* ansatz, ``dE`` its difference from the chain's current
+    #: state before the step (the energy change the Metropolis-Hastings test
+    #: weighs), ``dF`` the same for the cost when a length penalty makes the
+    #: two differ, and ``current`` the chain's energy *after* the decision --
+    #: equal to ``energy`` on an accepted row, unchanged on a rejected one.
+    #: ``T`` is the architecture temperature, ``ln(a)`` the log acceptance
+    #: ratio before ``min(0, .)``, ``steps`` the optimizer's parameter updates
+    #: for the relaxation.  The move itself, with its position and operator,
+    #: is last: the only variable-width field.
+    CHAIN_COLUMNS = (("step", "step", 5, "d"),
+                     ("time", "time", 8, "s"),
+                     ("move", "move", 7, "s"),
+                     ("L", "L", 3, "d"),
+                     ("energy", "energy", 18, ".10f"),
+                     ("dE", "dE", 18, "+.10f"),
+                     ("dF", "dF", 18, "+.10f"),
+                     ("current", "current", 18, ".10f"),
+                     ("T", "T", 10, ".3e"),
+                     ("lna", "ln(a)", 9, "+.3f"),
+                     ("acc", "acc", 4, "s"),
+                     ("steps", "steps", 7, "s"),
+                     ("action", "action", 0, "s"))
+
+    @staticmethod
+    def _chain_label(key: str, heading: str, energy_unit: str) -> str:
+        return (f"{heading} ({energy_unit})" if key in ("energy", "current")
+                else heading)
+
+    def write_chain_step(self, step: int, move: str, length: int,
+                         energy: float, delta_energy: float,
+                         current_energy: float, temperature: float,
+                         log_acceptance: float, accepted: bool,
+                         energy_unit: str = "eV",
+                         delta_cost: float | None = None,
+                         optimizer_steps: int | None = None,
+                         action: str = "") -> None:
+        """Append **one row** of the ``[MARKOV CHAIN]`` table (VASQA).
+
+        The counterpart of :meth:`write_iteration` for a chain: one row per
+        proposal, accepted or not (:data:`CHAIN_COLUMNS`).  Energies are in
+        ``energy_unit``; the heading is written before the first row, whose
+        ``delta_cost`` decides whether the table has a ``dF`` column.
+        """
+        if not self._table_open:
+            self._columns = tuple(c for c in self.CHAIN_COLUMNS
+                                  if c[0] != "dF" or delta_cost is not None)
+            cells = []
+            for key, head, width, _fmt in self._columns:
+                label = self._chain_label(key, head, energy_unit)
+                cells.append(label if key == "action"
+                             else f"{label:>{max(width, len(label))}}")
+            heading = " ".join(cells).rstrip()
+            self._emit("[MARKOV CHAIN]")
+            self._emit_body(heading, "-" * len(heading))
+            self._table_open = True
+
+        values = {
+            "step": int(step),
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "move": str(move), "L": int(length),
+            # `+ 0.0` turns a zero difference's sign bit off: "-0.000" reads
+            # as a decrease that did not happen.
+            "energy": float(energy), "dE": float(delta_energy) + 0.0,
+            "dF": None if delta_cost is None else float(delta_cost) + 0.0,
+            "current": float(current_energy), "T": float(temperature),
+            "lna": float(log_acceptance),
+            "acc": "yes" if accepted else "no",
+            "steps": "-" if optimizer_steps is None else str(optimizer_steps),
+            "action": str(action),
+        }
+        cells = []
+        for key, head, width, fmt in self._columns:
+            width = max(width, len(self._chain_label(key, head, energy_unit)))
+            value = values[key]
+            if key == "action":
+                cells.append(value)
+            elif value is None:
+                cells.append(f"{'-':>{width}}")
+            elif fmt == "s" or fmt == "d":
+                cells.append(f"{value:>{width}}")
+            elif fmt.startswith("+"):
+                cells.append(f"{value:>+{width}{fmt[1:]}}")
+            else:
+                cells.append(f"{value:>{width}{fmt}}")
+        self._emit_body(" ".join(cells).rstrip())
+
     # -- summary block ----------------------------------------------------- #
 
-    def write_summary(self, converged: bool, optimal_energy: float,
+    def write_summary(self, converged: bool | None, optimal_energy: float,
                       num_operators: int, energy_unit: str = "eV",
                       reference_energy: float | None = None,
                       correlation_energy: float | None = None,
@@ -759,7 +849,10 @@ class AdaptOutputLogger:
         table it duplicated.
         """
         self._emit(_BANNER, "[VARIATIONAL QUANTUM SUMMARY]")
-        self._emit_body(f"converged: {converged}")
+        # A Markov chain has no convergence criterion, so it passes None and
+        # the line is left out rather than written with a meaningless value.
+        if converged is not None:
+            self._emit_body(f"converged: {converged}")
         # `optimizer` is accepted for the callers that pass it and is not
         # written: [OPTIMIZATION SETUP] owns the optimizer, and a fact stated in
         # two blocks is a fact that can disagree with itself.
@@ -1413,6 +1506,7 @@ _SECTIONS = {"[BASIS]": "basis",
              "[QUANTUM ECHOES]": "quantum_echoes",
              "[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
              "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
+             "[MARKOV CHAIN]": "markov_chain",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
              "[VARIATIONAL QUANTUM SUMMARY]": "summary",
              "[GEOMETRY OPTIMIZATION SUMMARY]": "optimization",
@@ -1492,6 +1586,9 @@ def parse_output(path: str) -> dict:
                 section = _SECTIONS[stripped]
                 if section == "iterations":
                     columns = []
+                elif section == "markov_chain":
+                    columns = []
+                    step["markov_chain"] = []
                 elif section == "summary":
                     step["summary"] = {}
                 elif section == "forces":
@@ -1685,6 +1782,29 @@ def parse_output(path: str) -> dict:
                         performance[key] = int(numeric)     # a count, not a time
                     else:
                         performance[key] = numeric
+            elif section == "markov_chain":
+                if not columns:
+                    # "energy (eV)" and "current (eV)" are one column each.
+                    head = stripped
+                    for unit in ("eV", "Ha"):
+                        for name in ("energy", "current"):
+                            if f"{name} ({unit})" in head:
+                                energy_unit = unit
+                                head = head.replace(f"{name} ({unit})", name)
+                    columns = head.split()
+                    continue
+                record = dict(zip(columns,
+                                  stripped.split(None, len(columns) - 1)))
+                entry = {name: (value if name in ("time", "move", "acc",
+                                                  "action")
+                                else number(value))
+                         for name, value in record.items()}
+                for name in ("step", "L", "steps"):
+                    if entry.get(name) is not None:
+                        entry[name] = int(entry[name])
+                entry["accepted"] = record.get("acc") == "yes"
+                entry["energy_unit"] = energy_unit
+                step["markov_chain"].append(entry)
             elif section == "iterations":
                 if stripped.startswith("operator_pool:") or stripped.startswith("["):
                     continue

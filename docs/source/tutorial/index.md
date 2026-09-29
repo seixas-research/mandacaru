@@ -12,8 +12,9 @@ adapt_vqe_lih
 pes_scan
 ```
 
-The additional tutorials cover smaller hydrogen examples, excited states and
-periodic systems. They assume familiarity with the LiH workflow.
+The additional tutorials cover smaller hydrogen examples, excited states, the
+Markov-chain ansatz search and periodic systems. They assume familiarity with
+the LiH workflow.
 
 ```{toctree}
 :maxdepth: 1
@@ -21,5 +22,6 @@ periodic systems. They assume familiarity with the LiH workflow.
 vqe_h2
 energy_levels
 subspace_vqe
+vasqa
 bloch_crystals
 ```
