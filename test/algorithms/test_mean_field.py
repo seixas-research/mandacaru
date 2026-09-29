@@ -186,3 +186,53 @@ def test_ghf_finds_the_spin_orbit_ground_configuration_of_lead():
     below = from_hartree(determinant + constant, "eV") - energy
     assert result.success and below > from_hartree(0.08, "eV")
     assert result.scf.kramers_pairing < 1e-8
+
+
+@pytest.mark.parametrize("method", ["rhf", "uhf", "ghf"])
+def test_scf_writes_the_shared_run_log(method, tmp_path, capsys):
+    """``txt=`` holds the shared blocks, with a classical setup and summary."""
+    from mandacaru.utils.logging import parse_output, reset_log
+
+    path = str(tmp_path / f"{method}.txt")
+    atoms = h2()
+    atoms.calc = Mandacaru(method=method, h=0.35, txt=path)
+    energy_ev = atoms.get_potential_energy()
+    reset_log(path)
+    # The file is the whole report: standard output stays quiet.
+    assert "[SYSTEM]" not in capsys.readouterr().out
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    for block in ("[SYSTEM]", "[BASIS]", "[ELECTRONS]", "[SCF SETUP]",
+                  "[SCF SUMMARY]", "[PERFORMANCE]"):
+        assert block in text
+    assert method.upper() in text
+    # Nothing quantum was built, so nothing quantum is reported.
+    for block in ("[OPTIMIZATION SETUP]", "[ITERATIONS]",
+                  "[VARIATIONAL QUANTUM SUMMARY]"):
+        assert block not in text
+
+    parsed = parse_output(path)
+    for key in ("mapping", "qubits", "Hamiltonian", "Z2 tapering"):
+        assert key not in parsed["electrons"]
+    assert parsed["electrons"]["electrons (alpha, beta)"] == "(1, 1)"
+    assert "Hartree-Fock" in parsed["setup"]["scf_method"]
+    summary = parsed["summary"]
+    assert summary["converged"] == "True"
+    assert float(summary["optimal_energy_eV"]) == pytest.approx(
+        energy_ev, abs=1e-9)
+    assert int(summary["scf_iterations"]) == \
+        atoms.calc.result.num_evaluations
+
+
+def test_rhf_summary_reports_the_frontier_orbitals(tmp_path):
+    from mandacaru.utils.logging import parse_output, reset_log
+
+    path = str(tmp_path / "rhf.txt")
+    atoms = h2()
+    atoms.calc = Mandacaru(method="rhf", h=0.35, txt=path)
+    atoms.get_potential_energy()
+    reset_log(path)
+    summary = parse_output(path)["summary"]
+    scf = atoms.calc.result.scf
+    assert float(summary["homo_lumo_gap_eV"]) == pytest.approx(
+        from_hartree(scf.homo_lumo_gap, "eV"), abs=1e-6)

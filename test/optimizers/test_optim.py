@@ -26,7 +26,7 @@ from mandacaru import Mandacaru
 from mandacaru.optimizers import (DEFAULT_OPTIMIZER, DEFAULT_TOL,
                                   NAMED_OPTIMIZERS, Optimizer)
 from mandacaru.optimizers.optim import OPTIMIZER_KEYS, resolve_optimizer
-from mandacaru.utils.logging import AdaptOutputLogger, parse_output
+from mandacaru.utils.logging import Logger, parse_output
 
 # The classical optimizers used below, with the iteration budget and
 # the convergence tolerance written out rather than left to the
@@ -224,7 +224,7 @@ class TestTheIterationsTable:
         """A method that counts nothing must not look like one that did
         nothing."""
         path = tmp_path / "output.txt"
-        logger = AdaptOutputLogger(str(path), banner=False)
+        logger = Logger(str(path), banner=False)
 
         class Op:
             kind, label = "pauli", "iP[XYZ]"

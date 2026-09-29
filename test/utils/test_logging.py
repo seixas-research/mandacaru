@@ -28,7 +28,7 @@ from mandacaru.core import MolecularIntegrals, minimal_hao_basis
 from mandacaru.integrals import Grid
 from mandacaru.optimizers import DEFAULT_OPTIMIZER
 from mandacaru.units import HARTREE_TO_EV
-from mandacaru.utils import AdaptOutputLogger, parse_output
+from mandacaru.utils import Logger, parse_output
 import os
 from mandacaru.core.mapping import PauliSum
 
@@ -192,10 +192,10 @@ class TestAdaptOutputProtocol:
         assert parsed["system"]["geometry"] == "(not provided)"
 
 
-class TestAdaptOutputLogger:
+class TestLogger:
     def test_logger_cell_parameters(self, tmp_path):
         out = str(tmp_path / "log.txt")
-        with AdaptOutputLogger(out) as logger:
+        with Logger(out) as logger:
             logger.write_system(
                 symbols=["H", "H"], positions=[[0, 0, 0], [0, 0, 0.74]],
                 cell=np.diag([5.0, 6.0, 7.0]))
@@ -221,7 +221,7 @@ class TestLogAppendsAcrossSteps:
         from mandacaru.core.mapping import PauliSum
         pool = [SimpleNamespace(label="op0", kind="double",
                                 generator=PauliSum({"XXXX": 0.5j}))]
-        with AdaptOutputLogger(path, n_qubits=4) as logger:
+        with Logger(path, n_qubits=4) as logger:
             logger.write_system(symbols=["H", "H"],
                                   positions=[[0, 0, 0], [0, 0, 0.7 + step / 100]])
             logger.write_optimizer_setup("COBYLA", -1.0)
@@ -283,7 +283,7 @@ class TestLogAppendsAcrossSteps:
     def test_append_is_overridable(self, tmp_path):
         out = str(tmp_path / "output.txt")
         self._block(out, 1)
-        with AdaptOutputLogger(out, append=False) as logger:
+        with Logger(out, append=False) as logger:
             logger.write_system()
         # An explicit append=False truncates whatever the step counter says.
         assert len(parse_output(out)["steps"]) == 1
@@ -308,7 +308,7 @@ class TestBlockIndentation:
         out = str(tmp_path_factory.mktemp("indent") / "output.txt")
         pool = [SimpleNamespace(label="op0", kind="double",
                                 generator=PauliSum({"XXXX": 0.5j}))]
-        with AdaptOutputLogger(out, n_qubits=4) as logger:
+        with Logger(out, n_qubits=4) as logger:
             logger.write_system(symbols=["O", "H"],
                                   positions=[[0, 0, 0], [0, 0.97, 0]],
                                   cell=np.diag([10.0, 10.0, 10.0]))
@@ -1499,10 +1499,10 @@ class TestCompletionIsNotAssumed:
 
 class TestLogLifetime:
     def test_a_missing_parent_is_created_without_consuming_a_step(self, tmp_path):
-        from mandacaru.utils.logging import AdaptOutputLogger, log_steps
+        from mandacaru.utils.logging import Logger, log_steps
 
         path = str(tmp_path / "deep" / "nested" / "output.txt")
-        with AdaptOutputLogger(path, n_qubits=4) as logger:
+        with Logger(path, n_qubits=4) as logger:
             logger.write_system()
             assert logger.step == 1
         assert log_steps(path) == 1
@@ -1514,14 +1514,14 @@ class TestParserPreservesData:
     def written(self, tmp_path):
         from types import SimpleNamespace
 
-        from mandacaru.utils.logging import AdaptOutputLogger
+        from mandacaru.utils.logging import Logger
 
         path = str(tmp_path / "output.txt")
         cell = np.array([[4.0, 0.0, 0.0], [0.5, 5.0, 0.0], [0.0, 0.0, 6.0]])
         pool = [SimpleNamespace(label="custom operator with spaces",
                                 kind="double",
                                 generator=PauliSum({"XXXX": 0.5j}))]
-        with AdaptOutputLogger(path, n_qubits=4) as logger:
+        with Logger(path, n_qubits=4) as logger:
             logger.write_system(symbols=["H", "He"],
                                 positions=[[1.0, 2.0, 3.0], [0.0, 0.0, 0.74]],
                                 cell=cell)
@@ -1596,7 +1596,7 @@ class TestIterationColumns:
         path = str(tmp_path / "output.txt")
         pool = [SimpleNamespace(label="D(0,2->1,3)", kind="double",
                                 generator=PauliSum({"XXXY": 0.5j}))]
-        with AdaptOutputLogger(path, n_qubits=4) as logger:
+        with Logger(path, n_qubits=4) as logger:
             logger.write_optimizer_setup("BFGS", reference_energy=-1.0)
             logger.write_iteration(1, pool, [0.25], 0, None, -1.25, 1)
             logger.write_iteration(2, pool, [3.2e-7], 0, None, -1.5, 2)
@@ -1636,7 +1636,7 @@ class TestConvergenceMarkers:
         from mandacaru.algorithms.convergence import Convergence
 
         path = tmp_path / "output.txt"
-        with AdaptOutputLogger(str(path), n_qubits=4) as logger:
+        with Logger(str(path), n_qubits=4) as logger:
             logger.write_system()
             # An eV log, the default: the energy threshold is given in eV,
             # so it is read against dE as given.

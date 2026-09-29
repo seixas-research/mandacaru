@@ -16,11 +16,17 @@ operator pool, circuit, qubit Hamiltonian or state vector.
 ``method="ghf"`` is the one mean field with spin-orbit coupling in its Fock
 operator (:class:`~mandacaru.algorithms.hartree_fock.GHF`): its orbitals are
 two-component spinors, and its exported Hamiltonian is written in them.
+
+A run reports through the shared run log (:class:`~mandacaru.utils.logging.Logger`),
+to the ``txt=`` file, standard output or both: ``[SYSTEM]``, ``[BASIS]`` and a
+classical ``[ELECTRONS]`` -- no mapping, register or qubit Hamiltonian, since
+none is built -- then ``[SCF SETUP]`` and ``[SCF SUMMARY]``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import inspect
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -30,7 +36,16 @@ from ..core.sector import ParticleSector
 from ..units import convert_energy
 from .base import VariationalDriver
 from .dry_run import QubitEstimate
-from .hartree_fock import GHFResult, RHFResult, UHFResult
+from .hartree_fock import (GHF, LEVEL_SHIFT, RHF, UHF, GHFResult, RHFResult,
+                           UHFResult)
+
+#: How each SCF is described in ``[SCF SETUP]``, and the solver entry point
+#: whose defaults the geometry builder runs it with.
+SCF_METHODS = {
+    "rhf": ("restricted Hartree-Fock (closed shell)", RHF.run),
+    "uhf": ("unrestricted Hartree-Fock (natural-orbital export)", UHF.solve),
+    "ghf": ("generalized (spinor) Hartree-Fock", GHF.solve),
+}
 
 
 @dataclass(frozen=True)
@@ -61,6 +76,8 @@ class MeanFieldResult:
     num_particles: tuple[int, int]
     n_spatial_orbitals: int
     energy_unit: str
+    #: Wall-clock stages, resources and the total, as for the quantum drivers.
+    timings: dict | None = None
 
     @property
     def success(self) -> bool:
@@ -171,6 +188,7 @@ class _MeanFieldDriver(VariationalDriver):
     """Classical SCF adapter using the shared geometry and integral pipeline."""
 
     classical_mean_field = True
+    writes_output_log = True
     _kind: str = ""
 
     def _citation_config(self) -> dict[str, object]:
@@ -252,15 +270,42 @@ class _MeanFieldDriver(VariationalDriver):
             2 if self.mapping == "parity_reduced" else 0)
         self._configured = True
 
-    def run(self) -> MeanFieldResult | QubitEstimate:
-        """Return the converged classical energy and reusable MO Hamiltonian."""
+    def run(self, geometry=None,
+            cell=None) -> MeanFieldResult | QubitEstimate:
+        """Return the converged classical energy and reusable MO Hamiltonian.
+
+        ``geometry`` (an ASE ``Atoms`` or a ``(symbols, positions)`` pair) and
+        ``cell`` fill the log's ``[SYSTEM]`` block; the calculator passes them.
+        """
         if self.dry_run:
             return self._dry_run_estimate()
         if not self._configured or self._scf is None:
             raise RuntimeError("RHF/UHF needs an ASE geometry and basis first")
         self._check_kpts()
+        timings, run_t0 = self._make_timings()
+        self._show_banner()
+        logger = None
+        if self.log_targets:
+            logger = self._open_header_logger(self.log_targets, geometry, cell)
+        try:
+            if logger is not None:
+                logger.write_block("SCF SETUP", self._scf_setup_fields())
+            result = self._result(timings, run_t0)
+            if logger is not None:
+                logger.write_block("SCF SUMMARY", self._scf_summary_fields(
+                    result), framed=True)
+        finally:
+            if logger is not None:
+                logger.close()
         if not self._scf.converged:
             raise RuntimeError(f"{self._kind.upper()} SCF did not converge")
+        # The performance block closes the step, after the summary.  In
+        # calculator mode `Mandacaru` writes it instead (`defer_performance`).
+        self.write_performance(timings)
+        return result
+
+    def _result(self, timings, run_t0) -> MeanFieldResult:
+        """The :class:`MeanFieldResult` of the SCF ``_configure`` ran."""
         integrals = self._gradient_context["integrals"]
         constant = float(integrals.constant_energy + integrals.nuclear_repulsion)
         total = self._scf.electronic_energy + constant
@@ -277,11 +322,77 @@ class _MeanFieldDriver(VariationalDriver):
             num_particles=self.num_particles,
             n_spatial_orbitals=self.n_spatial_orbitals,
             energy_unit=self._energy_unit_label())
-        if self.verbose:
-            self._show_banner()
-            print(f"{self._kind.upper()} SCF: E = {result.optimal_energy:+.8f} "
-                  f"{result.energy_unit}, {result.num_evaluations} iterations")
-        return result
+        self._finalize_timings(timings, run_t0)
+        return replace(result, timings=timings.as_dict())
+
+    # -- the run log ------------------------------------------------------ #
+
+    def _log_title(self) -> str:
+        """``RHF``, ``UHF`` or ``GHF``."""
+        return self._kind.upper()
+
+    def _run_kwargs(self, atoms) -> dict:
+        """Forward the geometry to :meth:`run` for the log's ``[SYSTEM]``."""
+        return {"geometry": atoms}
+
+    def _electron_fields(self) -> dict:
+        """The classical ``[ELECTRONS]`` block: grid, charge, spin, orbitals.
+
+        No reference state, mapping, register or qubit Hamiltonian: the SCF
+        builds none, and a line reading ``Jordan-Wigner`` would describe a
+        calculation that did not happen.
+        """
+        return {
+            **self._grid_fields(),
+            "kinetic operator": self.kinetic or "finite difference",
+            "k-points": self._kpts_label(),
+            "charge": str(self.charge),
+            "spin-polarized": self._spin_polarized_label(),
+            "spatial orbitals": str(self.n_spatial_orbitals),
+            "electrons (alpha, beta)": str(self.num_particles),
+        }
+
+    def _scf_setup_fields(self) -> dict:
+        """``[SCF SETUP]``: which SCF ran and what it stops on."""
+        label, entry = SCF_METHODS[self._kind]
+        defaults = inspect.signature(entry).parameters
+        integrals = self._gradient_context["integrals"]
+        fields = {
+            "scf_method": label,
+            "max_iterations": defaults["max_iter"].default,
+            "convergence_Hartree": (f"{defaults['tol'].default:g} (energy "
+                                    f"change and largest density change)"),
+            "acceleration": (f"DIIS; level shift {LEVEL_SHIFT:g} Hartree "
+                             f"after the first energy rise"),
+        }
+        if self._kind == "ghf":
+            fields["spin_orbit_coupling"] = str(bool(
+                getattr(integrals, "spin_orbit_coupling", None)))
+        fields["energy_unit"] = self._energy_unit_label()
+        return fields
+
+    def _scf_summary_fields(self, result: MeanFieldResult) -> dict:
+        """``[SCF SUMMARY]``: the converged determinant and its energy."""
+        unit = result.energy_unit
+        scf = self._scf
+        fields = {"converged": str(bool(scf.converged)),
+                  f"optimal_energy_{unit}": f"{result.optimal_energy:.10f}"}
+        if isinstance(scf, UHFResult):
+            # The natural-orbital determinant the exported problem starts
+            # from; its energy differs from the UHF one.
+            fields[f"reference_energy_{unit}"] = \
+                f"{result.reference_energy:.10f}"
+            fields["spin_contamination"] = f"{scf.spin_contamination:.6f}"
+        elif isinstance(scf, GHFResult):
+            fields["kramers_pairing_Hartree"] = f"{scf.kramers_pairing:.3e}"
+        elif scf.converged and 0 < scf.n_occupied < len(scf.mo_energies):
+            to_unit = self._to_energy_units
+            fields.update({
+                f"homo_energy_{unit}": f"{to_unit(scf.homo_energy):.6f}",
+                f"lumo_energy_{unit}": f"{to_unit(scf.lumo_energy):.6f}",
+                f"homo_lumo_gap_{unit}": f"{to_unit(scf.homo_lumo_gap):.6f}"})
+        fields["scf_iterations"] = result.num_evaluations
+        return fields
 
 
 class RHFDriver(_MeanFieldDriver):

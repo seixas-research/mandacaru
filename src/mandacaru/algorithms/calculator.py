@@ -757,8 +757,9 @@ class Mandacaru(Calculator):
                 f"method {self.method!r} ({self._solver_class.__name__}) does "
                 f"not write {', '.join(repr(name) for name in ignored)}: its "
                 f"run() does not go through that machinery, so the option would "
-                f"be silently ignored.  Use method='adapt-vqe' for the "
-                f"structured log and checkpoints, or drop the option.")
+                f"be silently ignored.  Use method='rhf', 'uhf', 'ghf', 'vqe', "
+                f"'adapt-vqe' or 'vasqa' for the structured log, method='vqe' "
+                f"or 'adapt-vqe' for checkpoints, or drop the option.")
 
     def _show_trace(self) -> bool:
         """Whether the solver prints its full trace to standard output.

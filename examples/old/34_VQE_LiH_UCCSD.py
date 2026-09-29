@@ -103,9 +103,6 @@ def cnot_count(calc) -> int:
 # --------------------------------------------------------------------------- #
 
 atoms = lih(1.6)
-# `txt=` is not offered here: the structured block log is ADAPT-VQE's, whose
-# run() goes through it; `method="vqe"` prints its own summary instead, and
-# Mandacaru refuses the option rather than accepting a file it would leave empty.
 atoms.calc = Mandacaru(method="vqe",
                        basis=BASIS,
                        h=SPACING,

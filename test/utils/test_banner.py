@@ -55,7 +55,7 @@ class TestBannerInRun:
                   ansatz=UCCSD(2, (1, 1)), trace=True).run()
         out = capsys.readouterr().out
         assert "Dependencies:" in out               # the banner ran
-        assert out.index("Dependencies:") < out.index("Qubit Hamiltonian")
+        assert out.index("Dependencies:") < out.index("[SYSTEM]")
 
     def test_banner_precedes_output_txt(self, h2_hamiltonian, tmp_path, capsys):
         out_file = str(tmp_path / "output.txt")

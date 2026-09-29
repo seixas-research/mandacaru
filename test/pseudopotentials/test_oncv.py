@@ -908,6 +908,18 @@ class TestGhostSearch:
         assert result is outcomes[1]
         assert result.defects["s_miss"] == pytest.approx(2.0)
 
+    def test_a_huge_miss_ranks_below_a_small_phase_error(self):
+        """Gd-LDA: flagged either way, the search kept a miss of 23.8 over a
+        0.09 rad phase error with a miss of 1.4.  Each defect now counts by
+        how far it exceeds its own tolerance."""
+        from mandacaru.pseudopotentials.oncv import _defect_badness
+
+        huge_miss = (None, {}, {}, {"s_miss": 23.8})
+        small_phase = (None, {}, {3: (0.09, 0.09)}, {"s_miss": 1.4})
+        ghost = (None, {0: -0.5}, {}, {})
+        assert _defect_badness(small_phase) < _defect_badness(huge_miss)
+        assert _defect_badness(huge_miss) < _defect_badness(ghost)
+
     def test_a_pinned_construction_is_kept_with_its_miss_recorded(self):
         """A caller who fixed the cutoffs chose what a repair would change;
         an incomplete s channel alone is recorded, not refused."""

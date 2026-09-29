@@ -13,7 +13,7 @@ and key dependency versions) as a list of text lines, and :func:`show` writes
 them to **standard output**.  The variational drivers call ``show`` at the start
 of a run -- before anything is written to the structured ``output.txt`` log --
 so the console always opens with the provenance of the calculation, and
-:class:`~mandacaru.utils.logging.AdaptOutputLogger` writes the same lines once at
+:class:`~mandacaru.utils.logging.Logger` writes the same lines once at
 the top of the log file, so a log kept from a long run carries its own
 provenance.
 

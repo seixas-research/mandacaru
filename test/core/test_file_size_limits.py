@@ -16,7 +16,7 @@ import pytest
 from mandacaru.algorithms.base import VariationalDriver
 from mandacaru.core.mapping import PauliSum
 from mandacaru.core.serialization import MAX_FILE_QUBITS, save_hamiltonian
-from mandacaru.utils.logging import (DETAILED_LOG_MAX_QUBITS, AdaptOutputLogger,
+from mandacaru.utils.logging import (DETAILED_LOG_MAX_QUBITS, Logger,
                                      parse_output)
 
 
@@ -54,7 +54,7 @@ def test_output_log_omits_the_operator_label_above_twenty_qubits(tmp_path,
     """
     pool = _pool(n_qubits)
     path = tmp_path / "output.txt"
-    with AdaptOutputLogger(str(path), n_qubits=n_qubits) as log:
+    with Logger(str(path), n_qubits=n_qubits) as log:
         log.write_system()
         log.write_electrons({"qubits": n_qubits})
         log.write_optimizer_setup("COBYLA", -1.0,
@@ -87,7 +87,7 @@ def test_output_log_omits_the_operator_label_above_twenty_qubits(tmp_path,
 def test_log_pool_restores_the_listing(tmp_path):
     """``log_pool=True`` is the opt-in for the old per-iteration listing."""
     path = tmp_path / "output.txt"
-    with AdaptOutputLogger(str(path), n_qubits=4, log_pool=True) as log:
+    with Logger(str(path), n_qubits=4, log_pool=True) as log:
         log.write_system()
         log.write_iteration(1, _pool(4), [0.1, 0.3, 0.2], 1, None, -1.0, 1)
     text = path.read_text()

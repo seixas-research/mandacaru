@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from collections import namedtuple
 from time import perf_counter as _perf
 
 import numpy as np
@@ -55,8 +56,8 @@ from ..optimizers.optim import (DEFAULT_OPTIMIZER, NAMED_OPTIMIZERS,
                                 OptimizeResult, resolve_optimizer)
 from ..utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
                            dump_pool, resolve_dump_path)
-from ..units import (DEFAULT_GRID_SPACING, convert_energy, energy_unit_label,
-                     from_hartree)
+from ..units import (ANGSTROM_TO_BOHR, DEFAULT_GRID_SPACING, convert_energy,
+                     energy_unit_label, from_hartree)
 from ._hamiltonian_from_atoms import monkhorst_pack_kpts, resolve_initial_state
 
 
@@ -94,6 +95,50 @@ HERMITICITY_TOLERANCE = 1e-9
 
 #: Whether the start-up banner has already been written in this process.
 _BANNER_SHOWN = False
+
+
+#: What the ``[SYSTEM]`` block needs from a geometry.  ``pbc`` and ``magmoms``
+#: are ``None`` for an input that carries neither -- a bare
+#: ``(symbols, positions)`` pair -- which the block then reports as unknown
+#: rather than inventing a default.
+LoggedGeometry = namedtuple("LoggedGeometry",
+                            "symbols positions cell pbc magmoms")
+
+
+def _resolve_geometry(geometry) -> LoggedGeometry:
+    """Normalize ``geometry`` to a :class:`LoggedGeometry` for logging.
+
+    Accepts an ASE ``Atoms`` object (symbols, positions, cell, periodic
+    directions and initial magnetic moments read directly), a
+    ``(symbols, positions)`` pair, or ``None``.  ``cell`` is ``None`` for a
+    non-periodic input.
+    """
+    if geometry is None:
+        return LoggedGeometry(None, None, None, None, None)
+    # ASE Atoms: duck-typed to avoid a hard dependency here.
+    if hasattr(geometry, "get_chemical_symbols") and \
+            hasattr(geometry, "get_positions"):
+        cell = np.asarray(geometry.get_cell(), dtype=float)
+        return LoggedGeometry(
+            symbols=list(geometry.get_chemical_symbols()),
+            positions=np.asarray(geometry.get_positions(), dtype=float),
+            cell=cell if np.any(cell) else None,
+            pbc=np.asarray(geometry.get_pbc(), dtype=bool),
+            magmoms=np.asarray(geometry.get_initial_magnetic_moments(),
+                               dtype=float))
+    # (symbols, positions) pair.
+    symbols, positions = geometry
+    return LoggedGeometry(list(symbols), np.asarray(positions, dtype=float),
+                          None, None, None)
+
+
+#: How a fermion-to-qubit mapping is spelled in the ``[ELECTRONS]`` log block.
+#: The names the code uses are identifiers; the log is read by people too, and
+#: these are the transformations' own names.  An unlisted mapping is written
+#: verbatim.
+MAPPING_LABELS = {"jordan_wigner": "Jordan-Wigner", "parity": "parity",
+                  "parity_reduced": "reduced parity",
+                  "bravyi_kitaev": "Bravyi-Kitaev"}
 
 
 class VariationalDriver(Calculator):
@@ -277,7 +322,8 @@ class VariationalDriver(Calculator):
             raise NotImplementedError(
                 f"{type(self).__name__} does not write 'txt': its run() does "
                 f"not go through the block protocol, so the file would stay "
-                f"empty.  Use method='adapt-vqe' for the structured log.")
+                f"empty.  Use method='rhf', 'uhf', 'ghf', 'vqe', 'adapt-vqe' "
+                f"or 'vasqa' for the structured log.")
         #: Path of the run log, or ``None`` for standard output only.
         self.txt = None if txt is None else os.fspath(txt)
         # Output-unit convention: eV / Angstrom unless atomic units are asked
@@ -1642,14 +1688,176 @@ class VariationalDriver(Calculator):
             banner.show()
             _BANNER_SHOWN = True
 
-    # -- subclass hooks --------------------------------------------------- #
+    # -- the run log's opening blocks ------------------------------------ #
+
+    #: The name in the ``[SYSTEM]`` block's title; each solver sets its own.
+    log_title = ""
+
+    def _log_title(self) -> str:
+        """The ``[SYSTEM]`` block's title: the method, and what it runs on.
+
+        Written before the Hamiltonian is built, so it can name only what the
+        options already fix; a driver extends it with its pool or ansatz.
+        """
+        return self.log_title or type(self).__name__
+
+    def _system_logger(self, targets, geometry, cell):
+        """Open the run log and write its ``[SYSTEM]`` block.
+
+        Everything in it -- the geometry, the cell, the periodicity, the
+        initial moments, the pool or ansatz named in the title -- is known before the
+        Hamiltonian is built, so a calculator run writes it first (see
+        :meth:`_open_run_log`); the register width is not, and the title
+        leaves it to ``[ELECTRONS]``.
+        """
+        from ..utils.logging import Logger
+
+        resolved = _resolve_geometry(geometry)
+        symbols, positions = resolved.symbols, resolved.positions
+        cell = resolved.cell if cell is None else cell
+
+        # Geometry from ASE is in Angstrom; convert to Bohr only if requested.
+        if self.atomic_units:
+            if positions is not None:
+                positions = np.asarray(positions, float) * ANGSTROM_TO_BOHR
+            if cell is not None:
+                cell = np.asarray(cell, float) * ANGSTROM_TO_BOHR
+
+        logger = Logger(targets)
+        logger.write_system(
+            symbols=symbols, positions=positions, cell=cell,
+            pbc=resolved.pbc, magmoms=resolved.magmoms,
+            units=self._length_unit_label(),
+            title=self._log_title())
+        return logger
 
     def _open_run_log(self, atoms) -> None:
-        """Start the run log before the Hamiltonian is built (a driver that
-        writes one overrides this); the base writes nothing."""
+        """Write ``[SYSTEM]`` before the build; :meth:`_make_logger` continues."""
+        targets = self.log_targets
+        if not targets or not self.writes_output_log:
+            return
+        options = self._run_kwargs(atoms)
+        # The terminal banner comes first, as it does for every run.
+        self._show_banner()
+        self._early_logger = self._system_logger(
+            targets, options.get("geometry"), options.get("cell"))
 
     def _close_run_log(self) -> None:
-        """Close a log :meth:`_open_run_log` opened, when the build failed."""
+        logger = self.__dict__.pop("_early_logger", None)
+        if logger is not None:
+            logger.close()
+
+    def _open_header_logger(self, targets, geometry, cell):
+        """The run log with ``[SYSTEM]``, ``[BASIS]`` and ``[ELECTRONS]`` written.
+
+        Continues the logger :meth:`_open_run_log` opened before the build, or
+        opens one; the solver writes its own ``[OPTIMIZATION SETUP]`` next.
+        """
+        logger = self.__dict__.pop("_early_logger", None)
+        if logger is None:
+            logger = self._system_logger(targets, geometry, cell)
+        logger.set_register(self.n_qubits)
+        # The basis that ran (defaults resolved, radii, dataset files) has a
+        # block of its own; absent in direct mode, where no basis was built.
+        report = self._basis_report()
+        if report is not None:
+            logger.write_basis(*report)
+        logger.write_electrons(self._electron_fields())
+        return logger
+
+    def _spin_polarized_label(self) -> str:
+        """Whether the reference is open-shell, with its multiplicity.
+
+        Read from the particle numbers, not from the ``spin`` flag: that flag
+        is only a fallback request, and an odd electron count or the geometry's
+        magnetic moments make a doublet or a triplet with it left ``False`` --
+        which is what this line used to print for them.
+        """
+        n_alpha, n_beta = (int(n) for n in self.num_particles)
+        return (f"{n_alpha != n_beta} "
+                f"(multiplicity {abs(n_alpha - n_beta) + 1})")
+
+    def _electron_fields(self) -> dict:
+        """The ``[ELECTRONS]`` block: how the electronic problem was posed.
+
+        The same values the standard-output header prints, in the same order --
+        discretization first (what the integrals were computed on), then the
+        encoding and the size of the register and Hamiltonian it produced.  The
+        trace is off whenever this file is written, so this is the only place the
+        configuration is recorded.
+        """
+        orbitals = (getattr(self, "n_spatial_orbitals", None)
+                    or getattr(getattr(self, "pool", None),
+                               "n_spatial_orbitals", None))
+        frozen = self._frozen_label()
+        # Adding a key here changes the [ELECTRONS] block, whose exact ordered
+        # field list is pinned by `test/utils/test_logging.py`
+        # (TestElectronsBlock.FIELDS).  That is deliberate -- the block is the
+        # only record of the configuration when the trace goes to a file -- so a
+        # new field means updating that tuple in the same change.
+        return {
+            **self._grid_fields(),
+            "kinetic operator": self.kinetic or "finite difference",
+            "k-points": self._kpts_label(),
+            "charge": str(self.charge),
+            "spin-polarized": self._spin_polarized_label(),
+            "reference state": str(self.initial_state),
+            "frozen core": str(frozen),
+            "active space": self._active_space_label(),
+            "Z2 tapering": self._taper_label(),
+            "mapping": MAPPING_LABELS.get(str(self.mapping), str(self.mapping)),
+            "Hamiltonian": f"{len(self.hamiltonian.simplify().terms)} "
+                           f"Pauli terms",
+            "spatial orbitals": str(orbitals),
+            "electrons (alpha, beta)": str(self.num_particles),
+            "qubits": str(self.n_qubits),
+        }
+
+    def _grid_fields(self) -> dict:
+        """The ``[ELECTRONS]`` lines of the real-space grid.
+
+        The basis is not here: the ``[BASIS]`` block owns it.  The grid is --
+        the requested spacing and what the cell turned it into, which is the
+        number a comparison with another real-space code needs.
+        """
+        grid = getattr((getattr(self, "_gradient_context", None) or {})
+                       .get("integrals"), "grid", None)
+        realized = None
+        if grid is not None:
+            from ..units import BOHR_TO_ANGSTROM
+            spacing = " x ".join(f"{d * BOHR_TO_ANGSTROM:.4f}"
+                                 for d in (grid.dx, grid.dy, grid.dz))
+            realized = (f"{grid.nx} x {grid.ny} x {grid.nz} "
+                        f"(spacing {spacing} Angstrom)")
+        return {"grid spacing": f"{self.h:g} Angstrom (requested)",
+                "grid points": realized}
+
+    def _frozen_label(self) -> str:
+        """The requested frozen core, for the header and the run log."""
+        spec = self.active_space
+        frozen = None if spec is None else spec.frozen
+        if frozen is None:
+            return "none"
+        if isinstance(frozen, tuple):
+            return f"orbitals {list(frozen)}"
+        return str(frozen)
+
+    def _backend_description(self) -> str:
+        """How the state vector and the pool are represented."""
+        sector = getattr(self, "_sector", None)
+        if getattr(self, "_matrix_free", False):
+            space = (f"particle-number sector, {sector.dim} states of "
+                     f"2^{self.n_qubits}" if sector is not None
+                     else f"2^{self.n_qubits} amplitudes")
+            return f"matrix-free Pauli products, {space}"
+        if sector is not None:
+            return (f"particle-number sector, {sector.dim} states "
+                    f"of 2^{self.n_qubits}")
+        if getattr(self, "_sparse", False):
+            return f"sparse matrices, 2^{self.n_qubits} amplitudes"
+        return f"dense matrices, 2^{self.n_qubits} amplitudes"
+
+    # -- subclass hooks --------------------------------------------------- #
 
     def _configure(self, hamiltonian, num_particles, n_orbitals) -> None:
         """Build the ansatz / pool for ``hamiltonian`` and materialize it."""

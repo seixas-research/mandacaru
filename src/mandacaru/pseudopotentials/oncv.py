@@ -1034,20 +1034,26 @@ def scattering_errors(pp, log_derivative,
 
 
 def _defect_badness(candidate: tuple) -> tuple[int, float, int]:
-    """Rank one failed construction, preferring a phase-only defect.
+    """Rank one failed construction, preferring one without a ghost.
 
-    Among phase-only defects the smaller maximum error wins. Among ghosted
-    candidates the shallowest deepest ghost wins, then the one with fewer
-    affected channels. The same ranking is used while searching and when
-    returning a flagged dataset.
+    Among ghosted candidates the shallowest deepest ghost wins, then the one
+    with fewer affected channels.  Without a ghost, what counts is how far the
+    worst defect exceeds its own tolerance: a phase error against
+    :data:`PHASE_TOLERANCE` near the reference (:data:`RESONANCE_TOLERANCE`
+    farther out), an acceptance defect (the PAW-LCAO intruding-1s miss)
+    against 1.  A miss of 24 would collapse a molecule where a 0.09 rad phase
+    error is a flag, so neither kind outranks the other outright (Gd-LDA was
+    once kept at a miss of 23.8 over one of 1.4 with a 0.09 rad phase).  The
+    same ranking is used while searching and when returning a flagged
+    dataset.
     """
     _pp, ghosts, wrong = candidate[:3]
     extra = candidate[3] if len(candidate) > 3 else {}
     if ghosts:
-        return (2, -min(ghosts.values()), len(ghosts))
-    if wrong:
-        return (1, max(max(near, far) for near, far in wrong.values()), 0)
-    return (0, float(extra.get("s_miss", 0.0)), 0)
+        return (1, -min(ghosts.values()), len(ghosts))
+    phase = max((max(near / PHASE_TOLERANCE, far / RESONANCE_TOLERANCE)
+                 for near, far in wrong.values()), default=0.0)
+    return (0, max(phase, float(extra.get("s_miss", 0.0))), 0)
 
 
 def _least_defective(candidates: list[tuple]):
@@ -1128,7 +1134,7 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         # channel was once returned 0.95 rad off, untested.)
         wrong = _wrong_phases(scattering_errors(first, log_derivative,
                                                 phase_cache))
-        extra = {} if wrong or acceptance is None else acceptance(first)
+        extra = {} if acceptance is None else acceptance(first)
         if not wrong and not extra:
             return first
     else:
@@ -1261,7 +1267,8 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         wrong = _wrong_phases(scattering_errors(pp, log_derivative,
                                                 phase_cache))
         if wrong:
-            candidate = (pp, {}, wrong)
+            candidate = (pp, {}, wrong,
+                         {} if acceptance is None else acceptance(pp))
             if best is not None and _defect_badness(candidate) < \
                     _defect_badness(best):
                 best = candidate

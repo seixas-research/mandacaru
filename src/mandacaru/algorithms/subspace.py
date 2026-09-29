@@ -584,6 +584,43 @@ class SubspaceVQE(SubspaceMixin, VQE):
     def _emit_run_header(self, ref_energy) -> None:
         self._print_header(ref_energy)
 
+    def _print_header(self, ref_energy: float) -> None:
+        """Print the run configuration banner.
+
+        The Hamiltonian's Pauli-string expansion is not printed (see
+        :meth:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE._print_header`); only its
+        term count is.
+        """
+        rule = "=" * 70
+        print(rule)
+        print(f"{self.solver_label}  |  mapping: {self.mapping}  |  "
+              f"{self.n_qubits} qubits  |  "
+              f"optimizer: {self.optimizer.method}  |  device: {self.device}")
+        print(f"ansatz: {type(self.ansatz).__name__}  |  "
+              f"parameters: {self.ansatz.num_parameters}  |  "
+              f"k-points: {self._kpts_label()}")
+        print(f"spin-polarized: {self.spin}  |  "
+              f"initial state: {self.initial_state}")
+        print(f"backend provider: {self.backend_provider}  |  circuit execution: "
+              f"{self.execute_circuits}  |  quenching: {self.quenching}")
+        for detail in self._ansatz_details():
+            print(detail)
+        print(rule)
+        n_terms = len(self.hamiltonian.simplify().terms)
+        print(f"Qubit Hamiltonian: {n_terms} Pauli terms")
+        print(f"Reference (all-zero) energy = "
+              f"{self._to_energy_units(ref_energy):+.8f} "
+              f"{self._energy_unit_label()}")
+        print(rule)
+
+    def _ansatz_details(self) -> tuple[str, ...]:
+        """The ansatz's own configuration lines inside the shared VQE header."""
+        describe = getattr(self.ansatz, "describe", None)
+        lines = tuple(describe()) if describe is not None else ()
+        if getattr(self, "_taper_info", None) is not None:
+            lines += (self._taper_info.summary(),)
+        return lines
+
     def _subspace_optimize(self, refs, weights, initial_parameters, timings):
         k = self.num_states
         n = self.ansatz.num_parameters

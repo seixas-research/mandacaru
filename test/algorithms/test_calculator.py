@@ -57,11 +57,14 @@ def h2(distance=0.74, cell=6.0):
 class TestReportingOptionsAreHonest:
     """An option that writes a file either writes it or is refused."""
 
-    def test_vqe_refuses_a_log_it_would_ignore(self):
+    def test_a_subspace_method_refuses_a_log_it_would_ignore(self):
         # `txt=` is a driver-wide option now (every driver has to know where it
         # reports), so the refusal is about the *capability*, not the keyword.
         with pytest.raises(NotImplementedError, match="does not write 'txt'"):
-            Mandacaru(method="vqe", basis="HAO", txt="x.txt")
+            Mandacaru(method="subspace-vqe", basis="HAO", txt="x.txt")
+
+    def test_vqe_accepts_the_log(self, tmp_path):
+        Mandacaru(method="vqe", basis="HAO", txt=str(tmp_path / "out.txt"))
 
     def test_a_subspace_method_refuses_checkpoints(self):
         with pytest.raises(NotImplementedError, match="does not write"):
@@ -75,12 +78,12 @@ class TestReportingOptionsAreHonest:
     def test_vqe_keeps_a_checkpoint_it_does_support(self, tmp_path):
         Mandacaru(method="vqe", basis="HAO", checkpoint=str(tmp_path / "c.json"))
 
-    def test_a_method_without_a_log_keeps_its_trace(self, capsys, tmp_path):
+    def test_a_run_without_a_file_keeps_its_trace(self, capsys, tmp_path):
         """The trap: no file *and* no trace is a run that reports nothing."""
         atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.45)
+        atoms.calc = Mandacaru(method="rhf", basis="HAO", h=0.45)
         atoms.get_potential_energy()
-        assert "VQE" in capsys.readouterr().out
+        assert "[SCF SUMMARY]" in capsys.readouterr().out
 
 
 class TestOutputPathsAndSnapshots:

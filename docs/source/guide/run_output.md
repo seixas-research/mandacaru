@@ -40,10 +40,10 @@ it is refused with a message pointing at `trace=`.
 
 ```{note}
 `txt=` is accepted only by a method whose `run()` goes through this protocol —
-`"adapt-vqe"` and `"vasqa"` today — and refused with a message by the others
-rather than leaving an empty file. `"rhf"`, `"uhf"` and `"ghf"` print an SCF
-summary; `"vqe"` (including `ansatz="hva"`), `"subspace-vqe"` and
-`"subspace-adapt-vqe"` print their own run header, which is not this one.
+`"rhf"`, `"uhf"`, `"ghf"`, `"vqe"` (including `ansatz="hva"`), `"adapt-vqe"`
+and `"vasqa"` today — and refused with a message by the others rather than
+leaving an empty file. `"subspace-vqe"` and `"subspace-adapt-vqe"` print their
+own run header, which is not this one.
 
 There is one standard output per process, so consecutive printed runs number
 their blocks `step: 1`, `step: 2`, … just as consecutive runs sharing one
@@ -129,6 +129,76 @@ acceptance of each move. It has no `converged:` line, because a chain stops on
 its step budget, not on a criterion.
 {func}`~mandacaru.utils.logging.parse_output` returns the rows under
 `"markov_chain"`.
+
+## A fixed ansatz
+
+`method="vqe"` writes the same blocks with no progress table: its ansatz is
+fixed before the run, so there is no growth step or proposal to give a row to,
+only one classical minimization. Its `[OPTIMIZATION SETUP]` names the ansatz,
+its own configuration (the layers and grouping of `ansatz="hva"`) and where the
+parameters start; the summary gives the optimized energy, `num_parameters`,
+`cost_evaluations` and `optimizer_steps`, and has no `num_operators` line.
+
+```text
+[OPTIMIZATION SETUP]
+    classical_optimizer: SLSQP
+    ansatz: UCCSD
+    initial_parameters: all zero (the reference state)
+    reoptimize_all_parameters: True
+    ...
+    energy_unit: eV
+    reference_energy_eV: -187.7936353791
+
+========================================================================
+[VARIATIONAL QUANTUM SUMMARY]
+    converged: True
+    optimal_energy_eV: -188.3280359894
+    reference_energy_eV: -187.7936353791
+    correlation_energy_eV: -0.5344006102
+    num_parameters: 8
+    cost_evaluations: 76
+    optimizer_steps: 8
+========================================================================
+```
+
+Every method renders these blocks with the one
+{class}`~mandacaru.utils.logging.Logger`; a method's own table
+({meth}`~mandacaru.utils.logging.Logger.write_iteration`,
+{meth}`~mandacaru.utils.logging.Logger.write_chain_step`) is the only part that
+differs.
+
+## A classical mean field
+
+`method="rhf"`, `"uhf"` and `"ghf"` write the same `[SYSTEM]` and `[BASIS]`
+blocks, a classical `[ELECTRONS]` -- grid, charge, spin, orbitals and electrons,
+with no reference state, mapping, register or qubit Hamiltonian, since none is
+built -- and then two blocks of their own:
+
+```text
+[SCF SETUP]
+    scf_method: restricted Hartree-Fock (closed shell)
+    max_iterations: 200
+    convergence_Hartree: 1e-09 (energy change and largest density change)
+    acceleration: DIIS; level shift 0.5 Hartree after the first energy rise
+    energy_unit: eV
+
+========================================================================
+[SCF SUMMARY]
+    converged: True
+    optimal_energy_eV: -187.7936353791
+    homo_energy_eV: -5.156580
+    lumo_energy_eV: 12.730481
+    homo_lumo_gap_eV: 17.887062
+    scf_iterations: 24
+========================================================================
+```
+
+The summary's method-specific lines are the RHF frontier orbitals, the UHF
+natural-orbital reference energy and spin contamination, and the GHF Kramers
+pairing (`spin_orbit_coupling` is in the GHF setup).
+{func}`~mandacaru.utils.logging.parse_output` reads `[SCF SETUP]` under
+`"setup"` and `[SCF SUMMARY]` under `"summary"`, the keys a variational run's
+blocks are read under.
 
 ## The `output.txt` log
 

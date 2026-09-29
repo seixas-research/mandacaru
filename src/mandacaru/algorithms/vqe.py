@@ -26,11 +26,12 @@ calculator, ``Mandacaru(method="vqe", ...)``, which forwards every option here:
   basis=...)``: ``atoms.get_total_energy()`` builds the Hamiltonian from the
   geometry, builds a default UCCSD ansatz and runs, returning eV.
 
-The ``optimizer`` may be named by string, a ``verbose`` run prints the run
-configuration -- the qubit Hamiltonian by its **term count** only; its Pauli
-expansion goes to a file with ``verbose_hamiltonian=`` -- and a timing / memory /
-cores summary, and the run
-returns a :class:`VQEResult` shaped like
+The ``optimizer`` may be named by string, and the run reports itself through
+the shared run log (:class:`~mandacaru.utils.logging.Logger`): ``[SYSTEM]``,
+``[BASIS]``, ``[ELECTRONS]``, ``[OPTIMIZATION SETUP]`` and the summary, written
+to the ``txt=`` file, to standard output, or both.  A fixed ansatz has no
+growth loop, so there is no ``[ITERATIONS]`` table.  The run returns a
+:class:`VQEResult` shaped like
 :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQEResult`.
 
 Beyond the ground state, :meth:`VQE.energy_levels` returns the low-lying
@@ -48,7 +49,6 @@ import numpy as np
 from ..core.mapping import Fermion
 from ..optimizers.optim import DEFAULT_OPTIMIZER, Optimizer
 from ..units import convert_energy
-from ..utils.profiling import Timings
 from .ansatz_spec import (HVA_REFUSED_OPTIONS, ansatz_name, build_ansatz,
                           reference_problem, resolve_ansatz)
 from .base import VariationalDriver
@@ -198,6 +198,8 @@ class VQE(DeflationMixin, VariationalDriver):
     _default_sparse = False
     citation_method = "vqe"
     solver_label = "VQE"
+    log_title = "VQE"
+    writes_output_log = True
 
     def __init__(self, hamiltonian=None, ansatz=None,
                  optimizer: str | Optimizer = DEFAULT_OPTIMIZER,
@@ -365,12 +367,16 @@ class VQE(DeflationMixin, VariationalDriver):
         """Energy of the ansatz reference state (all parameters zero)."""
         return self.energy(self.ansatz.reference_state())
 
-    def run(self, initial_parameters=None) -> VQEResult:
+    def run(self, initial_parameters=None, geometry=None,
+            cell=None) -> VQEResult:
         """Optimize the parameters and return the ground-state estimate.
 
-        The optimizer and the ``verbose`` flag come from the constructor; the
-        only argument is ``initial_parameters`` (which the constructor does not
-        carry), defaulting to all-zero (the reference state).
+        The optimizer, the ``txt=`` log and the ``verbose`` flag come from the
+        constructor.  ``initial_parameters`` (which the constructor does not
+        carry) defaults to the ansatz's own starting point -- all zero, the
+        reference state, for UCCSD.  ``geometry`` (an ASE ``Atoms`` or a
+        ``(symbols, positions)`` pair) and ``cell`` fill the log's
+        ``[SYSTEM]`` block; the calculator passes them.
         """
         if self.dry_run:
             return self._dry_run_estimate()
@@ -398,11 +404,24 @@ class VQE(DeflationMixin, VariationalDriver):
 
         timings, run_t0 = self._make_timings()
         ref_energy = self.reference_energy()
-        if self.verbose:
-            self._show_banner()
-            self._print_header(ref_energy)
-            if resumed is not None:
-                print(f"resumed from {self.resume_path!r}")
+        self._show_banner()
+        logger = self._make_logger(self.log_targets, geometry, cell,
+                                   ref_energy, resumed,
+                                   given=initial_parameters is not None)
+        try:
+            vqe_result = self._optimize(x0, ref_energy, timings, run_t0)
+            if logger is not None:
+                self._write_summary(logger, vqe_result)
+        finally:
+            if logger is not None:
+                logger.close()
+        # The performance block closes the step, after the summary.  In
+        # calculator mode `Mandacaru` writes it instead (`defer_performance`).
+        self.write_performance(timings)
+        return vqe_result
+
+    def _optimize(self, x0, ref_energy, timings, run_t0) -> VQEResult:
+        """Minimize the energy from ``x0``, checkpointing as configured."""
 
         # Checkpoint the best point seen every `checkpoint_every` evaluations;
         # the optimizer's own iterate may be a trial step, the best is not.
@@ -441,10 +460,104 @@ class VQE(DeflationMixin, VariationalDriver):
             timings=timings.as_dict(),
             integration_profile=self._integration_profile,
             energy_unit=self._energy_unit_label())
-
-        if self.verbose:
-            self._print_summary(vqe_result, timings)
         return vqe_result
+
+    # -- the run log ------------------------------------------------------ #
+
+    def _run_kwargs(self, atoms) -> dict:
+        """Forward the geometry to :meth:`run` for the log's ``[SYSTEM]``."""
+        return {"geometry": atoms, **self.run_options}
+
+    def _ansatz_label(self) -> str:
+        """The ansatz as the log names it: ``UCCSD``, ``HVA`` or a class name.
+
+        Known before the ansatz is built -- the template the options chose, or
+        a pre-built ansatz's class -- so the title and ``[OPTIMIZATION SETUP]``
+        read it from this one place.
+        """
+        if self._preset_ansatz is not None:
+            return type(self._preset_ansatz).__name__
+        if self.ansatz_builder is not None:
+            return "custom ansatz_builder"
+        return self._ansatz_spec.name.upper()
+
+    def _log_title(self) -> str:
+        """The method and its ansatz, e.g. ``VQE (UCCSD)``."""
+        return f"{self.log_title} ({self._ansatz_label()})"
+
+    def _make_logger(self, targets, geometry, cell, ref_energy, resumed,
+                     given: bool = False):
+        """Open the run log and write every block before the optimization.
+
+        ``[SYSTEM]``, ``[BASIS]`` and ``[ELECTRONS]`` are the shared ones
+        (:meth:`~mandacaru.algorithms.base.VariationalDriver._open_header_logger`);
+        ``[OPTIMIZATION SETUP]`` names the fixed ansatz and where the
+        optimization starts.  ``None`` when the run reports nowhere.
+        """
+        if not targets:
+            return None
+        logger = self._open_header_logger(targets, geometry, cell)
+        unit = self._energy_unit_label()
+        lineage = {}
+        if resumed is not None:
+            lineage = {"resumed_from": str(self.resume_path),
+                       "restored_parameters": len(resumed.parameters)}
+        logger.write_optimizer_setup(
+            optimizer_method=self.optimizer.method,
+            reference_energy=self._to_energy_units(ref_energy),
+            energy_unit=unit, extra=self._setup_fields(given, resumed),
+            lineage=lineage)
+        return logger
+
+    def _setup_fields(self, given: bool, resumed) -> dict:
+        """Driver-specific ``[OPTIMIZATION SETUP]`` lines: the fixed ansatz."""
+        shots = (f"{self.shots}" if self.shots
+                 else "0 (exact expectation values)")
+        if resumed is not None:
+            start = "restored from the checkpoint"
+        elif given:
+            start = "given (initial_parameters)"
+        elif getattr(self.ansatz, "initial_parameters", None) is not None:
+            start = "the ansatz's own starting angles"
+        else:
+            start = "all zero (the reference state)"
+        fields = {"ansatz": self._ansatz_label()}
+        fields.update(self._ansatz_fields())
+        fields.update({
+            "initial_parameters": start,
+            "reoptimize_all_parameters": str(self.quenching),
+            "state_vector_backend": self._backend_description(),
+            "device": str(self.device),
+            "backend_provider": str(self.backend_provider),
+            "circuit_execution": str(self.execute_circuits),
+            "shots": shots})
+        return fields
+
+    def _ansatz_fields(self) -> dict:
+        """The ansatz's own configuration (``describe()``) as keyed lines.
+
+        Each ``"name: value"`` line of the description becomes a
+        ``name: value`` field with a snake-case key, so the block stays
+        parseable whatever template ran.
+        """
+        describe = getattr(self.ansatz, "describe", None)
+        fields = {}
+        for line in (describe() if describe is not None else ()):
+            key, _sep, value = str(line).partition(": ")
+            fields["_".join(key.lower().split())] = value.strip()
+        return fields
+
+    def _write_summary(self, logger, result: VQEResult) -> None:
+        """The ``[VARIATIONAL QUANTUM SUMMARY]`` of the optimized ansatz."""
+        logger.write_summary(
+            converged=bool(result.success),
+            optimal_energy=result.optimal_energy,
+            energy_unit=result.energy_unit,
+            reference_energy=result.reference_energy,
+            correlation_energy=result.correlation_energy,
+            num_parameters=result.num_parameters,
+            num_evaluations=result.num_evaluations,
+            optimizer_steps=result.optimizer_steps)
 
     def _checkpoint_record(self, ansatz, parameters, energy_ha, status,
                            labels=None, kinds=None):
@@ -540,45 +653,6 @@ class VQE(DeflationMixin, VariationalDriver):
         psi = self.ansatz.state(best.x)
         return self.energy(psi), psi, total_evals, None
 
-    # -- standard-output trace ------------------------------------------- #
-
-    def _print_header(self, ref_energy: float) -> None:
-        """Print the run configuration banner.
-
-        The Hamiltonian's Pauli-string expansion is not printed (see
-        :meth:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE._print_header`); only its
-        term count is.
-        """
-        rule = "=" * 70
-        print(rule)
-        print(f"{self.solver_label}  |  mapping: {self.mapping}  |  "
-              f"{self.n_qubits} qubits  |  "
-              f"optimizer: {self.optimizer.method}  |  device: {self.device}")
-        print(f"ansatz: {type(self.ansatz).__name__}  |  "
-              f"parameters: {self.ansatz.num_parameters}  |  "
-              f"k-points: {self._kpts_label()}")
-        print(f"spin-polarized: {self.spin}  |  "
-              f"initial state: {self.initial_state}")
-        print(f"backend provider: {self.backend_provider}  |  circuit execution: "
-              f"{self.execute_circuits}  |  quenching: {self.quenching}")
-        for detail in self._ansatz_details():
-            print(detail)
-        print(rule)
-        n_terms = len(self.hamiltonian.simplify().terms)
-        print(f"Qubit Hamiltonian: {n_terms} Pauli terms")
-        print(f"Reference (all-zero) energy = "
-              f"{self._to_energy_units(ref_energy):+.8f} "
-              f"{self._energy_unit_label()}")
-        print(rule)
-
-    def _ansatz_details(self) -> tuple[str, ...]:
-        """The ansatz's own configuration lines inside the shared VQE header."""
-        describe = getattr(self.ansatz, "describe", None)
-        lines = tuple(describe()) if describe is not None else ()
-        if getattr(self, "_taper_info", None) is not None:
-            lines += (self._taper_info.summary(),)
-        return lines
-
     def _citation_config(self) -> dict:
         """The shared configuration plus the template that ran."""
         config = super()._citation_config()
@@ -586,17 +660,3 @@ class VQE(DeflationMixin, VariationalDriver):
         config["ansatz"] = (ansatz_name(ansatz) if ansatz is not None
                             else getattr(self._ansatz_spec, "name", None))
         return config
-
-    def _print_summary(self, result: VQEResult,
-                       timings: Timings | None = None) -> None:
-        """Print the closing summary: result line plus timings / resources."""
-        rule = "=" * 70
-        print(rule)
-        status = "converged" if result.success else "did not converge"
-        print(f"{self.solver_label} finished ({status}): "
-              f"E = {result.optimal_energy:+.8f} {result.energy_unit}, "
-              f"{result.num_parameters} parameters, {result.num_evaluations} "
-              f"evaluations")
-        if timings is not None:
-            print(timings.format_report())
-        print(rule)

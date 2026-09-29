@@ -886,7 +886,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
 
     def _make_logger(self, targets, geometry, cell, ref_energy,
                      max_iterations, convergence, restored=None):
-        """Create an :class:`AdaptOutputLogger` and write the header blocks.
+        """Create a :class:`Logger` and write the header blocks.
 
         ``targets`` is what
         :meth:`~mandacaru.algorithms.base.VariationalDriver.log_targets`

@@ -44,8 +44,7 @@ class TestCommandLineOptions:
         assert self._options("--method", "adapt-vqe")["pool"] == "fermionic"
         assert "pool" not in self._options("--method", "vqe")
 
-    @pytest.mark.parametrize("flag", [["--txt", "o.txt"],
-                                      ["--max-iterations", "3"],
+    @pytest.mark.parametrize("flag", [["--max-iterations", "3"],
                                       ["--pool", "qeb"]])
     def test_an_option_the_method_ignores_is_a_usage_error(self, flag, capsys):
         with pytest.raises(SystemExit) as raised:

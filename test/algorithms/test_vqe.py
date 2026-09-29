@@ -216,9 +216,9 @@ class TestVQEMirrorsADAPT:
         out = capsys.readouterr().out
         # Only the term count is printed, not the Pauli-string expansion.
         n_terms = len(vqe.hamiltonian.simplify().terms)
-        assert f"Qubit Hamiltonian: {n_terms} Pauli terms" in out
+        assert f"Hamiltonian: {n_terms} Pauli terms" in out
         assert "* ZIII" not in out
-        assert "VQE finished" in out
+        assert "[VARIATIONAL QUANTUM SUMMARY]" in out
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
         Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
@@ -314,10 +314,10 @@ class TestVQEProfiling:
         Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                   ansatz=UCCSD(2, (1, 1)), trace=True).run()
         out = capsys.readouterr().out
-        assert "Timings (wall-clock)" in out
+        assert "[PERFORMANCE]" in out
         assert "parameter optimization" in out
-        assert "cores (OpenMP threads)" in out
-        assert "peak memory" in out
+        assert "openmp_threads" in out
+        assert "peak_memory_MiB" in out
 
     def test_calculator_summary_includes_integration(self, capsys):
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
@@ -328,6 +328,66 @@ class TestVQEProfiling:
         out = capsys.readouterr().out
         assert "integration:" in out              # integration stage is timed
         assert atoms.calc.result.integration_profile is not None
+
+
+class TestVQERunLog:
+    """``txt=`` writes the shared run log; a fixed ansatz has no table."""
+
+    @pytest.fixture(scope="class")
+    def log(self, tmp_path_factory):
+        from mandacaru.utils.logging import parse_output, reset_log
+
+        path = str(tmp_path_factory.mktemp("vqe") / "out.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[6.0] * 3)
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.40,
+                               optimizer=COBYLA_OPT, txt=path)
+        atoms.get_total_energy()
+        reset_log(path)
+        with open(path, encoding="utf-8") as fh:
+            return atoms.calc.result, fh.read(), parse_output(path)
+
+    def test_every_shared_block_is_written(self, log):
+        _result, text, parsed = log
+        for block in ("[SYSTEM]", "[BASIS]", "[ELECTRONS]",
+                      "[OPTIMIZATION SETUP]", "[VARIATIONAL QUANTUM SUMMARY]",
+                      "[PERFORMANCE]"):
+            assert block in text
+        assert "VQE (UCCSD)" in text
+        assert parsed["electrons"]["qubits"] == "4"
+
+    def test_a_fixed_ansatz_has_no_progress_table(self, log):
+        _result, text, parsed = log
+        assert "[ITERATIONS]" not in text and "[MARKOV CHAIN]" not in text
+        assert parsed["iterations"] == []
+
+    def test_the_setup_names_the_ansatz(self, log):
+        _result, _text, parsed = log
+        setup = parsed["setup"]
+        assert setup["classical_optimizer"] == "COBYLA"
+        assert setup["ansatz"] == "UCCSD"
+        assert setup["initial_parameters"] == "all zero (the reference state)"
+
+    def test_the_summary_is_the_result(self, log):
+        result, _text, parsed = log
+        summary = parsed["summary"]
+        assert float(summary["optimal_energy_eV"]) == pytest.approx(
+            result.optimal_energy, abs=1e-9)
+        assert int(summary["num_parameters"]) == result.num_parameters
+        assert int(summary["cost_evaluations"]) == result.num_evaluations
+        # A fixed ansatz grows no operator sequence.
+        assert "num_operators" not in summary
+
+    def test_the_file_is_the_whole_report(self, log, tmp_path, capsys):
+        """With ``txt=`` standard output stays quiet, as for ADAPT-VQE."""
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[6.0] * 3)
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.45,
+                               optimizer=COBYLA_OPT,
+                               txt=str(tmp_path / "quiet.txt"))
+        capsys.readouterr()
+        atoms.get_total_energy()
+        assert "[SYSTEM]" not in capsys.readouterr().out
 
 
 # --- Monkhorst-Pack k-points (requirement: kpts via ASE) ---

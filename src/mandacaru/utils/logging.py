@@ -6,35 +6,38 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Structured runtime logging for ADAPT-VQE (the ``output.txt`` protocol).
+"""Structured runtime logging for every method (the ``output.txt`` protocol).
 
-:class:`AdaptOutputLogger` writes a human-readable, machine-parseable trace of an
-ADAPT-VQE run to a plain text file (``output.txt`` by default) *as the loop
-runs* -- every block is flushed immediately, so a reader can follow the
-optimization live.  The file has these kinds of section:
+:class:`Logger` writes a human-readable, machine-parseable trace of a
+:class:`~mandacaru.algorithms.calculator.Mandacaru` run to a plain text file
+(``output.txt`` by convention) *as the run goes* -- every block is flushed
+immediately, so a reader can follow the optimization live.  Every method
+writes the same opening and closing blocks; what happens in between is the
+method's own:
 
 * the start-up **banner** (:func:`mandacaru.utils.banner.lines`), written once at
   the very top of the file so the log carries its own provenance;
 * a **system** block with the geometry of this step and the explicit unit-cell
   parameters;
-* an **electrons** block with how the electronic problem was posed -- basis,
-  grid, kinetic operator, k-points, spin, the fermion-to-qubit mapping and the
+* a **basis** block with the single-particle basis that ran;
+* an **electrons** block with how the electronic problem was posed -- grid,
+  kinetic operator, k-points, spin, the fermion-to-qubit mapping and the
   size of the register and Hamiltonian it produced;
-* an **optimization setup** block naming the classical optimizer, how the pool
-  screening gradient is computed and against which tolerance, the operator pool,
-  and the reference (Hartree-Fock) energy the VQE starts from;
-* one **iteration** block per accepted ADAPT operator, giving the pool's
-  *size*, the operator selected to join the ansatz (with its screening
-  gradient and Pauli expansion), the energy, the circuit metrics and the
-  parameterized circuit's expressivity score :math:`E` (KL divergence from the
-  Haar distribution);
-* a **summary** block with the final parameterization;
+* an **optimization setup** block naming the classical optimizer, the method's
+  own settings (the operator pool, the fixed ansatz, the chain's schedule) and
+  the reference (Hartree-Fock) energy the run starts from;
+* the method's **progress table**, when it has one: ADAPT-VQE's
+  ``[ITERATIONS]`` (one row per accepted operator, :meth:`Logger.write_iteration`)
+  or VASQA's ``[MARKOV CHAIN]`` (one row per proposal,
+  :meth:`Logger.write_chain_step`).  A fixed-ansatz VQE has neither: its
+  optimization is a single classical minimization;
+* a **summary** block with the final variational state;
 * for a geometry step, a **forces** block with the atomic force vectors and
   their Hellmann-Feynman / Pulay breakdown (:func:`append_forces`).
 
 Geometry steps concatenate
 --------------------------
-A geometry optimization runs one complete ADAPT-VQE per step, and every step
+A geometry optimization runs one complete variational run per step, and every step
 builds its own logger.  Truncating the file each time would leave only the last
 step's iterations, so the *first* logger of a given path in a process truncates
 and writes the banner and every later one **appends**.  The per-path step
@@ -46,7 +49,7 @@ steps again (``parse_output(...)["steps"]``).
 
 The pool's *contents* are not listed: a realistic pool grows with the fourth
 power of the number of orbitals, and repeating it every iteration is what used
-to make this file unreadable.  ``AdaptOutputLogger(..., log_pool=True)``
+to make this file unreadable.  ``Logger(..., log_pool=True)``
 restores the listing, but the supported route is the driver option
 ``verbose_operators=True``, which writes the pool once as structured JSON (see
 :mod:`mandacaru.utils.dumps`).
@@ -167,7 +170,7 @@ def log_steps(path) -> int:
 def reset_log(path: str | None = None) -> None:
     """Forget the step counter of ``path`` (or of every path when ``None``).
 
-    The next :class:`AdaptOutputLogger` for that path then truncates the file
+    The next :class:`Logger` for that path then truncates the file
     and writes the banner again, as though the process had just started.  A
     script does not need this -- a fresh process starts with an empty registry
     -- but a notebook or a driver loop that wants each run in its own file does.
@@ -189,8 +192,8 @@ def _indent(lines: Iterable[str], level: int = 1) -> list[str]:
     return [pad + line if line else line for line in lines]
 
 
-class AdaptOutputLogger:
-    """Append-only writer for the ADAPT-VQE ``output.txt`` protocol.
+class Logger:
+    """Append-only writer for the ``output.txt`` protocol, shared by every method.
 
     Parameters
     ----------
@@ -250,7 +253,7 @@ class AdaptOutputLogger:
 
         targets = _targets(path)
         if not targets:
-            raise ValueError("AdaptOutputLogger needs a destination: a file "
+            raise ValueError("Logger needs a destination: a file "
                              "path, logging.STDOUT, or several of them")
         # Every destination this logger writes to, in order, and the first of
         # them -- which is what `path` meant when there could only be one.
@@ -339,7 +342,7 @@ class AdaptOutputLogger:
 
     def write_system(self, symbols: Sequence[str] | None = None,
                      positions=None, cell=None, pbc=None, magmoms=None,
-                     units: str = "Angstrom", title: str = "ADAPT-VQE run",
+                     units: str = "Angstrom", title: str = "Mandacaru run",
                      extra: dict | None = None) -> None:
         """Write the ``[SYSTEM]`` block: this step's geometry, cell and spins.
 
@@ -501,7 +504,7 @@ class AdaptOutputLogger:
         is: the **classical optimizer** and its budget, the **convergence
         criteria** and the **screening gradient** -- how it is computed,
         against which threshold and in which unit -- then the driver's own
-        settings (``extra``; for ADAPT-VQE the operator pool), the **loop's
+        settings (``extra``: the operator pool, the fixed ansatz), the **loop's
         starting point** with the energy threshold in its unit, and last the
         run's **lineage** (``lineage``; what a resumed run was restored from).
 
@@ -821,7 +824,8 @@ class AdaptOutputLogger:
     # -- summary block ----------------------------------------------------- #
 
     def write_summary(self, converged: bool | None, optimal_energy: float,
-                      num_operators: int, energy_unit: str = "eV",
+                      num_operators: int | None = None,
+                      energy_unit: str = "eV",
                       reference_energy: float | None = None,
                       correlation_energy: float | None = None,
                       num_parameters: int | None = None,
@@ -862,7 +866,10 @@ class AdaptOutputLogger:
         if correlation_energy is not None:
             self._emit_body(f"correlation_energy_{energy_unit}: "
                             f"{correlation_energy:.10f}")
-        self._emit_body(f"num_operators: {num_operators}")
+        # A fixed ansatz has parameters but no grown operator sequence, so it
+        # passes None and the line is left out.
+        if num_operators is not None:
+            self._emit_body(f"num_operators: {num_operators}")
         if num_parameters is not None:
             self._emit_body(f"num_parameters: {num_parameters}")
         if expressivity is not None:
@@ -893,6 +900,25 @@ class AdaptOutputLogger:
                 self._emit_body(f"{key}: {value}")
         self._emit(_BANNER)
 
+    # -- a method's own flat blocks ---------------------------------------- #
+
+    def write_block(self, section: str, fields: dict,
+                    framed: bool = False) -> None:
+        """Write a flat ``[SECTION]`` of ``KEY: value`` lines.
+
+        For a method whose setup or summary is not the variational one -- the
+        classical SCF's ``[SCF SETUP]`` and ``[SCF SUMMARY]`` -- in the same
+        layout as the other blocks.  ``None`` values are skipped.  ``framed``
+        puts the block between rules, as a summary is.
+        """
+        if framed:
+            self._emit(_BANNER)
+        self._emit(f"[{section.strip('[]')}]")
+        for key, value in fields.items():
+            if value is not None:
+                self._emit_body(f"{key}: {value}")
+        self._emit(_BANNER if framed else "")
+
     # -- footer / teardown ------------------------------------------------- #
 
     def close(self) -> None:
@@ -901,7 +927,7 @@ class AdaptOutputLogger:
             if owned and not fh.closed:
                 fh.close()
 
-    def __enter__(self) -> "AdaptOutputLogger":
+    def __enter__(self) -> "Logger":
         return self
 
     def __exit__(self, *exc) -> None:
@@ -1505,6 +1531,9 @@ _SECTIONS = {"[BASIS]": "basis",
              "[QUANTUM ECHOES]": "quantum_echoes",
              "[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
              "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
+             # The classical SCF's setup and summary are read under the same
+             # keys as a variational run's, so a reader asks one question.
+             "[SCF SETUP]": "setup", "[SCF SUMMARY]": "summary",
              "[MARKOV CHAIN]": "markov_chain",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
              "[VARIATIONAL QUANTUM SUMMARY]": "summary",
@@ -1521,7 +1550,7 @@ _SETUP_ALIASES = {"screening_gradient": "gradient_method"}
 
 
 def parse_output(path: str) -> dict:
-    """Reference parser for an ADAPT ``output.txt`` (used by the tests).
+    """Reference parser for an ``output.txt`` run log (used by the tests).
 
     Reads the system, electrons and setup blocks as ``KEY: value`` lines, the
     ``[ITERATIONS]`` table as one record per row keyed by its column heading, and
