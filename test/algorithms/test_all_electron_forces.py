@@ -132,6 +132,39 @@ class TestAllElectronGradient:
         assert np.allclose(expanded[1], two_rdm(full, 6, "jordan_wigner"),
                            atol=1e-12)
 
+    def test_a_complex_state_keeps_the_frozen_core_energy(self):
+        """A complex active RDM (a spin-orbit state) distinguishes gamma_qs
+        from gamma_sq in the exchange cross terms; a real one cannot.  The
+        expanded RDMs on the full integrals must give the energy the frozen
+        core reduction gives."""
+        from mandacaru.algorithms.hartree_fock import spinor_integrals
+        from mandacaru.algorithms.rdm import electronic_energy
+        from mandacaru.core.hamiltonian import freeze_spin_orbital_integrals
+
+        rng = np.random.default_rng(7)
+        M = 3
+        a = rng.normal(size=(2 * M, 2 * M)) + 1j * rng.normal(size=(2 * M,
+                                                                  2 * M))
+        b = rng.normal(size=(M, M))
+        eri = np.einsum("pr,qs->pqrs", b + b.T, b + b.T)
+        spinors, _r = np.linalg.qr(rng.normal(size=(2 * M, 2 * M))
+                                   + 1j * rng.normal(size=(2 * M, 2 * M)))
+        h, g = spinor_integrals(a + a.conj().T, eri, spinors)
+        frozen, active = [0, M], [1, 2, M + 1, M + 2]
+        h_red, g_red, core = freeze_spin_orbital_integrals(h, g, frozen,
+                                                           active)
+        # A random complex two-electron state of the four active modes.
+        psi = np.zeros(16, dtype=complex)
+        states = [i for i in range(16) if bin(i).count("1") == 2]
+        psi[states] = rng.normal(size=6) + 1j * rng.normal(size=6)
+        psi /= np.linalg.norm(psi)
+        gamma, gamma2 = one_rdm(psi, 4, "jordan_wigner"), two_rdm(psi, 4)
+        assert np.abs(gamma.imag).max() > 1e-2
+        reduced = electronic_energy(gamma, gamma2, h_red, g_red) + core
+        full = electronic_energy(*expand_frozen_core(gamma, gamma2, (0,), M),
+                                 h, g)
+        assert full == pytest.approx(reduced, abs=1e-12)
+
     def test_an_unfrozen_run_is_untouched(self):
         gamma = np.eye(4, dtype=complex)
         gamma2 = np.zeros((4,) * 4, dtype=complex)

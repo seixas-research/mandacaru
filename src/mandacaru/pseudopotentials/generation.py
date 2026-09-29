@@ -328,6 +328,13 @@ class PseudoPotential:
     #: passes the real values.
     xc: str = "lda"
     relativity: str = "none"
+    #: Whether the functional carried the relativistic exchange correction
+    #: (:func:`~mandacaru.basis.xc.relativistic_exchange_factors`) -- what a
+    #: relativistic reference atom uses.  Stored, not derived from
+    #: ``relativity``: a file written before the correction existed is
+    #: relativistic without it, and rescreening it must match how it was
+    #: unscreened.
+    relativistic_exchange: bool = False
     #: Partial core density the local potential was unscreened with (zero
     #: without a core correction), and the record of how it was built
     #: (:mod:`.core_correction`).
@@ -385,7 +392,9 @@ class PseudoPotential:
             valence = np.asarray(self.valence_density, dtype=float)
             core = (np.zeros_like(valence) if self.core_density is None
                     else np.asarray(self.core_density, dtype=float))
-            _e_xc, v_xc = xc_potential(self.r, valence + core, self.xc)
+            _e_xc, v_xc = xc_potential(
+                self.r, valence + core, self.xc,
+                relativistic=bool(self.relativistic_exchange))
             screening = hartree_potential(self.r, valence) + v_xc
             self.__dict__["_screening"] = screening
         return np.asarray(channel.v_ionic, dtype=float) + screening
@@ -511,6 +520,7 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
     from ase.data import atomic_numbers
 
     from ..basis.relativity import _resolve as _resolve_relativity
+    from ..basis.relativity import relativistic_exchange
     from ..basis.xc import xc_potential
     from .core_correction import partial_core_density
 
@@ -571,7 +581,9 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
     elif nlcc is not False:
         nlcc_details["reason"] = "the atom has no core to correct for"
     v_hartree = hartree_potential(r, valence_density)
-    _e_xc, v_xc = xc_potential(r, valence_density + core_density, xc)
+    rel_x = relativistic_exchange(relativity)
+    _e_xc, v_xc = xc_potential(r, valence_density + core_density, xc,
+                               relativistic=rel_x)
     for channel in channels.values():
         channel.v_ionic = channel.v_screened - v_hartree - v_xc
 
@@ -601,6 +613,7 @@ def generate_pseudopotential(symbol: str, *, r_cut=None,
         v_local=v_local, local_l=local, projectors=projectors,
         kb_energies=kb_energies, valence_density=valence_density, atom=atom,
         family="ncpp", xc=str(xc), relativity=relativity,
+        relativistic_exchange=rel_x,
         core_density=core_density, nlcc=dict(nlcc_details))
 
 

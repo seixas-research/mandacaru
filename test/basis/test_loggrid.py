@@ -252,12 +252,14 @@ class TestItIsWiredIn:
     @pytest.mark.slow
     def test_the_uniform_grid_overstates_the_relativistic_shift(self):
         """The measurement that says which grid to believe: the uniform grid
-        exaggerates oxygen's shift by more than half again."""
+        exaggerates oxygen's shift by more than half again.  The shift
+        includes the relativistic exchange correction (+0.020 Ha; -0.0556
+        without it)."""
         from mandacaru.basis.atomic_solver import solve_atom
         shifts = {}
         for grid in ("uniform", "log"):
             nr = solve_atom(8, relativity="none", grid=grid).total_energy
             sr = solve_atom(8, relativity="scalar", grid=grid).total_energy
             shifts[grid] = sr - nr
-        assert shifts["log"] == pytest.approx(-0.0556, abs=2e-3)
+        assert shifts["log"] == pytest.approx(-0.0355, abs=2e-3)
         assert shifts["uniform"] < shifts["log"] * 1.4

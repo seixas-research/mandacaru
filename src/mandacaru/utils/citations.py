@@ -143,6 +143,7 @@ _PROVENANCE_KEYS = {
     ("relativity", "scalar"): ["KoellingHarmon1977"],
     ("relativity", "dirac"): ["KoellingHarmon1977", "Kleinman1980"],
     ("nlcc", True): ["Louie1982"],
+    ("relativistic_exchange", True): ["MacDonaldVosko1979"],
 }
 
 
@@ -150,7 +151,7 @@ def provenance_keys(datasets) -> list:
     """Keys for how the pseudopotential datasets of a run were generated.
 
     ``datasets`` is whatever the integrals carry -- each needs only ``xc``,
-    ``relativity`` and ``nlcc``.  A dataset that records none of them predates
+    ``relativity``, ``nlcc`` and ``relativistic_exchange``.  A dataset that records none of them predates
     the options and is the non-relativistic LDA construction, which the family
     key already covers.
     """
@@ -161,6 +162,8 @@ def provenance_keys(datasets) -> list:
             keys += _PROVENANCE_KEYS.get((field, value), [])
         if (getattr(dataset, "nlcc", None) or {}).get("applied"):
             keys += _PROVENANCE_KEYS[("nlcc", True)]
+        if getattr(dataset, "relativistic_exchange", False):
+            keys += _PROVENANCE_KEYS[("relativistic_exchange", True)]
     return keys
 
 

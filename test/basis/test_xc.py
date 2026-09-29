@@ -17,9 +17,10 @@ import pytest
 
 from mandacaru.basis.atomic_solver import lda_correlation, lda_xc
 from mandacaru.basis.xc import (DENSITY_FLOOR, FUNCTIONALS, PBE_KAPPA,
-                                pbe_correlation, pbe_exchange,
-                                pw92_correlation, xc_energy_density,
-                                xc_potential)
+                                RELATIVISTIC_SERIES_BETA, pbe_correlation,
+                                pbe_exchange, pw92_correlation,
+                                relativistic_exchange_factors,
+                                xc_energy_density, xc_potential)
 
 
 def radial_grid(points=4000, r_max=25.0):
@@ -166,3 +167,68 @@ class TestAgainstTheSelfConsistentAtom:
         # PBE binds oxygen more tightly than LDA does, but not by a lot.
         assert abs(pbe.total_energy - lda.total_energy) < 2.0
         assert pbe.eigenvalues[(2, 1)] < 0.0
+
+
+def heavy_density(r):
+    """A heavy atom's shells: a 1s at Z = 80 puts beta = k_F/c near 1.5."""
+    return (2 * np.exp(-160 * r) * (80 ** 3 / np.pi)
+            + two_shell_density(r))
+
+
+class TestRelativisticExchange:
+    """The relativistic correction to the exchange of the uniform gas."""
+
+    def test_it_vanishes_as_c_grows(self):
+        phi_e, phi_v = relativistic_exchange_factors(np.array([1e-8, 1e-4]))
+        assert np.allclose(phi_e, 1.0, atol=1e-6)
+        assert np.allclose(phi_v, 1.0, atol=1e-6)
+
+    def test_the_series_joins_the_closed_form(self):
+        from mandacaru.basis.relativity import SPEED_OF_LIGHT
+
+        beta = RELATIVISTIC_SERIES_BETA * np.array([1 - 1e-9, 1 + 1e-9])
+        rho = (beta * SPEED_OF_LIGHT) ** 3 / (3 * np.pi ** 2)
+        phi_e, phi_v = relativistic_exchange_factors(rho)
+        assert abs(phi_e[1] - phi_e[0]) < 1e-11
+        assert abs(phi_v[1] - phi_v[0]) < 1e-11
+
+    def test_it_weakens_exchange_where_the_density_is_high(self):
+        rho = np.logspace(0, 6, 7)
+        phi_e, phi_v = relativistic_exchange_factors(rho)
+        assert np.all(np.diff(phi_e) < 0) and np.all(phi_e < 1.0)
+        assert np.all(phi_v < phi_e)
+
+    def _residual(self, functional, epsilon=1e-4, points=40000):
+        r = np.arange(1, points + 1) * (8.0 / (points + 1))
+        rho = heavy_density(r)
+        shell = 4.0 * np.pi * r * r
+
+        def energy(density):
+            gradient = np.gradient(density, r, edge_order=2)
+            return np.trapezoid(xc_energy_density(
+                density, gradient, functional, relativistic=True) * shell, r)
+
+        _e, v = xc_potential(r, rho, functional, relativistic=True)
+        # Where the correction is largest: the Z = 80 core.
+        delta = epsilon * np.exp(-((r - 0.01) / 0.006) ** 2) * rho
+        left = energy(rho + delta) - energy(rho - delta)
+        right = 2.0 * np.trapezoid(v * delta * shell, r)
+        return abs(left - right) / abs(right)
+
+    @pytest.mark.parametrize("functional", ["lda", "pbe"])
+    def test_the_potential_is_the_derivative_of_the_energy(self, functional):
+        """Phi_V is d(rho e_x Phi_E)/drho, and PBE's extra
+        (4/3) e_x (Phi_V - Phi_E) term is its exchange's."""
+        assert self._residual(functional) < 1e-5
+
+    def test_it_is_off_unless_asked_for(self):
+        r = radial_grid()
+        rho = two_shell_density(r)
+        for functional in ("lda", "pbe"):
+            plain = xc_potential(r, rho, functional)
+            assert np.array_equal(
+                plain[1], xc_potential(r, rho, functional,
+                                       relativistic=False)[1])
+            assert not np.allclose(
+                plain[1], xc_potential(r, rho, functional,
+                                       relativistic=True)[1])

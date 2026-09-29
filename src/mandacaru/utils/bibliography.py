@@ -518,6 +518,18 @@ _BASES = [
   doi     = {10.1088/0022-3719/10/16/019}
 }""", "the scalar-relativistic radial equation (relativity='scalar')",
          verified=False, topics=("relativity", "pseudopotential")),
+    _ref("MacDonaldVosko1979", """
+@article{MacDonaldVosko1979,
+  author  = {MacDonald, A. H. and Vosko, S. H.},
+  title   = {A relativistic density functional formalism},
+  journal = {J. Phys. C},
+  volume  = {12},
+  pages   = {2977--2990},
+  year    = {1979},
+  doi     = {10.1088/0022-3719/12/15/007}
+}""", "the relativistic correction to LDA exchange of a relativistic "
+         "reference atom", verified=True,
+         topics=("relativity", "xc", "pseudopotential")),
     _ref("Louie1982", """
 @article{Louie1982,
   author  = {Louie, Steven G. and Froyen, Sverre and Cohen, Marvin L.},

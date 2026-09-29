@@ -174,15 +174,18 @@ class AlgebraicEnergy:
         return self.with_orbitals(self.lowdin(S) @ self.V, h, g)
 
     def directional(self, S, h, g, dS, dh, dg,
-                    step: float = DEFAULT_ALGEBRAIC_STEP) -> float:
+                    step: float = DEFAULT_ALGEBRAIC_STEP, dh_so=None) -> float:
         """``<dE/dS, dS> + <dE/dh, dh> + <dE/dg, dg>`` by a central difference."""
+        if dh_so is not None:
+            raise ValueError("a spin-orbit derivative needs SpinorAlgebraicEnergy")
+
         def shifted(sign):
             return self(S + sign * step * dS if dS is not None else S,
                         h + sign * step * dh if dh is not None else h,
                         g + sign * step * dg if dg is not None else g)
         return (shifted(+1.0) - shifted(-1.0)) / (2.0 * step)
 
-    def orbital_gradient(self, S, h, g, step: float = 1e-5) -> float:
+    def orbital_gradient(self, S, h, g, step: float = 1e-5) -> float | None:
         r"""Largest :math:`|\partial E/\partial\kappa_{pq}|` over orbital rotations.
 
         The size of the neglected orbital-response term.  It vanishes at both
@@ -327,6 +330,61 @@ def _hermitian(X):
     return 0.5 * (X + X.conj().T)
 
 
+class SpinorAlgebraicEnergy(AlgebraicEnergy):
+    r""":class:`AlgebraicEnergy` for a Hamiltonian written in GHF spinors.
+
+    The orbitals are ``(2M, 2M)`` two-component spinors in mode order, the
+    RDMs are the full spin-orbital ones (their spin-off-diagonal blocks are
+    what spin-orbit coupling populates), and the one-body matrix gains the
+    atomic-orbital spin-orbit matrix ``h_so`` (not Loewdin-transformed):
+    :math:`E = \sum\gamma_{PQ}(A^\dagger H A)_{PQ}
+    + \tfrac12\sum\Gamma_{PQRS}\langle PQ|RS\rangle_A` with
+    :math:`A = (X \oplus X)V`, :math:`X = S^{-1/2}` and
+    :math:`H = (h \oplus h) + h_{SO}`.
+    """
+
+    def __init__(self, spinors, gamma, gamma2, h_so):
+        self.V = np.asarray(spinors, dtype=complex)
+        self.D = np.asarray(gamma, dtype=complex)
+        self.G = np.asarray(gamma2, dtype=complex)
+        self.h_so = np.asarray(h_so, dtype=complex)
+
+    def with_orbitals(self, A, h, g, h_so=None) -> float:
+        from .hartree_fock import spinor_integrals
+
+        M = h.shape[0]
+        H = np.zeros((2 * M, 2 * M), dtype=complex)
+        H[:M, :M] = H[M:, M:] = h
+        H = H + (self.h_so if h_so is None else h_so)
+        h_mo, g_mo = spinor_integrals(H, g, A)
+        return float(np.real(np.einsum("pq,pq->", self.D, h_mo)
+                             + 0.5 * np.einsum("pqrs,pqrs->", self.G, g_mo)))
+
+    def __call__(self, S, h, g, h_so=None) -> float:
+        X = self.lowdin(S)
+        M = X.shape[0]
+        XX = np.zeros((2 * M, 2 * M), dtype=complex)
+        XX[:M, :M] = XX[M:, M:] = X
+        return self.with_orbitals(XX @ self.V, h, g, h_so)
+
+    def directional(self, S, h, g, dS, dh, dg,
+                    step: float = DEFAULT_ALGEBRAIC_STEP, dh_so=None) -> float:
+        """The same central difference, the spin-orbit matrix moving too."""
+        def shifted(sign):
+            return self(S + sign * step * dS if dS is not None else S,
+                        h + sign * step * dh if dh is not None else h,
+                        g + sign * step * dg if dg is not None else g,
+                        self.h_so + sign * step * dh_so
+                        if dh_so is not None else None)
+        return (shifted(+1.0) - shifted(-1.0)) / (2.0 * step)
+
+    def orbital_gradient(self, S, h, g, step: float = 1e-5) -> None:
+        """Not measured for spinors: the (2M)^2 rotations each need a
+        (2M)^4 transformation.  A full CI in the spinor space, which is what
+        the spin-orbit runs reach, has none to measure."""
+        return None
+
+
 def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                             orbital_delta=None, include_pulay: bool = True,
                             algebraic_step: float = DEFAULT_ALGEBRAIC_STEP,
@@ -391,8 +449,30 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     datasets = getattr(integrals, "pseudopotentials", None) or []
     atom_potentials = _atom_potentials(integrals)
 
-    D1, G2 = spatial_rdms(gamma, gamma2, M)
-    energy = AlgebraicEnergy(integrals.mo_coefficients, D1, G2)
+    # A spin-orbit Hamiltonian is written in GHF spinors: the energy keeps
+    # the full spin-orbital RDMs and the spin-orbit matrix, whose derivative
+    # comes from its own projections (`so_terms` below).
+    spinor = bool(getattr(integrals, "spinor_basis", False))
+    if spinor:
+        from ..core.spin_orbit import spin_orbit_pair
+
+        so_projectors = list(integrals.spin_orbit_projectors)
+        so_blocks = integrals.spin_orbit_coupling
+        chi_so = np.stack([p.evaluate(grid.X, grid.Y, grid.Z).ravel()
+                           for p in so_projectors])
+        C_so = integrals.spin_orbit_projections()
+        h_so_ao = spin_orbit_pair(C_so, C_so, so_projectors, so_blocks)
+        h_so_ao = 0.5 * (h_so_ao + h_so_ao.conj().T)
+        energy = SpinorAlgebraicEnergy(integrals.mo_coefficients, gamma,
+                                       gamma2, h_so_ao)
+        D1 = np.asarray(gamma, dtype=complex)
+
+        def so_terms(dC_so):
+            return (spin_orbit_pair(dC_so, C_so, so_projectors, so_blocks)
+                    + spin_orbit_pair(C_so, dC_so, so_projectors, so_blocks))
+    else:
+        D1, G2 = spatial_rdms(gamma, gamma2, M)
+        energy = AlgebraicEnergy(integrals.mo_coefficients, D1, G2)
 
     # -- the reference AO matrices, exactly as MolecularIntegrals._compute --
     external = integrals.external_potential()
@@ -573,9 +653,11 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     # The compensation shapes do not move with the basis, so
                     # only the moments change here.
                     dh = dh + ionic_derivative(dQ, None)
+                dh_so = (so_terms(_backend.kb_projections(dpsi, chi_so, dV))
+                         if spinor else None)
                 pulay[atom, k] = energy.directional(
                     S0, h0, g0, _hermitian(dS), _hermitian(dh), dg,
-                    algebraic_step)
+                    algebraic_step, dh_so=dh_so)
 
             # ---------------- Hellmann-Feynman: the operators of `atom` move --
             w_loc = _moved_radial(atom_potentials[atom], centers[atom],
@@ -644,9 +726,16 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dQ = moment_derivatives(dC)
                     dg = augmentation_derivative(dQ, dW, dU)
                     dh = dh + ionic_derivative(dQ, dV_ion)
+            dh_so = None
+            if spinor:
+                dchi_so = np.zeros_like(chi_so)
+                for p, projector in enumerate(so_projectors):
+                    if projector.atom_index == atom:
+                        dchi_so[p] = _moved_function(projector, grid, k, delta)
+                dh_so = so_terms(_backend.kb_projections(psi, dchi_so, dV))
             hf[atom, k] = energy.directional(
                 S0, h0, g0, _hermitian(dS) if dS is not None else None,
-                _hermitian(dh), dg, algebraic_step)
+                _hermitian(dh), dg, algebraic_step, dh_so=dh_so)
 
     hf = hf + _nuclear_repulsion_gradient(centers, charges)
 

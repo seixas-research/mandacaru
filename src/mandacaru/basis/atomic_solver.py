@@ -562,7 +562,9 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         atom additionally fills ``orbitals_j`` / ``eigenvalues_j`` /
         ``occupations_j``; its ``(n, l)`` entries carry the ``(2j+1)``-weighted
         average, so a consumer that does not know about spin-orbit coupling
-        sees the scalar-relativistic atom.
+        sees the scalar-relativistic atom.  Both relativistic treatments also
+        use the relativistic correction to LDA exchange
+        (:func:`mandacaru.basis.xc.relativistic_exchange_factors`).
     polish : int
         Extra self-consistency steps a **relativistic** atom takes with the
         Numerov shoot the pseudopotential generators use, after the
@@ -593,9 +595,12 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
     # Imported here, not at module scope: mandacaru.basis.xc builds the LDA
     # branch of its dispatcher out of `lda_xc` above, so a top-level import
     # would close a cycle.
-    from .relativity import (degeneracy, kappa_values,
+    from .relativity import (degeneracy, kappa_values, relativistic_exchange,
                              solve_radial_relativistic)
     from .xc import xc_potential
+
+    # A relativistic atom carries the relativistic exchange correction too.
+    rel_x = relativistic_exchange(relativity)
 
     Z = int(atomic_number)
     occupations = dict(configuration if configuration is not None
@@ -679,7 +684,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
 
     for iteration in range(1, max_iterations + 1):
         v_hartree = hartree_potential(r, density)
-        _e_xc, v_xc = xc_potential(r, density, xc)
+        _e_xc, v_xc = xc_potential(r, density, xc, relativistic=rel_x)
         v_effective = nuclear + v_hartree + v_xc
         if not non_relativistic:
             from .relativity import potential_derivatives
@@ -747,7 +752,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         polish_mixer = _PulayMixer(shell * step, mixing, electrons)
         for _ in range(polish):
             v_hartree = hartree_potential(r, density)
-            _e_xc, v_xc = xc_potential(r, density, xc)
+            _e_xc, v_xc = xc_potential(r, density, xc, relativistic=rel_x)
             v_effective = nuclear + v_hartree + v_xc
             new_density = np.zeros_like(r)
             for key, occupancy in (occupations_j if j_resolved
@@ -781,7 +786,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         # oxygen's relativistic 2s, which is the whole problem this polish
         # exists to remove).
         v_hartree = hartree_potential(r, density)
-        _e_xc, v_xc = xc_potential(r, density, xc)
+        _e_xc, v_xc = xc_potential(r, density, xc, relativistic=rel_x)
         v_effective = nuclear + v_hartree + v_xc
         for key, occupancy in (occupations_j if j_resolved
                                else occupations).items():
@@ -814,7 +819,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
 
     # Final potentials consistent with the converged density.
     v_hartree = hartree_potential(r, density)
-    e_xc, v_xc = xc_potential(r, density, xc)
+    e_xc, v_xc = xc_potential(r, density, xc, relativistic=rel_x)
     v_effective = nuclear + v_hartree + v_xc
 
     # Total energy from the eigenvalue sum, correcting the double counting.
@@ -837,4 +842,5 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         occupations_j=occupations_j,
         details={"points": points, "r_max": r_max, "mixing": mixing,
                  "confined": confinement is not None,
-                 "xc": xc, "relativity": relativity})
+                 "xc": xc, "relativity": relativity,
+                 "relativistic_exchange": rel_x})

@@ -52,6 +52,7 @@ def assert_same(left, right):
         np.testing.assert_allclose(projector, right.projectors[l])
     for l, energy in left.kb_energies.items():
         assert energy == pytest.approx(right.kb_energies[l])
+    assert left.relativistic_exchange == right.relativistic_exchange
 
 
 class TestFormatResolution:
@@ -252,3 +253,36 @@ class TestLibrary:
     def test_transition_metals_have_a_d_channel(self):
         """Iron's chemistry lives in 3d; a pseudopotential without it is wrong."""
         assert 2 in get_pseudopotential("Fe").channels
+
+
+class TestRelativisticExchangeRecord:
+    """Whether the functional carried the relativistic exchange correction is
+    stored, because rescreening a loaded file has to match its unscreening."""
+
+    @pytest.fixture(scope="class")
+    def scalar_oxygen(self):
+        import warnings
+
+        from mandacaru.pseudopotentials.generation import (
+            generate_pseudopotential)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return generate_pseudopotential("O", relativity="scalar")
+
+    def test_a_relativistic_dataset_carries_it(self, scalar_oxygen):
+        assert scalar_oxygen.relativistic_exchange
+
+    def test_a_file_written_before_it_existed_does_not(self, silicon):
+        assert not silicon.relativistic_exchange
+
+    def test_the_loaded_file_rescreens_as_it_was_unscreened(
+            self, scalar_oxygen, tmp_path):
+        """Without the stored flag the rescreened potential would differ in
+        the core by the correction itself."""
+        loaded = load_pseudopotential(save_pseudopotential(
+            scalar_oxygen, tmp_path / "o.parquet"))
+        assert loaded.relativistic_exchange
+        for l, channel in scalar_oxygen.channels.items():
+            np.testing.assert_allclose(loaded.screened_potential(l),
+                                       channel.v_screened, atol=1e-8)

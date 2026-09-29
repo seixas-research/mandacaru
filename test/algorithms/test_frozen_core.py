@@ -13,7 +13,9 @@ import pytest
 from ase import Atoms
 
 from mandacaru.basis import BasisSet, HydrogenicAtomicOrbital
-from mandacaru.core.hamiltonian import freeze_core_integrals
+from mandacaru.core.hamiltonian import (freeze_core_integrals,
+                                        freeze_spin_orbital_integrals,
+                                        spin_block_integrals)
 from mandacaru.algorithms.hartree_fock import RHF
 from mandacaru.algorithms._hamiltonian_from_atoms import (
     build_basis_hamiltonian, core_electrons, resolve_frozen)
@@ -94,6 +96,31 @@ class TestFreezeCoreIntegrals:
 # --------------------------------------------------------------------------- #
 # Part 3: driver-facing resolvers and the active-space reduction.
 # --------------------------------------------------------------------------- #
+
+class TestFreezeSpinOrbitalIntegrals:
+    """The spinor-basis reduction a spin-orbit Hamiltonian uses."""
+
+    def test_without_coupling_it_is_the_spatial_reduction(self):
+        """Freezing modes (i, M + i) of the spin-blocked integrals is freezing
+        spatial orbital i and spin-blocking afterwards."""
+        rng = np.random.default_rng(3)
+        M = 4
+        a, b = rng.normal(size=(M, M)), rng.normal(size=(M, M))
+        h = a + a.T
+        c = b + b.T
+        eri = np.einsum("pr,qs->pqrs", c, c) + np.einsum(
+            "pr,qs->pqrs", np.eye(M), np.eye(M))
+        frozen, active = [0], [1, 2, 3]
+        h_act, eri_act, e_core = freeze_core_integrals(h, eri, frozen, active)
+        spatial = spin_block_integrals(h_act, eri_act)
+        h_so, g_so = spin_block_integrals(h, eri)
+        modes = lambda pairs: list(pairs) + [M + k for k in pairs]
+        h_red, g_red, e_red = freeze_spin_orbital_integrals(
+            h_so, g_so, modes(frozen), modes(active))
+        assert e_red == pytest.approx(e_core, abs=1e-12)
+        np.testing.assert_allclose(h_red, spatial[0], atol=1e-12)
+        np.testing.assert_allclose(g_red, spatial[1], atol=1e-12)
+
 
 class TestCoreElectrons:
     @pytest.mark.parametrize("Z, expected", [

@@ -274,6 +274,8 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
         "kb_energies": {str(l): float(e) for l, e in pp.kb_energies.items()},
         "xc": str(getattr(pp, "xc", "lda")),
         "relativity": str(getattr(pp, "relativity", "none")),
+        "relativistic_exchange": bool(getattr(pp, "relativistic_exchange",
+                                              False)),
         "nlcc": dict(getattr(pp, "nlcc", None) or {}),
         "defects": _defects_record(getattr(pp, "defects", None)),
     }
@@ -473,6 +475,9 @@ def load_pseudopotential(path, format: str | None = None,
         # non-relativistic LDA without a core correction.
         xc=str(payload.get("xc", "lda")),
         relativity=str(payload.get("relativity", "none")),
+        # Written before the relativistic exchange correction existed.
+        relativistic_exchange=bool(payload.get("relativistic_exchange",
+                                               False)),
         nlcc=dict(payload.get("nlcc") or {"applied": False, "r_nlcc": None}),
         core_density=(np.asarray(payload["core_density"], dtype=float)
                       if "core_density" in payload else np.zeros_like(r)),

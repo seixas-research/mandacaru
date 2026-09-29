@@ -142,6 +142,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from scipy.integrate import simpson
 
+from ..basis.relativity import relativistic_exchange
 from ..basis.xc import xc_potential
 from ..basis.atomic_solver import (AtomicResult, hartree_potential,
                                     solve_atom)
@@ -198,7 +199,7 @@ DEFAULT_N_BESSEL_BY_DATASET = {
     **{(symbol, xc): 9 for symbol in ("Fe", "Co", "Ni")
        for xc in ("lda", "pbe")},
     # With its s cutoff shortened to 2.33 Bohr (DEFAULT_CUTOFFS).
-    ("Sn", "lda"): 10, ("Sn", "pbe"): 10,
+    ("Sn", "pbe"): 10,
 }
 #: Wave-vector cutoff of the residual kinetic energy (Bohr^-1).
 DEFAULT_Q_CUT = 5.0
@@ -296,6 +297,133 @@ DEFAULT_LOCAL_SHIFTS = {"C": 12.0, "N": 10.0, "O": 6.0, "F": 8.0,
 #: as ONCVPSP does (:data:`~.oncv.DEFAULT_FROZEN_SUBSHELLS`).
 DEFAULT_FROZEN_SUBSHELLS = {symbol: ((4, 3),) for symbol in
                             ("Tl", "Pb", "Bi", "Po", "At", "Rn")}
+#: Per-dataset repairs of the d-block and 6p libraries (HISTORY.md, 2026-09-28,
+#: "the d-block and 6p repairs"), keyed by ``(element, functional)`` and taking
+#: precedence over the per-element tables above.  Every entry is the exact
+#: combination a scan measured -- all built unitary (norm deficit 0) -- and
+#: fixes one of two defects of the scalar libraries:
+#:
+#: - the **s channel** misses a hydrogen 1s entering its sphere (the miss of
+#:   the projector expansion of that tail, > 1 before): a local-potential
+#:   shift and a tenth Bessel function, and for Tl, Po, Bi, Os, Re, Ta and V a
+#:   shorter s sphere, bring it to 0.1-0.95;
+#: - the **semicore d** of Ga-Kr, I and Xe is so compact that its projectors
+#:   amplify the basis filter: a filtered 3d/4d function projected onto its own
+#:   wave at h = 0.20 Angstrom was off by 0.1-0.9; a larger d sphere with a
+#:   higher second reference energy brings it to 0.02-0.16.
+#:
+#: Hf, Lu, Mo, Nb, Sc, Tc, Th, Ti-LDA, W-PBE and Zr-LDA found no repair in
+#: these scans and keep their old construction.
+_S_CHANNEL_REPAIRS = {
+    # (element, xc): (n_bessel, local_shift) -- scalar s-miss fixed by these.
+    ("Ac", "lda"): (10, 20.0), ("Ac", "pbe"): (10, 10.0),
+    ("Ag", "lda"): (9, 0.0), ("Ag", "pbe"): (10, 10.0),
+    ("Au", "lda"): (10, 0.0), ("Au", "pbe"): (10, 0.0),
+    ("Cd", "lda"): (9, 0.0), ("Cd", "pbe"): (10, 50.0),
+    ("Cr", "lda"): (10, 40.0), ("Cr", "pbe"): (10, 0.0),
+    ("Hg", "lda"): (10, 0.0), ("Hg", "pbe"): (10, 0.0),
+    ("Ir", "lda"): (9, 50.0), ("Ir", "pbe"): (10, 50.0),
+    ("La", "lda"): (10, 10.0), ("La", "pbe"): (10, 15.0),
+    ("Mn", "lda"): (10, 20.0), ("Mn", "pbe"): (10, 40.0),
+    ("Pd", "lda"): (9, 50.0), ("Pd", "pbe"): (10, 50.0),
+    ("Pt", "lda"): (10, 0.0), ("Pt", "pbe"): (10, 0.0),
+    ("Rh", "lda"): (10, 50.0), ("Rh", "pbe"): (10, 50.0),
+    ("Ru", "lda"): (9, 50.0), ("Ru", "pbe"): (10, 0.0),
+    ("Sb", "lda"): (9, 10.0), ("Sn", "lda"): (9, 10.0),
+    ("W", "lda"): (10, 0.0),
+    ("Y", "lda"): (9, 20.0), ("Y", "pbe"): (10, 10.0),
+    ("Zr", "pbe"): (10, 10.0),
+    # With a shorter s sphere (DEFAULT_CUTOFFS_BY_DATASET).
+    ("Tl", "lda"): (10, 10.0), ("Po", "lda"): (10, 10.0),
+    ("Bi", "lda"): (10, 10.0),
+    ("Os", "lda"): (10, 10.0), ("Os", "pbe"): (10, 50.0),
+    ("Re", "lda"): (10, 10.0), ("Re", "pbe"): (10, 10.0),
+    ("Ta", "lda"): (10, 20.0), ("Ta", "pbe"): (10, 20.0),
+    ("V", "lda"): (10, 0.0), ("V", "pbe"): (10, 10.0),
+}
+_D_CHANNEL_REPAIRS = {
+    # (element, xc): (d cutoff in Bohr, second reference energy in Hartree).
+    ("Ga", "lda"): (1.001, 2.0),
+    ("Ge", "lda"): (1.696, 3.0),
+    ("As", "lda"): (1.606, 3.0), ("As", "pbe"): (1.612, 3.0),
+    ("Se", "lda"): (1.056, 2.0), ("Se", "pbe"): (1.531, 3.0),
+    ("Br", "lda"): (1.006, 3.0), ("Br", "pbe"): (1.009, 3.0),
+    ("Kr", "lda"): (1.066, 1.0), ("Kr", "pbe"): (1.070, 2.0),
+    ("I", "lda"): (1.113, 2.0), ("I", "pbe"): (1.113, 2.0),
+    ("Xe", "lda"): (1.070, 2.0), ("Xe", "pbe"): (1.070, 2.0),
+}
+#: The tables the generator reads: per-l cutoffs, local shifts, second
+#: reference energies and norm deficits of the repaired datasets.  The
+#: cutoffs are every channel's, as each scan built it: the repaired s or d
+#: sphere (the s spheres of Tl, Po, Bi, Os, Re, Ta and V are 0.85-0.95 of
+#: their old radii; the d spheres are _D_CHANNEL_REPAIRS') with the others
+#: as the library carried them -- a channel left to the generic rule can come
+#: out elsewhere (Os-PBE's f at 0.53 Bohr, 1.2 rad off in phase).
+DEFAULT_CUTOFFS_BY_DATASET = {
+    ('Ac', 'lda'): {0: 4.818, 2: 3.468},
+    ('Ac', 'pbe'): {0: 4.87, 2: 3.449},
+    ('Ag', 'lda'): {0: 3.086, 2: 1.334},
+    ('Ag', 'pbe'): {0: 3.103, 2: 1.334},
+    ('As', 'lda'): {0: 2.081, 1: 2.564, 2: 1.606},
+    ('As', 'pbe'): {0: 2.095, 1: 2.582, 2: 1.612},
+    ('Au', 'lda'): {0: 2.923, 2: 2.923, 3: 2.923},
+    ('Au', 'pbe'): {0: 2.928, 2: 2.928, 3: 2.928},
+    ('Bi', 'lda'): {0: 2.294, 1: 3.183, 2: 1.344, 3: 3.183},
+    ('Br', 'lda'): {0: 1.829, 1: 2.159, 2: 1.006},
+    ('Br', 'pbe'): {0: 1.839, 1: 2.171, 2: 1.009},
+    ('Cd', 'lda'): {0: 3.002, 2: 1.276},
+    ('Cd', 'pbe'): {0: 3.018, 2: 1.276},
+    ('Cr', 'lda'): {0: 3.376, 2: 1.062},
+    ('Cr', 'pbe'): {0: 3.409, 2: 1.068},
+    ('Ga', 'lda'): {0: 2.439, 1: 3.279, 2: 1.001},
+    ('Ge', 'lda'): {0: 2.242, 1: 2.86, 2: 1.696},
+    ('Hg', 'lda'): {0: 2.846, 2: 2.846, 3: 2.846},
+    ('Hg', 'pbe'): {0: 2.851, 2: 2.851, 3: 2.851},
+    ('I', 'lda'): {0: 2.194, 1: 2.628, 2: 1.113},
+    ('I', 'pbe'): {0: 2.206, 1: 2.641, 2: 1.113},
+    ('Ir', 'lda'): {0: 3.093, 2: 3.093, 3: 3.093},
+    ('Ir', 'pbe'): {0: 3.102, 2: 3.102, 3: 3.102},
+    ('Kr', 'lda'): {0: 1.727, 1: 2.011, 2: 1.066},
+    ('Kr', 'pbe'): {0: 1.736, 1: 2.019, 2: 1.07},
+    ('La', 'lda'): {0: 4.868, 2: 2.91},
+    ('La', 'pbe'): {0: 4.943, 2: 2.881},
+    ('Mn', 'lda'): {0: 3.23, 2: 0.985},
+    ('Mn', 'pbe'): {0: 3.259, 2: 0.991},
+    ('Os', 'lda'): {0: 2.871, 2: 3.19, 3: 3.19},
+    ('Os', 'pbe'): {0: 3.041, 2: 3.201, 3: 3.201},
+    ('Pd', 'lda'): {0: 3.178, 2: 1.4},
+    ('Pd', 'pbe'): {0: 3.196, 2: 1.399},
+    ('Po', 'lda'): {0: 2.192, 1: 2.983, 2: 1.298, 3: 2.983},
+    ('Pt', 'lda'): {0: 3.005, 2: 3.005, 3: 3.005},
+    ('Pt', 'pbe'): {0: 3.011, 2: 3.011, 3: 3.011},
+    ('Re', 'lda'): {0: 2.968, 2: 3.298, 3: 3.298},
+    ('Re', 'pbe'): {0: 2.981, 2: 3.312, 3: 3.312},
+    ('Rh', 'lda'): {0: 3.279, 2: 1.474},
+    ('Rh', 'pbe'): {0: 3.299, 2: 1.472},
+    ('Ru', 'lda'): {0: 3.39, 2: 1.558},
+    ('Ru', 'pbe'): {0: 3.412, 2: 1.555},
+    ('Sb', 'lda'): {0: 2.439, 1: 3.026, 2: 1.101},
+    ('Se', 'lda'): {0: 1.945, 1: 2.34, 2: 1.056},
+    ('Se', 'pbe'): {0: 1.958, 1: 2.353, 2: 1.531},
+    ('Sn', 'lda'): {0: 2.33, 1: 3.305, 2: 1.153},
+    ('Ta', 'lda'): {0: 3.021, 2: 3.554, 3: 3.554},
+    ('Ta', 'pbe'): {0: 3.223, 2: 3.582, 3: 3.582},
+    ('Tl', 'lda'): {0: 2.678, 1: 3.773, 2: 1.451, 3: 3.773},
+    ('V', 'lda'): {0: 3.011, 2: 1.156},
+    ('V', 'pbe'): {0: 3.046, 2: 1.161},
+    ('W', 'lda'): {0: 3.418, 2: 3.418, 3: 3.418},
+    ('Xe', 'lda'): {0: 2.093, 1: 2.476, 2: 1.07},
+    ('Xe', 'pbe'): {0: 2.104, 1: 2.487, 2: 1.07},
+    ('Y', 'lda'): {0: 4.299, 2: 2.35},
+    ('Y', 'pbe'): {0: 4.368, 2: 2.318},
+    ('Zr', 'pbe'): {0: 4.084, 2: 2.076},
+}
+DEFAULT_LOCAL_SHIFTS_BY_DATASET = {key: shift for key, (_n, shift)
+                                   in _S_CHANNEL_REPAIRS.items()}
+DEFAULT_ENERGY_OFFSETS_BY_DATASET = {key: e for key, (_rc, e)
+                                     in _D_CHANNEL_REPAIRS.items()}
+DEFAULT_NORM_DEFICITS_BY_DATASET = {key: 0.0 for key in
+                                    (*_S_CHANNEL_REPAIRS, *_D_CHANNEL_REPAIRS)}
 #: First reference energy (Hartree) of the empty channel a frozen shell leaves.
 FROZEN_SCATTERING_ENERGY = 0.25
 #: Largest tolerated deviation of ``<p_i|phi_j>`` from the identity.
@@ -744,14 +872,15 @@ def _hartree_energy(r, rho) -> float:
                                     * 4.0 * np.pi * r * r, r))
 
 
-def _xc_energies(r, rho, xc: str = DEFAULT_XC):
+def _xc_energies(r, rho, xc: str = DEFAULT_XC, relativistic: bool = False):
     """``(E_xc[rho], int rho v_xc[rho])`` in the functional ``xc``.
 
-    It has to be the functional the reference atom was solved with: the
-    one-center constant subtracts these double-counting terms from that atom's
-    band energy, and a PBE band energy corrected with LDA terms is neither.
+    It has to be the functional the reference atom was solved with -- its
+    relativistic exchange correction included: the one-center constant
+    subtracts these double-counting terms from that atom's band energy, and a
+    PBE band energy corrected with LDA terms is neither.
     """
-    e_xc, v_xc = xc_potential(r, rho, xc)
+    e_xc, v_xc = xc_potential(r, rho, xc, relativistic=relativistic)
     shell = 4.0 * np.pi * r * r
     return (float(np.trapezoid(e_xc * rho * shell, r)),
             float(np.trapezoid(v_xc * rho * shell, r)))
@@ -1110,7 +1239,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     ----------
     r_cut : float or dict, optional
         Augmentation radii (Bohr), one value or ``{l: r_c}``; defaults to
-        :data:`DEFAULT_CUTOFFS`, else ``rc_factor`` times the outermost
+        :data:`DEFAULT_CUTOFFS_BY_DATASET` for the element and functional,
+        then :data:`DEFAULT_CUTOFFS`, else ``rc_factor`` times the outermost
         maximum of the bound partial wave.
     r_cut_local : float, optional
         Radius of the polynomial local potential (default ``local_factor``
@@ -1119,15 +1249,18 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         Raise of the local potential at the origin above its five-coefficient
         polynomial continuation (Hartree; Hamann's ``dvloc0``), the knob
         against ghost states of a deep local potential.  Defaults to
-        :data:`DEFAULT_LOCAL_SHIFTS` for the element, else 0.
+        :data:`DEFAULT_LOCAL_SHIFTS_BY_DATASET` for the element and
+        functional, else :data:`DEFAULT_LOCAL_SHIFTS` for the element, else 0.
     norm_deficit : float or None
         Fraction of the all-electron inner norm the smooth waves give up
         (:func:`smooth_partial_waves`); defaults to
-        :data:`DEFAULT_NORM_DEFICITS` for the element, else
+        :data:`DEFAULT_NORM_DEFICITS_BY_DATASET` for the element and
+        functional, else :data:`DEFAULT_NORM_DEFICITS` for the element, else
         :data:`DEFAULT_NORM_DEFICIT`; ``None`` for free waves.
     energy_offset : float, optional
         Second reference energy above the bound state (Hartree); defaults to
-        :data:`DEFAULT_ENERGY_OFFSETS` for the element, else
+        :data:`DEFAULT_ENERGY_OFFSETS_BY_DATASET` for the element and
+        functional, else :data:`DEFAULT_ENERGY_OFFSETS` for the element, else
         :data:`DEFAULT_ENERGY_OFFSET`.
     frozen_subshells : sequence of tuple, optional
         Occupied valence subshells, as ``(n, l)`` pairs, to generate into the
@@ -1138,7 +1271,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     n_bessel : int, optional
         Spherical Bessel functions per smooth partial wave; defaults to
         :data:`DEFAULT_N_BESSEL_BY_DATASET` for the element and functional,
-        else :data:`DEFAULT_N_BESSEL`.
+        else the s-channel repair's count, else :data:`DEFAULT_N_BESSEL`.
     q_cut, points, r_max, atom, ghosts
         As in :func:`~.oncv.generate_oncv`; the ghost search is
         :func:`~.oncv.ghost_free`, with the spectrum of the generalized
@@ -1204,17 +1337,25 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     r, v_ae = atom.r, atom.v_effective
     z_eff = float(atomic_number)
     shell = 4.0 * np.pi * r * r
+    dataset = (symbol, str(xc).strip().lower())
     if isinstance(norm_deficit, str):
-        norm_deficit = DEFAULT_NORM_DEFICITS.get(symbol, DEFAULT_NORM_DEFICIT)
+        norm_deficit = DEFAULT_NORM_DEFICITS_BY_DATASET.get(
+            dataset, DEFAULT_NORM_DEFICITS.get(symbol, DEFAULT_NORM_DEFICIT))
     if n_bessel is None:
         n_bessel = DEFAULT_N_BESSEL_BY_DATASET.get(
-            (symbol, str(xc).strip().lower()), DEFAULT_N_BESSEL)
-    energy_offset = float(DEFAULT_ENERGY_OFFSETS.get(symbol, DEFAULT_ENERGY_OFFSET)
-                          if energy_offset is None else energy_offset)
+            dataset, _S_CHANNEL_REPAIRS.get(dataset, (DEFAULT_N_BESSEL,))[0])
+    if energy_offset is None:
+        energy_offset = DEFAULT_ENERGY_OFFSETS_BY_DATASET.get(
+            dataset, DEFAULT_ENERGY_OFFSETS.get(symbol, DEFAULT_ENERGY_OFFSET))
+    energy_offset = float(energy_offset)
+    # The element's cutoffs with this dataset's repairs on top.
+    cutoff_table = {**DEFAULT_CUTOFFS, symbol: {
+        **DEFAULT_CUTOFFS.get(symbol, {}),
+        **DEFAULT_CUTOFFS_BY_DATASET.get(dataset, {})}}
 
     per_l, cutoffs, references = reference_waves(
         symbol, atom, valence_config, z_eff, r_cut, rc_factor, energy_offset,
-        defaults=DEFAULT_CUTOFFS, treatment=partial_wave_treatment,
+        defaults=cutoff_table, treatment=partial_wave_treatment,
         extra_l=extra_l, extra_energy=extra_energy)
     # The local potential follows the *largest* cutoff: a compact channel's
     # projector reaches out to r_cl instead (assemble_paw_channel).
@@ -1240,8 +1381,9 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                                               else 0.0))
         for l, (ae, energies) in references.items()}
 
-    shift = float(DEFAULT_LOCAL_SHIFTS.get(symbol, 0.0) if local_shift is None
-                  else local_shift)
+    shift = float(DEFAULT_LOCAL_SHIFTS_BY_DATASET.get(
+        dataset, DEFAULT_LOCAL_SHIFTS.get(symbol, 0.0))
+        if local_shift is None else local_shift)
     v_loc = polynomial_local_potential(r, v_ae, r_local, shift)
 
     channels: dict = {}
@@ -1296,7 +1438,9 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                 "partial_core_electrons": float(
                     np.trapezoid(smooth_core * shell, r))}
     v_hartree = hartree_potential(r, augmented)
-    _e_xc, v_xc = xc_potential(r, smooth_valence + xc_core, xc)
+    rel_x = relativistic_exchange(relativity)
+    _e_xc, v_xc = xc_potential(r, smooth_valence + xc_core, xc,
+                               relativistic=rel_x)
     v_local_ionic = v_loc - v_hartree - v_xc
     hartree_screening = float(np.trapezoid(v_hartree * g * shell, r))
     # Spin-orbit coupling, when asked for: two unitary branches per l >= 1,
@@ -1317,13 +1461,14 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     # norm-conserving convention.
     e_h_ae = _hartree_energy(r, ae_valence)
     e_h_ps = _hartree_energy(r, augmented)
-    e_xc_ae, v_xc_ae = _xc_energies(r, ae_valence, xc)
-    e_xc_ps, v_xc_ps = _xc_energies(r, smooth_valence, xc)
+    e_xc_ae, v_xc_ae = _xc_energies(r, ae_valence, xc, rel_x)
+    e_xc_ps, v_xc_ps = _xc_energies(r, smooth_valence, xc, rel_x)
     reference_valence = band - e_h_ae - v_xc_ae + e_xc_ae
     pseudo_atom = band - e_h_ps - v_xc_ps + e_xc_ps
     one_center = reference_valence - pseudo_atom
-    e_xc_full_ae, _v = _xc_energies(r, ae_valence + core_density, xc)
-    e_xc_full_ps, _v = _xc_energies(r, smooth_valence + smooth_core, xc)
+    e_xc_full_ae, _v = _xc_energies(r, ae_valence + core_density, xc, rel_x)
+    e_xc_full_ps, _v = _xc_energies(r, smooth_valence + smooth_core, xc,
+                                    rel_x)
     energies = {
         "band": float(band),
         "reference_valence": float(reference_valence),
@@ -1359,7 +1504,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         energies=energies, q_cut=float(q_cut),
         energy_offset=float(energy_offset),
         norm_deficit=None if norm_deficit is None else float(norm_deficit),
-        xc=str(xc), relativity=relativity, nlcc=dict(nlcc_details),
+        xc=str(xc), relativity=relativity, relativistic_exchange=rel_x,
+        nlcc=dict(nlcc_details),
         extra_l=int(extra_l), frozen_subshells=tuple(frozen),
         spin_orbit=spin_orbit)
 
@@ -2454,6 +2600,7 @@ def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
             "q_cut": float(pp.q_cut), "energy_offset": float(pp.energy_offset),
             "norm_deficit": pp.norm_deficit,
             "xc": str(pp.xc), "relativity": str(pp.relativity),
+            "relativistic_exchange": bool(pp.relativistic_exchange),
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
             "frozen_subshells": [list(o) for o in pp.frozen_subshells],
             "defects": defects_record(pp.defects),
@@ -2628,6 +2775,8 @@ def from_payload(payload: dict) -> PAWDataset:
         # file already in the library as something it is not.
         xc=str(payload.get("xc", "lda")),
         relativity=str(payload.get("relativity", "none")),
+        relativistic_exchange=bool(payload.get("relativistic_exchange",
+                                               False)),
         extra_l=int(payload.get("extra_l", 0)),
         frozen_subshells=tuple(tuple(int(x) for x in o)
                                for o in payload.get("frozen_subshells", [])),

@@ -428,6 +428,13 @@ def _resolve(treatment: str) -> str:
     return aliases[key]
 
 
+def relativistic_exchange(treatment: str) -> bool:
+    """Whether a reference atom of this treatment carries the relativistic
+    correction to LDA exchange (:func:`~mandacaru.basis.xc.relativistic_exchange_factors`):
+    every relativistic treatment does, the non-relativistic one does not."""
+    return _resolve(treatment) != "none"
+
+
 #: Points of the logarithmic grid used for a relativistic eigenvalue.  1200
 #: resolves what 64000 uniform points cannot; see :mod:`~.loggrid`.
 LOG_GRID_POINTS = 1200

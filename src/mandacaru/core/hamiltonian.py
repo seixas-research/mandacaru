@@ -104,6 +104,42 @@ class MeanFieldMixin:
         self._last_uhf_result = ((int(n_alpha), int(n_beta)), result)
         return result
 
+    def generalized_hartree_fock(self, n_alpha: int, n_beta: int):
+        """Generalized (spinor) Hartree-Fock, spin-orbit coupling included.
+
+        Returns a :class:`~mandacaru.algorithms.hartree_fock.GHFResult`.  The
+        one-body matrix is the scalar one on both spin blocks plus
+        :meth:`~MolecularIntegrals.spin_orbit_matrix` when the integrals carry
+        a spin-orbit term.  Started from the core and screened-core guesses
+        and from the RHF (closed shell) and UHF determinants written as
+        spinors, so it ends at or below them in the same Hamiltonian.  Only
+        ``n_alpha + n_beta`` matters to GHF; the split picks the RHF/UHF
+        starting determinants.
+        """
+        from ..algorithms.hartree_fock import GHF
+        particles = (int(n_alpha), int(n_beta))
+        cached = getattr(self, "_last_ghf_result", None)
+        if cached is not None and cached[0] == particles:
+            return cached[1]
+        one = np.asarray(self.one_body())
+        M = one.shape[0]
+        h = np.zeros((2 * M, 2 * M), dtype=complex)
+        h[:M, :M] = h[M:, M:] = one
+        if getattr(self, "spin_orbit_coupling", None):
+            h = h + self.spin_orbit_matrix()
+        solver = GHF(h, self.two_body(), sum(particles))
+        guesses = []
+        if particles[0] == particles[1]:
+            rhf = self.hartree_fock(sum(particles))
+            guesses.append(GHF.collinear_spinors(
+                rhf.mo_coefficients, rhf.mo_coefficients, *particles))
+        uhf = self.open_shell_hartree_fock(*particles)
+        guesses.append(GHF.collinear_spinors(
+            uhf.mo_coefficients_alpha, uhf.mo_coefficients_beta, *particles))
+        result = solver.solve(guesses=guesses)
+        self._last_ghf_result = (particles, result)
+        return result
+
 
 class MolecularIntegrals(MeanFieldMixin):
     r"""One- and two-body integrals over a localized basis for a molecule.
@@ -232,6 +268,10 @@ class MolecularIntegrals(MeanFieldMixin):
         #: basis) of the last ``molecular_hamiltonian(mo_basis=True)``: the
         #: RHF orbitals, or the UHF natural orbitals for an open shell.
         self.mo_coefficients: np.ndarray | None = None
+        #: Whether :attr:`mo_coefficients` are ``(2M, 2M)`` two-component
+        #: spinors in mode order (a spin-orbit Hamiltonian, whose molecular
+        #: orbitals are the GHF spinors) rather than ``(M, M)`` spatial MOs.
+        self.spinor_basis = False
         #: :class:`~mandacaru.algorithms.active_space.ActiveSpace` of the last
         #: ``molecular_hamiltonian(mo_basis=True)`` -- which spatial orbitals
         #: were frozen, kept and deleted.  ``None`` until one has been built.
@@ -455,28 +495,6 @@ class MolecularIntegrals(MeanFieldMixin):
                     cols = slice(tau * M, (tau + 1) * M)
                     h[rows, cols] = X.conj().T @ h[rows, cols] @ X
         return h
-
-    def _spin_orbit_in_mo_basis(self) -> np.ndarray:
-        r"""The spin-orbit matrix rotated into the molecular-orbital basis.
-
-        The rotation is spin-independent -- the same spatial
-        :attr:`mo_coefficients` for both spins -- so each of the four spin
-        quadrants transforms on its own as :math:`C^\dagger h C`.  The
-        molecular orbitals themselves come from a Hartree-Fock solution of the
-        **scalar** Hamiltonian; that is the usual and correct order, since the
-        reference determinant only has to span the space, not diagonalize the
-        operator that is about to be added to it.
-        """
-        C = np.asarray(self.mo_coefficients)
-        M = C.shape[0]
-        h = self.spin_orbit_matrix()
-        out = np.zeros_like(h)
-        for sigma in (0, 1):
-            for tau in (0, 1):
-                block = h[sigma * M:(sigma + 1) * M, tau * M:(tau + 1) * M]
-                out[sigma * M:(sigma + 1) * M,
-                    tau * M:(tau + 1) * M] = C.conj().T @ block @ C
-        return out
 
     def nonlocal_overlap_matrix(self):
         """The ``(P, P)`` overlap-correction matrix ``Q``, or ``None``."""
@@ -795,7 +813,11 @@ class MolecularIntegrals(MeanFieldMixin):
         frozen = _frozen_indices(spec)
         core_energy = 0.0
         self.active_space = None
-        if mo_basis:
+        if mo_basis and self.spin_orbit_coupling:
+            h_so, g_so, core_energy, space = self._spinor_problem(
+                n_electrons, num_particles, open_shell, frozen, spec)
+            self.active_space = space
+        elif mo_basis:
             h_mo, eri_mo, self.mo_coefficients = molecular_orbital_integrals(
                 self, n_electrons, num_particles, open_shell)
             space = self._resolve_active_space(
@@ -815,13 +837,7 @@ class MolecularIntegrals(MeanFieldMixin):
             if frozen or len(active) != self.n_orbitals:
                 h_mo, eri_mo, core_energy = freeze_core_integrals(
                     h_mo, eri_mo, frozen, active)
-            h_spin = None
-            if self.spin_orbit_coupling:
-                _refuse_spin_orbit_without_sz(frozen,
-                                              deleted=getattr(space, "deleted",
-                                                              ()))
-                h_spin = self._spin_orbit_in_mo_basis()
-            h_so, g_so = spin_block_integrals(h_mo, eri_mo, h_spin)
+            h_so, g_so = spin_block_integrals(h_mo, eri_mo)
         else:
             if spec is not None:
                 raise ValueError(
@@ -843,6 +859,66 @@ class MolecularIntegrals(MeanFieldMixin):
         if abs(const) > 1e-14:
             H = H + Fermion({(): complex(const)}, n_modes=h_so.shape[0])
         return H
+
+    def _spinor_problem(self, n_electrons, num_particles, open_shell, frozen,
+                        spec):
+        r"""``(h, g, core_energy, space)`` of a spin-orbit Hamiltonian in the
+        GHF spinor basis, with its frozen and deleted Kramers pairs removed.
+
+        Under spin-orbit coupling the two spins of a spatial orbital are not
+        partners, so a scalar MO basis cannot be frozen or truncated.  The GHF
+        spinors can: spinors ``2k`` and ``2k + 1`` (by energy) form pair ``k``,
+        at modes ``k`` and ``M + k`` (:meth:`GHF.mode_order`), the same slots a
+        spatial orbital has.  For a closed shell those are Kramers pairs; for
+        an odd electron count the highest occupied "pair" holds one electron
+        and is paired only in the register.  Pairs are indexed like spatial
+        orbitals in ``active_space``: ``frozen`` counts the lowest pairs and
+        ``orbitals`` the pairs kept, the lowest first -- the spinor energy is
+        the only ranking, since the MP2 and occupation selectors rank spatial
+        orbitals.
+        """
+        from ..algorithms.active_space import ActiveSpace
+
+        _n_el, na, nb, _open = resolve_reference(n_electrons, num_particles,
+                                                 open_shell)
+        ghf = self.generalized_hartree_fock(na, nb)
+        M = self.n_orbitals
+        self.mo_coefficients = ghf.mode_coefficients
+        self.spinor_basis = True
+        h, g = ghf.h_mo, ghf.eri_mo
+        if spec is not None and (spec.method != "energy"
+                                 or spec.threshold is not None
+                                 or isinstance(spec.orbitals, dict)):
+            raise NotImplementedError(
+                "with spin-orbit coupling the active space is chosen among "
+                "Kramers pairs of GHF spinors by energy: give 'frozen' and "
+                "'orbitals' as counts (or pair indices); the "
+                f"method={spec.method!r}, 'threshold' and occupied/virtual "
+                "forms rank spatial orbitals, which have no meaning here")
+        n_active_electrons = na + nb - 2 * len(frozen)
+        kept = [k for k in range(M) if k not in set(frozen)]
+        orbitals = None if spec is None else spec.orbitals
+        if orbitals is None:
+            active = kept
+        elif isinstance(orbitals, int):
+            active = kept[:int(orbitals)]
+        else:
+            active = sorted(int(k) for k in orbitals)
+        if 2 * len(active) < n_active_electrons:
+            raise ValueError(
+                f"{len(active)} active Kramers pairs cannot hold "
+                f"{n_active_electrons} electrons")
+        deleted = [k for k in kept if k not in set(active)]
+        space = None
+        core_energy = 0.0
+        if frozen or deleted:
+            modes = lambda pairs: [k for k in pairs] + [M + k for k in pairs]
+            h, g, core_energy = freeze_spin_orbital_integrals(
+                h, g, modes(frozen), modes(active))
+            space = ActiveSpace(n_orbitals=M, frozen=tuple(frozen),
+                                active=tuple(active), deleted=tuple(deleted),
+                                method="energy")
+        return h, g, core_energy, space
 
     def _resolve_active_space(self, h_mo, eri_mo, n_electrons, num_particles,
                               open_shell, frozen, spec):
@@ -924,33 +1000,6 @@ def _frozen_indices(spec) -> list[int]:
     if isinstance(spec.frozen, int):
         return list(range(spec.frozen))
     return sorted(int(i) for i in spec.frozen)
-
-
-def _refuse_spin_orbit_without_sz(frozen, deleted=()) -> None:
-    r"""Refuse the reductions that assume ``S_z`` is a good quantum number.
-
-    Spin-orbit coupling gives the one-body matrix an alpha-beta block, so the
-    Hamiltonian conserves :math:`J_z` and particle number but **not**
-    :math:`S_z`.  ``num_particles`` still chooses the orbital basis -- the
-    scalar Hartree-Fock (or UHF natural-orbital) reference the determinant is
-    built from -- and the drivers read the broken symmetry off the Hamiltonian
-    itself (:func:`~mandacaru.core.spin_orbit.conserves_spin_projection`) to
-    work in the total-N sector.  What is refused here are the reductions of the
-    orbital space that pair the two spins of a spatial orbital.
-    """
-    if frozen:
-        raise NotImplementedError(
-            "a frozen core and spin-orbit coupling are incompatible: "
-            "freezing replaces doubly occupied spatial orbitals by a mean "
-            "field, and the spin-orbit term is what stops the two spins of "
-            "an orbital from being occupied together.")
-    if len(deleted):
-        raise NotImplementedError(
-            "a truncated virtual space and spin-orbit coupling are "
-            "incompatible: the selector ranks spatial orbitals, and with "
-            "spin-orbit coupling the two spins of a spatial orbital are not "
-            "degenerate partners -- keeping or deleting them together is not "
-            "a choice the Hamiltonian permits.")
 
 
 def projector_blocks(projectors) -> dict:
@@ -1233,6 +1282,45 @@ def freeze_core_integrals(h_mo: np.ndarray, eri_mo: np.ndarray,
 
     eri_active = eri_mo[np.ix_(active, active, active, active)]
     return h_eff, eri_active, float(np.real(core_energy))
+
+
+def freeze_spin_orbital_integrals(h: np.ndarray, g: np.ndarray,
+                                  frozen: Sequence[int], active: Sequence[int]
+                                  ) -> tuple[np.ndarray, np.ndarray, float]:
+    r"""Frozen-core reduction of **spin-orbital** integrals.
+
+    :func:`freeze_core_integrals` does it for spatial integrals, before the
+    spin blocks are formed; a spinor basis has no spatial form, so the frozen
+    modes are removed here directly.  ``h`` is ``(K, K)`` and ``g`` the
+    ``(K, K, K, K)`` physicists' tensor :math:`\langle PQ|RS\rangle`; each
+    frozen mode holds one electron:
+
+    .. math::
+
+        E_{\text{core}} = \sum_{I}h_{II}
+            + \tfrac12\sum_{IJ}\bigl(\langle IJ|IJ\rangle
+            - \langle IJ|JI\rangle\bigr), \qquad
+        h^{\text{eff}}_{PQ} = h_{PQ}
+            + \sum_{I}\bigl(\langle PI|QI\rangle - \langle PI|IQ\rangle\bigr).
+
+    Returns ``(h_active, g_active, core_energy)`` over the ``active`` modes,
+    in the order given.
+    """
+    frozen = [int(i) for i in frozen]
+    active = [int(p) for p in active]
+    core_energy = sum(h[i, i] for i in frozen)
+    for i in frozen:
+        for j in frozen:
+            core_energy += 0.5 * (g[i, j, i, j] - g[i, j, j, i])
+    h_eff = np.asarray(h, dtype=complex)[np.ix_(active, active)].copy()
+    if frozen:
+        coulomb = np.einsum("piqi->pq", g[np.ix_(active, frozen, active,
+                                                 frozen)])
+        exchange = np.einsum("piiq->pq", g[np.ix_(active, frozen, frozen,
+                                                  active)])
+        h_eff += coulomb - exchange
+    g_active = g[np.ix_(active, active, active, active)]
+    return h_eff, g_active, float(np.real(core_energy))
 
 
 def minimal_hao_basis(nuclei, grid_units: str = "angstrom"):

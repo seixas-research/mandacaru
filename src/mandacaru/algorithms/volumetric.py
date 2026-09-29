@@ -138,7 +138,8 @@ ORBITAL_UNITS = "Bohr^-3/2"
 # Reduced density matrices, in the shape a one-particle picture needs.
 # --------------------------------------------------------------------------- #
 
-def spin_resolved_rdm(gamma, n_spatial_orbitals: int, frozen=(), active=None):
+def spin_resolved_rdm(gamma, n_spatial_orbitals: int, frozen=(), active=None,
+                      spinors=None):
     r"""``(D_alpha, D_beta)`` spatial one-RDMs, with the frozen core refilled.
 
     ``gamma`` is the **active-space** spin-orbital RDM the solver's register
@@ -158,6 +159,15 @@ def spin_resolved_rdm(gamma, n_spatial_orbitals: int, frozen=(), active=None):
 
     Returns two ``(M, M)`` Hermitian matrices over the **full** set of spatial
     molecular orbitals.
+
+    ``spinors`` -- the ``(2M, 2M)`` GHF spinors of a spin-orbit Hamiltonian
+    (:attr:`~mandacaru.core.hamiltonian.MolecularIntegrals.spinor_basis`) --
+    changes what the indices mean: ``frozen`` / ``active`` name Kramers pairs
+    (modes ``k`` and ``M + k``), and since a spinor has no definite spin the
+    blocks are taken in the **Loewdin** basis instead, after the rotation
+    :math:`D_\sigma = V_\sigma^{*}\,\gamma\,V_\sigma^{T}` over the spinors'
+    ``sigma`` rows.  :class:`OrbitalExpansion` then expands them with
+    :math:`X` alone.
     """
     M = int(n_spatial_orbitals)
     gamma = np.asarray(gamma, dtype=complex)
@@ -179,6 +189,20 @@ def spin_resolved_rdm(gamma, n_spatial_orbitals: int, frozen=(), active=None):
             f"|gamma - gamma^H| = {asymmetry:.2e}); the density it produces "
             f"would not be real, so the state it came from is wrong rather "
             f"than the picture")
+    if spinors is not None:
+        modes = active + [M + p for p in active]
+        full = np.zeros((2 * M, 2 * M), dtype=complex)
+        full[np.ix_(modes, modes)] = gamma
+        for c in core:
+            full[c, c] += 1.0
+            full[M + c, M + c] += 1.0
+        V = np.asarray(spinors, dtype=complex)
+        blocks = []
+        for spin in (0, 1):
+            Vs = V[spin * M:(spin + 1) * M]
+            D = Vs.conj() @ full @ Vs.T
+            blocks.append(0.5 * (D + D.conj().T))
+        return blocks[0], blocks[1]
     blocks = []
     for spin in (0, 1):
         full = np.zeros((M, M), dtype=complex)
@@ -188,6 +212,12 @@ def spin_resolved_rdm(gamma, n_spatial_orbitals: int, frozen=(), active=None):
             full[c, c] += 1.0
         blocks.append(0.5 * (full + full.conj().T))
     return blocks[0], blocks[1]
+
+
+def _spinors(integrals):
+    """The GHF spinors of a spin-orbit Hamiltonian, else ``None``."""
+    return (integrals.mo_coefficients
+            if getattr(integrals, "spinor_basis", False) else None)
 
 
 def _check_partition(M: int, frozen, active) -> None:
@@ -289,9 +319,13 @@ class OrbitalExpansion:
                 "(molecular_hamiltonian(mo_basis=True))")
         self.integrals = integrals
         self.grid = integrals.grid if grid is None else grid
-        #: ``(M, M)`` atomic-orbital coefficients of the molecular orbitals.
-        self.mo = integrals._lowdin_x() @ np.asarray(
-            integrals.mo_coefficients, dtype=complex)
+        #: ``(M, M)`` atomic-orbital coefficients of the molecular orbitals --
+        #: of the Loewdin orbitals themselves for a spinor basis, whose RDM
+        #: :func:`spin_resolved_rdm` has already rotated into them.
+        X = integrals._lowdin_x()
+        self.mo = (X if getattr(integrals, "spinor_basis", False)
+                   else X @ np.asarray(integrals.mo_coefficients,
+                                       dtype=complex))
         if grid is None or grid is integrals.grid:
             # The engine sampled every function once when it was built; that is
             # the same (M, G) array the integrals were computed from.
@@ -573,7 +607,8 @@ def volumetric_field(integrals, gamma, *, quantity: str = "density",
     expansion = OrbitalExpansion(integrals, grid=grid)
     M = int(len(integrals.basis) if n_spatial_orbitals is None
             else n_spatial_orbitals)
-    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active)
+    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active,
+                                        spinors=_spinors(integrals))
 
     notes: list[str] = []
     occupation = None
@@ -675,6 +710,7 @@ def state_natural_orbitals(integrals, gamma, *, frozen=(),
     """
     M = int(len(integrals.basis) if n_spatial_orbitals is None
             else n_spatial_orbitals)
-    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active)
+    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active,
+                                        spinors=_spinors(integrals))
     return OrbitalExpansion(integrals, grid=grid).natural_orbitals(
         D_alpha + D_beta)

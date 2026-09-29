@@ -521,6 +521,9 @@ class GHFResult:
     eri_mo: np.ndarray                # (2M)^4 <PQ|RS> in the spinor basis, mode order
     converged: bool
     n_iterations: int = 0
+    #: The same spinors in mode order (:meth:`GHF.mode_order`): column ``P``
+    #: is the spinor of mode ``P`` of the exported Hamiltonian.
+    mode_coefficients: np.ndarray | None = None
     #: Largest splitting within the energy-ordered pairs (0-1, 2-3, ...) of
     #: occupied spinors: zero for a Kramers-paired (time-reversal
     #: symmetric) closed shell.  Measured, not imposed.
@@ -710,5 +713,6 @@ class GHF:
         return GHFResult(
             electronic_energy=energy, n_electrons=self.n,
             mo_energies=np.real(eps), mo_coefficients=C, h_mo=h_mo,
-            eri_mo=eri_mo, converged=converged, n_iterations=it,
+            eri_mo=eri_mo, mode_coefficients=ordered, converged=converged,
+            n_iterations=it,
             kramers_pairing=pairing)

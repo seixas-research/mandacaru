@@ -174,6 +174,7 @@ from scipy.optimize import brentq
 from scipy.special import spherical_jn
 
 from ..basis.atomic_solver import AtomicResult, hartree_potential, solve_atom
+from ..basis.relativity import relativistic_exchange
 from ..basis.xc import xc_potential
 from ..core.hamiltonian import MolecularIntegrals
 from .generation import (Channel, PseudoPotential, _local_derivatives,
@@ -2429,7 +2430,9 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
             r, true_core, valence_density,
             r_nlcc=None if nlcc is True else float(nlcc))
     v_hartree = hartree_potential(r, valence_density)
-    _e_xc, v_xc = xc_potential(r, valence_density + core_density, xc)
+    rel_x = relativistic_exchange(relativity)
+    _e_xc, v_xc = xc_potential(r, valence_density + core_density, xc,
+                               relativistic=rel_x)
     v_local_ionic = v_loc - v_hartree - v_xc
     for channel in list(channels.values()) + list(channels_j.values()):
         channel.v_ionic = v_local_ionic
@@ -2446,7 +2449,8 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
         q_cut=float(q_cut), energy_offset=float(energy_offset),
         reference_configuration=dict(atom.occupations),
         frozen_subshells=frozen, scattering_energy=scattering_energy,
-        xc=str(xc), relativity=relativity, core_density=core_density,
+        xc=str(xc), relativity=relativity, relativistic_exchange=rel_x,
+        core_density=core_density,
         nlcc=dict(nlcc_details), extra_l=effective_extra_l,
         channels_j=channels_j, spin_orbit=spin_orbit)
 
@@ -2957,6 +2961,7 @@ def to_payload(pp: ONCVPseudoPotential, stride: int = 1) -> dict:
             "scattering_energy": (None if pp.scattering_energy is None
                                   else float(pp.scattering_energy)),
             "xc": str(pp.xc), "relativity": str(pp.relativity),
+            "relativistic_exchange": bool(pp.relativistic_exchange),
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
             "spin_orbit": spin_orbit, "defects": defects_record(pp.defects),
             "bound_state_audit": dict(pp.bound_state_audit),
@@ -3024,6 +3029,8 @@ def from_payload(payload: dict) -> ONCVPseudoPotential:
         # every file already in the library as something it is not.
         xc=str(payload.get("xc", "lda")),
         relativity=str(payload.get("relativity", "none")),
+        relativistic_exchange=bool(payload.get("relativistic_exchange",
+                                               False)),
         extra_l=int(payload.get("extra_l", 0)),
         nlcc=dict(payload.get("nlcc") or {"applied": False, "r_nlcc": None,
                                           "reason": "written before the "

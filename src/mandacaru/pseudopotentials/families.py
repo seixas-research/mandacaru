@@ -417,7 +417,13 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     # way the active electron count comes from the partition, not the request.
     space = integrals.active_space
     frozen = tuple(space.frozen) if space is not None else ()
-    if frozen:
+    if getattr(integrals, "spinor_basis", False):
+        # A spin-orbit Hamiltonian is written in GHF spinor pairs: its
+        # reference fills the lowest pairs, ceil(N/2) first-pair and
+        # floor(N/2) second-pair modes, whatever spin the atoms asked for.
+        n_active = n_el - 2 * len(frozen)
+        num_particles = ((n_active + 1) // 2, n_active // 2)
+    elif frozen:
         num_particles = _num_particles(n_el - 2 * len(frozen), n_unpaired,
                                        family.upper())
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,

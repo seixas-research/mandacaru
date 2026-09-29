@@ -393,14 +393,18 @@ def expand_frozen_core(gamma, gamma2, frozen, n_spatial_orbitals: int,
                 continue
             full_gamma2[p, q, p, q] += 1.0
             full_gamma2[p, q, q, p] -= 1.0
-    # Core-active cross terms (both orderings, direct and exchange).
+    # Core-active cross terms (both orderings, direct and exchange).  With
+    # Gamma_pqrs = <a+_p a+_q a_s a_r> and c filled: Gamma_{cqcs} =
+    # Gamma_{qcsc} = gamma_qs, and Gamma_{cqsc} = Gamma_{qccs} = -gamma_qs --
+    # gamma itself, not its transpose, which differ once gamma is complex
+    # (a spin-orbit state; a real RDM hid the difference).
     for c in core_index:
         full_gamma2[np.ix_([c], act_index, [c], act_index)] += gamma[
             np.newaxis, :, np.newaxis, :]
         full_gamma2[np.ix_(act_index, [c], act_index, [c])] += gamma[
             :, np.newaxis, :, np.newaxis]
-        full_gamma2[np.ix_([c], act_index, act_index, [c])] -= gamma.T[
+        full_gamma2[np.ix_([c], act_index, act_index, [c])] -= gamma[
             np.newaxis, :, :, np.newaxis]
-        full_gamma2[np.ix_(act_index, [c], [c], act_index)] -= gamma.T[
+        full_gamma2[np.ix_(act_index, [c], [c], act_index)] -= gamma[
             :, np.newaxis, np.newaxis, :]
     return full_gamma, full_gamma2

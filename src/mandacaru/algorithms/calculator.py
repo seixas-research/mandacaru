@@ -1047,6 +1047,13 @@ class Mandacaru(Calculator):
                     "active-space forces require force_method='rdm'; the "
                     "scf-response path does not differentiate the selected "
                     "virtual space")
+            if getattr(context.get("integrals"), "spinor_basis", False):
+                raise NotImplementedError(
+                    "forces with spin-orbit coupling and deleted Kramers pairs "
+                    "are not available: the finite-difference path aligns "
+                    "spatial orbitals between geometries, and GHF spinors are "
+                    "not spatial orbitals.  Keep every virtual pair (a frozen "
+                    "core alone is supported)")
             if not self.include_pulay:
                 raise NotImplementedError(
                     "active-space forces require include_pulay=True because "

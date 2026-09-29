@@ -837,6 +837,24 @@ arguments as `generate_oncv`, with the same defaults (`"lda"`, `"scalar"`,
 `True`, `0`), and `relativity="none", nlcc=False` reproduces the
 pre-relativistic dataset.
 
+**A relativistic reference atom also uses relativistic exchange.** Near a
+heavy nucleus the Fermi momentum $k_F = (3\pi^2\rho)^{1/3}$ is no longer small
+against $c$, and the exchange of the relativistic uniform gas is weaker
+(MacDonald and Vosko, *J. Phys. C* **12**, 2977 (1979)). With
+$\beta = k_F/c$, both relativistic treatments (`"scalar"` and `"dirac"`)
+scale the exchange energy per electron by
+$\Phi_E = 1 - \tfrac32\big(\sqrt{1+\beta^2}/\beta
+- \operatorname{asinh}\beta/\beta^2\big)^2$ and the exchange potential by its
+exact derivative,
+$\Phi_V = -\tfrac12 + \tfrac32\operatorname{asinh}\beta/(\beta\sqrt{1+\beta^2})$,
+for LDA and PBE exchange alike. The reference atom, the unscreening, the
+one-center energies and the rescreening of a loaded file all use the same
+functional. A dataset records it (`relativistic_exchange`), so a file written
+before the correction existed still rescreens the way it was unscreened. On
+Au and Bi the correction moves the 6s and 5d levels by 1–2.5 mHa and the
+semicore 5p and 4f by 6–20 mHa. It lowers the core's exchange by tens of
+Hartree, and changes the spin-orbit splittings by at most 1.3 %.
+
 ```{note}
 The same honest limit applies here as for ONCVPSP: a relativistic $s$-channel
 eigenvalue does not converge cleanly on this grid (the $r^\gamma$ cusp of a
@@ -874,9 +892,10 @@ for the $j$ average. Both $j$ levels are then shifted together by the gap
 between the scalar-relativistic level and the Dirac atom's $j$ average: below
 0.5 mHa for light and 4d/5f shells, 1–2 mHa for 5p and 5d, 3.7–6.8 mHa for the
 6p of Tl–Bi. The splitting itself is kept. The installed Dirac datasets are
-read with `directory="lda-dirac"`; the term breaks $S_z$, so only ADAPT-VQE
-with `pool="spin-orbit"` runs it, without a frozen core, a truncated virtual
-space or the `parity_reduced` mapping.
+read with `directory="lda-dirac"`. The term breaks $S_z$, so only ADAPT-VQE
+with `pool="spin-orbit"` runs it, and not with the `parity_reduced` mapping.
+The molecular orbitals are then the GHF spinors, and an `active_space`
+freezes and deletes Kramers pairs of them (see the active-space guide).
 
 **The overlap correction is built from the conserved norm, not the plain
 overlap.** Relativistically they differ at $O(c^{-2})$, and the choice is not

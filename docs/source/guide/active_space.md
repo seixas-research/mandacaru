@@ -290,10 +290,19 @@ with deleted virtual orbitals.
 `energy_cutoff` sets; truncating the mean-field orbitals on top of it would be a
 second, hidden cutoff with no convergence handle.
 
-**Spin-orbit coupling.** The selector ranks spatial orbitals, and with
-spin-orbit coupling the two spins of a spatial orbital are not degenerate
-partners, so keeping or deleting them together is not a choice the Hamiltonian
-permits.
+**Spin-orbit coupling.** With spin-orbit coupling the two spins of a spatial
+orbital are not partners, so the molecular orbitals are the GHF spinors
+instead, and the active space works on **Kramers pairs** of them. Spinors
+$2k$ and $2k+1$ (by energy) form pair $k$, and the pair occupies the two slots
+a spatial orbital would. `"frozen"` counts the lowest pairs and `"orbitals"`
+the pairs kept, lowest first. The spinor energy is the only ranking:
+`"method": "mp2"`, `"threshold"` and the occupied/virtual forms rank spatial
+orbitals and are refused. On HI (PAW-LCAO-SZ, `directory="lda-dirac"`, 18
+electrons in 10 pairs), freezing one pair costs 0.11 mHa, two pairs 0.11 mHa
+and four pairs 0.23 mHa. Keeping only the occupied pairs leaves the GHF
+determinant, 17.8 mHa above the full space. Forces are available with a
+frozen core. With deleted pairs they are refused, because the
+finite-difference path aligns spatial orbitals between geometries.
 
 ## What the density still does
 

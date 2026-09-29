@@ -79,6 +79,12 @@ $S_z$, the quantum calculation takes `pool="spin-orbit"`, and the
 reference is 0.09 mHa above the exact ground state after 100 operators; from
 the scalar reference it is 1.7 mHa above.
 
+The quantum methods use the same basis without being asked. A spin-orbit
+Hamiltonian built from atoms is always written in these GHF spinors
+(`Mandacaru(method="adapt-vqe", pool="spin-orbit", directory="lda-dirac",
+...)`), so its reference is the GHF determinant, and `active_space` freezes
+and deletes Kramers pairs of spinors (see the active-space guide).
+
 HVA can start from the actual unrestricted determinant without constructing
 that full vector in advance:
 `Mandacaru(method="vqe", ansatz={"name": "hva", "reference": mean_field})`

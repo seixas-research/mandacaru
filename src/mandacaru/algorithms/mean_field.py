@@ -30,7 +30,7 @@ from ..core.sector import ParticleSector
 from ..units import convert_energy
 from .base import VariationalDriver
 from .dry_run import QubitEstimate
-from .hartree_fock import GHF, GHFResult, RHFResult, UHFResult
+from .hartree_fock import GHFResult, RHFResult, UHFResult
 
 
 @dataclass(frozen=True)
@@ -266,7 +266,7 @@ class _MeanFieldDriver(VariationalDriver):
         total = self._scf.electronic_energy + constant
         reference = (self._scf.reference_energy + constant
                      if isinstance(self._scf, UHFResult) else total)
-        orbitals = (self._scf.mo_coefficients[:, self._mode_order]
+        orbitals = (self._scf.mode_coefficients
                     if isinstance(self._scf, GHFResult)
                     else integrals.mo_coefficients)
         result = MeanFieldResult(
@@ -326,22 +326,7 @@ class GHFDriver(_MeanFieldDriver):
         full_particles = tuple(int(n) for n in num_particles)
         n_electrons = sum(full_particles)
         M = integrals.n_orbitals
-        h_so = np.zeros((2 * M, 2 * M), dtype=complex)
-        h_so[:M, :M] = h_so[M:, M:] = integrals.one_body()
-        if getattr(integrals, "spin_orbit_coupling", None):
-            h_so = h_so + integrals.spin_orbit_matrix()
-        solver = GHF(h_so, integrals.two_body(), n_electrons)
-        guesses = []
-        if full_particles[0] == full_particles[1]:
-            rhf = integrals.hartree_fock(n_electrons)
-            guesses.append(GHF.collinear_spinors(
-                rhf.mo_coefficients, rhf.mo_coefficients, *full_particles))
-        uhf = integrals.open_shell_hartree_fock(*full_particles)
-        guesses.append(GHF.collinear_spinors(
-            uhf.mo_coefficients_alpha, uhf.mo_coefficients_beta,
-            *full_particles))
-        self._scf = solver.solve(guesses=guesses)
-        self._mode_order = solver.mode_order()
+        self._scf = integrals.generalized_hartree_fock(*full_particles)
         hamiltonian = Fermion.from_integrals(self._scf.h_mo, self._scf.eri_mo)
         # The same constant molecular_hamiltonian carries, so the exported
         # problem's energies are total energies like RHF's and UHF's.

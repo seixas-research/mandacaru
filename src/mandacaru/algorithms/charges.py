@@ -477,7 +477,7 @@ def partition_state(integrals, gamma, *, method: str = "hirshfeld",
     grid : Grid, optional
         Partition on this grid instead of the calculation's own.
     """
-    from .volumetric import OrbitalExpansion, spin_resolved_rdm
+    from .volumetric import OrbitalExpansion, _spinors, spin_resolved_rdm
 
     key = str(method).strip().lower()
     if key not in PARTITION_METHODS:
@@ -488,7 +488,8 @@ def partition_state(integrals, gamma, *, method: str = "hirshfeld",
     used = expansion.grid
     M = int(len(integrals.basis) if n_spatial_orbitals is None
             else n_spatial_orbitals)
-    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active)
+    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active,
+                                        spinors=_spinors(integrals))
 
     # `_potentials.nuclei` is the Bohr frame the grid and the basis functions
     # live in; `integrals.nuclei` is in the integrals' own `units` (Angstrom by

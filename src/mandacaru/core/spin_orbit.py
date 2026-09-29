@@ -52,10 +52,12 @@ returns an :math:`(M, M)` spatial matrix, and
   Jordan-Wigner register and the variational machinery still apply, but
   anything that assumed a fixed :math:`(n_\alpha, n_\beta)` -- the
   particle-number **sector** reduction, the parity mapping's two-qubit taper,
-  and the excitation pools -- has to be told not to.
-  :meth:`~.hamiltonian.MolecularIntegrals.molecular_hamiltonian` refuses the
-  combinations that would silently return the wrong answer rather than
-  quietly dropping the term.
+  and the excitation pools -- has to be told not to;
+- the two spins of a spatial orbital are no longer partners, so the
+  molecular-orbital basis is the **GHF spinors** instead
+  (:meth:`~.hamiltonian.MolecularIntegrals.generalized_hartree_fock`), and a
+  frozen core or truncated virtual space removes Kramers **pairs** of them
+  (:func:`~.hamiltonian.freeze_spin_orbital_integrals`).
 
 :math:`h^{SO}` is complex and Hermitian.  That is not a problem in itself: the
 fermionic operator it builds is Hermitian, so its Pauli expansion has real
@@ -122,11 +124,23 @@ def _projector_index(projectors):
 
 
 def spin_orbit_one_body(projections, projectors, blocks) -> np.ndarray:
-    r"""The ``(2M, 2M)`` spin-orbital matrix of :math:`V_{SO}`.
+    r"""The ``(2M, 2M)`` spin-orbital matrix of :math:`V_{SO}` (see
+    :func:`spin_orbit_pair`), made exactly Hermitian."""
+    out = spin_orbit_pair(projections, projections, projectors, blocks)
+    return 0.5 * (out + out.conj().T)
+
+
+def spin_orbit_pair(left, right, projectors, blocks) -> np.ndarray:
+    r"""``sum left_al D_SO (L.S) right_al^dagger`` over every channel.
+
+    With ``left = right = C`` this is the ``(2M, 2M)`` spin-orbital matrix of
+    :math:`V_{SO}`; with one side a derivative of the projections it is half
+    of that matrix's derivative (the nuclear gradient needs
+    ``pair(dC, C) + pair(C, dC)``).
 
     Parameters
     ----------
-    projections : ndarray
+    left, right : ndarray
         ``C[mu, p] = <phi_mu|chi_p>`` on the spin-orbit projectors, the
         ``(M, P)`` array
         :meth:`~.hamiltonian.MolecularIntegrals.spin_orbit_projections`
@@ -146,10 +160,11 @@ def spin_orbit_one_body(projections, projectors, blocks) -> np.ndarray:
     Returns
     -------
     ndarray
-        Complex Hermitian ``(2M, 2M)``, in the spin-blocked ordering
-        ``P = p + sigma * M``.
+        Complex ``(2M, 2M)``, in the spin-blocked ordering
+        ``P = p + sigma * M``; Hermitian when ``left is right``.
     """
-    C = np.asarray(projections)
+    C = np.asarray(left)
+    R = np.asarray(right)
     M = C.shape[0]
     out = np.zeros((2 * M, 2 * M), dtype=complex)
     if not blocks:
@@ -169,11 +184,13 @@ def spin_orbit_one_body(projections, projectors, blocks) -> np.ndarray:
                 f"({len(radial)}, {len(radial)}) for its {len(radial)} radial "
                 f"projectors, got {D.shape}")
 
-        # C_al[mu, m, i]
+        # C_al[mu, m, i], and the same for the right side.
         C_al = np.zeros((M, len(ms), len(radial)), dtype=complex)
+        R_al = np.zeros_like(C_al)
         for a, m in enumerate(ms):
             for b, i in enumerate(radial):
                 C_al[:, a, b] = C[:, positions[(m, i)]]
+                R_al[:, a, b] = R[:, positions[(m, i)]]
 
         LS = ls_matrix(l)
         size = 2 * l + 1
@@ -188,10 +205,10 @@ def spin_orbit_one_body(projections, projectors, blocks) -> np.ndarray:
                 quadrant = LS[sigma * size:(sigma + 1) * size,
                               tau * size:(tau + 1) * size]
                 block = np.einsum("umj,mn,vnj->uv", T, quadrant,
-                                  C_al.conj())
+                                  R_al.conj())
                 out[sigma * M:(sigma + 1) * M,
                     tau * M:(tau + 1) * M] += block
-    return 0.5 * (out + out.conj().T)
+    return out
 
 
 def conserves_spin_projection(fermion, tolerance: float = 1e-12) -> bool:

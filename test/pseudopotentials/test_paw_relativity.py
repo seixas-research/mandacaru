@@ -364,3 +364,49 @@ class TestSpinOrbitInTheMolecularHamiltonian:
         _i, scalar = self._p_block(integrals, full - integrals.spin_orbit_matrix())
         assert levels.mean() == pytest.approx(
             np.linalg.eigvalsh(scalar).mean(), abs=1e-9)
+
+
+
+class TestKramersPairActiveSpaces:
+    """A spin-orbit Hamiltonian is written in GHF spinor pairs, and its
+    active space freezes and deletes pairs.  HI with the installed Dirac
+    library (SZ): 18 electrons in 10 pairs; relations, not absolute values."""
+
+    @staticmethod
+    def _exact(active_space):
+        from ase import Atoms
+
+        from mandacaru.core.sector import ParticleSector
+        from mandacaru.pseudopotentials.environment import library_folder
+        from mandacaru.pseudopotentials.paw import FAMILY, build_paw
+
+        atoms = Atoms("HI", positions=[[0, 0, 0], [0, 0, 1.609]],
+                      cell=[9.0] * 3)
+        atoms.center()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            H, particles, pairs, _p, context = build_paw(
+                atoms, None, 0.25, 0, None,
+                {"size": "SZ",
+                 "directory": library_folder(FAMILY, "lda-dirac")},
+                active_space=active_space)
+        sector = ParticleSector(2 * pairs, tuple(particles), "jordan_wigner",
+                                spin_conserving=False)
+        matrix = sector.restrict(H.map_to_qubits("jordan_wigner",
+                                                 n_modes=2 * pairs))
+        matrix = matrix.toarray() if hasattr(matrix, "toarray") else matrix
+        return np.linalg.eigvalsh(matrix)[0], context["integrals"]
+
+    def test_freezing_and_truncating_pairs_is_variational(self):
+        full, integrals = self._exact(None)
+        assert integrals.spinor_basis
+        assert integrals.mo_coefficients.shape == (20, 20)
+        one_frozen, _i = self._exact({"frozen": 1})
+        two_frozen, _i = self._exact({"frozen": 2})
+        determinant, _i = self._exact({"orbitals": 9})
+        assert full < one_frozen < two_frozen < determinant
+        assert one_frozen - full < 5e-4            # Hartree
+
+    def test_a_ranking_of_spatial_orbitals_is_refused(self):
+        with pytest.raises(NotImplementedError, match="Kramers pairs"):
+            self._exact({"method": "mp2", "orbitals": 9})

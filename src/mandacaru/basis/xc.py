@@ -27,6 +27,38 @@ What is here
   Phys. Rev. Lett. **77**, 3865 (1996), spin-unpolarized.
 - :func:`xc_potential` -- ``(e_xc, v_xc)`` for either functional, on a radial
   grid.
+- :func:`relativistic_exchange_factors` -- the relativistic correction to the
+  exchange of the uniform gas (MacDonald and Vosko, J. Phys. C **12**, 2977
+  (1979)), applied to the exchange of either functional when
+  ``relativistic=True``.
+
+The relativistic exchange correction
+------------------------------------
+
+Near a heavy nucleus the Fermi momentum :math:`k_F = (3\pi^2\rho)^{1/3}` is
+no longer small against :math:`c`, and the exchange of the relativistic
+uniform gas is weaker than the non-relativistic one.  With
+:math:`\beta = k_F/c` and
+:math:`F = \sqrt{1+\beta^2}/\beta - \operatorname{asinh}\beta/\beta^2`,
+
+.. math::
+
+    \varepsilon_x \to \varepsilon_x\,\Phi_E, \quad
+    \Phi_E = 1 - \tfrac32 F^2, \qquad
+    v_x \to v_x\,\Phi_V, \quad
+    \Phi_V = -\tfrac12 + \tfrac32\,
+        \frac{\operatorname{asinh}\beta}{\beta\sqrt{1+\beta^2}} ,
+
+and :math:`\Phi_V` is exactly :math:`d(\rho\varepsilon_x\Phi_E)/d\rho`
+over :math:`v_x`, i.e. :math:`\rho\,d\Phi_E/d\rho =
+\tfrac43(\Phi_V - \Phi_E)`.  PBE's exchange,
+:math:`\varepsilon_x^{unif}F_x(s)`, is scaled by the same :math:`\Phi_E`; its
+correlation is left alone.  Below :math:`\beta = 10^{-2}` both factors are
+taken from their series, since :math:`F` is a difference of two
+:math:`1/\beta` terms.  The correction reaches
+:math:`\Phi_E \approx 0.985` in an oxygen core and lowers the exchange of a
+heavy atom's core by tens of Hartree; its reference atoms shift the Au and Bi
+6s and 5d levels by 1-2.5 mHa.
 
 The gradient-corrected potential
 --------------------------------
@@ -74,7 +106,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from .atomic_solver import lda_xc
+from .atomic_solver import lda_correlation, lda_exchange, lda_xc
+
+from .relativity import SPEED_OF_LIGHT
 
 #: The functionals :func:`xc_potential` accepts.
 FUNCTIONALS = ("lda", "pbe")
@@ -200,7 +234,7 @@ def pbe_correlation(rho, gradient):
     return ec_unif + np.where(dense, H, 0.0)
 
 
-def pbe_partials(rho, gradient):
+def pbe_partials(rho, gradient, split: bool = False):
     r"""``(df/drho, df/dsigma)`` of the PBE energy density, in closed form.
 
     :math:`f = \rho\,\varepsilon_{xc}(\rho, |\sigma|)` with
@@ -218,7 +252,8 @@ def pbe_partials(rho, gradient):
     = v_c^{\rm PW92}` plus :math:`H + \rho\,\partial H/\partial\rho`, where
     :math:`H` depends on :math:`\rho` through :math:`t` and through
     :math:`A(\varepsilon_c^{\rm PW92})`.  Below :data:`DENSITY_FLOOR` both
-    gradient terms vanish, as they do in the energy.
+    gradient terms vanish, as they do in the energy.  ``split=True`` returns
+    ``((dfx/drho, dfx/dsigma), (dfc/drho, dfc/dsigma))`` instead of the sums.
     """
     rho = np.asarray(rho, dtype=float)
     gradient = np.asarray(gradient, dtype=float)
@@ -266,10 +301,36 @@ def pbe_partials(rho, gradient):
     dc_drho = vc + np.where(dense, H + safe * dH_drho, 0.0)
     dc_dg = np.where(dense, safe * dH_dg, 0.0)
 
+    if split:
+        return (dx_drho, dx_dg * sign), (dc_drho, dc_dg * sign)
     return dx_drho + dc_drho, (dx_dg + dc_dg) * sign
 
 
-def xc_energy_density(rho, gradient, functional: str = "pbe"):
+#: Below this :math:`\beta = k_F/c` the relativistic exchange factors are
+#: taken from their series (:func:`relativistic_exchange_factors`).
+RELATIVISTIC_SERIES_BETA = 1e-2
+
+
+def relativistic_exchange_factors(rho):
+    r"""``(Phi_E, Phi_V)``: the relativistic exchange factors of the energy
+    per electron and of the potential (module docstring), for densities
+    ``rho``.  Both tend to 1 as :math:`eta = k_F/c 	o 0`."""
+    rho = np.maximum(np.asarray(rho, dtype=float), 1e-30)
+    beta = (3.0 * np.pi ** 2 * rho) ** (1.0 / 3.0) / SPEED_OF_LIGHT
+    small = beta < RELATIVISTIC_SERIES_BETA
+    b = np.where(small, RELATIVISTIC_SERIES_BETA, beta)
+    root = np.sqrt(1.0 + b * b)
+    arcsinh = np.arcsinh(b)
+    F = root / b - arcsinh / (b * b)
+    phi_e = np.where(small, 1.0 - (2.0 / 3.0) * beta ** 2
+                     + (2.0 / 5.0) * beta ** 4, 1.0 - 1.5 * F * F)
+    phi_v = np.where(small, 1.0 - beta ** 2 + 0.8 * beta ** 4,
+                     -0.5 + 1.5 * arcsinh / (b * root))
+    return phi_e, phi_v
+
+
+def xc_energy_density(rho, gradient, functional: str = "pbe",
+                      relativistic: bool = False):
     r"""The energy *per unit volume*, :math:`f = \rho\,\varepsilon_{xc}`.
 
     This is the quantity :func:`xc_potential` differentiates, so it is the one
@@ -277,10 +338,14 @@ def xc_energy_density(rho, gradient, functional: str = "pbe"):
     """
     key = _resolve(functional)
     rho = np.asarray(rho, dtype=float)
+    phi_e = (relativistic_exchange_factors(rho)[0] if relativistic
+             else 1.0)
     if key == "lda":
-        e_xc, _v = lda_xc(rho)
-        return rho * e_xc
-    return rho * (pbe_exchange(rho, gradient) + pbe_correlation(rho, gradient))
+        e_x, _vx = lda_exchange(rho)
+        e_c, _vc = lda_correlation(rho)
+        return rho * (e_x * phi_e + e_c)
+    return rho * (pbe_exchange(rho, gradient) * phi_e
+                  + pbe_correlation(rho, gradient))
 
 
 def _resolve(functional: str) -> str:
@@ -294,7 +359,8 @@ def _resolve(functional: str) -> str:
     return aliases[key]
 
 
-def xc_potential(r, rho, functional: str = "lda", gradient=None):
+def xc_potential(r, rho, functional: str = "lda", gradient=None,
+                 relativistic: bool = False):
     r"""``(e_xc, v_xc)`` on a radial grid: energy per electron and potential.
 
     Parameters
@@ -307,6 +373,11 @@ def xc_potential(r, rho, functional: str = "lda", gradient=None):
         ``"lda"`` (Slater + Perdew-Zunger, the historical default) or ``"pbe"``.
     gradient : ndarray, optional
         :math:`d\rho/dr`.  Computed from ``rho`` when omitted.
+    relativistic : bool
+        Apply the relativistic exchange correction
+        (:func:`relativistic_exchange_factors`); a relativistic reference atom
+        and every quantity derived from it use it
+        (:func:`~mandacaru.basis.relativity.relativistic_exchange`).
 
     Notes
     -----
@@ -318,16 +389,31 @@ def xc_potential(r, rho, functional: str = "lda", gradient=None):
     r = np.asarray(r, dtype=float)
     rho = np.asarray(rho, dtype=float)
     if key == "lda":
-        return lda_xc(rho)
+        if not relativistic:
+            return lda_xc(rho)
+        phi_e, phi_v = relativistic_exchange_factors(rho)
+        e_x, v_x = lda_exchange(rho)
+        e_c, v_c = lda_correlation(rho)
+        return e_x * phi_e + e_c, v_x * phi_v + v_c
 
     nodes = derivative_nodes(r)
     if gradient is None:
         gradient = _radial_derivative(r, rho, nodes)
     gradient = np.asarray(gradient, dtype=float)
 
-    e_xc = pbe_exchange(rho, gradient) + pbe_correlation(rho, gradient)
-
-    df_drho, df_dsigma = pbe_partials(rho, gradient)
+    e_x = pbe_exchange(rho, gradient)
+    e_c = pbe_correlation(rho, gradient)
+    (dx_drho, dx_dsigma), (dc_drho, dc_dsigma) = pbe_partials(
+        rho, gradient, split=True)
+    if relativistic:
+        # d(rho e_x Phi_E) = Phi_E d(rho e_x) + rho e_x dPhi_E, and
+        # rho dPhi_E/drho = (4/3)(Phi_V - Phi_E) (module docstring).
+        phi_e, phi_v = relativistic_exchange_factors(rho)
+        dx_drho = phi_e * dx_drho + (4.0 / 3.0) * e_x * (phi_v - phi_e)
+        dx_dsigma = phi_e * dx_dsigma
+        e_x = e_x * phi_e
+    e_xc = e_x + e_c
+    df_drho, df_dsigma = dx_drho + dc_drho, dx_dsigma + dc_dsigma
 
     # -(1/r^2) d/dr (r^2 df/dsigma).
     flux = r * r * df_dsigma
