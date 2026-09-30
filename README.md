@@ -1,7 +1,7 @@
 <h1 align="center" style="margin-top:20px; margin-bottom:50px;">
 
-<img src="https://raw.githubusercontent.com/seixas-research/mandacaru/refs/heads/main/logo/logo_light.png#gh-light-mode-only" alt="Mandacaru logo" height="100">
-<img src="https://raw.githubusercontent.com/seixas-research/mandacaru/refs/heads/main/logo/logo_dark.png#gh-dark-mode-only" alt="Mandacaru logo" height="100">
+<img src="https://raw.githubusercontent.com/seixas-research/mandacaru/refs/heads/main/logo/logo_light.png#gh-light-mode-only" alt="Mandacaru logo" height="200">
+<img src="https://raw.githubusercontent.com/seixas-research/mandacaru/refs/heads/main/logo/logo_dark.png#gh-dark-mode-only" alt="Mandacaru logo" height="200">
 </h1>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](LICENSE)
