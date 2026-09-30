@@ -52,8 +52,8 @@ families:
 | family | methods |
 | :--- | :--- |
 | derivative-free | `"COBYLA"`, `"Nelder-Mead"` |
-| quasi-Newton / gradient | `"SLSQP"` (the default, {data}`~mandacaru.optimizers.DEFAULT_OPTIMIZER`), `"BFGS"`, `"L-BFGS"`, `"CG"` |
-| stochastic | `"SPSA"` |
+| quasi-Newton / gradient | `"SLSQP"` (the default on an exact objective, {data}`~mandacaru.optimizers.DEFAULT_OPTIMIZER`), `"BFGS"`, `"L-BFGS"`, `"CG"` — all four refused when `shots > 0` |
+| stochastic | `"SPSA"` (the default under `shots > 0`) |
 
 Everything but SPSA is dispatched to `scipy.optimize.minimize`; SPSA is
 implemented natively, since SciPy has no equivalent.
@@ -92,6 +92,38 @@ one. It also gives the native SPSA something to certify convergence against,
 which `tol=None` does not. Pass `tol=None` to get each method's own
 default back.
 ```
+
+(shots-optimizer)=
+## Under `shots`, the default follows the objective
+
+`optimizer=None` — the constructor default of every driver, and of
+`mandacaru --optimizer` — is not always `"SLSQP"`. It resolves against the
+objective it is minimizing:
+
+* `shots = 0` (a state vector) —
+  {data}`~mandacaru.optimizers.optim.DEFAULT_OPTIMIZER`, `"SLSQP"`, as above.
+* `shots > 0` (a measured energy) —
+  {data}`~mandacaru.optimizers.optim.SHOT_OPTIMIZER`: SPSA,
+  `maxiter=100`, `tol=None`, `options={"track_best": False}` — the strict
+  two-evaluation form, `2 * maxiter + 1 = 201` energy evaluations in total,
+  each one a job on a processor. A dict without a `"method"` key inherits
+  this default too, so `optimizer={"maxiter": 50}` under `shots > 0` is SPSA
+  on a shorter budget.
+
+`"SLSQP"`, `"BFGS"`, `"L-BFGS"` and `"CG"` (
+{data}`~mandacaru.optimizers.optim.NOISE_INTOLERANT`) difference the energy at
+a step of about `1.5e-8`; a shot noise of `sigma` then becomes a gradient
+noise of about `sqrt(2) * sigma / eps` — roughly `1e6` Ha/rad at
+`sigma = 0.01` Ha — so all four are refused with `shots > 0`, however they
+were spelled: use the default, or `"COBYLA"`.
+
+{meth}`~mandacaru.optimizers.optim.Optimizer.max_evaluations` bounds the
+energy evaluations one run can make: `2 * maxiter + 1` for SPSA without
+`track_best` (`2 * maxiter + (maxiter + 1)` with it, the state-vector
+default), `maxiter` for COBYLA, `None` for a method that does not cap itself
+by iterations. On a processor this is what the run-wide budget checks before
+the first job is queued — see [What a hardware measurement
+costs](measurement_cost.md).
 
 ## Steps are not evaluations
 
@@ -213,7 +245,8 @@ Every method but SPSA and Nelder-Mead builds the identical 30-operator,
 1168-CNOT circuit; SLSQP gets there on a quarter of COBYLA's evaluations and an
 eighth of Nelder-Mead's, four times faster in wall time.
 
-**SLSQP is the shipped default** because all three tables say the same thing:
+**SLSQP is the shipped default on an exact objective** because all three
+tables say the same thing:
 the best energy anyone reached, on the shortest circuit anyone built, for a
 fraction of the cost, with every inner optimization certified. What it needs in
 return is the tight `tol` — see the warning above. `L-BFGS` is the alternative,
@@ -303,10 +336,12 @@ method are the levers that matter.
   leave one, and correctly reports convergence there. ADAPT never hits this
   (its screening only ever selects an operator with a non-zero gradient), but a
   hand-built fixed ansatz can. `"Nelder-Mead"` or `"COBYLA"` escape it.
-* **Shot-based execution** (`shots > 0`) — `"SPSA"` or `"COBYLA"`: neither needs
-  a derivative, and a finite-difference gradient through shot noise is the worst
-  of both worlds. SPSA's two evaluations per gradient is the whole point on
-  hardware, and the noiseless tables above cannot show it.
+* **Shot-based execution** (`shots > 0`) — `"SPSA"` (the default there,
+  [above](#shots-optimizer)) or `"COBYLA"`: neither needs a derivative, and a
+  finite-difference gradient through shot noise is the worst of both worlds
+  (`"SLSQP"`, `"BFGS"`, `"L-BFGS"` and `"CG"` are refused outright). SPSA's two
+  evaluations per gradient is the whole point on hardware, and the noiseless
+  tables above cannot show it.
 * **Cost-limited runs** — read `cost_evaluations`, not `optimizer_steps`; they
   rank the methods differently. SPSA is the extreme case: the fewest evaluations
   per step of any method, and by far the most steps.

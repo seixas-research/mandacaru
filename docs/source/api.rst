@@ -46,6 +46,20 @@ schedule.  See :doc:`tutorial/vasqa`.
    :undoc-members:
    :show-inheritance:
 
+Learned Proposals
+~~~~~~~~~~~~~~~~~
+
+The operator proposal behind ``method="valqa"`` -- a graph network over the
+qubit Hamiltonian with a Gaussian-process head -- and the edit store it is
+trained on.  See :doc:`tutorial/valqa`.
+
+.. automodule:: mandacaru.algorithms.proposal_model
+   :members: ProposalModel, HamiltonianGraph, assess_data_volume,
+             train_proposal_model, compress
+
+.. automodule:: mandacaru.algorithms.proposal_data
+   :members: ProblemRecord, EditRecorder, load_edits
+
 Interaction Energies
 ~~~~~~~~~~~~~~~~~~~~
 

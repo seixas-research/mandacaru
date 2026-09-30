@@ -945,11 +945,14 @@ nothing to correct.
   correlation are exact within the augmented Coulomb tensor, while the
   one-center xc corrections were linearized at the LDA level — the same
   inconsistency ONCVPSP carries.
-* **LDA only, no relativity, no projectors above the valence $l$, two partial
-  waves per channel**, reference energies $\varepsilon_1$ and $\varepsilon_1 +
-  \Delta$ rather than tuned per element, and a scaled-norm construction of the
-  smooth waves rather than Blöchl's free polynomial pseudization (the price of
-  a guaranteed positive definite overlap with this pair of reference waves).
+* **Two partial waves per channel**, at $\varepsilon_1$ and
+  $\varepsilon_1 + \Delta$ (a per-dataset $\Delta$ only where a repair
+  needed one), no projectors above the valence $l$ unless `extra_l` asks for
+  them (or a frozen 4f leaves an empty f channel, Tl–Rn), and a scaled-norm
+  construction of the smooth waves rather than Blöchl's free polynomial
+  pseudization (the price of a guaranteed positive definite overlap with this
+  pair of reference waves). The shipped sets are LDA, scalar-relativistic or
+  Dirac (*Relativity, GGA and spin-orbit coupling*, above).
 * **Not norm-conserving, but by a controlled amount** ($s$ = 2–15 %): the
   softness gain over ONCVPSP is correspondingly modest (H₂ basis ratio 0.98
   vs 0.975).

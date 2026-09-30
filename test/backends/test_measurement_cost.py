@@ -135,9 +135,66 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
         labels = ["XXII", "ZZII", "IIXY"]
         a = measurement_plan(plain, 4, labels)
         b = measurement_plan(mitigated, 4, labels)
-        # ZNE's three noise factors and 32 twirls are circuits the processor
-        # runs, so they belong in a size estimate: 96x here.
-        assert b.circuit_instances == a.circuit_instances * 3 * 32
+        # ZNE's three noise factors and the twirling randomizations are
+        # circuits the processor runs.  At 100 shots Runtime's "auto" rule
+        # takes 64 shots per randomization, so two randomizations: 6x.
+        assert b.circuit_instances == a.circuit_instances * 3 * 2
+        # The randomizations share the shots; the factors each pay in full.
+        assert b.total_shots == a.total_shots * 3 * 128 // 100
+
+    def test_the_nested_runtime_schema_is_read(self):
+        """``resilience.zne`` and an explicit ``zne_mitigation`` override the
+        level default; 32 randomizations split 4096 shots, not multiply them.
+        The flat ``zne`` spelling Runtime does not accept used to be read and
+        this one ignored: one noise factor and 131,072 shots were reported."""
+        options = {"resilience_level": 0,
+                   "resilience": {"zne_mitigation": True,
+                                  "zne": {"noise_factors": [1, 3, 5, 7, 9]}},
+                   "twirling": {"enable_gates": True,
+                                "num_randomizations": 32}}
+        plan = measurement_plan(QiskitProvider(shots=4096,
+                                               estimator_options=options),
+                                1, ["Z"])
+        assert (plan.noise_factors, plan.twirls, plan.shots_per_twirl) == \
+            (5, 32, 128)
+        assert plan.total_shots == 5 * 4096
+
+    def test_the_options_dataclass_reads_like_the_dict(self):
+        from qiskit_ibm_runtime.options import EstimatorOptions
+
+        options = {"resilience": {"zne_mitigation": True,
+                                  "zne": {"noise_factors": [1, 2]}},
+                   "twirling": {"enable_gates": False,
+                                "enable_measure": False}}
+        as_dict = measurement_plan(QiskitProvider(shots=1000,
+                                                  estimator_options=options),
+                                   1, ["Z"])
+        as_object = measurement_plan(
+            QiskitProvider(shots=1000,
+                           estimator_options=EstimatorOptions(**options)),
+            1, ["Z"])
+        assert (as_dict.noise_factors, as_dict.twirls) == (2, 1)
+        assert (as_object.noise_factors, as_object.twirls) == (2, 1)
+
+    def test_an_explicit_off_beats_the_level(self):
+        options = {"resilience_level": 2,
+                   "resilience": {"zne_mitigation": False},
+                   "twirling": {"enable_gates": False,
+                                "enable_measure": False}}
+        plan = measurement_plan(QiskitProvider(shots=1000,
+                                               estimator_options=options),
+                                1, ["Z"])
+        assert (plan.noise_factors, plan.twirls, plan.total_shots) == \
+            (1, 1, 1000)
+
+    def test_an_unset_level_is_runtimes_default_on_a_processor(self):
+        """Level 1 on IBM hardware (measurement twirling); no mitigation on
+        the local estimator, which ignores Runtime options."""
+        ibm = measurement_plan(QiskitProvider(device="ibm_test", shots=4096),
+                               1, ["Z"])
+        local = measurement_plan(QiskitProvider(shots=4096), 1, ["Z"])
+        assert ibm.twirls == 32 and ibm.noise_factors == 1
+        assert local.twirls == 1 and local.total_shots == 4096
 
     def test_the_budget_refuses_an_oversized_job(self):
         atoms = h2()
@@ -255,6 +312,21 @@ class TestAFailedJobKeepsTheState:
                              device="statevector"))
         with pytest.raises(RuntimeError, match="nothing has been optimized"):
             calc.remeasure()
+
+
+class TestTheIdentityIsCountedOnce:
+    """``drop_identity=False`` used to put the constant in a measured group
+    *and* return it as the constant: ``2 I + Z`` on ``|0>`` gave 5, not 3."""
+
+    @pytest.mark.parametrize("drop", [True, False])
+    def test_either_way(self, drop):
+        from mandacaru.backends.measurement import energy_from_group_counts
+
+        h = PauliSum({"I": 2.0, "Z": 1.0}, num_qubits=1)
+        groups, constant = qubit_wise_commuting_groups(h, drop_identity=drop)
+        counts = [{"0": 10} for _ in groups]
+        assert energy_from_group_counts(groups, constant, counts) == \
+            pytest.approx(3.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -644,3 +716,211 @@ class TestTheFactorizedMeasurement:
         with pytest.raises(ValueError, match="unknown measurement_scheme"):
             Mandacaru(method="adapt-vqe", basis="HAO",
                       measurement_scheme="nonsense")
+
+
+# --------------------------------------------------------------------------- #
+# Paid-job controls: reconfiguring a retry, chunked energies, resumed chunks,
+# the run-wide budget and one grouping for plan and execution.
+# --------------------------------------------------------------------------- #
+
+class TestARetryRunsOnTheOptionsItAsksFor:
+    """``remeasure(**overrides)`` used to ``setattr`` onto the live provider:
+    ``device=`` set an attribute nothing read, and a cached Estimator kept the
+    old resilience level."""
+
+    def test_the_provider_is_rebuilt(self):
+        old = QiskitProvider(device="ibm_old", shots=100,
+                             estimator_options={"resilience_level": 2})
+        old._estimator = object()                        # a cached primitive
+        new = old.with_options(device="ibm_new",
+                               estimator_options={"resilience_level": 0})
+        assert new.device_spec == "ibm_new" and new._estimator is None
+        assert new.estimator_options == {"resilience_level": 0}
+        assert old.device_spec == "ibm_old"
+
+    def test_an_unknown_option_is_refused(self):
+        with pytest.raises(ValueError, match="unknown option"):
+            QiskitProvider().with_options(devise="ibm_new")
+
+    def test_remeasure_rebuilds_and_drops_stale_forces(self):
+        atoms = h2()
+        calc = solved(atoms, QiskitProvider(device="statevector"))
+        atoms.get_forces()
+        first = calc.measurement_provider
+        calc.remeasure(rdms=False, shots=0)
+        assert calc.measurement_provider is not first
+        assert "forces" not in calc.results
+
+    def test_a_failed_request_is_the_one_retried(self, monkeypatch):
+        atoms = h2()
+        calc = solved(atoms, QiskitProvider(device="statevector"))
+        provider = calc.measurement_provider
+
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("chunk failed")
+
+        monkeypatch.setattr(provider, "expectation_values", explode)
+        with pytest.raises(MeasurementFailed):
+            atoms.get_forces()
+        monkeypatch.undo()
+        again = calc.remeasure()
+        assert again["rdms"] is not None              # the RDM request
+
+
+class TestEnergiesAreChunkedToo:
+    """Only ``expectation_values`` honored ``max_bases_per_job``: an energy
+    went as one PUB whatever the limit, while the plan reported a split."""
+
+    H = PauliSum({"X": 1.0, "Z": 0.5, "I": 2.0}, num_qubits=1)
+
+    def test_the_limit_splits_the_submission(self, monkeypatch):
+        provider = QiskitProvider(max_bases_per_job=1)
+        calls = []
+        original = provider._run_pubs
+
+        def spy(pubs, bases=None):
+            calls.append(len(pubs))
+            return original(pubs, bases=bases)
+
+        monkeypatch.setattr(provider, "_run_pubs", spy)
+        energy = provider.energies([(1, [], [], [], self.H)])[0]
+        assert calls == [1, 1]                   # two bases, two jobs
+        assert energy == pytest.approx(2.5)      # 2 + 0.5 <0|Z|0>, <0|X|0> = 0
+        assert provider.jobs_per_energy(self.H) == 2
+
+    def test_chunked_equals_unchunked(self):
+        state = (2, [0], [PauliSum({"XY": 0.5j, "YX": -0.5j}, num_qubits=2)],
+                 [0.4])
+        h = PauliSum({"ZI": 1.0, "IZ": -0.4, "XX": 0.3, "YY": 0.3,
+                      "II": 0.1}, num_qubits=2)
+        whole = QiskitProvider().energies([(*state, h)])[0]
+        split = QiskitProvider(max_bases_per_job=1).energies([(*state, h)])[0]
+        assert split == pytest.approx(whole, abs=1e-12)
+
+    def test_the_plan_predicts_the_executed_jobs(self):
+        atoms = lih()
+        calc = solved(atoms, QiskitProvider(device="statevector",
+                                            max_bases_per_job=2))
+        hamiltonian = calc.solver.hamiltonian
+        assert calc.measurement_plan.jobs == \
+            calc.measurement_provider.jobs_per_energy(hamiltonian)
+
+
+class TestCompletedChunksAreKept:
+    """A failure in chunk two used to discard chunk one's values."""
+
+    def test_a_retry_submits_only_the_missing_chunks(self, monkeypatch):
+        provider = QiskitProvider(max_bases_per_job=1)
+        labels = ["XI", "ZI", "IX"]
+        original = provider._run_pubs
+        calls = {"n": 0}
+
+        def second_fails(pubs, bases=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("chunk 2 failed")
+            return original(pubs, bases=bases)
+
+        monkeypatch.setattr(provider, "_run_pubs", second_fails)
+        with pytest.raises(RuntimeError, match="chunk 2"):
+            provider.expectation_values(2, [0], [], [], labels)
+        assert provider.completed_chunks() == 1
+        calls["n"] = 10
+        values, _stds = provider.expectation_values(2, [0], [], [], labels)
+        assert calls["n"] == 10 + (len(chunk_labels_by_basis(labels, 1)) - 1)
+        assert set(values) == set(labels)
+        assert provider.completed_chunks() == 0
+
+
+class TestTheRunBudget:
+    """On by default on a processor: an optimization there submits a job per
+    objective evaluation, and only a run-wide count keeps it in a quota."""
+
+    def test_it_refuses_before_queuing(self):
+        from mandacaru.backends.measurement import RunBudgetExceeded
+
+        provider = QiskitProvider(shots=100, run_budget={"jobs": 2})
+        h = PauliSum({"Z": 1.0}, num_qubits=1)
+        provider.energy(1, [], [], [], h)
+        provider.energy(1, [], [], [], h)
+        with pytest.raises(RunBudgetExceeded, match="jobs 3 > 2"):
+            provider.energy(1, [], [], [], h)
+        assert provider.run_usage()["jobs"] == 2
+
+    def test_it_is_on_by_default_for_hardware_only(self):
+        from mandacaru.backends.measurement import (
+            DEFAULT_HARDWARE_RUN_BUDGET, resolve_run_budget)
+
+        assert resolve_run_budget(None, hardware=True) == \
+            DEFAULT_HARDWARE_RUN_BUDGET
+        # Jobs only: a job's size is the measurement budget's to bound.
+        assert DEFAULT_HARDWARE_RUN_BUDGET["total_shots"] is None
+        assert resolve_run_budget(None, hardware=False) is None
+        assert resolve_run_budget(False, hardware=True) is None
+        assert QiskitProvider(device="ibm_test").is_hardware
+        assert not QiskitProvider(device="fake_fez").is_hardware
+
+    def test_the_ledger_survives_a_rebuild(self):
+        provider = QiskitProvider(shots=100)
+        provider.energy(1, [], [], [], PauliSum({"Z": 1.0}, num_qubits=1))
+        assert provider.with_options(shots=200).run_usage()["jobs"] == 1
+
+    def test_the_shot_ceiling_is_checked_up_front_too(self):
+        """Jobs fit, shots do not: refused before the first job, not at the
+        job where the ceiling is crossed."""
+        from mandacaru.backends.measurement import RunBudgetExceeded
+
+        calc = Mandacaru(method="vqe", basis="HAO", h=0.4, shots=1000,
+                         trace=False,
+                         backend_options={"run_budget": {
+                             "jobs": None, "total_shots": 50_000}})
+        with pytest.raises(RunBudgetExceeded, match="total_shots"):
+            calc.get_potential_energy(h2())
+        assert calc.solver.circuit_provider().run_usage()["jobs"] == 0
+
+    @pytest.mark.parametrize("method, options", [
+        ("vqe", {}), ("adapt-vqe", {"pool": "qeb", "max_iterations": 3})])
+    def test_a_run_the_budget_stops_keeps_its_best_point(self, method,
+                                                         options):
+        """Nelder-Mead has no evaluation bound, so the pre-flight lets it
+        start; the ledger stops it at job 6 and the best point is the
+        result, flagged unconverged -- not an exception that loses it."""
+        calc = Mandacaru(method=method, basis="HAO", h=0.4, shots=1000,
+                         optimizer={"method": "Nelder-Mead", "maxiter": 200},
+                         trace=False,
+                         backend_options={"seed": 3,
+                                          "run_budget": {"jobs": 6}},
+                         **options)
+        with pytest.warns(RuntimeWarning, match="run budget"):
+            energy = calc.get_potential_energy(h2())
+        assert np.isfinite(energy)
+        assert calc.solver.run_budget_exhausted
+        assert calc.solver.circuit_provider().run_usage()["jobs"] == 6
+
+    def test_an_optimization_that_cannot_fit_is_refused_up_front(self):
+        from mandacaru.backends.measurement import RunBudgetExceeded
+
+        calc = Mandacaru(method="vqe", basis="HAO", h=0.4, shots=1000,
+                         trace=False,
+                         backend_options={"run_budget": {"jobs": 10}})
+        with pytest.raises(RunBudgetExceeded, match="jobs 201 > 10"):
+            calc.get_potential_energy(h2())
+
+
+class TestOneGroupingForPlanAndExecution:
+    """The plan grouped labels lexically and Braket by coefficient: on a
+    15-term Hamiltonian that was 8 planned bases for 9 executed ones."""
+
+    def test_the_counts_agree(self):
+        rng = np.random.default_rng(7)
+        letters = "IXYZ"
+        terms = {}
+        while len(terms) < 15:
+            label = "".join(rng.choice(list(letters), size=3))
+            if label != "III":
+                terms[label] = float(rng.normal())
+        h = PauliSum(terms, num_qubits=3)
+        executed, _identity = qubit_wise_commuting_groups(h)
+        plan = measurement_plan(QiskitProvider(shots=100), 3, list(terms),
+                                hamiltonian=h)
+        assert plan.bases == len(executed)

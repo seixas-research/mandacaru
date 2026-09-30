@@ -1,0 +1,855 @@
+# -*- coding: utf-8 -*-
+# file: algorithms/proposal_model.py
+
+# This code is part of Mandacaru.
+# MIT License
+#
+# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
+
+r"""The learned operator proposal of VALQA: a Hamiltonian graph network with a
+Gaussian-process head (Learned-Proposal Markov Chain Ansatz Search).
+
+VALQA draws the operator an ``insert`` or ``replace`` places from
+
+.. math::
+
+    P(\mu \mid C, H) = (1 - \varepsilon)\, p_{\mathrm{ML}}(\mu \mid C, H)
+                     + \varepsilon\, p_{\nabla}(\mu \mid C),
+
+the mixture of a learned distribution and the gradient softmax VASQA draws
+from (:func:`~mandacaru.algorithms.mcas.gradient_softmax`).  Until a model has
+been trained on enough recorded edits *and* passed the readiness check below,
+:math:`\varepsilon = 1` exactly: the proposal is VASQA's, draw for draw.  A
+ready model keeps :math:`0 < \varepsilon`, so every operator keeps a positive
+probability and every move its reverse.
+
+Representation
+--------------
+The qubit Hamiltonian :math:`H = c_0 + \sum_\alpha c_\alpha P_\alpha` is a
+bipartite **factor graph**: one node per qubit, one per non-identity Pauli
+term, an edge labeled ``X``, ``Y`` or ``Z`` wherever a term acts on a qubit.
+Qubit features are the reference occupation, the normalized index (the
+Jordan-Wigner order), the coefficient of the one-qubit ``Z`` term (an
+orbital-energy proxy) and the node's degree; term features are the signed,
+absolute and logarithmic coefficient over :math:`E_{\mathrm{scale}} =
+\max_\alpha |c_\alpha|` and the term's weight and ``X``/``Y``/``Z`` counts.
+Two message-passing layers (terms gather from their qubits, qubits from their
+terms, one weight matrix per Pauli letter, residual updates; a qubit's messages
+are averaged with weights :math:`|c_\alpha|`) give qubit embeddings
+:math:`\mathbf h_i`.  A pool generator :math:`A_\mu = \sum_s a_s P_s` -- a
+sum of strings -- is embedded as the :math:`|a_s|`-weighted mean, over its
+strings, of the mean of :math:`R_\sigma \mathbf h_i` over each string's
+support.
+
+A candidate (insert :math:`\mu` into the circuit :math:`C`) is described by
+the Hamiltonian's pooled embedding, the circuit's mean and
+position-weighted mean operator embedding, the candidate's embedding and
+descriptors known **before** it is evaluated: its pool gradient at ``C``
+(absolute and relative to the largest), the source energy above the
+reference, its multiplicity in ``C`` and the circuit length.  The score does
+not depend on the insertion slot -- positions stay uniform, as in VASQA.
+
+Gaussian process
+----------------
+A linear map projects the candidate vector to 8 dimensions, where a squared
+exponential kernel compares candidates.  The prior mean is linear in the
+descriptors, so a candidate far from every training point -- a molecule
+unlike the recorded ones -- falls back to the learned trend in its gradient
+rather than to a constant.  The target is the energy change of
+recorded ``insert`` proposals, compressed as
+:math:`t(\Delta E) = \mathrm{sign}(\Delta E)\log(1 + |\Delta E|/\delta)` with
+:math:`\delta = 10^{-5}` Hartree (changes span five decades) and
+standardized; the length penalty is left out because it is the same for
+every insertion.  The network and the kernel are trained together by
+maximizing the marginal likelihood (a deep kernel) with Adam, on at most
+:data:`MAX_TRAINING_ROWS` rows.  The score of a candidate is
+:math:`b = -\mu + \kappa\sigma_f` (predicted improvement plus latent
+uncertainty) and :math:`p_{\mathrm{ML}} = \mathrm{softmax}(b/\tau)`.
+
+Readiness: how much data
+------------------------
+:func:`assess_data_volume` answers whether the recorded edits are enough.  It
+holds out one **group** at a time (a molecule, or a Hamiltonian), trains on
+the rest at growing fractions of the data, and ranks the held-out edits with
+three predictors: this model, the same Gaussian process on the descriptors
+alone (no graph), and the gradient heuristic :math:`-|g_\mu|`.  A model is
+**ready** when at least :data:`MIN_GROUPS` groups were held out and, on the
+full data, its mean held-out Spearman correlation exceeds both baselines' by
+:data:`READINESS_MARGIN` and beats the better one in most folds -- the gain
+has to come from the Hamiltonian representation, not from having a
+surrogate.
+
+Training needs JAX (``pip install 'mandacaru[learned-proposals]'``); using a
+trained model does not.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+
+from .proposal_data import (MODEL_FILE, ProblemRecord, data_directory,
+                            load_edits)
+
+#: Width of the node embeddings.
+HIDDEN = 16
+#: Message-passing layers (term <- qubit <- term cycles).
+LAYERS = 2
+#: Dimension the kernel compares candidates in.
+PROJECTION = 8
+#: :math:`\delta` of the target compression, Hartree.
+TARGET_SCALE = 1e-5
+#: Largest training set the Gaussian process is fitted on (its cost is cubic).
+MAX_TRAINING_ROWS = 400
+#: Adam steps of a fit.
+TRAINING_STEPS = 300
+#: Held-out groups required before a model can be ready.
+MIN_GROUPS = 3
+#: Mean held-out Spearman gain over the better baseline a ready model needs.
+READINESS_MARGIN = 0.05
+#: Weight of the gradient proposal once a model is ready (:math:`\varepsilon`).
+DEFAULT_MIXING = 0.3
+#: Exploration weight :math:`\kappa` of the latent standard deviation.
+DEFAULT_KAPPA = 1.0
+#: Softmax temperature :math:`\tau` of the scores (standardized units).
+DEFAULT_SCORE_TEMPERATURE = 1.0
+#: Descriptor columns (the "no graph" model uses only these).
+DESCRIPTORS = ("support", "x_fraction", "y_fraction", "z_fraction",
+               "relative_gradient", "gradient", "source_energy",
+               "multiplicity", "length")
+#: Version of the saved model layout.
+MODEL_SCHEMA = 1
+
+_EXTRA = "pip install 'mandacaru[learned-proposals]'"
+
+
+def compress(delta):
+    r""":math:`t(x) = \mathrm{sign}(x)\log(1 + |x|/\delta)` (``x`` in Hartree)."""
+    delta = np.asarray(delta, dtype=float)
+    return np.sign(delta) * np.log1p(np.abs(delta) / TARGET_SCALE)
+
+
+# --------------------------------------------------------------------------- #
+# The factor graph.
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class HamiltonianGraph:
+    """The factor graph of a qubit Hamiltonian and its pool, as dense arrays.
+
+    ``incidence[s, a, i]`` is one where term ``a`` acts on qubit ``i`` with
+    Pauli letter ``s`` (``X``, ``Y``, ``Z``); ``pool_incidence[s, mu, i]`` is
+    the weight qubit ``i`` has in generator ``mu``'s embedding.
+    """
+
+    qubit_features: np.ndarray        # (n, 4)
+    term_features: np.ndarray         # (M_H, 7)
+    incidence: np.ndarray             # (3, M_H, n)
+    weighted_incidence: np.ndarray    # incidence * |c~|
+    term_weights: np.ndarray          # (M_H,)
+    global_features: np.ndarray       # (3,)
+    pool_incidence: np.ndarray        # (3, M, n)
+    pool_descriptors: np.ndarray      # (M, 4)
+    scale: float
+
+    @classmethod
+    def from_problem(cls, problem: ProblemRecord) -> "HamiltonianGraph":
+        n = problem.n_qubits
+        terms = problem.terms
+        coefficients = problem.coefficients
+        n_terms = len(coefficients)
+        scale = float(np.max(np.abs(coefficients))) if n_terms else 1.0
+        scale = scale if scale > 0.0 else 1.0
+        scaled = coefficients / scale
+
+        incidence = np.stack([(terms == code).astype(float)
+                              for code in (1, 2, 3)])
+        weight = incidence.sum(axis=(0, 2))                      # k_alpha
+        counts = incidence.sum(axis=2).T                          # (M_H, 3)
+        term_features = np.column_stack([
+            scaled, np.abs(scaled), np.log(np.abs(scaled) + 1e-6),
+            weight / n, counts / n]) if n_terms else np.zeros((0, 7))
+
+        degree = incidence.sum(axis=(0, 1))
+        z_only = np.zeros(n)
+        for a in np.flatnonzero(weight == 1):
+            qubit = int(np.flatnonzero(terms[a])[0])
+            if terms[a, qubit] == 3:
+                z_only[qubit] += scaled[a]
+        qubit_features = np.column_stack([
+            problem.reference.astype(float),
+            np.arange(n) / max(1, n - 1),
+            z_only,
+            np.log1p(degree) / math.log1p(max(n_terms, 1))])
+
+        pool_incidence = np.zeros((3, problem.pool_size, n))
+        pool_descriptors = np.zeros((problem.pool_size, 4))
+        for mu in range(problem.pool_size):
+            lo, hi = problem.pool_offsets[mu], problem.pool_offsets[mu + 1]
+            strings = problem.pool_strings[lo:hi]
+            weights = problem.pool_weights[lo:hi]
+            total = weights.sum()
+            if total <= 0.0:
+                continue
+            for string, w in zip(strings, weights / total):
+                support = np.flatnonzero(string)
+                size = max(len(support), 1)
+                for qubit in support:
+                    pool_incidence[string[qubit] - 1, mu, qubit] += w / size
+                letters = [np.count_nonzero(string == code) / size
+                           for code in (1, 2, 3)]
+                pool_descriptors[mu] += w * np.array(
+                    [len(support) / n, *letters])
+        return cls(
+            qubit_features=qubit_features, term_features=term_features,
+            incidence=incidence,
+            weighted_incidence=incidence * np.abs(scaled)[None, :, None],
+            term_weights=np.abs(scaled),
+            global_features=np.array([math.log(scale), math.log(n),
+                                      math.log1p(n_terms)]),
+            pool_incidence=pool_incidence,
+            pool_descriptors=pool_descriptors, scale=scale)
+
+    def arrays(self) -> dict:
+        """The arrays the network reads."""
+        return {name: getattr(self, name) for name in (
+            "qubit_features", "term_features", "incidence",
+            "weighted_incidence", "term_weights", "global_features",
+            "pool_incidence")}
+
+
+# --------------------------------------------------------------------------- #
+# Candidates: what is known before an insertion is evaluated.
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Candidates:
+    """Insertions to score on one problem, one row each.
+
+    ``occupancy[r]`` is the circuit's operator counts over its length and
+    ``positional[r]`` the same weighted by position (later occurrences
+    weigh more), so ``occupancy @ zA`` is the circuit's mean operator
+    embedding; ``operator[r]`` is the candidate and ``descriptors[r]`` the
+    :data:`DESCRIPTORS`.
+    """
+
+    occupancy: np.ndarray
+    positional: np.ndarray
+    operator: np.ndarray
+    descriptors: np.ndarray
+
+    def __len__(self) -> int:
+        return len(self.operator)
+
+
+def _circuit_rows(architecture, pool_size: int):
+    occupancy = np.zeros(pool_size)
+    positional = np.zeros(pool_size)
+    length = len(architecture)
+    if length:
+        ramp = np.arange(1, length + 1, dtype=float)
+        ramp /= ramp.sum()
+        for j, mu in enumerate(architecture):
+            occupancy[mu] += 1.0 / length
+            positional[mu] += ramp[j]
+    return occupancy, positional
+
+
+def candidate_rows(graph: HamiltonianGraph, architectures, operators,
+                   gradients, source_energies) -> Candidates:
+    """The :class:`Candidates` for inserting ``operators[r]`` into
+    ``architectures[r]``, whose pool gradients are ``gradients[r]`` and whose
+    energy above the reference is ``source_energies[r]`` (Hartree)."""
+    pool_size = graph.pool_descriptors.shape[0]
+    occupancy, positional, descriptors = [], [], []
+    for architecture, mu, g, energy in zip(architectures, operators,
+                                           gradients, source_energies):
+        occ, pos = _circuit_rows(architecture, pool_size)
+        occupancy.append(occ)
+        positional.append(pos)
+        g = np.abs(np.asarray(g, dtype=float))
+        largest = float(g.max()) if g.size else 0.0
+        descriptors.append([
+            *graph.pool_descriptors[mu],
+            g[mu] / largest if largest > 0.0 else 0.0,
+            float(compress(g[mu])),
+            float(compress(energy)),
+            float(sum(1 for index in architecture if index == mu)),
+            float(len(architecture))])
+    rows = len(operators)
+    return Candidates(
+        occupancy=np.asarray(occupancy).reshape(rows, pool_size),
+        positional=np.asarray(positional).reshape(rows, pool_size),
+        operator=np.asarray(operators, dtype=np.int64),
+        descriptors=np.asarray(descriptors, dtype=float).reshape(
+            rows, len(DESCRIPTORS)))
+
+
+# --------------------------------------------------------------------------- #
+# The network, written once for NumPy (inference) and JAX (training).
+# --------------------------------------------------------------------------- #
+
+def _feature_width(use_graph: bool) -> int:
+    return (5 * HIDDEN + 3 + len(DESCRIPTORS)) if use_graph \
+        else len(DESCRIPTORS)
+
+
+def init_parameters(seed: int = 0, use_graph: bool = True) -> dict:
+    """Small random weights; the kernel starts at unit signal, 0.1 noise."""
+    rng = np.random.default_rng(seed)
+
+    def dense(*shape):
+        return rng.normal(0.0, 1.0 / math.sqrt(shape[-2]), size=shape)
+
+    params = {
+        "projection": dense(_feature_width(use_graph), PROJECTION),
+        "log_signal": np.array(0.0), "log_noise": np.array(math.log(0.1)),
+        "mean": np.array(0.0), "mean_weights": np.zeros(len(DESCRIPTORS))}
+    if use_graph:
+        d = HIDDEN
+        params.update({
+            "qubit_in": dense(4, d), "qubit_bias": np.zeros(d),
+            "term_in": dense(7, d), "term_bias": np.zeros(d),
+            "to_term": dense(LAYERS, 3, d, d),
+            "to_qubit": dense(LAYERS, 3, d, d),
+            "term_update": dense(LAYERS, 2 * d, d),
+            "term_update_bias": np.zeros((LAYERS, d)),
+            "qubit_update": dense(LAYERS, 2 * d, d),
+            "qubit_update_bias": np.zeros((LAYERS, d)),
+            "readout": dense(3, d, d)})
+    return params
+
+
+def embed(xp, params: dict, graph: dict):
+    """``(z_H, z_A)``: the Hamiltonian's pooled embedding and every pool
+    generator's, for array namespace ``xp`` (``numpy`` or ``jax.numpy``)."""
+    hq = xp.tanh(graph["qubit_features"] @ params["qubit_in"]
+                 + params["qubit_bias"])
+    hp = xp.tanh(graph["term_features"] @ params["term_in"]
+                 + params["term_bias"])
+    incidence = graph["incidence"]
+    weighted = graph["weighted_incidence"]
+    support = incidence.sum(axis=(0, 2))[:, None] + 1e-12
+    reach = weighted.sum(axis=(0, 1))[:, None] + 1e-12
+    for layer in range(LAYERS):
+        to_term = xp.einsum("id,sde->sie", hq, params["to_term"][layer])
+        message = xp.einsum("sai,sie->ae", incidence, to_term) / support
+        hp = hp + xp.tanh(xp.concatenate([hp, message], axis=1)
+                          @ params["term_update"][layer]
+                          + params["term_update_bias"][layer])
+        to_qubit = xp.einsum("ad,sde->sae", hp, params["to_qubit"][layer])
+        message = xp.einsum("sai,sae->ie", weighted, to_qubit) / reach
+        hq = hq + xp.tanh(xp.concatenate([hq, message], axis=1)
+                          @ params["qubit_update"][layer]
+                          + params["qubit_update_bias"][layer])
+    read = xp.einsum("id,sde->sie", hq, params["readout"])
+    z_a = xp.einsum("smi,sie->me", graph["pool_incidence"], read)
+    weights = graph["term_weights"]
+    term_mean = (weights @ hp) / (weights.sum() + 1e-12)
+    z_h = xp.concatenate([hq.mean(axis=0), term_mean,
+                          graph["global_features"]])
+    return z_h, z_a
+
+
+def features(xp, params: dict, graph: dict | None, rows: Candidates,
+             descriptors, use_graph: bool):
+    """The candidate vectors the kernel compares (``descriptors`` already
+    standardized)."""
+    if not use_graph:
+        return descriptors
+    z_h, z_a = embed(xp, params, graph)
+    n = len(rows)
+    return xp.concatenate([
+        xp.broadcast_to(z_h, (n, z_h.shape[0])),
+        xp.asarray(rows.occupancy) @ z_a, xp.asarray(rows.positional) @ z_a,
+        z_a[xp.asarray(rows.operator)], descriptors], axis=1)
+
+
+def _kernel(xp, params, a, b):
+    squared = ((a[:, None, :] - b[None, :, :]) ** 2).sum(axis=-1)
+    return xp.exp(2.0 * params["log_signal"]) * xp.exp(-0.5 * squared)
+
+
+def _noise(xp, params):
+    return xp.exp(2.0 * params["log_noise"]) + 1e-6
+
+
+def _prior_mean(params, descriptors):
+    """The linear prior mean over the (standardized) descriptors."""
+    return params["mean"] + descriptors @ params["mean_weights"]
+
+
+# --------------------------------------------------------------------------- #
+# The trained model.
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class ProposalModel:
+    """A trained (or untrained) GNN-GP proposal and its readiness report.
+
+    ``ready`` is what VALQA acts on: an unready model leaves the gradient
+    proposal in effect (:math:`\\varepsilon = 1`).
+    """
+
+    params: dict
+    use_graph: bool
+    descriptor_mean: np.ndarray
+    descriptor_std: np.ndarray
+    target_mean: float
+    target_std: float
+    train_phi: np.ndarray
+    alpha: np.ndarray
+    cholesky: np.ndarray
+    ready: bool = False
+    mixing: float = DEFAULT_MIXING
+    kappa: float = DEFAULT_KAPPA
+    temperature: float = DEFAULT_SCORE_TEMPERATURE
+    report: dict = field(default_factory=dict)
+    version: str = ""
+
+    # -- prediction -------------------------------------------------------- #
+
+    def predict(self, graph: dict | None, rows: Candidates):
+        """Posterior mean and latent standard deviation of the standardized
+        compressed energy change of each candidate."""
+        descriptors = (rows.descriptors - self.descriptor_mean) \
+            / self.descriptor_std
+        phi = features(np, self.params, graph, rows, descriptors,
+                       self.use_graph) @ self.params["projection"]
+        cross = _kernel(np, self.params, phi, self.train_phi)
+        mean = _prior_mean(self.params, descriptors) + cross @ self.alpha
+        solved = np.linalg.solve(self.cholesky, cross.T) \
+            if self.cholesky.size else np.zeros((0, len(rows)))
+        variance = math.exp(2.0 * float(self.params["log_signal"])) \
+            - (solved ** 2).sum(axis=0)
+        return mean, np.sqrt(np.maximum(variance, 0.0))
+
+    def bind(self, problem: ProblemRecord) -> "BoundProposal":
+        """The proposal for one run's problem; the Hamiltonian and every pool
+        generator are embedded once, here."""
+        return BoundProposal(self, HamiltonianGraph.from_problem(problem))
+
+    # -- storage ----------------------------------------------------------- #
+
+    def save(self, path) -> Path:
+        path = Path(path).expanduser()
+        arrays = {f"param_{name}": np.asarray(value)
+                  for name, value in self.params.items()}
+        meta = {"schema": MODEL_SCHEMA, "use_graph": self.use_graph,
+                "target_mean": self.target_mean,
+                "target_std": self.target_std, "ready": self.ready,
+                "mixing": self.mixing, "kappa": self.kappa,
+                "temperature": self.temperature, "report": self.report,
+                "version": self.version}
+        with open(path, "wb") as handle:
+            np.savez_compressed(
+                handle, meta=np.array(json.dumps(meta)),
+                descriptor_mean=self.descriptor_mean,
+                descriptor_std=self.descriptor_std,
+                train_phi=self.train_phi, alpha=self.alpha,
+                cholesky=self.cholesky, **arrays)
+        return path
+
+    @classmethod
+    def load(cls, path) -> "ProposalModel":
+        path = Path(path).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"no proposal model at {str(path)!r}")
+        with np.load(path, allow_pickle=False) as data:
+            meta = json.loads(str(data["meta"]))
+            if meta.get("schema") != MODEL_SCHEMA:
+                raise ValueError(f"{path}: model schema {meta.get('schema')!r}"
+                                 f", expected {MODEL_SCHEMA}")
+            params = {name[len("param_"):]: np.array(data[name])
+                      for name in data.files if name.startswith("param_")}
+            return cls(params=params, use_graph=bool(meta["use_graph"]),
+                       descriptor_mean=data["descriptor_mean"],
+                       descriptor_std=data["descriptor_std"],
+                       target_mean=float(meta["target_mean"]),
+                       target_std=float(meta["target_std"]),
+                       train_phi=data["train_phi"], alpha=data["alpha"],
+                       cholesky=data["cholesky"], ready=bool(meta["ready"]),
+                       mixing=float(meta["mixing"]),
+                       kappa=float(meta["kappa"]),
+                       temperature=float(meta["temperature"]),
+                       report=meta["report"], version=str(meta["version"]))
+
+
+class BoundProposal:
+    """A model bound to one problem: operator distributions at chain states."""
+
+    def __init__(self, model: ProposalModel, graph: HamiltonianGraph):
+        self.model = model
+        self.graph = graph
+        self._arrays = graph.arrays() if model.use_graph else None
+
+    def learned(self, architecture, gradients, source_energy) -> np.ndarray:
+        r""":math:`p_{\mathrm{ML}}(\mu|C) = \mathrm{softmax}(b/\tau)`,
+        :math:`b = -\mu + \kappa\sigma_f`, over the whole pool."""
+        pool = self.graph.pool_descriptors.shape[0]
+        rows = candidate_rows(self.graph, [architecture] * pool, range(pool),
+                              [gradients] * pool, [source_energy] * pool)
+        mean, std = self.model.predict(self._arrays, rows)
+        score = (-mean + self.model.kappa * std) / self.model.temperature
+        score -= score.max()
+        weights = np.exp(score)
+        return weights / weights.sum()
+
+    def probabilities(self, architecture, gradients, source_energy,
+                      baseline: np.ndarray) -> np.ndarray:
+        r""":math:`(1-\varepsilon) p_{\mathrm{ML}} + \varepsilon\,p_\nabla`;
+        ``baseline`` itself when the model is not ready."""
+        if not self.model.ready:
+            return baseline
+        eps = self.model.mixing
+        mixed = (1.0 - eps) * self.learned(architecture, gradients,
+                                           source_energy) + eps * baseline
+        return mixed / mixed.sum()
+
+
+# --------------------------------------------------------------------------- #
+# Training (JAX).
+# --------------------------------------------------------------------------- #
+
+def _require_jax():
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError as error:        # pragma: no cover - env dependent
+        raise ImportError(f"training a VALQA proposal model needs JAX: "
+                          f"{_EXTRA}") from error
+    # Double precision for the Cholesky factor, as the JAX force path does.
+    jax.config.update("jax_enable_x64", True)
+    return jax, jnp
+
+
+@dataclass
+class _Example:
+    """The insert rows of one problem, ready for the network."""
+
+    graph: HamiltonianGraph
+    rows: Candidates
+    target: np.ndarray            # compressed energy change
+    gradient: np.ndarray          # |g_mu| of each candidate (baseline)
+    group: list
+
+
+def training_examples(rows: list[dict], problems: dict,
+                      group_by: str = "molecule") -> list[_Example]:
+    """The recorded ``insert`` proposals, one :class:`_Example` per problem.
+
+    Only inserts are learned from: their energy change is a function of the
+    source state and the placed operator, which is what the score predicts;
+    a ``replace`` also depends on what it removed.
+    """
+    if group_by not in ("molecule", "hamiltonian"):
+        raise ValueError(f"group_by must be 'molecule' or 'hamiltonian', got "
+                         f"{group_by!r}")
+    by_problem: dict[str, list[dict]] = {}
+    for row in rows:
+        if (row.get("move") == "insert" and row.get("source_gradients")
+                and row.get("delta_energy") is not None
+                and math.isfinite(row["delta_energy"])):
+            by_problem.setdefault(row["problem"], []).append(row)
+    examples = []
+    for key, chosen in sorted(by_problem.items()):
+        problem = problems[key]
+        graph = HamiltonianGraph.from_problem(problem)
+        candidates = candidate_rows(
+            graph, [row["source"] for row in chosen],
+            [row["operator"] for row in chosen],
+            [row["source_gradients"] for row in chosen],
+            [row["source_energy"] - row["reference_energy"]
+             for row in chosen])
+        examples.append(_Example(
+            graph=graph, rows=candidates,
+            target=compress([row["delta_energy"] for row in chosen]),
+            gradient=np.array([abs(row["source_gradients"][row["operator"]])
+                               for row in chosen]),
+            group=[(row.get("formula") or key) if group_by == "molecule"
+                   else key for row in chosen]))
+    return examples
+
+
+def _subset(example: _Example, index) -> _Example:
+    index = np.asarray(index, dtype=np.int64)
+    rows = example.rows
+    return _Example(example.graph, Candidates(
+        rows.occupancy[index], rows.positional[index], rows.operator[index],
+        rows.descriptors[index]), example.target[index],
+        example.gradient[index], [example.group[i] for i in index])
+
+
+def fit(examples: list[_Example], *, use_graph: bool = True, seed: int = 0,
+        steps: int = TRAINING_STEPS, max_rows: int = MAX_TRAINING_ROWS,
+        learning_rate: float = 0.01, weight_decay: float = 1e-3
+        ) -> ProposalModel:
+    """Train the network and the kernel on ``examples`` (marginal likelihood).
+
+    The returned model is **not** ready: readiness is decided by
+    :func:`assess_data_volume`, which :func:`train_proposal_model` runs.
+    """
+    jax, jnp = _require_jax()
+    rng = np.random.default_rng(seed)
+    total = sum(len(e.target) for e in examples)
+    if total < 2:
+        raise ValueError(f"{total} recorded insertion(s): nothing to fit")
+    if total > max_rows:
+        # A uniform subsample across problems, reproducible from the seed.
+        keep = np.sort(rng.choice(total, size=max_rows, replace=False))
+        offsets = np.cumsum([0] + [len(e.target) for e in examples])
+        examples = [_subset(e, keep[(keep >= lo) & (keep < hi)] - lo)
+                    for e, lo, hi in zip(examples, offsets[:-1], offsets[1:])]
+        examples = [e for e in examples if len(e.target)]
+    descriptors = np.concatenate([e.rows.descriptors for e in examples])
+    d_mean = descriptors.mean(axis=0)
+    d_std = descriptors.std(axis=0)
+    d_std = np.where(d_std > 1e-12, d_std, 1.0)
+    target = np.concatenate([e.target for e in examples])
+    y_mean, y_std = float(target.mean()), float(target.std() or 1.0)
+    y = jnp.asarray((target - y_mean) / y_std)
+    all_scaled = (descriptors - d_mean) / d_std
+
+    graphs = [{k: jnp.asarray(v) for k, v in e.graph.arrays().items()}
+              for e in examples]
+    scaled = [jnp.asarray((e.rows.descriptors - d_mean) / d_std)
+              for e in examples]
+    decayed = [name for name in init_parameters(seed, use_graph)
+               if name not in ("log_signal", "log_noise", "mean")]
+
+    def phi_of(params):
+        return jnp.concatenate([
+            features(jnp, params, graph, example.rows, desc, use_graph)
+            for graph, example, desc in zip(graphs, examples, scaled)]) \
+            @ params["projection"]
+
+    def loss(params):
+        phi = phi_of(params)
+        n = phi.shape[0]
+        k = _kernel(jnp, params, phi, phi) + _noise(jnp, params) * jnp.eye(n)
+        chol = jnp.linalg.cholesky(k)
+        residual = y - _prior_mean(params, jnp.asarray(all_scaled))
+        solved = jax.scipy.linalg.cho_solve((chol, True), residual)
+        nll = 0.5 * residual @ solved + jnp.log(jnp.diag(chol)).sum() \
+            + 0.5 * n * math.log(2 * math.pi)
+        penalty = sum((params[name] ** 2).sum() for name in decayed)
+        return nll / n + weight_decay * penalty
+
+    params = {k: jnp.asarray(v) for k, v in
+              init_parameters(seed, use_graph).items()}
+    step_fn = jax.jit(jax.value_and_grad(loss))
+    first = {k: jnp.zeros_like(v) for k, v in params.items()}
+    second = {k: jnp.zeros_like(v) for k, v in params.items()}
+    best, best_params = math.inf, params
+    for t in range(1, steps + 1):
+        value, grads = step_fn(params)
+        value = float(value)
+        if not math.isfinite(value):
+            break
+        if value < best:
+            best, best_params = value, dict(params)
+        for name in params:
+            first[name] = 0.9 * first[name] + 0.1 * grads[name]
+            second[name] = 0.999 * second[name] + 0.001 * grads[name] ** 2
+            update = (first[name] / (1 - 0.9 ** t)) / (
+                jnp.sqrt(second[name] / (1 - 0.999 ** t)) + 1e-8)
+            params[name] = params[name] - learning_rate * update
+    params = {k: np.asarray(v, dtype=float) for k, v in best_params.items()}
+
+    phi = np.asarray(phi_of({k: jnp.asarray(v) for k, v in params.items()}))
+    k = _kernel(np, params, phi, phi) + float(_noise(np, params)) \
+        * np.eye(len(phi))
+    chol = np.linalg.cholesky(k)
+    residual = np.asarray(y) - _prior_mean(params, all_scaled)
+    alpha = np.linalg.solve(chol.T, np.linalg.solve(chol, residual))
+    model = ProposalModel(params=params, use_graph=use_graph,
+                          descriptor_mean=d_mean, descriptor_std=d_std,
+                          target_mean=y_mean, target_std=y_std,
+                          train_phi=phi, alpha=alpha, cholesky=chol)
+    model.version = _version(model)
+    return model
+
+
+def _version(model: ProposalModel) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(model.params):
+        digest.update(np.ascontiguousarray(model.params[name]).tobytes())
+    digest.update(model.alpha.tobytes())
+    return digest.hexdigest()[:12]
+
+
+# --------------------------------------------------------------------------- #
+# How much data is enough.
+# --------------------------------------------------------------------------- #
+
+def _spearman(prediction, observed) -> float:
+    from scipy.stats import spearmanr
+    prediction = np.asarray(prediction, dtype=float)
+    observed = np.asarray(observed, dtype=float)
+    if len(observed) < 3 or np.ptp(observed) == 0 or np.ptp(prediction) == 0:
+        return math.nan
+    return float(spearmanr(prediction, observed).statistic)
+
+
+def _split(examples, held_out):
+    train, test = [], []
+    for example in examples:
+        inside = np.array([g == held_out for g in example.group])
+        if (~inside).any():
+            train.append(_subset(example, np.flatnonzero(~inside)))
+        if inside.any():
+            test.append(_subset(example, np.flatnonzero(inside)))
+    return train, test
+
+
+def _thin(examples, fraction, rng):
+    if fraction >= 1.0:
+        return examples
+    out = []
+    for example in examples:
+        n = len(example.target)
+        keep = max(1, int(round(fraction * n)))
+        out.append(_subset(example, np.sort(rng.choice(n, keep,
+                                                       replace=False))))
+    return out
+
+
+def _score(model, examples):
+    """Held-out predictions of ``model`` on ``examples``, concatenated."""
+    predicted = []
+    for example in examples:
+        mean, _ = model.predict(example.graph.arrays() if model.use_graph
+                                else None, example.rows)
+        predicted.append(mean)
+    return np.concatenate(predicted)
+
+
+def _graph_won(fold) -> bool:
+    """Whether the graph model out-ranked both baselines on one fold."""
+    baselines = [v for v in (fold["descriptors"], fold["gradient"])
+                 if math.isfinite(v)]
+    return math.isfinite(fold["graph"]) and (
+        not baselines or fold["graph"] > max(baselines))
+
+
+def assess_data_volume(directory=None, *, group_by: str = "molecule",
+                       fractions=(0.25, 0.5, 1.0), seed: int = 0,
+                       steps: int = TRAINING_STEPS,
+                       max_rows: int = MAX_TRAINING_ROWS) -> dict:
+    """The learning curve of the recorded edits in ``directory`` (default:
+    the shared store, ``MANDACARU_PROPOSAL_DATA``).
+
+    Leave-one-group-out: each group (a molecule's formula, or a Hamiltonian
+    with ``group_by="hamiltonian"``) is held out in turn, the model and the
+    descriptor-only baseline are trained on a ``fraction`` of the other
+    groups' insertions, and all three predictors rank the held-out ones.
+    Returns ``{"curve": [...], "ready": bool, "reason": str, ...}``; each
+    curve point has the training labels used, the mean held-out Spearman
+    correlation of ``"graph"``, ``"descriptors"`` and ``"gradient"``, and the
+    folds the graph model won.
+    """
+    rows, problems = load_edits(directory)
+    examples = training_examples(rows, problems, group_by)
+    groups = sorted({g for e in examples for g in e.group})
+    labels = sum(len(e.target) for e in examples)
+    report = {"group_by": group_by, "groups": len(groups),
+              "insertions": labels, "problems": len(examples),
+              "rows": len(rows), "curve": []}
+    if len(groups) < MIN_GROUPS:
+        report.update(ready=False, reason=(
+            f"{len(groups)} {group_by} group(s); at least {MIN_GROUPS} are "
+            f"needed to hold one out and still train on two"))
+        return report
+    rng = np.random.default_rng(seed)
+    for fraction in fractions:
+        folds = []
+        for held_out in groups:
+            train, test = _split(examples, held_out)
+            train = _thin(train, fraction, rng)
+            observed = np.concatenate([e.target for e in test])
+            n_train = sum(len(e.target) for e in train)
+            if len(observed) < 3 or n_train < 2:
+                continue
+            fold = {"held_out": held_out, "train": min(n_train, max_rows),
+                    "test": len(observed)}
+            for name, use_graph in (("graph", True), ("descriptors", False)):
+                model = fit(train, use_graph=use_graph, seed=seed,
+                            steps=steps, max_rows=max_rows)
+                fold[name] = _spearman(_score(model, test), observed)
+            fold["gradient"] = _spearman(
+                -np.concatenate([e.gradient for e in test]), observed)
+            folds.append(fold)
+        point = {"fraction": fraction, "folds": folds}
+        for name in ("graph", "descriptors", "gradient"):
+            values = [f[name] for f in folds if math.isfinite(f[name])]
+            point[name] = float(np.mean(values)) if values else math.nan
+        point["train"] = (int(np.mean([f["train"] for f in folds]))
+                          if folds else 0)
+        point["graph_wins"] = sum(1 for f in folds if _graph_won(f))
+        report["curve"].append(point)
+    final = report["curve"][-1]
+    baseline = max((v for v in (final["descriptors"], final["gradient"])
+                    if math.isfinite(v)), default=-1.0)
+    scored = len(final["folds"])
+    if scored < MIN_GROUPS:
+        report.update(ready=False, reason=(
+            f"only {scored} held-out group(s) had 3 or more insertions"))
+    elif not math.isfinite(final["graph"]) \
+            or final["graph"] < baseline + READINESS_MARGIN:
+        report.update(ready=False, reason=(
+            f"held-out Spearman {final['graph']:.3f} does not beat the best "
+            f"baseline {baseline:.3f} by {READINESS_MARGIN}"))
+    elif final["graph_wins"] * 2 <= scored:
+        report.update(ready=False, reason=(
+            f"the graph model beat both baselines in {final['graph_wins']} of "
+            f"{scored} held-out groups"))
+    else:
+        report.update(ready=True, reason=(
+            f"held-out Spearman {final['graph']:.3f} against "
+            f"{baseline:.3f}, better in {final['graph_wins']} of {scored} "
+            f"groups"))
+    return report
+
+
+def train_proposal_model(directory=None, path=None, *,
+                         group_by: str = "molecule",
+                         fractions=(0.25, 0.5, 1.0), seed: int = 0,
+                         steps: int = TRAINING_STEPS,
+                         max_rows: int = MAX_TRAINING_ROWS,
+                         mixing: float = DEFAULT_MIXING,
+                         kappa: float = DEFAULT_KAPPA,
+                         temperature: float = DEFAULT_SCORE_TEMPERATURE
+                         ) -> ProposalModel:
+    """Assess the recorded edits, train on all of them and save the model.
+
+    ``directory`` defaults to the shared store (``MANDACARU_PROPOSAL_DATA``)
+    and ``path`` to :data:`~mandacaru.algorithms.proposal_data.MODEL_FILE`
+    inside it, where VALQA finds the model without being told.  The model is
+    saved whether or not it is ready -- with its readiness report -- so a
+    retrained file is picked up by the next run; VALQA uses the learned
+    proposal only when ``model.ready`` is true.
+    """
+    if not 0.0 < mixing <= 1.0:
+        raise ValueError(f"mixing (epsilon) must be in (0, 1], got {mixing!r}:"
+                         f" at 0 an operator the model rules out loses its "
+                         f"reverse move")
+    if not (kappa >= 0.0 and temperature > 0.0):
+        raise ValueError("need kappa >= 0 and temperature > 0")
+    directory = data_directory(directory)
+    path = directory / MODEL_FILE if path is None else path
+    report = assess_data_volume(directory, group_by=group_by,
+                                fractions=fractions, seed=seed, steps=steps,
+                                max_rows=max_rows)
+    rows, problems = load_edits(directory)
+    model = fit(training_examples(rows, problems, group_by), seed=seed,
+                steps=steps, max_rows=max_rows)
+    model.ready = bool(report["ready"])
+    model.report = report
+    model.mixing, model.kappa, model.temperature = mixing, kappa, temperature
+    model.save(path)
+    return model

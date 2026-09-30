@@ -90,7 +90,7 @@ DEFAULT_METHOD = "adapt-vqe"
 #: The periodic names are declared by the module that implements them, so
 #: there is one place to change them.
 STABLE_METHODS = ("rhf", "uhf", "ghf", "vqe", "adapt-vqe",
-                  "subspace-vqe", "subspace-adapt-vqe", "vasqa",
+                  "subspace-vqe", "subspace-adapt-vqe", "vasqa", "valqa",
                   *BLOCH_METHODS)
 
 # Methods registered by packages outside the stable API (see
@@ -145,12 +145,14 @@ def resolve_method(name: str):
         from .bloch import _bloch_drivers
         from .mean_field import GHFDriver, RHFDriver, UHFDriver
         from .subspace import SubspaceADAPTVQE, SubspaceVQE
+        from .valqa import VALQA
         from .vasqa import VASQA
         from .vqe import VQE
         classes = {"rhf": RHFDriver, "uhf": UHFDriver, "ghf": GHFDriver,
                    "vqe": VQE, "adapt-vqe": ADAPTVQE,
                    "subspace-vqe": SubspaceVQE,
-                   "subspace-adapt-vqe": SubspaceADAPTVQE, "vasqa": VASQA}
+                   "subspace-adapt-vqe": SubspaceADAPTVQE, "vasqa": VASQA,
+                   "valqa": VALQA}
         # The periodic drivers are these same solvers over the Born-von Karman
         # supercell, so they are built from them rather than duplicated.
         classes.update(_bloch_drivers())
@@ -252,11 +254,19 @@ def _real_problem(solver, hamiltonian) -> bool:
     return True
 
 
-def _planned_jobs(provider, labels) -> int:
-    """How many jobs the submission will be split into (see ``max_bases_per_job``)."""
+def _planned_jobs(provider, labels, hamiltonian=None) -> int:
+    """How many jobs the submission will be split into (see
+    ``max_bases_per_job``).  An energy is chunked by the Hamiltonian's
+    coefficient-weighted partition, which ``hamiltonian`` supplies; the RDM
+    operators by the unweighted one -- each the partition its execution uses."""
     from ..backends.measurement import planned_jobs
 
-    return planned_jobs(labels, getattr(provider, "max_bases_per_job", None))
+    weights = None
+    if hamiltonian is not None:
+        terms = hamiltonian.simplify().terms
+        weights = [abs(complex(terms[label])) for label in labels]
+    return planned_jobs(labels, getattr(provider, "max_bases_per_job", None),
+                        weights)
 
 
 def _job_id(provider):
@@ -360,7 +370,8 @@ class Mandacaru(Calculator):
         Markov-chain search over pool-operator sequences, each relaxed by VQE;
         options ``max_steps``, ``min_length`` / ``max_length``,
         ``move_weights``, ``temperature``, ``length_penalty``, ``warm_start``,
-        ``seed``).  ADAPT-VQE is the
+        ``record``, ``seed``), or ``"valqa"`` (the same chain drawing its
+        operators from a learned model, ``proposal_model``).  ADAPT-VQE is the
         practical choice for anything beyond a couple of orbitals: a fixed UCCSD
         ansatz becomes very slow past ~8 qubits.  A method registered through
         :func:`register_method` is accepted by name as well.
@@ -464,9 +475,12 @@ class Mandacaru(Calculator):
         See :func:`~mandacaru.algorithms.forces.hellmann_feynman_gradient` for the
         measurements.
     optimizer : str, dict or Optimizer
-        The classical optimizer, forwarded to the solver.  A **method name**
-        (``"SLSQP"``, the default, ``"COBYLA"``, ``"Nelder-Mead"``, ``"SPSA"``,
-        ``"L-BFGS"``, ``"BFGS"``) takes the library's budget and tolerance; a
+        The classical optimizer, forwarded to the solver.  ``None`` (the
+        default) is ``"SLSQP"`` on an exact objective and ``"SPSA"`` with
+        ``shots > 0``, where SLSQP, BFGS, L-BFGS and CG are refused.  A
+        **method name** (``"SLSQP"``, ``"COBYLA"``, ``"Nelder-Mead"``,
+        ``"SPSA"``, ``"L-BFGS"``, ``"BFGS"``, ``"CG"``) takes the library's
+        budget and tolerance; a
         **dict** sets them without importing anything::
 
             Mandacaru(method="adapt-vqe",
@@ -760,7 +774,7 @@ class Mandacaru(Calculator):
                 f"not write {', '.join(repr(name) for name in ignored)}: its "
                 f"run() does not go through that machinery, so the option would "
                 f"be silently ignored.  Use method='rhf', 'uhf', 'ghf', 'vqe', "
-                f"'adapt-vqe' or 'vasqa' for the structured log, method='vqe' "
+                f"'adapt-vqe', 'vasqa' or 'valqa' for the structured log, method='vqe' "
                 f"or 'adapt-vqe' for checkpoints, or drop the option.")
 
     def _show_trace(self) -> bool:
@@ -935,6 +949,14 @@ class Mandacaru(Calculator):
                 "classical SCF result")
         if want_forces:
             self._require_atom_centered_basis(self.basis)
+            # Forces measure the RDMs: a provider that cannot return many
+            # expectation values of one state is refused now, before the
+            # optimization it would otherwise fail after.
+            provider = self.measurement_provider
+            if provider is not None:
+                from ..backends.providers import require_capability
+                require_capability(provider, "expectation_values",
+                                   "forces measure the RDM operators")
 
         # Forces need one common grid along the whole trajectory; a plain
         # energy uses the solver's own per-geometry grid unless one was given.
@@ -1127,6 +1149,9 @@ class Mandacaru(Calculator):
         from .rdm import rdm_qubit_operators, rdms_from_expectations
 
         provider = self.measurement_provider
+        # What was asked for, kept apart from the last *successful* result, so
+        # a retry after a failure repeats the failed request.
+        self._requested_rdms = bool(rdms)
         if not rdms:
             hamiltonian = solver.hamiltonian
             identity = "I" * int(solver.n_qubits)
@@ -1135,7 +1160,8 @@ class Mandacaru(Calculator):
                 return self._measure_factorized(solver, factorized)
             self._plan_measurement(
                 solver, [l for l in hamiltonian.terms if l != identity],
-                hamiltonian=hamiltonian, includes_rdms=False)
+                hamiltonian=hamiltonian, includes_rdms=False,
+                weighted=True)
             with self._measurement_failure(solver):
                 energy = float(provider.energy(*solver.ansatz_problem()[:4],
                                                hamiltonian))
@@ -1241,7 +1267,7 @@ class Mandacaru(Calculator):
 
     def _plan_measurement(self, solver, labels, hamiltonian=None,
                           includes_rdms: bool = False, problems=None,
-                          factorization=None):
+                          factorization=None, weighted: bool = False):
         """Size the submission, log it as ``[MEASUREMENT PLAN]``, enforce the budget.
 
         Everything the plan reports is computed locally -- the grouping, the
@@ -1260,8 +1286,12 @@ class Mandacaru(Calculator):
                   else solver.ansatz_problem()[:4])
         isa = None
         try:
-            isa = provider._transpiled(provider.build(*widest[:4]),
-                                       int(solver.n_qubits))[0]
+            # The compiled circuit the submission binds its angles to, so the
+            # plan's gate counts are the submitted circuit's.
+            compiled = getattr(provider, "compiled", None)
+            isa = (compiled(*widest[:3])[0] if compiled is not None
+                   else provider._transpiled(provider.build(*widest[:4]),
+                                             int(solver.n_qubits))[0])
         except Exception:
             # A provider without a transpiler, or a backend that cannot be
             # reached: the plan is still worth having without the gate counts.
@@ -1278,7 +1308,9 @@ class Mandacaru(Calculator):
             plan = measurement_plan(
                 provider, int(solver.n_qubits), labels,
                 hamiltonian=hamiltonian, includes_rdms=includes_rdms,
-                isa_circuit=isa, jobs=_planned_jobs(provider, labels),
+                isa_circuit=isa,
+                jobs=_planned_jobs(provider, labels,
+                                   hamiltonian if weighted else None),
                 factorized_bases=self._factorized_bases(solver))
         self.measurement_plan = plan
         self._log_plan(solver, plan)
@@ -1361,11 +1393,17 @@ class Mandacaru(Calculator):
                 f"{plan.bases:,} measurement bases, {plan.circuit_instances:,} "
                 f"circuit instances, {plan.total_shots:,} shots on "
                 f"{plan.device}.")
+            kept = getattr(self.measurement_provider, "completed_chunks",
+                           None)
+            kept = kept() if callable(kept) else 0
+            resume = (f" {kept} completed chunk(s) are kept, and a plain "
+                      f"calc.remeasure() submits only the rest." if kept
+                      else "")
             raise MeasurementFailed(
                 f"the measurement job failed ({type(exc).__name__}: {exc})."
                 f"{detail} The optimized state is kept: calc.solver and "
                 f"calc.measurement_plan are intact, and calc.remeasure() "
-                f"retries without re-optimizing.") from exc
+                f"retries without re-optimizing.{resume}") from exc
 
     def remeasure(self, provider=None, rdms: bool | None = None, **overrides):
         """Measure the **already optimized** state again, without re-running it.
@@ -1384,9 +1422,15 @@ class Mandacaru(Calculator):
             the last measurement did, which for an energy-only run is one
             weighted observable.
         **overrides
-            Attributes set on the provider before submitting (``shots``,
-            ``estimator_options``, ``device``...), so a retry does not need a
-            new provider object.
+            Constructor options of the provider to change (``shots``,
+            ``estimator_options``, ``device``...): the retry runs on a fresh
+            provider built with them, so nothing the old one had cached -- a
+            resolved backend, an Estimator -- survives into it.  An unknown
+            name is refused.
+
+        The forces of the earlier measurement are dropped: they belonged to
+        other measured energies and RDMs, and ``atoms.get_forces()``
+        recomputes them.
         """
         solver = self.solver
         if solver is None or getattr(solver, "result", None) is None:
@@ -1399,10 +1443,20 @@ class Mandacaru(Calculator):
             raise RuntimeError(
                 "remeasure() needs a provider: pass one, or construct the "
                 "calculator with measurement_provider=")
-        for name, value in overrides.items():
-            setattr(self.measurement_provider, name, value)
+        if overrides:
+            rebuild = getattr(self.measurement_provider, "with_options", None)
+            if rebuild is None:
+                raise TypeError(
+                    f"{type(self.measurement_provider).__name__} cannot be "
+                    f"reconfigured; pass a new provider= instead")
+            self.measurement_provider = rebuild(**overrides)
         if rdms is None:
-            rdms = (self.measurement or {}).get("rdms") is not None
+            requested = getattr(self, "_requested_rdms", None)
+            rdms = (requested if requested is not None
+                    else (self.measurement or {}).get("rdms") is not None)
+        # Whatever depended on the previous measurement goes with it.
+        self.results.pop("forces", None)
+        self.force_result = None
         measured = self._measure(solver, rdms=rdms)
         self.results["energy"] = measured["energy_eV"]
         self.results["free_energy"] = measured["energy_eV"]

@@ -69,6 +69,12 @@ _METHOD_KEYS = {
     # Grimsley2019 for the pool gradient the default proposal draws from.
     "vasqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
               "Hastings1970", "Kirkpatrick1983"),
+    # VALQA is the same chain; its learned proposal is a message-passing
+    # network over the Hamiltonian with a Gaussian-process head, mixed with
+    # the gradient softmax.
+    "valqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
+              "Hastings1970", "Kirkpatrick1983", "Gilmer2017",
+              "Rasmussen2006"),
     "qpe": ("Kitaev1995", "AspuruGuzik2005"),
     # The periodic pair cite their variational method plus the machinery that
     # makes it a crystal: the Born-von Karman supercell the mesh realizes, the

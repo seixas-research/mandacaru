@@ -8,18 +8,19 @@
 
 """Execution devices for the variational loop.
 
-Mandacaru computes energies on an **exact state-vector backend** today; this module
-is the small registry that lets the user *name* the device an
-:class:`~mandacaru.algorithms.ADAPTVQE` should run on, so the same driver can later
-dispatch to a shot-based simulator or real quantum hardware without changing its
-public API.
+The small registry that lets the user *name* the device a driver runs on.  A
+local device (the exact state vector, ``braket-local``, a ``fake_*`` backend)
+simulates locally; a processor (an ``ibm_*`` name, an AWS Braket device) runs
+the optimization itself with ``shots > 0``, every energy measured by
+:class:`~mandacaru.backends.providers.QiskitProvider` (Runtime ``EstimatorV2``)
+or :class:`~mandacaru.backends.providers.BraketProvider`, within the run-wide
+budget of :func:`~mandacaru.backends.measurement.resolve_run_budget`.
 
 Supported names
 ---------------
 ``"AER_simulator"``
-    The default: an ideal (noiseless) simulator.  In the current build this is
-    the exact state-vector backend; it is the device used by the tests and
-    examples.
+    The default: an ideal (noiseless) simulator -- the exact state-vector
+    backend, or the local ``StatevectorEstimator`` with ``shots > 0``.
 ``"ibm-quantum"``
     Real IBM Quantum hardware via **Qiskit Runtime**: the least-busy
     operational QPU of your account (or of the ``instance`` named in the
@@ -30,8 +31,9 @@ Supported names
 ``"fake_*"``
     A Qiskit Runtime **fake backend** (``qiskit_ibm_runtime.fake_provider``,
     e.g. ``"fake_manila"``): the real IBM execution path -- transpilation to
-    that processor's gate set and coupling map, the Runtime ``SamplerV2`` --
-    run locally.  The way to rehearse a hardware run without a queue or a bill.
+    that processor's gate set and coupling map, an ``EstimatorV2`` on its
+    noise model -- run locally.  The way to rehearse a hardware run without a
+    queue or a bill.
 ``"braket-local"``
     Amazon Braket's local state-vector simulator, driven by
     :class:`~mandacaru.backends.providers.BraketProvider`.

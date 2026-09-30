@@ -53,7 +53,6 @@ import numpy as np
 from ..circuits.adapt_ansatz import AdaptAnsatz
 from ..circuits.pools import GRADIENT_FLOOR, PoolOperator, _support_of
 from ..circuits.profiling import CircuitMetrics
-from ..optimizers.optim import DEFAULT_OPTIMIZER
 from ..units import convert_energy, to_hartree
 from .calculator import _method_key
 from .convergence import Convergence
@@ -522,7 +521,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                  basis="HAO",
                  num_particles=None,
                  n_spatial_orbitals=None,
-                 optimizer: str | Optimizer = DEFAULT_OPTIMIZER,
+                 optimizer: str | Optimizer | None = None,
                  mapping: str = "jordan_wigner",
                  gradient: str = "analytic",
                  device: str = "AER_simulator",
@@ -1145,6 +1144,10 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                        else max_iterations)
         try:
             while len(selected) < max_iterations and len(iterations) < step_budget:
+                if getattr(self, "run_budget_exhausted", None):
+                    # The processor budget ended the last growth step at its
+                    # best point; growing further would submit nothing.
+                    break
                 with timings.time("gradient screening"):
                     psi = ansatz.state(params) if ansatz.num_parameters else \
                         ansatz.reference_state()

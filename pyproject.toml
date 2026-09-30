@@ -1,15 +1,14 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-fancy-pypi-readme"]
 build-backend = "hatchling.build"
 
 [project]
 name = "mandacaru"
-dynamic = ["version"]
+dynamic = ["version", "readme"]
 authors = [
   { name="Leandro Seixas Rocha", email="leandro.rocha@ilum.cnpem.br" },
 ]
 description = "Everything you need for fermionic quantum simulation."
-readme = "README.md"
 license = {file = "LICENSE"} 
 requires-python = ">=3.14"
 dependencies = [
@@ -47,6 +46,10 @@ classifiers = [
 # differentiates its Loewdin / SCF / integral-transform layer.  The default
 # force_method="rdm" needs none of it (see mandacaru.algorithms.forces).
 legacy-forces = ['jax']
+# Training VALQA's learned proposal (mandacaru.algorithms.train_proposal_model):
+# JAX differentiates the graph network and the Gaussian-process likelihood.
+# Using a trained model (method="valqa", proposal_model=...) needs none of it.
+learned-proposals = ['jax']
 docs = ['sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 coverage = ['pytest-cov']
 dev = ['pyarrow', 'psutil', 'jax', 'sphinx>=8,<10', 'myst-parser>=4,<6',
@@ -92,6 +95,29 @@ mandacaru-build = "mandacaru.pseudopotentials.build_cli:main"
 
 [tool.hatch.version]
 path = "src/mandacaru/version.py"
+
+# The PyPI description is README.md with its GitHub-only markup rewritten.
+# GitHub picks the logo for its light or dark theme from the
+# #gh-light-mode-only / #gh-dark-mode-only fragments; PyPI ignores them and
+# would show both logos, so it gets the light one alone.  Relative links are
+# made absolute, since PyPI has no repository to resolve them against.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '<img src="[^"]*#gh-dark-mode-only"[^>]*>\n?'
+replacement = ''
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '#gh-light-mode-only'
+replacement = ''
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\]\(LICENSE\)'
+replacement = '](https://github.com/seixas-research/mandacaru/blob/main/LICENSE)'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mandacaru"]

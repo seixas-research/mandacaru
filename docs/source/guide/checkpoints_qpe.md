@@ -175,7 +175,14 @@ checkpoint's state preparation on the system wires and
 `qiskit.circuit.library.PhaseEstimation` around an exact
 `PauliEvolutionGate` — whose state-vector simulation reproduces the native
 distribution to machine precision (`QuantumPhaseEstimation.evaluation_distribution`).
-Its gate count is what a hardware run would transpile.
+
+This is the **exact reference** synthesis, not a hardware one:
+`qiskit.synthesis.MatrixExponential` exponentiates the dense `2^n x 2^n`
+Hamiltonian, so the controlled powers of `U` are arbitrary unitaries whose
+gate count grows exponentially with the register — useful for checking a
+small system against `run()`, not for sizing a real submission. Molecular QPE
+on a processor needs a product-formula (or other) synthesis with an explicit
+approximation budget, which this method does not provide.
 
 See `examples/old/31_QPE_H2_from_checkpoint.py`.
 

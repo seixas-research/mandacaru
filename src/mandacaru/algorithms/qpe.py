@@ -535,6 +535,14 @@ class QuantumPhaseEstimation:
         the integer read off them is the bin ``m`` of :class:`QPEResult`),
         wires ``t .. t+n-1`` the system, with Mandacaru qubit ``k`` on wire
         ``t + n - 1 - k`` as every provider lays it out.
+
+        This is the **exact reference** synthesis, not a hardware one:
+        :class:`~qiskit.synthesis.MatrixExponential` exponentiates the dense
+        ``2^n x 2^n`` Hamiltonian, so the controlled powers of ``U`` are
+        arbitrary unitaries whose gate count grows exponentially with ``n``.
+        It checks small systems against :meth:`run`; running molecular QPE on
+        a processor needs a product-formula (or other) synthesis with an
+        explicit approximation budget, which this method does not provide.
         """
         from qiskit import QuantumCircuit
         from qiskit.circuit.library import PauliEvolutionGate, PhaseEstimation

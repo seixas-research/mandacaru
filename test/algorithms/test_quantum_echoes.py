@@ -117,7 +117,8 @@ def test_adapt_ground_state_handoff(mapping, tmp_path):
 
 def test_three_dimensional_h2_example(tmp_path, monkeypatch, capsys):
     """Validate physical geometry, the AO/MO dipole transform, and the echo."""
-    example = Path(__file__).resolve().parents[2] / "examples" / "quantum_echoes.py"
+    example = (Path(__file__).resolve().parents[2] / "examples" / "old"
+               / "quantum_echoes.py")
     module = runpy.run_path(str(example))
     build = module["build_h2_problem"]
     output = tmp_path / "output.txt"

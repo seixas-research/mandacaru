@@ -198,6 +198,27 @@ _ALGORITHMS = [
   doi     = {10.1126/science.220.4598.671}
 }""", "the annealed architecture temperature of VASQA", verified=False,
          topics=("mcas",)),
+    _ref("Gilmer2017", """
+@inproceedings{Gilmer2017,
+  author    = {Gilmer, Justin and Schoenholz, Samuel S. and Riley, Patrick F.
+               and Vinyals, Oriol and Dahl, George E.},
+  title     = {Neural message passing for quantum chemistry},
+  booktitle = {Proceedings of the 34th International Conference on Machine
+               Learning},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {70},
+  pages     = {1263--1272},
+  year      = {2017}
+}""", "the Hamiltonian message-passing network of VALQA's proposal",
+         verified=False, topics=("mcas",)),
+    _ref("Rasmussen2006", """
+@book{Rasmussen2006,
+  author    = {Rasmussen, Carl Edward and Williams, Christopher K. I.},
+  title     = {Gaussian Processes for Machine Learning},
+  publisher = {MIT Press},
+  year      = {2006}
+}""", "the Gaussian-process head of VALQA's proposal", verified=False,
+         topics=("mcas",)),
     _ref("Kitaev1995", """
 @misc{Kitaev1995,
   author        = {Kitaev, A. Yu.},

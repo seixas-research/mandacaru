@@ -121,22 +121,34 @@ ONCV = {"H2": {"rhf": -1.044179, "adapt": -1.058561},
 #:                            LiH -0.770388 / -0.778105 -> -0.770399 / -0.778117
 #:   PAW_BEFORE_BASIS_FILTER  H2 -1.094874 / -1.108638 -> -1.094880 / -1.108644
 #:                            LiH -0.770427 / -0.778141 -> -0.770438 / -0.778153
-PAW = {"H2": {"rhf": -1.094873, "adapt": -1.108624},
-       "LiH": {"rhf": -0.769939, "adapt": -0.777683}}
+#:
+#: Re-measured 2026-09-30 against the libraries rebuilt 2026-09-28/30
+#: (relativistic exchange, the intruding-1s check; TODO 1.16).  All four
+#: tables move together, H2 by ~20 uHa and LiH by ~16 uHa:
+#:   PAW                      H2 -1.094873 / -1.108624 -> -1.094853 / -1.108603
+#:                            LiH -0.769939 / -0.777683 -> -0.769924 / -0.777664
+#:   PAW_FILTER_ONLY          H2 -1.094919 / -1.108671 -> -1.094899 / -1.108650
+#:                            LiH -0.769921 / -0.777665 -> -0.769906 / -0.777647
+#:   PAW_EXACT_LOCAL_ONLY     H2 -1.094887 / -1.108652 -> -1.094867 / -1.108632
+#:                            LiH -0.770399 / -0.778117 -> -0.770383 / -0.778098
+#:   PAW_BEFORE_BASIS_FILTER  H2 -1.094880 / -1.108644 -> -1.094860 / -1.108624
+#:                            LiH -0.770438 / -0.778153 -> -0.770423 / -0.778134
+PAW = {"H2": {"rhf": -1.094853, "adapt": -1.108603},
+       "LiH": {"rhf": -0.769924, "adapt": -0.777664}}
 #: The filter alone (``exact_local_potential = False``).
 PAW_FILTER_ONLY = {
-    "H2": {"rhf": -1.094919, "adapt": -1.108671},
-    "LiH": {"rhf": -0.769921, "adapt": -0.777665}}
+    "H2": {"rhf": -1.094899, "adapt": -1.108650},
+    "LiH": {"rhf": -0.769906, "adapt": -0.777647}}
 #: The exact local potential alone (``filter=False``).
 PAW_EXACT_LOCAL_ONLY = {
-    "H2": {"rhf": -1.094887, "adapt": -1.108652},
-    "LiH": {"rhf": -0.770399, "adapt": -0.778117}}
+    "H2": {"rhf": -1.094867, "adapt": -1.108632},
+    "LiH": {"rhf": -0.770383, "adapt": -0.778098}}
 #: Neither: ``filter=False`` and ``exact_local_potential = False`` -- the
 #: pre-2026-09-20 model.  Not wrong, just grid-sampled throughout; pinned so
 #: both flips are auditable.
 PAW_BEFORE_BASIS_FILTER = {
-    "H2": {"rhf": -1.094880, "adapt": -1.108644},
-    "LiH": {"rhf": -0.770438, "adapt": -0.778153}}
+    "H2": {"rhf": -1.094860, "adapt": -1.108624},
+    "LiH": {"rhf": -0.770423, "adapt": -0.778134}}
 #: The family's **default basis** since 2026-09-20: the four tables above with
 #: the first zeta *confined* (``energy_shift = 0.1`` eV, GPAW's recipe; H 1s at
 #: 6.68 Bohr, Li 2s at 11.20).  A mild confinement lowers a minimal basis's
@@ -148,8 +160,12 @@ PAW_BEFORE_BASIS_FILTER = {
 #:   H2  adapt -1.127975 -> -1.128000   LiH adapt -0.779022 -> -0.779032
 #: and when the confinement shift became measured from the dataset's own free
 #: level:  H2 adapt -1.128000 -> -1.127986   LiH adapt -0.779032 -> -0.779033
-PAW_DEFAULT = {"H2": {"rhf": -1.118043, "adapt": -1.127986},
-               "LiH": {"rhf": -0.773118, "adapt": -0.779033}}
+#: and 2026-09-30 (libraries rebuilt 2026-09-28/30, as above):
+#:   H2  adapt -1.127986 -> -1.127967   LiH adapt -0.779033 -> -0.779013
+#: The ``rhf`` entries are only an upper bound (``PIN_TOL``) and were not
+#: re-measured.
+PAW_DEFAULT = {"H2": {"rhf": -1.118043, "adapt": -1.127967},
+               "LiH": {"rhf": -0.773118, "adapt": -0.779013}}
 #: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
 PAW_BEFORE_COMPENSATION_ATTRACTION = {
     "H2": {"rhf": -1.053292, "adapt": -1.067402},

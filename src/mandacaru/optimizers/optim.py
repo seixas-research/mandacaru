@@ -16,7 +16,8 @@ history so a convergence trace is always available:
   stochastic-gradient method, implemented natively here;
 * **COBYLA** (Constrained Optimization BY Linear Approximation) -- SciPy;
 * **Nelder-Mead** -- SciPy simplex;
-* **SLSQP** (Sequential Least Squares Programming) -- SciPy, **the default**;
+* **SLSQP** (Sequential Least Squares Programming) -- SciPy, **the default**
+  on an exact objective (SPSA is, with shots: :data:`SHOT_OPTIMIZER`);
 * **BFGS**, **L-BFGS** -- SciPy quasi-Newton;
 * **CG** -- SciPy nonlinear conjugate gradient, Polak-Ribiere.
 
@@ -59,7 +60,8 @@ class OptimizeResult:
 NAMED_OPTIMIZERS = ("SPSA", "COBYLA", "Nelder-Mead", "SLSQP",
                     "BFGS", "L-BFGS", "CG")
 
-#: Default method everywhere (drivers included).  Measured on H2O/PAW-LCAO-SZ with
+#: Default method on an exact objective (drivers included; with shots the
+#: default is :data:`SHOT_OPTIMIZER`).  Measured on H2O/PAW-LCAO-SZ with
 #: the qubit pool, where it reaches the same energy on the same circuit as
 #: every other method at **one to two orders of magnitude fewer steps and
 #: evaluations**, and was one of only two that certified convergence at every
@@ -67,6 +69,22 @@ NAMED_OPTIMIZERS = ("SPSA", "COBYLA", "Nelder-Mead", "SLSQP",
 #: stopping early on a flat landscape can cost ADAPT an extra operator.
 #: See ``docs/source/guide/optimizers.md`` for the measurements.
 DEFAULT_OPTIMIZER = "SLSQP"
+
+#: The default on a **shot-based** objective, where every evaluation carries
+#: independent sampling noise.  SLSQP (and BFGS, L-BFGS, CG) difference the
+#: energy at steps near 1.5e-8; a noise of ``sigma`` then becomes a gradient
+#: noise of about ``sqrt(2) sigma / eps`` -- ~10^6 Ha/rad at ``sigma = 0.01``
+#: Ha -- and the method walks on noise.  SPSA's perturbation is ``c = 0.1``
+#: rad, so the same noise costs ``sigma / c``, and ``track_best=False``
+#: spends two evaluations a step instead of three and does not pick a
+#: downward noise fluctuation as "the best".  ``tol=None``: a step size is not
+#: a convergence certificate under noise, so the run takes its ``maxiter``
+#: steps (``2 * maxiter + 1`` evaluations -- each one a job on a processor).
+SHOT_OPTIMIZER = {"method": "SPSA", "maxiter": 100, "tol": None,
+                  "options": {"track_best": False}}
+#: Methods that estimate derivatives by differencing the energy at tiny
+#: steps: refused on a shot-based objective (see :data:`SHOT_OPTIMIZER`).
+NOISE_INTOLERANT = ("SLSQP", "BFGS", "L-BFGS", "CG")
 
 #: Default iteration budget and convergence tolerance of a bare
 #: :class:`Optimizer`.
@@ -91,9 +109,8 @@ DEFAULT_OPTIMIZER = "SLSQP"
 DEFAULT_MAXITER = 1000
 DEFAULT_TOL = 1e-12
 
-# Methods routed to scipy.optimize.minimize vs. implemented natively below.
-_SCIPY_METHODS = ("COBYLA", "Nelder-Mead", "SLSQP", "BFGS", "L-BFGS",
-                  "CG")
+# Methods implemented natively below; every other one goes to
+# scipy.optimize.minimize.
 _CUSTOM_METHODS = ("SPSA",)
 
 #: Mandacaru name -> the name ``scipy.optimize.minimize`` knows it by, for the
@@ -145,7 +162,8 @@ def _check_method(method, allowed) -> None:
 
 def resolve_optimizer(optimizer, allowed=NAMED_OPTIMIZERS,
                       maxiter: int = 2000,
-                      tol: float | None = DEFAULT_TOL) -> "Optimizer":
+                      tol: float | None = DEFAULT_TOL,
+                      shots: int = 0) -> "Optimizer":
     """Normalize an ``optimizer`` argument to an :class:`Optimizer`.
 
     Three spellings, all equivalent:
@@ -163,7 +181,26 @@ def resolve_optimizer(optimizer, allowed=NAMED_OPTIMIZERS,
 
     Shared by the VQE and ADAPT-VQE drivers, so every method exposes the same
     ``optimizer=`` surface.
+
+    ``None`` is the default for the objective: :data:`DEFAULT_OPTIMIZER` on
+    an exact one, :data:`SHOT_OPTIMIZER` when ``shots > 0`` (a dict without a
+    ``"method"`` takes the same default).  With ``shots > 0`` a method in
+    :data:`NOISE_INTOLERANT` is refused, however it was spelled.
     """
+    if optimizer is None:
+        optimizer = dict(SHOT_OPTIMIZER) if shots else DEFAULT_OPTIMIZER
+    elif isinstance(optimizer, dict) and "method" not in optimizer and shots:
+        optimizer = {**SHOT_OPTIMIZER, **optimizer}
+    resolved = _resolve_optimizer(optimizer, allowed, maxiter, tol)
+    if shots and resolved.method in NOISE_INTOLERANT:
+        raise ValueError(
+            f"optimizer {resolved.method!r} differences the energy at tiny "
+            f"steps, which turns shot noise into gradient noise; with "
+            f"shots > 0 use 'SPSA' (the default) or 'COBYLA'")
+    return resolved
+
+
+def _resolve_optimizer(optimizer, allowed, maxiter, tol) -> "Optimizer":
     if isinstance(optimizer, Optimizer):
         return optimizer
     if isinstance(optimizer, dict):
@@ -192,7 +229,8 @@ class Optimizer:
     Parameters
     ----------
     method : str
-        Optimization method (default :data:`DEFAULT_OPTIMIZER`, ``"SLSQP"``),
+        Optimization method (default :data:`DEFAULT_OPTIMIZER`, ``"SLSQP"``;
+        a driver with shots resolves ``None`` to :data:`SHOT_OPTIMIZER`),
         one of :data:`NAMED_OPTIMIZERS`:
 
         * **derivative-free** -- ``"COBYLA"``, ``"Nelder-Mead"``;
@@ -236,6 +274,20 @@ class Optimizer:
         self.tol = tol
         self.options = dict(options or {})
         self.seed = int(seed)
+
+    def max_evaluations(self) -> int | None:
+        """The most cost evaluations :meth:`minimize` can make, or ``None``
+        when the method does not bound them by ``maxiter``.
+
+        On a processor each evaluation is a job, so this is what a run
+        budget is checked against before the first one is queued.
+        """
+        if self.method == "SPSA":
+            track_best = bool(self.options.get("track_best", True))
+            return 2 * self.maxiter + (self.maxiter + 1 if track_best else 1)
+        if self.method == "COBYLA":
+            return int(self.options.get("maxiter", self.maxiter))
+        return None
 
     def minimize(self, cost: Callable[[np.ndarray], float],
                  x0: Sequence[float], callback=None) -> OptimizeResult:

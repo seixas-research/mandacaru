@@ -433,3 +433,75 @@ class TestVQESpinAndInitialState:
         with pytest.raises(ValueError):
             Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                       ansatz=UCCSD(2, (1, 1)), initial_state="excited")
+
+
+class TestTheShotObjectiveIsTheDeclaredCircuit:
+    """With ``shots > 0`` every objective evaluation is a circuit, and it goes
+    through the same validated export as the final measurement.  It used to
+    hand the provider the logical angles and zip them against the generators:
+    a one-angle Trotter HVA with several compiled rotations submitted only
+    the first, and a prebuilt exact-UCC ansatz was run as the ordered
+    product it does not declare."""
+
+    class ExactCircuit:
+        """A provider whose "measurement" is the executed circuit's exact
+        expectation value, so any difference is the circuit, not noise."""
+
+        def energy(self, n, occupied, generators, theta, hamiltonian):
+            from mandacaru.backends.providers import QiskitProvider
+            psi = QiskitProvider().statevector(n, occupied, generators, theta)
+            return float(np.vdot(psi, hamiltonian.to_matrix() @ psi).real)
+
+    def test_a_prebuilt_trotter_hva_submits_its_whole_circuit(self):
+        from mandacaru.circuits.hva import HamiltonianVariationalAnsatz
+        from mandacaru.core.mapping import Fermion
+
+        n0 = Fermion.creation(0) * Fermion.annihilation(0)
+        hop = Fermion.creation(0) * Fermion.annihilation(1)
+        fermion = n0 + hop + Fermion.creation(1) * Fermion.annihilation(0)
+        ansatz = HamiltonianVariationalAnsatz(
+            fermion, (1, 0), mapping="jordan_wigner", layers=1,
+            evolution="trotter", order=2, steps=2)
+        assert len(ansatz.pauli_generators) > ansatz.num_parameters
+        qubit_h = fermion.map_to_qubits("jordan_wigner", n_modes=2)
+        calc = Mandacaru(method="vqe", hamiltonian=qubit_h, ansatz=ansatz,
+                         shots=1000, trace=False)
+        solver = calc.solver
+        solver.circuit_provider = lambda: self.ExactCircuit()
+        theta = np.array([0.71])
+        assert solver.ansatz_energy(ansatz, theta) == pytest.approx(
+            solver.energy(ansatz.state(theta)), abs=1e-10)
+
+    def test_a_prebuilt_exact_ucc_is_refused_with_shots(self):
+        hamiltonian = PauliSum({"ZIII": 1.0, "XXII": 0.3}, num_qubits=4)
+        with pytest.raises(ValueError, match="ordered product"):
+            Mandacaru(method="vqe", hamiltonian=hamiltonian,
+                      ansatz=UCCSD(2, (1, 1), trotter=False), shots=1000,
+                      trace=False).solver
+
+
+class TestAShotRunBuildsNoStateVector:
+    """With shots every energy is a measured circuit, yet the driver used to
+    build the Hamiltonian matrix (and meet its state-memory guard) and the
+    UCCSD every dense generator -- 256 MiB each at 12 qubits -- before
+    submitting anything.  Here every dense constructor is forbidden."""
+
+    def test_vqe_with_shots_never_materializes(self, monkeypatch):
+        from mandacaru.core import mapping
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("a shot-based run built a 2^N matrix")
+
+        hamiltonian = PauliSum({"ZIII": 1.0, "IZII": -0.5, "XXYY": 0.2,
+                                "IIII": -0.3}, num_qubits=4)
+        calc = Mandacaru(method="vqe", hamiltonian=hamiltonian,
+                         ansatz=UCCSD(2, (1, 1), trotter=True), shots=1000,
+                         optimizer={"method": "SPSA", "maxiter": 3},
+                         backend_options={"seed": 7}, trace=False)
+        monkeypatch.setattr(mapping.PauliSum, "to_matrix", forbidden)
+        monkeypatch.setattr(mapping.PauliSum, "to_sparse_matrix", forbidden)
+        result = calc.solver.run()
+        assert np.isfinite(result.optimal_energy)
+        # The reference energy came from the determinant: |1010> here.
+        assert calc.solver.reference_energy() == pytest.approx(
+            -1.0 - 0.5 - 0.3)

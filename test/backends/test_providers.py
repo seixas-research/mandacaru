@@ -90,6 +90,18 @@ class TestProviderRegistry:
                          execute_circuits=False).execute_circuits is False
 
 
+class TestAnglesMatchGenerators:
+    """A circuit whose angles and generators differ in number is refused: the
+    gate stream used to ``zip`` them, silently dropping the unmatched ones."""
+
+    @pytest.mark.parametrize("n_angles", [1, 3])
+    def test_a_count_mismatch_is_refused(self, n_angles):
+        generators = [PauliSum({"XY": 0.5j, "YX": -0.5j}, num_qubits=2)] * 2
+        provider = build_provider("qiskit")
+        with pytest.raises(ValueError, match="angles for 2 generators"):
+            provider.build(2, [0], generators, np.full(n_angles, 0.3))
+
+
 class TestPauliRotationDecomposition:
     def test_extracts_imaginary_coefficients(self):
         generator = PauliSum({"XY": 0.5j, "YX": -0.5j, "II": 0.0})

@@ -270,3 +270,39 @@ class TestCheckpoints:
             [it.optimizer_steps for it in first.iterations]
         # ...and the run total continues from where the file stopped.
         assert second.optimizer_steps > first.optimizer_steps
+
+
+class TestAShotObjectiveGetsANoiseTolerantOptimizer:
+    """SLSQP at ``tol=1e-12`` was the default on shot-based objectives too:
+    it differences the energy at ~1.5e-8 rad, turning a 0.01 Ha shot noise
+    into ~10^6 Ha/rad of gradient noise."""
+
+    def test_the_default_is_spsa_with_shots(self):
+        spsa = resolve_optimizer(None, shots=1000)
+        assert spsa.method == "SPSA" and spsa.tol is None
+        assert spsa.options["track_best"] is False
+        assert resolve_optimizer(None).method == DEFAULT_OPTIMIZER
+
+    def test_a_dict_without_a_method_keeps_the_shot_default(self):
+        spsa = resolve_optimizer({"maxiter": 20}, shots=1000)
+        assert spsa.method == "SPSA" and spsa.maxiter == 20
+
+    @pytest.mark.parametrize("method", ["SLSQP", "BFGS", "L-BFGS", "CG"])
+    def test_a_finite_difference_method_is_refused(self, method):
+        with pytest.raises(ValueError, match="shot noise"):
+            resolve_optimizer(method, shots=1000)
+        with pytest.raises(ValueError, match="shot noise"):
+            resolve_optimizer({"method": method}, shots=1000)
+        assert resolve_optimizer(method).method == method
+
+    @pytest.mark.parametrize("method", ["COBYLA", "SPSA", "Nelder-Mead"])
+    def test_the_others_are_accepted(self, method):
+        assert resolve_optimizer(method, shots=1000).method == method
+
+    def test_the_driver_follows_its_shots(self):
+        calc = Mandacaru(method="vqe", basis="HAO", h=0.4, shots=1000,
+                         trace=False)
+        assert calc.solver.optimizer.method == "SPSA"
+        with pytest.raises(ValueError, match="shot noise"):
+            Mandacaru(method="vqe", basis="HAO", h=0.4, shots=1000,
+                      optimizer="SLSQP", trace=False).solver

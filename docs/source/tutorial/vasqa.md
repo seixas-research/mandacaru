@@ -200,4 +200,6 @@ ratio and the decision (see {doc}`../guide/run_output`). Without `txt=` the
 same blocks are printed. Checkpoints are refused: a chain's state is more than
 one ansatz.
 
-Learned proposal distributions are not implemented.
+A chain whose operator probabilities come from a trained model is VALQA,
+`method="valqa"` ({doc}`valqa`); `record="DIR"` makes a VASQA run collect
+the edits that model is trained on.

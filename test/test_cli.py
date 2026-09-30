@@ -71,7 +71,7 @@ class TestMarkovChainOptions:
         options = self._options()
         for name in ("max_steps", "max_length", "move_weights", "temperature",
                      "length_penalty", "warm_start", "seed", "proposal",
-                     "proposal_temperature"):
+                     "proposal_temperature", "record", "proposal_model"):
             assert name not in options
 
     def test_every_flag_reaches_its_option(self):
@@ -85,6 +85,16 @@ class TestMarkovChainOptions:
         assert options["length_penalty"] == 0.002
         assert options["warm_start"] is False and options["seed"] == 11
         assert options["pool"] == "qeb"
+
+    def test_the_recording_and_model_flags_reach_valqa(self):
+        options = solver_options(build_parser().parse_args(
+            ["H2", "--cell", "6", "--method", "valqa", "--record", "edits",
+             "--proposal-model", "model.npz"]))
+        assert options["record"] == "edits"
+        assert options["proposal_model"] == "model.npz"
+
+    def test_no_record_turns_the_shared_store_off(self):
+        assert self._options("--no-record")["record"] is False
 
     def test_one_temperature_is_fixed_and_two_anneal(self):
         assert self._options("--temperature", "0.05")["temperature"] == 0.05
@@ -192,6 +202,19 @@ class TestLibraryVariables:
         upaw = self._checkout(home, "mandacaru-upaw")
         assert main(["--set-upaw", str(upaw)]) == 0
         assert f"MANDACARU_UPAW_PATH={upaw}" in (home / ".zshrc").read_text()
+
+    def test_the_proposal_store_is_created_and_recorded(self, home, capsys,
+                                                        monkeypatch):
+        import os
+
+        monkeypatch.setenv("MANDACARU_PROPOSAL_DATA", "")
+        store = home / "valqa" / "edits"
+        assert main(["--set-proposal-data", str(store)]) == 0
+        assert store.is_dir()
+        assert f"export MANDACARU_PROPOSAL_DATA={store}" in \
+            (home / ".zshrc").read_text()
+        assert os.environ["MANDACARU_PROPOSAL_DATA"] == str(store)
+        assert "added to" in capsys.readouterr().out
 
     def test_a_missing_directory_writes_nothing(self, home, capsys):
         assert main(["--set-oncvpsp", str(home / "nowhere")]) == 1

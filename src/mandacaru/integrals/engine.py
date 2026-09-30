@@ -76,6 +76,34 @@ def radial_kinetic_energy(radial, l: int, r_max: float = 40.0,
     return float(0.5 * (np.trapezoid(du * du, r) + centrifugal) / norm)
 
 
+def eri_peak_bytes(n_orbitals: int) -> int:
+    """Peak memory of the FFT two-body tensor beyond the Poisson blocks.
+
+    The two Gram blocks ``G1``/``G2`` (``U x U`` complex, ``U = M(M+1)/2``
+    pairs), the ``M^4`` complex result, and one ``a``-slice of assembly
+    temporaries (a few ``M^3`` arrays).  The blocked Poisson stage is
+    bounded separately by ``max_memory_mb``.
+    """
+    M = int(n_orbitals)
+    U = M * (M + 1) // 2
+    return 16 * (2 * U * U + M ** 4 + 6 * M ** 3)
+
+
+def refuse_unaffordable_eri(n_orbitals: int) -> None:
+    """Raise :class:`MemoryError` when the two-body tensor cannot fit, before
+    the Poisson solves it would otherwise run first."""
+    from ..core.matrix_free import format_bytes, physical_memory_bytes
+
+    needed = eri_peak_bytes(n_orbitals)
+    available = physical_memory_bytes()
+    if needed > available:
+        raise MemoryError(
+            f"the two-electron tensor of {n_orbitals} orbitals needs "
+            f"{format_bytes(needed)} (the M^4 result and its two Gram "
+            f"blocks) against {format_bytes(available)} of memory; reduce "
+            f"the basis (size=, an active_space) before integrating")
+
+
 class IntegralEngine:
     """Compute one- and two-body real-space integrals over a localized basis.
 
@@ -404,6 +432,7 @@ class IntegralEngine:
         flip[ju, iu] = True
         np.fill_diagonal(flip, False)
 
+        refuse_unaffordable_eri(M)
         B = self._eri_block_size(U, ngrid, solver, max_memory_mb)
         G1 = np.empty((U, U), dtype=np.complex128)
         G2 = np.empty((U, U), dtype=np.complex128)
@@ -429,18 +458,23 @@ class IntegralEngine:
         G2 *= dV
 
         # R[(a,c),(b,d)] = sum_g rho_ac Phi_bd dV, with rho_ac = conj(rho_u) when
-        # a > c and Phi_bd = conj(Phi_v) when b > d.
-        u = uidx.reshape(-1)                                     # over (a, c)
-        fa = flip.reshape(-1)
-        g1 = G1[u][:, u]
-        g2 = G2[u][:, u]
-        fa_ = fa[:, None]
-        fb_ = fa[None, :]
-        R = np.where(~fa_ & ~fb_, g1,
-            np.where(fa_ & ~fb_, g2,
-            np.where(~fa_ & fb_, np.conj(g2), np.conj(g1))))
-        # (a, c, b, d) -> physicists' (a, b, c, d).
-        return R.reshape(M, M, M, M).transpose(0, 2, 1, 3).copy()
+        # a > c and Phi_bd = conj(Phi_v) when b > d.  Assembled one ``a`` at
+        # a time straight into the physicists' (a, b, c, d) tensor: the only
+        # M^4 array is the result itself (the full-size gathers, nested
+        # ``where`` intermediates and final copy used to hold ~6 of them).
+        u = uidx.reshape(-1)                                     # over (b, d)
+        fb = flip.reshape(-1)[None, :]
+        eri = np.empty((M, M, M, M), dtype=np.complex128)
+        for a in range(M):
+            rows = uidx[a]                                        # (a, c) pairs
+            fa = flip[a][:, None]
+            g1 = G1[rows][:, u]                                   # (M, M^2)
+            g2 = G2[rows][:, u]
+            block = np.where(fb, np.where(fa, np.conj(g1), np.conj(g2)),
+                             np.where(fa, g2, g1))
+            # block[c, (b, d)] -> eri[a, b, c, d]
+            eri[a] = block.reshape(M, M, M).transpose(1, 0, 2)
+        return eri
 
     @staticmethod
     def _pair_block(psi, rows_i, rows_j, out):

@@ -40,8 +40,8 @@ it is refused with a message pointing at `trace=`.
 
 ```{note}
 `txt=` is accepted only by a method whose `run()` goes through this protocol —
-`"rhf"`, `"uhf"`, `"ghf"`, `"vqe"` (including `ansatz="hva"`), `"adapt-vqe"`
-and `"vasqa"` today — and refused with a message by the others rather than
+`"rhf"`, `"uhf"`, `"ghf"`, `"vqe"` (including `ansatz="hva"`), `"adapt-vqe"`,
+`"vasqa"` and `"valqa"` today — and refused with a message by the others rather than
 leaving an empty file. `"subspace-vqe"` and `"subspace-adapt-vqe"` print their
 own run header, which is not this one.
 
@@ -99,7 +99,8 @@ they read `-`.
 
 ## The Markov-chain table
 
-`method="vasqa"` writes the same blocks, with one difference: its
+`method="vasqa"` and `method="valqa"` write the same blocks, with one
+difference: their
 `[OPTIMIZATION SETUP]` holds the chain's settings (moves, temperature, length
 penalty, seed), and in place of `[ITERATIONS]` it writes `[MARKOV CHAIN]`, one
 row per proposal, accepted or not:
@@ -674,6 +675,13 @@ plan's monthly budget. A local simulator or a fake backend therefore reports the
 wall clock and the device name, and nothing is invented. `parse_output` reads the
 whole block back as `result["performance"]`, with the stages as
 `performance["stages_s"]`.
+
+The block above is one measurement -- `qpu_jobs` / `qpu_job_ids` list the jobs
+of that single submission, e.g. a `measurement_provider=` energy plus RDMs. A
+solver whose *whole optimization* ran on a processor (`device="ibm_*"` with
+`shots > 0`) instead reports `qpu_submissions`, the cumulative job count of
+the run so far -- one per energy evaluation, summed across every growth step
+of an ADAPT-VQE run.
 
 ## `verbose_operators` and `verbose_hamiltonian`
 

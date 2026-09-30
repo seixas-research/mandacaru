@@ -81,7 +81,6 @@ if TYPE_CHECKING:
     from ..algorithms.nested_otoc import NestedOTOCResult, OTOCSpectrum
 
 _BANNER = "=" * 72
-_RULE = "-" * 72
 #: One level of indentation inside a block.  The section markers, the rules and
 #: the banner sit at column 0; everything a block *contains* is indented one
 #: level, and what a keyed line contains (the geometry under ``geometry:``, the
@@ -1522,7 +1521,8 @@ _RELAXATION_COUNTS = ("geometry_steps",)
 
 #: ``[PERFORMANCE]`` keys that are counts rather than measurements, so they read
 #: back as ``int``.
-_PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs")
+_PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs",
+                       "qpu_submissions")
 
 #: Section markers of the protocol, mapped to the key they fill (the step
 #: markers are handled separately: they open a new geometry step).

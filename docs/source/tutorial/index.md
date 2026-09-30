@@ -23,5 +23,6 @@ vqe_h2
 energy_levels
 subspace_vqe
 vasqa
+valqa
 bloch_crystals
 ```

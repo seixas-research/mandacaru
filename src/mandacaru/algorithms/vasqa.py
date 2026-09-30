@@ -48,13 +48,17 @@ proposed state.
 The reported state (``result.optimal_energy``, ``result.operators``,
 ``result.optimal_parameters`` and the solver's ``ansatz``) is the **lowest-cost**
 architecture evaluated, rejected proposals included; the lowest-energy one and
-the chain's final state are reported beside it.  Learned proposals are not
-implemented.
+the chain's final state are reported beside it.  When the operator
+probabilities come from a trained model instead, the method is VALQA
+(:mod:`~mandacaru.algorithms.valqa`); both share the chain,
+:class:`MarkovChainSearch`, and both can record their proposals for training
+(``record=DIR``, :mod:`~mandacaru.algorithms.proposal_data`).
 """
 
 from __future__ import annotations
 
 import math
+import uuid
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -62,12 +66,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ..circuits.profiling import CircuitMetrics
-from ..optimizers.optim import DEFAULT_OPTIMIZER
 from ..units import convert_energy, to_hartree
 from .mcas import (MOVES, ProposalKernel, TemperatureSchedule,
                    gradient_softmax,
                    log_acceptance, metropolis_accept)
 from .pool_driver import PoolDriver
+from .proposal_data import EditRecorder, ProblemRecord, resolve_record
 
 if TYPE_CHECKING:
     from ..optimizers.optim import Optimizer
@@ -184,7 +188,7 @@ class VASQAResult:
                                     units))
 
     def __repr__(self) -> str:
-        return (f"VASQAResult(energy={self.optimal_energy:.6f} "
+        return (f"{type(self).__name__}(energy={self.optimal_energy:.6f} "
                 f"{self.energy_unit}, operators={self.num_operators}, "
                 f"steps={len(self.steps)}, "
                 f"acceptance={self.acceptance_rate:.2f})")
@@ -206,14 +210,18 @@ class _Evaluated:
     #: (``None``: uniform).  The forward move uses the current state's, the
     #: reverse the proposed state's.
     operator_probabilities: np.ndarray | None = None
+    #: The pool gradients at this state (``None`` when not screened).
+    gradients: np.ndarray | None = None
 
 
-class VASQA(PoolDriver):
+class MarkovChainSearch(PoolDriver):
     """Markov Chain Ansatz Search with VQE relaxation, on the state vector.
 
-    **The internal layer**: reached only through the calculator,
-    ``Mandacaru(method="vasqa", ...)``, which forwards every option here.
-    The problem setup -- ``hamiltonian`` or ``basis``, ``pool``, ``mapping``,
+    The chain VASQA and VALQA share; they differ only in the distribution
+    ``insert`` and ``replace`` draw their new operator from
+    (:meth:`_operator_distribution`).  **The internal layer**: reached only
+    through the calculator, ``Mandacaru(method="vasqa" | "valqa", ...)``,
+    which forwards every option here.  The problem setup -- ``hamiltonian`` or ``basis``, ``pool``, ``mapping``,
     ``sparse``, ``sector``, ``taper``, ``active_space`` and the rest -- is the
     one ADAPT-VQE takes (:class:`~mandacaru.algorithms.pool_driver.PoolDriver`).
 
@@ -254,24 +262,21 @@ class VASQA(PoolDriver):
         move (default ``True``).  ``False`` starts every architecture from
         zero angles and memoizes its energy, which makes the cost a fixed
         function of the architecture (see the module docstring).
-    proposal : {"gradient", "uniform"}
-        How ``insert`` and ``replace`` draw their new operator (default
-        ``"gradient"``).  ``"gradient"`` is a softmax of the pool gradients
-        :math:`|g_\\mu| = |2\\,\\mathrm{Re}\\langle H\\psi|A_\\mu\\psi\\rangle|` at the
-        current state (:func:`~mandacaru.algorithms.mcas.gradient_softmax`):
-        the operators ADAPT-VQE would pick are proposed most often, and the
-        rest keep a positive probability.  The gradient is the one for
-        appending at the end of the circuit, used for every slot -- a
-        heuristic for *which* operator, not a derivative at each position --
-        and the reverse probability is evaluated at the proposed state, so
-        the Metropolis-Hastings ratio stays exact.  One pool screening per
-        proposal.  ``"uniform"`` draws every operator with ``1/M``.
     proposal_temperature : float
         Softmax temperature of the gradient proposal, relative to the largest
         gradient (default :data:`DEFAULT_PROPOSAL_TEMPERATURE`): the steepest
         operator is ``exp(1/proposal_temperature)`` times as likely as one
         with zero gradient.  Small values approach ADAPT's greedy choice,
         large ones the uniform proposal.
+    record : str, path or bool, optional
+        Directory to append every proposal to -- rejected ones included --
+        with the problem it searched (:mod:`~mandacaru.algorithms.proposal_data`):
+        the training data of VALQA's learned proposal.  ``None`` (default)
+        records into the shared store ``MANDACARU_PROPOSAL_DATA`` when that
+        variable is set and records nothing otherwise; ``True`` requires the
+        store; ``False`` records nothing.  Recording needs the
+        pool gradients at every new state, so a ``"uniform"`` VASQA run that
+        records also screens the pool (counted in ``num_screenings``).
     seed : int, optional
         Seed of the chain's random stream (proposals and acceptance).
     profile : bool
@@ -282,9 +287,6 @@ class VASQA(PoolDriver):
     _default_sparse = "auto"
     _supports_spin_orbit = True
 
-    citation_method = "vasqa"
-    #: The name in the ``[SYSTEM]`` block's title.
-    log_title = "VASQA"
     #: ``run()`` writes the ``txt=`` log: ADAPT-VQE's blocks, with a
     #: ``[MARKOV CHAIN]`` table where ADAPT has ``[ITERATIONS]``.
     writes_output_log = True
@@ -298,7 +300,7 @@ class VASQA(PoolDriver):
                  basis="HAO",
                  num_particles=None,
                  n_spatial_orbitals=None,
-                 optimizer: str | Optimizer = DEFAULT_OPTIMIZER,
+                 optimizer: str | Optimizer | None = None,
                  mapping: str = "jordan_wigner",
                  device: str = "AER_simulator",
                  max_steps: int = 200,
@@ -308,8 +310,8 @@ class VASQA(PoolDriver):
                  temperature=None,
                  length_penalty: float = 0.0,
                  warm_start: bool = True,
-                 proposal: str = "gradient",
                  proposal_temperature: float = DEFAULT_PROPOSAL_TEMPERATURE,
+                 record=None,
                  seed: int | None = None,
                  profile: bool = True,
                  verbose: bool = True,
@@ -347,12 +349,10 @@ class VASQA(PoolDriver):
             raise ValueError(f"warm_start must be True or False, got "
                              f"{warm_start!r}")
         self.warm_start = warm_start
-        self.proposal = str(proposal).strip().lower()
-        if self.proposal not in PROPOSALS:
-            raise ValueError(f"unknown proposal {proposal!r}; use one of "
-                             f"{PROPOSALS}")
         self.proposal_temperature = float(proposal_temperature)
         gradient_softmax([1.0, 0.0], self.proposal_temperature)   # validates
+        self.record = resolve_record(record)
+        self._recorder: EditRecorder | None = None
         self.seed = None if seed is None else int(seed)
         self._adopt_problem(hamiltonian, num_particles, n_spatial_orbitals)
 
@@ -382,7 +382,8 @@ class VASQA(PoolDriver):
                 return _Evaluated(cached.architecture,
                                   cached.parameters.copy(), cached.energy,
                                   cached.cost, operator_probabilities=(
-                                      cached.operator_probabilities))
+                                      cached.operator_probabilities),
+                                  gradients=cached.gradients)
         ansatz = self._ansatz_for(architecture)
         if not architecture:
             energy = self.energy(ansatz.reference_state())
@@ -398,18 +399,105 @@ class VASQA(PoolDriver):
                 self._cost(energy, len(architecture)), int(result.nfev),
                 int(result.nit or 0), bool(result.success),
                 str(result.message))
-        if self.proposal == "gradient":
-            # The proposal out of this state: a softmax of the pool gradients
-            # at its relaxed angles.  Needed whether or not it is accepted --
-            # a rejected proposal's distribution is the reverse probability.
+        if not architecture:
+            self._reference_ha = evaluated.energy
+        if self._draws_from_gradients or self._recorder is not None:
+            # The proposal out of this state, from the pool gradients at its
+            # relaxed angles.  Needed whether or not it is accepted -- a
+            # rejected proposal's distribution is the reverse probability.
             psi = (ansatz.state(evaluated.parameters) if architecture
                    else ansatz.reference_state())
-            evaluated.operator_probabilities = gradient_softmax(
-                self._analytic_gradients(psi), self.proposal_temperature)
+            evaluated.gradients = self._analytic_gradients(psi)
             self._screenings += 1
+        evaluated.operator_probabilities = self._operator_distribution(
+            evaluated)
         if not self.warm_start:
             self._cache[architecture] = evaluated
         return evaluated
+
+    # -- the proposal: what VASQA and VALQA define ------------------------- #
+
+    #: Whether the operator distribution needs the pool gradients.
+    _draws_from_gradients = True
+    #: Whether the proposal needs the run's problem record (a learned model
+    #: is bound to it); recording needs it regardless.
+    _needs_problem = False
+
+    def _gradient_distribution(self, evaluated: _Evaluated) -> np.ndarray:
+        """The gradient softmax at ``evaluated``'s relaxed state."""
+        return gradient_softmax(evaluated.gradients,
+                                self.proposal_temperature)
+
+    def _operator_distribution(self, evaluated: _Evaluated):
+        """The distribution new operators are drawn from at ``evaluated``
+        (``None``: uniform).  A fixed function of the state, so the
+        Metropolis-Hastings ratio stays exact."""
+        raise NotImplementedError
+
+    def _prepare_proposal(self, problem: ProblemRecord | None) -> None:
+        """Set the proposal up for this run's problem (``None``: empty pool)."""
+
+    def _proposal_setup(self) -> dict:
+        """The ``[OPTIMIZATION SETUP]`` lines describing the proposal."""
+        raise NotImplementedError
+
+    def _result_extras(self) -> dict:
+        """Fields the result class adds to :class:`VASQAResult`."""
+        return {}
+
+    _result_class = VASQAResult
+
+    def _problem_record(self) -> ProblemRecord:
+        """The Hamiltonian, reference and pool this run searches."""
+        return ProblemRecord.from_problem(
+            self.hamiltonian, self._new_ansatz().reference_qubits(),
+            self._pool_ops)
+
+    def _open_recorder(self, problem, geometry) -> EditRecorder | None:
+        if self.record is None or problem is None:
+            return None
+        from ..version import __version__
+        return EditRecorder(self.record, problem, run={
+            "run": uuid.uuid4().hex[:12], "method": self.log_title,
+            "mandacaru": __version__, "formula": _formula(geometry),
+            "pool": getattr(self.pool, "name", "?"),
+            "proposal": self._proposal_setup()["proposal"],
+            "model": self._model_version(),
+            "warm_start": self.warm_start,
+            "length_penalty": self._length_penalty_ha,
+            "optimizer": self.optimizer.method, "seed": self.seed})
+
+    def _model_version(self) -> str | None:
+        """The version of the model drawing proposals, if any."""
+        return None
+
+    def _edit_row(self, step, action, source: _Evaluated,
+                  proposed: _Evaluated, log_forward, log_reverse,
+                  log_alpha, accepted, beta) -> dict:
+        """One ``edits.jsonl`` row: the state before, the edit, the outcome."""
+        mu = action.operator
+        probs = source.operator_probabilities
+        drawn = (None if mu is None
+                 else float(probs[mu]) if probs is not None
+                 else 1.0 / len(self._pool_ops))
+        return {
+            "step": step, "move": action.move, "position": action.position,
+            "operator": mu, "other": action.other,
+            "replaced": (source.architecture[action.position]
+                         if action.move == "replace" else None),
+            "source": list(source.architecture),
+            "proposed": list(proposed.architecture),
+            "source_energy": source.energy,
+            "reference_energy": self._reference_ha,
+            "delta_energy": proposed.energy - source.energy,
+            "delta_cost": proposed.cost - source.cost,
+            "source_gradients": (None if source.gradients is None
+                                 else [float(g) for g in source.gradients]),
+            "operator_probability": drawn,
+            "log_q_forward": log_forward, "log_q_reverse": log_reverse,
+            "log_acceptance": log_alpha, "accepted": bool(accepted),
+            "temperature": 0.0 if math.isinf(beta) else 1.0 / beta,
+            "nfev": proposed.nfev, "optimizer_success": proposed.success}
 
     # -- the chain -------------------------------------------------------- #
 
@@ -451,7 +539,12 @@ class VASQA(PoolDriver):
         #: Pool-gradient screenings, one per new state under the gradient
         #: proposal: part of the search cost, so it is reported.
         self._screenings = 0
+        self._reference_ha = None
         rng = np.random.default_rng(self.seed)
+        problem = self._problem_record() if kernel is not None and (
+            self.record is not None or self._needs_problem) else None
+        self._prepare_proposal(problem)
+        self._recorder = self._open_recorder(problem, geometry)
 
         self._show_banner()
         with timings.time("parameter optimization"):
@@ -498,6 +591,10 @@ class VASQA(PoolDriver):
                 log_alpha = log_acceptance(beta, current.cost, proposed.cost,
                                            log_forward, log_reverse)
                 accepted = metropolis_accept(log_alpha, rng)
+                if self._recorder is not None:
+                    self._recorder.write(self._edit_row(
+                        step, action, current, proposed, log_forward,
+                        log_reverse, log_alpha, accepted, beta))
                 previous = current
                 tried[action.move] += 1
                 if accepted:
@@ -548,7 +645,7 @@ class VASQA(PoolDriver):
             def names(evaluated):
                 return [labels[i] for i in evaluated.architecture]
 
-            result = VASQAResult(
+            result = self._result_class(
                 optimal_energy=self._to_energy_units(best_cost.energy),
                 optimal_parameters=best_cost.parameters,
                 reference_energy=self._to_energy_units(reference_energy),
@@ -572,12 +669,15 @@ class VASQA(PoolDriver):
                 seed=self.seed,
                 metrics=metrics,
                 integration_profile=self._integration_profile,
-                energy_unit=unit)
+                energy_unit=unit, **self._result_extras())
             if logger is not None:
                 self._write_summary(logger, result)
         finally:
             if logger is not None:
                 logger.close()
+            if self._recorder is not None:
+                self._recorder.close()
+                self._recorder = None
 
         if failures:
             warnings.warn(
@@ -624,11 +724,9 @@ class VASQA(PoolDriver):
                 "pool": getattr(self.pool, "name", "?"),
                 "pool_class": self.pool.__class__.__name__,
                 "pool_size": len(self._pool_ops),
-                "proposal": (
-                    f"gradient softmax (tau {self.proposal_temperature:g} of "
-                    f"max |grad|), Metropolis-Hastings"
-                    if self.proposal == "gradient"
-                    else "uniform, Metropolis-Hastings"),
+                **self._proposal_setup(),
+                "recorded_edits": (str(self.record) if self.record is not None
+                                   else "none"),
                 "max_steps": self.max_steps,
                 "ansatz_length": f"{self.min_length} to {self.max_length}",
                 "move_weights": ", ".join(f"{move} {weight:g}" for move, weight
@@ -687,3 +785,67 @@ def _temperature_in_hartree(temperature, unit: str):
         return {key: float(to_hartree(float(value), unit))
                 for key, value in temperature.items()}
     return float(to_hartree(float(temperature), unit))
+
+
+def _formula(geometry) -> str | None:
+    """The chemical formula of a run's geometry, if it has one."""
+    if geometry is None:
+        return None
+    if hasattr(geometry, "get_chemical_formula"):
+        return geometry.get_chemical_formula()
+    try:
+        from ase import Atoms
+        return Atoms(list(geometry[0])).get_chemical_formula()
+    except Exception:
+        return None
+
+
+class VASQA(MarkovChainSearch):
+    """VASQA: the chain with a gradient-softmax or uniform proposal.
+
+    Takes every option of :class:`MarkovChainSearch` and
+
+    Parameters
+    ----------
+    proposal : {"gradient", "uniform"}
+        How ``insert`` and ``replace`` draw their new operator (default
+        ``"gradient"``).  ``"gradient"`` is a softmax of the pool gradients
+        :math:`|g_\\mu| = |2\\,\\mathrm{Re}\\langle H\\psi|A_\\mu\\psi\\rangle|` at the
+        current state (:func:`~mandacaru.algorithms.mcas.gradient_softmax`):
+        the operators ADAPT-VQE would pick are proposed most often, and the
+        rest keep a positive probability.  The gradient is the one for
+        appending at the end of the circuit, used for every slot -- a
+        heuristic for *which* operator, not a derivative at each position --
+        and the reverse probability is evaluated at the proposed state, so
+        the Metropolis-Hastings ratio stays exact.  One pool screening per
+        proposal.  ``"uniform"`` draws every operator with ``1/M``.
+    """
+
+    citation_method = "vasqa"
+    #: The name in the ``[SYSTEM]`` block's title.
+    log_title = "VASQA"
+    _needs_problem = False
+
+    def __init__(self, hamiltonian=None, proposal: str = "gradient",
+                 **chain_options):
+        self.proposal = str(proposal).strip().lower()
+        if self.proposal not in PROPOSALS:
+            raise ValueError(f"unknown proposal {proposal!r}; use one of "
+                             f"{PROPOSALS}")
+        super().__init__(hamiltonian, **chain_options)
+
+    @property
+    def _draws_from_gradients(self) -> bool:
+        return self.proposal == "gradient"
+
+    def _operator_distribution(self, evaluated):
+        if self.proposal == "gradient":
+            return self._gradient_distribution(evaluated)
+        return None
+
+    def _proposal_setup(self) -> dict:
+        return {"proposal": (
+            f"gradient softmax (tau {self.proposal_temperature:g} of "
+            f"max |grad|), Metropolis-Hastings"
+            if self.proposal == "gradient"
+            else "uniform, Metropolis-Hastings")}

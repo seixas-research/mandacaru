@@ -188,6 +188,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "(mandacaru-upaw, MANDACARU_UPAW_PATH); optional, "
                              "since UPAW-LCAO is otherwise generated on "
                              "demand.")
+    parser.add_argument("--set-proposal-data", metavar="DIR", default=None,
+                        help="record DIR as MANDACARU_PROPOSAL_DATA, the "
+                             "shared store vasqa and valqa record their "
+                             "proposals into and valqa reads its trained "
+                             "model from (created if missing), then exit.")
     parser.add_argument("--pseudo-status", action="store_true",
                         help="report where each pseudopotential library "
                              "variable points and how many datasets it "
@@ -322,15 +327,15 @@ def build_parser() -> argparse.ArgumentParser:
     solver = parser.add_argument_group("solver")
     solver.add_argument("--pool", default=None,
                         choices=tuple(available_pools()),
-                        help="operator pool of adapt-vqe and vasqa (default "
+                        help="operator pool of adapt-vqe, vasqa and valqa (default "
                              "fermionic)")
     solver.add_argument("--ansatz", default=None, choices=ANSATZ_NAMES,
                         help="circuit of --method vqe: uccsd (default) or "
                              "hva, the Hamiltonian variational ansatz")
-    solver.add_argument("--optimizer", default=DEFAULT_OPTIMIZER,
+    solver.add_argument("--optimizer", default=None,
                         choices=tuple(NAMED_OPTIMIZERS),
-                        help=f"classical optimizer "
-                             f"(default {DEFAULT_OPTIMIZER})")
+                        help=f"classical optimizer (default {DEFAULT_OPTIMIZER}; "
+                             f"SPSA with --shots)")
     solver.add_argument("--max-iterations", type=int, default=None,
                         help="ADAPT growth steps (adaptive methods)")
     solver.add_argument("--convergence-gradient", type=float, default=None,
@@ -357,7 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "(default: references.bib beside --txt)")
 
     chain = parser.add_argument_group(
-        "markov chain (--method vasqa)",
+        "markov chain (--method vasqa or valqa)",
         "Energies in eV.  Each flag is forwarded only when given, so another "
         "method refuses it as a usage error.")
     chain.add_argument("--max-steps", type=int, default=None,
@@ -391,6 +396,20 @@ def build_parser() -> argparse.ArgumentParser:
                        action="store_const", const=False, default=None,
                        help="relax every proposal from zero angles (a fixed "
                             "cost per ansatz) instead of the current ones")
+    chain.add_argument("--record", metavar="DIR", default=None,
+                       help="append every proposal, and the problem searched, "
+                            "to DIR instead of the shared store "
+                            "MANDACARU_PROPOSAL_DATA: the training data of "
+                            "valqa's model")
+    chain.add_argument("--no-record", dest="record", action="store_const",
+                       const=False,
+                       help="record nothing, even with "
+                            "MANDACARU_PROPOSAL_DATA set")
+    chain.add_argument("--proposal-model", metavar="PATH", default=None,
+                       help="valqa only: the trained proposal model (default "
+                            "the shared store's, when it has one); without "
+                            "one, or while it is not ready, the gradient "
+                            "proposal is in effect")
     chain.add_argument("--seed", type=int, default=None,
                        help="seed of the chain's random stream")
     return parser
@@ -480,7 +499,7 @@ def solver_options(args) -> dict:
     for name in ("pool", "ansatz", "max_iterations", "txt", "num_states",
                  "multiplicity", "references", "max_steps", "max_length",
                  "length_penalty", "warm_start", "seed", "proposal",
-                 "proposal_temperature"):
+                 "proposal_temperature", "record", "proposal_model"):
         value = getattr(args, name)
         if value is not None:
             options[name] = value
@@ -665,6 +684,37 @@ def set_library_command(settings: dict) -> int:
     return 1 if failed else 0
 
 
+def set_proposal_data_command(source: str) -> int:
+    """``mandacaru --set-proposal-data DIR``: create ``DIR`` if needed and
+    record it, absolute, as ``MANDACARU_PROPOSAL_DATA`` in the shell
+    configuration and in this process."""
+    from .algorithms.proposal_data import PROPOSAL_DATA_VARIABLE as variable
+    from .utils.shell_config import ShellConfigError, set_shell_variable
+
+    path = os.path.abspath(os.path.expanduser(source))
+    if os.path.exists(path) and not os.path.isdir(path):
+        print(f"{variable}: {source!r} is a file; nothing was written.")
+        return 1
+    try:
+        os.makedirs(path, exist_ok=True)
+        update = set_shell_variable(variable, path)
+    except (OSError, ShellConfigError) as exc:
+        print(f"{variable}: {exc}")
+        return 1
+    print({"added": f"{variable}={path} added to {update.path}",
+           "replaced": (f"{variable}={path} replaces {update.previous} in "
+                        f"{update.path}"),
+           "unchanged": f"{update.path} already sets {variable}={path}",
+           "declined": (f"{variable} left at {update.previous} in "
+                        f"{update.path}")}[update.action])
+    if update.action != "declined":
+        os.environ[variable] = path
+    if update.changed:
+        print("Open a new terminal, or `source` the file above, for the "
+              "variable to be defined in your shell.")
+    return 0
+
+
 def pseudo_status_command() -> int:
     """``mandacaru --pseudo-status``: every library variable, where it
     points and what it holds; 0 when every required one is set and valid
@@ -699,6 +749,8 @@ def main(argv=None) -> int:
         if path is not None}
     if settings:
         return set_library_command(settings)
+    if args.set_proposal_data is not None:
+        return set_proposal_data_command(args.set_proposal_data)
     if args.pseudo_status:
         return pseudo_status_command()
     if args.temperature is not None and len(args.temperature) > 2:

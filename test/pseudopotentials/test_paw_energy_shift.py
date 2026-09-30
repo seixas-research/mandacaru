@@ -193,14 +193,18 @@ class TestBasis:
 #: -32.869439 -> -32.871967.
 #: And when the shift became measured from the dataset's own free level (4e-6
 #: Ha below the stored reference for H): confined -30.695857 -> -30.695489.
-UNCONFINED_EV = -30.228412
-CONFINED_EV = -30.695489
+#: Re-measured 2026-09-30 against the libraries rebuilt 2026-09-28/30:
+#: free -30.228412 -> -30.227857, confined -30.695489 -> -30.694972 (gain
+#: 0.4671 eV), DZP Gaussian -33.354719 -> -33.354485, DZP unconfined
+#: -32.871967 -> -32.871708.
+UNCONFINED_EV = -30.227857
+CONFINED_EV = -30.694972
 #: The same molecule in the DZP basis with a Gaussian polarization shell,
 #: 20 qubits.  Re-measured in the same rebuild: -33.374833 -> -33.360087.
-DZP_GAUSSIAN_EV = -33.354719
+DZP_GAUSSIAN_EV = -33.354485
 #: The same, with the confinement switched off (orbital polarization).
 #: -32.884195 -> -32.869555 in the same rebuild.
-DZP_UNCONFINED_EV = -32.871967
+DZP_UNCONFINED_EV = -32.871708
 
 
 @needs_library

@@ -34,6 +34,12 @@ import time
 
 import pytest
 
+# The shared store of recorded chain proposals: every VASQA / VALQA run
+# records into it by default, so a test run under a shell that sets it would
+# fill the user's training data with test chains.  Tests that need a store
+# set their own with monkeypatch.
+os.environ.pop("MANDACARU_PROPOSAL_DATA", None)
+
 TEST_LIMIT_S = 180.0
 SESSION_LIMIT_S = 1200.0
 RSS_LIMIT_GB = 8.0

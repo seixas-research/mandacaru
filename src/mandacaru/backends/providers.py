@@ -129,6 +129,29 @@ def pauli_rotations(generator: PauliSum, atol: float = 1e-12
     return out
 
 
+def run_local_estimator(estimator, pubs, precision: float):
+    """Run a *local* Qiskit Estimator synchronously; the one place that
+    touches the primitive's private ``_run``.
+
+    The public ``run()`` hands the work to a one-off worker thread
+    (``PrimitiveJob``), and Qiskit circuit data allocated on another thread
+    can make a later garbage collection spin forever in its Rust allocator
+    (reproduced on macOS / Python 3.14 / qiskit 2.5).  A Qiskit release
+    without ``_run`` is refused here, with the reason, rather than silently
+    routed back through the threaded path.
+    """
+    from qiskit.primitives.containers.estimator_pub import EstimatorPub
+
+    private = getattr(estimator, "_run", None)
+    if not callable(private):
+        raise RuntimeError(
+            f"{type(estimator).__name__} has no synchronous _run(); this "
+            f"Qiskit release needs the local-Estimator adapter in "
+            f"mandacaru.backends.providers updated (its threaded run() can "
+            f"hang garbage collection)")
+    return private([EstimatorPub.coerce(pub, precision) for pub in pubs])
+
+
 def pauli_strings_commute(first: str, second: str) -> bool:
     """Two Pauli strings commute iff they differ, with neither the identity,
     at an **even** number of positions."""
@@ -208,6 +231,12 @@ class CircuitProvider(ABC):
         determinant preparation followed by one Pauli-rotation block per term of
         each generator, in append order.
         """
+        thetas = np.asarray(thetas, dtype=float).ravel()
+        generators = list(generators)
+        if len(thetas) != len(generators):
+            raise ValueError(
+                f"{len(thetas)} angles for {len(generators)} generators: a "
+                "circuit that zips them short prepares a different state")
         for q in occupied:
             yield ("x", q)
         for theta, generator in zip(thetas, generators):
@@ -281,6 +310,107 @@ class CircuitProvider(ABC):
     #: True when the provider can estimate ``<H>`` from measurement shots, i.e.
     #: can target real QPUs rather than only a state-vector simulator.
     supports_shots: bool = False
+    #: What this provider can do beyond preparing a state; checked before an
+    #: optimization spends anything (:func:`require_capability`).
+    #: ``"energy"`` a (shot-based) ``<H>``; ``"expectation_values"`` many
+    #: ``<P>`` of one state, what RDMs and forces need; ``"batch"`` several
+    #: problems in one submission (``energies``).
+    capabilities: tuple = ("energy",)
+
+    # -- run ledger and budget ------------------------------------------- #
+
+    #: Run-wide budget (see
+    #: :func:`~mandacaru.backends.measurement.resolve_run_budget`).
+    run_budget = None
+
+    @property
+    def is_hardware(self) -> bool:
+        """True when a submission reaches a paid, remote processor."""
+        return False
+
+    def _ledger(self) -> dict:
+        ledger = self.__dict__.get("_run_ledger")
+        if ledger is None:
+            ledger = self.__dict__["_run_ledger"] = {"jobs": 0, "shots": 0,
+                                                     "handles": []}
+        return ledger
+
+    @property
+    def run_jobs(self) -> list:
+        """Every job handle this provider has submitted, oldest first (the
+        cumulative ledger; :attr:`jobs` is the current submission)."""
+        return list(self._ledger()["handles"])
+
+    def run_usage(self) -> dict:
+        """``{"jobs": ..., "shots": ...}`` submitted so far in this run."""
+        ledger = self._ledger()
+        return {"jobs": ledger["jobs"], "shots": ledger["shots"]}
+
+    def _charge(self, shots: int, jobs: int = 1) -> None:
+        """Account for a submission about to be queued, or refuse it.
+
+        Called *before* the job is queued, so a refusal costs nothing.
+        """
+        from .measurement import RunBudgetExceeded, resolve_run_budget
+
+        ledger = self._ledger()
+        budget = resolve_run_budget(self.run_budget, self.is_hardware)
+        after = {"jobs": ledger["jobs"] + int(jobs),
+                 "total_shots": ledger["shots"] + int(shots)}
+        if budget is not None:
+            over = [(key, after[key], budget[key]) for key in after
+                    if budget.get(key) is not None
+                    and after[key] > budget[key]]
+            if over:
+                detail = "; ".join(f"{key} {value:,} > {limit:,}"
+                                   for key, value, limit in over)
+                raise RunBudgetExceeded(
+                    f"{self!r}: this submission would exceed the run budget "
+                    f"({detail}) after {ledger['jobs']:,} jobs and "
+                    f"{ledger['shots']:,} shots.  Raise run_budget= (a dict "
+                    f"of jobs / total_shots) if you mean it, or rehearse on "
+                    f"a fake backend first.")
+        ledger["jobs"] = after["jobs"]
+        ledger["shots"] = after["total_shots"]
+
+    def jobs_per_energy(self, hamiltonian) -> int:
+        """Submissions one :meth:`energy` of ``hamiltonian`` costs."""
+        return 1
+
+    def shots_per_energy(self, hamiltonian) -> int:
+        """Shots one :meth:`energy` of ``hamiltonian`` costs (the ledger's
+        arithmetic), so a budget can be checked before the first job."""
+        return 0
+
+    def _record_job(self, job) -> None:
+        if job is not None:
+            self._ledger()["handles"].append(job)
+
+    # -- reconfiguration ------------------------------------------------- #
+
+    def _constructor_options(self) -> dict:
+        """The constructor arguments that rebuild this provider."""
+        return {}
+
+    def with_options(self, **overrides) -> "CircuitProvider":
+        """A new provider with ``overrides`` applied to its constructor
+        arguments.
+
+        Setting attributes on a live provider does not reach what it has
+        already built -- a resolved backend, a cached Estimator -- so a retry
+        with other options gets a fresh object.  An unknown name is refused
+        rather than set as an attribute nothing reads.  The run ledger
+        carries over: a retry belongs to the same run and budget.
+        """
+        options = self._constructor_options()
+        unknown = sorted(set(overrides) - set(options))
+        if unknown:
+            raise ValueError(
+                f"unknown option(s) {unknown} for {type(self).__name__}; it "
+                f"takes {sorted(options)}")
+        fresh = type(self)(**{**options, **overrides})
+        fresh.__dict__["_run_ledger"] = self._ledger()
+        return fresh
 
     def energy(self, n_qubits: int, occupied, generators, thetas,
                hamiltonian) -> float:
@@ -369,7 +499,8 @@ class QiskitProvider(CircuitProvider):
                  estimator_options: dict | None = None,
                  physical_qubits=None, seed: int | None = None,
                  max_bases_per_job: int | None = None,
-                 enable_fractional_gates: bool = False):
+                 enable_fractional_gates: bool = False,
+                 run_budget=None):
         self.device_spec = str(device).strip()
         self.physical_qubits = (None if physical_qubits is None
                                 else [int(q) for q in physical_qubits])
@@ -386,8 +517,11 @@ class QiskitProvider(CircuitProvider):
         #: Requires a processor that offers them (Heron and later); Qiskit spells
         #: it ``use_fractional_gates``, which is what this forwards.
         self.enable_fractional_gates = bool(enable_fractional_gates)
-        self.estimator_options = (None if estimator_options is None
-                                  else dict(estimator_options))
+        # A dict is copied; an ``EstimatorOptions`` object is kept as given
+        # (Runtime takes either).
+        self.estimator_options = (
+            dict(estimator_options) if isinstance(estimator_options, dict)
+            else estimator_options)
         #: Seed of the local Estimator's sampling, so a shot-based run is
         #: reproducible.  ``None`` samples freshly, which is what a real
         #: measurement does; a seed is for tests and for comparing two runs
@@ -402,17 +536,47 @@ class QiskitProvider(CircuitProvider):
         #: chunk it happened in.
         self.max_bases_per_job = (None if max_bases_per_job is None
                                   else int(max_bases_per_job))
+        #: Run-wide limit on jobs and shots (on by default for an ``ibm_*``
+        #: device; see :func:`~mandacaru.backends.measurement.resolve_run_budget`).
+        self.run_budget = run_budget
         self._backend = None
         self._estimator = None
         #: The Runtime job of the last hardware submission (``None`` locally).
         self.last_job = None
-        #: Every job of the last multi-chunk submission, oldest first.
+        #: Every job of the current (last) submission, oldest first;
+        #: :attr:`run_jobs` is every job of the run.
         self.jobs: list = []
         #: The ``PrimitiveResult`` of the last ``energies`` call.
         self.last_result = None
+        #: Standard errors of the last ``energies`` call, one per problem.
+        self.last_stds: list[float] = []
+        #: Chunks of an ``expectation_values`` submission that completed,
+        #: keyed by what was submitted, so a retry resumes only the rest.
+        self._completed_chunks: dict = {}
+        #: Compiled parameterized circuits, one per (register, reference,
+        #: generator sequence): an optimization transpiles its ansatz once
+        #: and binds new angles per evaluation.
+        self._templates: dict = {}
 
     def __repr__(self) -> str:
         return f"QiskitProvider(device={self.device_spec!r}, shots={self.shots})"
+
+    capabilities = ("energy", "expectation_values", "batch")
+
+    def _constructor_options(self) -> dict:
+        return {"device": self.device_spec, "shots": self.shots,
+                "instance": self.instance, "token": self.token,
+                "channel": self.channel,
+                "optimization_level": self.optimization_level,
+                "estimator_options": self.estimator_options,
+                "physical_qubits": self.physical_qubits, "seed": self.seed,
+                "max_bases_per_job": self.max_bases_per_job,
+                "enable_fractional_gates": self.enable_fractional_gates,
+                "run_budget": self.run_budget}
+
+    @property
+    def is_hardware(self) -> bool:
+        return self.is_ibm_device
 
     # -- device resolution ------------------------------------------------ #
 
@@ -607,44 +771,190 @@ class QiskitProvider(CircuitProvider):
                               for w in range(n_qubits)]
         isa = transpile(qc, backend=backend,
                         optimization_level=self.optimization_level,
-                        initial_layout=initial_layout)
+                        initial_layout=initial_layout,
+                        seed_transpiler=0 if self.seed is None else self.seed)
         return isa, isa.layout
 
-    def pub(self, n_qubits: int, occupied, generators, thetas, hamiltonian):
-        """One Estimator PUB ``(isa_circuit, observable)`` for this target."""
-        qc, layout = self._transpiled(
-            self.build(n_qubits, occupied, generators, thetas), n_qubits)
-        observable = self.observable(hamiltonian)
-        return (qc, observable if layout is None
-                else observable.apply_layout(layout))
+    def parametric(self, n_qubits: int, occupied, generators):
+        """``(circuit, parameters)``: the ansatz with one symbolic angle per
+        generator.
 
-    def _run_pubs(self, pubs):
-        """Run Estimator PUBs as **one** job and return the ``PrimitiveResult``."""
+        Every rotation of every generator is kept, zero angle or not, so the
+        circuit's structure does not change between two parameter points and
+        one compilation serves the whole optimization.
+        """
+        from qiskit import QuantumCircuit
+        from qiskit.circuit import ParameterVector
+
+        generators = list(generators)
+        params = ParameterVector("theta", len(generators))
+        qc = QuantumCircuit(n_qubits)
+
+        def wire(k):
+            return n_qubits - 1 - int(k)
+
+        for q in occupied:
+            qc.x(wire(q))
+        for k, generator in enumerate(generators):
+            for label, coeff in pauli_rotations(generator):
+                # `_pauli_rotation(label, 1)` emits rz(-2): scale it by the
+                # term's coefficient and the generator's symbolic angle.
+                for op in self._pauli_rotation(label, 1.0):
+                    gate = op[0]
+                    if gate == "cx":
+                        qc.cx(wire(op[1]), wire(op[2]))
+                    elif gate == "rz":
+                        qc.rz(op[2] * float(coeff) * params[k], wire(op[1]))
+                    else:
+                        getattr(qc, gate)(wire(op[1]))
+        return qc, params
+
+    def compiled(self, n_qubits: int, occupied, generators):
+        """``(isa_circuit, layout, parameters)`` for this target, cached.
+
+        The one compiled form of an ansatz: every evaluation binds its
+        angles to it, and the measurement plan reads its gate counts off the
+        same circuit that is submitted.  Transpilation is seeded (the
+        provider's ``seed``, else 0), so the layout is reproducible.
+        """
+        key = (int(n_qubits), tuple(int(q) for q in occupied),
+               tuple(tuple(sorted((str(l), complex(c))
+                                  for l, c in getattr(g, "terms", {}).items()))
+                     for g in generators))
+        cached = self._templates.get(key)
+        if cached is None:
+            qc, params = self.parametric(n_qubits, occupied, generators)
+            isa, layout = self._transpiled(qc, n_qubits)
+            cached = self._templates[key] = (isa, layout, params)
+        return cached
+
+    def pub(self, n_qubits: int, occupied, generators, thetas, hamiltonian):
+        """One Estimator PUB ``(isa_circuit, observable, angles)``."""
+        isa, layout, params = self.compiled(n_qubits, occupied, generators)
+        observable = self.observable(hamiltonian)
+        if layout is not None:
+            observable = observable.apply_layout(layout)
+        return self._bound_pub(isa, params, observable, thetas)
+
+    @staticmethod
+    def _bound_pub(isa, params, observable, thetas):
+        values = np.asarray(thetas, dtype=float).ravel()
+        if len(values) != len(params):
+            raise ValueError(f"{len(values)} angles for {len(params)} "
+                             "generators")
+        return (isa, observable) if not len(params) else \
+            (isa, observable, values)
+
+    def _run_pubs(self, pubs, bases: int | None = None):
+        """Run Estimator PUBs as **one** job and return the ``PrimitiveResult``.
+
+        ``bases`` -- the measurement bases the PUBs' observables need -- sizes
+        the run-ledger entry; the job is refused before it is queued when it
+        would exceed :attr:`run_budget`.
+        """
+        from .measurement import resilience_multipliers
+
         if not self.is_local and self.shots <= 0:
             raise ValueError(f"{self!r}: a processor needs shots > 0")
+        factors, twirls, per_twirl = resilience_multipliers(self)
+        per_instance = twirls * per_twirl if twirls > 1 else self.shots
+        self._charge(max(int(bases or len(pubs)), 1) * factors
+                     * max(per_instance, 0))
         estimator = self.estimator()
         if self.is_ibm_device:
             self.last_job = estimator.run(pubs, precision=self.precision)
+            self._record_job(self.last_job)
             result = self.last_job.result()
         else:
-            # Run the local primitives *synchronously*.  Their ``run()`` hands
-            # the work to a one-off worker thread (``PrimitiveJob``), and
-            # Qiskit circuit data allocated on another thread can make a
-            # later garbage collection spin forever in its Rust allocator
-            # (reproduced on macOS / Python 3.14 / qiskit 2.5).
-            from qiskit.primitives.containers.estimator_pub import EstimatorPub
-            result = estimator._run([EstimatorPub.coerce(pub, self.precision)
-                                     for pub in pubs])
+            result = run_local_estimator(estimator, pubs, self.precision)
         self.last_result = result
         return result
 
+    def _energy_pieces(self, hamiltonian, limit):
+        """``hamiltonian`` split into weighted observables of at most
+        ``limit`` measurement bases each (the identity rides with the first),
+        with the base count of each piece."""
+        from .measurement import chunk_labels_by_basis, qwc_partition
+
+        terms = hamiltonian.simplify().terms
+        identity = "I" * hamiltonian.num_qubits
+        labels = [label for label in terms if label != identity]
+        weights = [abs(complex(terms[label])) for label in labels]
+        chunks = chunk_labels_by_basis(labels, limit, weights) or [[]]
+        pieces = []
+        for k, chunk in enumerate(chunks):
+            piece = {label: terms[label] for label in chunk}
+            if k == 0 and identity in terms:
+                piece[identity] = terms[identity]
+            if not piece:
+                piece = {identity: 0.0}
+            op = PauliSum(piece, num_qubits=hamiltonian.num_qubits)
+            n_bases = len(qwc_partition(
+                chunk, [abs(complex(terms[l])) for l in chunk])) if chunk else 1
+            pieces.append((op, n_bases))
+        return pieces
+
+    def jobs_per_energy(self, hamiltonian) -> int:
+        if not self.max_bases_per_job:
+            return 1
+        return len(self._energy_pieces(hamiltonian, self.max_bases_per_job))
+
+    def shots_per_energy(self, hamiltonian) -> int:
+        from .measurement import resilience_multipliers
+
+        factors, twirls, per_twirl = resilience_multipliers(self)
+        per_instance = twirls * per_twirl if twirls > 1 else self.shots
+        bases = sum(n for _op, n in self._energy_pieces(
+            hamiltonian, self.max_bases_per_job))
+        return int(bases * factors * max(per_instance, 0))
+
     def energies(self, problems) -> list[float]:
         """Expectation values of several ``(n_qubits, occupied, generators,
-        thetas, hamiltonian)`` problems, submitted as **one** Estimator job."""
-        pubs = [self.pub(*problem) for problem in problems]
-        result = self._run_pubs(pubs)
-        return [float(np.asarray(result[i].data.evs).reshape(-1)[0])
-                for i in range(len(pubs))]
+        thetas, hamiltonian)`` problems.
+
+        One Estimator job carries every problem, as one weighted observable
+        each -- unless :attr:`max_bases_per_job` is set, in which case each
+        Hamiltonian is split into weighted observables of at most that many
+        qubit-wise-commuting bases (the identity counted once) and job ``k``
+        carries piece ``k`` of every problem.  The energy is the sum of the
+        pieces, its standard error the root sum of squares (:attr:`last_stds`).
+        Each circuit is transpiled once and shared by its pieces.
+        """
+        problems = list(problems)
+        limit = self.max_bases_per_job
+        prepared = []
+        for n_qubits, occupied, generators, thetas, hamiltonian in problems:
+            isa, layout, params = self.compiled(n_qubits, occupied,
+                                                generators)
+            prepared.append(((isa, params, thetas), layout,
+                             self._energy_pieces(hamiltonian, limit)))
+        energies = [0.0] * len(problems)
+        variances = [0.0] * len(problems)
+        self.jobs = []
+        rounds = max(len(pieces) for _qc, _l, pieces in prepared)
+        for k in range(rounds):
+            owners, pubs, bases = [], [], 0
+            for i, (qc, layout, pieces) in enumerate(prepared):
+                if k >= len(pieces):
+                    continue
+                op, n_bases = pieces[k]
+                observable = self.observable(op)
+                if layout is not None:
+                    observable = observable.apply_layout(layout)
+                owners.append(i)
+                pubs.append(self._bound_pub(qc[0], qc[1], observable, qc[2]))
+                bases += n_bases
+            result = self._run_pubs(pubs, bases=bases)
+            if self.last_job is not None and self.is_ibm_device:
+                self.jobs.append(self.last_job)
+            for j, i in enumerate(owners):
+                energies[i] += float(np.asarray(result[j].data.evs)
+                                     .reshape(-1)[0])
+                std = getattr(result[j].data, "stds", None)
+                if std is not None:
+                    variances[i] += float(np.asarray(std).reshape(-1)[0]) ** 2
+        self.last_stds = [float(np.sqrt(v)) for v in variances]
+        return energies
 
     def expectation_values(self, n_qubits: int, occupied, generators, thetas,
                            labels, max_bases_per_job: int | None = None):
@@ -661,34 +971,74 @@ class QiskitProvider(CircuitProvider):
         and shared by every chunk, so the split costs nothing but job
         overhead, and it bounds what any single Runtime program has to hold --
         the unsplit form submitted 97,980 observables in one PUB and died with
-        "Program runtime ran out of memory".  Partial results are kept: each
-        chunk's values are in the returned dicts as soon as its job returns,
-        and every job is on :attr:`jobs`.
+        "Program runtime ran out of memory".
+
+        Completed chunks are **kept**: each is stored, keyed by the circuit,
+        the labels and the options, as soon as its job returns, and a repeat
+        of the same request -- :meth:`~mandacaru.algorithms.Mandacaru.remeasure`
+        after a failure -- submits only the chunks still missing.  Every job
+        of the submission is on :attr:`jobs`.
         """
         from qiskit.quantum_info import SparsePauliOp
 
-        from .measurement import chunk_labels_by_basis
+        from .measurement import chunk_labels_by_basis, qwc_partition
 
         labels = [str(label) for label in labels]
         limit = (self.max_bases_per_job if max_bases_per_job is None
                  else max_bases_per_job)
-        qc, layout = self._transpiled(
-            self.build(n_qubits, occupied, generators, thetas), n_qubits)
+        key = self._submission_key(n_qubits, occupied, generators, thetas,
+                                   labels, limit)
+        done = self._completed_chunks.setdefault(key, {})
+        chunks = chunk_labels_by_basis(labels, limit)
         values: dict[str, float] = {}
         stds: dict[str, float] = {}
         self.jobs = []
-        for chunk in chunk_labels_by_basis(labels, limit):
+        qc = layout = None
+        for index, chunk in enumerate(chunks):
+            if index in done:
+                values.update(done[index][0])
+                stds.update(done[index][1])
+                continue
+            if qc is None:
+                qc, layout, params = self.compiled(n_qubits, occupied,
+                                                   generators)
             observables = [SparsePauliOp(label) for label in chunk]
             if layout is not None:
                 observables = [o.apply_layout(layout) for o in observables]
-            result = self._run_pubs([(qc, observables)])
-            if self.last_job is not None:
+            result = self._run_pubs(
+                [self._bound_pub(qc, params, observables, thetas)],
+                bases=len(qwc_partition(chunk)))
+            if self.last_job is not None and self.is_ibm_device:
                 self.jobs.append(self.last_job)
-            values.update(zip(chunk, np.asarray(result[0].data.evs,
-                                                dtype=float).reshape(-1)))
-            stds.update(zip(chunk, np.asarray(result[0].data.stds,
-                                              dtype=float).reshape(-1)))
+            chunk_values = dict(zip(chunk, np.asarray(
+                result[0].data.evs, dtype=float).reshape(-1)))
+            chunk_stds = dict(zip(chunk, np.asarray(
+                result[0].data.stds, dtype=float).reshape(-1)))
+            done[index] = (chunk_values, chunk_stds)
+            values.update(chunk_values)
+            stds.update(chunk_stds)
+        # Complete: nothing left to resume.
+        self._completed_chunks.pop(key, None)
         return values, stds
+
+    def completed_chunks(self) -> int:
+        """Chunks of unfinished ``expectation_values`` requests already
+        measured -- what a retry of the same request will not resubmit."""
+        return sum(len(done) for done in self._completed_chunks.values())
+
+    def _submission_key(self, n_qubits, occupied, generators, thetas, labels,
+                        limit) -> str:
+        """A fingerprint of what a submission measures and how."""
+        import hashlib
+
+        parts = [str(int(n_qubits)), repr(sorted(int(q) for q in occupied)),
+                 repr(np.round(np.asarray(thetas, dtype=float), 12).tolist()),
+                 repr([sorted((str(l), complex(c)) for l, c in
+                              getattr(g, "terms", {}).items())
+                       for g in generators]),
+                 repr(labels), repr(limit), self.device_spec, str(self.shots),
+                 repr(self.estimator_options), repr(self.physical_qubits)]
+        return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
     def energy(self, n_qubits: int, occupied, generators, thetas,
                hamiltonian) -> float:
@@ -750,16 +1100,33 @@ class BraketProvider(CircuitProvider):
     AWS_ARN_PREFIX = "arn:aws:braket"
 
     def __init__(self, device: str = "braket_sv", shots: int = 0,
-                 s3_folder=None, poll_timeout_seconds: float = 5 * 24 * 60 * 60):
+                 s3_folder=None, poll_timeout_seconds: float = 5 * 24 * 60 * 60,
+                 run_budget=None):
         self.device_spec = str(device)
         self.shots = int(shots)
         self.s3_folder = s3_folder
         self.poll_timeout_seconds = float(poll_timeout_seconds)
+        #: Run-wide limit on tasks and shots (on by default for an AWS
+        #: device; see :func:`~mandacaru.backends.measurement.resolve_run_budget`).
+        self.run_budget = run_budget
         self._device = None
+        #: QWC groups per Hamiltonian, so an optimization partitions its
+        #: unchanged Hamiltonian once rather than at every evaluation.
+        self._groups: dict = {}
 
     def __repr__(self) -> str:
         return (f"BraketProvider(device={self.device_spec!r}, "
                 f"shots={self.shots})")
+
+    def _constructor_options(self) -> dict:
+        return {"device": self.device_spec, "shots": self.shots,
+                "s3_folder": self.s3_folder,
+                "poll_timeout_seconds": self.poll_timeout_seconds,
+                "run_budget": self.run_budget}
+
+    @property
+    def is_hardware(self) -> bool:
+        return self.is_aws_device
 
     # -- device resolution ------------------------------------------------ #
 
@@ -786,13 +1153,34 @@ class BraketProvider(CircuitProvider):
 
     def _run(self, circuit, shots: int):
         """Submit ``circuit`` and return its Braket result."""
+        return self._submit(circuit, shots).result()
+
+    def jobs_per_energy(self, hamiltonian) -> int:
+        if not self.shots:
+            return 1
+        from .measurement import qubit_wise_commuting_groups
+        key = tuple(sorted((label, complex(c)) for label, c
+                           in hamiltonian.terms.items()))
+        if key not in self._groups:
+            self._groups[key] = qubit_wise_commuting_groups(hamiltonian)
+        return max(len(self._groups[key][0]), 1)
+
+    def shots_per_energy(self, hamiltonian) -> int:
+        return self.jobs_per_energy(hamiltonian) * max(self.shots, 0)
+
+    def _submit(self, circuit, shots: int):
+        """Queue ``circuit`` (after the run-budget check) and return its task."""
+        self._charge(int(shots))
         device = self.device()
         kwargs = {"shots": int(shots)}
         if self.is_aws_device:
             kwargs["poll_timeout_seconds"] = self.poll_timeout_seconds
             if self.s3_folder is not None:
                 kwargs["s3_destination_folder"] = tuple(self.s3_folder)
-        return device.run(circuit, **kwargs).result()
+        task = device.run(circuit, **kwargs)
+        if self.is_aws_device:
+            self._record_job(task)
+        return task
 
     # -- circuit construction --------------------------------------------- #
 
@@ -870,13 +1258,18 @@ class BraketProvider(CircuitProvider):
         from .measurement import (energy_from_group_counts,
                                   qubit_wise_commuting_groups)
 
-        groups, identity = qubit_wise_commuting_groups(hamiltonian)
-        counts_per_group = []
-        for basis, _payload in groups:
-            circuit = self.build(n_qubits, occupied, generators, thetas,
-                                 measure_basis=basis)
-            result = self._run(circuit, self.shots)
-            counts_per_group.append(self._counts(result))
+        key = tuple(sorted((label, complex(c)) for label, c
+                           in hamiltonian.terms.items()))
+        if key not in self._groups:
+            self._groups[key] = qubit_wise_commuting_groups(hamiltonian)
+        groups, identity = self._groups[key]
+        # Every group is queued before any is awaited: the waits overlap
+        # instead of adding up, one per group.
+        tasks = [self._submit(self.build(n_qubits, occupied, generators,
+                                         thetas, measure_basis=basis),
+                              self.shots)
+                 for basis, _payload in groups]
+        counts_per_group = [self._counts(task.result()) for task in tasks]
         return energy_from_group_counts(groups, identity, counts_per_group)
 
     @staticmethod
@@ -976,8 +1369,30 @@ _PROVIDER_CLASSES = {
 _CACHE: dict[str, CircuitProvider] = {}
 
 
-def qpu_usage(provider, wall_time_s: float | None = None) -> dict:
+def require_capability(provider, capability: str, why: str) -> None:
+    """Refuse ``provider`` unless it can do ``capability`` (see
+    :attr:`CircuitProvider.capabilities`); ``why`` says what needs it.
+
+    A provider object that declares nothing is judged by the method the
+    capability names.
+    """
+    declared = getattr(provider, "capabilities", None)
+    able = (capability in declared if declared is not None
+            else callable(getattr(provider, capability, None)))
+    if not able:
+        raise NotImplementedError(
+            f"{why}, and {provider!r} cannot measure "
+            f"{capability.replace('_', ' ')}; use a QiskitProvider (IBM, fake "
+            f"or local), or ask for the energy only")
+
+
+def qpu_usage(provider, wall_time_s: float | None = None,
+              cumulative: bool = False) -> dict:
     """QPU accounting for ``provider``'s most recent submission, or ``{}``.
+
+    With ``cumulative=True`` it covers every job of the run instead
+    (:attr:`CircuitProvider.run_jobs`) -- what an optimization on a processor
+    costs, one job per objective evaluation.
 
     Reported for the ``[PERFORMANCE]`` log block.  ``wall_time_s`` -- measured by
     the caller around the submission -- is always included, because it is the
@@ -1001,10 +1416,14 @@ def qpu_usage(provider, wall_time_s: float | None = None) -> dict:
     # A chunked submission is several jobs (`max_bases_per_job`); accounting
     # that reported only the last one would under-report the whole cost by the
     # chunk factor, which is exactly the number the chunking makes large.
-    jobs = list(getattr(provider, "jobs", None) or ())
-    if not jobs:
-        job = getattr(provider, "last_job", None)
-        jobs = [] if job is None else [job]
+    if cumulative and hasattr(provider, "run_usage"):
+        jobs = list(provider.run_jobs)
+        usage["qpu_submissions"] = int(provider.run_usage()["jobs"])
+    else:
+        jobs = list(getattr(provider, "jobs", None) or ())
+        if not jobs:
+            job = getattr(provider, "last_job", None)
+            jobs = [] if job is None else [job]
     if not jobs:
         return usage
     usage["qpu_jobs"] = len(jobs)

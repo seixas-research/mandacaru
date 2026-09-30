@@ -52,7 +52,8 @@ from ..core.serialization import (DEFAULT_FORMAT, EXTENSION_FORMATS,
                                   load_hamiltonian, resolve_format,
                                   resolve_save_path, save_hamiltonian)
 from ..core.spin_orbit import conserves_spin_projection
-from ..optimizers.optim import (DEFAULT_OPTIMIZER, NAMED_OPTIMIZERS,
+from ..backends.measurement import RunBudgetExceeded
+from ..optimizers.optim import (NAMED_OPTIMIZERS,
                                 OptimizeResult, resolve_optimizer)
 from ..utils.dumps import (HAMILTONIAN_FILE, POOL_FILE, dump_hamiltonian,
                            dump_pool, resolve_dump_path)
@@ -278,7 +279,7 @@ class VariationalDriver(Calculator):
     #: Default ``sparse`` policy (``False`` dense; ``"auto"`` for adaptive drivers).
     _default_sparse = False
 
-    def __init__(self, *, optimizer=DEFAULT_OPTIMIZER,
+    def __init__(self, *, optimizer=None,
                  mapping: str = "jordan_wigner",
                  basis="HAO", device: str = "AER_simulator", grid=None,
                  h: float = DEFAULT_GRID_SPACING, kpts=None, spin: bool = False,
@@ -322,8 +323,8 @@ class VariationalDriver(Calculator):
             raise NotImplementedError(
                 f"{type(self).__name__} does not write 'txt': its run() does "
                 f"not go through the block protocol, so the file would stay "
-                f"empty.  Use method='rhf', 'uhf', 'ghf', 'vqe', 'adapt-vqe' "
-                f"or 'vasqa' for the structured log.")
+                f"empty.  Use method='rhf', 'uhf', 'ghf', 'vqe', 'adapt-vqe', "
+                f"'vasqa' or 'valqa' for the structured log.")
         #: Path of the run log, or ``None`` for standard output only.
         self.txt = None if txt is None else os.fspath(txt)
         # Output-unit convention: eV / Angstrom unless atomic units are asked
@@ -332,7 +333,6 @@ class VariationalDriver(Calculator):
         self.atomic_units = bool(atomic_units)
         self.energy_units = "Ha" if self.atomic_units else "eV"
         self.length_units = "bohr" if self.atomic_units else "angstrom"
-        self.optimizer = resolve_optimizer(optimizer, allowed=self._OPTIMIZERS)
         from ..core.mapping import resolve_mapping
         # The mapping name is the sole source of the register representation.
         self.mapping = resolve_mapping(mapping)
@@ -430,6 +430,10 @@ class VariationalDriver(Calculator):
         # require shots > 0 and the energy is estimated from measured
         # qubit-wise-commuting groups (see mandacaru.backends.measurement).
         self.shots = int(shots)
+        # The optimizer follows the objective: ``None`` is SPSA on a
+        # shot-based one, and a finite-difference method is refused there.
+        self.optimizer = resolve_optimizer(optimizer, allowed=self._OPTIMIZERS,
+                                           shots=self.shots)
         # A dry run only *estimates* the register, so hardware may be named
         # without shots there.
         if not dry_run:
@@ -678,28 +682,70 @@ class VariationalDriver(Calculator):
         self.n_qubits = int(n_qubits)
         self._sector = sector
         dim = sector.dim if sector is not None else 1 << int(n_qubits)
-        refuse_unaffordable_state(int(n_qubits), dim, sector is not None)
         self._matrix_free = self._resolve_matrix_free(qubit_h, dim, operators)
+        self._sparse = (True if self._matrix_free or sector is not None
+                        else self._resolve_sparse(self.sparse, n_qubits))
+        self.__dict__["_h_matrix_value"] = None
+        self.__dict__["_h_matrix_builder"] = (
+            lambda: self._build_h_matrix(qubit_h, int(n_qubits), sector, dim))
+        if not self.shots:
+            self._h_matrix                          # build it now, as before
+        return self._sparse
+
+    @property
+    def _h_matrix(self):
+        """The Hamiltonian matrix of the state-vector backend, built on first
+        use.  A shot-based objective never touches it -- every energy is a
+        measured circuit -- so a hardware run allocates no ``2^N`` operator
+        and meets no state-memory guard unless something local asks for it
+        (ADAPT's classical pool screening does)."""
+        value = self.__dict__.get("_h_matrix_value")
+        if value is None:
+            builder = self.__dict__.get("_h_matrix_builder")
+            if builder is None:
+                raise AttributeError("no Hamiltonian has been materialized")
+            value = self.__dict__["_h_matrix_value"] = builder()
+        return value
+
+    @_h_matrix.setter
+    def _h_matrix(self, value):
+        self.__dict__["_h_matrix_value"] = value
+
+    def _build_h_matrix(self, qubit_h, n_qubits: int, sector, dim: int):
+        """The stored (Hermitized) matrix, or the matrix-free operator."""
+        refuse_unaffordable_state(int(n_qubits), dim, sector is not None)
         if self._matrix_free:
             # Only integer masks and coefficients are kept; the Hermitian part
             # is taken on the coefficients, as 0.5 * (H + H^dagger) would.
-            self._sparse = True
-            self._h_matrix = PauliOperator(qubit_h, sector=sector,
-                                           hermitian=True)
-            return self._sparse
+            return PauliOperator(qubit_h, sector=sector, hermitian=True)
         if sector is not None:
-            self._sparse = True
             hs = sector.restrict(qubit_h)
-            self._h_matrix = 0.5 * (hs + hs.conj().T)
-            return self._sparse
-        self._sparse = self._resolve_sparse(self.sparse, n_qubits)
+            return 0.5 * (hs + hs.conj().T)
         if self._sparse:
             hs = qubit_h.to_sparse_matrix()
-            self._h_matrix = 0.5 * (hs + hs.conj().T)
-        else:
-            h = qubit_h.to_matrix()
-            self._h_matrix = 0.5 * (h + h.conj().T)     # Hermitize rounding noise
-        return self._sparse
+            return 0.5 * (hs + hs.conj().T)
+        h = qubit_h.to_matrix()
+        return 0.5 * (h + h.conj().T)                   # Hermitize rounding noise
+
+    def determinant_energy(self, occupied) -> float:
+        """``<D|H|D>`` of the computational-basis state with ``occupied``
+        qubits set, from the Hamiltonian's ``I``/``Z`` strings alone.
+
+        Exact and ``O(terms)``: every string with an ``X`` or ``Y`` flips a
+        bit and has no diagonal element.  What a shot-based run reports as
+        its reference energy, with no ``2^N`` state.
+        """
+        occupied = {int(q) for q in occupied}
+        total = 0.0
+        for label, coeff in self.hamiltonian.terms.items():
+            if any(ch in "XY" for ch in label):
+                continue
+            sign = 1.0
+            for k, ch in enumerate(label):
+                if ch == "Z" and k in occupied:
+                    sign = -sign
+            total += sign * float(np.real(coeff))
+        return total
 
     def energy(self, psi: np.ndarray) -> float:
         r"""Expectation value ``<psi| H |psi>`` (real) for a state vector ``psi``."""
@@ -717,9 +763,48 @@ class VariationalDriver(Calculator):
         """
         if not self.shots:
             return self.energy(ansatz.state(theta))
+        # The same validated export the final measurement uses: a state the
+        # circuit cannot prepare is refused, and logical angles are expanded
+        # to one per generator, rather than zipped short.
+        return self.circuit_provider().energy(
+            *self.circuit_problem(ansatz, theta))
+
+    def _preflight_run_budget(self, evaluations: int | None,
+                              jobs_per_evaluation: int = 1,
+                              shots_per_evaluation: int = 0) -> None:
+        """Refuse an optimization that cannot fit its provider's run budget,
+        before the first job is queued.
+
+        ``evaluations`` is the optimizer's bound on its cost evaluations
+        (:meth:`~mandacaru.optimizers.optim.Optimizer.max_evaluations`); an
+        unbounded method is left to the provider's per-job check, which stops
+        the run where the budget ends.
+        """
+        if not self.shots or evaluations is None:
+            return
         provider = self.circuit_provider()
-        return provider.energy(ansatz.n_qubits, ansatz.reference_qubits(),
-                               ansatz.pauli_generators, theta, self.hamiltonian)
+        if provider is None or not hasattr(provider, "run_usage"):
+            return
+        from ..backends.measurement import (RunBudgetExceeded,
+                                            resolve_run_budget)
+        budget = resolve_run_budget(getattr(provider, "run_budget", None),
+                                    getattr(provider, "is_hardware", False))
+        if budget is None:
+            return
+        usage = provider.run_usage()
+        needed = {"jobs": usage["jobs"] + int(evaluations)
+                  * max(int(jobs_per_evaluation), 1),
+                  "total_shots": usage["shots"] + int(evaluations)
+                  * max(int(shots_per_evaluation), 0)}
+        over = [f"{key} {needed[key]:,} > {budget[key]:,}" for key in needed
+                if budget.get(key) is not None and needed[key] > budget[key]]
+        if over:
+            raise RunBudgetExceeded(
+                f"the optimizer may evaluate the energy {evaluations:,} "
+                f"times on {provider!r}, over the run budget "
+                f"({'; '.join(over)}).  Lower the optimizer's maxiter or the "
+                f"shots, or raise run_budget= in backend_options if you "
+                f"mean it.")
 
     # -- circuit provider ------------------------------------------------- #
 
@@ -753,9 +838,24 @@ class VariationalDriver(Calculator):
     def ansatz_problem(self, theta=None):
         """``(n_qubits, occupied, generators, theta, hamiltonian)`` of the
         optimized ansatz -- what a provider's ``energy``/``energies`` takes."""
+        if theta is None:
+            theta = self.result.optimal_parameters
+        return self.circuit_problem(self.ansatz, theta)
+
+    def circuit_problem(self, ansatz, theta):
+        """The provider problem of ``ansatz`` at ``theta``: the one circuit
+        export, shared by every shot-based objective evaluation, the final
+        measurement and a checkpoint.
+
+        Refuses what a Pauli-rotation circuit cannot prepare -- exact HVA
+        group evolution, an unserializable ansatz, the exact UCC exponential
+        of a sum -- whatever built the ansatz (a named template or a prebuilt
+        object), and expands logical angles to one angle per generator.  A
+        count that still disagrees with the generators is an error, not a
+        shorter circuit.
+        """
         from ..circuits.base import is_circuit_serializable
 
-        ansatz = self.ansatz
         if getattr(ansatz, "evolution", None) == "exact":
             raise ValueError(
                 "exact HVA group evolution has no generic Pauli-rotation "
@@ -772,23 +872,28 @@ class VariationalDriver(Calculator):
                 "a circuit prepares the ordered product, which is a different "
                 "state.  Build the ansatz with trotter=True to export or "
                 "measure it.")
-        if theta is None:
-            theta = self.result.optimal_parameters
         # An ansatz whose angles are not its generators' angles (the HVA:
         # one angle per group, a compiled rotation per Pauli string) expands
         # them to the generator stream itself.
         expand = getattr(ansatz, "circuit_parameters", None)
-        angles = (expand(theta) if expand is not None
-                  else np.asarray(theta, dtype=float))
-        return (ansatz.n_qubits, ansatz.reference_qubits(),
-                ansatz.pauli_generators, angles, self.hamiltonian)
+        angles = np.asarray(expand(theta) if expand is not None else theta,
+                            dtype=float).ravel()
+        generators = ansatz.pauli_generators
+        if len(angles) != len(generators):
+            raise ValueError(
+                f"{type(ansatz).__name__} gives {len(angles)} circuit angles "
+                f"for {len(generators)} generators; the circuit would not be "
+                f"the state the ansatz declares")
+        return (ansatz.n_qubits, ansatz.reference_qubits(), generators,
+                angles, getattr(self, "hamiltonian", None))
 
     def measured_energy(self, provider, theta=None) -> float:
         """``<H>`` of the optimized ansatz evaluated on ``provider``.
 
-        The way to run on real hardware within a budget: optimize locally,
-        then measure the final state once -- e.g. with
-        ``QiskitProvider(device="ibm_kingston", shots=4096)``.  Returned in the
+        Measures an already optimized state on another provider -- e.g. a
+        local optimization measured once on
+        ``QiskitProvider(device="ibm_kingston", shots=4096)``; a driver whose
+        own device is a processor optimizes there directly.  Returned in the
         driver's output units (eV; Hartree with ``atomic_units=True``) -- the
         provider itself measures the Hartree qubit Hamiltonian.
         """
@@ -1286,6 +1391,13 @@ class VariationalDriver(Calculator):
         :class:`~mandacaru.optimizers.optim.OptimizeResult` also carries the full
         vector, so callers need no branching.
         """
+        cost, best = self._budget_tracked(cost)
+        try:
+            return self._optimize_grown_inner(cost, previous_parameters, n_new)
+        except RunBudgetExceeded as exc:
+            return self._budget_stop(exc, best)
+
+    def _optimize_grown_inner(self, cost, previous_parameters, n_new):
         previous = np.asarray(previous_parameters, dtype=float).ravel()
         n_new = int(n_new)
         x0 = np.concatenate([previous, np.zeros(n_new)])
@@ -1312,6 +1424,43 @@ class VariationalDriver(Calculator):
         already-optimized values and ``k+1..`` held at their starting values --
         the fixed-ansatz analog of freezing previous growth steps.
         """
+        cost, best = self._budget_tracked(cost)
+        try:
+            return self._optimize_all_inner(cost, x0, callback)
+        except RunBudgetExceeded as exc:
+            return self._budget_stop(exc, best)
+
+    def _budget_tracked(self, cost):
+        """``cost`` wrapped to remember its best evaluation, so a run the
+        budget stops keeps the point it had reached."""
+        best = {"x": None, "fun": np.inf, "history": []}
+
+        def tracked(theta):
+            value = float(cost(theta))
+            best["history"].append(value)
+            if value < best["fun"]:
+                best["x"] = np.array(theta, dtype=float).ravel().copy()
+                best["fun"] = value
+            return value
+
+        return tracked, best
+
+    def _budget_stop(self, exc, best) -> OptimizeResult:
+        """The best point before :class:`RunBudgetExceeded`, as an
+        unconverged result -- the optimization is kept, as a failed
+        measurement keeps it, and :attr:`run_budget_exhausted` says why it
+        stopped.  With no evaluation at all there is nothing to keep."""
+        if best["x"] is None:
+            raise exc
+        self.run_budget_exhausted = str(exc)
+        warnings.warn(f"the run budget stopped the optimization at its best "
+                      f"point so far: {exc}", RuntimeWarning, stacklevel=3)
+        return OptimizeResult(x=best["x"], fun=best["fun"],
+                              nfev=len(best["history"]),
+                              history=list(best["history"]), success=False,
+                              message=f"run budget exhausted: {exc}")
+
+    def _optimize_all_inner(self, cost, x0, callback=None) -> OptimizeResult:
         x0 = np.asarray(x0, dtype=float).ravel()
         if self.quenching or x0.size <= 1:
             return self.optimizer.minimize(cost, x0, callback=callback)
@@ -1627,6 +1776,8 @@ class VariationalDriver(Calculator):
         timings = Timings(n_cores=_backend.num_threads(),
                           backend="C (OpenMP)" if _backend.HAS_C_BACKEND
                           else "NumPy")
+        # A new run starts with its budget verdict cleared.
+        self.run_budget_exhausted = None
         run_t0 = self.__dict__.pop("_wall_start", None)
         if run_t0 is None:
             run_t0 = _perf()
@@ -1651,7 +1802,7 @@ class VariationalDriver(Calculator):
             # No provider, or an exact (shots = 0) evaluation: nothing ran on a
             # processor, so there is nothing to account for.
             return {}
-        return qpu_usage(provider, wall_time_s)
+        return qpu_usage(provider, wall_time_s, cumulative=True)
 
     def write_performance(self, timings, extra: dict | None = None) -> None:
         """Append this run's ``[PERFORMANCE]`` block to the run report.

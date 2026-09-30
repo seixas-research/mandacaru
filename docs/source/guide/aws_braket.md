@@ -122,10 +122,44 @@ QiskitProvider(device="ibm_kingston,ibm_fez,ibm_marrakesh", shots=4096)  # least
 Credentials come from `QiskitRuntimeService.save_account(...)` run once, or
 from `QiskitProvider(instance=..., token=..., channel=...)`.
 
-**Optimize locally, measure once.** QPU time is scarce (the open plan gives
-ten minutes a month), and a variational optimization needs hundreds of energy
-evaluations. So run the optimization on the local state vector and measure
-only the optimized states on hardware:
+**The device decides where the optimization runs.** A local device (the exact
+state vector, `braket-local`, a `fake_*` backend) simulates locally, whatever
+`shots` says. Naming an `ibm_*` processor with `shots > 0` runs the *whole*
+optimization on it, one job per energy evaluation:
+
+```python
+atoms.calc = Mandacaru(method="vqe",
+                       ansatz="uccsd",
+                       basis="HAO",
+                       device="ibm_kingston",
+                       shots=4096)
+atoms.get_total_energy()          # every energy evaluation is a Runtime job
+```
+
+`optimizer=None` (the default) follows the objective there too: under
+`shots > 0` it is SPSA (100 steps, two evaluations each plus one final one --
+201 in total -- `tol=None`, since a step size certifies nothing under shot
+noise), and `"SLSQP"`, `"BFGS"`, `"L-BFGS"` and `"CG"` are refused outright,
+however they are spelled -- differencing the energy at a step of about
+`1.5e-8` turns shot noise into gradient noise. Use the default or
+`optimizer="COBYLA"`; see [Choosing a classical optimizer](#shots-optimizer).
+
+An `ibm_*` device (like a Braket QPU or managed simulator) also submits within
+a run-wide budget by default -- 250 jobs; a `total_shots` limit is opt-in --
+and refuses an
+optimization that cannot fit it before the first job is queued, naming the
+optimizer's own bound on its evaluations as the count that did not fit; pass
+`backend_options={"run_budget": {...}}` to change it, or `False` to switch it
+off (never needed locally, where it is already off). **Rehearse first**: run
+the identical call with `device="fake_kingston"` (or `"fake_fez"`,
+`"fake_marrakesh"`) -- the same transpilation, the same noise model, no queue
+and no bill -- before pointing it at the real processor. See
+[What a hardware measurement costs](measurement_cost.md) for the budget and
+the mitigation options.
+
+**Measuring only the final state** is still there for when the optimization
+itself should not touch the budget: optimize on the local state vector (or a
+fake backend), then measure just the optimized state on hardware --
 
 ```python
 from mandacaru.algorithms.base import measure_energies
@@ -139,6 +173,13 @@ e_hw = atoms.calc.solver.measured_energy(provider)        # one job
 e_curve = measure_energies(solvers, provider)             # many geometries, one job
 ```
 
+or, through the calculator, `measurement_provider=`, which also measures the
+reduced density matrices a force request needs (see
+[What a hardware measurement costs](measurement_cost.md)). Examples
+`24_ADAPTVQE_LiH_IBM.py`, `25_ADAPTVQE_H2_IBM.py` and `29_H2_relaxation_IBM.py`
+follow this pattern; `13_braket_aws_compatibility.py` runs the whole
+optimization on a Braket device the way an `ibm_*` one would.
+
 **Keep the circuit small.** Hardware noise, not shot noise, limited the first
 LiH and H₂ runs (14 eV off for 92 CZ gates; a few tenths of an eV for 17). For
 molecules with a closed-shell reference the parity mapping's two-qubit
@@ -150,11 +191,6 @@ Mandacaru(method="adapt-vqe",
           mapping="parity_reduced",
           basis="HAO")     # H2 on 2 qubits
 ```
-
-A driver with `shots > 0` and an IBM device (`Mandacaru(..., device="ibm_kingston",
-shots=4096)`) runs the whole optimization through the Estimator instead, one
-job per energy evaluation; do that on a fake backend, not on a budget.
-Example `24_ADAPTVQE_LiH_IBM.py` follows the optimize-locally pattern.
 
 ## Registered devices
 
@@ -248,6 +284,12 @@ implemented yet.
 For a fixed ansatz, `method="vqe"` is fully hardware-native
 today — every cost evaluation in the optimization is measured on the device.
 :::
+
+`measurement_provider=` needs a provider that can return **many** expectation
+values of one state — what a force request measures through the reduced
+density matrices. `BraketProvider` cannot (it only measures `<H>`), so pairing
+one with `atoms.get_forces()` is refused before the optimization runs, not
+after; use a `QiskitProvider` (IBM, fake or local) for forces.
 
 ---
 

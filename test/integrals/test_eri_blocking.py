@@ -72,3 +72,25 @@ class TestBlockedHermitianERI:
         monkeypatch.setenv("MANDACARU_ERI_MEMORY_MB", "0")
         with pytest.raises(ValueError):
             engine_mod.eri_memory_budget_mb()
+
+
+class TestTheTensorItselfIsBudgeted:
+    """``max_memory_mb`` bounds the Poisson blocks; the ``M^4`` result and
+    its Gram blocks are checked against memory before any solve runs."""
+
+    def test_the_estimate_counts_the_result_and_the_gram_blocks(self):
+        from mandacaru.integrals.engine import eri_peak_bytes
+
+        M = 100
+        U = M * (M + 1) // 2
+        assert eri_peak_bytes(M) >= 16 * (M ** 4 + 2 * U * U)
+        assert eri_peak_bytes(M) / 2 ** 30 > 1.49          # the report's figure
+
+    def test_an_unaffordable_tensor_is_refused_up_front(self, monkeypatch):
+        from mandacaru.core import matrix_free
+        from mandacaru.integrals.engine import refuse_unaffordable_eri
+
+        monkeypatch.setattr(matrix_free, "physical_memory_bytes",
+                            lambda: 10 ** 6)
+        with pytest.raises(MemoryError, match="two-electron tensor"):
+            refuse_unaffordable_eri(40)

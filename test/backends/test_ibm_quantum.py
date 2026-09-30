@@ -174,7 +174,7 @@ class TestEstimatorEnergies:
         out = _isolated(_H2_RUN + """
     provider = QiskitProvider(device="fake_manila", shots=4096)
     energy = calc.measured_energy(provider)
-    isa, observable = provider.pub(*calc.ansatz_problem())
+    isa, observable, *_angles = provider.pub(*calc.ansatz_problem())
     print(provider.backend().name, isa.layout is not None,
           observable.num_qubits == provider.backend().num_qubits,
           abs(energy - exact) < 0.4 * HARTREE_TO_EV)
@@ -206,7 +206,7 @@ class TestEstimatorEnergies:
         out = _isolated(_H2_RUN + """
     provider = QiskitProvider(device="fake_manila", shots=1024,
                               physical_qubits=[3, 4, 1, 2])
-    isa, observable = provider.pub(*calc.ansatz_problem())
+    isa, observable, *_angles = provider.pub(*calc.ansatz_problem())
     # Mandacaru qubit k -> physical_qubits[k]; wire n-1-k carries qubit k.
     # (The *initial* layout is what the pin fixes; routing may permute the
     # final one, which apply_layout accounts for.)

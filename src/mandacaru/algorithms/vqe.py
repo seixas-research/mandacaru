@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..core.mapping import Fermion
-from ..optimizers.optim import DEFAULT_OPTIMIZER, Optimizer
+from ..optimizers.optim import Optimizer
 from ..units import convert_energy
 from .ansatz_spec import (HVA_REFUSED_OPTIONS, ansatz_name, build_ansatz,
                           reference_problem, resolve_ansatz)
@@ -202,7 +202,7 @@ class VQE(DeflationMixin, VariationalDriver):
     writes_output_log = True
 
     def __init__(self, hamiltonian=None, ansatz=None,
-                 optimizer: str | Optimizer = DEFAULT_OPTIMIZER,
+                 optimizer: str | Optimizer | None = None,
                  verbose: bool = True,
                  *, num_particles=None, n_spatial_orbitals=None,
                  ansatz_builder=None, **driver_kwargs):
@@ -312,6 +312,10 @@ class VQE(DeflationMixin, VariationalDriver):
                 mapping=self.mapping, taper=self.taper,
                 provider=self.ansatz_provider(), shots=self.shots)
         self.ansatz = ansatz
+        if self.shots:
+            # Every objective evaluation is a circuit: refuse an ansatz that
+            # cannot be one now, not after the first submission.
+            self.circuit_problem(ansatz, np.zeros(ansatz.num_parameters))
         self.mapping = getattr(ansatz, "mapping", self.mapping)
         # Expose the occupation / active-space size like ADAPTVQE does, so the
         # calculator's `num_particles` and the dry run read them uniformly.
@@ -364,7 +368,13 @@ class VQE(DeflationMixin, VariationalDriver):
         return self.ansatz_energy(self.ansatz, theta)
 
     def reference_energy(self) -> float:
-        """Energy of the ansatz reference state (all parameters zero)."""
+        """Energy of the ansatz reference state (all parameters zero).
+
+        With shots it is read off the determinant (:meth:`determinant_energy`)
+        rather than a state vector, which a shot-based run never builds.
+        """
+        if self.shots and hasattr(self.ansatz, "reference_qubits"):
+            return self.determinant_energy(self.ansatz.reference_qubits())
         return self.energy(self.ansatz.reference_state())
 
     def run(self, initial_parameters=None, geometry=None,
@@ -403,6 +413,14 @@ class VQE(DeflationMixin, VariationalDriver):
             x0 = np.asarray(resumed.parameters, dtype=float)
 
         timings, run_t0 = self._make_timings()
+        if self.shots:
+            provider = self.circuit_provider()
+            from ..backends.measurement import resolve_shots_per_energy
+            self._preflight_run_budget(
+                self.optimizer.max_evaluations(),
+                provider.jobs_per_energy(self.hamiltonian)
+                if hasattr(provider, "jobs_per_energy") else 1,
+                resolve_shots_per_energy(provider, self.hamiltonian))
         ref_energy = self.reference_energy()
         self._show_banner()
         logger = self._make_logger(self.log_targets, geometry, cell,

@@ -98,11 +98,25 @@ class UCCSD:
             g.map_to_qubits(self.mapping, n_modes=self.n_modes,
                             num_particles=self.num_particles)
             for g in self.excitations]
-        # Pre-materialize each generator matrix once (skipped for circuit
-        # execution, where the 2^N matrices are never needed).
-        self._generators = ([] if provider is not None else
-                            [g.to_matrix() for g in self._pauli_generators])
-        self._hf = self._reference_vector()
+        # The 2^N generator matrices and the reference vector are built on
+        # first use, not here: a shot-based run submits circuits and never
+        # needs them (at 12 qubits each matrix is 256 MiB).
+        self._generator_cache = None
+        self._hf_cache = None
+
+    @property
+    def _generators(self) -> list:
+        """Dense generator matrices, materialized once on first use."""
+        if self._generator_cache is None:
+            self._generator_cache = [g.to_matrix()
+                                     for g in self._pauli_generators]
+        return self._generator_cache
+
+    @property
+    def _hf(self) -> np.ndarray:
+        if self._hf_cache is None:
+            self._hf_cache = self._reference_vector()
+        return self._hf_cache
 
     # -- reference determinant -------------------------------------------- #
 
@@ -177,9 +191,11 @@ class UCCSD:
         return "product" if self.trotter else "sum"
 
     def reference_qubits(self) -> list[int]:
-        """Qubit indices set to ``|1>`` in the Hartree-Fock determinant."""
-        from ..backends.providers import _occupied_qubits, basis_state_index
-        return _occupied_qubits(basis_state_index(self._hf), self.n_qubits)
+        """Qubit indices set to ``|1>`` in the Hartree-Fock determinant --
+        read off the mapped occupations, with no ``2^N`` vector."""
+        from ..core.mapping import reference_qubit_bits
+        bits = reference_qubit_bits(self.mapping, self.n_modes, self._occupied)
+        return [k for k, bit in enumerate(bits) if bit]
 
     def reference_state(self) -> np.ndarray:
         """The Hartree-Fock reference state vector (a copy)."""

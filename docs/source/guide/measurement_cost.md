@@ -62,7 +62,7 @@ atoms.get_potential_energy()   # 1 observable: <H> as one weighted operator
 atoms.get_forces()             # the RDM operators, because these need them
 ```
 
-An energy is now **one weighted `SparsePauliOp`**, so the Estimator groups the
+An energy is **one weighted `SparsePauliOp`**, so the Estimator groups the
 terms itself and returns one number instead of an array of 12,736 — which is
 also what removes the per-observable ZNE arrays from the Runtime's memory.
 
@@ -83,6 +83,7 @@ it exceeds a budget. Everything in it is computed locally:
     shots_per_basis: 4096
     zne_noise_factors: 1
     twirling_randomizations: 1
+    shots_per_randomization: 4096
     circuit_instances: 93
     total_shots: 380928
     hamiltonian_one_norm_Ha: 5.502732
@@ -93,9 +94,27 @@ it exceeds a budget. Everything in it is computed locally:
     expected_fidelity: 7.494e-01 (at a nominal 0.003 two-qubit error)
 ```
 
-`circuit_instances` is `bases × noise_factors × twirls`: `resilience_level=2`
-multiplies the job by 96 before a single shot is counted, which is the factor
-that is easiest to forget.
+This plan is local (`device: statevector`), so `resilience_level` counts as
+`0` and neither ZNE nor twirling turns on. On an IBM processor an *unset*
+`resilience_level` is Runtime's own default of `1`: no ZNE, but measurement
+twirling is already on. `circuit_instances` is `bases × noise_factors ×
+randomizations`, so at level `1` it jumps to `93 × 1 × 32 = 2,976` for this
+plan — `shots=4096` on the `auto` rule takes `max(64, ceil(shots / 32))`
+shots per randomization (`128` here), hence `32` of them.
+
+`total_shots` does **not** carry that same factor: the randomizations
+**share** the requested shots rather than each repeating them in full, so a
+(basis, noise-factor) pair still costs `shots_per_basis` shots split across
+its twirls, not `randomizations × shots_per_basis`. `total_shots` therefore
+stays `93 × 1 × 4096 = 380,928`, unchanged from the no-mitigation case, and
+the per-randomization share is the plan's `shots_per_randomization` line. At
+`resilience_level=2` (ZNE on, 3 noise factors by default) both grow:
+`circuit_instances = 93 × 3 × 32 = 8,928`, `total_shots = 93 × 3 × 4096 =
+1,142,784` — the noise factors multiply the shots, the randomizations do not.
+
+The plan is an **estimate**: Runtime submits a target *precision*, and its
+own learning circuits (for twirling and ZNE) are extra, so the job's returned
+metadata is the final word on what it billed.
 
 ```python
 Mandacaru(..., measurement_budget={"observables": 20_000, "bases": 5_000})
@@ -123,7 +142,15 @@ except MeasurementFailed as exc:
 
 `remeasure()` submits the **same** ansatz again — no re-optimization — with
 whatever provider or options you hand it, and `calc.measurement_plan` still
-holds the plan of the attempt that failed.
+holds the plan of the attempt that failed. Passed keyword overrides (`shots`,
+`estimator_options`, `device`, ...) rebuild the provider through its own
+`with_options(...)`, so nothing the failed one had cached survives into the
+retry; an unknown option name is refused rather than silently dropped. The
+forces of the earlier measurement are dropped along with it (they belonged to
+other RDMs), so `atoms.get_forces()` recomputes them after a `remeasure()`.
+
+A run-wide budget refuses a submission for a different reason — before it is
+even queued, not after it fails — and is covered on its own [below](#run-budget).
 
 ## Bounded jobs instead of one unbounded PUB
 
@@ -137,9 +164,48 @@ group:
 QiskitProvider(device="ibm_fez", shots=4096, max_bases_per_job=250)
 ```
 
+The same limit applies to an **energy**, not only the RDM operators:
+`QiskitProvider.energies` splits the Hamiltonian into several weighted
+observables of at most that many bases each (the identity riding with the
+first piece), and `provider.jobs_per_energy(hamiltonian)` reports how many
+submissions one energy costs — the number an on-hardware optimization's
+run-budget preflight multiplies the optimizer's own
+{meth}`~mandacaru.optimizers.optim.Optimizer.max_evaluations` by, before the
+first job is queued. One `qwc_partition` is shared by the plan, this chunking
+and a Braket submission, so the bases a plan reports are exactly the bases
+that get measured. Completed chunks of an unfinished submission are **kept**,
+keyed by what was asked for, so a `remeasure()` after a partial failure
+submits only the rest.
+
 The ansatz is transpiled once and shared, results accumulate as each job
 returns, and `[PERFORMANCE]` sums the QPU accounting over every job rather than
 reporting the last one. The numbers are identical to the unsplit submission.
+
+(run-budget)=
+## The run-wide budget refuses before it queues
+
+A processor -- an `ibm_*` device, an AWS Braket QPU or managed simulator --
+also carries a **run-wide** budget: 250 jobs by default, with no default
+ceiling on total shots (each job's size is already the measurement budget's
+to bound; a `total_shots` limit can be set), off on a local or fake device
+unless asked for. It is passed as
+`run_budget=` to a provider (`backend_options={"run_budget": {"jobs": 500}}`
+for a driver); `False` switches it off, and a dict overrides only the keys it
+names.
+
+An optimization whose `optimizer.max_evaluations() * provider.jobs_per_energy
+(hamiltonian)` would need more jobs than the budget (or, with a `total_shots`
+limit, more shots than `provider.shots_per_energy(hamiltonian)` allows) is
+refused up front,
+before anything is queued, naming that count against the limit. A submission
+that would only exceed it partway through the run is refused at that job
+instead (`RunBudgetExceeded`), and whatever the run had already reached -- the
+optimizer's best point, the checkpoint -- is kept. `provider.run_usage()`
+reports the jobs and shots spent so far in the run (`run_jobs` lists every
+job handle), and it survives `with_options(...)` -- what `remeasure()`
+rebuilds through -- so a retry belongs to the same run and the same budget.
+`[PERFORMANCE]` reports the cumulative count as `qpu_submissions` for a run
+whose whole optimization was on hardware.
 
 ## Odd-`Y` strings are exactly zero
 
@@ -238,5 +304,10 @@ rather than silently falling back.
   `measurement_scheme="double-factorized"` is the structural answer.
 * **Too deep to trust** → `pool="ceo-ovp"` (about half the CNOTs of `qeb`),
   `tetris=True`, `prune=True`, and pin the layout with `physical_qubits=`.
+* **Too many jobs for the run budget** → fewer evaluations
+  (`optimizer={"maxiter": ...}`), `measurement_provider=` instead of
+  `device="ibm_*"` (optimize locally, measure once), or raise `run_budget=`
+  in `backend_options=` if the run really needs it — see
+  [above](#run-budget).
 * **On the Open plan**, the realistic target stays 4–8 qubits. `examples/old/25_ADAPTVQE_H2_IBM.py`
   is the shape that works: two qubits, five Pauli terms, four CNOTs.
