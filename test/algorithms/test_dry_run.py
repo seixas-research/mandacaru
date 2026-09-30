@@ -110,12 +110,12 @@ class TestEstimate:
         assert est.num_particles == (9, 7) and est.n_qubits == 20
 
     def test_pseudopotentials_count_valence_only(self):
-        est = estimate_qubits(_boxed("H2O"), basis="NCPP")
+        est = estimate_qubits(_boxed("H2O"), basis="ONCVPSP")
         assert est.n_electrons == 8 and est.n_frozen_orbitals == 0
         # The label always names the filter and the confinement, so a reader
-        # need not know each family's defaults: NCPP leaves the filter off
+        # need not know each family's defaults: ONCVPSP leaves the filter off
         # (PAW-LCAO/UPAW-LCAO turn it on), and every family confines at 0.1 eV.
-        assert est.basis == ("NCPP (SZ, unfiltered, energy_shift 0.1 eV, "
+        assert est.basis == ("ONCVPSP (SZ, unfiltered, energy_shift 0.1 eV, "
                              "gaussian polarization, pseudopotentials)")
         assert est.per_atom == [("O", 4), ("H", 1), ("H", 1)]
         assert est.n_qubits == 12

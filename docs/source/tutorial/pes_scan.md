@@ -62,7 +62,7 @@ variational problem, but its integrals still need adequate resolution.
 From a source checkout with Mandacaru installed, run:
 
 ```bash
-python examples/30_LiH_basis_pool_scan.py
+python examples/old/30_LiH_basis_pool_scan.py
 ```
 
 The script writes these files into `docs/source/_static/lih/`:
@@ -76,13 +76,13 @@ The script writes these files into `docs/source/_static/lih/`:
 To redraw the saved CSV without rerunning any calculations:
 
 ```bash
-python examples/30_LiH_basis_pool_scan.py --plot-only
+python examples/old/30_LiH_basis_pool_scan.py --plot-only
 ```
 
 To test another grid without overwriting the documentation figure:
 
 ```bash
-python examples/30_LiH_basis_pool_scan.py --spacing 0.10 --output-dir /tmp/lih-finer-grid
+python examples/old/30_LiH_basis_pool_scan.py --spacing 0.10 --output-dir /tmp/lih-finer-grid
 ```
 
 Changing the spacing also changes the grid-aligned distances. Compare only
@@ -134,7 +134,7 @@ consistent fragment calculations and subtract their energies:
 Use compatible basis, grid, potential and core conventions, and account for the
 open-shell isolated atoms. `reference_energy` is a molecular reference
 determinant, not the sum of isolated-atom energies. The helper
-`examples/pes_utils.py::atomic_reference` already returns **eV**; do not convert
+`examples/old/pes_utils.py::atomic_reference` already returns **eV**; do not convert
 it from Hartree a second time.
 
 The supplied `3-21G` calculation reports grid-resolution warnings for a compact
@@ -173,6 +173,6 @@ with the documentation; Read the Docs does not run the scientific calculation.
 
 ## Complete script
 
-```{literalinclude} ../../../examples/30_LiH_basis_pool_scan.py
+```{literalinclude} ../../../examples/old/30_LiH_basis_pool_scan.py
 :language: python
 ```

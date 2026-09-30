@@ -372,7 +372,7 @@ def count_basis_functions(atoms, basis="HAO"):
     Instantiates the basis family exactly as a run would (so every option that
     changes the function count -- ``size``, polarization, ``n_gaussians`` -- is
     honored) but never samples anything on a grid.  A pseudopotential family
-    (``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW-LCAO"``) counts its valence pseudo-atomic
+    (``"ONCVPSP"`` / ``"PAW-LCAO"``) counts its valence pseudo-atomic
     orbitals; the plane-wave family returns one entry ``("PW", n_plane_waves)``
     since it is not atom-centered.  Returns ``(per_atom, basis_label)``.
     """

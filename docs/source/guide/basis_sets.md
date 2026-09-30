@@ -159,7 +159,7 @@ ones they were split from. The overlap matrix stays comfortably invertible at DZ
 (condition number ~170 for H₂), but it grows with every zeta — another reason the
 high sizes are specialist tools.
 
-See `examples/21_multizeta_basis.py`, which reproduces every table above and
+See `examples/old/21_multizeta_basis.py`, which reproduces every table above and
 plots the zeta hierarchy.
 
 

@@ -105,4 +105,4 @@ print(bset.describe("O"))
   the core integrals. Refine the grid and check convergence, or consider a
   suitable pseudopotential model.
 
-See `examples/23_NAO_AE_basis.py` and {mod}`mandacaru.basis.nao_ae`.
+See `examples/old/23_NAO_AE_basis.py` and {mod}`mandacaru.basis.nao_ae`.

@@ -8,7 +8,7 @@
 
 r"""Hellmann-Feynman and Pulay forces for every atom-centered basis.
 
-Pseudopotential families (PAW-LCAO, ONCVPSP, NCPP) and all-electron bases share one
+Pseudopotential families (PAW-LCAO, ONCVPSP) and all-electron bases share one
 derivative: the difference is only which terms exist.  An all-electron
 Hamiltonian has no projectors, no augmented overlap and no compensation
 charges, and its per-atom local potential is the bare (softened) ``-Z/r``;

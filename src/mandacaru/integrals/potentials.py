@@ -52,7 +52,7 @@ class Potentials:
         Coulomb singularity on the grid (default ``1e-12``).  Irrelevant to
         :meth:`pseudopotential`, which has no singularity to regularize.
     pseudos : sequence, optional
-        One :class:`~mandacaru.pseudopotentials.generation.PseudoPotential` per nucleus,
+        One :class:`~mandacaru.pseudopotentials.dataset.PseudoPotential` per nucleus,
         enabling :meth:`pseudopotential`.
     units : {"angstrom", "bohr"}
         Unit of the nuclear centers (default ``"angstrom"``).

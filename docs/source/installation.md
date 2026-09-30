@@ -43,22 +43,18 @@ not what the tests, or a calculation, actually run.
 
 ## Pseudopotential datasets
 
-None of the generated families ships with the package: **NCPP**, **ONCVPSP**,
-**PAW-LCAO** and **UPAW-LCAO** each live in their own repository — about 11 MB,
-110 MB and 190 MB for all 92 elements of the first three — and an environment
+None of the generated families ships with the package: **ONCVPSP**,
+**PAW-LCAO** and **UPAW-LCAO** each live in their own repository — about
+110 MB and 190 MB for all 92 elements of the first two — and an environment
 variable names the checkout Mandacaru reads from:
 
 | basis | variable | repository |
 | :--- | :--- | :--- |
-| `NCPP` | `MANDACARU_NCPP_PATH` | `mandacaru-ncpp` |
 | `ONCVPSP` | `MANDACARU_ONCVPSP_PATH` | `mandacaru-oncvpsp` |
 | `PAW-LCAO` | `MANDACARU_PAW_PATH` | `mandacaru-paw` |
 | `UPAW-LCAO` | `MANDACARU_UPAW_PATH` | `mandacaru-upaw` (optional) |
 
 ```bash
-git clone https://github.com/seixas-research/mandacaru-ncpp.git
-mandacaru --set-ncpp mandacaru-ncpp
-
 git clone https://github.com/seixas-research/mandacaru-paw.git
 mandacaru --set-paw mandacaru-paw
 
@@ -75,21 +71,22 @@ Each `--set-*` command writes `export MANDACARU_..._PATH=DIR` into `~/.zshrc`
 or `~/.bashrc` (whichever `$SHELL` reads), asking `[Y/n]` before replacing a
 different value; open a new terminal, or `source` the file, for the variable
 to take effect in your shell. Inside a checkout the datasets sit one folder
-per exchange-correlation functional (`<checkout>/lda/<Symbol>.parquet`; the
-PAW-LCAO library also has `pbe/`). A calculation reads `lda/` unless the
-calculator names another folder:
+per set (`<checkout>/lda-sr/<Symbol>.parquet` — every family's
+scalar-relativistic LDA set, and the default); PAW-LCAO also has
+`lda-dirac/` (the spin-orbit set) and ONCVPSP an empty `pbe/`. A calculation
+reads `lda-sr/` unless the calculator names another folder:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO",
-                       directory="pbe")      # $MANDACARU_PAW_PATH/pbe/
+                       directory="lda-dirac")  # $MANDACARU_PAW_PATH/lda-dirac/
 ```
 
-Without this, `basis="NCPP"`, `basis="PAW-LCAO"` and `basis="ONCVPSP"` raise a
+Without this, `basis="PAW-LCAO"` and `basis="ONCVPSP"` raise a
 `LibraryPathError` that repeats the matching `--set-*` command; the all-electron
 bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. A
 basis option `directory=...` (a full path) overrides the variable for one run.
 An ONCVPSP or PAW-LCAO dataset whose own recorded functional disagrees with
-the `lda/` or `pbe/` folder it was loaded from is refused, so a file cannot be
+the folder it was loaded from is refused, so a file cannot be
 read as the wrong functional by being copied into the wrong folder.
 
 `basis="UPAW-LCAO"` needs nothing either: `MANDACARU_UPAW_PATH` is the one

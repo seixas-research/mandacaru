@@ -338,7 +338,7 @@ ho(\mathbf r)\, V^{A\prime}_{	ext{loc}}(r)\,
 
         # The quantity actually needed is (dV/dr)/r, because
         #   dV/dR_A = -(dV/dr) * (r - R_A)/r ,
-        # and it is *finite* at the origin: a Troullier-Martins potential is flat
+        # and it is *finite* at the origin: a smooth local potential is flat
         # there, so dV/dr ~ c r.  Interpolating dV/dr and then dividing by r
         # instead would manufacture a 1/r spike at any grid node that lands near
         # the nucleus -- which is precisely the pathology pseudopotentials exist

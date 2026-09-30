@@ -77,7 +77,7 @@ from ase.calculators.calculator import Calculator, all_changes
 
 from .ansatz_spec import resolve_ansatz
 from .bloch import BLOCH_METHODS
-from ..pseudopotentials.environment import DEFAULT_XC as DEFAULT_LIBRARY_FOLDER
+from ..pseudopotentials.environment import DEFAULT_LIBRARY_FOLDER
 from ..units import BOHR_TO_ANGSTROM, DEFAULT_GRID_SPACING
 
 if TYPE_CHECKING:
@@ -368,16 +368,18 @@ class Mandacaru(Calculator):
         Basis family, as for the solvers (default ``"HAO"``); accepts a
         ``{"name": ..., <options>}`` dict, including the periodic plane-wave
         family (energy only -- plane waves carry no forces) and the
-        pseudopotential families ``"NCPP"`` / ``"ONCVPSP"`` / ``"PAW-LCAO"``
+        pseudopotential families ``"ONCVPSP"`` / ``"PAW-LCAO"``
         (``{"name": "PAW-LCAO", "size": "DZP"}``), which replace the all-electron
         problem by a valence-only one.
     directory : str
         The folder of the pseudopotential library the datasets are read
-        from, relative to the family's library variable: ``"lda"`` (the
-        default) reads ``$MANDACARU_PAW_PATH/lda/`` for PAW-LCAO, ``"pbe"``
-        reads ``$MANDACARU_PAW_PATH/pbe/``.  ONCVPSP and NCPP read the same
-        folder of their own libraries.  A basis that names its own
-        ``directory`` option keeps it.  Not ASE's working directory: the
+        from, relative to the family's library variable.  ``"lda-sr"`` (the
+        default) is every family's scalar-relativistic LDA set, e.g.
+        ``$MANDACARU_PAW_PATH/lda-sr/``; ``"lda-dirac"`` reads
+        ``$MANDACARU_PAW_PATH/lda-dirac/``, the PAW-LCAO set with the
+        spin-orbit term.  ONCVPSP reads the named folder of its
+        own libraries.  A basis that names its own ``directory`` option
+        keeps it.  Not ASE's working directory: the
         calculator's ``directory`` attribute is left to ASE.
     h : float
         Grid spacing in Angstrom (default ``0.20``), used both for the
@@ -902,7 +904,7 @@ class Mandacaru(Calculator):
                 "nuclear forces need an atom-centered basis whose orbitals move "
                 "with the nuclei; the plane-wave ('PW') family does not "
                 "qualify. Use 'HAO', 'NAO', 'GTO', '6-31G(d)' or a "
-                "pseudopotential family ('NCPP', 'ONCVPSP', 'PAW-LCAO').")
+                "pseudopotential family ('ONCVPSP', 'PAW-LCAO').")
 
     # -- ASE hook ---------------------------------------------------------- #
 

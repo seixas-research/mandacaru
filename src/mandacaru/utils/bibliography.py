@@ -381,17 +381,6 @@ _BASES = [
   primaryClass  = {quant-ph},
   doi           = {10.48550/arXiv.2408.03159}
 }""", "unitary PAW-LCAO (basis='UPAW-LCAO')", verified=False, topics=("upaw-lcao",)),
-    _ref("Troullier1991", """
-@article{Troullier1991,
-  author  = {Troullier, N. and Martins, Jos{\\'e} Lu{\\'i}s},
-  title   = {Efficient pseudopotentials for plane-wave calculations},
-  journal = {Phys. Rev. B},
-  volume  = {43},
-  pages   = {1993--2006},
-  year    = {1991},
-  doi     = {10.1103/PhysRevB.43.1993}
-}""", "the NCPP (Troullier-Martins) pseudopotentials", verified=False,
-         topics=("ncpp",)),
     _ref("Kleinman1982", """
 @article{Kleinman1982,
   author  = {Kleinman, Leonard and Bylander, D. M.},
@@ -402,7 +391,7 @@ _BASES = [
   year    = {1982},
   doi     = {10.1103/PhysRevLett.48.1425}
 }""", "the Kleinman-Bylander separable nonlocal form", verified=False,
-         topics=("ncpp", "oncvpsp")),
+         topics=("oncvpsp",)),
     _ref("Hamann2013", """
 @article{Hamann2013,
   author  = {Hamann, D. R.},

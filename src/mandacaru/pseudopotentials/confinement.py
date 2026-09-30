@@ -7,7 +7,7 @@
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
 r"""Confined pseudo-atomic orbitals: the ``energy_shift`` of a pseudopotential
-basis (PAW-LCAO, UPAW-LCAO, ONCVPSP and NCPP).
+basis (PAW-LCAO, UPAW-LCAO and ONCVPSP).
 
 Without this module the first zeta of such a basis is the dataset's bound smooth
 partial wave -- the valence orbital of the **free** atom, which has no range of
@@ -53,10 +53,8 @@ from the GPAW source, not recalled), chosen on purpose: with the same
 with.  (The *datasets* still differ -- each code pseudizes its own atom -- so
 the radii agree closely, not identically.)
 
-For the norm-conserving families the overlap is the identity (``q = 0``):
-ONCVPSP solves with its own local potential and projectors, NCPP with the
-screened semilocal potential of the channel, whose free eigenstate is the
-stored pseudo wave.  Each dataset supplies its operator through
+For the norm-conserving family the overlap is the identity (``q = 0``):
+ONCVPSP solves with its own local potential and projectors.  Each dataset supplies its operator through
 ``channel_operator_on(l, r)``, which returns the grid, the potential, the
 ``u``-form projectors, ``D`` and ``q``.
 
@@ -87,8 +85,8 @@ CONFINEMENT_INNER_FRACTION = 0.6
 DEFAULT_ENERGY_SHIFT = 0.1
 
 #: The basis options this module provides, shared by every family whose
-#: datasets define ``channel_operator_on`` -- PAW-LCAO, UPAW-LCAO, ONCVPSP and
-#: NCPP -- and their defaults (the polarization shell is derived from the
+#: datasets define ``channel_operator_on`` -- PAW-LCAO, UPAW-LCAO and
+#: ONCVPSP -- and their defaults (the polarization shell is derived from the
 #: confinement, :func:`resolve_polarization`, so it has none of its own).
 CONFINEMENT_OPTIONS = ("energy_shift", "confinement", "polarization")
 CONFINEMENT_DEFAULT_OPTIONS = {"energy_shift": DEFAULT_ENERGY_SHIFT}

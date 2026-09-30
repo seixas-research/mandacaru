@@ -203,7 +203,7 @@ estimated from measurements.
 
 Mandacaru emits only `X`, `H`, `S`, `Si`, `CNot` and `Rz` — all Braket-native and
 available on every Braket QPU (the device's own compiler maps them to its native
-basis). `examples/13_braket_aws_compatibility.py` verifies this on every run.
+basis). `examples/old/13_braket_aws_compatibility.py` verifies this on every run.
 
 ---
 
@@ -253,11 +253,11 @@ today — every cost evaluation in the optimization is measured on the device.
 
 ## Verifying compatibility
 
-`examples/13_braket_aws_compatibility.py` runs the full check locally — no AWS
+`examples/old/13_braket_aws_compatibility.py` runs the full check locally — no AWS
 account, no charges — and prints a report covering the gate set, the
 shots-versus-state-vector constraint, QWC grouping, shot-noise convergence,
 per-evaluation task count, and the registered devices:
 
 ```bash
-python examples/13_braket_aws_compatibility.py
+python examples/old/13_braket_aws_compatibility.py
 ```

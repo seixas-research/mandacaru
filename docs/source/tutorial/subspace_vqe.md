@@ -163,4 +163,4 @@ Three limits come with the construction:
   reference, which breaks $\hat S^2$, is refused.
 
 A complete, runnable script (both methods, compared to exact diagonalization) is
-`examples/09_SubspaceVQE_H2.py`.
+`examples/old/09_SubspaceVQE_H2.py`.

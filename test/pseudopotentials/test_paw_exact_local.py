@@ -341,9 +341,9 @@ class TestInertElsewhere:
         assert not getattr(integrals, "split_local_potential", False)
 
     def test_a_norm_conserving_family_is_untouched(self):
-        """NCPP builds plain ``MolecularIntegrals``; nothing is separated."""
+        """ONCVPSP builds its norm-conserving integrals; nothing is separated."""
         atoms = Atoms("H2", positions=[[3, 3, 3], [3, 3, 3.74]], cell=[6.0] * 3)
-        integrals = integrals_of(atoms, 0.3, basis="NCPP")
+        integrals = integrals_of(atoms, 0.3, basis="ONCVPSP")
         assert integrals.short_range_local() is None
 
     @staticmethod

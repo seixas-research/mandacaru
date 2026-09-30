@@ -284,7 +284,7 @@ read off the left margin:
     filter_cutoff: 16.6244 Bohr^-1 (3760.30 eV)
     local_potential: range-separated: long range on the grid, short range on atom-centered quadrature (sigma = 0.2646 Bohr)
     dataset_xc: LDA (atomic reference only; the valence interaction is the bare Coulomb operator)
-    directory: lda (/data/mandacaru-paw/lda)
+    directory: lda-sr (/data/mandacaru-paw/lda-sr)
     basis_functions: 6
     datasets:
         symbol  Z  Z_ion  l_max  r_cut_Bohr  source

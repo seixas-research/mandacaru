@@ -21,9 +21,8 @@ grid or the cell of the offending test rather than the limits):
 * the whole session  < :data:`SESSION_LIMIT_S` (20 minutes),
 * peak RSS           < :data:`RSS_LIMIT_GB` (8 GB).
 
-The budget was set for the pseudopotential tests (``test_ncpp_family``,
-``test_oncvpsp``, ``test_paw``, ``test_pseudopotential_engine``, ...), which
-are the heaviest; it now covers the whole suite.
+The budget was set for the pseudopotential tests (``test_oncv``,
+``test_paw``, ...), which are the heaviest; it now covers the whole suite.
 """
 
 from __future__ import annotations
@@ -150,7 +149,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 def pytest_sessionstart(session):
     """Name the pseudopotential library variables that are unset or wrong.
 
-    The NCPP, ONCVPSP and PAW-LCAO datasets live outside the package, so
+    The ONCVPSP and PAW-LCAO datasets live outside the package, so
     every test that loads one fails with a ``LibraryPathError`` without its
     variable; this says why once, at the top, instead of in each traceback.
     (A report header would be hidden by the ``-q`` in ``addopts``.)

@@ -16,10 +16,10 @@ import os
 import numpy as np
 import pytest
 
+from mandacaru.pseudopotentials.paw import get_paw, paw_library_path
 from mandacaru.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
                                      PARQUET_MAGIC, PSEUDO_FORMATS, STRIDE,
                                      available_elements, detect_format,
-                                     get_pseudopotential,
                                      library_elements, library_file,
                                      load_pseudopotential, resolve_format,
                                      save_pseudopotential)
@@ -27,15 +27,14 @@ from mandacaru.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
 
 @pytest.fixture(scope="module")
 def silicon():
-    """A real pseudopotential from the NCPP library ($MANDACARU_NCPP_PATH)."""
-    return get_pseudopotential("Si")
+    """A real dataset from the PAW-LCAO library ($MANDACARU_PAW_PATH)."""
+    return get_paw("Si")
 
 
 def assert_same(left, right):
     """Every numerical table and scalar survived the round trip."""
     assert left.symbol == right.symbol
     assert left.atomic_number == right.atomic_number
-    assert left.local_l == right.local_l
     assert left.valence_charge == pytest.approx(right.valence_charge)
     for name in ("r", "v_local", "valence_density"):
         np.testing.assert_allclose(getattr(left, name), getattr(right, name))
@@ -46,12 +45,9 @@ def assert_same(left, right):
         assert channel.eigenvalue == pytest.approx(other.eigenvalue)
         assert channel.r_cut == pytest.approx(other.r_cut)
         np.testing.assert_allclose(channel.pseudo_radial, other.pseudo_radial)
-        np.testing.assert_allclose(channel.v_ionic, other.v_ionic)
     assert sorted(left.projectors) == sorted(right.projectors)
     for l, projector in left.projectors.items():
         np.testing.assert_allclose(projector, right.projectors[l])
-    for l, energy in left.kb_energies.items():
-        assert energy == pytest.approx(right.kb_energies[l])
     assert left.relativistic_exchange == right.relativistic_exchange
 
 
@@ -212,7 +208,7 @@ class TestArrowStringIsolation:
 
 
 class TestLibrary:
-    """The NCPP library, ``$MANDACARU_NCPP_PATH/lda``."""
+    """The library layout every family shares."""
 
     def test_covers_z_up_to_92(self):
         elements = library_elements()
@@ -220,10 +216,11 @@ class TestLibrary:
         assert elements[0] == "H" and elements[-1] == "U"
 
     def test_every_element_is_present(self):
-        assert set(available_elements()) == set(library_elements())
+        assert set(available_elements(paw_library_path())) == set(
+            library_elements())
 
     def test_library_files_are_parquet(self):
-        assert library_file("Si").endswith(".parquet")
+        assert library_file("Si", paw_library_path()).endswith(".parquet")
 
     def test_library_file_finds_either_format(self, tmp_path):
         (tmp_path / "Si.json").write_text("{}")
@@ -233,56 +230,15 @@ class TestLibrary:
         """It applies to library generation only -- see the idempotence test."""
         assert STRIDE > 1
 
-    @pytest.mark.parametrize("symbol, valence", [
-        ("H", 1), ("C", 4), ("O", 6), ("Si", 4),
-        ("Fe", 8),                      # 3d^6 4s^2, not a 2-electron atom
-        ("Zn", 12),
-    ])
-    def test_valence_charges(self, symbol, valence):
-        assert get_pseudopotential(symbol).valence_charge == pytest.approx(
-            valence)
-
-    @pytest.mark.parametrize("symbol", ["H", "C", "O", "Si", "Fe"])
-    def test_library_entries_are_physical(self, symbol):
-        pp = get_pseudopotential(symbol)
-        assert np.all(np.isfinite(pp.v_local))
-        assert pp.v_local[0] > -1e4          # bounded at the origin, unlike -Z/r
-        assert np.all(np.diff(pp.r) > 0)
-        assert pp.local_l in pp.channels
-
-    def test_transition_metals_have_a_d_channel(self):
-        """Iron's chemistry lives in 3d; a pseudopotential without it is wrong."""
-        assert 2 in get_pseudopotential("Fe").channels
-
 
 class TestRelativisticExchangeRecord:
     """Whether the functional carried the relativistic exchange correction is
     stored, because rescreening a loaded file has to match its unscreening."""
 
-    @pytest.fixture(scope="class")
-    def scalar_oxygen(self):
-        import warnings
+    def test_a_relativistic_dataset_carries_it(self, silicon):
+        assert silicon.relativity == "scalar" and silicon.relativistic_exchange
 
-        from mandacaru.pseudopotentials.generation import (
-            generate_pseudopotential)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return generate_pseudopotential("O", relativity="scalar")
-
-    def test_a_relativistic_dataset_carries_it(self, scalar_oxygen):
-        assert scalar_oxygen.relativistic_exchange
-
-    def test_a_file_written_before_it_existed_does_not(self, silicon):
-        assert not silicon.relativistic_exchange
-
-    def test_the_loaded_file_rescreens_as_it_was_unscreened(
-            self, scalar_oxygen, tmp_path):
-        """Without the stored flag the rescreened potential would differ in
-        the core by the correction itself."""
+    def test_it_survives_the_round_trip(self, silicon, tmp_path):
         loaded = load_pseudopotential(save_pseudopotential(
-            scalar_oxygen, tmp_path / "o.parquet"))
+            silicon, tmp_path / "si.parquet"))
         assert loaded.relativistic_exchange
-        for l, channel in scalar_oxygen.channels.items():
-            np.testing.assert_allclose(loaded.screened_potential(l),
-                                       channel.v_screened, atol=1e-8)

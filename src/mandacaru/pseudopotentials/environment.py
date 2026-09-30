@@ -8,23 +8,24 @@
 
 """Where the pseudopotential libraries live: one environment variable each.
 
-The NCPP, ONCVPSP, PAW-LCAO and UPAW-LCAO datasets are not part of the
-package.  Each family lives in a repository of its own (``mandacaru-ncpp``,
-``mandacaru-oncvpsp``, ``mandacaru-paw``, ``mandacaru-upaw``), and an
+The ONCVPSP, PAW-LCAO and UPAW-LCAO datasets are not part of the
+package.  Each family lives in a repository of its own
+(``mandacaru-oncvpsp``, ``mandacaru-paw``, ``mandacaru-upaw``), and an
 environment variable names the checkout:
 
 ====================  ==========================  ==========================
 family                variable                    set it with
 ====================  ==========================  ==========================
-``ncpp``              ``MANDACARU_NCPP_PATH``     ``mandacaru --set-ncpp DIR``
 ``oncvpsp``           ``MANDACARU_ONCVPSP_PATH``  ``mandacaru --set-oncvpsp DIR``
 ``paw-lcao``          ``MANDACARU_PAW_PATH``      ``mandacaru --set-paw DIR``
 ``upaw-lcao``         ``MANDACARU_UPAW_PATH``     ``mandacaru --set-upaw DIR``
 ====================  ==========================  ==========================
 
-Inside a checkout the datasets sit one directory per exchange-correlation
-functional -- ``<checkout>/lda/<Symbol>.parquet`` today, ``<checkout>/pbe/``
-when there are PBE datasets -- so one repository serves every functional.
+Inside a checkout the datasets sit one directory per set, named for its
+functional and relativistic treatment (:data:`LIBRARY_FOLDERS`): every family
+ships ``lda-sr/`` (scalar-relativistic LDA, the default); PAW-LCAO adds
+``lda-dirac/`` (with the spin-orbit term).  A set without an entry, such as ONCVPSP's PBE, sits in
+the folder named for the functional (``pbe/``).
 UPAW-LCAO is the one optional library: without ``MANDACARU_UPAW_PATH`` its
 datasets are generated on demand (a few seconds per element), so an unset
 variable is not an error for it (:data:`OPTIONAL_FAMILIES`).
@@ -42,15 +43,14 @@ from __future__ import annotations
 import os
 
 #: Family -> the environment variable naming its repository checkout.
-FAMILY_VARIABLES = {"ncpp": "MANDACARU_NCPP_PATH",
-                    "oncvpsp": "MANDACARU_ONCVPSP_PATH",
+FAMILY_VARIABLES = {"oncvpsp": "MANDACARU_ONCVPSP_PATH",
                     "paw-lcao": "MANDACARU_PAW_PATH",
                     "upaw-lcao": "MANDACARU_UPAW_PATH"}
 #: Family -> the ``mandacaru`` flag that sets its variable.
-SET_FLAGS = {"ncpp": "--set-ncpp", "oncvpsp": "--set-oncvpsp",
+SET_FLAGS = {"oncvpsp": "--set-oncvpsp",
              "paw-lcao": "--set-paw", "upaw-lcao": "--set-upaw"}
 #: Family -> the repository that holds its datasets.
-REPOSITORIES = {"ncpp": "mandacaru-ncpp", "oncvpsp": "mandacaru-oncvpsp",
+REPOSITORIES = {"oncvpsp": "mandacaru-oncvpsp",
                 "paw-lcao": "mandacaru-paw", "upaw-lcao": "mandacaru-upaw"}
 #: Families that work without their variable: UPAW-LCAO is generated on
 #: demand when there is no library to read.
@@ -59,6 +59,14 @@ OPTIONAL_FAMILIES = ("upaw-lcao",)
 FUNCTIONALS = ("lda", "pbe")
 #: The functional of every dataset loaded without saying which.
 DEFAULT_XC = "lda"
+#: The folder of a set inside a family's checkout, where it is not simply
+#: named for its functional.
+LIBRARY_FOLDERS = {("oncvpsp", "lda", "scalar"): "lda-sr",
+                   ("paw-lcao", "lda", "scalar"): "lda-sr",
+                   ("paw-lcao", "lda", "dirac"): "lda-dirac"}
+#: The folder ``Mandacaru(directory=...)`` reads by default, every family's
+#: scalar-relativistic LDA set.
+DEFAULT_LIBRARY_FOLDER = "lda-sr"
 
 _DATA_EXTENSIONS = (".parquet", ".pq", ".json")
 
@@ -84,6 +92,21 @@ def _functional(xc: str) -> str:
     if xc not in FUNCTIONALS:
         raise ValueError(f"xc must be one of {FUNCTIONALS}, not {xc!r}")
     return xc
+
+
+def library_folder_name(family: str, xc: str = DEFAULT_XC,
+                        relativity: str = "scalar") -> str:
+    """The folder name of ``family``'s ``xc`` set with ``relativity``
+    (:data:`LIBRARY_FOLDERS`, else the functional itself)."""
+    key, xc = _family(family), _functional(xc)
+    return LIBRARY_FOLDERS.get((key, xc, str(relativity).lower()), xc)
+
+
+def _folders(root: str) -> list[str]:
+    """The set folders of a checkout: its non-hidden subdirectories."""
+    return sorted(entry for entry in os.listdir(root)
+                  if not entry.startswith(".")
+                  and os.path.isdir(os.path.join(root, entry)))
 
 
 def _how_to_set(key: str) -> str:
@@ -122,42 +145,43 @@ def repository_path(family: str) -> str:
 
 
 def library_directory(family: str, xc: str = DEFAULT_XC, directory=None, *,
-                      must_exist: bool = True) -> str:
+                      must_exist: bool = True,
+                      relativity: str = "scalar") -> str:
     """The folder holding ``family``'s ``<Symbol>.parquet`` files for ``xc``.
 
     ``directory`` is the caller's own folder, returned as given (no variable,
-    no functional subdirectory).  Otherwise it is ``<checkout>/<xc>`` of
-    :func:`repository_path`; with ``must_exist`` (the default, for loading) a
-    missing functional directory is an error, and without it (for writing) it
-    is simply returned for the caller to create.
+    no set subdirectory).  Otherwise it is ``<checkout>/<folder>`` of
+    :func:`repository_path`, the folder :func:`library_folder_name` names; with
+    ``must_exist`` (the default, for loading) a missing folder is an error,
+    and without it (for writing) it is simply returned for the caller to
+    create.
     """
     if directory is not None:
         return os.fspath(directory)
     key = _family(family)
-    xc = _functional(xc)
-    folder = os.path.join(repository_path(key), xc)
+    name = library_folder_name(key, xc, relativity)
+    root = repository_path(key)
+    folder = os.path.join(root, name)
     if must_exist and not os.path.isdir(folder):
-        present = [f for f in FUNCTIONALS
-                   if os.path.isdir(os.path.join(repository_path(key), f))]
         raise LibraryPathError(
-            f"the {key} library at {repository_path(key)!r} has no {xc}/ "
-            f"directory (it has: {', '.join(present) or 'none'}).  Update the "
+            f"the {key} library at {root!r} has no {name}/ folder (it has: "
+            f"{', '.join(_folders(root)) or 'none'}).  Update the "
             f"{REPOSITORIES[key]} checkout, or generate the datasets into it: "
-            f"mandacaru-build --pp {key} --xc {xc} --all --install")
+            f"mandacaru-build --pp {key} --xc {_functional(xc)} --all --install")
     return folder
 
 
 #: Families whose library is laid out as ``<checkout>/<folder>/``, the folder
 #: a calculation selects with ``Mandacaru(directory=...)``.  UPAW-LCAO is
 #: generated on demand into its own library and is not one of them.
-FOLDER_FAMILIES = ("ncpp", "oncvpsp", "paw-lcao")
+FOLDER_FAMILIES = ("oncvpsp", "paw-lcao")
 
 
 def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
     """``<checkout>/<folder>`` of ``family``'s library, which must exist.
 
-    ``folder`` is one directory name inside the checkout -- ``"lda"``,
-    ``"pbe"``, or any other set placed beside them -- not a path: a
+    ``folder`` is one directory name inside the checkout -- ``"lda-sr"``,
+    ``"lda-dirac"`` for PAW-LCAO, ``"pbe"`` for ONCVPSP, or any other set placed beside them -- not a path: a
     separator, ``"."`` or ``".."`` is refused, so a calculation cannot reach
     outside the library its variable names.  A caller's own folder anywhere
     on disk is the basis option ``directory=`` instead.
@@ -175,16 +199,14 @@ def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
             or (os.altsep and os.altsep in name) or os.path.isabs(name)):
         raise ValueError(
             f"directory must be the name of one folder inside the "
-            f"pseudopotential library, such as 'lda' or 'pbe', not "
+            f"pseudopotential library, such as 'lda-sr' or 'lda-dirac', not "
             f"{folder!r}; to load datasets from a folder elsewhere, pass it "
             f"as the basis option, basis={{'name': ..., 'directory': path}}")
     key = _family(family)
     root = repository_path(key)
     path = os.path.join(root, name)
     if not os.path.isdir(path):
-        present = sorted(entry for entry in os.listdir(root)
-                         if not entry.startswith(".")
-                         and os.path.isdir(os.path.join(root, entry)))
+        present = _folders(root)
         raise LibraryPathError(
             f"the {key} library at {root!r} has no {name}/ folder (it has: "
             f"{', '.join(present) or 'none'}).  Choose one of those with "
@@ -233,8 +255,9 @@ def status_lines() -> list[str]:
             lines.append(f"{key:<9} {variable}={value}  NOT A DIRECTORY  "
                          f"(mandacaru {SET_FLAGS[key]} DIR)")
             continue
-        held = [f"{xc}/: {dataset_count(os.path.join(root, xc))} datasets"
-                for xc in FUNCTIONALS if os.path.isdir(os.path.join(root, xc))]
+        held = [f"{name}/: {dataset_count(os.path.join(root, name))} datasets"
+                for name in _folders(root)
+                if dataset_count(os.path.join(root, name))]
         lines.append(f"{key:<9} {variable}={root}  "
-                     + ("; ".join(held) if held else "no lda/ or pbe/ directory"))
+                     + ("; ".join(held) if held else "no dataset folder"))
     return lines

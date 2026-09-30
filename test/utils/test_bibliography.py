@@ -259,7 +259,6 @@ class TestTheSelector:
         assert "Ivanov2024" in citation_keys(family="upaw-lcao")
         assert "Ivanov2024" not in citation_keys(family="paw-lcao")
         assert "Hamann2013" in citation_keys(family="oncvpsp")
-        assert "Troullier1991" in citation_keys(family="ncpp")
 
     def test_basis_options_are_cited_only_when_they_did_something(self):
         plain = citation_keys(family="paw-lcao", basis_options={"size": "SZ"})

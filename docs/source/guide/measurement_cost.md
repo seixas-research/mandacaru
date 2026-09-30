@@ -238,5 +238,5 @@ rather than silently falling back.
   `measurement_scheme="double-factorized"` is the structural answer.
 * **Too deep to trust** → `pool="ceo-ovp"` (about half the CNOTs of `qeb`),
   `tetris=True`, `prune=True`, and pin the layout with `physical_qubits=`.
-* **On the Open plan**, the realistic target stays 4–8 qubits. `examples/25_ADAPTVQE_H2_IBM.py`
+* **On the Open plan**, the realistic target stays 4–8 qubits. `examples/old/25_ADAPTVQE_H2_IBM.py`
   is the shape that works: two qubits, five Pauli terms, four CNOTs.

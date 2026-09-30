@@ -11,7 +11,7 @@ Vanderbilt pseudopotentials with two projectors per channel.
 
 Atomic checks (radial, cheap) on freshly generated H, Li and O; the molecular
 checks on H2 (0.74 A, h = 0.25 A, 6 A cell) and LiH (1.6 A, h = 0.30 A, 8 A
-cell) against the Troullier-Martins energies pinned in ``test_ncpp_family``.
+cell) against their pinned energies.
 H and Li carry two s projectors here, so H2/LiH genuinely exercise the 2x2
 Vanderbilt blocks of the general separable form.
 """
@@ -38,13 +38,12 @@ from mandacaru.pseudopotentials import (
     report_oncv, resolve_family, save_pseudopotential)
 from mandacaru.pseudopotentials.io import library_elements
 from mandacaru.pseudopotentials.environment import LibraryPathError
-from mandacaru.pseudopotentials.io import (available_elements,
-                                                       default_library_path,
-                                                       detect_format)
+from mandacaru.pseudopotentials.io import available_elements, detect_format
+from mandacaru.pseudopotentials.paw import paw_library_path
 from mandacaru.pseudopotentials import oncv
 
 # --------------------------------------------------------------------------- #
-# Test systems (identical to test_ncpp_family, whose TM energies we compare to).
+# Test systems.
 # --------------------------------------------------------------------------- #
 
 H2_H, H2_CELL = 0.25, 6.0
@@ -67,9 +66,6 @@ def lih():
 
 SYSTEMS = {"H2": (h2, H2_H), "LiH": (lih, LIH_H)}
 
-#: Troullier-Martins energies (Hartree) pinned in test_ncpp_family.py.
-TM = {"H2": {"rhf": -1.061096245397, "adapt": -1.075333384673},
-      "LiH": {"rhf": -0.729555411706, "adapt": -0.740838985744}}
 #: ONCVPSP energies measured 2026-09-23 with the shipped library
 #: (H rc = 1.30, Li rc = 2.60 Bohr, Delta = 1 Ha, q_c = 5 Bohr^-1).
 #:
@@ -100,7 +96,6 @@ TM = {"H2": {"rhf": -1.061096245397, "adapt": -1.075333384673},
 ONCV = {"H2": {"rhf": -1.082754, "adapt": -1.097211},
         "LiH": {"rhf": -0.750308, "adapt": -0.759527}}
 PIN_TOL = 2e-3
-TM_TOL = 0.05
 
 _GENERATED: dict = {}
 
@@ -235,7 +230,6 @@ class TestAtomic:
         far = pp.r > 20.0
         assert np.allclose(pp.v_local[far], -pp.valence_charge / pp.r[far],
                            atol=2e-3)
-        assert pp.local_l == -1 and pp.kb_energies == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -328,9 +322,9 @@ class TestLibrary:
 
     def test_loaders_refuse_the_other_family(self, tmp_path):
         with pytest.raises(ValueError, match="belongs to family 'oncvpsp'"):
-            PSEUDO_FAMILIES["ncpp"].get("H", oncv_library_path())
+            PSEUDO_FAMILIES["paw-lcao"].get("H", oncv_library_path())
         with pytest.raises(ValueError, match="not 'oncvpsp'"):
-            get_oncv("H", default_library_path())
+            get_oncv("H", paw_library_path())
         with pytest.raises(FileNotFoundError, match="ONCVPSP"):
             get_oncv("Xe", directory=str(tmp_path))
 
@@ -369,13 +363,6 @@ class TestIO:
         again = load_pseudopotential(save_pseudopotential(back,
                                                           tmp_path / f"H2.{fmt}"))
         assert np.array_equal(again.projectors[0][0], back.projectors[0][0])
-
-    def test_tm_files_still_load_as_tm(self):
-        from mandacaru.pseudopotentials import get_pseudopotential
-        pp = get_pseudopotential("O")
-        assert type(pp).__name__ == "PseudoPotential" and pp.family == "ncpp"
-        assert isinstance(pp.projectors[0], np.ndarray)
-
 
 class TestResolution:
     @pytest.mark.parametrize("name", ["oncvpsp", "ONCVPSP", "oncv", "Oncv"])
@@ -423,7 +410,7 @@ class TestResolution:
 
 
 # --------------------------------------------------------------------------- #
-# (b) Hardness on the coarse grid and (c) molecular energies vs TM.
+# (b) Hardness on the coarse grid and (c) molecular energies.
 # --------------------------------------------------------------------------- #
 
 class TestMolecular:
@@ -513,20 +500,17 @@ class TestMolecular:
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
     def test_hardness_on_the_coarse_grid(self, name):
         oncv_ints = _build(name, "oncv")[4]["integrals"]
-        tm_ints = _build(name, "tm")[4]["integrals"]
         basis = oncv_ints.resolution_ratios
         projectors = oncv_ints.kb_resolution_ratios
         print(f"\n{name} (h={SYSTEMS[name][1]} A): ONCV basis T_grid/T_exact = "
               f"{np.round(basis, 3)}, projector norm ratios = "
-              f"{np.round(projectors, 3)}; TM basis = "
-              f"{np.round(tm_ints.resolution_ratios, 3)}, TM projectors: none")
+              f"{np.round(projectors, 3)}")
         assert np.all((basis > 0.75) & (basis < 1.25))
         assert projectors.shape == (4,)
         assert np.all((projectors > 0.75) & (projectors < 1.25))
-        assert tm_ints.kb_resolution_ratios is None
 
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
-    def test_energies_against_troullier_martins(self, name):
+    def test_energies(self, name):
         H, particles, n_orb, _profile, context = _build(name, "oncv")
         integrals = context["integrals"]
         assert context["family"] == "oncvpsp"
@@ -549,14 +533,9 @@ class TestMolecular:
         rhf = integrals.hartree_fock(context["n_electrons"])
         e_rhf = rhf.electronic_energy + integrals.nuclear_repulsion
         e_fci = _fci(H)
-        print(f"\n{name}: ONCV RHF {e_rhf:.6f}  FCI {e_fci:.6f}  | TM RHF "
-              f"{TM[name]['rhf']:.6f}  ADAPT {TM[name]['adapt']:.6f}  | "
-              f"diff RHF {e_rhf - TM[name]['rhf']:+.4f}  FCI-vs-ADAPT "
-              f"{e_fci - TM[name]['adapt']:+.4f} Ha")
+        print(f"\n{name}: ONCV RHF {e_rhf:.6f}  FCI {e_fci:.6f} Ha")
         assert np.isfinite(e_rhf) and np.isfinite(e_fci)
         assert e_fci <= e_rhf + 1e-9
-        assert abs(e_rhf - TM[name]["rhf"]) < TM_TOL
-        assert abs(e_fci - TM[name]["adapt"]) < TM_TOL
         assert e_rhf == pytest.approx(ONCV[name]["rhf"], abs=PIN_TOL)
 
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
@@ -571,14 +550,11 @@ class TestMolecular:
             atoms.get_potential_energy()
         result = atoms.calc.result
         energy = result.in_units("Ha")          # the pins are Hartree; results eV
-        print(f"\n{name}: ONCV ADAPT-VQE {energy:.6f} Ha "
-              f"(TM {TM[name]['adapt']:.6f}, diff "
-              f"{energy - TM[name]['adapt']:+.4f})")
+        print(f"\n{name}: ONCV ADAPT-VQE {energy:.6f} Ha")
         assert atoms.calc.n_qubits == 4
         assert result.energy_unit == "eV"
         assert np.isfinite(result.optimal_energy)
         assert energy == pytest.approx(ONCV[name]["adapt"], abs=PIN_TOL)
-        assert abs(energy - TM[name]["adapt"]) < TM_TOL
         assert energy <= ONCV[name]["rhf"] + PIN_TOL
 
     def test_size_hierarchy_is_variational(self):

@@ -13,8 +13,8 @@ construction, Phys. Rev. B **88**, 085117 (2013): **two projectors per
 angular-momentum channel** built from two reference energies, a Bessel-function
 pseudo wave function whose residual kinetic energy beyond a wave-vector cutoff
 is minimized, and a local potential that is *not* one of the channels.  Written
-from scratch on top of the same LDA radial atom the Troullier-Martins family
-uses (:mod:`mandacaru.basis.atomic_solver`); nothing is read from tables.
+from scratch on top of Mandacaru's own LDA radial atom
+(:mod:`mandacaru.basis.atomic_solver`); nothing is read from tables.
 
 Construction
 ------------
@@ -177,7 +177,7 @@ from ..basis.atomic_solver import AtomicResult, hartree_potential, solve_atom
 from ..basis.relativity import relativistic_exchange
 from ..basis.xc import xc_potential
 from ..core.hamiltonian import MolecularIntegrals
-from .generation import (Channel, PseudoPotential, _local_derivatives,
+from .dataset import (Channel, PseudoPotential, _local_derivatives,
                          _valence_configuration)
 
 #: Registry name of the family and its alias.
@@ -996,9 +996,7 @@ def scattering_errors(pp, log_derivative,
     # log-derivative would need a kappa this per-l check does not have.
     if treatment == "dirac":
         treatment = "scalar"
-    # A family may judge "near" over a narrower window (the single-projector
-    # NCPP: first-order transferability, KBView.phase_window).
-    window = float(getattr(pp, "phase_window", PHASE_WINDOW))
+    window = PHASE_WINDOW
     # Compare where the smooth wave obeys the all-electron equation again:
     # past the projectors, which for PAW-LCAO can reach beyond r_cut.
     radius = getattr(pp, "projector_radius", None)
@@ -1299,7 +1297,7 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
 
 @dataclass
 class ONCVChannel(Channel):
-    """One ONCVPSP channel: the TM :class:`Channel` plus the second wave.
+    """One ONCVPSP channel: the shared :class:`Channel` plus the second wave.
 
     ``pseudo_radial``/``eigenvalue``/``coefficients`` describe the first
     (bound) partial wave, which is also the first-zeta basis function.
@@ -1764,13 +1762,12 @@ def polynomial_local_potential(r: np.ndarray, v_ae: np.ndarray,
 class ONCVPseudoPotential(PseudoPotential):
     r"""An ONCVPSP pseudopotential: local potential + two projectors per channel.
 
-    Inherits the :class:`~.generation.PseudoPotential` layout so the valence
+    Inherits the :class:`~.dataset.PseudoPotential` layout so the valence
     basis (:func:`~.orbitals.pseudo_basis`), the local potential sampler
     (:meth:`local_potential`) and the multiple-zeta hierarchy work unchanged;
     every ``channels[l]`` is an :class:`ONCVChannel`.  ``projectors`` maps
     ``l -> [chi_1(r), chi_2(r)]`` and ``coupling`` maps ``l -> D`` (the
-    :math:`2\times2` block).  ``kb_energies`` is empty: the coupling is a
-    matrix, not a number per channel.
+    :math:`2\times2` block).
     """
 
     coupling: dict = field(default_factory=dict)           # l -> (2, 2)
@@ -2515,9 +2512,9 @@ def generate_oncv(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACT
     return ONCVPseudoPotential(
         symbol=symbol, atomic_number=atomic_number,
         valence_charge=valence_charge, r=r, channels=channels,
-        v_local=v_local_ionic, local_l=-1,
+        v_local=v_local_ionic,
         projectors={l: list(c.projectors) for l, c in channels.items()},
-        kb_energies={}, valence_density=valence_density, atom=atom,
+        valence_density=valence_density, atom=atom,
         family=FAMILY,
         coupling={l: np.array(c.coupling) for l, c in channels.items()},
         v_local_screened=v_loc, r_cut_local=r_local, local_shift=float(shift),
@@ -2890,7 +2887,8 @@ def oncv_coupling_blocks(projectors, symbols, potentials) -> dict:
 def oncv_library_path(directory=None, xc: str = DEFAULT_XC, *,
                       must_exist: bool = True) -> str:
     """The ONCVPSP library folder: ``directory`` when given, else
-    ``$MANDACARU_ONCVPSP_PATH/<xc>`` (:func:`.environment.library_directory`)."""
+    ``$MANDACARU_ONCVPSP_PATH/<set>``, ``lda-sr`` for LDA
+    (:func:`.environment.library_directory`)."""
     from .environment import library_directory
     return library_directory(FAMILY, xc, directory, must_exist=must_exist)
 
@@ -2901,7 +2899,7 @@ _CACHE: dict = {}
 def get_oncv(symbol: str, directory=None,
              xc: str = DEFAULT_XC) -> ONCVPseudoPotential:
     """Load ``symbol`` from the ONCVPSP library (cached): ``directory``, or
-    ``$MANDACARU_ONCVPSP_PATH/<xc>``."""
+    ``$MANDACARU_ONCVPSP_PATH/<set>`` (``lda-sr`` for LDA)."""
     from .io import load_library_dataset
 
     return load_library_dataset(
@@ -2962,8 +2960,8 @@ class ONCVIntegrals(MolecularIntegrals):
 def build_oncv(atoms, grid, h, charge, spin, options, kinetic=None, **active):
     r"""Valence-only Hamiltonian from ONCVPSP pseudopotentials.
 
-    Same 5-tuple as the Troullier-Martins builder
-    (:func:`~.families._build_tm`): the basis is the bound pseudo partial
+    The driver 5-tuple of :func:`~.families.build_valence_hamiltonian`:
+    the basis is the bound pseudo partial
     waves (with the ``size`` hierarchy), the external potential the local
     channel, and the nonlocal term the two-projector Vanderbilt form with one
     :math:`2\times2` coupling block per ``(atom, l, m)``; no overlap
@@ -3082,8 +3080,7 @@ def from_payload(payload: dict) -> ONCVPseudoPotential:
     dataset = ONCVPseudoPotential(
         symbol=payload["symbol"], atomic_number=int(payload["atomic_number"]),
         valence_charge=float(payload["valence_charge"]), r=r,
-        channels=channels, v_local=v_local, local_l=-1, projectors=projectors,
-        kb_energies={},
+        channels=channels, v_local=v_local, projectors=projectors,
         valence_density=np.asarray(tables["valence_density"], dtype=float),
         atom=None, family=FAMILY, coupling=coupling,
         v_local_screened=v_screened, r_cut_local=float(payload["r_cut_local"]),

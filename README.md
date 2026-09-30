@@ -24,13 +24,12 @@
 pip install mandacaru
 ```
 
-No pseudopotential data ships with the package. NCPP, ONCVPSP, PAW-LCAO and
+No pseudopotential data ships with the package. ONCVPSP, PAW-LCAO and
 UPAW-LCAO each live in their own repository, and an environment variable
 names the checkout Mandacaru reads from:
 
 | basis | variable | repository |
 | :--- | :--- | :--- |
-| `NCPP` | `MANDACARU_NCPP_PATH` | `mandacaru-ncpp` |
 | `ONCVPSP` | `MANDACARU_ONCVPSP_PATH` | `mandacaru-oncvpsp` |
 | `PAW-LCAO` | `MANDACARU_PAW_PATH` | `mandacaru-paw` |
 | `UPAW-LCAO` | `MANDACARU_UPAW_PATH` | `mandacaru-upaw` |
@@ -41,12 +40,14 @@ mandacaru --set-paw mandacaru-paw     # writes ~/.zshrc or ~/.bashrc, asking bef
 mandacaru --pseudo-status             # each variable, where it points, and how many datasets it serves
 ```
 
-Datasets sit one folder per exchange-correlation functional inside each
-checkout (`<checkout>/lda/<Symbol>.parquet`; PAW-LCAO also has `pbe/`). A
-calculation reads `lda/` by default and another folder with
-`Mandacaru(..., directory="pbe")`; a dataset whose own functional disagrees
-with the folder it is loaded from is refused. The all-electron bases
-(`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need none of this. See the
+Datasets sit one folder per set inside each checkout
+(`<checkout>/lda-sr/<Symbol>.parquet` — every family's scalar-relativistic
+LDA set, and the default); PAW-LCAO also has `lda-dirac/` and ONCVPSP an empty
+`pbe/`. A calculation reads `lda-sr/` by default and
+another folder with `Mandacaru(..., directory="lda-dirac")`; a dataset whose
+own functional disagrees with the folder it is loaded from is refused. The
+all-electron bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need none
+of this. See the
 [pseudopotentials guide](https://mandacaru.readthedocs.io/en/latest/guide/pseudopotentials.html)
 for the full setup and the [installation guide](https://mandacaru.readthedocs.io/en/latest/installation.html)
 for the numerical backend and the optional dependencies.

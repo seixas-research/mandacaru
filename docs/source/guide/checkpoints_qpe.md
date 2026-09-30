@@ -26,7 +26,7 @@ atoms.center()
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
                        h=0.25,
-                       checkpoint="examples/data/h2_wavefunction.json",
+                       checkpoint="examples/old/data/h2_wavefunction.json",
                        checkpoint_every=1)
 atoms.get_potential_energy()
 ```
@@ -47,8 +47,8 @@ The record is also kept on the driver as `calc.solver.checkpoint` (or
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
                        h=0.25,
-                       resume="examples/data/h2_wavefunction.json",
-                       checkpoint="examples/data/h2_wavefunction.json",
+                       resume="examples/old/data/h2_wavefunction.json",
+                       checkpoint="examples/old/data/h2_wavefunction.json",
                        max_iterations=40)
 ```
 
@@ -71,7 +71,7 @@ warm-starts from the previous one.
 ```python
 from mandacaru.core import load_checkpoint
 
-ck = load_checkpoint("examples/data/h2_wavefunction.json")
+ck = load_checkpoint("examples/old/data/h2_wavefunction.json")
 print(ck.summary())
 psi = ck.state_vector()            # the amplitudes, prepared from the file
 E = ck.expectation()               # <H> in Hartree, from the stored Hamiltonian
@@ -131,7 +131,7 @@ known resolution.
 from mandacaru.algorithms import QuantumPhaseEstimation
 
 qpe = QuantumPhaseEstimation(n_evaluation_qubits=10)
-result = qpe.run("examples/data/h2_wavefunction.json")
+result = qpe.run("examples/old/data/h2_wavefunction.json")
 print(result.summary())
 result.energy                  # the most probable reading (eV)
 result.resolution              # W / 2^t
@@ -177,7 +177,7 @@ checkpoint's state preparation on the system wires and
 distribution to machine precision (`QuantumPhaseEstimation.evaluation_distribution`).
 Its gate count is what a hardware run would transpile.
 
-See `examples/31_QPE_H2_from_checkpoint.py`.
+See `examples/old/31_QPE_H2_from_checkpoint.py`.
 
 ### Citing it
 

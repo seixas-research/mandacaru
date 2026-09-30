@@ -562,7 +562,7 @@ class TestBasisBlock:
         assert block["local_potential"].startswith("range-separated")
         assert block["dataset_xc"].startswith("LDA")
         # The folder is stated once, by name and path; the table names files.
-        assert block["directory"].startswith("lda (")
+        assert block["directory"].startswith("lda-sr (")
         assert block["basis_functions"] == "4"
 
     def test_the_tables_read_back_typed(self, paw):

@@ -271,8 +271,8 @@ class TestPlumbing:
             Mandacaru(method="adapt-vqe",
                       basis={"name": "PAW-LCAO", "energy_shift": -1})
 
-    @pytest.mark.parametrize("name", ["NCPP", "ONCVPSP"])
-    def test_norm_conserving_families_have_it_too(self, name):
+    def test_the_norm_conserving_family_has_it_too(self):
+        name = "ONCVPSP"
         Mandacaru(method="adapt-vqe",
                   basis={"name": name, "energy_shift": 0.2,
                          "polarization": "gaussian"})

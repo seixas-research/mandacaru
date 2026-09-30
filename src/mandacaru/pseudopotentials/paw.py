@@ -13,8 +13,8 @@ Phys. Rev. B **50**, 17953 (1994), in its frozen-core, one-center-expansion
 form, with the one-center energies **linearized around the reference atom**
 (a fixed coupling matrix :math:`D^0` per species, the "frozen augmentation"
 that makes a PAW-LCAO dataset behave like an ultrasoft pseudopotential).  Written
-from scratch on the same LDA radial atom as the Troullier-Martins and ONCVPSP
-families (:mod:`mandacaru.basis.atomic_solver`), reusing the Numerov partial
+from scratch on the same LDA radial atom as the ONCVPSP family
+(:mod:`mandacaru.basis.atomic_solver`), reusing the Numerov partial
 waves, the spherical-Bessel machinery and the polynomial local potential of
 :mod:`.oncv`.  Nothing is read from tables.
 
@@ -148,7 +148,7 @@ from ..basis.atomic_solver import (AtomicResult, hartree_potential,
                                     solve_atom)
 from ..core.hamiltonian import MolecularIntegrals, projector_blocks
 from .confinement import CONFINEMENT_DEFAULT_OPTIONS, CONFINEMENT_OPTIONS
-from .generation import Channel, PseudoPotential, _valence_configuration
+from .dataset import Channel, PseudoPotential, _valence_configuration
 from .oncv import (INNER_POINTS, Q_MAX, Q_STEP,
                    PseudoWaves, _bessel_table, _bessel_transform_table,
                    _inner_grid, _log_derivative_of_u,
@@ -568,7 +568,7 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
 
 @dataclass
 class PAWChannel(Channel):
-    """One PAW-LCAO channel: the TM :class:`Channel` plus the partial-wave sets.
+    """One PAW-LCAO channel: the shared :class:`Channel` plus the partial-wave sets.
 
     ``pseudo_radial``/``eigenvalue``/``coefficients`` describe the first
     (bound) smooth partial wave, which is also the first-zeta basis function.
@@ -855,7 +855,7 @@ def pseudize_density(r: np.ndarray, density: np.ndarray, r_cut: float
                      ) -> np.ndarray:
     r"""Smooth counterpart of a spherical density: :math:`a + b r^2 + c r^4`
     inside ``r_cut`` matched in value, first and second derivative."""
-    from .generation import _local_derivatives
+    from .dataset import _local_derivatives
     r_cut = _snap(r, r_cut)
     d = _local_derivatives(r, density, r_cut, order=2)
     # value, slope, curvature of a + b r^2 + c r^4 at r_cut
@@ -916,7 +916,7 @@ def _local_spline(dataset):
 class PAWDataset(PseudoPotential):
     r"""A PAW-LCAO dataset: local potential, projectors, one-center matrices.
 
-    Inherits the :class:`~.generation.PseudoPotential` layout so the valence
+    Inherits the :class:`~.dataset.PseudoPotential` layout so the valence
     basis (:func:`~.orbitals.pseudo_basis`, first zeta = the bound smooth
     partial wave), the local-potential sampler (:meth:`local_potential`,
     the **ionic** :math:`\tilde v^{ion}`) and the multiple-zeta hierarchy work
@@ -1485,9 +1485,9 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     return PAWDataset(
         symbol=symbol, atomic_number=atomic_number,
         valence_charge=valence_charge, r=r, channels=channels,
-        v_local=v_local_ionic, local_l=-1,
+        v_local=v_local_ionic,
         projectors={l: list(c.projectors) for l, c in channels.items()},
-        kb_energies={}, valence_density=smooth_valence, atom=atom,
+        valence_density=smooth_valence, atom=atom,
         family=FAMILY,
         coupling={l: np.array(c.coupling) for l, c in channels.items()},
         coupling_screened={l: np.array(c.coupling_screened)
@@ -2396,11 +2396,14 @@ class PAWIntegrals(MolecularIntegrals):
 
 
 def paw_library_path(directory=None, xc: str = DEFAULT_XC, *,
-                     must_exist: bool = True) -> str:
+                     must_exist: bool = True,
+                     relativity: str = "scalar") -> str:
     """The PAW-LCAO library folder: ``directory`` when given, else
-    ``$MANDACARU_PAW_PATH/<xc>`` (:func:`.environment.library_directory`)."""
+    ``$MANDACARU_PAW_PATH/lda-sr`` (``lda-dirac`` for ``relativity="dirac"``;
+    :func:`.environment.library_directory`)."""
     from .environment import library_directory
-    return library_directory(FAMILY, xc, directory, must_exist=must_exist)
+    return library_directory(FAMILY, xc, directory, must_exist=must_exist,
+                             relativity=relativity)
 
 
 _CACHE: dict = {}
@@ -2408,7 +2411,7 @@ _CACHE: dict = {}
 
 def get_paw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
     """Load ``symbol`` from the PAW-LCAO library (cached): ``directory``, or
-    ``$MANDACARU_PAW_PATH/<xc>``."""
+    ``$MANDACARU_PAW_PATH/lda-sr``."""
     from .io import load_library_dataset
 
     return load_library_dataset(
@@ -2423,9 +2426,9 @@ def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
     """Generate and save PAW-LCAO datasets for ``elements``; returns the paths."""
     from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
 
-    folder = paw_library_path(directory,
-                              generation_options.get("xc", DEFAULT_XC),
-                              must_exist=False)
+    folder = paw_library_path(
+        directory, generation_options.get("xc", DEFAULT_XC), must_exist=False,
+        relativity=generation_options.get("relativity", "scalar"))
     os.makedirs(folder, exist_ok=True)
     format = DEFAULT_FORMAT if format is None else format
     stride = STRIDE if stride is None else int(stride)
@@ -2798,8 +2801,7 @@ def from_payload(payload: dict) -> PAWDataset:
     dataset = PAWDataset(
         symbol=payload["symbol"], atomic_number=int(payload["atomic_number"]),
         valence_charge=float(payload["valence_charge"]), r=r,
-        channels=channels, v_local=v_local, local_l=-1, projectors=projectors,
-        kb_energies={},
+        channels=channels, v_local=v_local, projectors=projectors,
         valence_density=np.asarray(tables["valence_density"], dtype=float),
         # The layout is shared with UPAW-LCAO, so the family is read, not assumed.
         atom=None, family=str(payload.get("family", FAMILY)), coupling=coupling,

@@ -6,13 +6,13 @@ potential by a smooth, valence-only problem. In Mandacaru a pseudopotential
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="NCPP",        # norm-conserving Troullier-Martins
-                       h=0.15)
-atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="ONCVPSP",     # Hamann's optimized norm-conserving Vanderbilt
                        h=0.25)
 atoms.calc = Mandacaru(method="vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},   # Bloechl's PAW-LCAO, polarized double zeta
+                       h=0.25)
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis="UPAW-LCAO",   # the unitary PAW-LCAO variant
                        h=0.25)
 ```
 
@@ -30,12 +30,11 @@ raises an error that names the families instead of aliasing to one.
 
 ## Families
 
-Four families are shipped, all generated from scratch by Mandacaru's own LDA
+Three families are shipped, all generated from scratch by Mandacaru's own LDA
 radial atomic solver (`mandacaru.basis.atomic_solver`):
 
 | Basis name | Aliases | Family | Projectors | Overlap | Library |
 |---|---|---|---|---|---|
-| `"NCPP"` | `"TM"`, `"NCPP-TM"` | Troullier–Martins norm-conserving, Kleinman–Bylander separable form | one per channel | none | `mandacaru-ncpp`, H–U |
 | `"ONCVPSP"` | `"ONCV"` | Hamann's optimized norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `mandacaru-oncvpsp`, H–U |
 | `"PAW-LCAO"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `mandacaru-paw`, H–U |
 | `"UPAW-LCAO"` | `"unitary-paw-lcao"` | the same, with a **unitary** transformation ($q = 0$, below) | two per channel, $2\times2$ coupling | $S$ (unaugmented) | generated on demand |
@@ -48,7 +47,7 @@ the SIESTA-style one), `directory` (an alternative library folder) and `filter`
 `polarization` (*Confined orbitals*, below). Any other key — or an all-electron option such
 as `tier` — is refused before an integral is computed. A family may give an
 option a **default of its own**: PAW-LCAO and UPAW-LCAO declare `filter=True`, the
-norm-conserving families leave it off.
+norm-conserving family, ONCVPSP, leaves it off.
 
 `"PAW-LCAO"` is the recommended pseudopotential family. `"UPAW-LCAO"` is an option — the
 same construction with a unitary transformation — and the measurements that
@@ -59,7 +58,7 @@ element uses the *same* family:
 
 ```python
 basis={"O": {"name": "PAW-LCAO", "size": "DZP"}, "H": {"name": "PAW-LCAO"}}
-basis={"O": {"name": "NCPP", "size": "DZP"}, "*": "NCPP"}     # "*" = every other element
+basis={"O": {"name": "ONCVPSP", "size": "DZP"}, "*": "ONCVPSP"}     # "*" = every other element
 ```
 
 Mixing a pseudopotential family with an all-electron family across elements
@@ -77,14 +76,14 @@ from mandacaru.pseudopotentials import (
     PSEUDO_FAMILIES, FamilySpec, family_names, lookup_family,
     register_family, resolve_family)
 
-family_names()      # ['ncpp', 'oncvpsp', 'paw-lcao', 'upaw-lcao', 'ncpp-tm', 'oncv', 'tm', 'unitary-paw-lcao']
-spec = resolve_family("TM")            # -> PSEUDO_FAMILIES["ncpp"]
-spec.name, spec.aliases, spec.label    # "ncpp", ("tm", "ncpp-tm"), "NCPP"
+family_names()      # ['paw-lcao', 'oncvpsp', 'upaw-lcao', 'oncv', 'unitary-paw-lcao']
+spec = resolve_family("ONCV")          # -> PSEUDO_FAMILIES["oncvpsp"]
+spec.name, spec.aliases, spec.label    # "oncvpsp", ("oncv",), "ONCVPSP"
 spec.options       # (..., "filter", "energy_shift", "confinement", "polarization")
 spec.default_options       # {"energy_shift": 0.1} -- PAW-LCAO/UPAW-LCAO also {"filter": True}
 spec.resolved_options({"size": "DZ"})  # the defaults with the user's options on top
 spec.norm_conserving                   # True
-spec.generate("O")                     # generate_pseudopotential("O")
+spec.generate("O")                     # generate_oncv("O")
 spec.get("O")                          # the (cached) library loader
 spec.build(atoms, grid, h, charge, spin, options, kinetic)
 lookup_family("HAO")                   # None -- an all-electron basis name
@@ -94,8 +93,8 @@ lookup_family("HAO")                   # None -- an all-electron basis name
 `(hamiltonian, num_particles, n_spatial_orbitals, integration_profile,
 context)` — and `_pseudopotential_hamiltonian` in the driver is a thin
 dispatcher on it. The family name is also **stored in every pseudopotential
-file** (`family` field, format version 2; files written before the field
-existed, and files spelled `"tm"`, load as `"ncpp"`).
+file** (`family` field, format version 2); a file that does not carry the
+field, or carries no radial tables, is refused rather than guessed at.
 
 A new family is added by registering a `FamilySpec`:
 
@@ -113,11 +112,10 @@ driver, in the dry run and on the command line, with no change to any of them.
 
 ## ONCVPSP: optimized norm-conserving Vanderbilt potentials
 
-The second shipped family is
-`"oncvpsp"` (alias `"oncv"`), D. R. Hamann's construction, *Phys. Rev. B*
+`"oncvpsp"` (alias `"oncv"`) is D. R. Hamann's construction, *Phys. Rev. B*
 **88**, 085117 (2013), written from scratch in
-`mandacaru.pseudopotentials.oncv` on top of the same LDA radial
-atom as the TM family:
+`mandacaru.pseudopotentials.oncv` on Mandacaru's own LDA radial atomic
+solver:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
@@ -128,11 +126,10 @@ atoms.calc = Mandacaru(method="vqe",
                        h=0.25)
 ```
 
-What makes it different from TM is **two projectors per angular-momentum
-channel** built from two reference energies, and a local potential that is
-*not* one of the channels — so the s channel of H and Li carries projectors
-too, and H₂/LiH genuinely run through the $2\times2$ Vanderbilt blocks of the
-general separable form.
+It has **two projectors per angular-momentum channel** built from two
+reference energies, and a local potential that is *not* one of the channels —
+so the s channel of H and Li carries projectors too, and H₂/LiH genuinely run
+through the $2\times2$ Vanderbilt blocks of the general separable form.
 
 ### Construction
 
@@ -172,8 +169,7 @@ general separable form.
    potential inside $r_{cl} = 0.9\,\max_l r_c$ (value and four derivatives
    matched, `polynomial_local_potential`; Hamann's `dvloc0` shift of the
    origin value is available as `local_shift`, default 0), unscreened with
-   the Hartree and LDA xc potentials of the pseudo valence density using the
-   TM machinery.
+   the Hartree and LDA xc potentials of the pseudo valence density.
 4. **Projectors and coupling.** Inside $r_c$, because
    $T_l\,j_l(qr) = \tfrac12 q^2 j_l(qr)$, the projectors are analytic:
    $\chi_i = \sum_n c_{in}(\varepsilon_i -
@@ -224,18 +220,16 @@ box state above zero), pseudo = AE beyond $r_c$ to 1e-14, norm matrix to
 plane-wave cutoff — as it is for any first-row 2p; it is a diagnostic, not a
 failure, and the shipped C/N/F potentials behave the same.
 
-Molecular, same grids as the TM pins (H₂ 0.74 Å at h = 0.25 Å, LiH 1.6 Å at
+Molecular (H₂ 0.74 Å at h = 0.25 Å, LiH 1.6 Å at
 h = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4 iterations):
 
-| | ONCV RHF | ONCV FCI = ADAPT | TM RHF | TM ADAPT | ONCV − TM |
-|---|---|---|---|---|---|
-| H₂ | −1.044179 | −1.058561 | −1.061096 | −1.075333 | +0.017 Ha |
-| LiH | −0.774343 | −0.782341 | −0.729555 | −0.740839 | −0.042 Ha |
+| | RHF | FCI = ADAPT |
+|---|---|---|
+| H₂ | −1.044179 | −1.058561 |
+| LiH | −0.774343 | −0.782341 |
 
-Both within the 0.05 Ha agreement asked of two independent LDA pseudizations
-of the same atoms on a coarse grid; the LiH gap is the larger because the TM
-lithium has $r_c = 3.59$ Bohr, wider than the Li–H bond, whereas the ONCV
-value sits on a stable plateau ($r_c$ = 2.4–2.6 give −0.7747/−0.7743). The
+The ONCV $r_c$ for LiH sits on a stable plateau ($r_c$ = 2.4–2.6 give
+−0.7747/−0.7743 Ha). The
 nonlocal matrix is nonzero and Hermitian to 1e-17; four projectors per
 molecule (two radial × one $m$ × two atoms) in two $2\times2$ blocks with
 nonzero off-diagonal coupling. DZP on H₂ (20 qubits, RHF only) lowers the
@@ -243,20 +237,19 @@ RHF energy to −1.1428 Ha.
 
 **Hardness at h = 0.25/0.30 Å** (`resolution_ratios` $T_{grid}/T_{exact}$
 of the basis, `kb_resolution_ratios` grid/radial norm of the projectors):
-H₂ basis 0.975 (TM 0.973), projectors 0.86/0.97; LiH basis 1.166/0.959 (TM
-1.111/0.956), projectors 1.00/1.00/1.12/1.06 — all inside the ±25 % band the
-driver warns at. The ONCV first zetas are as resolvable as TM's; TM has no
-projectors on H/Li to compare, and the ONCV second projector (built from the
+H₂ basis 0.975, projectors 0.86/0.97; LiH basis 1.166/0.959, projectors
+1.00/1.00/1.12/1.06 — all inside the ±25 % band the
+driver warns at. The ONCV second projector (built from the
 scattering wave) is the hardest object, still within 14 %.
 
 ### Library and files
 
-`$MANDACARU_ONCVPSP_PATH/lda/{H,Li,C,N,O,F}.parquet` (70–220 kB each, decimated
-to 0.02 Bohr like the TM library), regenerated with
+`$MANDACARU_ONCVPSP_PATH/lda-sr/{H,Li,C,N,O,F}.parquet` (70–220 kB each,
+decimated to 0.02 Bohr), regenerated with
 `build_oncv_library(["H", "Li", "C", "N", "O", "F"])`; `get_oncv(symbol,
 directory)` is the family's loader (`directory` defaults to
-`$MANDACARU_ONCVPSP_PATH/<xc>`, so `get_oncv(symbol, directory)` finds them and
-the TM files, in their own repository, are untouched). The record is `ONCVPseudoPotential` (a `PseudoPotential`
+`$MANDACARU_ONCVPSP_PATH/lda-sr` for LDA). The
+record is `ONCVPseudoPotential` (a `PseudoPotential`
 subclass: `channels[l]` are `ONCVChannel`s carrying `reference_energies`,
 `wavevectors`, `wave_coefficients`, `pseudo_waves`, `projectors` (two),
 `coupling`, `vanderbilt`, `residual_kinetic`; `projectors[l]` is the list of
@@ -265,7 +258,7 @@ the two radial projectors, `coupling[l]` the block, `v_local_screened`,
 scheme with `"family": "oncvpsp"` (format version 2; radial tables under
 `radial_tables` — `pseudo_wave_l{l}_{i}`, `projector_l{l}_{i}`,
 `v_local_screened` — and the scalars in the metadata); `io.py` dispatches on
-the family and loading a TM file is untouched. Generation takes 0.5 s (H) to
+the family. Generation takes 0.5 s (H) to
 2.5 s (F).
 
 ### The reference atom and the channel set
@@ -466,15 +459,14 @@ splittings a pseudopotential is built from.
 
 ## PAW-LCAO: projector augmented waves
 
-The third shipped family is
-`"paw-lcao"`, P. E. Blöchl's projector augmented-wave method, *Phys. Rev. B* **50**,
+`"paw-lcao"` is P. E. Blöchl's projector augmented-wave method, *Phys. Rev. B* **50**,
 17953 (1994), in its **frozen-core, one-center-expansion** form with the
 one-center energies **linearized around the reference atom** — a fixed
 per-species coupling matrix $D^0$, which makes the dataset behave like an
 ultrasoft pseudopotential with an exact PAW-LCAO reconstruction of the atomic
 partial waves. Written from scratch in
 `mandacaru.pseudopotentials.paw` on the same LDA radial atom as
-the other two families, reusing the Numerov partial waves, the Bessel
+the ONCVPSP family, reusing the Numerov partial waves, the Bessel
 machinery and the polynomial local potential of the ONCVPSP module:
 
 ```python
@@ -486,8 +478,8 @@ atoms.calc = Mandacaru(method="vqe",
                        h=0.25)
 ```
 
-The name has no alias; `family_names()` lists `ncpp`, `oncvpsp`, `paw-lcao`,
-`upaw-lcao` first (and the unknown-family error names all four).
+The name has no alias; `family_names()` lists `paw-lcao`, `oncvpsp`,
+`upaw-lcao` first (and the unknown-family error names all three).
 
 ### The transformation
 
@@ -578,7 +570,7 @@ through Löwdin, RHF and UHF.
    \propto (1 - r^2/r_g^2)^3$ inside $r_g = \min_l r_c$
    (`compensation_shape`, analytic potential `compensation_potential`),
    restores neutrality with the ion outside the sphere. Unscreening follows
-   the norm-conserving families: $\tilde v^{ion} = \tilde v^{scr} -
+   ONCVPSP's convention: $\tilde v^{ion} = \tilde v^{scr} -
    v_H[\tilde n_v + \hat n] - v_{xc}[\tilde n_v]$ (→ $-Z_{ion}/r$ outside),
    and the coupling loses the Hartree screening of the augmentation,
    $D^{ion} = D^{scr} - q\int v_H[\tilde n_v + \hat n]\,g$
@@ -594,7 +586,7 @@ through Löwdin, RHF and UHF.
    Li +0.0006, C +0.030, N +0.053, O −0.107, F −0.570 Ha. It enters every
    molecular Hamiltonian through the new
    `MolecularIntegrals.constant_energy` (next to the nuclear repulsion, also
-   in `hartree_fock_hamiltonian`), so PAW-LCAO totals are comparable with TM/ONCV.
+   in `hartree_fock_hamiltonian`), so PAW-LCAO totals are comparable with ONCVPSP's.
 
 ### In a molecule (`build_paw`, `PAWIntegrals`)
 
@@ -780,17 +772,17 @@ state above zero), $S$ bounded below by 1.02–1.35, $q$ positive definite and
 equal to $s$ times the AE inner Gram matrix, $D^{scr} = \Delta T + \Delta V$
 to 1e-15, smooth = AE beyond $r_c$ to 1e-14.
 
-Molecular, same grids as the TM/ONCV pins (H₂ 0.74 Å at h = 0.25 Å, LiH 1.6 Å
+Molecular (H₂ 0.74 Å at h = 0.25 Å, LiH 1.6 Å
 at h = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4
 iterations; energies in eV as the user sees them, Hartree in parentheses):
 
-| | PAW-LCAO RHF | PAW-LCAO FCI = ADAPT | ONCV RHF / ADAPT | TM RHF / ADAPT | PAW-LCAO − ONCV | PAW-LCAO − TM |
-|---|---|---|---|---|---|---|
-| H₂ | −28.662 eV (−1.053292) | −29.046 eV (−1.067402) | −1.044179 / −1.058561 | −1.061096 / −1.075333 | −0.248 eV | +0.212 eV |
-| LiH | −20.693 eV (−0.760451) | −20.924 eV (−0.768954) | −0.774343 / −0.782341 | −0.729555 / −0.740839 | +0.378 eV | −0.841 eV |
+| | PAW-LCAO RHF | PAW-LCAO FCI = ADAPT | ONCV RHF / ADAPT | PAW-LCAO − ONCV |
+|---|---|---|---|---|
+| H₂ | −28.662 eV (−1.053292) | −29.046 eV (−1.067402) | −1.044179 / −1.058561 | −0.248 eV |
+| LiH | −20.693 eV (−0.760451) | −20.924 eV (−0.768954) | −0.774343 / −0.782341 | +0.378 eV |
 
-PAW-LCAO lands between the two norm-conserving families on both molecules (all
-three agree within 0.05 Ha, against the 0.1 Ha asked). On H₂ the augmented
+PAW-LCAO agrees with ONCVPSP on both molecules (within 0.05 Ha, against the
+0.1 Ha asked). On H₂ the augmented
 overlap has eigenvalues 0.203 / 1.809 (bare 0.199 / 1.757), the
 Löwdin-orthonormalized overlap is the identity to 1e-16, and the augmented
 two-body tensor keeps the pair-density symmetries to 1e-12. DZ on H₂ (8
@@ -806,11 +798,12 @@ give nonsense.
 
 ### Library and files
 
-`$MANDACARU_PAW_PATH/lda/{H,Li,C,N,O,F}.parquet` (100–385 kB, decimated to
+`$MANDACARU_PAW_PATH/lda-sr/{H,Li,C,N,O,F}.parquet` (100–385 kB, decimated to
 0.02 Bohr; 9.6 s to regenerate with `build_paw_library()`; `get_paw(symbol,
 directory)` is the family's loader, `paw_library_path()` its directory
-(`$MANDACARU_PAW_PATH/<xc>` by default), TM and ONCVPSP files, in their own
-repositories, untouched). The record is `PAWDataset` (a `PseudoPotential` subclass:
+(`$MANDACARU_PAW_PATH/lda-sr` by default, `lda-dirac` for
+`relativity="dirac"`), ONCVPSP files, in their own repository,
+untouched). The record is `PAWDataset` (a `PseudoPotential` subclass:
 `channels[l]` are `PAWChannel`s with `reference_energies`, `ae_waves`,
 `pseudo_waves`, `projectors` (dual), `raw_projectors`, `overlap_correction`
 $q$, `kinetic_difference` $\Delta T$, `potential_difference`,
@@ -825,10 +818,10 @@ below), `compensation_radius`, `compensation_charge`, `hartree_screening`,
 "paw-lcao"` (format version 2; every radial table under `radial_tables` —
 `ae_wave_l{l}_{i}`, `pseudo_wave_l{l}_{i}`, `projector_l{l}_{i}`,
 `raw_projector_l{l}_{i}`, the densities — and the scalars in the metadata).
-`io.py` now dispatches the table families (`TABLE_FAMILIES`) by *record type*
-on save and by the presence of `radial_tables` on load, so a plain TM record
-merely carrying the name `"paw-lcao"` keeps the TM layout and the TM loader refuses
-it as before. Round trips are lossless and idempotent (tested).
+`io.py` dispatches the table families (`TABLE_FAMILIES`) by *record type*
+on save and by the family declared in the payload on load; a file without a
+recognized `family`, or without `radial_tables`, is refused outright. Round
+trips are lossless and idempotent (tested).
 
 ### Relativity, GGA and spin-orbit coupling
 
@@ -951,7 +944,7 @@ nothing to correct.
 * **HF/FCI valence with LDA-generated datasets.** The molecule's exchange and
   correlation are exact within the augmented Coulomb tensor, while the
   one-center xc corrections were linearized at the LDA level — the same
-  inconsistency the norm-conserving families carry.
+  inconsistency ONCVPSP carries.
 * **LDA only, no relativity, no projectors above the valence $l$, two partial
   waves per channel**, reference energies $\varepsilon_1$ and $\varepsilon_1 +
   \Delta$ rather than tuned per element, and a scaled-norm construction of the
@@ -1079,20 +1072,19 @@ H^{NL} = C\,D\,C^\dagger, \qquad C_{\mu p} = \langle\phi_\mu|\chi_p\rangle ,
 
 where $C$ (`MolecularIntegrals.projections()`, an $M\times P$ matrix) contains
 the basis–projector overlaps and $D$ is a **block-diagonal** $P\times P$
-coupling matrix. ONCVPSP and PAW-LCAO integrate $C$ on atom-centered spheres;
-NCPP uses the C-accelerated grid quadrature. Each projector
+coupling matrix. ONCVPSP and PAW-LCAO integrate $C$ on atom-centered spheres.
+Each projector
 carries three labels — `atom_index`, `channel = (l, m)` and a radial `index`
 within that channel — and $D$ has one block per `(atom, l, m)`, of size
 $n\times n$ for $n$ radial projectors in that channel. The family supplies the
 blocks as `nonlocal_coupling={(atom, l, m): block}`.
 
-For Troullier–Martins/Kleinman–Bylander there is one projector per channel and
-the block is the $1\times1$ matrix $[E^{KB}_l]$ (`kb_coupling_blocks`), so
-$C\,D\,C^\dagger$ reduces to the familiar $\sum_p |\chi_p\rangle E^{KB}_p
-\langle\chi_p|$ — the test suite checks it agrees with the old rank-one formula
-to $10^{-12}$. ONCVPSP and PAW-LCAO fill $2\times2$ blocks; the machinery
+ONCVPSP and PAW-LCAO fill $2\times2$ blocks; the machinery
 (`projector_blocks`, `assemble_block_matrix` in `mandacaru.core.hamiltonian`)
-validates and assembles them. `kb_nonlocal()` keeps its name (alias
+validates and assembles them. A family with a single Kleinman–Bylander
+projector per channel would instead supply the $1\times1$ block $[E^{KB}_l]$,
+reducing $C\,D\,C^\dagger$ to the familiar separable form $\sum_p
+|\chi_p\rangle E^{KB}_p\langle\chi_p|$. `kb_nonlocal()` keeps its name (alias
 `nonlocal_matrix()`), and the projector resolution check
 (`kb_resolution_ratios`) is unchanged.
 
@@ -1109,7 +1101,7 @@ S \;\to\; S + C\,Q\,C^\dagger ,
 (`MolecularIntegrals.overlap()`; the grid overlap alone is `bare_overlap()`),
 so the orthonormalized one- and two-body integrals — and everything downstream,
 RHF, the UHF natural orbitals, the qubit Hamiltonian — see the augmented
-metric automatically. Norm-conserving families pass `None`; `Q = 0` reproduces
+metric automatically. ONCVPSP passes `None`; `Q = 0` reproduces
 the plain Hamiltonian exactly. The PAW-LCAO family is the first to use it (its $q$
 blocks), together with two further hooks on `MolecularIntegrals`:
 `two_body_augmentation()` (a correction added to the grid two-body tensor —
@@ -1140,22 +1132,18 @@ optimization on this grid is not merely inaccurate — it does not converge.
 
 ## The pseudopotential libraries
 
-None of the four generated families ships inside the package. Each lives in
-a repository of its own — `mandacaru-ncpp`, `mandacaru-oncvpsp`,
+None of the three generated families ships inside the package. Each lives in
+a repository of its own — `mandacaru-oncvpsp`,
 `mandacaru-paw`, `mandacaru-upaw` — and an environment variable names the
 checkout Mandacaru reads from:
 
 | family | variable | set it with |
 |---|---|---|
-| `ncpp` | `MANDACARU_NCPP_PATH` | `mandacaru --set-ncpp DIR` |
 | `oncvpsp` | `MANDACARU_ONCVPSP_PATH` | `mandacaru --set-oncvpsp DIR` |
 | `paw-lcao` | `MANDACARU_PAW_PATH` | `mandacaru --set-paw DIR` |
 | `upaw-lcao` | `MANDACARU_UPAW_PATH` | `mandacaru --set-upaw DIR` (optional) |
 
 ```bash
-git clone https://github.com/seixas-research/mandacaru-ncpp.git
-mandacaru --set-ncpp mandacaru-ncpp
-
 git clone https://github.com/seixas-research/mandacaru-oncvpsp.git
 mandacaru --set-oncvpsp mandacaru-oncvpsp
 
@@ -1165,49 +1153,43 @@ mandacaru --set-paw mandacaru-paw
 mandacaru --pseudo-status        # each variable, where it points, and how many datasets it serves
 ```
 
-`--set-ncpp` / `--set-oncvpsp` / `--set-paw` / `--set-upaw` write `export
+`--set-oncvpsp` / `--set-paw` / `--set-upaw` write `export
 MANDACARU_..._PATH=DIR` into `~/.zshrc` or `~/.bashrc` (whichever `$SHELL`
 reads), asking `[Y/n]` before replacing a different value; open a new
 terminal, or `source` the file, for the variable to take effect in your
-shell. Inside a checkout the datasets sit one folder per exchange-correlation
-functional — `<checkout>/lda/<Symbol>.parquet`, and `<checkout>/pbe/` in the
-PAW-LCAO library — so one checkout serves every functional.
+shell. Inside a checkout the datasets sit one folder per set —
+`<checkout>/lda-sr/<Symbol>.parquet`, every family's scalar-relativistic LDA
+set and the default — with `<checkout>/lda-dirac/` added by the PAW-LCAO
+library and `<checkout>/pbe/` by the ONCVPSP library.
 `MANDACARU_UPAW_PATH` is the one optional variable: UPAW-LCAO is generated on
 demand without it (*Datasets* above).
 
-A calculation reads the `lda/` folder unless the calculator names another one
-with `directory=`, resolved against the family's own variable:
+A calculation reads the `lda-sr/` folder unless the calculator names another
+one with `directory=`, resolved against the family's own variable:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
-                       directory="pbe")   # $MANDACARU_PAW_PATH/pbe/
+                       directory="lda-dirac")   # $MANDACARU_PAW_PATH/lda-dirac/
 ```
 
-The same folder is read from the ONCVPSP and NCPP libraries when those are the
-basis, and a per-element basis mapping has each of its library entries pointed
-there. `directory=` takes the name of one folder inside the checkout, not a
-path; a missing folder raises `LibraryPathError` listing the ones present, and
-naming a folder with a basis that reads no library is refused. It is not ASE's
-working directory, which the calculator leaves as it is.
+The same folder name is looked for in the ONCVPSP library when
+that is the basis, and a per-element basis mapping has each of its library
+entries pointed there; with the default `directory="lda-sr"` every family
+reads its own scalar-relativistic set unchanged. `directory=` takes the name
+of one folder inside the checkout, not a path; a missing folder raises
+`LibraryPathError` listing the ones present, and naming a folder with a basis
+that reads no library is refused. It is not ASE's working directory, which
+the calculator leaves as it is.
 
-```python
-from mandacaru.pseudopotentials.io import available_elements, get_pseudopotential
-
-pp = get_pseudopotential("Fe")   # reads $MANDACARU_NCPP_PATH/lda/Fe.parquet
-pp.valence_charge     # 8.0  -- 3d^6 4s^2
-sorted(pp.channels)   # [0, 2]
-```
-
-The NCPP datasets cover **every element with Z ≤ 92** (H through U), generated
-from scratch by Mandacaru's own LDA radial atomic solver. The valence includes
-semicore $(n-1)d$ and $(n-2)f$ shells, so iron is an eight-electron atom with a
-d channel rather than a two-electron 4s² one. Hydrogen and lithium carry a
-single valence channel, which is the local one, so in this family H₂ and LiH
-have no projectors at all — their nonlocal term is identically zero (the
-ONCVPSP family gives them two s projectors each). The ONCVPSP and PAW-LCAO
-checkouts (all 92 elements) are about 110 MB and 190 MB; NCPP's own datasets
-are about 11 MB.
+Each family's own module is the loader — `get_oncv(symbol, directory)`,
+`get_paw(symbol, directory)`, `get_upaw(symbol, directory)` — all accepting
+`directory=None` to fall back to the library variable and its default
+`lda-sr/` set; `available_elements(directory)` (from
+`mandacaru.pseudopotentials.io`) lists what a directory holds. The ONCVPSP
+and PAW-LCAO datasets cover **every element with Z ≤ 92** (H through U),
+generated from scratch by Mandacaru's own LDA radial atomic solver; the
+checkouts (all 92 elements) are about 110 MB and 190 MB.
 
 A calculation that needs a variable that is unset, or that names something
 that is not a directory, raises `LibraryPathError`
@@ -1223,16 +1205,10 @@ UPAW-LCAO has its own repository, `mandacaru-upaw`, but it is the one
 optional library: without `MANDACARU_UPAW_PATH` a missing dataset is
 generated on demand (*Datasets* above) rather than raising
 `LibraryPathError`. A library built with `mandacaru-build --pp UPAW
---install` goes to `$MANDACARU_UPAW_PATH/<xc>/`, inside that checkout.
-
-To regenerate or extend a library:
-
-```python
-from mandacaru.pseudopotentials.io import build_library
-
-written, failures = build_library()               # all of Z <= 92, into $MANDACARU_NCPP_PATH/lda/
-written, failures = build_library(["Ti", "V"])    # or a subset
-```
+--install` goes to `$MANDACARU_UPAW_PATH/<xc>/`, inside that checkout. The
+ONCVPSP and PAW-LCAO libraries are regenerated or extended the same way,
+with `mandacaru-build --pp ONCV --all --install` or `--pp PAW --all
+--install` (or `build_oncv_library`/`build_paw_library` from Python, above).
 
 ## File format
 
@@ -1256,13 +1232,15 @@ load_pseudopotential("Fe.parquet")   # extension
 load_pseudopotential("mystery.dat")  # magic bytes
 ```
 
-Every file records its `family` (format version 2). A file without the field
-is a version-1 file and loads as `"ncpp"`, as does one spelled with the old
-name `"tm"`; the NCPP loader refuses a file that declares another family.
+Every file records its `family` (format version 2); a file without the
+field, or without `radial_tables`, is refused rather than guessed at — this
+build reads only ONCVPSP and PAW-LCAO table layouts (UPAW-LCAO sharing
+PAW-LCAO's).
 
 ```{note}
 Saving is lossless and idempotent: `load` then `save` returns the same tables.
-The library is decimated once at generation time (`build_library(stride=...)`,
+The library is decimated once at generation time
+(`build_oncv_library`/`build_paw_library`/`build_upaw_library(..., stride=...)`,
 4 by default) because the generation grid must resolve the all-electron core
 while the smooth result does not need it. `save_pseudopotential` itself defaults
 to `stride=1`, so repeated round trips never compound.
@@ -1282,7 +1260,7 @@ from the outermost channel:
 
 ```python
 Mandacaru(method="adapt-vqe",
-          basis={"name": "NCPP", "size": "DZP"},
+          basis={"name": "ONCVPSP", "size": "DZP"},
           h=0.15)
 ```
 
@@ -1315,8 +1293,8 @@ Mandacaru(method="adapt-vqe",
 
 `energy_shift` is in **eV** (as in GPAW and as for [the NAO
 family](basis_sets.md)) and is accepted by every pseudopotential family:
-`"PAW-LCAO"`, `"UPAW-LCAO"`, `"ONCVPSP"` and `"NCPP"`, together with
-`confinement` and `polarization`. **The default is 0.1 eV** for all four,
+`"PAW-LCAO"`, `"UPAW-LCAO"` and `"ONCVPSP"`, together with
+`confinement` and `polarization`. **The default is 0.1 eV** for all three,
 GPAW's default -- so a plain `basis="PAW-LCAO"` or `basis="ONCVPSP"` is a
 confined basis, and an ONCVPSP and a PAW-LCAO calculation of the same molecule
 use bases built by the same recipe.
@@ -1341,15 +1319,13 @@ problem the stored wave solves, with a confining potential added,
 ```
 
 and the radius `r_c` found by a root search on
-`ε(r_c) − ε_free = energy_shift`. For the norm-conserving families the overlap
+`ε(r_c) − ε_free = energy_shift`. For the norm-conserving family the overlap
 is the identity (`q = 0`): ONCVPSP solves with its own local potential and
-projectors, and NCPP with the screened semilocal potential of the channel,
-rebuilt from the file's ionic potential, valence density and partial core the
-way the generator unscreened it. The radii agree across families to a few
-hundredths of a Bohr (O 2p at 0.1 eV: 5.340 PAW-LCAO, 5.345 ONCVPSP, 5.353
-NCPP), because the recipe is the same and the potentials nearly so.
+projectors. The radii agree across families to a few
+hundredths of a Bohr (O 2p at 0.1 eV: 5.340 PAW-LCAO, 5.345 ONCVPSP),
+because the recipe is the same and the potentials nearly so.
 
-The Fourier filter stays **off** by default for ONCVPSP and NCPP. Before
+The Fourier filter stays **off** by default for ONCVPSP. Before
 atom-centered ONCVPSP projector integration, measured on
 water (SZ, 3.5 Å of vacuum), the net force on the free molecule is PAW-LCAO's
 0.43 / 0.079 / 0.0083 eV/Å at h = 0.25 / 0.20 / 0.16 Å without the filter and
@@ -1458,7 +1434,7 @@ is considerably **longer-ranged** than one made with `split_norm = 0.15`.
 `tail_norm` takes a number (the second zeta's; GPAW's values are kept for the
 higher ones) or the whole sequence. Writing `split_norm` selects the
 SIESTA-style scheme instead; giving both is refused. The choice applies to
-every family with a size hierarchy (`"NCPP"`, `"ONCVPSP"`, `"PAW-LCAO"`, `"UPAW-LCAO"`
+every family with a size hierarchy (`"ONCVPSP"`, `"PAW-LCAO"`, `"UPAW-LCAO"`
 and the all-electron `"NAO"`), and the log's `[BASIS]` block names the scheme
 in its `zeta_split:` line.
 
@@ -1524,9 +1500,7 @@ against finite difference agree to 5 meV/Å on this system).
 Two limits are refused with the usable range in the message: a shift so large
 that the confinement would cut into the augmentation sphere (`r_i` must stay
 outside `r_cut`), and one so small that the radius runs past the dataset's
-radial table. The norm-conserving families do not take `energy_shift` (nor,
-therefore, the Gaussian polarization): their confined radial solve has not been
-written.
+radial table.
 
 ## Fourier filtering
 
@@ -1555,7 +1529,7 @@ Mandacaru(method="adapt-vqe",
           h=0.20)
 
 Mandacaru(method="adapt-vqe",
-          basis={"name": "NCPP", "filter": True},       # opt in, NCPP default off
+          basis={"name": "ONCVPSP", "filter": True},       # opt in, ONCVPSP default off
           h=0.20)
 
 Mandacaru(method="adapt-vqe",
@@ -1566,7 +1540,7 @@ Mandacaru(method="adapt-vqe",
 `filter` takes `True` / `"auto"` (cutoff tied to the grid, `k_c = π/h`), a
 positive **kinetic-energy cutoff in eV** (`k_c = sqrt(2E)` in atomic units),
 or `False`. Anything else raises at construction. It is **on by default for
-`PAW-LCAO` and `UPAW-LCAO`, off for `NCPP` and `ONCVPSP`** — declared once per family as
+`PAW-LCAO` and `UPAW-LCAO`, off for `ONCVPSP`** — declared once per family as
 `FamilySpec.default_options`, so a new family states its own and the drivers
 need no edit. `filter=False` reproduces the unfiltered basis byte for byte.
 
@@ -1648,8 +1622,8 @@ energy 0.037 eV.
 **Filtering changes the basis, so it changes the numbers.** It is a modeling
 choice, not a numerical detail: the filtered first zeta is no longer exactly
 the pseudo-orbital the projectors were built from, so the atomic reference is
-no longer reproduced exactly. That is why the norm-conserving families leave
-it off — their orbitals are not built band-limited — while PAW-LCAO and UPAW-LCAO turn
+no longer reproduced exactly. That is why ONCVPSP leaves
+it off — its orbitals are not built band-limited — while PAW-LCAO and UPAW-LCAO turn
 it on, since `optimize_pseudo_waves` already minimizes the kinetic energy
 beyond `q_cut` and the filter has little left to take. Set `filter=False` to
 compare against an older result.
@@ -1664,7 +1638,7 @@ basis addresses it directly; see [Basis sets](basis_sets.md).
 
 ```{note}
 **Relaxation works, and oxygen needs a finer grid than lithium.**
-LiH relaxes cleanly (`examples/28_LiH_relaxation_PAW.py`: five BFGS steps from
+LiH relaxes cleanly (`examples/old/28_LiH_relaxation_PAW.py`: five BFGS steps from
 2.0 Å to d = 1.6876 Å, final fmax 0.002 eV/Å), and so do H₂, OH, CH and H₂O.
 Water from a 90°, 1.0 Å start converges in **three BFGS steps** (h = 0.16 Å,
 PAW-LCAO-SZ, 123 s) to d = 0.992 Å and an angle of 117.3°, against 0.9572 Å and
@@ -1711,15 +1685,10 @@ tests is printed at the end of the session (the complete table is written to
 `test/.resource_report.txt`). The budget — set for the pseudopotential tests,
 the heaviest in the suite — is one test < 3 min, the whole run < 10 min, peak
 RSS < 3 GB; shrink a test's grid or cell rather than the limits.
-`pseudopotentials/test_ncpp_family.py` pins the NCPP energies of H₂ (0.74 Å, h = 0.25 Å) and
-LiH (1.6 Å, h = 0.30 Å) measured before the nonlocal generalization and
-exercises the general form with synthetic projectors; `pseudopotentials/test_oncv.py`
+`pseudopotentials/test_oncv.py`
 validates the ONCVPSP family atomically (H, Li, O) and on the same two
 molecules (50 tests, ~11 s, peak RSS 0.6 GB); `pseudopotentials/test_paw.py` does the same for
 the PAW-LCAO family, adding the overlap, on-site-projection, compensation and
 grid-stability checks (70 tests, 11.5 s, peak RSS 0.77 GB);
-`pseudopotentials/test_engine.py` covers the engine, the basis-name selector
-and the per-element sizes.
-
-See `examples/26_pseudopotential_generation.py` and
-`examples/27_pseudopotential_calculations.py`.
+`pseudopotentials/test_families.py` covers the basis-name selector and its
+aliases.

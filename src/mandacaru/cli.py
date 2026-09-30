@@ -180,9 +180,6 @@ def build_parser() -> argparse.ArgumentParser:
                              "MANDACARU_PAW_PATH in ~/.zshrc or ~/.bashrc "
                              "(asking before replacing a different value), "
                              "then exit.")
-    parser.add_argument("--set-ncpp", metavar="DIR", default=None,
-                        help="the same for the NCPP datasets (mandacaru-ncpp, "
-                             "MANDACARU_NCPP_PATH).")
     parser.add_argument("--set-oncvpsp", metavar="DIR", default=None,
                         help="the same for the ONCVPSP datasets "
                              "(mandacaru-oncvpsp, MANDACARU_ONCVPSP_PATH).")
@@ -252,8 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "(6-31+G*, 6-311+G(2df,2p), ...), Dunning "
                             "(cc-pVDZ, aug-cc-pVTZ, cc-pCVDZ) or Karlsruhe "
                             "(def2-SVP, def2-TZVP, ...) -- or a "
-                            "pseudopotential family, NCPP (Troullier-"
-                            "Martins), ONCVPSP or PAW-LCAO, for a valence-only "
+                            "pseudopotential family, ONCVPSP or PAW-LCAO, "
+                            "for a valence-only "
                             "run (size=DZP etc. through --basis-option)")
     basis.add_argument("--basis-option", action="append", type=_key_value,
                        default=[], metavar="KEY=VALUE",
@@ -613,7 +610,7 @@ def build_backend_command() -> int:
 
 
 def set_library_command(settings: dict) -> int:
-    """``mandacaru --set-paw DIR`` / ``--set-ncpp DIR`` / ``--set-oncvpsp DIR``.
+    """``mandacaru --set-paw DIR`` / ``--set-oncvpsp DIR`` / ``--set-upaw DIR``.
 
     ``settings`` maps a family to the directory given for it.  Each directory
     must exist; it is recorded, absolute, as the family's variable in the
@@ -621,7 +618,7 @@ def set_library_command(settings: dict) -> int:
     which asks before replacing a different value), and set in this process
     too.  Returns 0 when every variable was recorded or already held that value.
     """
-    from .pseudopotentials.environment import (FAMILY_VARIABLES, FUNCTIONALS,
+    from .pseudopotentials.environment import (FAMILY_VARIABLES, _folders,
                                                dataset_count)
     from .utils.shell_config import ShellConfigError, set_shell_variable
 
@@ -653,13 +650,14 @@ def set_library_command(settings: dict) -> int:
         if update.action == "declined":
             continue
         os.environ[variable] = path
-        held = {xc: dataset_count(os.path.join(path, xc)) for xc in FUNCTIONALS
-                if os.path.isdir(os.path.join(path, xc))}
+        held = {name: dataset_count(os.path.join(path, name))
+                for name in _folders(path)
+                if dataset_count(os.path.join(path, name))}
         if held:
-            print("    " + ", ".join(f"{xc}/: {n} datasets"
-                                     for xc, n in held.items()))
+            print("    " + ", ".join(f"{name}/: {n} datasets"
+                                     for name, n in held.items()))
         else:
-            print(f"    warning: {path} has no lda/ or pbe/ directory yet; "
+            print(f"    warning: {path} has no dataset folder yet; "
                   "calculations will not find datasets there")
     if changed:
         print("Open a new terminal, or `source` the file above, for the "
@@ -697,8 +695,7 @@ def main(argv=None) -> int:
     if args.build_backend:
         return build_backend_command()
     settings = {family: path for family, path in (
-        ("paw-lcao", args.set_paw), ("ncpp", args.set_ncpp),
-        ("oncvpsp", args.set_oncvpsp), ("upaw-lcao", args.set_upaw))
+        ("paw-lcao", args.set_paw), ("oncvpsp", args.set_oncvpsp), ("upaw-lcao", args.set_upaw))
         if path is not None}
     if settings:
         return set_library_command(settings)

@@ -90,4 +90,4 @@ A repeated level can indicate a restricted ansatz or failed optimization; it
 does not by itself prove that all accessible states have been found. Increasing
 the number of starts or changing the ansatz can help diagnose the limitation.
 
-A complete, runnable script is `examples/08_energy_levels_H2.py`.
+A complete, runnable script is `examples/old/08_energy_levels_H2.py`.

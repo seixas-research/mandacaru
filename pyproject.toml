@@ -95,6 +95,6 @@ path = "src/mandacaru/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mandacaru"]
-# No pseudopotential data ships in the wheel: the NCPP, ONCVPSP and PAW-LCAO
-# libraries live in the mandacaru-ncpp, mandacaru-oncvpsp and mandacaru-paw
-# repositories, found through MANDACARU_{NCPP,ONCVPSP,PAW}_PATH.
+# No pseudopotential data ships in the wheel: the ONCVPSP and PAW-LCAO
+# libraries live in the mandacaru-oncvpsp and mandacaru-paw
+# repositories, found through MANDACARU_{ONCVPSP,PAW}_PATH.

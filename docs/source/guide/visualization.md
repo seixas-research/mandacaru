@@ -20,7 +20,7 @@ atoms.calc.write_cube("difference.cube", quantity="difference_density")
 atoms.calc.write_cube("no1.cube", quantity="natural_orbital", index=1)
 ```
 
-`examples/32_wavefunction_cube.py` is the worked version of this, with a
+`examples/old/32_wavefunction_cube.py` is the worked version of this, with a
 figure.
 
 ## What is in the file, and what is not
@@ -58,7 +58,7 @@ most occupied one; the occupation is returned on the field and written into the
 file's comment line. Reference (Hartree--Fock) orbitals are ordered by energy.
 
 `spin_density` is the picture to draw for an open shell -- a doublet such as
-H₃, or the O₂ triplet of `examples/06_ADAPTVQE_O2_triplet.py`. For a closed
+H₃, or the O₂ triplet of `examples/old/06_ADAPTVQE_O2_triplet.py`. For a closed
 shell it is zero everywhere, which is a useful thing to confirm.
 
 `difference_density` is usually the most informative of the lot. Its reference
@@ -68,7 +68,7 @@ what it shows is exactly what the variational optimization did. For H₂ at a
 stretched bond, correlation takes density out of the bond and puts it back on
 the two atoms:
 
-```{image} ../../../examples/data/h2_cube_slice.png
+```{image} ../../../examples/old/data/h2_cube_slice.png
 :alt: Electron density and correlation density of stretched H2
 :width: 100%
 ```
@@ -144,7 +144,7 @@ atoms.calc.write_cube("second.cube", state=levels.states[2])
 
 ## Pseudopotentials: the smooth valence density
 
-With a PAW-LCAO, UPAW-LCAO, ONCVPSP or NCPP basis the orbitals are the **smooth pseudo**
+With a PAW-LCAO, UPAW-LCAO or ONCVPSP basis the orbitals are the **smooth pseudo**
 valence orbitals, so what is written is the *pseudo valence density*. The core
 is absent by construction, and inside the augmentation spheres the smooth
 density is not the physical one.

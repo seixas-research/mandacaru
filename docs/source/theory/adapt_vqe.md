@@ -170,6 +170,6 @@ one consequence worth knowing: an MVP step compiles as two or three separate
 eight-string excitations and therefore *costs* gates rather than saving them.
 `ceo-ovp` is the paper's one-parameter variant (its Supplementary Sec. I) — the
 same pool, never expanded — and it is the one that delivers the reduction here.
-On the LiH curve of `examples/24_ADAPTVQE_LiH_IBM.py` (STO-3G, 12 qubits) it
+On the LiH curve of `examples/old/24_ADAPTVQE_LiH_IBM.py` (STO-3G, 12 qubits) it
 matches `qeb` in energy with **104 CNOTs against 208**, while the adaptive `ceo`
 needs 248. Use `ceo-ovp` when the gate count is what matters.

@@ -12,10 +12,8 @@ r"""``mandacaru-build``: generate pseudopotential datasets from the command line
 Every dataset is generated natively (the reference atom, the partial waves,
 the projectors), through the same functions a calculation uses:
 :func:`~mandacaru.pseudopotentials.paw.generate_paw` (PAW-LCAO),
-:func:`~mandacaru.pseudopotentials.paw.generate_upaw` (UPAW-LCAO),
-:func:`~mandacaru.pseudopotentials.oncv.generate_oncv` (ONCVPSP) and
-:func:`~mandacaru.pseudopotentials.generation.generate_pseudopotential`
-(NCPP).  The radial kernels of that generation -- the tridiagonal eigenpair of
+:func:`~mandacaru.pseudopotentials.paw.generate_upaw` (UPAW-LCAO) and
+:func:`~mandacaru.pseudopotentials.oncv.generate_oncv` (ONCVPSP).  The radial kernels of that generation -- the tridiagonal eigenpair of
 the uniform-grid radial equation and the Numerov recursions -- run in C
 (:mod:`mandacaru.basis.radial_backend`, compiled on first use); ``--backend
 python`` selects the reference kernels instead, which give the same numbers
@@ -23,9 +21,9 @@ more slowly.
 
 A dataset is written to ``--output`` (default: the current directory, one
 subdirectory per family) at the library stride.  ``--install`` writes into
-Mandacaru's own library for the family instead -- ``<checkout>/<xc>/`` of the
-checkout its environment variable names (``MANDACARU_PAW_PATH``,
-``MANDACARU_ONCVPSP_PATH``, ``MANDACARU_NCPP_PATH``,
+Mandacaru's own library for the family instead -- the set's folder
+(``lda-sr/``, ``lda-dirac/``, ...) of the checkout its environment variable
+names (``MANDACARU_PAW_PATH``, ``MANDACARU_ONCVPSP_PATH``,
 ``MANDACARU_UPAW_PATH``) -- and so replaces the dataset
 calculations load; it is never the default.
 
@@ -47,11 +45,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #: ``--pp`` spellings -> family name.
 FAMILIES = {"paw": "paw-lcao", "paw-lcao": "paw-lcao",
             "upaw": "upaw-lcao", "upaw-lcao": "upaw-lcao",
-            "oncv": "oncvpsp", "oncvpsp": "oncvpsp",
-            "ncpp": "ncpp", "tm": "ncpp"}
-#: Families whose generator takes ``xc``, ``relativity`` and ``ghosts`` --
-#: all of them.
-MODERN = ("paw-lcao", "upaw-lcao", "oncvpsp", "ncpp")
+            "oncv": "oncvpsp", "oncvpsp": "oncvpsp"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="mandacaru-build",
-        description="Generate PAW-LCAO, UPAW-LCAO, ONCVPSP or NCPP datasets "
+        description="Generate PAW-LCAO, UPAW-LCAO or ONCVPSP datasets "
                     "natively, with the radial kernels in C.",
         epilog="examples:\n"
                "  mandacaru-build --pp PAW --relativistic --xc LDA --element Fe\n"
@@ -74,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
                "  mandacaru-build --build-backend\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--pp", default="PAW", metavar="FAMILY",
-                        help="PAW (PAW-LCAO, default), UPAW, ONCV or NCPP")
+                        help="PAW (PAW-LCAO, default), UPAW or ONCV")
     which = parser.add_mutually_exclusive_group()
     which.add_argument("--element", "-e", nargs="+", metavar="SYMBOL",
                        help="element(s) to generate")
@@ -108,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="repair, refuse or keep a ghost state, or flag: "
                              "write an element no repair "
                              "cleans with its defect recorded, so loading it "
-                             "warns (default: repair; flag for NCPP)")
+                             "warns (default: repair)")
     parser.add_argument("--check", action="store_true",
                         help="also compare every channel's scattering phase "
                              "with the all-electron atom")
@@ -156,12 +150,15 @@ def build_backend_command() -> int:
     return 1
 
 
-def _directory(family: str, output, install: bool, xc: str = "lda") -> str:
+def _directory(family: str, output, install: bool, xc: str = "lda",
+               relativity: str = "scalar") -> str:
     """Where the datasets go; ``--install`` resolves (and validates) the
-    family's library variable (:mod:`.environment`)."""
+    family's library variable and the set's folder (:mod:`.environment`:
+    ``lda-sr/`` or ``lda-dirac/`` for PAW-LCAO)."""
     if install:
         from .environment import library_directory
-        return library_directory(family, xc, must_exist=False)
+        return library_directory(family, xc, must_exist=False,
+                                 relativity=relativity)
     return os.path.join(output if output is not None else os.getcwd(), family)
 
 
@@ -172,11 +169,8 @@ def _generate(family: str, symbol: str, options: dict):
     if family == "upaw-lcao":
         from .paw import generate_upaw
         return generate_upaw(symbol, **options)
-    if family == "oncvpsp":
-        from .oncv import generate_oncv
-        return generate_oncv(symbol, **options)
-    from .generation import generate_pseudopotential
-    return generate_pseudopotential(symbol, **options)
+    from .oncv import generate_oncv
+    return generate_oncv(symbol, **options)
 
 
 def _reference_occupations(symbol: str,
@@ -220,10 +214,6 @@ def _frozen_subshells(entries: list[str]) -> tuple[tuple[int, int], ...]:
 
 
 def _levels_and_phase(family: str):
-    if family == "ncpp":
-        from .generation import kb_levels
-        from .oncv import log_derivative_ps
-        return kb_levels, log_derivative_ps
     if family in ("paw-lcao", "upaw-lcao"):
         from .paw import _paw_levels, log_derivative_paw
         return _paw_levels, log_derivative_paw
@@ -274,38 +264,25 @@ def _build_one(family: str, symbol: str, options: dict, directory: str,
                  + defect_message(symbol, family, pp.defects), f"    {pp!r}"]
     lines.append(f"    {elapsed:.1f} s, {'C' if uses_c else 'Python'} radial "
                  f"kernels -> {path}")
-    if family in MODERN:
-        from .oncv import ghost_errors, scattering_errors
-        levels, log_derivative = _levels_and_phase(family)
-        # A Kleinman-Bylander dataset is read through the view the shared
-        # tests understand (one projector, E_KB, the local channel's V_scr).
-        subject = pp
-        if family == "ncpp":
-            from .generation import KBView
-            subject = KBView(pp)
-        ghosts = ghost_errors(subject, levels)
-        phases = scattering_errors(subject, log_derivative) if check else {}
-        for l, channel in sorted(subject.channels.items()):
-            first, second = (float(e) for e in levels(subject, l)[:2])
-            reference = float(channel.reference_energies[0])
-            line = (f"    l={l}  r_c={channel.r_cut:.3f}  eps_ref="
-                    f"{reference:+.6f}  lowest-eps_ref={first - reference:+.1e}"
-                    f"  {'GHOST' if l in ghosts else 'no ghost'}")
-            if l in phases:
-                near, far = phases[l]
-                line += f"  phase {near:.3f}/{far:.3f} rad"
-            lines.append(line)
-        for l in sorted(set(ghosts) - set(pp.channels)):
-            lines.append(f"    l={l}  no projectors  local potential binds "
-                         f"{ghosts[l]:+.1e} Ha below the atom  GHOST")
-        if family == "ncpp":
-            lines.append(f"    local potential: the l={pp.local_l} channel"
-                         + (", NLCC" if (pp.nlcc or {}).get("applied") else "")
-                         + (f"; phase near = eps +- {subject.phase_window:g} Ha"
-                            if check else ""))
-        else:
-            lines.append(f"    local potential: r_cl={pp.r_cut_local:.3f} Bohr, "
-                         f"shift {pp.local_shift:+.1f} Ha")
+    from .oncv import ghost_errors, scattering_errors
+    levels, log_derivative = _levels_and_phase(family)
+    ghosts = ghost_errors(pp, levels)
+    phases = scattering_errors(pp, log_derivative) if check else {}
+    for l, channel in sorted(pp.channels.items()):
+        first, second = (float(e) for e in levels(pp, l)[:2])
+        reference = float(channel.reference_energies[0])
+        line = (f"    l={l}  r_c={channel.r_cut:.3f}  eps_ref="
+                f"{reference:+.6f}  lowest-eps_ref={first - reference:+.1e}"
+                f"  {'GHOST' if l in ghosts else 'no ghost'}")
+        if l in phases:
+            near, far = phases[l]
+            line += f"  phase {near:.3f}/{far:.3f} rad"
+        lines.append(line)
+    for l in sorted(set(ghosts) - set(pp.channels)):
+        lines.append(f"    l={l}  no projectors  local potential binds "
+                     f"{ghosts[l]:+.1e} Ha below the atom  GHOST")
+    lines.append(f"    local potential: r_cl={pp.r_cut_local:.3f} Bohr, "
+                 f"shift {pp.local_shift:+.1f} Ha")
     return True, "\n".join(lines)
 
 
@@ -319,14 +296,10 @@ def main(argv=None) -> int:
 
     family = FAMILIES.get(args.pp.strip().lower())
     if family is None:
-        parser.error(f"--pp must be one of PAW, UPAW, ONCV, NCPP, not {args.pp!r}")
+        parser.error(f"--pp must be one of PAW, UPAW, ONCV, not {args.pp!r}")
     if args.install and args.output is not None:
         parser.error("--install and --output are exclusive")
     relativity = args.relativity or "scalar"
-    if family == "ncpp" and relativity == "dirac":
-        parser.error("the NCPP family has one projector per l and no "
-                     "spin-orbit term; use --relativistic, or --pp PAW or ONCV "
-                     "for --dirac")
     if args.all:
         from .io import LIBRARY_Z_MAX, library_elements
         symbols = list(library_elements(args.z_max or LIBRARY_Z_MAX))
@@ -361,11 +334,8 @@ def main(argv=None) -> int:
         if family != "oncvpsp" or args.extra_l < 0:
             parser.error("--extra-l requires --pp ONCV and a nonnegative count")
 
-    # Without --ghosts each family keeps its own default: repair for
-    # PAW/UPAW/ONCV, flag for NCPP (a single-channel atom has nothing to try).
-    ghosts = args.ghosts or ("flag" if family == "ncpp" else "repair")
-    options = ({"xc": args.xc, "relativity": relativity,
-                "ghosts": ghosts} if family in MODERN else {})
+    ghosts = args.ghosts or "repair"
+    options = {"xc": args.xc, "relativity": relativity, "ghosts": ghosts}
     if args.occupations:
         options["reference_configuration"] = configuration
     if args.freeze_subshell:
@@ -373,7 +343,8 @@ def main(argv=None) -> int:
     if args.extra_l is not None:
         options["extra_l"] = args.extra_l
     try:
-        directory = _directory(family, args.output, args.install, args.xc)
+        directory = _directory(family, args.output, args.install, args.xc,
+                               args.relativity or "scalar")
     except FileNotFoundError as error:
         print(f"mandacaru-build: {error}", file=sys.stderr)
         return 2
@@ -384,10 +355,9 @@ def main(argv=None) -> int:
         print(f"mandacaru-build: the C radial backend is unavailable: {message}",
               file=sys.stderr)
         return 2
-    print(f"mandacaru-build: {family}, "
-          + (f"{args.xc.upper()}, relativity={relativity}, ghosts={ghosts}"
-             if family in MODERN else "LDA, non-relativistic")
-          + f", {len(symbols)} element(s), {args.workers} worker(s)")
+    print(f"mandacaru-build: {family}, {args.xc.upper()}, "
+          f"relativity={relativity}, ghosts={ghosts}, "
+          f"{len(symbols)} element(s), {args.workers} worker(s)")
     print(f"radial kernels: {message}")
     print(f"writing to {directory}\n", flush=True)
 

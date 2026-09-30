@@ -193,7 +193,6 @@ Basis Sets
    :members:
    :undoc-members:
    :show-inheritance:
-   :exclude-members: generate_pseudopotential, PseudoPotential, Channel, pseudize_channel, check_channel, report
 
 Named Gaussian Families
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -234,8 +233,8 @@ See :doc:`guide/pseudopotentials`.
 Pseudopotentials
 ----------------
 
-The valence-only families selected as basis names -- ``"NCPP"``
-(Troullier-Martins), ``"ONCVPSP"`` (Hamann) and ``"PAW-LCAO"`` (Bloechl) -- their
+The valence-only families selected as basis names -- ``"ONCVPSP"`` (Hamann),
+``"PAW-LCAO"`` (Bloechl) and ``"UPAW-LCAO"`` (Ivanov et al.) -- their
 registry, generation, library and the pseudo-atomic orbitals.  See
 :doc:`guide/pseudopotentials`.
 
@@ -255,8 +254,8 @@ Families and Registry
 Confined Orbitals
 ~~~~~~~~~~~~~~~~~
 
-The ``energy_shift`` of a pseudopotential basis (PAW-LCAO, UPAW-LCAO, ONCVPSP,
-NCPP): the first zeta solved in a smooth
+The ``energy_shift`` of a pseudopotential basis (PAW-LCAO, UPAW-LCAO, ONCVPSP):
+the first zeta solved in a smooth
 confining potential, its cutoff radius fixed by the eigenvalue shift.  See
 :doc:`guide/pseudopotentials`.
 

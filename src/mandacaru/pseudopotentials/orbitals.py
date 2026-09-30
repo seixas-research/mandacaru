@@ -15,10 +15,10 @@ the grid:
   the valence basis.  They are the natural choice -- they are exactly the states
   the pseudopotential was built to reproduce, they are nodeless and smooth, and
   they contain no core, so the basis size drops with the electron count;
-* the **Kleinman-Bylander projectors** :math:`\chi_{l}(r)\,Y_{lm}`, which carry
+* the **separable projectors** :math:`\chi_{l}(r)\,Y_{lm}`, which carry
   the nonlocal part of the potential.
 
-Both are radial tables from :mod:`mandacaru.pseudopotentials.generation`, splined and
+Both are radial tables of a family's dataset (:mod:`.dataset`), splined and
 multiplied by a spherical harmonic -- the same construction
 :class:`~mandacaru.basis.nao.NumericalAtomicOrbital` uses, so they drop into the
 integral engine unchanged.
@@ -103,10 +103,10 @@ class PseudoAtomicOrbital(_RadialTabulated):
 
 
 class KBProjector(_RadialTabulated):
-    r"""A Kleinman-Bylander projector :math:`\chi_{l}(r)Y_{lm}`.
+    r"""A separable projector :math:`\chi_{l}(r)Y_{lm}`.
 
-    Carries the Kleinman-Bylander energy :attr:`kb_energy` and the index of the
-    atom it belongs to, which is what the nonlocal matrix and its nuclear
+    Carries the diagonal coupling element :attr:`kb_energy` and the index of
+    the atom it belongs to, which is what the nonlocal matrix and its nuclear
     derivative need.
 
     Every projector also carries the three labels the **general separable
@@ -114,21 +114,17 @@ class KBProjector(_RadialTabulated):
     keys on: :attr:`atom_index`, the :attr:`channel` ``(l, m)`` and, within
     that channel, its radial :attr:`index`.  The nonlocal coupling matrix
     :math:`D` is block-diagonal over ``(atom, l, m)``; a family with several
-    radial projectors per channel (ONCVPSP) numbers them with ``index`` and
-    supplies the block, whereas the Kleinman-Bylander form has a single
-    projector per channel (``index = 0``) and the :math:`1\times1` block
-    :math:`[E^{KB}_l]`.
+    radial projectors per channel (ONCVPSP, PAW-LCAO) numbers them with
+    ``index`` and supplies the block.
     """
 
     def __init__(self, pseudopotential, l: int, m: int, center=None,
                  units: str = "angstrom", atom_index: int = 0,
-                 index: int = 0, radial=None, kb_energy=None):
-        chi = (pseudopotential.projectors[int(l)] if radial is None
-               else np.asarray(radial, dtype=float))
+                 index: int = 0, *, radial, kb_energy: float):
+        chi = np.asarray(radial, dtype=float)
         super().__init__(pseudopotential.r, chi, l, m, center, units)
         self.symbol = pseudopotential.symbol
-        self.kb_energy = float(pseudopotential.kb_energies[int(l)]
-                               if kb_energy is None else kb_energy)
+        self.kb_energy = float(kb_energy)
         self.atom_index = int(atom_index)
         #: Radial projector index within the ``(atom, l, m)`` channel.
         self.index = int(index)
@@ -174,8 +170,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     for the all-electron NAO family (``"SZ"``, ``"DZ"``, ``"DZP"``, ``"TZP"``,
     ...); a ``{symbol: size}`` mapping (with an optional ``"*"`` default)
     gives each element its own size.  The **first zeta always comes from the pseudopotential** and cannot be
-    replaced: the Troullier-Martins construction pseudizes each valence orbital
-    inside its cutoff radius and the Kleinman-Bylander projectors are built from
+    replaced: the dataset's construction pseudizes each valence orbital
+    inside its cutoff radius and the projectors are built from
     those specific pseudo-orbitals, so pairing the potential with an unrelated
     all-electron radial function would be inconsistent.  The extra zetas are
     split-valence refinements *of* that pseudo-orbital, and the polarization
@@ -222,7 +218,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     reference energy, so the atomic reference is no longer reproduced exactly.
     That is a variational price, measured in
     ``docs/source/guide/pseudopotentials.md``, and it is why the norm-conserving
-    families (NCPP, ONCVPSP) leave the filter **off** by default while PAW-LCAO and
+    family (ONCVPSP) leaves the filter **off** by default while PAW-LCAO and
     UPAW-LCAO turn it on -- a PAW-LCAO partial wave is already built band-limited, so
     the filter barely moves it.
     """
@@ -371,39 +367,6 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         functions.extend(atom_functions)
         owners.extend([index] * len(atom_functions))
     return functions, owners
-
-
-def kb_projectors(symbols, positions, potentials, units: str = "angstrom"):
-    """Kleinman-Bylander projectors for a molecule (one per ``(atom, l, m)``)."""
-    projectors = []
-    for index, (symbol, position) in enumerate(zip(symbols, positions)):
-        pp = potentials[symbol]
-        for l in sorted(pp.projectors):
-            for m in range(-l, l + 1):
-                projectors.append(KBProjector(pp, l, m, center=position,
-                                              units=units, atom_index=index))
-    return projectors
-
-
-def kb_coupling_blocks(projectors) -> dict:
-    r"""Nonlocal coupling blocks of a Kleinman-Bylander projector set.
-
-    The general separable nonlocal term is :math:`H^{NL} = C\,D\,C^\dagger`
-    with :math:`D` block-diagonal over ``(atom, l, m)``.  For the KB form each
-    block is the :math:`1\times1` matrix :math:`[E^{KB}_l]`; this returns
-    ``{(atom_index, l, m): [[E_KB]]}``, the layout
-    :class:`~mandacaru.core.hamiltonian.MolecularIntegrals` takes as
-    ``nonlocal_coupling``.
-    """
-    blocks = {}
-    for projector in projectors:
-        key = projector.block_key
-        if key in blocks:
-            raise ValueError(
-                f"two Kleinman-Bylander projectors share the channel {key}; "
-                "the KB form has exactly one projector per (atom, l, m)")
-        blocks[key] = np.array([[projector.kb_energy]], dtype=complex)
-    return blocks
 
 
 def valence_electrons(symbols, potentials) -> float:

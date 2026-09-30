@@ -81,7 +81,7 @@ The complete three-dimensional H2 example reuses the molecular builder and
 ADAPT checkpoint from the dipole example:
 
 ```console
-conda run -n mandacaru python examples/nested_otoc.py
+conda run -n mandacaru python examples/old/nested_otoc.py
 ```
 
 It writes the standard `[BASIS]` and ADAPT report, then `[NESTED OTOC]` with
@@ -178,7 +178,7 @@ is another source of amplitudes. `ADAPTVQEResult` itself contains optimization
 results, not state amplitudes. Input arrays are never modified or silently
 renormalized.
 
-The complete runnable example is `examples/quantum_echoes.py`, using an H₂
+The complete runnable example is `examples/old/quantum_echoes.py`, using an H₂
 molecule with a 0.74 Å bond oriented along $(1,1,1)$. It evaluates the
 interacting molecular Hamiltonian and all three position matrices on a
 nonperiodic three-dimensional Cartesian grid. Both operators are transformed
@@ -205,13 +205,13 @@ retained by that calculator. The standard builder also supplies the same
 basis defaults and nuclear-cusp regularization as the other ASE examples.
 
 ```console
-conda run -n mandacaru python examples/quantum_echoes.py
+conda run -n mandacaru python examples/old/quantum_echoes.py
 ```
 
 For an x-polarized field of magnitude 0.01 atomic units:
 
 ```console
-conda run -n mandacaru python examples/quantum_echoes.py --field-direction 1 0 0 --field-strength 0.01
+conda run -n mandacaru python examples/old/quantum_echoes.py --field-direction 1 0 0 --field-strength 0.01
 ```
 
 `--output /path/to/output.txt` also places `spectrum.csv` in that directory.

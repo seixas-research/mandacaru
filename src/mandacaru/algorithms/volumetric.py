@@ -74,7 +74,7 @@ density and integrates to the full electron count.
 
 The pseudopotential caveat
 --------------------------
-With a PAW-LCAO / UPAW-LCAO / ONCVPSP / NCPP basis the orbitals are the **smooth pseudo**
+With a PAW-LCAO / UPAW-LCAO / ONCVPSP basis the orbitals are the **smooth pseudo**
 valence orbitals, so what is written is the *pseudo valence density*: the core
 is absent by construction, and inside the augmentation spheres the smooth
 density is not the physical one.  For PAW-LCAO the overlap itself is augmented,

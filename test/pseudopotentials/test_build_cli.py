@@ -87,15 +87,9 @@ def test_oncv_extra_channel_option_is_validated(capsys):
 
 @pytest.mark.parametrize("spelling, family", [
     ("PAW", "paw-lcao"), ("paw-lcao", "paw-lcao"), ("UPAW", "upaw-lcao"),
-    ("ONCV", "oncvpsp"), ("ONCVPSP", "oncvpsp"), ("NCPP", "ncpp"), ("TM", "ncpp")])
+    ("ONCV", "oncvpsp"), ("ONCVPSP", "oncvpsp")])
 def test_family_spellings(spelling, family):
     assert FAMILIES[spelling.lower()] == family
-
-
-def test_ncpp_refuses_what_its_generator_cannot_do(capsys):
-    with pytest.raises(SystemExit):
-        main(["--pp", "NCPP", "--dirac", "--element", "H"])
-    assert "no spin-orbit term" in capsys.readouterr().err
 
 
 def test_an_unknown_element_is_a_usage_error(capsys):
@@ -164,4 +158,4 @@ def test_install_writes_into_the_functional_folder(tmp_path, monkeypatch,
                                                    capsys):
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(tmp_path))
     assert main(["--pp", "PAW", "--element", "H", "--install"]) == 0
-    assert (tmp_path / "lda" / "H.parquet").is_file()
+    assert (tmp_path / "lda-sr" / "H.parquet").is_file()

@@ -27,7 +27,7 @@ block matrix :math:`Q` that turns the basis overlap into
 The registry :data:`PSEUDO_FAMILIES` maps a family name to its
 :class:`FamilySpec`.  **A family is selected through the** ``basis``
 **argument of any driver**, exactly like an all-electron family:
-``basis="PAW-LCAO"``, ``basis={"name": "NCPP", "size": "DZP"}``, or a per-element
+``basis="PAW-LCAO"``, ``basis={"name": "ONCVPSP", "size": "DZP"}``, or a per-element
 mapping ``{"O": {"name": "PAW-LCAO", "size": "DZP"}, "H": "PAW-LCAO"}``.  The drivers
 only ever see the spec: :func:`mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis`
 recognizes a registered family name (:func:`lookup_family`) and
@@ -37,12 +37,6 @@ dispatches to ``spec.build``.  A new family is added with
 a basis name.
 
 Registered today:
-
-``"ncpp"`` (aliases ``"tm"``, ``"ncpp-tm"``)
-    Norm-conserving **Troullier-Martins** potentials in Kleinman-Bylander
-    separable form -- one projector per channel, :math:`D = \mathrm{diag}(E^{KB})`,
-    no overlap correction.  Its library (the ``mandacaru-ncpp`` repository,
-    found through ``MANDACARU_NCPP_PATH``) covers every element up to uranium.
 
 ``"oncvpsp"`` (alias ``"oncv"``; :mod:`.oncv`)
     Hamann's **optimized norm-conserving Vanderbilt** potentials -- two
@@ -77,11 +71,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .confinement import CONFINEMENT_DEFAULT_OPTIONS, CONFINEMENT_OPTIONS
-
-#: The canonical name of the Troullier-Martins family (library:
-#: ``$MANDACARU_NCPP_PATH``).
-DEFAULT_FAMILY = "ncpp"
+#: The family a name-less request resolves to: PAW-LCAO (library:
+#: ``$MANDACARU_PAW_PATH``).
+DEFAULT_FAMILY = "paw-lcao"
 
 #: Basis options every family accepts: the size hierarchy built on the
 #: pseudo-orbitals, the library directory and the Fourier filter
@@ -119,7 +111,7 @@ class FamilySpec:
         a request a pseudopotential family has to be able to honor.
     norm_conserving : bool
         Whether the family's projectors leave the basis overlap untouched
-        (``True`` for TM/ONCVPSP; PAW-LCAO carries an overlap correction).
+        (``True`` for ONCVPSP; PAW-LCAO carries an overlap correction).
     aliases : tuple of str
         Alternative names resolving to this family.
     options : tuple of str
@@ -130,7 +122,7 @@ class FamilySpec:
         Option values this family uses when the user does not say
         (``{"filter": True}`` for PAW-LCAO / UPAW-LCAO, whose smooth partial waves are
         built to be band-limited and lose little by being filtered, while
-        NCPP / ONCVPSP leave it off).  Declaring the default **here** rather
+        ONCVPSP leaves it off).  Declaring the default **here** rather
         than in the builder is what keeps it discoverable: one place says what
         every family does, a new family declares its own, and
         :meth:`resolved_options` is the only merge.  Every key must be in
@@ -230,7 +222,7 @@ def family_listing() -> str:
 def lookup_family(name) -> FamilySpec | None:
     """The :class:`FamilySpec` registered under ``name``, or ``None``.
 
-    Case-insensitive, aliases accepted (``"PAW-LCAO"``, ``"oncv"``, ``"NCPP-TM"``);
+    Case-insensitive, aliases accepted (``"PAW-LCAO"``, ``"oncv"``);
     anything that is not a registered family name -- ``"HAO"``, ``"cc-pVTZ"``,
     a per-element mapping -- gives ``None``.  This is how
     :func:`~mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis` tells a
@@ -270,27 +262,6 @@ def resolve_family(name=None) -> FamilySpec:
             f"unknown pseudopotential family {name!r}; registered families: "
             f"{family_listing()}")
     return spec
-
-
-# --------------------------------------------------------------------------- #
-# Family "ncpp": norm-conserving Troullier-Martins, Kleinman-Bylander form.
-# --------------------------------------------------------------------------- #
-
-def _generate_tm(symbol, **options):
-    from .generation import generate_pseudopotential
-    return generate_pseudopotential(symbol, **options)
-
-
-def _get_tm(symbol, directory=None):
-    """Library loader; refuses a file that belongs to another family."""
-    from .io import get_pseudopotential
-    pp = get_pseudopotential(symbol, directory)
-    if canonical_family_name(getattr(pp, "family", DEFAULT_FAMILY)) != "ncpp":
-        location = directory or "the NCPP library ($MANDACARU_NCPP_PATH)"
-        raise ValueError(
-            f"the pseudopotential for {symbol!r} in {location} belongs to "
-            f"family {pp.family!r}, not 'ncpp'")
-    return pp
 
 
 def pseudo_basis_arguments(family, options, *, confinement=None,
@@ -441,39 +412,3 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     n_active = space.n_active if space is not None else len(basis_fns)
     return (hamiltonian, num_particles, n_active,
             integrals.integration_profile(), context)
-
-
-def _build_tm(atoms, grid, h, charge, spin, options, kinetic=None, **active):
-    r"""Valence-only Hamiltonian from Troullier-Martins pseudopotentials.
-
-    The core electrons are gone entirely: the basis is the set of valence
-    pseudo-atomic orbitals, the external potential is the smooth local
-    channel, and the Kleinman-Bylander projectors supply the nonlocal part
-    through the general separable form with the :math:`1\times1` blocks
-    :math:`[E^{KB}_l]` (:func:`~.orbitals.kb_coupling_blocks`) and no overlap
-    correction.  The "nuclei" carry the *ionic* charges, so the constant term
-    is the ion-ion repulsion.
-    """
-    from .orbitals import kb_coupling_blocks, kb_projectors
-
-    return build_valence_hamiltonian(
-        atoms, grid, h, charge, spin, options, kinetic, family="ncpp",
-        load=_get_tm, **active,
-        projectors=lambda symbols, positions, potentials, _options:
-            kb_projectors(symbols, positions, potentials),
-        coupling=lambda projectors, _symbols, _potentials:
-            kb_coupling_blocks(projectors))
-
-
-NCPP_FAMILY = register_family(FamilySpec(
-    name="ncpp",
-    description="norm-conserving Troullier-Martins, Kleinman-Bylander "
-                "separable form (one projector per channel)",
-    generate=_generate_tm,
-    get=_get_tm,
-    build=_build_tm,
-    norm_conserving=True,
-    aliases=("tm", "ncpp-tm"),
-    options=COMMON_OPTIONS + CONFINEMENT_OPTIONS,
-    default_options=dict(CONFINEMENT_DEFAULT_OPTIONS),
-))

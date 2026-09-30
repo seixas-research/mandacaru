@@ -18,9 +18,9 @@ Four things are pinned here, in this order:
 2. **the option** -- ``True`` / ``"auto"`` / a number in eV / ``False``
    accepted, everything else refused with a clear message, in the single-family
    and the per-element form and in the dry run;
-3. **the default** -- on for PAW-LCAO and UPAW-LCAO, off for NCPP and ONCVPSP, declared
+3. **the default** -- on for PAW-LCAO and UPAW-LCAO, off for ONCVPSP, declared
    in the registry, and ``filter=False`` reproducing the unfiltered basis
-   **byte for byte** (this is what keeps every pinned NCPP/ONCVPSP number
+   **byte for byte** (this is what keeps every pinned ONCVPSP number
    still valid and makes the PAW-LCAO flip auditable);
 4. **what it buys** -- the rigid-shift energy ripple shrinks, and the analytic
    force is still the derivative of the calculator's own energy.
@@ -314,7 +314,7 @@ class TestOption:
         chose it is tabulated on the constant."""
         assert FILTER_NYQUIST_FRACTION == 1.0
 
-    @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO", "NCPP", "ONCVPSP"])
+    @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO", "ONCVPSP"])
     def test_every_family_accepts_the_option(self, family):
         spec = PSEUDO_FAMILIES[family.lower()]
         assert "filter" in spec.options
@@ -372,7 +372,7 @@ class TestOption:
 
 class TestDefault:
     @pytest.mark.parametrize("family, expected", [
-        ("paw-lcao", True), ("upaw-lcao", True), ("ncpp", None), ("oncvpsp", None),
+        ("paw-lcao", True), ("upaw-lcao", True), ("oncvpsp", None),
     ])
     def test_declared_in_the_registry(self, family, expected):
         """The default lives in one place -- the family spec -- so a new
@@ -391,13 +391,12 @@ class TestDefault:
             FILTER_NYQUIST_FRACTION * np.pi / (0.25 * ANGSTROM_TO_BOHR),
             rel=0.05)              # the realized spacing, not exactly h
 
-    @pytest.mark.parametrize("family", ["ncpp", "oncvpsp"])
-    def test_the_norm_conserving_families_stay_opt_in(self, family):
-        assert build(h2(), family, 0.25)[4]["filter_cutoff"] is None
-        assert build(h2(), {"name": family, "filter": True},
+    def test_the_norm_conserving_family_stays_opt_in(self):
+        assert build(h2(), "oncvpsp", 0.25)[4]["filter_cutoff"] is None
+        assert build(h2(), {"name": "oncvpsp", "filter": True},
                      0.25)[4]["filter_cutoff"] is not None
 
-    @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao", "ncpp", "oncvpsp"])
+    @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao", "oncvpsp"])
     def test_filter_off_is_byte_identical_to_an_unfiltered_basis(self, family):
         """``filter=False`` must reproduce the historical basis **exactly**.
 
@@ -405,7 +404,7 @@ class TestDefault:
         to itself.  Against what the construction was *before* the option
         existed: the SZ first zeta is the dataset's own ``pseudo_radial``, and
         the DZP tables are exactly what ``zeta_tables`` returns from it.  This
-        is what keeps every pinned NCPP / ONCVPSP number valid and makes the
+        is what keeps every pinned ONCVPSP number valid and makes the
         PAW-LCAO flip a decision rather than a drift.
         """
         spec = PSEUDO_FAMILIES[family]
@@ -418,7 +417,7 @@ class TestDefault:
         # table and not of a resampling.  The *last* node is dropped -- it is
         # the one point `radial` treats with `r >= r_max`, and the spline's
         # boundary evaluation there lands a few ULP away (8e-28 on a value of
-        # 4e-12 for NCPP hydrogen); everywhere else the match is exact.
+        # 4e-12 for hydrogen); everywhere else the match is exact.
         r = np.asarray(pp.r)[:-1]
 
         # SZ: the basis function IS the dataset's tabulated partial wave.
@@ -481,7 +480,7 @@ class TestDefault:
         assert on.n_qubits == off.n_qubits and on.per_atom == off.per_atom
         assert "filtered (auto: 1 x Nyquist)" in on.basis
         assert "unfiltered" in off.basis
-        assert "unfiltered" in estimate_qubits(water(), basis="NCPP").basis
+        assert "unfiltered" in estimate_qubits(water(), basis="ONCVPSP").basis
         explicit = count_basis_functions(water(),
                                          {"name": "PAW-LCAO", "filter": 700.0})[1]
         assert "filtered (700 eV)" in explicit

@@ -130,7 +130,7 @@ between them. A finer band means a larger `kpts`, hence a larger supercell and
 proportionally more qubits — 4 k-points cost 8 qubits for this chain.
 ```
 
-`examples/35_spectral_function_H_chain.py` writes and plots the full `A(E, k)`. In one
+`examples/old/35_spectral_function_H_chain.py` writes and plots the full `A(E, k)`. In one
 dimension the mesh already is a line, so this is enough. Two and three dimensions need
 the band paths and symmetry tools described below.
 
@@ -331,7 +331,7 @@ symmetry — is `details["image_spread"]`.
 
 No example script accompanies this section: the force needs six displaced
 Hamiltonian rebuilds per atom and the stress twelve more, on top of the state
-already converged for `examples/11_Bloch_crystals.py`, which would multiply
+already converged for `examples/old/11_Bloch_crystals.py`, which would multiply
 that script's cost for what is, computationally, a classical contraction with
 no new circuit evaluation. `test/algorithms/test_periodic_forces.py` is the
 runnable, validated reference.
@@ -433,12 +433,12 @@ reduced = square.calc.get_spectral_function(irreducible=True)   # may warn
 print(reduced.irreducible.symmetry_residual)
 ```
 
-Measured on the two-dimensional square lattice of `examples/36_spectral_function_square_lattice.py`:
+Measured on the two-dimensional square lattice of `examples/old/36_spectral_function_square_lattice.py`:
 a half-filled `2x2x1` mesh (a metal, C4 broken by the reference) gives a residual
 of **1.2** and warns; a closed-shell 6-k-point H chain gives **1.3e-15** — exact
 to machine precision, for a **1.50x** reduction in evaluations and no warning
 (`test/algorithms/test_bloch.py::TestTheIrreducibleZoneIsAudited`; the chain of
-`examples/35_spectral_function_H_chain.py` samples 8 k-points, which is a
+`examples/old/35_spectral_function_H_chain.py` samples 8 k-points, which is a
 half-filled metal and does *not* reduce cleanly).
 `symmetry_residual` starts as `None`: nobody having checked is not the same as
 having checked and found it clean.
@@ -460,7 +460,7 @@ default to the periodic directions, so a slab in a tall box gets the 2-D path of
 its plane rather than the 3-D path of its formal Bravais lattice.
 ```
 
-`examples/36_spectral_function_square_lattice.py` runs all of this end to end on
+`examples/old/36_spectral_function_square_lattice.py` runs all of this end to end on
 the square lattice above: the space group and irreducible zone before any run, a
 path with a missing point on purpose (`3x3x1`), the audited symmetry reduction,
 and the updated `SpectralFunction.write()` CSV — now
@@ -468,8 +468,8 @@ and the updated `SpectralFunction.write()` CSV — now
 carrying every fractional component rather than only the first (which silently
 dropped `k_y` for any lattice sampled in more than one direction).
 
-Runnable end-to-end scripts: `examples/07_ADAPTVQE_H_chain_bands.py` (band structure
-+ total energy to CSV, with a separate plotting script), `examples/11_Bloch_crystals.py`
-(the three methods compared on the H chain), `examples/35_spectral_function_H_chain.py`
-(the 1-D spectral function) and `examples/36_spectral_function_square_lattice.py`
+Runnable end-to-end scripts: `examples/old/07_ADAPTVQE_H_chain_bands.py` (band structure
++ total energy to CSV, with a separate plotting script), `examples/old/11_Bloch_crystals.py`
+(the three methods compared on the H chain), `examples/old/35_spectral_function_H_chain.py`
+(the 1-D spectral function) and `examples/old/36_spectral_function_square_lattice.py`
 (band paths and symmetry in 2-D).

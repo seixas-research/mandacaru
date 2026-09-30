@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 
 from mandacaru.basis import HydrogenicAtomicOrbital
-from mandacaru.integrals import Grid, IntegralEngine, PoissonFFTSolver, Potentials
+from mandacaru.integrals import (Grid, IntegralEngine, PoissonFFTSolver,
+                                 Potentials, _backend)
 from mandacaru.integrals.poisson import cell_self_potential
 from mandacaru.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
@@ -175,3 +176,22 @@ class TestPoissonSolverDirect:
             phi_ref[i] = np.sum(rho * kern) * grid.dV
 
         assert np.allclose(phi_fft, phi_ref, atol=1e-10)
+
+
+class TestProjectionKernel:
+    def test_c_backend_matches_numpy(self):
+        rng = np.random.default_rng(0)
+        psi = rng.normal(size=(5, 400)) + 1j * rng.normal(size=(5, 400))
+        chi = rng.normal(size=(3, 400)) + 1j * rng.normal(size=(3, 400))
+        got = _backend.kb_projections(psi, chi, 0.017)
+        expected = (np.conj(psi) @ chi.T) * 0.017
+        assert np.allclose(got, expected, atol=1e-12)
+
+    def test_handles_no_projectors(self):
+        psi = np.ones((3, 10), dtype=complex)
+        assert _backend.kb_projections(psi, np.zeros((0, 10)), 1.0).shape == (3, 0)
+
+    def test_rejects_mismatched_grids(self):
+        with pytest.raises(ValueError, match="sampled on"):
+            _backend.kb_projections(np.ones((2, 10), dtype=complex),
+                                    np.ones((1, 7), dtype=complex), 1.0)

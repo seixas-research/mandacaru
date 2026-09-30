@@ -7,6 +7,7 @@ import pytest
 from mandacaru.basis import atomic_solver
 from mandacaru.basis._config import ground_state_config
 from mandacaru.basis.atomic_solver import (_PulayMixer, density_change,
+                                           hartree_potential, lda_xc,
                                            relaxed_configuration, solve_atom)
 
 
@@ -142,3 +143,55 @@ class TestRelaxedConfiguration:
         relaxed_configuration(58, points=1000)
         relaxed_configuration(58, points=2000)
         assert calls == [1000, 2000]
+
+
+#: NIST LSD reference eigenvalues (Hartree) for closed-shell atoms.
+NIST_EIGENVALUES = {
+    2: {(1, 0): -0.570425},
+    4: {(1, 0): -3.856411, (2, 0): -0.205719},
+}
+
+
+@pytest.fixture(scope="module")
+def oxygen_atom():
+    return solve_atom(8, points=6000, r_max=30.0, tolerance=1e-7, mixing=0.25)
+
+
+class TestAtomicSolver:
+    @pytest.mark.parametrize("atomic_number", sorted(NIST_EIGENVALUES))
+    def test_matches_published_lda_eigenvalues(self, atomic_number):
+        """Closed-shell atoms, where spin-restricted LDA is the right model."""
+        atom = solve_atom(atomic_number, points=6000, r_max=30.0,
+                          tolerance=1e-7, mixing=0.25)
+        assert atom.converged
+        for state, reference in NIST_EIGENVALUES[atomic_number].items():
+            assert atom.eigenvalues[state] == pytest.approx(reference, abs=5e-3)
+
+    def test_valence_eigenvalue_is_accurate(self, oxygen_atom):
+        """The valence shell is what a pseudopotential is built from."""
+        assert oxygen_atom.eigenvalues[(2, 1)] == pytest.approx(-0.338381,
+                                                                abs=2e-3)
+
+    def test_density_integrates_to_the_electron_count(self, oxygen_atom):
+        r = oxygen_atom.r
+        electrons = np.trapezoid(4.0 * np.pi * oxygen_atom.density * r * r, r)
+        assert electrons == pytest.approx(8.0, rel=2e-3)
+
+    def test_orbitals_have_the_right_node_count(self, oxygen_atom):
+        for (n, l), u in oxygen_atom.orbitals.items():
+            interior = u[(oxygen_atom.r > 0.05) & (oxygen_atom.r < 12.0)]
+            nodes = int(np.sum(np.diff(np.sign(interior)) != 0))
+            assert nodes == n - l - 1, f"state {(n, l)} has {nodes} nodes"
+
+    def test_hartree_potential_of_a_point_charge(self):
+        """A tight spherical blob must look like ``1/r`` outside itself."""
+        r = np.linspace(1e-3, 20.0, 4000)
+        width = 0.2
+        rho = np.exp(-(r / width) ** 2) / (np.pi ** 1.5 * width ** 3)
+        potential = hartree_potential(r, rho)
+        far = r > 2.0
+        assert np.allclose(potential[far], 1.0 / r[far], rtol=1e-4)
+
+    def test_lda_xc_is_negative(self):
+        e_xc, v_xc = lda_xc(np.array([0.01, 0.1, 1.0]))
+        assert np.all(e_xc < 0) and np.all(v_xc < 0)
