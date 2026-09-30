@@ -14,6 +14,7 @@ requires-python = ">=3.14"
 dependencies = [
     # -- numerical core -------------------------------------------------- #
     'numpy>=2.0.0',
+    'jax',
     'scipy',
     'ase',
     'spglib',
@@ -42,17 +43,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# The legacy differentiated-SCF force path, force_method="scf-response": JAX
-# differentiates its Loewdin / SCF / integral-transform layer.  The default
-# force_method="rdm" needs none of it (see mandacaru.algorithms.forces).
-legacy-forces = ['jax']
-# Training VALQA's learned proposal (mandacaru.algorithms.train_proposal_model):
-# JAX differentiates the graph network and the Gaussian-process likelihood.
-# Using a trained model (method="valqa", proposal_model=...) needs none of it.
-learned-proposals = ['jax']
 docs = ['sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 coverage = ['pytest-cov']
-dev = ['pyarrow', 'psutil', 'jax', 'sphinx>=8,<10', 'myst-parser>=4,<6',
+dev = ['pyarrow', 'psutil', 'sphinx>=8,<10', 'myst-parser>=4,<6',
        'furo>=2024.8.6', 'pytest-cov']
 
 [tool.pytest.ini_options]
