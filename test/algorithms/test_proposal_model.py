@@ -19,7 +19,8 @@ from mandacaru.algorithms.proposal_data import ProblemRecord
 from mandacaru.algorithms.proposal_model import (
     DESCRIPTORS, EMBEDDING, PROJECTION, HamiltonianGraph,
     ProposalModel, assess_data_volume, candidate_rows, compress, embed,
-    features, init_parameters, train_proposal_model, training_examples)
+    features, init_parameters, train_proposal_model, training_examples,
+    fit_pairwise_ranker, uncompress, within_state, PairwiseRanker)
 from mandacaru.circuits.pools import PoolOperator
 from mandacaru.core.mapping import PauliSum
 
@@ -171,6 +172,7 @@ class TestConditioning:
         assert len(updated.train_phi) == len(model.train_phi) + 1
 
 
+
 class TestTrajectories:
     def test_rows_are_paired_with_their_previous_hamiltonian(self):
         now, before = _problem(), _problem(scale=1.1)
@@ -201,6 +203,192 @@ class TestTrajectories:
     def test_an_unknown_grouping_is_refused(self):
         with pytest.raises(ValueError, match="group_by"):
             training_examples([], {}, "frame")
+
+
+class TestWithinState:
+    """Judging a predictor by the choice it makes inside one state."""
+
+    def _examples(self):
+        problem = _problem()
+        base = {"problem": problem.key, "move": "insert", "source_energy": -1.0,
+                "reference_energy": -1.0, "source_gradients": [0.3, 0.1, 0.0]}
+        changes = {(0,): [-3e-3, -1e-3, -2e-4], (1,): [-5e-4, -2e-3]}
+        rows = [{**base, "source": list(state), "operator": mu,
+                 "delta_energy": change}
+                for state, values in changes.items()
+                for mu, change in enumerate(values)]
+        return training_examples(rows, {problem.key: problem}), rows
+
+    def test_uncompress_inverts_compress(self):
+        x = np.array([-3e-2, -1e-6, 0.0, 4e-4])
+        np.testing.assert_allclose(uncompress(compress(x)), x, atol=1e-15)
+
+    def test_a_perfect_predictor_has_no_regret(self):
+        examples, _ = self._examples()
+        observed = np.concatenate([e.target for e in examples])
+        out = within_state({"perfect": observed, "backwards": -observed},
+                           examples)
+        assert out["states"] == 2
+        assert out["perfect"]["regret"] == 0.0
+        assert out["perfect"]["spearman"] == pytest.approx(1.0)
+        assert out["backwards"]["spearman"] == pytest.approx(-1.0)
+        # Backwards picks -2e-4 Ha against -3e-3, and -5e-4 against -2e-3.
+        assert out["backwards"]["regret"] == pytest.approx(
+            ((-2e-4 + 3e-3) + (-5e-4 + 2e-3)) / 2)
+
+
+class TestPairwiseRanker:
+    """V2: the simplest within-state model, a Bradley-Terry ranker."""
+
+    def _examples(self, states=12, seed=0):
+        """Insertions whose gain follows the gradient, three per state."""
+        rng = np.random.default_rng(seed)
+        problem = _problem()
+        rows = []
+        for k in range(states):
+            g = rng.uniform(0.01, 0.5, size=3)
+            for mu in range(3):
+                rows.append({"problem": problem.key, "move": "insert",
+                             "operator": mu, "source": [k % 3] * (k // 3),
+                             "source_energy": -1.0 - k,
+                             "reference_energy": -1.0,
+                             "source_gradients": g.tolist(),
+                             "delta_energy": -(g[mu] ** 2)})
+        return training_examples(rows, {problem.key: problem})
+
+    def test_it_learns_a_ranking_that_follows_the_data(self):
+        examples = self._examples()
+        ranker = fit_pairwise_ranker(examples)
+        assert ranker is not None and ranker.pairs == 12 * 3
+        scores = np.concatenate([-ranker.scores(e.rows) for e in examples])
+        out = within_state({"ranker": scores, "backwards": -scores},
+                           examples)
+        # The pool descriptors differ per operator, so a regularized fit
+        # orders nearly every state, not necessarily every one.
+        assert out["ranker"]["spearman"] > 0.9
+        assert out["ranker"]["regret"] < 0.1 * out["backwards"]["regret"]
+
+    def test_without_two_insertions_in_a_state_there_is_nothing_to_fit(self):
+        examples = self._examples(states=1)
+        single = [e for e in examples]
+        for e in single:
+            e.state = [(i,) for i in range(len(e.target))]
+        assert fit_pairwise_ranker(single) is None
+
+    def test_an_unfitted_predictor_is_reported_as_nan(self):
+        examples = self._examples(states=2)
+        n = sum(len(e.target) for e in examples)
+        out = within_state({"none": np.full(n, np.nan)}, examples)
+        assert np.isnan(out["none"]["spearman"])
+        assert np.isnan(out["none"]["regret"])
+
+
+def _point(graph, ranker, gradient, per_fold=None, folds=4):
+    """A fabricated full-data curve point for the readiness rule."""
+    per_fold = per_fold or [(graph, ranker, gradient)] * folds
+
+    def entry(value):
+        return {"spearman": value, "regret": 0.0}
+    return {"folds": [{"within_state": {
+                "graph": entry(g), "ranker": entry(r),
+                "gradient": entry(d), "states": 10}}
+            for g, r, d in per_fold],
+            "within_state": {"graph": entry(graph), "ranker": entry(ranker),
+                             "gradient": entry(gradient), "states": 40}}
+
+
+class TestReadiness:
+    """A model is judged on the choice within a state (decided 2026-10-01)."""
+
+    def test_the_ranker_comes_first(self):
+        from mandacaru.algorithms.proposal_model import _readiness
+        ready, kind, _ = _readiness(_point(0.46, 0.46, 0.38))
+        assert ready and kind == "ranker"
+
+    def test_the_graph_model_has_to_beat_the_ranker(self):
+        from mandacaru.algorithms.proposal_model import _readiness
+        ready, kind, _ = _readiness(_point(0.55, 0.46, 0.38))
+        assert ready and kind == "graph"
+
+    def test_nothing_beats_the_gradient_by_the_margin(self):
+        from mandacaru.algorithms.proposal_model import _readiness
+        ready, kind, reason = _readiness(_point(0.40, 0.41, 0.38))
+        assert not ready and kind is None and "0.05" in reason
+
+    def test_most_groups_must_agree(self):
+        from mandacaru.algorithms.proposal_model import _readiness
+        folds = [(0.3, 0.6, 0.4), (0.3, 0.6, 0.4), (0.3, 0.3, 0.4),
+                 (0.3, 0.3, 0.4)]
+        ready, _, _ = _readiness(_point(0.3, 0.45, 0.38, folds))
+        assert not ready
+
+    def test_without_screened_states_nothing_is_judged(self):
+        from mandacaru.algorithms.proposal_model import _readiness
+        nan = float("nan")
+        ready, _, reason = _readiness(_point(nan, nan, nan))
+        assert not ready and "screen_insertions" in reason
+
+
+class TestTheOnlineRanker:
+    """``PairwiseRanker.update``: sequential Bayes in the Laplace
+    approximation."""
+
+    def test_no_pair_changes_nothing(self):
+        ranker = fit_pairwise_ranker(TestPairwiseRanker()._examples())
+        assert ranker.update([]) is ranker
+
+    def test_new_pairs_move_the_weights_and_sharpen_the_prior(self):
+        offline = fit_pairwise_ranker(TestPairwiseRanker()._examples(seed=0))
+        new = TestPairwiseRanker()._examples(states=6, seed=1)
+        online = offline.update(new)
+        assert online.pairs == offline.pairs + 6 * 3
+        assert not np.allclose(online.weights, offline.weights)
+        # The precision only grows: the new pairs add positive curvature.
+        assert np.all(np.linalg.eigvalsh(online.precision
+                                         - offline.precision) >= -1e-9)
+
+    def test_a_confident_prior_barely_moves(self):
+        offline = fit_pairwise_ranker(TestPairwiseRanker()._examples(seed=0))
+        confident = PairwiseRanker(weights=offline.weights, mean=offline.mean,
+                                   std=offline.std, pairs=offline.pairs,
+                                   precision=1e8 * np.eye(len(offline.weights)))
+        new = TestPairwiseRanker()._examples(states=6, seed=1)
+        np.testing.assert_allclose(confident.update(new).weights,
+                                   offline.weights, atol=1e-5)
+
+    def test_a_ranker_model_conditions_its_ranker(self):
+        model = TestARankerModel()._model()
+        new = TestPairwiseRanker()._examples(states=4, seed=2)
+        online = model.condition(new)
+        assert online.kind == "ranker" and online.version != model.version
+        assert online.ranker.pairs == model.ranker.pairs + 4 * 3
+        assert model.ranker.pairs < online.ranker.pairs      # copy, not edit
+
+
+class TestARankerModel:
+    def _model(self):
+        model = _synthetic_model()
+        model.kind = "ranker"
+        model.ranker = fit_pairwise_ranker(TestPairwiseRanker()._examples())
+        return model
+
+    def test_it_draws_from_the_ranker_scores(self):
+        model = self._model()
+        bound = model.bind(_problem())
+        graph = bound.graph
+        rows = candidate_rows(graph, [()] * 3, range(3),
+                              [[0.3, 0.1, 0.0]] * 3, [0.0] * 3)
+        expected = np.exp(model.ranker.scores(rows) / model.temperature)
+        np.testing.assert_allclose(bound.learned((), [0.3, 0.1, 0.0], 0.0),
+                                   expected / expected.sum())
+
+    def test_kind_and_ranker_survive_the_file(self, tmp_path):
+        model = self._model()
+        again = ProposalModel.load(model.save(tmp_path / "m.npz"))
+        assert again.kind == "ranker"
+        np.testing.assert_array_equal(again.ranker.weights,
+                                      model.ranker.weights)
+        assert again.ranker.pairs == model.ranker.pairs
 
 
 class TestCandidates:
@@ -407,7 +595,8 @@ class TestTraining:
         assert again.report["groups"] == 3
         assert again.ready == again.report["ready"]
         assert set(again.report["curve"][0]) >= {"graph", "descriptors",
-                                                 "gradient", "train"}
+                                                 "gradient", "train",
+                                                 "within_state"}
 
     def test_mixing_zero_is_refused(self, tmp_path):
         with pytest.raises(ValueError, match="reverse move"):
@@ -422,7 +611,7 @@ def _record_toy(directory, formulas):
     problem = _problem()
     for formula in formulas:
         recorder = EditRecorder(directory, problem, run={
-            "run": formula, "method": "VASQA", "formula": formula})
+            "run": formula, "method": "MCAS-VQE", "formula": formula})
         for step in range(8):
             g = rng.normal(size=3)
             mu = int(rng.integers(3))

@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-# file: algorithms/vasqa.py
+# file: algorithms/mcas_vqe.py
 
 # This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""VASQA: the Variational, Adaptive and Stochastic Quantum Algorithm.
+r"""MCAS-VQE: Markov Chain Ansatz Search with the Variational Quantum
+Eigensolver.
 
-:class:`VASQA` searches the *structure* of a product-of-exponentials ansatz
+:class:`MCASVQE` searches the *structure* of a product-of-exponentials ansatz
 with a Markov chain (Markov Chain Ansatz Search, :mod:`~mandacaru.algorithms.mcas`)
 and relaxes each proposed structure with VQE.  Where ADAPT-VQE only ever
 appends the largest-gradient operator, the chain can also delete, replace and
@@ -67,7 +68,7 @@ import numpy as np
 
 from ..circuits.profiling import CircuitMetrics
 from ..units import convert_energy, to_hartree
-from .mcas import (MOVES, REPLACE_STARTS, ProposalKernel,
+from .mcas import (MOVES, REPLACE_STARTS, Action, ProposalKernel,
                    TemperatureSchedule, edit_distance, gradient_softmax,
                    log_acceptance, metropolis_accept)
 from .orbital_tracking import (DEFAULT_TRANSFER_THRESHOLD, OrbitalSnapshot,
@@ -100,7 +101,7 @@ class MCASStep:
     """One step of the chain: the proposal, the decision and the state after.
 
     ``proposed`` and ``current`` are pool-index tuples; energies and costs are
-    in the result's :attr:`VASQAResult.energy_unit`.  A rejected step leaves
+    in the result's :attr:`MCASVQEResult.energy_unit`.  A rejected step leaves
     ``current`` equal to the previous step's, and is kept: the chain's
     occupation includes it.
     """
@@ -124,8 +125,8 @@ class MCASStep:
 
 
 @dataclass
-class VASQAResult:
-    """Result of a VASQA run.
+class MCASVQEResult:
+    """Result of a MCAS-VQE run.
 
     ``optimal_*`` and :attr:`operators` describe the lowest-**cost**
     architecture evaluated; with ``length_penalty=0`` that is also the
@@ -167,6 +168,10 @@ class VASQAResult:
     #: :func:`~mandacaru.algorithms.mcas.edit_distance` from the start to the
     #: reported architecture.
     edit_distance_from_start: int = 0
+    #: Insertions relaxed and recorded beside the chain (``screen_insertions``).
+    num_screened_insertions: int = 0
+    #: What a periodic rebuild (``rebuild_every``) kept; ``None`` without one.
+    rebuild: str | None = None
 
     @property
     def num_operators(self) -> int:
@@ -250,10 +255,10 @@ class _Evaluated:
 class MarkovChainSearch(PoolDriver):
     """Markov Chain Ansatz Search with VQE relaxation, on the state vector.
 
-    The chain VASQA and VALQA share; they differ only in the distribution
+    The chain MCAS-VQE and VALQA share; they differ only in the distribution
     ``insert`` and ``replace`` draw their new operator from
     (:meth:`_operator_distribution`).  **The internal layer**: reached only
-    through the calculator, ``Mandacaru(method="vasqa" | "valqa", ...)``,
+    through the calculator, ``Mandacaru(method="mcas-vqe" | "valqa", ...)``,
     which forwards every option here.  The problem setup -- ``hamiltonian`` or ``basis``, ``pool``, ``mapping``,
     ``sparse``, ``sector``, ``taper``, ``active_space`` and the rest -- is the
     one ADAPT-VQE takes (:class:`~mandacaru.algorithms.pool_driver.PoolDriver`).
@@ -315,6 +320,15 @@ class MarkovChainSearch(PoolDriver):
         matching, the ansatz is longer than ``max_length``, or the relaxed
         ansatz does not beat the reference.  Where the chain starts does not
         change what it samples, only how soon it gets there.
+    rebuild_every : int, optional
+        With ``transfer``, balance exploiting the carried ansatz against
+        exploring: at every ``rebuild_every``-th geometry of a trajectory,
+        after the transferred chain's ``transfer_steps``, a fresh chain from
+        the empty ansatz searches for the full ``max_steps``, and the
+        lowest-cost state of both is reported -- so a basin carried along a
+        trajectory is challenged at least that often (default ``None``:
+        never).  The result's ``rebuild`` and the run log's summary say
+        which one won.
     transfer_threshold : float
         Smallest overlap :math:`|\\langle\\phi_p(X_n)|\\phi_{\\pi(p)}(X_{n+1})
         \\rangle|` between a previous orbital and its match at which the
@@ -333,6 +347,19 @@ class MarkovChainSearch(PoolDriver):
         operator is ``exp(1/proposal_temperature)`` times as likely as one
         with zero gradient.  Small values approach ADAPT's greedy choice,
         large ones the uniform proposal.
+    screen_insertions : int
+        At every state the chain visits for the first time, also relax this
+        many insertions and record them, flagged ``screened`` (default
+        ``0``).  They are drawn without replacement from the state's own
+        operator distribution -- the choice the proposal faces there -- each
+        at a random slot, from a random stream of their own, so the chain's
+        moves and acceptances are unchanged.  They are not chain moves: no
+        acceptance test, no effect on the reported state.  What they buy is
+        several measured insertions per state, which is what judges a
+        proposal's choice *within* a state
+        (:func:`~mandacaru.algorithms.proposal_model.assess_data_volume`).
+        Their evaluations count in ``num_evaluations``.  Needs a ``record``
+        directory.
     record : str, path or bool, optional
         Directory to append every proposal to -- rejected ones included --
         with the problem it searched (:mod:`~mandacaru.algorithms.proposal_data`):
@@ -340,7 +367,7 @@ class MarkovChainSearch(PoolDriver):
         records into the shared store ``MANDACARU_PROPOSAL_DATA`` when that
         variable is set and records nothing otherwise; ``True`` requires the
         store; ``False`` records nothing.  Recording needs the
-        pool gradients at every new state, so a ``"uniform"`` VASQA run that
+        pool gradients at every new state, so a ``"uniform"`` MCAS-VQE run that
         records also screens the pool (counted in ``num_screenings``).
     seed : int, optional
         Seed of the chain's random stream (proposals and acceptance).
@@ -379,6 +406,8 @@ class MarkovChainSearch(PoolDriver):
                  transfer: bool = False,
                  transfer_steps: int | None = None,
                  transfer_threshold: float = DEFAULT_TRANSFER_THRESHOLD,
+                 rebuild_every: int | None = None,
+                 screen_insertions: int = 0,
                  proposal_temperature: float = DEFAULT_PROPOSAL_TEMPERATURE,
                  record=None,
                  seed: int | None = None,
@@ -431,6 +460,11 @@ class MarkovChainSearch(PoolDriver):
         if self.transfer_steps < 0:
             raise ValueError(f"transfer_steps must be >= 0, got "
                              f"{transfer_steps!r}")
+        self.rebuild_every = (None if rebuild_every is None
+                              else int(rebuild_every))
+        if self.rebuild_every is not None and self.rebuild_every < 1:
+            raise ValueError(f"rebuild_every must be >= 1 or None, got "
+                             f"{rebuild_every!r}")
         self.transfer_threshold = float(transfer_threshold)
         if not 0.0 <= self.transfer_threshold <= 1.0:
             raise ValueError(f"transfer_threshold must be in [0, 1], got "
@@ -451,6 +485,14 @@ class MarkovChainSearch(PoolDriver):
         self.proposal_temperature = float(proposal_temperature)
         gradient_softmax([1.0, 0.0], self.proposal_temperature)   # validates
         self.record = resolve_record(record)
+        self.screen_insertions = int(screen_insertions)
+        if self.screen_insertions < 0:
+            raise ValueError(f"screen_insertions must be >= 0, got "
+                             f"{screen_insertions!r}")
+        if self.screen_insertions and self.record is None:
+            raise ValueError(
+                "screen_insertions records what it measures: give a record "
+                "directory (record=DIR, or set MANDACARU_PROPOSAL_DATA)")
         self._recorder: EditRecorder | None = None
         self.seed = None if seed is None else int(seed)
         self._adopt_problem(hamiltonian, num_particles, n_spatial_orbitals)
@@ -467,7 +509,7 @@ class MarkovChainSearch(PoolDriver):
         """
         result = getattr(previous, "result", None)
         if type(previous) is not type(self) \
-                or not isinstance(result, VASQAResult):
+                or not isinstance(result, MCASVQEResult):
             return
         context = getattr(previous, "_gradient_context", None) or {}
         pool = getattr(previous, "pool", None)
@@ -616,7 +658,7 @@ class MarkovChainSearch(PoolDriver):
             self._cache[architecture] = evaluated
         return evaluated
 
-    # -- the proposal: what VASQA and VALQA define ------------------------- #
+    # -- the proposal: what MCAS-VQE and VALQA define ------------------------- #
 
     #: Whether the operator distribution needs the pool gradients.
     _draws_from_gradients = True
@@ -643,10 +685,10 @@ class MarkovChainSearch(PoolDriver):
         raise NotImplementedError
 
     def _result_extras(self) -> dict:
-        """Fields the result class adds to :class:`VASQAResult`."""
+        """Fields the result class adds to :class:`MCASVQEResult`."""
         return {}
 
-    _result_class = VASQAResult
+    _result_class = MCASVQEResult
 
     def _problem_record(self) -> ProblemRecord:
         """The Hamiltonian, reference and pool this run searches."""
@@ -679,6 +721,43 @@ class MarkovChainSearch(PoolDriver):
         """The version of the model drawing proposals, if any."""
         return None
 
+    def _keep_row(self, row: dict) -> None:
+        """Record an evaluated edit, and keep an insertion for the next
+        geometry when the method asks for it."""
+        if self._recorder is not None:
+            self._recorder.write(row)
+        if self._collects_insertions and row["move"] == "insert":
+            before = self._previous_problem()
+            self._insertions.append({
+                **row, "problem": self._problem.key,
+                "previous_problem": None if before is None else before.key})
+
+    def _screen(self, state: _Evaluated, step: int, beta: float,
+                rng: np.random.Generator) -> tuple[int, int, int]:
+        """Relax and record ``screen_insertions`` insertions at ``state``;
+        returns ``(insertions, function evaluations, optimizer steps)``."""
+        size = len(self._pool_ops)
+        p = (np.full(size, 1.0 / size)
+             if state.operator_probabilities is None
+             else np.asarray(state.operator_probabilities, dtype=float))
+        k = min(self.screen_insertions, int(np.count_nonzero(p > 0.0)))
+        nfev = nit = 0
+        for mu in rng.choice(size, size=k, replace=False, p=p / p.sum()):
+            action = Action("insert",
+                            int(rng.integers(len(state.architecture) + 1)),
+                            operator=int(mu))
+            x0 = (action.transfer(state.parameters, self.replace_start)
+                  if self.warm_start
+                  else np.zeros(len(state.architecture) + 1))
+            evaluated = self._evaluate(action.apply(state.architecture), x0)
+            nfev += evaluated.nfev
+            nit += evaluated.nit
+            row = self._edit_row(step, action, state, evaluated, None, None,
+                                 None, None, beta)
+            row.update(screened=True, accepted=None)
+            self._keep_row(row)
+        return k, nfev, nit
+
     #: Whether the chain keeps its evaluated insertions in memory for the
     #: next geometry (VALQA's update between geometries).
     _collects_insertions = False
@@ -709,11 +788,12 @@ class MarkovChainSearch(PoolDriver):
             "log_q_forward": log_forward, "log_q_reverse": log_reverse,
             "log_acceptance": log_alpha, "accepted": bool(accepted),
             "temperature": 0.0 if math.isinf(beta) else 1.0 / beta,
-            "nfev": proposed.nfev, "optimizer_success": proposed.success}
+            "nfev": proposed.nfev, "optimizer_success": proposed.success,
+            "screened": False}
 
     # -- the chain -------------------------------------------------------- #
 
-    def run(self, geometry=None, cell=None) -> VASQAResult:
+    def run(self, geometry=None, cell=None) -> MCASVQEResult:
         """Run the chain for ``max_steps`` proposals and report the best state.
 
         ``geometry`` (an ASE ``Atoms`` or a ``(symbols, positions)`` pair) and
@@ -724,7 +804,7 @@ class MarkovChainSearch(PoolDriver):
             return self._dry_run_estimate()
         if not self._configured:
             raise RuntimeError(
-                "VASQA has no Hamiltonian; construct it with one, or use it "
+                "MCAS-VQE has no Hamiltonian; construct it with one, or use it "
                 "as an ASE calculator with a `hamiltonian_builder`")
         self._check_kpts()
         timings, run_t0 = self._make_timings()
@@ -766,6 +846,7 @@ class MarkovChainSearch(PoolDriver):
             with timings.time("parameter optimization"):
                 current = self._evaluate((), np.zeros(0))
             reference_energy = current.energy
+            reference = current
             start_architecture, x0, start = self._transferred_start(labels)
             seen = {current.architecture}
             total_evals = total_steps = 0
@@ -787,6 +868,20 @@ class MarkovChainSearch(PoolDriver):
                              f"geometry's ansatz relaxed to a cost "
                              f"{transferred.cost - current.cost:+.3e} Ha "
                              f"above the reference's)")
+            # Every rebuild_every-th geometry of a trajectory, a fresh full
+            # search challenges the transferred ansatz, which stays a
+            # candidate for the reported state.
+            # Every rebuild_every-th geometry of a trajectory, a fresh full
+            # search from the empty ansatz follows the transferred chain, and
+            # the better state of the two is reported: the carried basin is
+            # challenged at least that often.
+            rebuild = bool(self.rebuild_every and self._linked
+                           and self._step % self.rebuild_every == 0
+                           and current.architecture)
+            if rebuild:
+                start += (f"; periodic rebuild (every {self.rebuild_every} "
+                          f"geometries): a fresh search from the empty "
+                          f"ansatz follows")
             self._start_description = start
             if current.architecture:          # a transferred start
                 n_steps = self.transfer_steps
@@ -800,87 +895,116 @@ class MarkovChainSearch(PoolDriver):
             tried = {move: 0 for move in MOVES}
             taken = {move: 0 for move in MOVES}
 
-            for step in range(1, n_steps + 1):
-                beta = schedule.beta(step - 1)
-                action = kernel.sample(current.architecture, rng,
-                                       current.operator_probabilities)
-                if action is None:
-                    # Unreachable while insert has weight and max_length > 0,
-                    # which the kernel enforces; a silent self-loop would
-                    # hide it.
-                    raise RuntimeError(
-                        f"no architecture move is valid at "
-                        f"{current.architecture!r}")
-                proposed_arch = action.apply(current.architecture)
-                x0 = (action.transfer(current.parameters, self.replace_start)
-                      if self.warm_start
-                      else np.zeros(len(proposed_arch)))
-                with timings.time("parameter optimization"):
-                    proposed = self._evaluate(proposed_arch, x0)
-                total_evals += proposed.nfev
-                total_steps += proposed.nit
-                if not proposed.success:
-                    failures.append((step, proposed.message))
-                seen.add(proposed.architecture)
+            screened_states: set = set()
+            screened = 0
+            # Its own stream: screening must not move the chain's draws.
+            screen_rng = np.random.default_rng(
+                None if self.seed is None else [self.seed, 1])
 
-                log_forward = kernel.log_q(proposed_arch, current.architecture,
+            def segment(current, length, schedule, offset):
+                """Run ``length`` proposals from ``current``; steps are
+                numbered after ``offset``.  Returns where the chain ends."""
+                nonlocal total_evals, total_steps, screened, best_cost, \
+                    best_energy
+                for i in range(1, length + 1):
+                    step = offset + i
+                    beta = schedule.beta(i - 1)
+                    if (self.screen_insertions and self._recorder is not None
+                            and current.architecture not in screened_states
+                            and len(current.architecture) < self.max_length):
+                        screened_states.add(current.architecture)
+                        with timings.time("parameter optimization"):
+                            k, nfev, nit = self._screen(current, step, beta,
+                                                        screen_rng)
+                        screened += k
+                        total_evals += nfev
+                        total_steps += nit
+                    action = kernel.sample(current.architecture, rng,
                                            current.operator_probabilities)
-                log_reverse = kernel.log_q(current.architecture, proposed_arch,
-                                           proposed.operator_probabilities)
-                log_alpha = log_acceptance(beta, current.cost, proposed.cost,
-                                           log_forward, log_reverse)
-                accepted = metropolis_accept(log_alpha, rng)
-                if self._recorder is not None or self._collects_insertions:
-                    row = self._edit_row(
-                        step, action, current, proposed, log_forward,
-                        log_reverse, log_alpha, accepted, beta)
-                    if self._recorder is not None:
-                        self._recorder.write(row)
-                    if self._collects_insertions and action.move == "insert":
-                        before = self._previous_problem()
-                        self._insertions.append({
-                            **row, "problem": self._problem.key,
-                            "previous_problem": (None if before is None
-                                                 else before.key)})
-                previous = current
-                tried[action.move] += 1
-                if accepted:
-                    taken[action.move] += 1
-                    current = proposed
-                if proposed.cost < best_cost.cost:
-                    best_cost = proposed
-                if proposed.energy < best_energy.energy:
-                    best_energy = proposed
+                    if action is None:
+                        # Unreachable while insert has weight and
+                        # max_length > 0, which the kernel enforces; a silent
+                        # self-loop would hide it.
+                        raise RuntimeError(
+                            f"no architecture move is valid at "
+                            f"{current.architecture!r}")
+                    proposed_arch = action.apply(current.architecture)
+                    x0 = (action.transfer(current.parameters,
+                                          self.replace_start)
+                          if self.warm_start
+                          else np.zeros(len(proposed_arch)))
+                    with timings.time("parameter optimization"):
+                        proposed = self._evaluate(proposed_arch, x0)
+                    total_evals += proposed.nfev
+                    total_steps += proposed.nit
+                    if not proposed.success:
+                        failures.append((step, proposed.message))
+                    seen.add(proposed.architecture)
 
-                temperature = float(self._to_energy_units(
-                    schedule.temperature(step - 1)))
-                steps.append(MCASStep(
-                    step=step, move=action.move,
-                    action=action.describe(labels),
-                    temperature=temperature,
-                    proposed=proposed.architecture,
-                    proposed_energy=self._to_energy_units(proposed.energy),
-                    proposed_cost=self._to_energy_units(proposed.cost),
-                    log_q_forward=log_forward, log_q_reverse=log_reverse,
-                    log_acceptance=log_alpha, accepted=accepted,
-                    current=current.architecture,
-                    current_energy=self._to_energy_units(current.energy),
-                    current_cost=self._to_energy_units(current.cost),
-                    num_evaluations=proposed.nfev,
-                    optimizer_success=proposed.success))
-                if logger is not None:
-                    logger.write_chain_step(
+                    log_forward = kernel.log_q(
+                        proposed_arch, current.architecture,
+                        current.operator_probabilities)
+                    log_reverse = kernel.log_q(
+                        current.architecture, proposed_arch,
+                        proposed.operator_probabilities)
+                    log_alpha = log_acceptance(
+                        beta, current.cost, proposed.cost, log_forward,
+                        log_reverse)
+                    accepted = metropolis_accept(log_alpha, rng)
+                    if self._recorder is not None or self._collects_insertions:
+                        self._keep_row(self._edit_row(
+                            step, action, current, proposed, log_forward,
+                            log_reverse, log_alpha, accepted, beta))
+                    previous = current
+                    tried[action.move] += 1
+                    if accepted:
+                        taken[action.move] += 1
+                        current = proposed
+                    if proposed.cost < best_cost.cost:
+                        best_cost = proposed
+                    if proposed.energy < best_energy.energy:
+                        best_energy = proposed
+
+                    temperature = float(self._to_energy_units(
+                        schedule.temperature(i - 1)))
+                    steps.append(MCASStep(
                         step=step, move=action.move,
-                        length=len(proposed.architecture),
-                        energy=self._to_energy_units(proposed.energy),
-                        delta_energy=self._to_energy_units(
-                            proposed.energy - previous.energy),
+                        action=action.describe(labels),
+                        temperature=temperature,
+                        proposed=proposed.architecture,
+                        proposed_energy=self._to_energy_units(proposed.energy),
+                        proposed_cost=self._to_energy_units(proposed.cost),
+                        log_q_forward=log_forward, log_q_reverse=log_reverse,
+                        log_acceptance=log_alpha, accepted=accepted,
+                        current=current.architecture,
                         current_energy=self._to_energy_units(current.energy),
-                        temperature=temperature, log_acceptance=log_alpha,
-                        accepted=accepted, energy_unit=unit,
-                        optimizer_steps=(proposed.nit if proposed.nfev
-                                         else None),
-                        action=action.describe(short))
+                        current_cost=self._to_energy_units(current.cost),
+                        num_evaluations=proposed.nfev,
+                        optimizer_success=proposed.success))
+                    if logger is not None:
+                        logger.write_chain_step(
+                            step=step, move=action.move,
+                            length=len(proposed.architecture),
+                            energy=self._to_energy_units(proposed.energy),
+                            delta_energy=self._to_energy_units(
+                                proposed.energy - previous.energy),
+                            current_energy=self._to_energy_units(
+                                current.energy),
+                            temperature=temperature, log_acceptance=log_alpha,
+                            accepted=accepted, energy_unit=unit,
+                            optimizer_steps=(proposed.nit if proposed.nfev
+                                             else None),
+                            action=action.describe(short))
+                return current
+
+            current = segment(current, n_steps, schedule, 0)
+            challenger = None
+            if rebuild:
+                challenger = best_cost
+                current = segment(reference, self.max_steps,
+                                  TemperatureSchedule(temperature_ha,
+                                                      max(self.max_steps, 1)),
+                                  n_steps)
 
             # The reported state is what the calculator's forces, densities
             # and measured energies are taken from: the ansatz and the
@@ -910,6 +1034,7 @@ class MarkovChainSearch(PoolDriver):
                                     for move in MOVES},
                 num_architectures=len(seen),
                 num_screenings=self._screenings,
+                num_screened_insertions=screened,
                 num_evaluations=total_evals,
                 optimizer_steps=total_steps,
                 optimizer_failures=failures,
@@ -918,6 +1043,7 @@ class MarkovChainSearch(PoolDriver):
                 integration_profile=self._integration_profile,
                 energy_unit=unit,
                 start_operators=names(start_state), start=start,
+                rebuild=_rebuild_outcome(challenger, best_cost),
                 edit_distance_from_start=edit_distance(
                     start_state.architecture, best_cost.architecture),
                 **self._result_extras())
@@ -978,6 +1104,7 @@ class MarkovChainSearch(PoolDriver):
                 **self._proposal_setup(),
                 "recorded_edits": (str(self.record) if self.record is not None
                                    else "none"),
+                "screened_insertions_per_state": self.screen_insertions,
                 "max_steps": (f"{self.max_steps} ({self.transfer_steps} from "
                               f"a transferred ansatz)" if self.transfer
                               else self.max_steps),
@@ -1004,7 +1131,7 @@ class MarkovChainSearch(PoolDriver):
                     "False (no gate counts: pass profile=True)")})
         return logger
 
-    def _write_summary(self, logger, result: VASQAResult) -> None:
+    def _write_summary(self, logger, result: MCASVQEResult) -> None:
         """The ``[VARIATIONAL QUANTUM SUMMARY]`` of the lowest-cost ansatz."""
         unit = result.energy_unit
         extra = {
@@ -1015,6 +1142,8 @@ class MarkovChainSearch(PoolDriver):
             "chain_steps": len(result.steps),
             "acceptance_rate": f"{result.acceptance_rate:.4f}",
             "edit_distance_from_start": result.edit_distance_from_start,
+            **({"periodic_rebuild": result.rebuild} if result.rebuild
+               else {}),
             **{f"accepted_{move}": f"{taken} of {tried}" for move, (taken, tried)
                in result.acceptance_by_move.items()},
             "architectures_evaluated": result.num_architectures,
@@ -1033,6 +1162,16 @@ class MarkovChainSearch(PoolDriver):
             num_evaluations=result.num_evaluations,
             optimizer_steps=result.optimizer_steps, metrics=result.metrics,
             extra=extra)
+
+
+def _rebuild_outcome(challenger, best) -> str | None:
+    """Which ansatz a periodic rebuild reported, or ``None`` without one."""
+    if challenger is None:
+        return None
+    if best is challenger:
+        return "the transferred chain's ansatz was kept"
+    return (f"the rebuilt ansatz won, by "
+            f"{1000 * (challenger.cost - best.cost):.3f} mHa in cost")
 
 
 def _temperature_in_hartree(temperature, unit: str):
@@ -1056,8 +1195,8 @@ def _formula(geometry) -> str | None:
         return None
 
 
-class VASQA(MarkovChainSearch):
-    """VASQA: the chain with a gradient-softmax or uniform proposal.
+class MCASVQE(MarkovChainSearch):
+    """MCAS-VQE: the chain with a gradient-softmax or uniform proposal.
 
     Takes every option of :class:`MarkovChainSearch` and
 
@@ -1077,9 +1216,9 @@ class VASQA(MarkovChainSearch):
         proposal.  ``"uniform"`` draws every operator with ``1/M``.
     """
 
-    citation_method = "vasqa"
+    citation_method = "mcas-vqe"
     #: The name in the ``[SYSTEM]`` block's title.
-    log_title = "VASQA"
+    log_title = "MCAS-VQE"
     _needs_problem = False
 
     def __init__(self, hamiltonian=None, proposal: str = "gradient",

@@ -16,7 +16,7 @@ quantum state -- the four architecture moves, their *summed* proposal
 probabilities, the Metropolis-Hastings test and the temperature schedule -- so
 it can be verified exhaustively against a synthetic cost (the transition matrix
 of a small architecture space satisfies detailed balance to round-off) before
-any energy enters.  :class:`~mandacaru.algorithms.vasqa.VASQA` drives it with
+any energy enters.  :class:`~mandacaru.algorithms.mcas_vqe.MCASVQE` drives it with
 VQE energies.
 
 Proposal convention

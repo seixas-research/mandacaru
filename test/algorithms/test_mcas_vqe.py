@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-# file: test_vasqa.py
+# file: test_mcas_vqe.py
 
-"""VASQA end to end: the MCAS chain driving VQE on H2 in a minimal basis.
+"""MCAS-VQE end to end: the MCAS chain driving VQE on H2 in a minimal basis.
 
 The chain itself is verified without a Hamiltonian in ``test_mcas.py``; this
 file checks what the energies add -- that the reported state is the one the
 calculator will differentiate, that a zero-angle insertion leaves the state
 alone, that the sector ground state is reached and never undershot, and that
 the options behave as documented.  Reached only through
-``Mandacaru(method="vasqa")``.
+``Mandacaru(method="mcas-vqe")``.
 """
 
 import math
@@ -18,7 +18,7 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms import VASQAResult
+from mandacaru.algorithms import MCASVQEResult
 from mandacaru.core import MolecularIntegrals, minimal_hao_basis
 from mandacaru.integrals import Grid
 from mandacaru.units import HARTREE_TO_EV
@@ -45,10 +45,10 @@ def sector_ground_ev(h2_hamiltonian):
     return float(np.linalg.eigvalsh(m[np.ix_(two, two)])[0]) * HARTREE_TO_EV
 
 
-def _vasqa(h2_hamiltonian, **options):
+def _mcas_vqe(h2_hamiltonian, **options):
     options = {"pool": "fermionic", "max_steps": 30, "max_length": 5,
                "seed": 7, "profile": False, "trace": False, **options}
-    return Mandacaru(method="vasqa", hamiltonian=h2_hamiltonian,
+    return Mandacaru(method="mcas-vqe", hamiltonian=h2_hamiltonian,
                      num_particles=(1, 1), n_spatial_orbitals=2, **options)
 
 
@@ -56,21 +56,21 @@ class TestTheSearch:
     @pytest.mark.parametrize("pool", POOLS)
     def test_every_pool_reaches_the_sector_ground_state(
             self, h2_hamiltonian, sector_ground_ev, pool):
-        calc = _vasqa(h2_hamiltonian, pool=pool)
+        calc = _mcas_vqe(h2_hamiltonian, pool=pool)
         result = calc.run()
-        assert isinstance(result, VASQAResult)
+        assert isinstance(result, MCASVQEResult)
         assert result.optimal_energy == pytest.approx(sector_ground_ev,
                                                       abs=1e-6)
 
     def test_no_energy_undershoots_the_sector_ground_state(
             self, h2_hamiltonian, sector_ground_ev):
-        result = _vasqa(h2_hamiltonian, pool="qubit").run()
+        result = _mcas_vqe(h2_hamiltonian, pool="qubit").run()
         energies = [s.proposed_energy for s in result.steps]
         assert min(energies) >= sector_ground_ev - 1e-9
 
     def test_the_reported_state_is_the_solvers_ansatz(self, h2_hamiltonian):
         """Forces and densities read ``solver.ansatz`` at these parameters."""
-        calc = _vasqa(h2_hamiltonian, pool="qubit")
+        calc = _mcas_vqe(h2_hamiltonian, pool="qubit")
         result = calc.run()
         solver = calc.solver
         assert len(result.operators) == len(result.optimal_parameters)
@@ -82,7 +82,7 @@ class TestTheSearch:
                                                        abs=1e-10)
 
     def test_the_trajectory_is_complete(self, h2_hamiltonian):
-        result = _vasqa(h2_hamiltonian, max_steps=12).run()
+        result = _mcas_vqe(h2_hamiltonian, max_steps=12).run()
         assert [s.step for s in result.steps] == list(range(1, 13))
         taken = sum(a for a, _ in result.acceptance_by_move.values())
         tried = sum(t for _, t in result.acceptance_by_move.values())
@@ -98,13 +98,13 @@ class TestTheSearch:
                 assert s.current == s.proposed
 
     def test_the_first_move_can_only_insert(self, h2_hamiltonian):
-        result = _vasqa(h2_hamiltonian, max_steps=1).run()
+        result = _mcas_vqe(h2_hamiltonian, max_steps=1).run()
         assert result.steps[0].move == "insert"
 
 
 class TestTheEvaluator:
     def test_a_zero_angle_insertion_preserves_the_state(self, h2_hamiltonian):
-        solver = _vasqa(h2_hamiltonian, pool="qubit").solver
+        solver = _mcas_vqe(h2_hamiltonian, pool="qubit").solver
         architecture = (0, 3, 5)
         theta = np.array([0.3, -0.2, 0.1])
         psi = solver._ansatz_for(architecture).state(theta)
@@ -116,7 +116,7 @@ class TestTheEvaluator:
                                        psi, atol=1e-12)
 
     def test_the_empty_architecture_is_the_reference(self, h2_hamiltonian):
-        calc = _vasqa(h2_hamiltonian, max_steps=0)
+        calc = _mcas_vqe(h2_hamiltonian, max_steps=0)
         result = calc.run()
         assert result.operators == []
         assert result.optimal_energy == result.reference_energy
@@ -126,7 +126,7 @@ class TestTheEvaluator:
         """One electron in one orbital: nothing to correlate, as in ADAPT."""
         from mandacaru.core.mapping import Fermion
         h = Fermion.from_integrals(np.diag([-0.5, -0.5]))
-        calc = Mandacaru(method="vasqa", hamiltonian=h, num_particles=(1, 0),
+        calc = Mandacaru(method="mcas-vqe", hamiltonian=h, num_particles=(1, 0),
                          n_spatial_orbitals=1, profile=False, trace=False)
         result = calc.run()
         assert result.steps == [] and result.operators == []
@@ -134,7 +134,7 @@ class TestTheEvaluator:
 
     def test_without_warm_start_the_cost_is_a_function_of_the_architecture(
             self, h2_hamiltonian):
-        result = _vasqa(h2_hamiltonian, pool="qubit", warm_start=False,
+        result = _mcas_vqe(h2_hamiltonian, pool="qubit", warm_start=False,
                         max_steps=40).run()
         seen: dict = {}
         for s in result.steps:
@@ -142,26 +142,26 @@ class TestTheEvaluator:
             assert s.proposed_energy == seen[s.proposed]
 
     def test_a_large_length_penalty_keeps_the_reference(self, h2_hamiltonian):
-        result = _vasqa(h2_hamiltonian, length_penalty=10.0).run()
+        result = _mcas_vqe(h2_hamiltonian, length_penalty=10.0).run()
         assert result.operators == []
         assert result.optimal_cost == result.reference_energy
         assert result.best_energy < result.reference_energy
 
     def test_the_penalty_is_part_of_the_cost(self, h2_hamiltonian):
-        result = _vasqa(h2_hamiltonian, length_penalty=0.01).run()
+        result = _mcas_vqe(h2_hamiltonian, length_penalty=0.01).run()
         for s in result.steps:
             assert s.proposed_cost == pytest.approx(
                 s.proposed_energy + 0.01 * len(s.proposed))
 
     def test_at_zero_temperature_the_cost_never_rises(self, h2_hamiltonian):
-        result = _vasqa(h2_hamiltonian, pool="qubit", temperature=0.0,
+        result = _mcas_vqe(h2_hamiltonian, pool="qubit", temperature=0.0,
                         length_penalty=0.001, max_steps=30).run()
         costs = [s.current_cost for s in result.steps]
         assert all(b <= a + 1e-12 for a, b in zip(costs, costs[1:]))
 
     def test_atomic_units_report_hartree(self, h2_hamiltonian,
                                          sector_ground_ev):
-        result = _vasqa(h2_hamiltonian, atomic_units=True,
+        result = _mcas_vqe(h2_hamiltonian, atomic_units=True,
                         temperature={"initial": 0.004, "final": 4e-5}).run()
         assert result.energy_unit == "Ha"
         assert result.in_units("eV") == pytest.approx(sector_ground_ev,
@@ -169,8 +169,8 @@ class TestTheEvaluator:
 
     def test_the_default_temperature_is_in_ev_in_either_unit(
             self, h2_hamiltonian):
-        ev = _vasqa(h2_hamiltonian, max_steps=3).run()
-        ha = _vasqa(h2_hamiltonian, max_steps=3, atomic_units=True).run()
+        ev = _mcas_vqe(h2_hamiltonian, max_steps=3).run()
+        ha = _mcas_vqe(h2_hamiltonian, max_steps=3, atomic_units=True).run()
         assert ev.steps[0].temperature == pytest.approx(0.1)
         assert ha.steps[0].temperature * HARTREE_TO_EV == pytest.approx(0.1)
         assert ha.steps[-1].temperature * HARTREE_TO_EV == pytest.approx(1e-3)
@@ -182,35 +182,35 @@ class TestTheGradientProposal:
         """At the RHF reference both singles have zero gradient (Brillouin)
         and the double does not: tau = 0.2 proposes it with probability
         e^5 / (e^5 + 2) ~ 0.987."""
-        firsts = [_vasqa(h2_hamiltonian, max_steps=1, seed=seed).run()
+        firsts = [_mcas_vqe(h2_hamiltonian, max_steps=1, seed=seed).run()
                   .steps[0].action for seed in range(10)]
         doubles = sum(action.startswith("insert(D(") for action in firsts)
         assert doubles >= 8, firsts
 
     def test_the_uniform_proposal_draws_the_singles_as_often(
             self, h2_hamiltonian):
-        firsts = [_vasqa(h2_hamiltonian, max_steps=1, seed=seed,
+        firsts = [_mcas_vqe(h2_hamiltonian, max_steps=1, seed=seed,
                          proposal="uniform").run().steps[0].action
                   for seed in range(30)]
         singles = sum(action.startswith("insert(S(") for action in firsts)
         assert 10 <= singles <= 30        # 2/3 expected, ~20
 
     def test_one_screening_per_new_state(self, h2_hamiltonian):
-        gradient = _vasqa(h2_hamiltonian, max_steps=12).run()
+        gradient = _mcas_vqe(h2_hamiltonian, max_steps=12).run()
         assert gradient.num_screenings == 13      # the reference + 12
-        uniform = _vasqa(h2_hamiltonian, max_steps=12,
+        uniform = _mcas_vqe(h2_hamiltonian, max_steps=12,
                          proposal="uniform").run()
         assert uniform.num_screenings == 0
 
     def test_memoized_states_are_screened_once(self, h2_hamiltonian):
-        result = _vasqa(h2_hamiltonian, max_steps=40, warm_start=False).run()
+        result = _mcas_vqe(h2_hamiltonian, max_steps=40, warm_start=False).run()
         assert result.num_screenings == result.num_architectures
 
     def test_the_setup_block_names_it(self, h2_hamiltonian, tmp_path):
         from mandacaru.utils.logging import parse_output, reset_log
         path = tmp_path / "output.txt"
         reset_log(str(path))
-        _vasqa(h2_hamiltonian, max_steps=3, txt=str(path),
+        _mcas_vqe(h2_hamiltonian, max_steps=3, txt=str(path),
                proposal_temperature=0.5).run()
         log = parse_output(str(path))
         assert log["setup"]["proposal"].startswith(
@@ -220,15 +220,15 @@ class TestTheGradientProposal:
 
 class TestReproducibility:
     def test_the_same_seed_gives_the_same_chain(self, h2_hamiltonian):
-        a = _vasqa(h2_hamiltonian, pool="qubit", max_steps=15).run()
-        b = _vasqa(h2_hamiltonian, pool="qubit", max_steps=15).run()
+        a = _mcas_vqe(h2_hamiltonian, pool="qubit", max_steps=15).run()
+        b = _mcas_vqe(h2_hamiltonian, pool="qubit", max_steps=15).run()
         assert [(s.action, s.accepted) for s in a.steps] == \
             [(s.action, s.accepted) for s in b.steps]
         assert a.optimal_energy == b.optimal_energy
 
     def test_another_seed_gives_another_chain(self, h2_hamiltonian):
-        a = _vasqa(h2_hamiltonian, pool="qubit", max_steps=15, seed=1).run()
-        b = _vasqa(h2_hamiltonian, pool="qubit", max_steps=15, seed=2).run()
+        a = _mcas_vqe(h2_hamiltonian, pool="qubit", max_steps=15, seed=1).run()
+        b = _mcas_vqe(h2_hamiltonian, pool="qubit", max_steps=15, seed=2).run()
         assert [s.action for s in a.steps] != [s.action for s in b.steps]
 
 
@@ -246,19 +246,19 @@ class TestOptions:
     ])
     def test_bad_options_are_refused_by_the_constructor(self, options, error):
         with pytest.raises(ValueError, match=error):
-            Mandacaru(method="vasqa", **options)
+            Mandacaru(method="mcas-vqe", **options)
 
     @pytest.mark.parametrize("option", ["checkpoint", "resume"])
     def test_checkpoints_are_refused(self, option, tmp_path):
         with pytest.raises(NotImplementedError):
-            Mandacaru(method="vasqa", **{option: str(tmp_path / "x")})
+            Mandacaru(method="mcas-vqe", **{option: str(tmp_path / "x")})
 
     @pytest.mark.parametrize("option", [{"tetris": True},
                                         {"gradient": "analytic"},
                                         {"max_iterations": 5}])
     def test_adapt_growth_options_are_not_accepted(self, option):
         with pytest.raises(TypeError, match="does not take"):
-            Mandacaru(method="vasqa", **option)
+            Mandacaru(method="mcas-vqe", **option)
 
 
 class TestRunLog:
@@ -269,7 +269,7 @@ class TestRunLog:
         from mandacaru.utils.logging import parse_output, reset_log
         path = tmp_path / "output.txt"
         reset_log(str(path))
-        result = _vasqa(h2_hamiltonian, pool="qubit", max_steps=15,
+        result = _mcas_vqe(h2_hamiltonian, pool="qubit", max_steps=15,
                         txt=str(path), **options).run()
         return result, parse_output(str(path)), path.read_text()
 
@@ -277,7 +277,7 @@ class TestRunLog:
                                                   tmp_path):
         result, log, text = self._log(h2_hamiltonian, tmp_path)
         assert "[MARKOV CHAIN]" in text and "[ITERATIONS]" not in text
-        assert "VASQA (QubitPool)" in text
+        assert "MCAS-VQE (QubitPool)" in text
         rows = log["markov_chain"]
         assert [r["step"] for r in rows] == list(range(1, 16))
         for row, step in zip(rows, result.steps):
@@ -321,7 +321,7 @@ class TestRunLog:
         assert int(summary["chain_steps"]) == 15
 
     def test_a_trace_prints_the_same_blocks(self, h2_hamiltonian, capsys):
-        _vasqa(h2_hamiltonian, max_steps=3, trace=True).run()
+        _mcas_vqe(h2_hamiltonian, max_steps=3, trace=True).run()
         out = capsys.readouterr().out
         assert "[OPTIMIZATION SETUP]" in out and "[MARKOV CHAIN]" in out
 
@@ -330,12 +330,12 @@ class TestCalculatorMode:
     def test_energy_and_forces_from_a_geometry(self):
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
         atoms.center(vacuum=2.5)
-        atoms.calc = Mandacaru(method="vasqa", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="mcas-vqe", basis="HAO", h=0.4,
                                max_steps=10, seed=3, profile=False,
                                trace=False)
         energy = atoms.get_potential_energy()
         assert math.isfinite(energy)
-        assert isinstance(atoms.calc.result, VASQAResult)
+        assert isinstance(atoms.calc.result, MCASVQEResult)
         assert energy == pytest.approx(atoms.calc.result.optimal_energy)
         forces = atoms.get_forces()
         assert forces.shape == (2, 3) and np.all(np.isfinite(forces))
@@ -357,7 +357,7 @@ class TestTransferBetweenGeometries:
         options = {"basis": "HAO", "h": 0.4, "pool": "qeb", "max_steps": 15,
                    "max_length": 4, "seed": 3, "profile": False,
                    "trace": False, "record": False, **options}
-        return Mandacaru(method="vasqa", **options)
+        return Mandacaru(method="mcas-vqe", **options)
 
     def _energies(self, calc, distances):
         results = []
@@ -399,12 +399,47 @@ class TestTransferBetweenGeometries:
     def test_only_a_chain_of_the_same_method_passes_its_ansatz_on(self):
         valqa = Mandacaru(method="valqa", basis="HAO", h=0.4, transfer=True,
                           proposal_model=False, record=False, trace=False)
-        vasqa = self._calc(transfer=True)
+        mcas_vqe = self._calc(transfer=True)
         atoms = _h2_at(0.74)
-        atoms.calc = vasqa
+        atoms.calc = mcas_vqe
         atoms.get_potential_energy()
-        valqa.solver.inherit_ansatz(vasqa.solver)
+        valqa.solver.inherit_ansatz(mcas_vqe.solver)
         assert valqa.solver._inherited is None
+
+
+class TestPeriodicRebuild:
+    """``rebuild_every``: a fresh search challenges the carried ansatz."""
+
+    def _results(self, **options):
+        calc = TestTransferBetweenGeometries()._calc(
+            transfer=True, transfer_steps=2, **options)
+        return TestTransferBetweenGeometries()._energies(
+            calc, (0.74, 0.76, 0.78, 0.80))
+
+    def test_every_second_geometry_starts_afresh(self):
+        results = self._results(rebuild_every=2)
+        rebuilt = [r.rebuild is not None for r in results]
+        assert rebuilt == [False, False, True, False]
+        assert "periodic rebuild (every 2 geometries)" in results[2].start
+        # The transferred chain's 2 steps, then a fresh chain's 15.
+        assert len(results[2].steps) == 2 + 15
+        assert results[2].start_operators == results[1].operators
+        assert results[3].start.startswith("previous geometry's ansatz")
+        assert len(results[3].steps) == 2
+
+    def test_the_better_of_the_two_is_reported(self):
+        results = self._results(rebuild_every=2)
+        outcome = results[2].rebuild
+        assert outcome.startswith(("the transferred chain's ansatz was kept",
+                                   "the rebuilt ansatz won"))
+        # The fresh chain only adds candidates: the reported cost is at most
+        # the transferred chain's on its own.
+        plain = self._results()
+        assert results[2].optimal_cost <= plain[2].optimal_cost + 1e-9
+
+    def test_rebuild_every_is_validated(self):
+        with pytest.raises(ValueError, match="rebuild_every"):
+            Mandacaru(method="mcas-vqe", rebuild_every=0)
 
 
 class TestTransferRefusals:
@@ -413,8 +448,8 @@ class TestTransferRefusals:
 
     def _run(self, h2_hamiltonian, operators, angles, pool_labels=None,
              **options):
-        from mandacaru.algorithms.vasqa import _Inherited
-        calc = _vasqa(h2_hamiltonian, transfer=True, max_steps=2, **options)
+        from mandacaru.algorithms.mcas_vqe import _Inherited
+        calc = _mcas_vqe(h2_hamiltonian, transfer=True, max_steps=2, **options)
         labels = [op.label for op in calc.solver._pool_ops]
         calc.solver._inherited = _Inherited(
             operators=list(operators), angles=np.asarray(angles),
@@ -430,7 +465,7 @@ class TestTransferRefusals:
         assert result.start_operators == []
 
     def test_an_ansatz_longer_than_max_length(self, h2_hamiltonian):
-        calc = _vasqa(h2_hamiltonian)
+        calc = _mcas_vqe(h2_hamiltonian)
         labels = [op.label for op in calc.solver._pool_ops]
         result = self._run(h2_hamiltonian, labels[:2], np.zeros(2),
                            max_length=1)
@@ -438,7 +473,7 @@ class TestTransferRefusals:
 
     def test_a_usable_ansatz_is_relaxed_and_kept(self, h2_hamiltonian,
                                                  sector_ground_ev):
-        best = _vasqa(h2_hamiltonian, max_steps=40).run()
+        best = _mcas_vqe(h2_hamiltonian, max_steps=40).run()
         result = self._run(h2_hamiltonian, best.operators,
                            best.optimal_parameters)
         assert result.start_operators == best.operators
@@ -455,4 +490,53 @@ class TestTransferOptions:
         ({"replace_start": "random"}, "replace_start")])
     def test_bad_values_are_refused_at_construction(self, options, match):
         with pytest.raises(ValueError, match=match):
-            Mandacaru(method="vasqa", **options)
+            Mandacaru(method="mcas-vqe", **options)
+
+
+class TestScreenedInsertions:
+    """``screen_insertions``: several measured insertions per state, beside
+    the chain and without moving it."""
+
+    def _rows(self, path):
+        import json
+        return [json.loads(line) for line in
+                (path / "edits.jsonl").read_text().splitlines()]
+
+    def test_the_chain_is_the_same_with_and_without_screening(
+            self, h2_hamiltonian, tmp_path):
+        plain = _mcas_vqe(h2_hamiltonian, pool="qeb", record=tmp_path / "a",
+                       warm_start=False).run()
+        screened = _mcas_vqe(h2_hamiltonian, pool="qeb", record=tmp_path / "b",
+                          warm_start=False, screen_insertions=2).run()
+        assert [(s.action, s.accepted) for s in plain.steps] == \
+            [(s.action, s.accepted) for s in screened.steps]
+        assert plain.optimal_energy == screened.optimal_energy
+        assert screened.num_screened_insertions > 0
+        assert plain.num_screened_insertions == 0
+
+    def test_screened_rows_are_flagged_and_bounded_per_state(
+            self, h2_hamiltonian, tmp_path):
+        result = _mcas_vqe(h2_hamiltonian, pool="qeb", record=tmp_path,
+                        screen_insertions=2).run()
+        rows = self._rows(tmp_path)
+        chain = [r for r in rows if not r["screened"]]
+        screened = [r for r in rows if r["screened"]]
+        assert len(chain) == len(result.steps)
+        assert len(screened) == result.num_screened_insertions
+        assert all(r["move"] == "insert" and r["accepted"] is None
+                   and r["log_acceptance"] is None for r in screened)
+        per_state: dict = {}
+        for r in screened:
+            per_state.setdefault(tuple(r["source"]), set()).add(r["operator"])
+        # Distinct operators, at most two, per visited state.
+        counts = {}
+        for r in screened:
+            counts[tuple(r["source"])] = counts.get(tuple(r["source"]), 0) + 1
+        assert all(counts[s] == len(per_state[s]) <= 2 for s in counts)
+
+    def test_it_needs_somewhere_to_record(self, monkeypatch):
+        monkeypatch.delenv("MANDACARU_PROPOSAL_DATA", raising=False)
+        with pytest.raises(ValueError, match="screen_insertions records"):
+            Mandacaru(method="mcas-vqe", screen_insertions=2)
+        with pytest.raises(ValueError, match="screen_insertions must be"):
+            Mandacaru(method="mcas-vqe", screen_insertions=-1, record=False)

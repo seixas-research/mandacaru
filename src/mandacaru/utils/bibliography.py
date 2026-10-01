@@ -270,7 +270,7 @@ _ALGORITHMS = [
   pages   = {1087},
   year    = {1953},
   doi     = {10.1063/1.1699114}
-}""", "the Metropolis acceptance of the VASQA architecture chain",
+}""", "the Metropolis acceptance of the MCAS-VQE architecture chain",
          verified=False, topics=("mcas",)),
     _ref("Hastings1970", """
 @article{Hastings1970,
@@ -282,7 +282,7 @@ _ALGORITHMS = [
   pages   = {97},
   year    = {1970},
   doi     = {10.1093/biomet/57.1.97}
-}""", "the proposal-ratio correction of the VASQA architecture chain",
+}""", "the proposal-ratio correction of the MCAS-VQE architecture chain",
          verified=False, topics=("mcas",)),
     _ref("Kirkpatrick1983", """
 @article{Kirkpatrick1983,
@@ -293,7 +293,7 @@ _ALGORITHMS = [
   pages   = {671},
   year    = {1983},
   doi     = {10.1126/science.220.4598.671}
-}""", "the annealed architecture temperature of VASQA", verified=False,
+}""", "the annealed architecture temperature of MCAS-VQE", verified=False,
          topics=("mcas",)),
     _ref("Gilmer2017", """
 @inproceedings{Gilmer2017,

@@ -22,7 +22,7 @@ the LiH workflow.
 vqe_h2
 energy_levels
 subspace_vqe
-vasqa
+mcas_vqe
 valqa
 bloch_crystals
 ```

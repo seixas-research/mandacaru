@@ -34,7 +34,7 @@ import time
 
 import pytest
 
-# The shared store of recorded chain proposals: every VASQA / VALQA run
+# The shared store of recorded chain proposals: every MCAS-VQE / VALQA run
 # records into it by default, so a test run under a shell that sets it would
 # fill the user's training data with test chains.  Tests that need a store
 # set their own with monkeypatch.

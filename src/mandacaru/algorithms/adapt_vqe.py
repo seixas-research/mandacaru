@@ -539,7 +539,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         # Everything else -- the problem setup, the Hamiltonian cache, the
         # circuit providers, checkpoints -- is a VariationalDriver option and is
         # forwarded untouched, so its name and default live in one place.  The
-        # pool options are the PoolDriver's, shared with VASQA.
+        # pool options are the PoolDriver's, shared with MCAS-VQE.
         super().__init__(pool=pool, profile=profile, sector=sector,
                          optimizer=optimizer, mapping=mapping, basis=basis,
                          device=device, verbose=verbose, sparse=sparse,

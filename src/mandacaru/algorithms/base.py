@@ -324,7 +324,7 @@ class VariationalDriver(Calculator):
                 f"{type(self).__name__} does not write 'txt': its run() does "
                 f"not go through the block protocol, so the file would stay "
                 f"empty.  Use method='rhf', 'uhf', 'ghf', 'vqe', 'adapt-vqe', "
-                f"'vasqa' or 'valqa' for the structured log.")
+                f"'mcas-vqe' or 'valqa' for the structured log.")
         #: Path of the run log, or ``None`` for standard output only.
         self.txt = None if txt is None else os.fspath(txt)
         # Output-unit convention: eV / Angstrom unless atomic units are asked

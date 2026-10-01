@@ -5,7 +5,7 @@
 means the same thing at the next geometry.
 
 The matching and the renaming are checked on synthetic overlaps; the whole
-path through ``Mandacaru(method="vasqa", transfer=True)`` is checked by
+path through ``Mandacaru(method="mcas-vqe", transfer=True)`` is checked by
 relabeling the orbitals of a geometry on purpose -- a sign flip and two
 orbitals exchanged, as an eigensolver may do -- and requiring the
 transferred ansatz to reproduce the previous energy before any
@@ -118,7 +118,7 @@ def _calc(**options):
                "max_steps": 20, "transfer_steps": 0, "max_length": 6,
                "seed": 1, "transfer": True, "temperature": 0.0,
                "profile": False, "trace": False, "record": False, **options}
-    return Mandacaru(method="vasqa", **options)
+    return Mandacaru(method="mcas-vqe", **options)
 
 
 @pytest.fixture

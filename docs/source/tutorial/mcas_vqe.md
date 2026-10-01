@@ -1,8 +1,9 @@
-# VASQA: Searching the Ansatz with a Markov Chain
+# MCAS-VQE: Searching the Ansatz with a Markov Chain
 
 ADAPT-VQE builds its ansatz greedily: each step appends the pool operator with
-the largest energy gradient, and an operator once chosen stays. `method="vasqa"`
-(Variational, Adaptive and Stochastic Quantum Algorithm) treats the operator
+the largest energy gradient, and an operator once chosen stays.
+`method="mcas-vqe"` (Markov Chain Ansatz Search with the Variational Quantum
+Eigensolver) treats the operator
 *sequence* itself as the thing to search. A Markov chain proposes changes to
 the sequence, VQE relaxes the angles of each proposal, and a
 Metropolis-Hastings test decides whether the chain moves there. An early
@@ -14,9 +15,9 @@ from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
 atoms.center(vacuum=2.5)
-atoms.calc = Mandacaru(method="vasqa",
-                       basis="HAO",
-                       h=0.25,
+atoms.calc = Mandacaru(method="mcas-vqe",
+                       basis={"name": "PAW-LCAO", "size": "SZ"},
+                       h=0.20,
                        pool="qeb",
                        max_steps=100,
                        max_length=10,
@@ -33,7 +34,7 @@ print(result.acceptance_by_move)   # {"insert": (accepted, proposed), ...}
 From the command line, the same run is
 
 ```console
-$ mandacaru H2 --cell 5.5 --h 0.25 --method vasqa --pool qeb \
+$ mandacaru H2 --cell 5.5 --h 0.25 --method mcas-vqe --pool qeb \
       --max-steps 100 --max-length 10 --temperature 0.1 0.001 \
       --length-penalty 1e-3 --seed 1234 --txt output.txt
 ```
@@ -184,6 +185,11 @@ instead: its operators and, with `warm_start=True`, its angles (with
 zero). Because the new start is usually close to the answer, `transfer_steps`
 sets a shorter chain for it, and that is where the saving comes from.
 
+Run relaxations and dynamics in the PAW-LCAO basis, as below: its forces are
+the ones to trust. All-electron bases such as HAO leave the compact core
+functions unresolved at practical grid spacings, so their energy surfaces are
+not smooth enough to move atoms on.
+
 ```python
 from ase import Atoms
 from ase.optimize import BFGS
@@ -191,7 +197,7 @@ from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.80]])
 atoms.center(vacuum=2.5)
-atoms.calc = Mandacaru(method="vasqa",
+atoms.calc = Mandacaru(method="mcas-vqe",
                        basis="HAO",
                        h=0.25,
                        pool="qeb",
@@ -241,6 +247,19 @@ started from and the one it reports (a swap counts as two, so it is an upper
 bound on the distance when swaps are allowed); the function
 `mandacaru.algorithms.mcas.edit_distance(a, b)` compares any two.
 
+Carrying the ansatz along exploits what earlier geometries found; it can also
+keep the search in the basin it found first. `rebuild_every=N`
+(`--rebuild-every N`) balances that with exploration: at every N-th geometry,
+after the transferred chain's `transfer_steps`, a fresh chain from the empty
+ansatz searches for the full `max_steps`, and the lowest-cost state of both is
+reported. The transferred chain runs first and unchanged, so a rebuild can
+only keep or improve the reported state. It costs one full search every N
+geometries. `result.rebuild` and the run log's summary say whether the
+transferred or the rebuilt ansatz won. On the PAW-LCAO H2O scan (2026-10-01,
+`rebuild_every=2`), the transferred ansatz was kept at all four rebuild
+geometries, at 40 % more evaluations: there the carried basin was the better
+one.
+
 Transfer changes where the chain starts, not what it samples: the moves, the
 proposals and the acceptance rule are the same, so only how soon the chain
 reaches the low-cost architectures changes. The renaming is exact for
@@ -280,5 +299,5 @@ same blocks are printed. Checkpoints are refused: a chain's state is more than
 one ansatz.
 
 A chain whose operator probabilities come from a trained model is VALQA,
-`method="valqa"` ({doc}`valqa`); `record="DIR"` makes a VASQA run collect
+`method="valqa"` ({doc}`valqa`); `record="DIR"` makes a MCAS-VQE run collect
 the edits that model is trained on.

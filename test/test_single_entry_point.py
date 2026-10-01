@@ -4,7 +4,7 @@
 """The algorithms are called solely through :class:`Mandacaru`.
 
 ``Mandacaru(method="vqe" | "adapt-vqe" | "subspace-vqe" | "subspace-adapt-vqe"
-| "vasqa")``
+| "mcas-vqe")``
 is the one way in.  The solver classes are the internal layer: they are not
 exported, and nothing outside the package -- no test, example or documentation
 page -- constructs or imports one.  This file enforces both halves.
@@ -24,14 +24,14 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # ``BlochCalculator`` was public until the periodic driver moved behind the
 # entry point; it is listed here so the sweep fails if it ever comes back.
 SOLVER_CLASSES = ("RHFDriver", "UHFDriver", "DFTDriver", "HVA", "VQE",
-                  "ADAPTVQE", "SubspaceVQE", "SubspaceADAPTVQE", "VASQA",
+                  "ADAPTVQE", "SubspaceVQE", "SubspaceADAPTVQE", "MCASVQE",
                   "BlochCalculator")
 # ``HVA`` was a method until it became ``method="vqe", ansatz="hva"``; it
 # stays in SOLVER_CLASSES so the sweep fails if the class ever comes back.
 METHODS = {"rhf": "RHFDriver", "uhf": "UHFDriver", "dft": "DFTDriver",
            "vqe": "VQE",
            "adapt-vqe": "ADAPTVQE", "subspace-vqe": "SubspaceVQE",
-           "subspace-adapt-vqe": "SubspaceADAPTVQE", "vasqa": "VASQA",
+           "subspace-adapt-vqe": "SubspaceADAPTVQE", "mcas-vqe": "MCASVQE",
            "bloch-vqe": "BlochVQE", "bloch-adapt-vqe": "BlochADAPTVQE"}
 
 

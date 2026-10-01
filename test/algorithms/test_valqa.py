@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 # file: test_valqa.py
 
-"""VALQA: VASQA's chain with a learned operator proposal.
+"""VALQA: MCAS-VQE's chain with a learned operator proposal.
 
-The model starts where VASQA is -- without one, or with one that has not
-passed its readiness check, VALQA draws what VASQA's gradient proposal draws,
+The model starts where MCAS-VQE is -- without one, or with one that has not
+passed its readiness check, VALQA draws what MCAS-VQE's gradient proposal draws,
 step for step -- and a ready model changes the draws without breaking the
 Metropolis-Hastings ratio.  Reached only through ``Mandacaru(method="valqa")``.
 """
@@ -69,21 +69,21 @@ def _trajectory(result):
             for s in result.steps]
 
 
-class TestTheModelStartsWhereVASQAIs:
-    def test_without_a_model_the_chain_is_vasqas(self, h2_hamiltonian):
-        vasqa = _chain(h2_hamiltonian, method="vasqa").run()
+class TestTheModelStartsWhereMCASVQEIs:
+    def test_without_a_model_the_chain_is_mcas_vqes(self, h2_hamiltonian):
+        mcas_vqe = _chain(h2_hamiltonian, method="mcas-vqe").run()
         valqa = _chain(h2_hamiltonian).run()
         assert isinstance(valqa, VALQAResult)
-        assert _trajectory(valqa) == _trajectory(vasqa)
-        assert valqa.optimal_energy == vasqa.optimal_energy
+        assert _trajectory(valqa) == _trajectory(mcas_vqe)
+        assert valqa.optimal_energy == mcas_vqe.optimal_energy
         assert valqa.proposal_model is None and not valqa.model_ready
 
     def test_a_model_that_is_not_ready_changes_nothing(self, h2_hamiltonian,
                                                        tmp_path):
         path = _model(tmp_path / "m.npz", ready=False)
-        vasqa = _chain(h2_hamiltonian, method="vasqa").run()
+        mcas_vqe = _chain(h2_hamiltonian, method="mcas-vqe").run()
         valqa = _chain(h2_hamiltonian, proposal_model=path).run()
-        assert _trajectory(valqa) == _trajectory(vasqa)
+        assert _trajectory(valqa) == _trajectory(mcas_vqe)
         assert valqa.proposal_model == "synthetic" and not valqa.model_ready
 
     def test_the_setup_block_says_why(self, h2_hamiltonian, tmp_path):
@@ -104,10 +104,10 @@ class TestAReadyModel:
     def test_it_changes_the_draws_and_keeps_every_ratio_finite(
             self, h2_hamiltonian, tmp_path):
         path = _model(tmp_path / "m.npz")
-        vasqa = _chain(h2_hamiltonian, method="vasqa").run()
+        mcas_vqe = _chain(h2_hamiltonian, method="mcas-vqe").run()
         valqa = _chain(h2_hamiltonian, proposal_model=path).run()
         assert valqa.model_ready and valqa.proposal_model == "synthetic"
-        assert _trajectory(valqa) != _trajectory(vasqa)
+        assert _trajectory(valqa) != _trajectory(mcas_vqe)
         # Every operator keeps a positive probability, so an insertion
         # always has its reverse deletion and a replacement its reverse.
         for step in valqa.steps:
@@ -177,13 +177,13 @@ class TestOptions:
         with pytest.raises(FileNotFoundError, match="no proposal model"):
             Mandacaru(method="valqa", proposal_model=str(tmp_path / "x.npz"))
 
-    def test_valqa_does_not_take_vasqas_proposal(self):
+    def test_valqa_does_not_take_mcas_vqes_proposal(self):
         with pytest.raises(TypeError, match="does not take"):
             Mandacaru(method="valqa", proposal="uniform")
 
-    def test_vasqa_does_not_take_a_model(self, tmp_path):
+    def test_mcas_vqe_does_not_take_a_model(self, tmp_path):
         with pytest.raises(TypeError, match="does not take"):
-            Mandacaru(method="vasqa",
+            Mandacaru(method="mcas-vqe",
                       proposal_model=_model(tmp_path / "m.npz"))
 
 
@@ -205,11 +205,11 @@ class TestTheSharedStore:
         store.mkdir()
         _model(store / MODEL_FILE)
         monkeypatch.setenv("MANDACARU_PROPOSAL_DATA", str(store))
-        vasqa = _chain(h2_hamiltonian, method="vasqa", record=False).run()
+        mcas_vqe = _chain(h2_hamiltonian, method="mcas-vqe", record=False).run()
         valqa = _chain(h2_hamiltonian, proposal_model=False,
                        record=False).run()
         assert valqa.proposal_model is None
-        assert _trajectory(valqa) == _trajectory(vasqa)
+        assert _trajectory(valqa) == _trajectory(mcas_vqe)
 
 
 def _h2_at(distance):
@@ -263,7 +263,7 @@ class TestAlongATrajectory:
         first, second = self._run(tmp_path, update_between_geometries=True)
         assert first.proposal_model == "synthetic"
         assert first.model_update.startswith("none (no previous geometry")
-        assert "scored before conditioning" in second.model_update
+        assert "scored before the update" in second.model_update
         assert second.proposal_model != "synthetic"
         assert second.model_ready
 
@@ -284,6 +284,36 @@ class TestAlongATrajectory:
         assert len({r["trajectory"] for r in rows}) == 2
         assert {r["geometry_step"] for r in rows} == {0}
         assert calc.result.model_update.startswith("none")
+
+    def test_without_a_ready_model_the_update_says_why(self, tmp_path):
+        _, second = self._run(tmp_path, update_between_geometries=True,
+                              proposal_model=_model(tmp_path / "u.npz",
+                                                    ready=False))
+        assert second.model_update.startswith("none (model synthetic is "
+                                              "not ready)")
+        _, second = self._run(tmp_path, update_between_geometries=True,
+                              proposal_model=False)
+        assert second.model_update == "none (no proposal model)"
+
+    def test_the_online_ranker_takes_the_offline_ones_place(self, tmp_path):
+        """The update replaces the offline predictor, not the gradient: the
+        ranker is updated with the previous geometry's pairs, and the
+        gradient stays in the mixture."""
+        path = tmp_path / "r.npz"
+        model = ProposalModel.load(_model(path))
+        model.kind = "ranker"
+        from mandacaru.algorithms.proposal_model import PairwiseRanker
+        model.ranker = PairwiseRanker(weights=np.ones(len(DESCRIPTORS)),
+                                      mean=np.zeros(len(DESCRIPTORS)),
+                                      std=np.ones(len(DESCRIPTORS)))
+        model.save(path)
+        first, second = self._run(tmp_path, update_between_geometries=True,
+                                  proposal_model=str(path),
+                                  screen_insertions=2)
+        assert "scored before the update" in second.model_update
+        assert "within-state Spearman" in second.model_update
+        assert second.proposal_model != first.proposal_model
+        assert second.model_ready
 
     def test_the_option_is_validated_at_construction(self):
         with pytest.raises(ValueError, match="update_between_geometries"):

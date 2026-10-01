@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-# file: examples/39_vasqa.py
+# file: examples/39_mcas_vqe.py
 
 # This code is part of Mandacaru.
 # MIT License
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Water (H2O) with VASQA: searching the ansatz with a Markov chain.
+r"""Water (H2O) with MCAS-VQE: searching the ansatz with a Markov chain.
 
-VASQA -- the Variational, Adaptive and Stochastic Quantum Algorithm,
-``Mandacaru(method="vasqa")`` -- treats the *structure* of the ansatz as the
+MCAS-VQE -- the Variational, Adaptive and Stochastic Quantum Algorithm,
+``Mandacaru(method="mcas-vqe")`` -- treats the *structure* of the ansatz as the
 unknown.  An ansatz is an ordered sequence of operators taken from a pool,
 
 .. math::
@@ -18,7 +18,7 @@ unknown.  An ansatz is an ordered sequence of operators taken from a pool,
                               e^{\theta_1 A_{\mu_1}} |\mathrm{HF}\rangle,
     \qquad C = (\mu_1, \ldots, \mu_L),
 
-and VASQA explores the space of such sequences with a Markov chain
+and MCAS-VQE explores the space of such sequences with a Markov chain
 (Markov Chain Ansatz Search, MCAS).  Each step of the chain
 
 1. **proposes a move** on the current sequence ``C``:
@@ -79,14 +79,14 @@ The problem is the frozen-core water of ``03_ADAPTVQE_H2O.py``: HAO basis,
 oxygen ``1s`` frozen, 6 active spatial orbitals on **12 qubits** with a
 ``(4, 4)`` closed shell, and the QEB (qubit-excitation) pool.  The script
 
-* runs VASQA as an ASE calculator and writes the full run log, with its
-  ``[MARKOV CHAIN]`` table, to ``examples/data/output_H2O_vasqa.txt``;
+* runs MCAS-VQE as an ASE calculator and writes the full run log, with its
+  ``[MARKOV CHAIN]`` table, to ``examples/data/output_H2O_mcas_vqe.txt``;
 * explains the chain from the result object: the move statistics, the first
   steps of the trajectory, the lowest-cost ansatz and where the chain ended;
 * compares with ADAPT-VQE on the same qubit Hamiltonian and with the exact
   ground state of the ``(4, 4)`` sector;
-* writes the trajectory to ``examples/data/h2o_vasqa_trajectory.csv`` and,
-  when Matplotlib is available, plots it to ``h2o_vasqa_trajectory.png``.
+* writes the trajectory to ``examples/data/h2o_mcas_vqe_trajectory.csv`` and,
+  when Matplotlib is available, plots it to ``h2o_mcas_vqe_trajectory.png``.
 
 .. note::
 
@@ -147,12 +147,12 @@ atoms = Atoms("OH2",
               pbc=True)
 
 # --------------------------------------------------------------------------- #
-# 2. The VASQA calculator.  Every option below is a VASQA option except the
+# 2. The MCAS-VQE calculator.  Every option below is a MCAS-VQE option except the
 #    problem setup (basis, grid, active space, pool), which is ADAPT-VQE's.
 # --------------------------------------------------------------------------- #
-LOG = os.path.join(DATA, "output_H2O_vasqa.txt")
+LOG = os.path.join(DATA, "output_H2O_mcas_vqe.txt")
 atoms.calc = Mandacaru(
-    method="vasqa",
+    method="mcas-vqe",
     # The problem: HAO orbitals on a 0.30 Angstrom grid, oxygen 1s frozen.
     basis={"name": "HAO"},
     h=0.30,
@@ -202,8 +202,8 @@ atoms.calc = Mandacaru(
 # Asking ASE for the energy builds the Hamiltonian and runs the whole chain.
 t0 = time.perf_counter()
 energy_ev = atoms.get_total_energy()            # eV (ASE convention)
-vasqa_seconds = time.perf_counter() - t0
-result = atoms.calc.result                      # a VASQAResult, energies in eV
+mcas_vqe_seconds = time.perf_counter() - t0
+result = atoms.calc.result                      # a MCASVQEResult, energies in eV
 n_qubits = atoms.calc.n_qubits
 na, nb = atoms.calc.num_particles
 
@@ -219,7 +219,7 @@ print(f"H2O, frozen-core HAO: {n_qubits // 2} active orbitals, {n_qubits} "
       f"qubits, (n_alpha, n_beta) = ({na}, {nb})")
 print(f"pool: {atoms.calc.pool.name} ({len(atoms.calc.solver._pool_ops)} "
       f"operators), seed {result.seed}, {len(result.steps)} steps in "
-      f"{vasqa_seconds:.1f} s")
+      f"{mcas_vqe_seconds:.1f} s")
 print(rule)
 
 print("Moves proposed and accepted:")
@@ -269,7 +269,7 @@ for k, label in enumerate(result.operators, 1):
 
 # --------------------------------------------------------------------------- #
 # 4. The same Hamiltonian with ADAPT-VQE, and the exact sector ground state.
-#    The qubit Hamiltonian VASQA used is passed directly, so nothing is
+#    The qubit Hamiltonian MCAS-VQE used is passed directly, so nothing is
 #    rebuilt: both algorithms see exactly the same operator.
 # --------------------------------------------------------------------------- #
 t0 = time.perf_counter()
@@ -293,15 +293,15 @@ print(f"{'':<12} {'E (eV)':>15} {'E - exact (eV)':>15} {'operators':>10} "
       f"{'evaluations':>12} {'time (s)':>9}")
 for name, energy, operators, evaluations, seconds in (
         ("Hartree-Fock", result.reference_energy, 0, 0, 0.0),
-        ("VASQA", result.optimal_energy, result.num_operators,
-         result.num_evaluations, vasqa_seconds),
+        ("MCAS-VQE", result.optimal_energy, result.num_operators,
+         result.num_evaluations, mcas_vqe_seconds),
         ("ADAPT-VQE", adapt.optimal_energy, adapt.num_operators,
          adapt.num_evaluations, adapt_seconds)):
     print(f"{name:<12} {energy:>15.6f} {energy - exact_ev:>+15.6f} "
           f"{operators:>10d} {evaluations:>12d} {seconds:>9.1f}")
 print(f"{'exact (4,4)':<12} {exact_ev:>15.6f}")
 recovered = (result.optimal_energy - result.reference_energy) / correlation
-print(f"VASQA recovered {recovered:.1%} of the sector correlation energy "
+print(f"MCAS-VQE recovered {recovered:.1%} of the sector correlation energy "
       f"({correlation:.4f} eV).")
 print(rule)
 
@@ -312,7 +312,7 @@ assert min(s.proposed_energy for s in result.steps) >= exact_ev - 1e-6
 # --------------------------------------------------------------------------- #
 # 5. The trajectory, as data and (optionally) as a picture.
 # --------------------------------------------------------------------------- #
-CSV = os.path.join(DATA, "h2o_vasqa_trajectory.csv")
+CSV = os.path.join(DATA, "h2o_mcas_vqe_trajectory.csv")
 with open(CSV, "w", newline="", encoding="utf-8") as fh:
     writer = csv.writer(fh)
     writer.writerow(["step", "move", "action", "proposed_length",
@@ -354,11 +354,11 @@ if plt is not None:
     bottom.step(steps, length, where="post", color="C1")
     bottom.set_ylabel("operators in current ansatz")
     bottom.set_xlabel("Markov-chain step")
-    fig.suptitle("H2O (12 qubits, QEB pool): VASQA trajectory")
+    fig.suptitle("H2O (12 qubits, QEB pool): MCAS-VQE trajectory")
     fig.tight_layout()
-    fig.savefig(os.path.join(DATA, "h2o_vasqa_trajectory.png"), dpi=150)
+    fig.savefig(os.path.join(DATA, "h2o_mcas_vqe_trajectory.png"), dpi=150)
 
 print(f"run log:    {LOG}")
 print(f"trajectory: {CSV}")
 if plt is not None:
-    print(f"plot:       {os.path.join(DATA, 'h2o_vasqa_trajectory.png')}")
+    print(f"plot:       {os.path.join(DATA, 'h2o_mcas_vqe_trajectory.png')}")

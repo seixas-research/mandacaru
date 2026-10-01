@@ -1,16 +1,16 @@
 # VALQA: A Learned Proposal for the Ansatz Search
 
-VASQA ({doc}`vasqa`) draws each new operator from a softmax of the pool
+MCAS-VQE ({doc}`mcas_vqe`) draws each new operator from a softmax of the pool
 gradients at the current state. `method="valqa"` (Variational Adaptive
 Learnable Quantum Algorithm) runs the same Markov chain and draws the new
 operator from a **trained model** instead. The model reads the qubit
 Hamiltonian as a graph, predicts how much inserting each pool operator would
 lower the energy, and turns the predictions into probabilities. Moves,
-positions, VQE relaxation and the Metropolis-Hastings test are VASQA's.
+positions, VQE relaxation and the Metropolis-Hastings test are MCAS-VQE's.
 
-The model starts where VASQA is. Until a model has been trained on enough
+The model starts where MCAS-VQE is. Until a model has been trained on enough
 recorded edits, and has passed a readiness check, VALQA draws exactly what
-VASQA's gradient proposal draws: the same chain for the same seed.
+MCAS-VQE's gradient proposal draws: the same chain for the same seed.
 
 ## The workflow
 
@@ -24,7 +24,7 @@ VASQA's gradient proposal draws: the same chain for the same seed.
    This writes `MANDACARU_PROPOSAL_DATA` to `~/.zshrc` or `~/.bashrc` (and
    creates the directory). Data then accumulates across all your runs.
 
-1. **Record.** With the store set, every VASQA and VALQA run records by
+1. **Record.** With the store set, every MCAS-VQE and VALQA run records by
    default. Each proposal, rejected ones included, is appended to
    `edits.jsonl`, and the Hamiltonian, reference and pool it searched are
    stored once in `problems/`. Along an ASE trajectory a row also carries
@@ -32,7 +32,7 @@ VASQA's gradient proposal draws: the same chain for the same seed.
    file is saved into the same store:
 
    ```python
-   atoms.calc = Mandacaru(method="vasqa", basis="HAO", h=0.30,
+   atoms.calc = Mandacaru(method="mcas-vqe", basis="HAO", h=0.30,
                           active_space={"frozen": "auto"}, pool="qeb",
                           max_steps=150, warm_start=False, seed=1)
    atoms.get_potential_energy()
@@ -42,6 +42,11 @@ VASQA's gradient proposal draws: the same chain for the same seed.
    records nothing. `warm_start=False` is the better setting for collecting
    data: each architecture is then relaxed from zero angles, so its recorded
    energy is a property of the architecture rather than of the path.
+   `screen_insertions=K` (`--screen-insertions K`) also relaxes and records
+   K insertions at every state the chain visits, flagged `screened`. They are
+   drawn from that state's operator distribution, beside the chain and
+   without moving it. They are the data that judges a proposal's choice
+   *within* a state, which is the decision it actually makes.
 
 2. **Train and assess.** `train_proposal_model()` measures whether the data
    in the store is enough (see below), trains on all of it and saves the
@@ -77,7 +82,7 @@ chain method.
 
 ## Along a trajectory
 
-`transfer=True` works for VALQA exactly as for VASQA ({doc}`vasqa`, "Along a
+`transfer=True` works for VALQA exactly as for MCAS-VQE ({doc}`mcas_vqe`, "Along a
 trajectory"): in a relaxation or scan, each geometry's chain starts from the
 ansatz the previous geometry reported, and `transfer_steps` sets the shorter
 chain that start allows.
@@ -85,9 +90,10 @@ chain that start allows.
 ```python
 from ase.optimize import BFGS
 
-atoms.calc = Mandacaru(method="valqa", basis="HAO", h=0.25, pool="qeb",
-                       max_steps=30, transfer=True, transfer_steps=6,
-                       seed=1234)
+atoms.calc = Mandacaru(method="valqa",
+                       basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.20,
+                       pool="qeb", max_steps=30, transfer=True,
+                       transfer_steps=6, seed=1234)
 BFGS(atoms).run(fmax=0.05)
 print(atoms.calc.result.start)
 ```
@@ -97,7 +103,7 @@ are renamed where orbitals exchanged places, and angles change sign where an
 orbital did. The transferred ansatz is kept only if it relaxes below the
 reference's cost at the new geometry; otherwise the chain starts empty, and
 the `start` line of `[OPTIMIZATION SETUP]` says why. The details are in the
-VASQA tutorial. The start does not change what the chain samples. The
+MCAS-VQE tutorial. The start does not change what the chain samples. The
 command-line flags are `--transfer`, `--transfer-steps N` and
 `--transfer-threshold S`.
 
@@ -112,24 +118,32 @@ without a previous problem.
 
 ### Updating between geometries
 
-By default the model is the same for every geometry. With
-`update_between_geometries=True` (`--update-between-geometries`), the model's
-Gaussian process is conditioned on the insertions the previous geometry
-evaluated before the next chain starts:
+By default the offline model, trained from recorded MCAS-VQE chains, is the
+same for every geometry. With `update_between_geometries=True`
+(`--update-between-geometries`), an online model takes its place: before
+each chain, the model is updated with the insertions the previous geometry
+evaluated. The online model replaces the offline one in the mixture; the
+gradient proposal keeps its share, so the exploration it provides is not
+traded away:
 
 ```python
-atoms.calc = Mandacaru(method="valqa", basis="HAO", h=0.25, pool="qeb",
-                       max_steps=30, transfer=True, transfer_steps=6,
-                       update_between_geometries=True, seed=1234)
+atoms.calc = Mandacaru(method="valqa",
+                       basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.20,
+                       pool="qeb", max_steps=30, transfer=True,
+                       transfer_steps=6, update_between_geometries=True,
+                       seed=1234)
 BFGS(atoms).run(fmax=0.05)
 print(atoms.calc.result.model_update)
 ```
 
 Those insertions are first scored by the model that has not seen them
 (test-then-train), and the line reports their count, the error and rank
-correlation of that prediction, and the model version before and after. Only
-the Gaussian process's posterior takes the new points in; the network and the
-kernel stay as trained. Each chain still runs with one frozen model, so its
+correlation of that prediction, and the model version before and after. A
+ranker model takes a sequential Bayesian step: its weights are refitted on
+the new within-state pairs with the previous weights as the prior, so the
+offline training is refined, not forgotten. A graph model conditions its
+Gaussian process; its network and kernel stay as trained. Each chain still
+runs with one frozen model, so its
 Metropolis-Hastings ratio stays exact, and the updated model lives for the
 trajectory: the store's model file is not changed. The update needs a ready
 model and a previous geometry of the same molecule and pool (`transfer` is not
@@ -145,7 +159,7 @@ P(\mu\mid C,H)=(1-\varepsilon)\,p_{\mathrm{ML}}(\mu\mid C,H)
 +\varepsilon\,p_\nabla(\mu\mid C),
 $$
 
-where $p_\nabla$ is VASQA's gradient softmax and $\varepsilon = 1$ until the
+where $p_\nabla$ is MCAS-VQE's gradient softmax and $\varepsilon = 1$ until the
 model is ready (0.3 afterwards). Because $\varepsilon > 0$, every operator
 keeps a positive probability, so every insertion has its reverse deletion.
 The model is frozen for the run and the distribution at a state depends only
@@ -177,7 +191,7 @@ $p_{\mathrm{ML}}$ comes from three pieces:
 The score $b_\mu = -\mu_\mu + \kappa\sigma_\mu$ favors predicted improvement
 and, through the uncertainty, operators the model has not seen enough of;
 $p_{\mathrm{ML}} = \mathrm{softmax}(b/\tau)$. The score does not depend on the
-insertion slot: positions stay uniform, as in VASQA.
+insertion slot: positions stay uniform, as in MCAS-VQE.
 
 ## Is there enough data?
 
@@ -188,17 +202,37 @@ three predictors:
 
 - the graph model;
 - the same Gaussian process on hand-made descriptors only, with no graph;
-- the gradient heuristic $-|g_\mu|$, which is what VASQA draws from.
+- the gradient heuristic $-|g_\mu|$, which is what MCAS-VQE draws from.
+- a pairwise logistic ranker on the same descriptors, fitted only on the
+  states with several recorded insertions: the simplest model of the choice
+  within a state.
 
-The model is **ready** when at least three molecules can be held out and,
-with all the data, its mean held-out Spearman correlation beats both
-baselines by 0.05 and beats the better one for most held-out molecules. The
-gain has to come from the Hamiltonian representation, not merely from having
-a surrogate. `group_by="hamiltonian"` holds out single geometries instead,
+A model is **ready** when, over at least three held-out molecules, it
+orders the insertions recorded at one chain state better than the gradient
+does: its mean within-state Spearman correlation must beat the gradient's by
+0.05, and beat it for most held-out molecules. That is the decision the
+proposal makes, and a better ordering moves the whole softmax toward the
+better insertions even when the first choice is the same. The pairwise
+ranker is the first candidate; the graph model is chosen only when it also
+beats the ranker. `train_proposal_model` saves the chosen kind with the model
+(`model.kind`: `"ranker"` or `"graph"`), and the run log names it. A ranker
+model and a graph model can both be updated between geometries (below). The
+judgment needs states with several recorded
+insertions, so record chains with `screen_insertions`. `group_by="hamiltonian"` holds out single geometries instead,
 which tests transfer along a potential-energy curve, and
 `group_by="trajectory"` holds out whole trajectories. Those are weaker claims
 than the molecule, and the report records which grouping was used. Both
 `assess_data_volume` and `train_proposal_model` take `group_by`.
+
+The correlation above compares insertions across all held-out states, and
+there a large gradient means a large gain almost by construction. The
+proposal, however, only chooses among the insertions of one state. Each curve
+point therefore also has `within_state`: over the held-out states with
+several recorded insertions, each predictor's mean Spearman correlation
+inside a state and its regret, which is the energy its first choice gave up
+against the best insertion recorded there, in Hartree. The within-state
+correlation is what the readiness rule above uses; the regret and the
+across-state correlations are reported beside it.
 
 `model.report["curve"]` is the learning curve: for each fraction, the
 training labels used and the three correlations. A curve still rising at the
@@ -208,7 +242,7 @@ is the limit.
 
 ### What the first data showed
 
-The first measurement (2026-09-30) recorded 942 insertions from VASQA chains
+The first measurement (2026-09-30) recorded 942 insertions from MCAS-VQE chains
 on H2, LiH, BeH2, H4, HF and H2O (HAO, frozen core, QEB pool). Holding out
 each molecule in turn, the gradient heuristic ranked the held-out insertions
 at a Spearman correlation of 0.78. The graph model reached 0.67, and the
@@ -220,3 +254,27 @@ predictor of an insertion's energy change. A model has to find what the
 gradient misses, and six molecules, three of them with 3- to 8-operator
 pools, are too few transfer tests to show that. Molecules with larger pools
 are what the next recordings should add.
+
+### Trajectory data with screened insertions
+
+The second measurement (2026-10-01) recorded bond scans in the PAW-LCAO basis
+(SZ, h = 0.20 Angstrom), the basis whose forces and energy surfaces are smooth
+enough to move atoms on. Each scan has five geometries, two seeds and
+`transfer=True` with `screen_insertions=4`, for H2, LiH, BeH2, H4, HF and
+H2O. That gave 4939 insertions, in 1170 states with several measured
+insertions. Holding out each molecule, over three training seeds:
+
+| predictor | across states | within a state | regret (mHa) |
+| --- | --- | --- | --- |
+| gradient | 0.64 | 0.38 | 0.014 |
+| pairwise ranker | 0.59 | 0.46 | 0.013 |
+| graph model | 0.66 to 0.68 | 0.46 to 0.49 | 0.014 to 0.030 |
+| descriptors only | 0.40 to 0.49 | 0.25 to 0.33 | 0.037 to 0.072 |
+
+Within a state, both the graph model and a plain pairwise logistic ranker on
+the descriptors order the insertions better than the gradient. Their first
+choice, however, is no better: the regret is the same. Under the
+within-state rule the pairwise ranker is ready (0.459 against 0.383, better
+for H2, BeH2, HF and LiH, narrowly worse for H2O and H4), and it is the first
+learned proposal VALQA uses. Conditioning on the previous geometry made no
+consistent difference.

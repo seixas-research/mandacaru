@@ -27,7 +27,7 @@ Without it the full variational run is performed:
 
     $ mandacaru water.xyz --method adapt-vqe --basis HAO --h 0.25 --frozen
     $ mandacaru LiH --cell 10 --basis PAW-LCAO --h 0.25
-    $ mandacaru LiH --cell 10 --method vasqa --pool qeb --max-steps 150 --seed 1
+    $ mandacaru LiH --cell 10 --method mcas-vqe --pool qeb --max-steps 150 --seed 1
 
 The geometry is any file :func:`ase.io.read` understands (``.xyz``, ``.cif``,
 ``POSCAR``, ...) or the name of a molecule in ASE's ``g2`` collection
@@ -170,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
                "  mandacaru H2O --cell 8 --basis PAW-LCAO --basis-option size=DZP --dry-run\n"
                "  mandacaru --load-hamiltonian lih.parquet --dry-run --json\n"
                "  mandacaru LiH --cell 10 --method adapt-vqe --pool qeb --h 0.3\n"
-               "  mandacaru LiH --cell 10 --method vasqa --pool qeb --max-steps "
+               "  mandacaru LiH --cell 10 --method mcas-vqe --pool qeb --max-steps "
                "150 --seed 1\n"
                "  mandacaru --build-backend\n"
                "  mandacaru --set-paw ~/Repositories/mandacaru-paw\n",
@@ -192,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "demand.")
     parser.add_argument("--set-proposal-data", metavar="DIR", default=None,
                         help="record DIR as MANDACARU_PROPOSAL_DATA, the "
-                             "shared store vasqa and valqa record their "
+                             "shared store mcas_vqe and valqa record their "
                              "proposals into and valqa reads its trained "
                              "model from (created if missing), then exit.")
     parser.add_argument("--pseudo-status", action="store_true",
@@ -329,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     solver = parser.add_argument_group("solver")
     solver.add_argument("--pool", default=None,
                         choices=tuple(available_pools()),
-                        help="operator pool of adapt-vqe, vasqa and valqa (default "
+                        help="operator pool of adapt-vqe, mcas_vqe and valqa (default "
                              "fermionic)")
     solver.add_argument("--ansatz", default=None, choices=ANSATZ_NAMES,
                         help="circuit of --method vqe: uccsd (default) or "
@@ -371,7 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "(default: references.bib beside --txt)")
 
     chain = parser.add_argument_group(
-        "markov chain (--method vasqa or valqa)",
+        "markov chain (--method mcas-vqe or valqa)",
         "Energies in eV.  Each flag is forwarded only when given, so another "
         "method refuses it as a usage error.")
     chain.add_argument("--max-steps", type=int, default=None,
@@ -418,6 +418,10 @@ def build_parser() -> argparse.ArgumentParser:
                        metavar="N",
                        help="chain length when the start was transferred "
                             "(default --max-steps)")
+    chain.add_argument("--rebuild-every", type=int, default=None, metavar="N",
+                       help="with --transfer, search afresh from the empty "
+                            "ansatz every N geometries, keeping the carried "
+                            "ansatz as a candidate")
     chain.add_argument("--transfer-threshold", type=float, default=None,
                        metavar="S",
                        help="smallest matched orbital overlap between "
@@ -428,6 +432,12 @@ def build_parser() -> argparse.ArgumentParser:
                             "to DIR instead of the shared store "
                             "MANDACARU_PROPOSAL_DATA: the training data of "
                             "valqa's model")
+    chain.add_argument("--screen-insertions", type=int, default=None,
+                       metavar="K",
+                       help="at every new state also relax and record K "
+                            "insertions beside the chain (needs a record "
+                            "directory): the data that judges a proposal's "
+                            "choice within a state")
     chain.add_argument("--no-record", dest="record", action="store_const",
                        const=False,
                        help="record nothing, even with "
@@ -439,9 +449,10 @@ def build_parser() -> argparse.ArgumentParser:
                             "proposal is in effect")
     chain.add_argument("--update-between-geometries", action="store_const",
                        const=True, default=None,
-                       help="valqa only: along a relaxation or scan, "
-                            "condition the model's Gaussian process on each "
-                            "geometry's insertions before the next chain")
+                       help="valqa only: along a relaxation or scan, update "
+                            "the model with each geometry's insertions before "
+                            "the next chain (the online model replaces the "
+                            "offline one; the gradient keeps its share)")
     chain.add_argument("--seed", type=int, default=None,
                        help="seed of the chain's random stream")
     return parser
@@ -531,10 +542,11 @@ def solver_options(args) -> dict:
     for name in ("pool", "ansatz", "max_iterations", "txt", "num_states",
                  "multiplicity", "references", "max_steps", "max_length",
                  "length_penalty", "warm_start", "replace_start",
-                 "transfer", "transfer_steps", "transfer_threshold", "seed",
+                 "transfer", "transfer_steps", "transfer_threshold",
+                 "rebuild_every", "seed",
                  "proposal",
                  "proposal_temperature", "record", "proposal_model",
-                 "update_between_geometries", "xc",
+                 "update_between_geometries", "screen_insertions", "xc",
                  "dispersion"):
         value = getattr(args, name)
         if value is not None:

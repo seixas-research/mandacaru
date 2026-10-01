@@ -68,7 +68,7 @@ _METHOD_KEYS = {
     # annealing paper is cited with the rest because the default temperature
     # is annealed.
     # Grimsley2019 for the pool gradient the default proposal draws from.
-    "vasqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
+    "mcas-vqe": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
               "Hastings1970", "Kirkpatrick1983"),
     # VALQA is the same chain; its learned proposal is a message-passing
     # network over the Hamiltonian with a Gaussian-process head, mixed with

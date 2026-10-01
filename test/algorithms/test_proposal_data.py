@@ -5,7 +5,7 @@
 
 Every proposal becomes a row -- rejected ones included, as they are the
 negative examples -- and the problem it searched is stored once.  Reached
-through ``Mandacaru(method="vasqa" | "valqa", record=...)``.
+through ``Mandacaru(method="mcas-vqe" | "valqa", record=...)``.
 """
 
 import json
@@ -36,7 +36,7 @@ def h2_hamiltonian():
     return _h2(0.74)
 
 
-def _chain(h2_hamiltonian, method="vasqa", **options):
+def _chain(h2_hamiltonian, method="mcas-vqe", **options):
     options = {"pool": "qubit", "max_steps": 12, "max_length": 4, "seed": 7,
                "profile": False, "trace": False, **options}
     return Mandacaru(method=method, hamiltonian=h2_hamiltonian,
@@ -82,7 +82,7 @@ class TestRecording:
                 assert 0.0 < row["operator_probability"] <= 1.0
             else:
                 assert row["operator_probability"] is None
-            assert row["model"] is None and row["method"] == "VASQA"
+            assert row["model"] is None and row["method"] == "MCAS-VQE"
 
     def test_a_uniform_chain_that_records_screens_the_pool(
             self, h2_hamiltonian, tmp_path):
@@ -229,11 +229,11 @@ class TestRefusals:
         path = tmp_path / "file"
         path.write_text("")
         with pytest.raises(ValueError, match="is a file"):
-            Mandacaru(method="vasqa", record=str(path))
+            Mandacaru(method="mcas-vqe", record=str(path))
 
     def test_the_parent_must_exist(self, tmp_path):
         with pytest.raises(ValueError, match="does not exist"):
-            Mandacaru(method="vasqa", record=str(tmp_path / "a" / "b"))
+            Mandacaru(method="mcas-vqe", record=str(tmp_path / "a" / "b"))
 
     def test_rows_without_their_problem_are_refused(self, h2_hamiltonian,
                                                     tmp_path):
@@ -299,7 +299,7 @@ class TestTheSharedStore:
     def test_record_true_needs_the_store(self, monkeypatch):
         monkeypatch.delenv("MANDACARU_PROPOSAL_DATA", raising=False)
         with pytest.raises(ValueError, match="MANDACARU_PROPOSAL_DATA"):
-            Mandacaru(method="vasqa", record=True)
+            Mandacaru(method="mcas-vqe", record=True)
 
     def test_without_the_store_nothing_is_recorded(self, h2_hamiltonian,
                                                    monkeypatch, tmp_path):

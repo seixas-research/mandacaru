@@ -6,7 +6,7 @@
 Everything here runs on pool *indices* and a synthetic cost, so the proposal
 probabilities and the Metropolis-Hastings chain are verified exactly -- by
 enumerating a small architecture space and building its transition matrix --
-before VQE energies enter (``test_vasqa.py``).
+before VQE energies enter (``test_mcas_vqe.py``).
 """
 
 import itertools

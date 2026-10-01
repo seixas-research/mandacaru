@@ -8,7 +8,7 @@
 
 r"""The recorded architecture edits a learned proposal is trained on.
 
-A Markov-chain ansatz search (VASQA or VALQA) run with ``record=DIR`` appends
+A Markov-chain ansatz search (MCAS-VQE or VALQA) run with ``record=DIR`` appends
 one row per proposal to ``DIR/edits.jsonl`` -- rejected proposals included, as
 they are the negative examples -- and stores the problem it searched once, in
 ``DIR/problems/<key>.npz``:

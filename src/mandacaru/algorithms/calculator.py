@@ -90,7 +90,7 @@ DEFAULT_METHOD = "adapt-vqe"
 #: The periodic names are declared by the module that implements them, so
 #: there is one place to change them.
 STABLE_METHODS = ("rhf", "uhf", "ghf", "dft", "vqe", "adapt-vqe",
-                  "subspace-vqe", "subspace-adapt-vqe", "vasqa", "valqa",
+                  "subspace-vqe", "subspace-adapt-vqe", "mcas-vqe", "valqa",
                   *BLOCH_METHODS)
 
 # Methods registered by packages outside the stable API (see
@@ -147,13 +147,13 @@ def resolve_method(name: str):
         from .mean_field import GHFDriver, RHFDriver, UHFDriver
         from .subspace import SubspaceADAPTVQE, SubspaceVQE
         from .valqa import VALQA
-        from .vasqa import VASQA
+        from .mcas_vqe import MCASVQE
         from .vqe import VQE
         classes = {"rhf": RHFDriver, "uhf": UHFDriver, "ghf": GHFDriver,
                    "dft": DFTDriver,
                    "vqe": VQE, "adapt-vqe": ADAPTVQE,
                    "subspace-vqe": SubspaceVQE,
-                   "subspace-adapt-vqe": SubspaceADAPTVQE, "vasqa": VASQA,
+                   "subspace-adapt-vqe": SubspaceADAPTVQE, "mcas-vqe": MCASVQE,
                    "valqa": VALQA}
         # The periodic drivers are these same solvers over the Born-von Karman
         # supercell, so they are built from them rather than duplicated.
@@ -372,7 +372,7 @@ class Mandacaru(Calculator):
         fixed ansatz, chosen by
         ``ansatz=``: ``"uccsd"`` or the Hamiltonian variational ansatz
         ``"hva"``), or the subspace-search variants
-        ``"subspace-vqe"`` / ``"subspace-adapt-vqe"``, or ``"vasqa"`` (a
+        ``"subspace-vqe"`` / ``"subspace-adapt-vqe"``, or ``"mcas-vqe"`` (a
         Markov-chain search over pool-operator sequences, each relaxed by VQE;
         options ``max_steps``, ``min_length`` / ``max_length``,
         ``move_weights``, ``temperature``, ``length_penalty``, ``warm_start``,
@@ -780,7 +780,7 @@ class Mandacaru(Calculator):
                 f"not write {', '.join(repr(name) for name in ignored)}: its "
                 f"run() does not go through that machinery, so the option would "
                 f"be silently ignored.  Use method='rhf', 'uhf', 'ghf', 'vqe', "
-                f"'adapt-vqe', 'vasqa' or 'valqa' for the structured log, method='vqe' "
+                f"'adapt-vqe', 'mcas-vqe' or 'valqa' for the structured log, method='vqe' "
                 f"or 'adapt-vqe' for checkpoints, or drop the option.")
 
     def _show_trace(self) -> bool:

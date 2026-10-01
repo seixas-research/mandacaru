@@ -8,7 +8,7 @@
 
 r"""VALQA: the Variational Adaptive Learnable Quantum Algorithm.
 
-VALQA is VASQA's Markov Chain Ansatz Search with a **learned** proposal
+VALQA is MCAS-VQE's Markov Chain Ansatz Search with a **learned** proposal
 (Learned-Proposal MCAS): the operator an ``insert`` or ``replace`` places is
 drawn from
 
@@ -19,17 +19,17 @@ drawn from
 
 where :math:`p_{\mathrm{ML}}` comes from a graph network over the qubit
 Hamiltonian with a Gaussian-process head
-(:mod:`~mandacaru.algorithms.proposal_model`) and :math:`p_\nabla` is VASQA's
+(:mod:`~mandacaru.algorithms.proposal_model`) and :math:`p_\nabla` is MCAS-VQE's
 gradient softmax.  Moves, positions, relaxation and the Metropolis-Hastings
-test are VASQA's: the model is frozen for the run, and the distribution at a
+test are MCAS-VQE's: the model is frozen for the run, and the distribution at a
 state is a fixed function of that state, evaluated at the current state for
 the forward probability and at the proposed one for the reverse, so the
 ratio stays exact.
 
-The model starts where VASQA is.  Without ``proposal_model``, or with a model
+The model starts where MCAS-VQE is.  Without ``proposal_model``, or with a model
 whose readiness check failed (too few recorded edits, or no measurable gain
 over the gradient heuristic on held-out molecules), :math:`\varepsilon = 1`
-and VALQA draws exactly what VASQA's gradient proposal draws -- the same chain
+and VALQA draws exactly what MCAS-VQE's gradient proposal draws -- the same chain
 for the same seed.  The data comes from the chains of either method, which
 record into the shared store ``MANDACARU_PROPOSAL_DATA`` by default;
 :func:`~mandacaru.algorithms.proposal_model.train_proposal_model` assesses
@@ -39,9 +39,11 @@ where the next VALQA run picks it up.
 Along a trajectory (an ASE relaxation, scan or dynamics) the proposal at a
 geometry is conditioned on the previous geometry's Hamiltonian as well,
 :math:`q(C' \mid C_n, H_n, H_{n+1})`, and with
-``update_between_geometries=True`` the Gaussian process takes in the
-insertions each geometry evaluated before the next chain starts -- scored
-first, test-then-train.  Every chain runs with one frozen model either way.
+``update_between_geometries=True`` the offline model is replaced by an
+online one, updated with the insertions each geometry evaluated before the
+next chain starts -- scored first, test-then-train.  The online model takes
+the offline model's place in the mixture; the gradient proposal keeps its
+share.  Every chain runs with one frozen model either way.
 """
 
 from __future__ import annotations
@@ -52,13 +54,14 @@ from dataclasses import dataclass
 import numpy as np
 
 from .proposal_data import MODEL_FILE, shared_store
-from .proposal_model import ProposalModel, _spearman, training_examples
-from .vasqa import MarkovChainSearch, VASQAResult
+from .proposal_model import (ProposalModel, _spearman,
+                             training_examples, within_state)
+from .mcas_vqe import MarkovChainSearch, MCASVQEResult
 
 
 @dataclass(repr=False)
-class VALQAResult(VASQAResult):
-    """A VASQA result plus the proposal model that drew the operators.
+class VALQAResult(MCASVQEResult):
+    """A MCAS-VQE result plus the proposal model that drew the operators.
 
     ``proposal_model`` is the model's version (``None`` without a model) and
     ``model_ready`` whether it was used: ``False`` means the gradient
@@ -76,7 +79,7 @@ class VALQA(MarkovChainSearch):
     """VALQA: the Markov chain with a learned operator proposal.
 
     Takes every option of
-    :class:`~mandacaru.algorithms.vasqa.MarkovChainSearch` and
+    :class:`~mandacaru.algorithms.mcas_vqe.MarkovChainSearch` and
 
     Parameters
     ----------
@@ -89,10 +92,15 @@ class VALQA(MarkovChainSearch):
         the gradient softmax is in effect.  Loaded at construction, frozen
         for the run.
     update_between_geometries : bool
-        Along an ASE trajectory, condition the model's Gaussian process on
-        the insertions the previous geometry's chain evaluated before this
-        chain starts (default ``False``).  The network and the kernel stay as
-        trained, and the model is still frozen for each chain.  The previous
+        Along an ASE trajectory, replace the offline model with an online
+        one, updated with the insertions the previous geometry's chain
+        evaluated before this chain starts (default ``False``): a ranker
+        model takes a sequential Bayesian step on the new within-state pairs
+        (:meth:`~mandacaru.algorithms.proposal_model.PairwiseRanker.update`),
+        a graph model conditions its Gaussian process with the network and
+        kernel as trained.  The online model takes the offline model's place
+        in the mixture; the gradient proposal keeps its share
+        (:math:`\varepsilon`).  The model is still frozen for each chain.  The previous
         geometry's insertions are scored first by the model that has not
         seen them (the ``model_update`` line and result field), so the
         update is test-then-train.  The updated model lives for the
@@ -159,30 +167,48 @@ class VALQA(MarkovChainSearch):
             self._model = model
             return (f"none (the previous geometry evaluated no insertion); "
                     f"model {model.version} carried over")
-        predicted, observed = [], []
-        for example in examples:
-            mean, _ = model.predict(
-                example.graph.arrays() if model.use_graph else None,
-                example.rows,
-                example.previous.arrays()
-                if model.use_graph and example.previous is not None else None)
-            predicted.append(mean)
-            observed.append((example.target - model.target_mean)
-                            / model.target_std)
-        predicted = np.concatenate(predicted)
-        observed = np.concatenate(observed)
-        rmse = float(np.sqrt(np.mean((predicted - observed) ** 2)))
-        spearman = _spearman(predicted, observed)
+        if model.kind == "ranker":
+            # Scored on its decision: the order of the insertions of a state.
+            score = -np.concatenate([model.ranker.scores(e.rows)
+                                     for e in examples])
+            within = within_state({"model": score}, examples)
+            spearman = within["model"]["spearman"]
+            scored = (f"{within['states']} state(s) with several insertions"
+                      + ("" if math.isnan(spearman)
+                         else f", within-state Spearman {spearman:.3f}"))
+        else:
+            predicted, observed = [], []
+            for example in examples:
+                mean, _ = model.predict(
+                    example.graph.arrays() if model.use_graph else None,
+                    example.rows,
+                    example.previous.arrays()
+                    if model.use_graph and example.previous is not None
+                    else None)
+                predicted.append(mean)
+                observed.append((example.target - model.target_mean)
+                                / model.target_std)
+            predicted = np.concatenate(predicted)
+            observed = np.concatenate(observed)
+            rmse = float(np.sqrt(np.mean((predicted - observed) ** 2)))
+            spearman = _spearman(predicted, observed)
+            scored = (f"RMSE {rmse:.3f} standardized"
+                      + ("" if math.isnan(spearman)
+                         else f", Spearman {spearman:.3f}"))
         self._model = model.condition(examples)
-        rank = ("" if math.isnan(spearman)
-                else f", Spearman {spearman:.3f}")
         return (f"{n} insertion(s) of geometry {self._step - 1} scored before "
-                f"conditioning (RMSE {rmse:.3f} standardized{rank}); model "
-                f"{model.version} -> {self._model.version}")
+                f"the update ({scored}); model {model.version} -> "
+                f"{self._model.version}")
 
     def _prepare_proposal(self, problem) -> None:
-        if self.update_between_geometries and self._model_in_use:
-            self._update = self._update_model()
+        if self.update_between_geometries:
+            if self._model_in_use:
+                self._update = self._update_model()
+            elif self._model is None:
+                self._update = "none (no proposal model)"
+            else:
+                self._update = (f"none (model {self._model.version} is not "
+                                f"ready)")
         self._bound = (self._model.bind(problem, self._previous_problem())
                        if self._model_in_use and problem is not None
                        else None)
@@ -207,8 +233,10 @@ class VALQA(MarkovChainSearch):
             reason = self._model.report.get("reason", "readiness unknown")
             text = f"{gradient}; model {self._model.version} not ready: {reason}"
         else:
-            text = (f"learned GNN-GP (model {self._model.version}) mixed with "
-                    f"{gradient}, epsilon {self._model.mixing:g}")
+            name = {"graph": "GNN-GP", "ranker": "pairwise ranker"}.get(
+                self._model.kind, self._model.kind)
+            text = (f"learned {name} (model {self._model.version}) mixed "
+                    f"with {gradient}, epsilon {self._model.mixing:g}")
         if self.update_between_geometries:
             text += f"; updated between geometries: {self._update or 'none'}"
         return {"proposal": f"{text}, Metropolis-Hastings",

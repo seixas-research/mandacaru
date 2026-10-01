@@ -28,7 +28,7 @@ method's own:
   the reference (Hartree-Fock) energy the run starts from;
 * the method's **progress table**, when it has one: ADAPT-VQE's
   ``[ITERATIONS]`` (one row per accepted operator, :meth:`Logger.write_iteration`)
-  or VASQA's ``[MARKOV CHAIN]`` (one row per proposal,
+  or MCAS-VQE's ``[MARKOV CHAIN]`` (one row per proposal,
   :meth:`Logger.write_chain_step`).  A fixed-ansatz VQE has neither: its
   optimization is a single classical minimization;
 * a **summary** block with the final variational state;
@@ -731,7 +731,7 @@ class Logger:
                 self._emit_body(f"[{i:3d}] {op.label}  "
                                 f"|grad|={abs(grads[i]):.6e}{marker}", level=2)
 
-    # -- Markov-chain table (VASQA) ---------------------------------------- #
+    # -- Markov-chain table (MCAS-VQE) ---------------------------------------- #
 
     #: Columns of the ``[MARKOV CHAIN]`` table, one row per proposal:
     #: ``(key, heading, width, format)``.  ``energy`` is the relaxed energy of
@@ -771,7 +771,7 @@ class Logger:
                          energy_unit: str = "eV",
                          optimizer_steps: int | None = None,
                          action: str = "") -> None:
-        """Append **one row** of the ``[MARKOV CHAIN]`` table (VASQA).
+        """Append **one row** of the ``[MARKOV CHAIN]`` table (MCAS-VQE).
 
         The counterpart of :meth:`write_iteration` for a chain: one row per
         proposal, accepted or not (:data:`CHAIN_COLUMNS`).  Energies are in

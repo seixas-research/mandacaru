@@ -61,18 +61,18 @@ class TestCommandLineOptions:
 
 
 class TestMarkovChainOptions:
-    """The ``--method vasqa`` flags, forwarded only when given."""
+    """The ``--method mcas-vqe`` flags, forwarded only when given."""
 
     def _options(self, *argv):
         return solver_options(build_parser().parse_args(
-            ["H2", "--cell", "6", "--method", "vasqa", *argv]))
+            ["H2", "--cell", "6", "--method", "mcas-vqe", *argv]))
 
     def test_nothing_given_forwards_nothing(self):
         options = self._options()
         for name in ("max_steps", "max_length", "move_weights", "temperature",
                      "length_penalty", "warm_start", "replace_start",
                      "transfer", "transfer_steps", "transfer_threshold",
-                     "seed", "proposal",
+                     "rebuild_every", "seed", "proposal",
                      "proposal_temperature", "record", "proposal_model"):
             assert name not in options
 
@@ -91,8 +91,10 @@ class TestMarkovChainOptions:
     def test_the_transfer_flags_reach_their_options(self):
         options = self._options("--transfer", "--transfer-steps", "6",
                                 "--replace-start", "inherit",
-                                "--transfer-threshold", "0.8")
+                                "--transfer-threshold", "0.8",
+                                "--rebuild-every", "5")
         assert options["transfer_threshold"] == 0.8
+        assert options["rebuild_every"] == 5
         assert options["transfer"] is True
         assert options["transfer_steps"] == 6
         assert options["replace_start"] == "inherit"
@@ -101,10 +103,11 @@ class TestMarkovChainOptions:
         options = solver_options(build_parser().parse_args(
             ["H2", "--cell", "6", "--method", "valqa", "--record", "edits",
              "--proposal-model", "model.npz",
-             "--update-between-geometries"]))
+             "--update-between-geometries", "--screen-insertions", "3"]))
         assert options["record"] == "edits"
         assert options["proposal_model"] == "model.npz"
         assert options["update_between_geometries"] is True
+        assert options["screen_insertions"] == 3
 
     def test_no_record_turns_the_shared_store_off(self):
         assert self._options("--no-record")["record"] is False
@@ -116,7 +119,7 @@ class TestMarkovChainOptions:
 
     def test_three_temperatures_are_a_usage_error(self, capsys):
         with pytest.raises(SystemExit) as raised:
-            main(["H2", "--cell", "6", "--method", "vasqa", "--dry-run",
+            main(["H2", "--cell", "6", "--method", "mcas-vqe", "--dry-run",
                   "--temperature", "1", "2", "3"])
         assert raised.value.code == 2
         assert "--temperature" in capsys.readouterr().err
@@ -144,13 +147,13 @@ class TestMarkovChainOptions:
         assert raised.value.code == 2
         assert "does not take" in capsys.readouterr().err
 
-    def test_a_vasqa_dry_run_accepts_them(self, capsys):
-        assert main(["H2", "--cell", "6", "--method", "vasqa", "--dry-run",
+    def test_a_mcas_vqe_dry_run_accepts_them(self, capsys):
+        assert main(["H2", "--cell", "6", "--method", "mcas-vqe", "--dry-run",
                      "--max-steps", "5", "--seed", "3", "--temperature",
                      "0.1", "0.01", "--move-weight", "swap=0.5"]) == 0
 
     def test_a_short_chain_runs_end_to_end(self, capsys):
-        assert main(["H2", "--cell", "5", "--h", "0.4", "--method", "vasqa",
+        assert main(["H2", "--cell", "5", "--h", "0.4", "--method", "mcas-vqe",
                      "--max-steps", "4", "--seed", "3", "--quiet"]) == 0
 
 

@@ -37,9 +37,9 @@ circuit template, ``"uccsd"`` (the default) or ``"hva"``, and its options.
 Markov Chain Ansatz Search
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The architecture chain behind ``method="vasqa"``: the four moves, their summed
+The architecture chain behind ``method="mcas-vqe"``: the four moves, their summed
 proposal probabilities, the Metropolis-Hastings test and the temperature
-schedule.  See :doc:`tutorial/vasqa`.
+schedule.  See :doc:`tutorial/mcas_vqe`.
 
 .. automodule:: mandacaru.algorithms.mcas
    :members:

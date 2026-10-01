@@ -41,7 +41,7 @@ it is refused with a message pointing at `trace=`.
 ```{note}
 `txt=` is accepted only by a method whose `run()` goes through this protocol —
 `"rhf"`, `"uhf"`, `"ghf"`, `"dft"`, `"vqe"` (including `ansatz="hva"`), `"adapt-vqe"`,
-`"vasqa"` and `"valqa"` today — and refused with a message by the others rather than
+`"mcas-vqe"` and `"valqa"` today — and refused with a message by the others rather than
 leaving an empty file. `"subspace-vqe"` and `"subspace-adapt-vqe"` print their
 own run header, which is not this one.
 
@@ -99,7 +99,7 @@ they read `-`.
 
 ## The Markov-chain table
 
-`method="vasqa"` and `method="valqa"` write the same blocks, with one
+`method="mcas-vqe"` and `method="valqa"` write the same blocks, with one
 difference: their
 `[OPTIMIZATION SETUP]` holds the chain's settings (moves, temperature, length
 penalty, seed, `replace_start`), and `start`, which says where the chain

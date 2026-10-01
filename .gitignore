@@ -180,9 +180,8 @@ HISTORY.md
 VERSION_DESCRIPTION.md
 PAW_SAGA.md
 TODO.md
-MCAS.md
-LP-MCAS.md
-new_MCAS.md
+VALQA_PLAN.md
+DFT_PLAN.md
 
 # CODEX
 codex/
@@ -206,6 +205,5 @@ docs/index.html
 
 # others
 examples/references.bib
-examples/output_*
-examples/data/references.bib
-examples/data/output_*
+examples/old/*
+exemples/new/outputs/*

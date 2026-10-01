@@ -15,7 +15,7 @@ reduce it with the Hamiltonian under a Z2 taper, pick the particle-number
 sector every generator stays inside, materialize the generators in the run's
 representation (dense, sparse, sector or matrix-free) and hand out empty
 product-of-exponentials ansatze on that register.  :class:`PoolDriver` does
-that once, for ADAPT-VQE (which grows the ansatz by gradient) and VASQA (which
+that once, for ADAPT-VQE (which grows the ansatz by gradient) and MCAS-VQE (which
 searches it with a Markov chain) alike.
 """
 
