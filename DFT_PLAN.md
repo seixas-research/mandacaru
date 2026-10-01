@@ -47,13 +47,26 @@ passes except the pre-existing ONCV library-drift test
   H2O); k-mesh equals its supercell to 1e-8 Ha/cell (Si 2x2x2); Al metal with
   three smearings.
 
-### 1.3 Validation still in flight
+### 1.3 Periodic validation (Vera, 2026-10-01) -- passed
 
-- Vera's periodic validation (Si equation of state and gap, Al k/smearing
-  convergence, grid insensitivity, rigid-translation invariance) was running
-  when work stopped. **Read its report first next session** (agent memory under
-  `.claude/agent-memory/vera-validator/`) and fix anything it flags before
-  starting Phase A.
+PAW-LCAO LDA, DZP, h = 0.25 Angstrom, Gamma-centered meshes; independent
+reference pyscf (GTH-pade, gth-dzvp) for trends:
+
+- Si equation of state: a0 = 5.495 Angstrom, B = 90 GPa at 4x4x4 (~5.487 /
+  89 with the 6x6x6 shift); pyscf 5.431 / 92. 1.1 % above pyscf, 1.6 % above
+  plane-wave LDA (see K9).
+- Si gaps (a = 5.4): mesh indirect 0.963 (4x4x4) / 0.846 eV (6x6x6) against
+  pyscf 0.656 / 0.682; Gamma direct 2.69 / 2.70 against 2.60 / 2.62. The
+  Gamma15/Gamma2' crossing at 5.6 Angstrom (gap 2.04 eV) is reproduced by
+  pyscf.
+- Al: smearing choices agree to 1.9 meV at 6x6x6; F <= E for FD/Gaussian;
+  entropy formulas verified by finite difference to 1e-11; electron count
+  exact; k-mesh not converged at 8x8x8 (Gamma-centered fcc), same pattern in
+  pyscf (4 -> 6: -0.384 vs -0.387 eV).
+- Grid insensitivity at fixed filter: 1.8e-6 Ha spread over h = 0.30 / 0.25 /
+  0.20; rigid translation of the atoms by 0.1 Angstrom: 7e-7 Ha.
+- Vera's memory: `.claude/agent-memory/vera-validator/periodic-bloch-dft-si-al-2026-10-01.md`;
+  scripts in `/tmp/vera_pbc/` (not durable).
 
 ---
 
@@ -69,6 +82,9 @@ passes except the pre-existing ONCV library-drift test
 | K6 | Crystal examples missing; Doug's docs predate the crystal path | `examples/new/`, `docs/source/guide/dft.md` | Doug: a Si band-gap example and an Al smearing example (outputs under `examples/new/outputs/`). |
 | K7 | Pre-existing "GPAW" in docstrings/docs (FYI from Rita) | `basis/filtering.py`, `pseudopotentials/confinement.py`, guides | User decision: the clean-room rule was for new work; check `dry_run.py` and `basis_report.py` at least never print it. |
 | K8 | `DFT_PLAN.md` itself | repo root | Allowed in `test_repo_hygiene.py::ROOT_ALLOWED`; decide whether it is gitignored like `TODO.md`. |
+| K9 | Si lattice constant 0.06 Angstrom (1.1 %) above pyscf/gth-dzvp | basis vs dataset | Scan basis size (DZP -> TZP) and the filter cutoff at fixed h; if it persists, compare the Si dataset's atomic properties. Not a code bug as far as known. |
+| K10 | Absolute eigenvalues and the Fermi level shift with h (lowest Si level -8.76 / -7.98 / -7.10 eV at h = 0.30 / 0.25 / 0.20) while energies and gaps do not | `algorithms/periodic_dft.py::_potentials` | The G = 0 of the electrostatic potential is dropped, so the eigenvalue zero is arbitrary and grid-dependent. Fix the reference (e.g. the average of the total local potential, including the short-range parts the grid does not carry) or document that eigenvalues are relative; until then never compare Fermi levels across h. |
+| K11 | `band_gap` is a mesh gap (upper bound: the Si CBM is off-mesh) | `PeriodicKohnShamResult.band_gap` | Say so in the docstring and the guide; Phase B's band paths give the true gap. |
 
 ---
 
