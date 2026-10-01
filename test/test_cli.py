@@ -70,7 +70,9 @@ class TestMarkovChainOptions:
     def test_nothing_given_forwards_nothing(self):
         options = self._options()
         for name in ("max_steps", "max_length", "move_weights", "temperature",
-                     "length_penalty", "warm_start", "seed", "proposal",
+                     "length_penalty", "warm_start", "replace_start",
+                     "transfer", "transfer_steps", "transfer_threshold",
+                     "seed", "proposal",
                      "proposal_temperature", "record", "proposal_model"):
             assert name not in options
 
@@ -86,12 +88,23 @@ class TestMarkovChainOptions:
         assert options["warm_start"] is False and options["seed"] == 11
         assert options["pool"] == "qeb"
 
+    def test_the_transfer_flags_reach_their_options(self):
+        options = self._options("--transfer", "--transfer-steps", "6",
+                                "--replace-start", "inherit",
+                                "--transfer-threshold", "0.8")
+        assert options["transfer_threshold"] == 0.8
+        assert options["transfer"] is True
+        assert options["transfer_steps"] == 6
+        assert options["replace_start"] == "inherit"
+
     def test_the_recording_and_model_flags_reach_valqa(self):
         options = solver_options(build_parser().parse_args(
             ["H2", "--cell", "6", "--method", "valqa", "--record", "edits",
-             "--proposal-model", "model.npz"]))
+             "--proposal-model", "model.npz",
+             "--update-between-geometries"]))
         assert options["record"] == "edits"
         assert options["proposal_model"] == "model.npz"
+        assert options["update_between_geometries"] is True
 
     def test_no_record_turns_the_shared_store_off(self):
         assert self._options("--no-record")["record"] is False
@@ -121,7 +134,7 @@ class TestMarkovChainOptions:
         assert raised.value.code == 2
 
     @pytest.mark.parametrize("flag", [["--max-steps", "5"], ["--seed", "1"],
-                                      ["--no-warm-start"],
+                                      ["--no-warm-start"], ["--transfer"],
                                       ["--proposal", "uniform"],
                                       ["--temperature", "0.1"]])
     def test_another_method_refuses_them(self, flag, capsys):

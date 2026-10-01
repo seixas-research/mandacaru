@@ -341,3 +341,118 @@ class TestCalculatorMode:
         assert forces.shape == (2, 3) and np.all(np.isfinite(forces))
         # Newton's third law along the bond.
         assert forces[0, 2] == pytest.approx(-forces[1, 2], abs=1e-3)
+
+
+def _h2_at(distance):
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, distance]])
+    atoms.center(vacuum=2.5)
+    return atoms
+
+
+class TestTransferBetweenGeometries:
+    """``transfer=True``: each geometry's chain starts from the ansatz the
+    previous geometry reported."""
+
+    def _calc(self, **options):
+        options = {"basis": "HAO", "h": 0.4, "pool": "qeb", "max_steps": 15,
+                   "max_length": 4, "seed": 3, "profile": False,
+                   "trace": False, "record": False, **options}
+        return Mandacaru(method="vasqa", **options)
+
+    def _energies(self, calc, distances):
+        results = []
+        for distance in distances:
+            atoms = _h2_at(distance)
+            atoms.calc = calc
+            atoms.get_potential_energy()
+            results.append(calc.result)
+        return results
+
+    def test_the_next_geometry_starts_from_the_previous_ansatz(self):
+        first, second = self._energies(
+            self._calc(transfer=True, transfer_steps=3), (0.74, 0.78))
+        assert first.start.endswith("(transfer: no previous geometry)")
+        assert first.start_operators == []
+        assert second.start.startswith("previous geometry's ansatz")
+        assert second.start_operators == first.operators
+        assert len(second.steps) == 3 and len(first.steps) == 15
+        assert second.edit_distance_from_start == 0
+        # The short local search lands where a full rebuild does.
+        (rebuilt,) = self._energies(self._calc(), (0.78,))
+        assert second.optimal_energy == pytest.approx(rebuilt.optimal_energy,
+                                                      abs=1e-6)
+        assert second.num_evaluations < rebuilt.num_evaluations
+
+    def test_without_transfer_every_geometry_starts_empty(self):
+        _, second = self._energies(self._calc(), (0.74, 0.78))
+        assert second.start == "empty ansatz"
+        assert second.start_operators == [] and len(second.steps) == 15
+
+    def test_the_start_is_in_the_run_log(self, tmp_path):
+        txt = tmp_path / "out.txt"
+        self._energies(self._calc(transfer=True, transfer_steps=2,
+                                  txt=str(txt)), (0.74, 0.78))
+        text = txt.read_text()
+        assert "previous geometry's ansatz" in text
+        assert "edit_distance_from_start" in text
+
+    def test_only_a_chain_of_the_same_method_passes_its_ansatz_on(self):
+        valqa = Mandacaru(method="valqa", basis="HAO", h=0.4, transfer=True,
+                          proposal_model=False, record=False, trace=False)
+        vasqa = self._calc(transfer=True)
+        atoms = _h2_at(0.74)
+        atoms.calc = vasqa
+        atoms.get_potential_energy()
+        valqa.solver.inherit_ansatz(vasqa.solver)
+        assert valqa.solver._inherited is None
+
+
+class TestTransferRefusals:
+    """A transferred ansatz the new problem cannot use is dropped, and the
+    log says why."""
+
+    def _run(self, h2_hamiltonian, operators, angles, pool_labels=None,
+             **options):
+        from mandacaru.algorithms.vasqa import _Inherited
+        calc = _vasqa(h2_hamiltonian, transfer=True, max_steps=2, **options)
+        labels = [op.label for op in calc.solver._pool_ops]
+        calc.solver._inherited = _Inherited(
+            operators=list(operators), angles=np.asarray(angles),
+            pool_labels=labels if pool_labels is None else pool_labels,
+            symbols=None, orbitals="no molecular orbitals (a Hamiltonian "
+                                   "given directly)")
+        return calc.run()
+
+    def test_another_pool_is_not_a_previous_geometry(self, h2_hamiltonian):
+        result = self._run(h2_hamiltonian, ["S(0->1)"], [0.1],
+                           pool_labels=["S(0->1)"])
+        assert "another system or pool" in result.start
+        assert result.start_operators == []
+
+    def test_an_ansatz_longer_than_max_length(self, h2_hamiltonian):
+        calc = _vasqa(h2_hamiltonian)
+        labels = [op.label for op in calc.solver._pool_ops]
+        result = self._run(h2_hamiltonian, labels[:2], np.zeros(2),
+                           max_length=1)
+        assert "> max_length 1" in result.start
+
+    def test_a_usable_ansatz_is_relaxed_and_kept(self, h2_hamiltonian,
+                                                 sector_ground_ev):
+        best = _vasqa(h2_hamiltonian, max_steps=40).run()
+        result = self._run(h2_hamiltonian, best.operators,
+                           best.optimal_parameters)
+        assert result.start_operators == best.operators
+        assert "orbitals not tracked: no molecular orbitals" in result.start
+        assert result.optimal_energy == pytest.approx(sector_ground_ev,
+                                                      abs=1e-6)
+
+
+class TestTransferOptions:
+    @pytest.mark.parametrize("options, match", [
+        ({"transfer": "yes"}, "transfer must be"),
+        ({"transfer_steps": -1}, "transfer_steps"),
+        ({"transfer_threshold": 1.5}, "transfer_threshold"),
+        ({"replace_start": "random"}, "replace_start")])
+    def test_bad_values_are_refused_at_construction(self, options, match):
+        with pytest.raises(ValueError, match=match):
+            Mandacaru(method="vasqa", **options)

@@ -405,6 +405,24 @@ def build_parser() -> argparse.ArgumentParser:
                        action="store_const", const=False, default=None,
                        help="relax every proposal from zero angles (a fixed "
                             "cost per ansatz) instead of the current ones")
+    chain.add_argument("--replace-start", default=None,
+                       choices=("zero", "inherit"),
+                       help="angle a replacing operator starts from: zero "
+                            "(default) or the replaced operator's")
+    chain.add_argument("--transfer", dest="transfer", action="store_const",
+                       const=True, default=None,
+                       help="along a relaxation or scan, start each "
+                            "geometry's chain from the previous geometry's "
+                            "ansatz and angles")
+    chain.add_argument("--transfer-steps", type=int, default=None,
+                       metavar="N",
+                       help="chain length when the start was transferred "
+                            "(default --max-steps)")
+    chain.add_argument("--transfer-threshold", type=float, default=None,
+                       metavar="S",
+                       help="smallest matched orbital overlap between "
+                            "geometries at which the ansatz is still "
+                            "transferred (default 0.9)")
     chain.add_argument("--record", metavar="DIR", default=None,
                        help="append every proposal, and the problem searched, "
                             "to DIR instead of the shared store "
@@ -419,6 +437,11 @@ def build_parser() -> argparse.ArgumentParser:
                             "the shared store's, when it has one); without "
                             "one, or while it is not ready, the gradient "
                             "proposal is in effect")
+    chain.add_argument("--update-between-geometries", action="store_const",
+                       const=True, default=None,
+                       help="valqa only: along a relaxation or scan, "
+                            "condition the model's Gaussian process on each "
+                            "geometry's insertions before the next chain")
     chain.add_argument("--seed", type=int, default=None,
                        help="seed of the chain's random stream")
     return parser
@@ -507,8 +530,11 @@ def solver_options(args) -> dict:
     # --txt run.txt` used to run and write nothing.
     for name in ("pool", "ansatz", "max_iterations", "txt", "num_states",
                  "multiplicity", "references", "max_steps", "max_length",
-                 "length_penalty", "warm_start", "seed", "proposal",
-                 "proposal_temperature", "record", "proposal_model", "xc",
+                 "length_penalty", "warm_start", "replace_start",
+                 "transfer", "transfer_steps", "transfer_threshold", "seed",
+                 "proposal",
+                 "proposal_temperature", "record", "proposal_model",
+                 "update_between_geometries", "xc",
                  "dispersion"):
         value = getattr(args, name)
         if value is not None:

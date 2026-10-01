@@ -43,8 +43,6 @@ The function mirrors :class:`~mandacaru.core.hamiltonian.MolecularIntegrals`
 step for step; :func:`energy_from_integrals` is checked against the driver's own
 energy in the test suite, which is what guarantees the derivatives describe the
 right function.
-
-Requires ``jax``; :func:`jax_available` reports whether it can be imported.
 """
 
 from __future__ import annotations
@@ -52,23 +50,9 @@ from __future__ import annotations
 import numpy as np
 
 
-def jax_available() -> bool:
-    """True when JAX can be imported (the differentiable layer is usable)."""
-    from importlib.util import find_spec
-
-    return find_spec("jax") is not None
-
-
-def _require_jax():
-    try:
-        import jax
-        import jax.numpy as jnp
-    except ImportError as exc:                      # pragma: no cover
-        raise ImportError(
-            "force_method='scf-response' uses JAX to differentiate the algebraic "
-            "layer (Loewdin orthogonalization, SCF, integral transforms); "
-            "install it with `pip install mandacaru[legacy-forces]`, or use the "
-            "default force_method='rdm', which needs no JAX") from exc
+def _jax():
+    import jax
+    import jax.numpy as jnp
     # Gradients of a quantum-chemical energy are meaningless in float32.
     jax.config.update("jax_enable_x64", True)
     return jax, jnp
@@ -254,7 +238,7 @@ def energy_from_integrals(S, h_ao, eri_ao, gamma, gamma2, *, n_electrons,
     Written entirely in ``jax.numpy``, so :func:`integral_gradients` can
     differentiate it with respect to ``S``, ``h_ao`` and ``eri_ao``.
     """
-    _jax, jnp = _require_jax()
+    _, jnp = _jax()
     S = jnp.asarray(np.real(S))
     h = jnp.asarray(np.real(h_ao))
     eri = jnp.asarray(np.real(eri_ao))
@@ -330,7 +314,7 @@ def integral_gradients(S, h_ao, eri_ao, gamma, gamma2, **kwargs):
     Contracted with the corresponding integral derivatives with respect to the
     nuclear coordinates, these give the Pulay contribution to the force.
     """
-    jax, _jnp = _require_jax()
+    jax, _jnp = _jax()
     kwargs = dict(kwargs)
     kwargs["scf_iterations"] = _resolve_scf_iterations(S, h_ao, eri_ao, kwargs)
 

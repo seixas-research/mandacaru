@@ -46,6 +46,10 @@ schedule.  See :doc:`tutorial/vasqa`.
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: mandacaru.algorithms.orbital_tracking
+   :members: OrbitalMatch, OrbitalSnapshot, orbital_overlap,
+             match_orbitals, occupation_blocks, transfer_ansatz
+
 Learned Proposals
 ~~~~~~~~~~~~~~~~~
 

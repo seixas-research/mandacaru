@@ -29,15 +29,13 @@ from ase import Atoms
 
 from mandacaru.algorithms import Mandacaru, nuclear_gradient, one_rdm, two_rdm
 from mandacaru.algorithms._jax_energy import (energy_from_integrals,
-                                              integral_gradients, jax_available)
+                                              integral_gradients)
 from mandacaru.algorithms.rdm import electronic_energy, particle_number
 from mandacaru.core.hamiltonian import spin_block_integrals
 from mandacaru.integrals import Grid
 from mandacaru.units import HARTREE_TO_EV
 import warnings
 from mandacaru.utils import parse_output
-
-needs_jax = pytest.mark.skipif(not jax_available(), reason="jax not installed")
 
 BOX, SPACING = 6.0, 0.20
 
@@ -114,7 +112,6 @@ class TestReducedDensityMatrices:
 # The differentiable algebraic layer.
 # --------------------------------------------------------------------------- #
 
-@needs_jax
 class TestJaxEnergyLayer:
     @staticmethod
     def _raw_integrals(integrals):
@@ -191,7 +188,6 @@ def driver_energy(atoms, grid) -> float:
     return work.calc.result.optimal_energy
 
 
-@needs_jax
 class TestForcesMatchFiniteDifference:
     def test_every_component(self, fixed_grid):
         atoms = h2(0.74)
@@ -234,7 +230,6 @@ class TestForcesMatchFiniteDifference:
         assert compressed[0, 2] < 0 and compressed[1, 2] > 0  # repulsive
 
 
-@needs_jax
 class TestPulayContribution:
     def test_pulay_is_large_and_opposes_hellmann_feynman(self, fixed_grid):
         """The reason Hellmann-Feynman alone is not enough for this basis."""
@@ -387,7 +382,6 @@ class TestIsolatedAtom:
             isolated_atom_force("He", 2, spacing=0.20, form="magic")
 
 
-@needs_jax
 class TestByPartsMode:
     """The by-parts mode is a diagnostic, not a better force -- pin that."""
 
@@ -450,7 +444,6 @@ class TestByPartsMode:
 # The ASE calculator.
 # --------------------------------------------------------------------------- #
 
-@needs_jax
 class TestMandacaru:
     def test_implements_energy_and_forces(self):
         calc = Mandacaru(method="vqe", basis="HAO", h=SPACING)

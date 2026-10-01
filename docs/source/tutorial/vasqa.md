@@ -42,7 +42,9 @@ $ mandacaru H2 --cell 5.5 --h 0.25 --method vasqa --pool qeb \
 the second), `--proposal uniform` and `--proposal-temperature` choose how new
 operators are drawn, `--move-weight swap=0` changes one move's weight and
 leaves the others at 1, and `--no-warm-start` relaxes every proposal from zero
-angles.
+angles. `--replace-start inherit` lets a `replace` start the new operator from
+the angle of the one it replaces (default `zero`), and `--transfer` and
+`--transfer-steps N` are described under "Along a trajectory" below.
 Energies on the command line are in eV.
 
 The pool is any of those ADAPT-VQE uses: `"fermionic"`, `"qubit"`, `"qeb"`,
@@ -171,6 +173,83 @@ the optimizer's $\widehat E(C)$. A local optimizer does not certify the global
 minimum over the angles.
 
 ---
+
+## Along a trajectory
+
+In an ASE relaxation, scan or dynamics run, every geometry is its own chain,
+and by default each one starts from the empty ansatz. With `transfer=True`, a
+geometry's chain starts from the ansatz the previous geometry reported
+instead: its operators and, with `warm_start=True`, its angles (with
+`warm_start=False` only the operators are carried and the angles start from
+zero). Because the new start is usually close to the answer, `transfer_steps`
+sets a shorter chain for it, and that is where the saving comes from.
+
+```python
+from ase import Atoms
+from ase.optimize import BFGS
+from mandacaru import Mandacaru
+
+atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.80]])
+atoms.center(vacuum=2.5)
+atoms.calc = Mandacaru(method="vasqa",
+                       basis="HAO",
+                       h=0.25,
+                       pool="qeb",
+                       max_steps=30,          # the first geometry, from empty
+                       transfer=True,
+                       transfer_steps=6,      # every later geometry
+                       length_penalty=1e-3,
+                       seed=1234)
+BFGS(atoms).run(fmax=0.05)
+
+result = atoms.calc.result                    # the last geometry's chain
+print(result.start)                           # where this chain began
+print(result.start_operators)                 # the architecture it began with
+print(result.edit_distance_from_start)        # moves to the reported ansatz
+```
+
+The same is `--transfer --transfer-steps 6` on the command line
+(`--transfer-threshold S` sets the overlap threshold).
+
+Each geometry's molecular orbitals come from their own mean-field
+calculation, which may flip an orbital's sign or, where two orbital energies
+cross, exchange two orbitals. Before the transfer, the chain therefore
+follows the orbitals from the previous geometry to this one
+(`mandacaru.algorithms.orbital_tracking`). It overlaps the two sets on the
+grid, matches each orbital to its largest overlap inside its occupation block
+(doubly occupied, singly occupied, empty), renames the operators of
+exchanged orbitals, and flips the angle of every excitation that is odd in a
+flipped orbital. The `start` line reports how many orbitals were reordered
+and aligned, and the smallest matched overlap.
+
+The transferred ansatz is relaxed at the new geometry first, and the chain
+starts from it only if its cost lies below the reference's. Otherwise the
+chain falls back to the empty ansatz, with the full `max_steps`, and says why
+in the `start` line of `[OPTIMIZATION SETUP]` (and in `result.start`). The
+possible reasons are:
+
+- there was no previous geometry;
+- the previous geometry was another molecule or pool;
+- an orbital's best match is below `transfer_threshold` (default 0.9),
+  which is the sign of an electronic reorganization rather than a
+  relabeling;
+- an operator cannot be followed through the matching;
+- the ansatz is longer than `max_length`;
+- it relaxed to no better than the reference. `result.edit_distance_from_start` is the
+number of insert, delete and replace moves between the architecture the chain
+started from and the one it reports (a swap counts as two, so it is an upper
+bound on the distance when swaps are allowed); the function
+`mandacaru.algorithms.mcas.edit_distance(a, b)` compares any two.
+
+Transfer changes where the chain starts, not what it samples: the moves, the
+proposals and the acceptance rule are the same, so only how soon the chain
+reaches the low-cost architectures changes. The renaming is exact for
+fermionic excitations. For qubit excitations after a reordering, it gives a
+close start rather than the same state. Pauli-string and coupled-exchange
+operators are carried only when no orbital moved. A rotation inside a nearly
+degenerate shell is not aligned: it shows as a low matched overlap, and the
+chain rebuilds. Keep the steps between geometries small. The calculator hands
+the ansatz on only between chains of the same method.
 
 ## What the result holds
 

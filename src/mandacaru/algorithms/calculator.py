@@ -976,6 +976,13 @@ class Mandacaru(Calculator):
         grid = (self._frozen_grid(atoms)
                 if want_forces and not periodic else self._grid)
         solver = self._make_solver(grid=grid)
+        # A Markov-chain search with ``transfer=True`` starts from the ansatz
+        # the previous geometry reported.  Read through __dict__: see
+        # _make_solver on why ``self.solver`` must not be touched here.
+        previous = self.__dict__.get("_solver")
+        inherit = getattr(solver, "inherit_ansatz", None)
+        if inherit is not None and previous is not None:
+            inherit(previous)
         # This step's performance block is written here, once the gradient and
         # any measurement have been timed too (see :meth:`_log_performance`).
         solver.defer_performance = True

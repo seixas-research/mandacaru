@@ -41,6 +41,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,6 +68,29 @@ MODEL_FILE = "proposal_model.npz"
 
 #: Integer code of each Pauli letter; ``I`` is ``0``.
 PAULI_CODES = {"I": 0, "X": 1, "Y": 2, "Z": 3}
+
+
+def save_npz_atomically(path, **arrays) -> Path:
+    """Write a compressed ``.npz`` so that a reader never sees it half written.
+
+    The arrays go to a temporary file in the same directory, which then
+    replaces ``path`` in one rename: a concurrent reader -- another run
+    loading the store's model or a problem -- gets the old file or the new
+    one, never a torn archive.
+    """
+    path = Path(path)
+    handle = tempfile.NamedTemporaryFile(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False)
+    try:
+        with handle:
+            np.savez_compressed(handle, **arrays)
+        # A temporary file is private (0600); the store is not.
+        os.chmod(handle.name, 0o644)
+        os.replace(handle.name, path)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
+    return path
 
 
 def _codes(label: str) -> np.ndarray:
@@ -148,7 +173,7 @@ class ProblemRecord:
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{self.key}.npz"
         if not path.exists():
-            np.savez_compressed(
+            save_npz_atomically(
                 path, n_qubits=self.n_qubits, terms=self.terms,
                 coefficients=self.coefficients, constant=self.constant,
                 reference=self.reference,
@@ -243,8 +268,12 @@ def check_record_directory(directory) -> Path:
 class EditRecorder:
     """Append a chain's proposals to ``<directory>/edits.jsonl``.
 
-    Each row is written and flushed as the step completes, so an interrupted
-    run keeps what it measured.
+    Each row is written as the step completes, so an interrupted run keeps
+    what it measured.  A row is one ``write`` on a descriptor opened for
+    appending, so runs recording into the same store at the same time do not
+    interleave inside a row.  A file whose last row was cut short by an
+    interrupted run is continued on a new line; :func:`load_edits` skips the
+    cut row.
     """
 
     def __init__(self, directory, problem: ProblemRecord, run: dict):
@@ -253,18 +282,36 @@ class EditRecorder:
         problem.save(self.directory)
         self.problem = problem
         self.run = {"schema": SCHEMA, "problem": problem.key, **run}
-        self._file = open(self.directory / EDITS_FILE, "a", encoding="utf-8")
+        path = self.directory / EDITS_FILE
+        self._fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+                           0o644)
+        self._separator = _ends_inside_a_row(path)
         self.rows = 0
 
     def write(self, row: dict) -> None:
-        self._file.write(json.dumps({**self.run, **row},
-                                    separators=(",", ":")) + "\n")
-        self._file.flush()
+        if self._fd is None:
+            raise ValueError("the edit recorder is closed")
+        line = json.dumps({**self.run, **row}, separators=(",", ":")) + "\n"
+        data = (b"\n" if self._separator else b"") + line.encode("utf-8")
+        while data:
+            data = data[os.write(self._fd, data):]
+        self._separator = False
         self.rows += 1
 
     def close(self) -> None:
-        if not self._file.closed:
-            self._file.close()
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+
+
+def _ends_inside_a_row(path: Path) -> bool:
+    """Whether ``path`` is non-empty and does not end with a newline."""
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            return False
+        handle.seek(-1, os.SEEK_END)
+        return handle.read(1) != b"\n"
 
 
 def load_edits(directory=None) -> tuple[list[dict], dict[str, ProblemRecord]]:
@@ -272,24 +319,34 @@ def load_edits(directory=None) -> tuple[list[dict], dict[str, ProblemRecord]]:
     defaults to the shared store).
 
     Rows whose problem file is missing are refused rather than dropped: the
-    store would otherwise shrink silently.
+    store would otherwise shrink silently.  A row an interrupted run cut short
+    is not valid JSON; it is skipped with a warning naming its line.
     """
     directory = data_directory(directory)
     edits = directory / EDITS_FILE
     if not edits.is_file():
         raise FileNotFoundError(f"no {EDITS_FILE} in {str(directory)!r}: "
                                 f"record a chain with record=DIR first")
-    rows = []
+    rows, cut = [], []
     with open(edits, encoding="utf-8") as handle:
         for number, line in enumerate(handle, 1):
             line = line.strip()
             if not line:
                 continue
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                cut.append(number)
+                continue
             if row.get("schema") != SCHEMA:
                 raise ValueError(f"{edits}:{number}: row schema "
                                  f"{row.get('schema')!r}, expected {SCHEMA}")
             rows.append(row)
+    if cut:
+        warnings.warn(f"{edits}: skipped {len(cut)} row(s) cut short by an "
+                      f"interrupted run, at line(s) "
+                      f"{', '.join(map(str, cut))}", RuntimeWarning,
+                      stacklevel=2)
     problems = {}
     for key in sorted({row["problem"] for row in rows}):
         path = directory / PROBLEMS_DIR / f"{key}.npz"

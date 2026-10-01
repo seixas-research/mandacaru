@@ -25,8 +25,6 @@ from mandacaru.algorithms._jax_energy import (SCF_ITERATION_MARGIN,
                                               _resolve_scf_iterations,
                                               scf_iterations_required)
 
-pytest.importorskip("jax")
-
 
 def _two_level_system(n=6, seed=0):
     """A small symmetric h/eri pair with a well-defined RHF solution."""

@@ -32,7 +32,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_ALLOWED = {".gitignore", ".readthedocs.yaml", "CLAUDE.md", "DFT_PLAN.md",
                 "HISTORY.md",
                 "LICENSE", "PAW_SAGA.md", "README.md", "TODO.md",
-                "VERSION_DESCRIPTION.md",
+                "VALQA_PLAN.md", "VERSION_DESCRIPTION.md",
                 "pyproject.toml"}
 def gitignore_patterns():
     """Directory patterns ``.gitignore`` excludes (negations not supported)."""

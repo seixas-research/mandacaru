@@ -69,6 +69,31 @@ DEFAULT_MOVE_WEIGHTS = {move: 1.0 for move in MOVES}
 
 Architecture = tuple[int, ...]
 
+#: How the operator a ``replace`` puts in starts (:meth:`Action.transfer`).
+REPLACE_STARTS = ("zero", "inherit")
+
+
+def edit_distance(a, b) -> int:
+    r"""The fewest ``insert``, ``delete`` and ``replace`` moves turning the
+    architecture ``a`` into ``b`` (the Levenshtein distance of the two
+    operator sequences).
+
+    Swaps are not counted as moves of their own, so a pair of exchanged
+    operators costs 2 here, where the chain's ``swap`` does it in one move:
+    the result is an upper bound on the distance with swaps, and the number
+    of accepted moves a chain took is another (it need not take the
+    shortest path).  It is what compares the ansatz found at one geometry
+    with the one found at the next.
+    """
+    a, b = tuple(a), tuple(b)
+    row = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        previous, row[0] = row[0], i
+        for j, y in enumerate(b, 1):
+            previous, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1,
+                                           previous + (x != y))
+    return row[-1]
+
 
 @dataclass(frozen=True)
 class Action:
@@ -102,14 +127,21 @@ class Action:
             return tuple(out)
         raise ValueError(f"unknown move {self.move!r}")
 
-    def transfer(self, parameters) -> np.ndarray:
+    def transfer(self, parameters, replace_start: str = "zero"
+                 ) -> np.ndarray:
         r"""Carry the angles of the old architecture to the new one.
 
-        A new occurrence (``insert``, ``replace``) starts at zero angle, which
-        for ``insert`` leaves the state exactly unchanged
-        (:math:`e^{0 \cdot A} = I`); a deleted occurrence takes its angle with
-        it; a swap moves each angle with its operator.
+        A new occurrence (``insert``) starts at zero angle, which leaves the
+        state exactly unchanged (:math:`e^{0 \cdot A} = I`); a deleted
+        occurrence takes its angle with it; a swap moves each angle with its
+        operator.  The operator a ``replace`` puts in starts at zero angle
+        (``replace_start="zero"``) or at the angle of the one it replaces
+        (``"inherit"``), which is a sensible start when the two generators
+        are related -- the same excitation in another spin channel, say.
         """
+        if replace_start not in REPLACE_STARTS:
+            raise ValueError(f"replace_start must be one of {REPLACE_STARTS}, "
+                             f"got {replace_start!r}")
         theta = np.asarray(parameters, dtype=float).ravel().copy()
         j = self.position
         if self.move == "insert":
@@ -117,7 +149,8 @@ class Action:
         if self.move == "delete":
             return np.delete(theta, j)
         if self.move == "replace":
-            theta[j] = 0.0
+            if replace_start == "zero":
+                theta[j] = 0.0
             return theta
         if self.move == "swap":
             k = self.other

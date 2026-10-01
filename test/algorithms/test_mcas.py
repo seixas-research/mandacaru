@@ -16,8 +16,9 @@ import numpy as np
 import pytest
 
 from mandacaru.algorithms.mcas import (MOVES, Action, ProposalKernel,
-                                       TemperatureSchedule, gradient_softmax,
-                                       log_acceptance, metropolis_accept)
+                                       TemperatureSchedule, edit_distance,
+                                       gradient_softmax, log_acceptance,
+                                       metropolis_accept)
 
 #: Deliberately unequal, so a symmetric-proposal shortcut would show.
 WEIGHTS = {"insert": 1.0, "delete": 2.0, "replace": 0.7, "swap": 1.3}
@@ -86,6 +87,62 @@ class TestActions:
         theta = np.array([0.1, 0.2])
         Action("swap", 0, other=1).transfer(theta)
         np.testing.assert_array_equal(theta, [0.1, 0.2])
+
+    def test_replace_can_inherit_the_replaced_angle(self):
+        out = Action("replace", 1, operator=4).transfer(
+            [0.1, 0.2, 0.3], replace_start="inherit")
+        np.testing.assert_array_equal(out, [0.1, 0.2, 0.3])
+
+    def test_an_unknown_replace_start_is_refused(self):
+        with pytest.raises(ValueError, match="replace_start"):
+            Action("replace", 0, operator=1).transfer([0.1], "random")
+
+    @pytest.mark.parametrize("action", [
+        Action("insert", 1, operator=9), Action("delete", 2),
+        Action("replace", 0, operator=9), Action("swap", 0, other=3)])
+    def test_the_inverse_move_restores_architecture_and_angles(self, action):
+        """Every move has an inverse that undoes it, angles included -- the
+        insertion's zero angle and the swap's exchange round-trip exactly;
+        a replacement restores the operator, and with ``inherit`` its
+        angle."""
+        c, theta = (1, 2, 3, 4), np.array([0.1, 0.2, 0.3, 0.4])
+        inverse = {"insert": Action("delete", action.position),
+                   "delete": Action("insert", action.position,
+                                    operator=c[action.position]),
+                   "replace": Action("replace", action.position,
+                                     operator=c[action.position]),
+                   "swap": action}[action.move]
+        assert inverse.apply(action.apply(c)) == c
+        if action.move in ("insert", "swap"):
+            np.testing.assert_array_equal(
+                inverse.transfer(action.transfer(theta)), theta)
+        if action.move == "replace":
+            np.testing.assert_array_equal(
+                inverse.transfer(action.transfer(theta, "inherit"),
+                                 "inherit"), theta)
+
+
+class TestEditDistance:
+    @pytest.mark.parametrize("a, b, d", [
+        ((), (), 0), ((), (1, 2), 2), ((1, 2, 3), (1, 2, 3), 0),
+        ((1, 2, 3), (1, 3), 1), ((1, 2, 3), (1, 9, 3), 1),
+        ((1, 2), (2, 1), 2), ((1, 2, 3), (4, 5), 3)])
+    def test_it_counts_insertions_deletions_and_replacements(self, a, b, d):
+        assert edit_distance(a, b) == d == edit_distance(b, a)
+
+    def test_it_bounds_any_sequence_of_moves(self):
+        """No chain of ``k`` insert/delete/replace moves gets further than
+        ``k``, and a swap costs at most 2."""
+        rng = np.random.default_rng(0)
+        kernel = ProposalKernel(5, None, 0, 6)
+        for _ in range(50):
+            c = start = tuple(int(x) for x in rng.integers(5, size=3))
+            cost = 0
+            for _ in range(4):
+                action = kernel.sample(c, rng)
+                c = action.apply(c)
+                cost += 2 if action.move == "swap" else 1
+            assert edit_distance(start, c) <= cost
 
 
 class TestValidity:

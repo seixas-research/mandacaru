@@ -139,6 +139,39 @@ class TestAReadyModel:
         assert _trajectory(a) == _trajectory(b)
 
 
+class TestTheModelIsFrozenForTheRun:
+    def test_the_file_is_read_when_the_solver_is_built(self, h2_hamiltonian,
+                                                       tmp_path):
+        """Retraining into the same file while a run is set up does not
+        change the model that run draws from."""
+        path = tmp_path / "m.npz"
+        _model(path)
+        calc = _chain(h2_hamiltonian, max_steps=5, proposal_model=str(path),
+                      record=tmp_path / "edits")
+        calc.solver                          # the model is loaded here
+        path.unlink()
+        _model(path, ready=False, reason="replaced")
+        result = calc.run()
+        assert result.model_ready and result.proposal_model == "synthetic"
+        from mandacaru.algorithms.proposal_data import load_edits
+        rows, _ = load_edits(tmp_path / "edits")
+        assert {r["model"] for r in rows} == {"synthetic"}
+
+    def test_a_model_of_another_schema_fails_at_construction(self,
+                                                             tmp_path):
+        import json
+        path = tmp_path / "m.npz"
+        _model(path)
+        with np.load(path) as data:
+            arrays = {name: data[name] for name in data.files}
+        meta = json.loads(str(arrays["meta"]))
+        meta["schema"] += 1
+        arrays["meta"] = np.array(json.dumps(meta))
+        np.savez_compressed(path, **arrays)
+        with pytest.raises(ValueError, match="model schema"):
+            Mandacaru(method="valqa", proposal_model=str(path))
+
+
 class TestOptions:
     def test_a_missing_model_is_refused_at_construction(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="no proposal model"):
@@ -177,3 +210,81 @@ class TestTheSharedStore:
                        record=False).run()
         assert valqa.proposal_model is None
         assert _trajectory(valqa) == _trajectory(vasqa)
+
+
+def _h2_at(distance):
+    from ase import Atoms
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, distance]])
+    atoms.center(vacuum=2.5)
+    return atoms
+
+
+class TestAlongATrajectory:
+    """Two geometries through one ASE calculator: the second chain is
+    conditioned on the first one's Hamiltonian, and with
+    ``update_between_geometries`` on its insertions too."""
+
+    def _run(self, tmp_path, distances=(0.74, 0.78), **options):
+        options = {"basis": "HAO", "h": 0.4, "pool": "qeb", "max_steps": 12,
+                   "max_length": 4, "seed": 3, "profile": False,
+                   "trace": False, "record": str(tmp_path / "edits"),
+                   "proposal_model": _model(tmp_path / "m.npz"), **options}
+        calc = Mandacaru(method="valqa", **options)
+        results = []
+        for distance in distances:
+            atoms = _h2_at(distance)
+            atoms.calc = calc
+            atoms.get_potential_energy()
+            results.append(calc.result)
+        return results
+
+    def test_rows_carry_the_trajectory_and_the_previous_hamiltonian(
+            self, tmp_path):
+        from mandacaru.algorithms.proposal_data import load_edits
+        self._run(tmp_path)
+        rows, problems = load_edits(tmp_path / "edits")
+        steps = {r["geometry_step"] for r in rows}
+        assert steps == {0, 1}
+        assert len({r["trajectory"] for r in rows}) == 1
+        first = {r["problem"] for r in rows if r["geometry_step"] == 0}
+        second = [r for r in rows if r["geometry_step"] == 1]
+        assert {r["previous_problem"] for r in second} == first
+        assert all(r["previous_problem"] is None for r in rows
+                   if r["geometry_step"] == 0)
+        assert first <= set(problems)
+
+    def test_without_the_update_the_model_is_the_same_at_every_geometry(
+            self, tmp_path):
+        first, second = self._run(tmp_path)
+        assert first.proposal_model == second.proposal_model == "synthetic"
+        assert second.model_update is None
+
+    def test_the_update_scores_then_conditions(self, tmp_path):
+        first, second = self._run(tmp_path, update_between_geometries=True)
+        assert first.proposal_model == "synthetic"
+        assert first.model_update.startswith("none (no previous geometry")
+        assert "scored before conditioning" in second.model_update
+        assert second.proposal_model != "synthetic"
+        assert second.model_ready
+
+    def test_another_molecule_starts_a_new_trajectory(self, tmp_path):
+        from ase import Atoms
+        from mandacaru.algorithms.proposal_data import load_edits
+        calc = Mandacaru(method="valqa", basis="HAO", h=0.4, pool="qeb",
+                         max_steps=4, max_length=3, seed=3, profile=False,
+                         trace=False, record=str(tmp_path / "edits"),
+                         update_between_geometries=True,
+                         proposal_model=_model(tmp_path / "m.npz"))
+        for atoms in (_h2_at(0.74), Atoms("H3", positions=[
+                [0, 0, 0], [0, 0, 0.9], [0, 0, 1.8]])):
+            atoms.center(vacuum=2.5)
+            atoms.calc = calc
+            atoms.get_potential_energy()
+        rows, _ = load_edits(tmp_path / "edits")
+        assert len({r["trajectory"] for r in rows}) == 2
+        assert {r["geometry_step"] for r in rows} == {0}
+        assert calc.result.model_update.startswith("none")
+
+    def test_the_option_is_validated_at_construction(self):
+        with pytest.raises(ValueError, match="update_between_geometries"):
+            Mandacaru(method="valqa", update_between_geometries="yes")

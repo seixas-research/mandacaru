@@ -67,9 +67,12 @@ import numpy as np
 
 from ..circuits.profiling import CircuitMetrics
 from ..units import convert_energy, to_hartree
-from .mcas import (MOVES, ProposalKernel, TemperatureSchedule,
-                   gradient_softmax,
+from .mcas import (MOVES, REPLACE_STARTS, ProposalKernel,
+                   TemperatureSchedule, edit_distance, gradient_softmax,
                    log_acceptance, metropolis_accept)
+from .orbital_tracking import (DEFAULT_TRANSFER_THRESHOLD, OrbitalSnapshot,
+                               match_orbitals, occupation_blocks,
+                               orbital_overlap, transfer_ansatz)
 from .pool_driver import PoolDriver
 from .proposal_data import EditRecorder, ProblemRecord, resolve_record
 
@@ -156,6 +159,14 @@ class VASQAResult:
     timings: dict | None = None
     integration_profile: dict | None = None
     energy_unit: str = "eV"
+    #: The architecture the chain started from: empty, unless ``transfer=True``
+    #: carried the previous geometry's ansatz over.
+    start_operators: list = field(default_factory=list)
+    #: Why the chain started where it did (see ``transfer``).
+    start: str = "empty ansatz"
+    #: :func:`~mandacaru.algorithms.mcas.edit_distance` from the start to the
+    #: reported architecture.
+    edit_distance_from_start: int = 0
 
     @property
     def num_operators(self) -> int:
@@ -192,6 +203,28 @@ class VASQAResult:
                 f"{self.energy_unit}, operators={self.num_operators}, "
                 f"steps={len(self.steps)}, "
                 f"acceptance={self.acceptance_rate:.2f})")
+
+
+@dataclass
+class _Inherited:
+    """What the previous geometry's chain hands on: its reported ansatz, the
+    orbitals it was expressed in, and its place in the trajectory.
+
+    Copies only -- never the previous solver itself, which would keep every
+    earlier geometry alive along a long trajectory.
+    """
+
+    operators: list
+    angles: np.ndarray
+    pool_labels: list
+    symbols: list | None
+    #: The previous molecular orbitals, or why there are none (a string).
+    orbitals: object
+    #: The trajectory the previous chain belonged to, and its step there.
+    trajectory: str | None = None
+    step: int = 0
+    #: The problem (Hamiltonian, reference, pool) the previous chain searched.
+    problem: ProblemRecord | None = None
 
 
 @dataclass
@@ -238,8 +271,8 @@ class MarkovChainSearch(PoolDriver):
         ``200``).
     min_length, max_length : int
         Allowed number of operators in the ansatz, inclusive (defaults ``0``
-        and ``20``).  The chain starts from the empty ansatz, the reference
-        itself, so ``min_length`` must be ``0``.
+        and ``20``).  The chain can always fall back to the empty ansatz,
+        the reference itself, so ``min_length`` must be ``0``.
     move_weights : dict, optional
         Relative weight of ``"insert"``, ``"delete"``, ``"replace"`` and
         ``"swap"`` (default all ``1``); a move left out is never proposed, but
@@ -262,6 +295,38 @@ class MarkovChainSearch(PoolDriver):
         move (default ``True``).  ``False`` starts every architecture from
         zero angles and memoizes its energy, which makes the cost a fixed
         function of the architecture (see the module docstring).
+    replace_start : str
+        The angle the operator a ``replace`` puts in starts from, with
+        ``warm_start``: ``"zero"`` (default) or ``"inherit"``, the angle of
+        the operator it replaces.
+    transfer : bool
+        Along an ASE trajectory (a relaxation, a scan, dynamics), start each
+        geometry's chain from the ansatz the previous geometry reported --
+        its operators and, with ``warm_start``, its angles -- instead of
+        from the empty ansatz (default ``False``).  The transferred ansatz is
+        relaxed at the new geometry first and kept as the start only if its
+        cost is below the reference's.  The molecular orbitals are followed
+        between the geometries (:mod:`~mandacaru.algorithms.orbital_tracking`):
+        operators are renamed where two orbitals changed places and angles
+        change sign where an orbital did.  The chain starts empty instead,
+        and the run log's ``start`` line says why, when the previous geometry
+        was another system or pool, an orbital's best match falls below
+        ``transfer_threshold``, an operator cannot be followed through the
+        matching, the ansatz is longer than ``max_length``, or the relaxed
+        ansatz does not beat the reference.  Where the chain starts does not
+        change what it samples, only how soon it gets there.
+    transfer_threshold : float
+        Smallest overlap :math:`|\\langle\\phi_p(X_n)|\\phi_{\\pi(p)}(X_{n+1})
+        \\rangle|` between a previous orbital and its match at which the
+        ansatz is still transferred (default
+        :data:`~mandacaru.algorithms.orbital_tracking.DEFAULT_TRANSFER_THRESHOLD`).
+    transfer_steps : int, optional
+        Chain length when the chain starts from a transferred ansatz
+        (default ``max_steps``).  A transferred start is usually close to
+        the new geometry's answer, so a short local search is what saves
+        quantum evaluations over rebuilding; a chain that had to start empty
+        still takes ``max_steps``.  The temperature schedule spans the steps
+        actually taken.
     proposal_temperature : float
         Softmax temperature of the gradient proposal, relative to the largest
         gradient (default :data:`DEFAULT_PROPOSAL_TEMPERATURE`): the steepest
@@ -310,6 +375,10 @@ class MarkovChainSearch(PoolDriver):
                  temperature=None,
                  length_penalty: float = 0.0,
                  warm_start: bool = True,
+                 replace_start: str = "zero",
+                 transfer: bool = False,
+                 transfer_steps: int | None = None,
+                 transfer_threshold: float = DEFAULT_TRANSFER_THRESHOLD,
                  proposal_temperature: float = DEFAULT_PROPOSAL_TEMPERATURE,
                  record=None,
                  seed: int | None = None,
@@ -328,8 +397,8 @@ class MarkovChainSearch(PoolDriver):
             raise ValueError(f"max_steps must be >= 0, got {max_steps!r}")
         if int(min_length) != 0:
             raise ValueError(
-                "min_length must be 0: the chain starts from the empty "
-                "ansatz (the reference state)")
+                "min_length must be 0: the chain starts from, or falls back "
+                "to, the empty ansatz (the reference state)")
         self.min_length = int(min_length)
         self.max_length = int(max_length)
         self.move_weights = move_weights
@@ -349,12 +418,144 @@ class MarkovChainSearch(PoolDriver):
             raise ValueError(f"warm_start must be True or False, got "
                              f"{warm_start!r}")
         self.warm_start = warm_start
+        if replace_start not in REPLACE_STARTS:
+            raise ValueError(f"replace_start must be one of {REPLACE_STARTS}, "
+                             f"got {replace_start!r}")
+        self.replace_start = replace_start
+        if not isinstance(transfer, bool):
+            raise ValueError(f"transfer must be True or False, got "
+                             f"{transfer!r}")
+        self.transfer = transfer
+        self.transfer_steps = (self.max_steps if transfer_steps is None
+                               else int(transfer_steps))
+        if self.transfer_steps < 0:
+            raise ValueError(f"transfer_steps must be >= 0, got "
+                             f"{transfer_steps!r}")
+        self.transfer_threshold = float(transfer_threshold)
+        if not 0.0 <= self.transfer_threshold <= 1.0:
+            raise ValueError(f"transfer_threshold must be in [0, 1], got "
+                             f"{transfer_threshold!r}")
+        #: Where the chain started and why (the setup block's ``start``).
+        self._start_description = "empty ansatz"
+        #: The previous geometry's reported ansatz (operator labels, angles),
+        #: handed over by the calculator (:meth:`inherit_ansatz`).
+        self._inherited: _Inherited | None = None
+        #: This chain's trajectory (a new one unless it continues the
+        #: previous geometry's), its step there, and the problem it searched.
+        self._trajectory = uuid.uuid4().hex[:12]
+        self._step = 0
+        self._problem: ProblemRecord | None = None
+        self._linked = False
+        #: The evaluated insertions, kept only when ``_collects_insertions``.
+        self._insertions: list[dict] = []
         self.proposal_temperature = float(proposal_temperature)
         gradient_softmax([1.0, 0.0], self.proposal_temperature)   # validates
         self.record = resolve_record(record)
         self._recorder: EditRecorder | None = None
         self.seed = None if seed is None else int(seed)
         self._adopt_problem(hamiltonian, num_particles, n_spatial_orbitals)
+
+    # -- transfer between geometries -------------------------------------- #
+
+    def inherit_ansatz(self, previous) -> None:
+        """Take over the ansatz ``previous`` -- the solver of the preceding
+        geometry -- reported, when ``transfer=True``.
+
+        The ASE calculator calls this on each new geometry's solver before
+        running it.  Only a chain of the same method passes its ansatz on,
+        with the molecular orbitals it was expressed in.
+        """
+        result = getattr(previous, "result", None)
+        if type(previous) is not type(self) \
+                or not isinstance(result, VASQAResult):
+            return
+        context = getattr(previous, "_gradient_context", None) or {}
+        pool = getattr(previous, "pool", None)
+        self._inherited = _Inherited(
+            operators=list(result.operators),
+            angles=np.asarray(result.optimal_parameters, dtype=float),
+            pool_labels=[op.label for op in previous._pool_ops],
+            symbols=getattr(previous, "_basis_symbols", None),
+            orbitals=(OrbitalSnapshot.from_integrals(
+                context.get("integrals"),
+                getattr(pool, "n_spatial_orbitals", 0)) if self.transfer
+                else "not needed without transfer"),
+            trajectory=previous._trajectory, step=previous._step,
+            problem=previous._problem)
+
+    def _link_trajectory(self, labels) -> bool:
+        """Join the previous geometry's trajectory when it searched the same
+        system and pool; start a new one otherwise.  Returns whether linked."""
+        inherited = self._inherited
+        linked = (inherited is not None
+                  and inherited.symbols == getattr(self, "_basis_symbols",
+                                                   None)
+                  and inherited.pool_labels == list(labels))
+        if linked:
+            self._trajectory = inherited.trajectory or self._trajectory
+            self._step = inherited.step + 1
+        return linked
+
+    def _previous_problem(self) -> ProblemRecord | None:
+        """The previous geometry's problem when this chain continues its
+        trajectory and it differs from this one's."""
+        inherited = self._inherited
+        if not self._linked or inherited.problem is None:
+            return None
+        if self._problem is not None \
+                and inherited.problem.key == self._problem.key:
+            return None
+        return inherited.problem
+
+    def _transferred_start(self, labels) -> tuple[tuple, np.ndarray, str]:
+        """The architecture and angles the chain starts from, and why."""
+        empty = (), np.zeros(0)
+        if not self.transfer:
+            return *empty, "empty ansatz"
+        inherited = self._inherited
+        if inherited is None:
+            return *empty, "empty ansatz (transfer: no previous geometry)"
+        refused = "empty ansatz (transfer refused: {})".format
+        if not self._linked:
+            # The same label names a different excitation in another
+            # molecule, charge or basis.
+            return *empty, refused("another system or pool than the previous "
+                                   "geometry's")
+        operators, angles = inherited.operators, inherited.angles
+        context = getattr(self, "_gradient_context", None) or {}
+        integrals = context.get("integrals")
+        current = OrbitalSnapshot.from_integrals(
+            integrals, getattr(self.pool, "n_spatial_orbitals", 0))
+        if isinstance(inherited.orbitals, str) or isinstance(current, str):
+            reason = (inherited.orbitals if isinstance(inherited.orbitals, str)
+                      else current)
+            tracking = f"orbitals not tracked: {reason}"
+        else:
+            overlap = orbital_overlap(inherited.orbitals, current,
+                                      integrals.grid)
+            match = match_orbitals(overlap, occupation_blocks(
+                len(overlap), self.pool.num_particles))
+            if match.confidence < self.transfer_threshold:
+                return *empty, refused(
+                    f"smallest matched orbital overlap "
+                    f"{match.confidence:.3f} < transfer_threshold "
+                    f"{self.transfer_threshold:g}")
+            moved = transfer_ansatz(operators, angles, match, len(overlap),
+                                    labels)
+            if isinstance(moved, str):
+                return *empty, refused(moved)
+            operators, angles = moved
+            tracking = match.describe()
+        if len(operators) > self.max_length:
+            return *empty, refused(f"{len(operators)} operators > max_length "
+                                   f"{self.max_length}")
+        index = {label: i for i, label in enumerate(labels)}
+        architecture = tuple(index[label] for label in operators)
+        x0 = angles if self.warm_start else np.zeros(len(architecture))
+        return architecture, x0, (
+            f"previous geometry's ansatz, {len(architecture)} operator(s), "
+            f"{'angles carried' if self.warm_start else 'angles from zero'}; "
+            f"{tracking}")
 
     # -- the evaluator ---------------------------------------------------- #
 
@@ -457,7 +658,8 @@ class MarkovChainSearch(PoolDriver):
         if self.record is None or problem is None:
             return None
         from ..version import __version__
-        return EditRecorder(self.record, problem, run={
+        previous = self._previous_problem()
+        recorder = EditRecorder(self.record, problem, run={
             "run": uuid.uuid4().hex[:12], "method": self.log_title,
             "mandacaru": __version__, "formula": _formula(geometry),
             "pool": getattr(self.pool, "name", "?"),
@@ -465,11 +667,21 @@ class MarkovChainSearch(PoolDriver):
             "model": self._model_version(),
             "warm_start": self.warm_start,
             "length_penalty": self._length_penalty_ha,
-            "optimizer": self.optimizer.method, "seed": self.seed})
+            "optimizer": self.optimizer.method, "seed": self.seed,
+            "trajectory": self._trajectory, "geometry_step": self._step,
+            "previous_problem": None if previous is None else previous.key})
+        if previous is not None:
+            # Training conditions on it, so it goes into the same store.
+            previous.save(recorder.directory)
+        return recorder
 
     def _model_version(self) -> str | None:
         """The version of the model drawing proposals, if any."""
         return None
+
+    #: Whether the chain keeps its evaluated insertions in memory for the
+    #: next geometry (VALQA's update between geometries).
+    _collects_insertions = False
 
     def _edit_row(self, step, action, source: _Evaluated,
                   proposed: _Evaluated, log_forward, log_reverse,
@@ -529,11 +741,9 @@ class MarkovChainSearch(PoolDriver):
                                  self.min_length, self.max_length)
                   if self._pool_ops else None)
         n_steps = self.max_steps if kernel is not None else 0
-        schedule = TemperatureSchedule(
-            _temperature_in_hartree(DEFAULT_TEMPERATURE, "eV")
-            if self.temperature is None
-            else _temperature_in_hartree(self.temperature, unit),
-            self.max_steps)
+        temperature_ha = (_temperature_in_hartree(DEFAULT_TEMPERATURE, "eV")
+                          if self.temperature is None
+                          else _temperature_in_hartree(self.temperature, unit))
         self._length_penalty_ha = float(to_hartree(self.length_penalty, unit))
         self._cache: dict = {}
         #: Pool-gradient screenings, one per new state under the gradient
@@ -543,25 +753,53 @@ class MarkovChainSearch(PoolDriver):
         rng = np.random.default_rng(self.seed)
         problem = self._problem_record() if kernel is not None and (
             self.record is not None or self._needs_problem) else None
+        self._problem = problem
+        self._insertions = []        # this run's, not a previous run's
+        self._linked = self._link_trajectory(labels)
         self._prepare_proposal(problem)
+        logger = None
         self._recorder = self._open_recorder(problem, geometry)
-
-        self._show_banner()
-        with timings.time("parameter optimization"):
-            current = self._evaluate((), np.zeros(0))
-        reference_energy = current.energy
-        logger = self._make_logger(self.log_targets, geometry, cell,
-                                   reference_energy, schedule)
-
-        best_cost = best_energy = current
-        seen = {current.architecture}
-        steps: list[MCASStep] = []
-        tried = {move: 0 for move in MOVES}
-        taken = {move: 0 for move in MOVES}
-        total_evals = total_steps = 0
-        failures: list[tuple[int, str]] = []
-
+        # Everything after the recorder opens is inside the try, so the
+        # edit file is closed whatever fails, the first evaluation included.
         try:
+            self._show_banner()
+            with timings.time("parameter optimization"):
+                current = self._evaluate((), np.zeros(0))
+            reference_energy = current.energy
+            start_architecture, x0, start = self._transferred_start(labels)
+            seen = {current.architecture}
+            total_evals = total_steps = 0
+            failures: list[tuple[int, str]] = []
+            if start_architecture and kernel is None:
+                start = "empty ansatz (empty pool)"
+            elif start_architecture:
+                with timings.time("parameter optimization"):
+                    transferred = self._evaluate(start_architecture, x0)
+                total_evals += transferred.nfev
+                total_steps += transferred.nit
+                seen.add(transferred.architecture)
+                if not transferred.success:
+                    failures.append((0, transferred.message))
+                if transferred.cost < current.cost:
+                    current = transferred
+                else:
+                    start = (f"empty ansatz (transfer refused: the previous "
+                             f"geometry's ansatz relaxed to a cost "
+                             f"{transferred.cost - current.cost:+.3e} Ha "
+                             f"above the reference's)")
+            self._start_description = start
+            if current.architecture:          # a transferred start
+                n_steps = self.transfer_steps
+            schedule = TemperatureSchedule(temperature_ha, max(n_steps, 1))
+            logger = self._make_logger(self.log_targets, geometry, cell,
+                                       reference_energy, schedule)
+
+            start_state = current
+            best_cost = best_energy = current
+            steps: list[MCASStep] = []
+            tried = {move: 0 for move in MOVES}
+            taken = {move: 0 for move in MOVES}
+
             for step in range(1, n_steps + 1):
                 beta = schedule.beta(step - 1)
                 action = kernel.sample(current.architecture, rng,
@@ -574,7 +812,8 @@ class MarkovChainSearch(PoolDriver):
                         f"no architecture move is valid at "
                         f"{current.architecture!r}")
                 proposed_arch = action.apply(current.architecture)
-                x0 = (action.transfer(current.parameters) if self.warm_start
+                x0 = (action.transfer(current.parameters, self.replace_start)
+                      if self.warm_start
                       else np.zeros(len(proposed_arch)))
                 with timings.time("parameter optimization"):
                     proposed = self._evaluate(proposed_arch, x0)
@@ -591,10 +830,18 @@ class MarkovChainSearch(PoolDriver):
                 log_alpha = log_acceptance(beta, current.cost, proposed.cost,
                                            log_forward, log_reverse)
                 accepted = metropolis_accept(log_alpha, rng)
-                if self._recorder is not None:
-                    self._recorder.write(self._edit_row(
+                if self._recorder is not None or self._collects_insertions:
+                    row = self._edit_row(
                         step, action, current, proposed, log_forward,
-                        log_reverse, log_alpha, accepted, beta))
+                        log_reverse, log_alpha, accepted, beta)
+                    if self._recorder is not None:
+                        self._recorder.write(row)
+                    if self._collects_insertions and action.move == "insert":
+                        before = self._previous_problem()
+                        self._insertions.append({
+                            **row, "problem": self._problem.key,
+                            "previous_problem": (None if before is None
+                                                 else before.key)})
                 previous = current
                 tried[action.move] += 1
                 if accepted:
@@ -669,7 +916,11 @@ class MarkovChainSearch(PoolDriver):
                 seed=self.seed,
                 metrics=metrics,
                 integration_profile=self._integration_profile,
-                energy_unit=unit, **self._result_extras())
+                energy_unit=unit,
+                start_operators=names(start_state), start=start,
+                edit_distance_from_start=edit_distance(
+                    start_state.architecture, best_cost.architecture),
+                **self._result_extras())
             if logger is not None:
                 self._write_summary(logger, result)
         finally:
@@ -727,13 +978,17 @@ class MarkovChainSearch(PoolDriver):
                 **self._proposal_setup(),
                 "recorded_edits": (str(self.record) if self.record is not None
                                    else "none"),
-                "max_steps": self.max_steps,
+                "max_steps": (f"{self.max_steps} ({self.transfer_steps} from "
+                              f"a transferred ansatz)" if self.transfer
+                              else self.max_steps),
                 "ansatz_length": f"{self.min_length} to {self.max_length}",
                 "move_weights": ", ".join(f"{move} {weight:g}" for move, weight
                                           in weights.items()),
                 f"architecture_temperature_{unit}": temperature,
                 f"length_penalty_{unit}": f"{self.length_penalty:g}",
                 "warm_start": str(self.warm_start),
+                "replace_start": self.replace_start,
+                "start": self._start_description,
                 "seed": str(self.seed),
                 "energy_column": "relaxed energy of the proposed ansatz",
                 "dE_column": ("proposed minus current energy, before the "
@@ -759,6 +1014,7 @@ class MarkovChainSearch(PoolDriver):
             "final_num_operators": len(result.final_operators),
             "chain_steps": len(result.steps),
             "acceptance_rate": f"{result.acceptance_rate:.4f}",
+            "edit_distance_from_start": result.edit_distance_from_start,
             **{f"accepted_{move}": f"{taken} of {tried}" for move, (taken, tried)
                in result.acceptance_by_move.items()},
             "architectures_evaluated": result.num_architectures,

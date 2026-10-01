@@ -30,9 +30,13 @@ bipartite **factor graph**: one node per qubit, one per non-identity Pauli
 term, an edge labeled ``X``, ``Y`` or ``Z`` wherever a term acts on a qubit.
 Qubit features are the reference occupation, the normalized index (the
 Jordan-Wigner order), the coefficient of the one-qubit ``Z`` term (an
-orbital-energy proxy) and the node's degree; term features are the signed,
-absolute and logarithmic coefficient over :math:`E_{\mathrm{scale}} =
+orbital-energy proxy) and the node's degree; term features are the absolute
+and logarithmic coefficient over :math:`E_{\mathrm{scale}} =
 \max_\alpha |c_\alpha|` and the term's weight and ``X``/``Y``/``Z`` counts.
+The sign of a coefficient is left out: a term with ``X`` or ``Y`` letters
+changes sign with the arbitrary sign of a molecular orbital, so a signed
+feature would make two gauges of one molecule look different (the one-qubit
+``Z`` coefficients, which do not change, keep theirs).
 Two message-passing layers (terms gather from their qubits, qubits from their
 terms, one weight matrix per Pauli letter, residual updates; a qubit's messages
 are averaged with weights :math:`|c_\alpha|`) give qubit embeddings
@@ -41,8 +45,22 @@ sum of strings -- is embedded as the :math:`|a_s|`-weighted mean, over its
 strings, of the mean of :math:`R_\sigma \mathbf h_i` over each string's
 support.
 
+The Hamiltonian's embedding :math:`\mathbf z_H` pools the qubit embeddings by
+mean and sum and the term embeddings by their :math:`|c_\alpha|`-weighted
+mean and sum.  The spec's plain sum over terms is replaced by the
+coefficient-weighted one: a molecule has thousands of terms, and an
+unweighted sum would dwarf every other feature in the kernel.
+
+**Two geometries.**  Along a trajectory, the proposal at geometry
+:math:`X_{n+1}` is conditioned on the Hamiltonian the transferred ansatz was
+built for as well: :math:`q(C' \mid C_n, H_n, H_{n+1})`.  The candidate
+vector carries :math:`\mathbf z_{n+1}`, :math:`\mathbf z_n` and
+:math:`\Delta\mathbf z = \mathbf z_{n+1} - \mathbf z_n`.  A single
+geometry -- and every recorded row without a ``previous_problem`` -- is the
+case :math:`H_n = H_{n+1}`, :math:`\Delta\mathbf z = 0`.
+
 A candidate (insert :math:`\mu` into the circuit :math:`C`) is described by
-the Hamiltonian's pooled embedding, the circuit's mean and
+these embeddings, the circuit's mean and
 position-weighted mean operator embedding, the candidate's embedding and
 descriptors known **before** it is evaluated: its pool gradient at ``C``
 (absolute and relative to the largest), the source energy above the
@@ -66,6 +84,16 @@ maximizing the marginal likelihood (a deep kernel) with Adam, on at most
 :math:`b = -\mu + \kappa\sigma_f` (predicted improvement plus latent
 uncertainty) and :math:`p_{\mathrm{ML}} = \mathrm{softmax}(b/\tau)`.
 
+Between geometries
+------------------
+With ``update_between_geometries=True`` VALQA conditions the Gaussian
+process on the insertions the previous geometry evaluated before the next
+chain starts (:meth:`ProposalModel.condition`): the network and the kernel's
+hyperparameters stay frozen, only the posterior takes the new points in.  The
+new rows are scored first, by the model that has not seen them
+(test-then-train).  Each chain still runs with one frozen model, so its
+Metropolis-Hastings ratio stays exact.
+
 Readiness: how much data
 ------------------------
 :func:`assess_data_volume` answers whether the recorded edits are enough.  It
@@ -79,8 +107,7 @@ full data, its mean held-out Spearman correlation exceeds both baselines' by
 has to come from the Hamiltonian representation, not from having a
 surrogate.
 
-Training needs JAX (``pip install 'mandacaru[learned-proposals]'``); using a
-trained model does not.
+Training runs in JAX; using a trained model needs only NumPy.
 """
 
 from __future__ import annotations
@@ -88,16 +115,17 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from .proposal_data import (MODEL_FILE, ProblemRecord, data_directory,
-                            load_edits)
+                            load_edits, save_npz_atomically)
 
 #: Width of the node embeddings.
-HIDDEN = 16
+HIDDEN = 32
 #: Message-passing layers (term <- qubit <- term cycles).
 LAYERS = 2
 #: Dimension the kernel compares candidates in.
@@ -122,10 +150,13 @@ DEFAULT_SCORE_TEMPERATURE = 1.0
 DESCRIPTORS = ("support", "x_fraction", "y_fraction", "z_fraction",
                "relative_gradient", "gradient", "source_energy",
                "multiplicity", "length")
-#: Version of the saved model layout.
-MODEL_SCHEMA = 1
-
-_EXTRA = "pip install 'mandacaru[learned-proposals]'"
+#: How held-out groups are formed: by molecule (formula), by Hamiltonian, or
+#: by trajectory -- successive geometries are nearly identical, so holding
+#: out single frames would leak.
+GROUPINGS = ("molecule", "hamiltonian", "trajectory")
+#: Version of the saved model layout (2: two-geometry features, mean and sum
+#: pooling, no signed coefficient).
+MODEL_SCHEMA = 2
 
 
 def compress(delta):
@@ -148,7 +179,7 @@ class HamiltonianGraph:
     """
 
     qubit_features: np.ndarray        # (n, 4)
-    term_features: np.ndarray         # (M_H, 7)
+    term_features: np.ndarray         # (M_H, 6)
     incidence: np.ndarray             # (3, M_H, n)
     weighted_incidence: np.ndarray    # incidence * |c~|
     term_weights: np.ndarray          # (M_H,)
@@ -172,8 +203,8 @@ class HamiltonianGraph:
         weight = incidence.sum(axis=(0, 2))                      # k_alpha
         counts = incidence.sum(axis=2).T                          # (M_H, 3)
         term_features = np.column_stack([
-            scaled, np.abs(scaled), np.log(np.abs(scaled) + 1e-6),
-            weight / n, counts / n]) if n_terms else np.zeros((0, 7))
+            np.abs(scaled), np.log(np.abs(scaled) + 1e-6),
+            weight / n, counts / n]) if n_terms else np.zeros((0, 6))
 
         degree = incidence.sum(axis=(0, 1))
         z_only = np.zeros(n)
@@ -294,8 +325,12 @@ def candidate_rows(graph: HamiltonianGraph, architectures, operators,
 # The network, written once for NumPy (inference) and JAX (training).
 # --------------------------------------------------------------------------- #
 
+#: Width of the Hamiltonian embedding :math:`\mathbf z_H`.
+EMBEDDING = 4 * HIDDEN + 3
+
+
 def _feature_width(use_graph: bool) -> int:
-    return (5 * HIDDEN + 3 + len(DESCRIPTORS)) if use_graph \
+    return (3 * EMBEDDING + 3 * HIDDEN + len(DESCRIPTORS)) if use_graph \
         else len(DESCRIPTORS)
 
 
@@ -314,7 +349,7 @@ def init_parameters(seed: int = 0, use_graph: bool = True) -> dict:
         d = HIDDEN
         params.update({
             "qubit_in": dense(4, d), "qubit_bias": np.zeros(d),
-            "term_in": dense(7, d), "term_bias": np.zeros(d),
+            "term_in": dense(6, d), "term_bias": np.zeros(d),
             "to_term": dense(LAYERS, 3, d, d),
             "to_qubit": dense(LAYERS, 3, d, d),
             "term_update": dense(LAYERS, 2 * d, d),
@@ -350,22 +385,26 @@ def embed(xp, params: dict, graph: dict):
     read = xp.einsum("id,sde->sie", hq, params["readout"])
     z_a = xp.einsum("smi,sie->me", graph["pool_incidence"], read)
     weights = graph["term_weights"]
-    term_mean = (weights @ hp) / (weights.sum() + 1e-12)
-    z_h = xp.concatenate([hq.mean(axis=0), term_mean,
+    term_sum = weights @ hp
+    z_h = xp.concatenate([hq.mean(axis=0), hq.sum(axis=0),
+                          term_sum / (weights.sum() + 1e-12), term_sum,
                           graph["global_features"]])
     return z_h, z_a
 
 
 def features(xp, params: dict, graph: dict | None, rows: Candidates,
-             descriptors, use_graph: bool):
+             descriptors, use_graph: bool, previous: dict | None = None):
     """The candidate vectors the kernel compares (``descriptors`` already
-    standardized)."""
+    standardized).  ``previous`` is the graph of the previous geometry's
+    Hamiltonian, ``None`` for the same Hamiltonian."""
     if not use_graph:
         return descriptors
     z_h, z_a = embed(xp, params, graph)
+    z_prev = z_h if previous is None else embed(xp, params, previous)[0]
+    z = xp.concatenate([z_h, z_prev, z_h - z_prev])
     n = len(rows)
     return xp.concatenate([
-        xp.broadcast_to(z_h, (n, z_h.shape[0])),
+        xp.broadcast_to(z, (n, z.shape[0])),
         xp.asarray(rows.occupancy) @ z_a, xp.asarray(rows.positional) @ z_a,
         z_a[xp.asarray(rows.operator)], descriptors], axis=1)
 
@@ -414,13 +453,19 @@ class ProposalModel:
 
     # -- prediction -------------------------------------------------------- #
 
-    def predict(self, graph: dict | None, rows: Candidates):
-        """Posterior mean and latent standard deviation of the standardized
-        compressed energy change of each candidate."""
+    def _phi(self, graph, rows, previous=None):
         descriptors = (rows.descriptors - self.descriptor_mean) \
             / self.descriptor_std
-        phi = features(np, self.params, graph, rows, descriptors,
-                       self.use_graph) @ self.params["projection"]
+        return descriptors, features(
+            np, self.params, graph, rows, descriptors, self.use_graph,
+            previous) @ self.params["projection"]
+
+    def predict(self, graph: dict | None, rows: Candidates,
+                previous: dict | None = None):
+        """Posterior mean and latent standard deviation of the standardized
+        compressed energy change of each candidate (``previous``: the graph
+        arrays of the previous geometry's Hamiltonian)."""
+        descriptors, phi = self._phi(graph, rows, previous)
         cross = _kernel(np, self.params, phi, self.train_phi)
         mean = _prior_mean(self.params, descriptors) + cross @ self.alpha
         solved = np.linalg.solve(self.cholesky, cross.T) \
@@ -429,10 +474,55 @@ class ProposalModel:
             - (solved ** 2).sum(axis=0)
         return mean, np.sqrt(np.maximum(variance, 0.0))
 
-    def bind(self, problem: ProblemRecord) -> "BoundProposal":
-        """The proposal for one run's problem; the Hamiltonian and every pool
-        generator are embedded once, here."""
-        return BoundProposal(self, HamiltonianGraph.from_problem(problem))
+    def bind(self, problem: ProblemRecord,
+             previous: ProblemRecord | None = None) -> "BoundProposal":
+        """The proposal for one run's problem, conditioned on the previous
+        geometry's (``None``: the same Hamiltonian); the Hamiltonians and
+        every pool generator are embedded once, here."""
+        return BoundProposal(
+            self, HamiltonianGraph.from_problem(problem),
+            None if previous is None
+            else HamiltonianGraph.from_problem(previous))
+
+    def condition(self, examples) -> "ProposalModel":
+        """This model with its Gaussian process conditioned on ``examples``
+        as well (:func:`training_examples`); the network, the kernel and the
+        standardization stay as trained.
+
+        The old training residuals are recovered from the posterior,
+        :math:`r = K\alpha = L L^\top \alpha`, the new ones are standardized
+        with the stored statistics, and the factorization is rebuilt over
+        both -- the most recent :data:`MAX_TRAINING_ROWS` rows when there are
+        more.  Returns a new model; this one is unchanged.
+        """
+        phis, residuals = [self.train_phi], [
+            self.cholesky @ (self.cholesky.T @ self.alpha)]
+        for example in examples:
+            descriptors, phi = self._phi(
+                example.graph.arrays() if self.use_graph else None,
+                example.rows,
+                example.previous.arrays()
+                if self.use_graph and example.previous is not None else None)
+            target = (example.target - self.target_mean) / self.target_std
+            phis.append(phi)
+            residuals.append(target - _prior_mean(self.params, descriptors))
+        phi = np.concatenate(phis)[-MAX_TRAINING_ROWS:]
+        residual = np.concatenate(residuals)[-MAX_TRAINING_ROWS:]
+        k = _kernel(np, self.params, phi, phi) \
+            + float(_noise(np, self.params)) * np.eye(len(phi))
+        chol = np.linalg.cholesky(k) if len(phi) else np.zeros((0, 0))
+        alpha = (np.linalg.solve(chol.T, np.linalg.solve(chol, residual))
+                 if len(phi) else np.zeros(0))
+        model = ProposalModel(
+            params=self.params, use_graph=self.use_graph,
+            descriptor_mean=self.descriptor_mean,
+            descriptor_std=self.descriptor_std,
+            target_mean=self.target_mean, target_std=self.target_std,
+            train_phi=phi, alpha=alpha, cholesky=chol, ready=self.ready,
+            mixing=self.mixing, kappa=self.kappa,
+            temperature=self.temperature, report=self.report)
+        model.version = _version(model)
+        return model
 
     # -- storage ----------------------------------------------------------- #
 
@@ -446,25 +536,35 @@ class ProposalModel:
                 "mixing": self.mixing, "kappa": self.kappa,
                 "temperature": self.temperature, "report": self.report,
                 "version": self.version}
-        with open(path, "wb") as handle:
-            np.savez_compressed(
-                handle, meta=np.array(json.dumps(meta)),
-                descriptor_mean=self.descriptor_mean,
-                descriptor_std=self.descriptor_std,
-                train_phi=self.train_phi, alpha=self.alpha,
-                cholesky=self.cholesky, **arrays)
-        return path
+        return save_npz_atomically(
+            path, meta=np.array(json.dumps(meta)),
+            descriptor_mean=self.descriptor_mean,
+            descriptor_std=self.descriptor_std,
+            train_phi=self.train_phi, alpha=self.alpha,
+            cholesky=self.cholesky, **arrays)
 
     @classmethod
     def load(cls, path) -> "ProposalModel":
         path = Path(path).expanduser()
         if not path.is_file():
             raise FileNotFoundError(f"no proposal model at {str(path)!r}")
-        with np.load(path, allow_pickle=False) as data:
+        try:
+            archive = np.load(path, allow_pickle=False)
+        except (OSError, ValueError, zipfile.BadZipFile) as error:
+            raise ValueError(f"{path}: not a proposal model file "
+                             f"({error})") from error
+        if not isinstance(archive, np.lib.npyio.NpzFile):
+            raise ValueError(f"{path}: not a proposal model file")
+        if "meta" not in archive.files:
+            archive.close()
+            raise ValueError(f"{path}: not a proposal model file")
+        with archive as data:
             meta = json.loads(str(data["meta"]))
             if meta.get("schema") != MODEL_SCHEMA:
-                raise ValueError(f"{path}: model schema {meta.get('schema')!r}"
-                                 f", expected {MODEL_SCHEMA}")
+                raise ValueError(
+                    f"{path}: model schema {meta.get('schema')!r}, expected "
+                    f"{MODEL_SCHEMA}; retrain it with train_proposal_model(), "
+                    f"which rewrites the file from the recorded edits")
             params = {name[len("param_"):]: np.array(data[name])
                       for name in data.files if name.startswith("param_")}
             return cls(params=params, use_graph=bool(meta["use_graph"]),
@@ -483,10 +583,15 @@ class ProposalModel:
 class BoundProposal:
     """A model bound to one problem: operator distributions at chain states."""
 
-    def __init__(self, model: ProposalModel, graph: HamiltonianGraph):
+    def __init__(self, model: ProposalModel, graph: HamiltonianGraph,
+                 previous: HamiltonianGraph | None = None):
         self.model = model
         self.graph = graph
+        self.previous = previous
         self._arrays = graph.arrays() if model.use_graph else None
+        self._previous = (previous.arrays()
+                          if model.use_graph and previous is not None
+                          else None)
 
     def learned(self, architecture, gradients, source_energy) -> np.ndarray:
         r""":math:`p_{\mathrm{ML}}(\mu|C) = \mathrm{softmax}(b/\tau)`,
@@ -494,7 +599,7 @@ class BoundProposal:
         pool = self.graph.pool_descriptors.shape[0]
         rows = candidate_rows(self.graph, [architecture] * pool, range(pool),
                               [gradients] * pool, [source_energy] * pool)
-        mean, std = self.model.predict(self._arrays, rows)
+        mean, std = self.model.predict(self._arrays, rows, self._previous)
         score = (-mean + self.model.kappa * std) / self.model.temperature
         score -= score.max()
         weights = np.exp(score)
@@ -516,13 +621,9 @@ class BoundProposal:
 # Training (JAX).
 # --------------------------------------------------------------------------- #
 
-def _require_jax():
-    try:
-        import jax
-        import jax.numpy as jnp
-    except ImportError as error:        # pragma: no cover - env dependent
-        raise ImportError(f"training a VALQA proposal model needs JAX: "
-                          f"{_EXTRA}") from error
+def _jax():
+    import jax
+    import jax.numpy as jnp
     # Double precision for the Cholesky factor, as the JAX force path does.
     jax.config.update("jax_enable_x64", True)
     return jax, jnp
@@ -537,6 +638,8 @@ class _Example:
     target: np.ndarray            # compressed energy change
     gradient: np.ndarray          # |g_mu| of each candidate (baseline)
     group: list
+    #: The previous geometry's Hamiltonian, ``None`` for the same one.
+    previous: HamiltonianGraph | None = None
 
 
 def training_examples(rows: list[dict], problems: dict,
@@ -547,19 +650,39 @@ def training_examples(rows: list[dict], problems: dict,
     source state and the placed operator, which is what the score predicts;
     a ``replace`` also depends on what it removed.
     """
-    if group_by not in ("molecule", "hamiltonian"):
-        raise ValueError(f"group_by must be 'molecule' or 'hamiltonian', got "
+    if group_by not in GROUPINGS:
+        raise ValueError(f"group_by must be one of {GROUPINGS}, got "
                          f"{group_by!r}")
-    by_problem: dict[str, list[dict]] = {}
+    by_problem: dict[tuple, list[dict]] = {}
     for row in rows:
         if (row.get("move") == "insert" and row.get("source_gradients")
                 and row.get("delta_energy") is not None
                 and math.isfinite(row["delta_energy"])):
-            by_problem.setdefault(row["problem"], []).append(row)
+            pair = (row["problem"], row.get("previous_problem"))
+            by_problem.setdefault(pair, []).append(row)
+    graphs: dict[str, HamiltonianGraph] = {}
+
+    def graph_of(key):
+        if key not in graphs:
+            if key not in problems:
+                raise FileNotFoundError(
+                    f"rows refer to the previous problem {key}, whose "
+                    f"problem file is missing")
+            graphs[key] = HamiltonianGraph.from_problem(problems[key])
+        return graphs[key]
+
+    def group(row, key):
+        if group_by == "molecule":
+            return row.get("formula") or key
+        if group_by == "trajectory":
+            return row.get("trajectory") or row.get("run") or key
+        return key
+
     examples = []
-    for key, chosen in sorted(by_problem.items()):
-        problem = problems[key]
-        graph = HamiltonianGraph.from_problem(problem)
+    for (key, previous), chosen in sorted(by_problem.items(),
+                                          key=lambda item: (item[0][0],
+                                                            item[0][1] or "")):
+        graph = graph_of(key)
         candidates = candidate_rows(
             graph, [row["source"] for row in chosen],
             [row["operator"] for row in chosen],
@@ -571,8 +694,9 @@ def training_examples(rows: list[dict], problems: dict,
             target=compress([row["delta_energy"] for row in chosen]),
             gradient=np.array([abs(row["source_gradients"][row["operator"]])
                                for row in chosen]),
-            group=[(row.get("formula") or key) if group_by == "molecule"
-                   else key for row in chosen]))
+            group=[group(row, key) for row in chosen],
+            previous=(None if previous is None or previous == key
+                      else graph_of(previous))))
     return examples
 
 
@@ -582,7 +706,8 @@ def _subset(example: _Example, index) -> _Example:
     return _Example(example.graph, Candidates(
         rows.occupancy[index], rows.positional[index], rows.operator[index],
         rows.descriptors[index]), example.target[index],
-        example.gradient[index], [example.group[i] for i in index])
+        example.gradient[index], [example.group[i] for i in index],
+        example.previous)
 
 
 def fit(examples: list[_Example], *, use_graph: bool = True, seed: int = 0,
@@ -594,7 +719,7 @@ def fit(examples: list[_Example], *, use_graph: bool = True, seed: int = 0,
     The returned model is **not** ready: readiness is decided by
     :func:`assess_data_volume`, which :func:`train_proposal_model` runs.
     """
-    jax, jnp = _require_jax()
+    jax, jnp = _jax()
     rng = np.random.default_rng(seed)
     total = sum(len(e.target) for e in examples)
     if total < 2:
@@ -617,6 +742,9 @@ def fit(examples: list[_Example], *, use_graph: bool = True, seed: int = 0,
 
     graphs = [{k: jnp.asarray(v) for k, v in e.graph.arrays().items()}
               for e in examples]
+    previous = [None if e.previous is None else
+                {k: jnp.asarray(v) for k, v in e.previous.arrays().items()}
+                for e in examples]
     scaled = [jnp.asarray((e.rows.descriptors - d_mean) / d_std)
               for e in examples]
     decayed = [name for name in init_parameters(seed, use_graph)
@@ -624,8 +752,9 @@ def fit(examples: list[_Example], *, use_graph: bool = True, seed: int = 0,
 
     def phi_of(params):
         return jnp.concatenate([
-            features(jnp, params, graph, example.rows, desc, use_graph)
-            for graph, example, desc in zip(graphs, examples, scaled)]) \
+            features(jnp, params, graph, example.rows, desc, use_graph, prev)
+            for graph, example, desc, prev
+            in zip(graphs, examples, scaled, previous)]) \
             @ params["projection"]
 
     def loss(params):
@@ -723,8 +852,11 @@ def _score(model, examples):
     """Held-out predictions of ``model`` on ``examples``, concatenated."""
     predicted = []
     for example in examples:
-        mean, _ = model.predict(example.graph.arrays() if model.use_graph
-                                else None, example.rows)
+        use = model.use_graph
+        mean, _ = model.predict(
+            example.graph.arrays() if use else None, example.rows,
+            example.previous.arrays()
+            if use and example.previous is not None else None)
         predicted.append(mean)
     return np.concatenate(predicted)
 

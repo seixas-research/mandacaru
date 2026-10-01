@@ -27,7 +27,9 @@ VASQA's gradient proposal draws: the same chain for the same seed.
 1. **Record.** With the store set, every VASQA and VALQA run records by
    default. Each proposal, rejected ones included, is appended to
    `edits.jsonl`, and the Hamiltonian, reference and pool it searched are
-   stored once in `problems/`:
+   stored once in `problems/`. Along an ASE trajectory a row also carries
+   its `trajectory`, its `geometry_step` and the `previous_problem`, whose
+   file is saved into the same store:
 
    ```python
    atoms.calc = Mandacaru(method="vasqa", basis="HAO", h=0.30,
@@ -44,7 +46,6 @@ VASQA's gradient proposal draws: the same chain for the same seed.
 2. **Train and assess.** `train_proposal_model()` measures whether the data
    in the store is enough (see below), trains on all of it and saves the
    model, with its readiness report, as `proposal_model.npz` in the store.
-   It needs JAX (`pip install 'mandacaru[learned-proposals]'`).
 
    ```python
    from mandacaru.algorithms import train_proposal_model
@@ -65,10 +66,75 @@ VASQA's gradient proposal draws: the same chain for the same seed.
    gradient proposal in effect; the `[OPTIMIZATION SETUP]` block's
    `proposal` line says why. Its version is on the result
    (`result.proposal_model`, `result.model_ready`) and in every recorded
-   edit. Retraining replaces the file, and the next run picks it up.
+   edit. Retraining replaces the file, and the next run picks it up. The
+   model file has schema 2: a model trained before must be retrained with
+   `train_proposal_model()`, and loading an old file raises a `ValueError`
+   that says so.
 
-On the command line: `--method valqa`, `--proposal-model PATH`, and
-`--record DIR` or `--no-record` for either chain method.
+On the command line: `--method valqa`, `--proposal-model PATH`,
+`--update-between-geometries`, and `--record DIR` or `--no-record` for either
+chain method.
+
+## Along a trajectory
+
+`transfer=True` works for VALQA exactly as for VASQA ({doc}`vasqa`, "Along a
+trajectory"): in a relaxation or scan, each geometry's chain starts from the
+ansatz the previous geometry reported, and `transfer_steps` sets the shorter
+chain that start allows.
+
+```python
+from ase.optimize import BFGS
+
+atoms.calc = Mandacaru(method="valqa", basis="HAO", h=0.25, pool="qeb",
+                       max_steps=30, transfer=True, transfer_steps=6,
+                       seed=1234)
+BFGS(atoms).run(fmax=0.05)
+print(atoms.calc.result.start)
+```
+
+The molecular orbitals are followed from one geometry to the next: operators
+are renamed where orbitals exchanged places, and angles change sign where an
+orbital did. The transferred ansatz is kept only if it relaxes below the
+reference's cost at the new geometry; otherwise the chain starts empty, and
+the `start` line of `[OPTIMIZATION SETUP]` says why. The details are in the
+VASQA tutorial. The start does not change what the chain samples. The
+command-line flags are `--transfer`, `--transfer-steps N` and
+`--transfer-threshold S`.
+
+### Two geometries
+
+Along any ASE trajectory, with or without `transfer`, the model is
+conditioned on two Hamiltonians, the previous geometry's and the current one,
+$q(C'\mid C_n, H_n, H_{n+1})$. Its features are $z_{n+1}$, $z_n$ and
+$\Delta z = z_{n+1} - z_n$, where $z$ is a Hamiltonian's graph embedding. A
+single geometry is the case $\Delta z = 0$, and so is every recorded row
+without a previous problem.
+
+### Updating between geometries
+
+By default the model is the same for every geometry. With
+`update_between_geometries=True` (`--update-between-geometries`), the model's
+Gaussian process is conditioned on the insertions the previous geometry
+evaluated before the next chain starts:
+
+```python
+atoms.calc = Mandacaru(method="valqa", basis="HAO", h=0.25, pool="qeb",
+                       max_steps=30, transfer=True, transfer_steps=6,
+                       update_between_geometries=True, seed=1234)
+BFGS(atoms).run(fmax=0.05)
+print(atoms.calc.result.model_update)
+```
+
+Those insertions are first scored by the model that has not seen them
+(test-then-train), and the line reports their count, the error and rank
+correlation of that prediction, and the model version before and after. Only
+the Gaussian process's posterior takes the new points in; the network and the
+kernel stay as trained. Each chain still runs with one frozen model, so its
+Metropolis-Hastings ratio stays exact, and the updated model lives for the
+trajectory: the store's model file is not changed. The update needs a ready
+model and a previous geometry of the same molecule and pool (`transfer` is not
+required); otherwise `model_update` says `none` and why.
+The `proposal` line of `[OPTIMIZATION SETUP]` carries the same text.
 
 ## The proposal
 
@@ -92,14 +158,19 @@ $p_{\mathrm{ML}}$ comes from three pieces:
   non-identity Pauli term of $H = c_0 + \sum_\alpha c_\alpha P_\alpha$, and an
   edge labeled X, Y or Z wherever a term acts on a qubit. A term acting on
   three qubits is one node with three edges, not three pairwise couplings.
-- **A message-passing network.** Two layers let terms gather from their
-  qubits and qubits from their terms, with one weight matrix per Pauli
-  letter. A pool generator (a sum of Pauli strings) is embedded from the
+  A term's features use the magnitude of its coefficient, not its sign: the
+  sign of a term with X or Y letters follows the arbitrary sign of a molecular
+  orbital, so two gauges of one molecule must look the same.
+- **A message-passing network.** Two layers of width 32 let terms gather from
+  their qubits and qubits from their terms, with one weight matrix per Pauli
+  letter. The Hamiltonian's embedding pools qubits and terms by mean and
+  sum. A pool generator (a sum of Pauli strings) is embedded from the
   qubit embeddings on each string's support. The same operator therefore gets
   a different representation in a different Hamiltonian.
 - **A Gaussian process.** It predicts the energy change of inserting
   operator $\mu$ into circuit $C$, with an uncertainty. Its inputs are the
-  graph embeddings plus what is known *before* the insertion is evaluated:
+  graph embeddings (of both geometries' Hamiltonians along a trajectory) plus
+  what is known *before* the insertion is evaluated:
   the operator's pool gradient, the circuit's operators and length, and the
   current energy above the reference.
 
@@ -124,8 +195,10 @@ with all the data, its mean held-out Spearman correlation beats both
 baselines by 0.05 and beats the better one for most held-out molecules. The
 gain has to come from the Hamiltonian representation, not merely from having
 a surrogate. `group_by="hamiltonian"` holds out single geometries instead,
-which tests transfer along a potential-energy curve. That is a weaker claim,
-and the report records which grouping was used.
+which tests transfer along a potential-energy curve, and
+`group_by="trajectory"` holds out whole trajectories. Those are weaker claims
+than the molecule, and the report records which grouping was used. Both
+`assess_data_volume` and `train_proposal_model` take `group_by`.
 
 `model.report["curve"]` is the learning curve: for each fraction, the
 training labels used and the three correlations. A curve still rising at the

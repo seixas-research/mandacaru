@@ -16,20 +16,24 @@ import pytest
 
 from mandacaru import Mandacaru
 from mandacaru.algorithms.proposal_data import (EDITS_FILE, PROBLEMS_DIR,
-                                                ProblemRecord, load_edits)
+                                                EditRecorder, ProblemRecord,
+                                                load_edits)
 from mandacaru.core import MolecularIntegrals, minimal_hao_basis
 from mandacaru.integrals import Grid
 from mandacaru.units import HARTREE_TO_EV
 
 
-@pytest.fixture(scope="module")
-def h2_hamiltonian():
-    R = 0.74
+def _h2(R):
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
     grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.25)
     mints = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
     return mints.molecular_hamiltonian(mo_basis=True, n_electrons=2)
+
+
+@pytest.fixture(scope="module")
+def h2_hamiltonian():
+    return _h2(0.74)
 
 
 def _chain(h2_hamiltonian, method="vasqa", **options):
@@ -120,6 +124,106 @@ class TestRecording:
             axis=1).any()
 
 
+class TestAppending:
+    """The store only grows: runs append, interrupted rows are tolerated."""
+
+    def test_a_second_run_keeps_the_first_runs_rows(self, h2_hamiltonian,
+                                                    tmp_path):
+        _chain(h2_hamiltonian, record=tmp_path).run()
+        before = (tmp_path / EDITS_FILE).read_bytes()
+        second = _chain(h2_hamiltonian, record=tmp_path, seed=3).run()
+        after = (tmp_path / EDITS_FILE).read_bytes()
+        assert after.startswith(before)
+        assert len(after.splitlines()) == \
+            len(before.splitlines()) + len(second.steps)
+
+    def test_an_existing_problem_file_is_not_rewritten(self, h2_hamiltonian,
+                                                       tmp_path):
+        _chain(h2_hamiltonian, record=tmp_path).run()
+        (path,) = (tmp_path / PROBLEMS_DIR).iterdir()
+        stamp = path.stat().st_mtime_ns
+        _chain(h2_hamiltonian, record=tmp_path, seed=3).run()
+        assert path.stat().st_mtime_ns == stamp
+        assert [p.name for p in (tmp_path / PROBLEMS_DIR).iterdir()] == \
+            [path.name]
+
+    def test_two_problems_share_one_directory(self, h2_hamiltonian,
+                                              tmp_path):
+        _chain(h2_hamiltonian, record=tmp_path).run()
+        _chain(_h2(0.9), record=tmp_path).run()
+        rows, problems = load_edits(tmp_path)
+        assert len(problems) == 2
+        assert len(list((tmp_path / PROBLEMS_DIR).iterdir())) == 2
+        assert {r["problem"] for r in rows} == set(problems)
+
+    def test_a_row_cut_short_is_skipped_with_its_line(self, h2_hamiltonian,
+                                                      tmp_path):
+        result = _chain(h2_hamiltonian, record=tmp_path).run()
+        with open(tmp_path / EDITS_FILE, "a") as handle:
+            handle.write('{"schema":1,"prob')
+        with pytest.warns(RuntimeWarning, match=f"line\\(s\\) "
+                          f"{len(result.steps) + 1}$"):
+            rows, _ = load_edits(tmp_path)
+        assert len(rows) == len(result.steps)
+
+    def test_the_next_run_starts_a_new_line_after_a_cut_row(
+            self, h2_hamiltonian, tmp_path):
+        first = _chain(h2_hamiltonian, record=tmp_path).run()
+        with open(tmp_path / EDITS_FILE, "a") as handle:
+            handle.write('{"schema":1,"prob')
+        second = _chain(h2_hamiltonian, record=tmp_path, seed=3).run()
+        with pytest.warns(RuntimeWarning, match="skipped 1 row"):
+            rows, _ = load_edits(tmp_path)
+        assert len(rows) == len(first.steps) + len(second.steps)
+
+    def test_close_is_idempotent_and_ends_writing(self, h2_hamiltonian,
+                                                  tmp_path):
+        calc = _chain(h2_hamiltonian)
+        problem = ProblemRecord.from_problem(
+            calc.solver.hamiltonian,
+            calc.solver._new_ansatz().reference_qubits(),
+            calc.solver._pool_ops)
+        recorder = EditRecorder(tmp_path, problem, run={"run": "r"})
+        recorder.write({"step": 1})
+        recorder.close()
+        recorder.close()
+        with pytest.raises(ValueError, match="closed"):
+            recorder.write({"step": 2})
+        assert len(_rows(tmp_path)) == 1
+
+    @pytest.mark.parametrize("where", ["banner", "step"])
+    def test_a_failing_run_closes_the_file_and_keeps_its_rows(
+            self, h2_hamiltonian, tmp_path, monkeypatch, where):
+        calc = _chain(h2_hamiltonian, record=tmp_path)
+        solver = calc.solver
+        opened = []
+        open_recorder = solver._open_recorder
+
+        def spy(*args):
+            opened.append(open_recorder(*args))
+            return opened[-1]
+
+        monkeypatch.setattr(solver, "_open_recorder", spy)
+        if where == "banner":
+            def fail(*args, **kwargs):
+                raise RuntimeError("boom")
+            monkeypatch.setattr(solver, "_show_banner", fail)
+        else:
+            evaluate, calls = solver._evaluate, []
+
+            def fail(*args, **kwargs):
+                calls.append(1)
+                if len(calls) == 5:
+                    raise RuntimeError("boom")
+                return evaluate(*args, **kwargs)
+            monkeypatch.setattr(solver, "_evaluate", fail)
+        with pytest.raises(RuntimeError, match="boom"):
+            calc.run()
+        assert solver._recorder is None and opened[0]._fd is None
+        if where == "step":
+            assert len(_rows(tmp_path)) == 3
+
+
 class TestRefusals:
     def test_a_file_is_not_a_record_directory(self, tmp_path):
         path = tmp_path / "file"
@@ -141,6 +245,21 @@ class TestRefusals:
 
     def test_an_empty_directory_has_no_edits(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="record a chain"):
+            load_edits(tmp_path)
+
+    def test_problems_without_edits_are_refused(self, h2_hamiltonian,
+                                                tmp_path):
+        _chain(h2_hamiltonian, record=tmp_path).run()
+        (tmp_path / EDITS_FILE).unlink()
+        with pytest.raises(FileNotFoundError, match="record a chain"):
+            load_edits(tmp_path)
+
+    def test_rows_of_another_schema_are_refused(self, h2_hamiltonian,
+                                                tmp_path):
+        _chain(h2_hamiltonian, record=tmp_path).run()
+        with open(tmp_path / EDITS_FILE, "a") as handle:
+            handle.write(json.dumps({"schema": 2, "problem": "x"}) + "\n")
+        with pytest.raises(ValueError, match="row schema 2"):
             load_edits(tmp_path)
 
 

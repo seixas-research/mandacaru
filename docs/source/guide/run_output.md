@@ -102,7 +102,16 @@ they read `-`.
 `method="vasqa"` and `method="valqa"` write the same blocks, with one
 difference: their
 `[OPTIMIZATION SETUP]` holds the chain's settings (moves, temperature, length
-penalty, seed), and in place of `[ITERATIONS]` it writes `[MARKOV CHAIN]`, one
+penalty, seed, `replace_start`), and `start`, which says where the chain
+began: the empty ansatz, or the previous geometry's ansatz with `transfer=True`,
+and the reason when a transfer fell back to empty. With `transfer=True`,
+`max_steps` also shows the length of a chain that starts from a transferred
+ansatz. For `method="valqa"` the `proposal` line also says which model drew
+the operators and, with `update_between_geometries=True`, what the update
+before this chain did (the same text as the result's `model_update`). The
+summary adds `edit_distance_from_start`, the number of insert,
+delete and replace moves between the starting architecture and the reported
+one. In place of `[ITERATIONS]` it writes `[MARKOV CHAIN]`, one
 row per proposal, accepted or not:
 
 ```text
