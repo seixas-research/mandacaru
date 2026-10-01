@@ -1,0 +1,143 @@
+
+    ██▄  ▄██  ▄▄▄  ▄▄  ▄▄ ▄▄▄▄   ▄▄▄   ▄▄▄▄  ▄▄▄  ▄▄▄▄  ▄▄ ▄▄
+    ██ ▀▀ ██ ██▀██ ███▄██ ██▀██ ██▀██ ██▀▀▀ ██▀██ ██▄█▄ ██ ██
+    ██    ██ ██▀██ ██ ▀██ ████▀ ██▀██ ▀████ ██▀██ ██ ██ ▀███▀
+
+-----------------------------------------------------------------
+    version:       26.9.64
+    developed by:  Leandro Seixas Rocha
+    website:       https://mandacaru.seixas.dev
+    repository:    https://github.com/seixas-research/mandacaru
+    documentation: https://mandacaru.readthedocs.io/
+-----------------------------------------------------------------
+
+System:
+├── architecture: arm64
+├── platform:     Darwin
+├── user:         leseixas
+├── hostname:     safira
+├── cwd:          /Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru/examples/new
+└── PID:          9512
+
+Python:
+├── version:    3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:04:32) [Clang 20.1.8 ]
+└── executable: /Users/leseixas/miniconda3/envs/mandacaru/bin/python
+
+Dependencies:
+├── ase version:         3.29.0     [/Users/leseixas/miniconda3/envs/mandacaru/lib/python3.14/site-packages/ase]
+├── numpy version:       2.5.3      [/Users/leseixas/miniconda3/envs/mandacaru/lib/python3.14/site-packages/numpy]
+├── scipy version:       1.18.1     [/Users/leseixas/miniconda3/envs/mandacaru/lib/python3.14/site-packages/scipy]
+├── matplotlib version:  3.11.2     [/Users/leseixas/miniconda3/envs/mandacaru/lib/python3.14/site-packages/matplotlib]
+└── qiskit version:      2.5.2      [/Users/leseixas/miniconda3/envs/mandacaru/lib/python3.14/site-packages/qiskit]
+
+========================================================================
+    DFT (R2SCAN)
+========================================================================
+
+[SYSTEM]
+    step: 1
+    units: Angstrom
+    n_atoms: 3
+    geometry:
+        O       3.0000000000     3.7632390000     3.5963090000
+        H       3.0000000000     4.5264780000     3.0000000000
+        H       3.0000000000     3.0000000000     3.0000000000
+    cell_present: True
+    cell_vectors:
+        a1 = [  6.0000000000   0.0000000000   0.0000000000]
+        a2 = [  0.0000000000   7.5264780000   0.0000000000]
+        a3 = [  0.0000000000   0.0000000000   6.5963090000]
+    cell_lengths: a=6.0000000000 b=7.5264780000 c=6.5963090000
+    cell_angles: alpha=90.000000 beta=90.000000 gamma=90.000000
+    pbc: a=False b=False c=False (non-periodic)
+    initial_magnetic_moments: [0.0, 0.0, 0.0]
+
+[BASIS]
+    name: PAW-LCAO
+    family: PAW-LCAO (projector augmented wave (Bloechl 1994), frozen core, linearized one-center terms, multipole compensation)
+    size: DZP
+    zeta_split: tail_norm 0.16, 0.3, 0.6 (norm of the tail, every zeta split from the first)
+    projector_basis: raw
+    energy_shift: 0.1 eV
+    confinement_potential: A exp(-(r_c - r_i)/(r - r_i)) / (r_c - r), A = 12 Ha, r_i = 0.6 r_c
+    polarization: gaussian (quasi-Gaussian: r^l [exp(-r^2/r_char^2) - (a - b r^2)], further shells split from it)
+    filter: filtered (auto: 1 x Nyquist)
+    filter_cutoff: 8.3123 Bohr^-1 (940.08 eV)
+    local_potential: range-separated: long range on the grid, short range on atom-centered quadrature (sigma = 0.5291 Bohr)
+    dataset_xc: LDA (atomic reference only; the valence interaction is the bare Coulomb operator)
+    directory: lda-sr (/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr)
+    basis_functions: 23
+    datasets:
+        symbol  Z  Z_ion  l_max  r_cut_Bohr  source
+        ----------------------------------------------
+        O       8  6      1      1.4499      O.parquet
+        H       1  1      0      1.2998      H.parquet
+    orbitals:
+        symbol  l  zetas  polarization  r_c_Bohr  r_c_Angstrom  eps_free_eV  eps_basis_eV  shift_eV
+        -------------------------------------------------------------------------------------------
+        O       0  2      0             4.3727    2.3140        -23.610301   -23.510301    0.100000
+        O       1  2      1             5.3457    2.8288        -9.222144    -9.122144     0.100000
+        H       0  2      1             6.6834    3.5367        -6.356143    -6.256142     0.100000
+    polarization_shells:
+        symbol  l  based_on_l  r_cut_Bohr  r_char_Bohr  r_c_at_0.3eV_Bohr
+        -----------------------------------------------------------------
+        O       2  1           5.3457      1.1269       4.5078
+        H       1  0           6.6834      1.3967       5.5870
+    functions:
+        symbol  atoms  functions_per_atom
+        ---------------------------------
+        O       1      13
+        H       2      5
+
+[ELECTRONS]
+    grid spacing: 0.2 Angstrom (requested)
+    grid points: 31 x 39 x 34 (spacing 0.2000 x 0.2000 x 0.2000 Angstrom)
+    kinetic operator: finite difference
+    k-points: Gamma (1x1x1 Monkhorst-Pack)
+    charge: 0
+    spin-polarized: False (multiplicity 1)
+    spatial orbitals: 23
+    electrons (alpha, beta): (4, 4)
+    operator_details: omitted (46 qubits > 20)
+
+[SCF SETUP]
+    scf_method: restricted Kohn-Sham (closed shell)
+    xc_functional: R2SCAN
+    dispersion: D4
+    max_iterations: 200
+    convergence_Hartree: 1e-08 (energy change and largest density change)
+    acceleration: DIIS; level shift 0.5 Hartree while the energy rises by more than 1e-06 Hartree
+    energy_unit: eV
+
+========================================================================
+[SCF SUMMARY]
+    converged: True
+    optimal_energy_eV: -479.9648415783
+    homo_energy_eV: -7.199431
+    lumo_energy_eV: 1.977603
+    homo_lumo_gap_eV: 9.177034
+    scf_iterations: 17
+    reference_energy_eV: -488.6251370109
+    hartree_energy_eV: 593.4626329841
+    xc_energy_eV: -96.9604862819
+    core_correction_energy_eV: 0.0009908599
+    dispersion_energy_eV: -0.0012825501
+========================================================================
+
+[PERFORMANCE]
+    step: 1
+    stages (wall-clock seconds):
+        integration: one-body integrals             0.0084
+        integration: two-body integrals (fft)       1.5491
+        --------------------------------------------------
+        sum of timed stages                         1.5576
+    untimed_s: 9.5278
+    wall_time_s: 11.0854
+    solver_wall_time_s: 11.0653
+    integration_backend: C (OpenMP)
+    openmp_threads: 8
+    cpu_count: 8
+    mpi: not used (single process, shared-memory OpenMP)
+    peak_memory_MiB: 1488.8
+    resident_memory_MiB: 1301.2
+========================================================================

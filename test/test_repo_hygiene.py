@@ -29,7 +29,8 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: The only files that may live in the repository root.
-ROOT_ALLOWED = {".gitignore", ".readthedocs.yaml", "CLAUDE.md", "HISTORY.md",
+ROOT_ALLOWED = {".gitignore", ".readthedocs.yaml", "CLAUDE.md", "DFT_PLAN.md",
+                "HISTORY.md",
                 "LICENSE", "PAW_SAGA.md", "README.md", "TODO.md",
                 "VERSION_DESCRIPTION.md",
                 "pyproject.toml"}

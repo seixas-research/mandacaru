@@ -388,7 +388,8 @@ class SpinorAlgebraicEnergy(AlgebraicEnergy):
 def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                             orbital_delta=None, include_pulay: bool = True,
                             algebraic_step: float = DEFAULT_ALGEBRAIC_STEP,
-                            orbital_gradient: bool = True):
+                            orbital_gradient: bool = True, energy=None,
+                            field=None):
     r"""Hellmann-Feynman + Pulay gradient of a pseudopotential calculation.
 
     Parameters
@@ -410,6 +411,21 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         Step of the directional derivative of the algebraic energy.
     orbital_gradient : bool
         Measure the orbital-rotation residual (``details["orbital_gradient"]``).
+    energy : object, optional
+        The algebraic energy :math:`E(S, h, g)` to differentiate, in place of
+        the one built from ``gamma``, ``gamma2`` and the integrals' molecular
+        orbitals (which are then not needed): any object with
+        ``__call__(S, h, g)``, ``directional(...)`` like
+        :class:`AlgebraicEnergy` and a spatial one-body matrix ``D`` (the
+        electron count is its trace).  The Kohn-Sham gradient
+        (:mod:`mandacaru.algorithms.dft`) supplies its own.
+    field : object, optional
+        Terms of the energy that are not functions of ``(S, h, g)``.
+        ``field.pulay(dpsi)`` returns the change of an extra one-body matrix
+        (already folded into ``energy``) when the basis functions move by
+        ``dpsi``, added to ``dh``; ``field.hellmann_feynman(atom, k)`` returns
+        a gradient component (Hartree/Bohr) for whatever else moves with
+        ``atom``.
 
     Returns
     -------
@@ -423,7 +439,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                          ForceResult, _nuclear_repulsion_gradient,
                          _pair_potentials, orbital_derivatives)
 
-    if integrals.mo_coefficients is None:
+    if energy is None and integrals.mo_coefficients is None:
         raise RuntimeError("the integrals carry no molecular orbitals; build the "
                            "Hamiltonian with molecular_hamiltonian(mo_basis=True)")
     if integrals.kinetic != "fd":
@@ -452,8 +468,10 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     # A spin-orbit Hamiltonian is written in GHF spinors: the energy keeps
     # the full spin-orbital RDMs and the spin-orbit matrix, whose derivative
     # comes from its own projections (`so_terms` below).
-    spinor = bool(getattr(integrals, "spinor_basis", False))
-    if spinor:
+    spinor = energy is None and bool(getattr(integrals, "spinor_basis", False))
+    if energy is not None:
+        D1 = np.asarray(energy.D, dtype=complex)
+    elif spinor:
         from ..core.spin_orbit import spin_orbit_pair
 
         so_projectors = list(integrals.spin_orbit_projectors)
@@ -655,6 +673,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dh = dh + ionic_derivative(dQ, None)
                 dh_so = (so_terms(_backend.kb_projections(dpsi, chi_so, dV))
                          if spinor else None)
+                if field is not None:
+                    dh = dh + field.pulay(dpsi)
                 pulay[atom, k] = energy.directional(
                     S0, h0, g0, _hermitian(dS), _hermitian(dh), dg,
                     algebraic_step, dh_so=dh_so)
@@ -736,6 +756,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
             hf[atom, k] = energy.directional(
                 S0, h0, g0, _hermitian(dS) if dS is not None else None,
                 _hermitian(dh), dg, algebraic_step, dh_so=dh_so)
+            if field is not None:
+                hf[atom, k] += field.hellmann_feynman(atom, k)
 
     hf = hf + _nuclear_repulsion_gradient(centers, charges)
 

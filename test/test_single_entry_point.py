@@ -23,11 +23,13 @@ from mandacaru import Mandacaru
 REPO = pathlib.Path(__file__).resolve().parents[1]
 # ``BlochCalculator`` was public until the periodic driver moved behind the
 # entry point; it is listed here so the sweep fails if it ever comes back.
-SOLVER_CLASSES = ("RHFDriver", "UHFDriver", "HVA", "VQE", "ADAPTVQE",
-                  "SubspaceVQE", "SubspaceADAPTVQE", "VASQA", "BlochCalculator")
+SOLVER_CLASSES = ("RHFDriver", "UHFDriver", "DFTDriver", "HVA", "VQE",
+                  "ADAPTVQE", "SubspaceVQE", "SubspaceADAPTVQE", "VASQA",
+                  "BlochCalculator")
 # ``HVA`` was a method until it became ``method="vqe", ansatz="hva"``; it
 # stays in SOLVER_CLASSES so the sweep fails if the class ever comes back.
-METHODS = {"rhf": "RHFDriver", "uhf": "UHFDriver", "vqe": "VQE",
+METHODS = {"rhf": "RHFDriver", "uhf": "UHFDriver", "dft": "DFTDriver",
+           "vqe": "VQE",
            "adapt-vqe": "ADAPTVQE", "subspace-vqe": "SubspaceVQE",
            "subspace-adapt-vqe": "SubspaceADAPTVQE", "vasqa": "VASQA",
            "bloch-vqe": "BlochVQE", "bloch-adapt-vqe": "BlochADAPTVQE"}

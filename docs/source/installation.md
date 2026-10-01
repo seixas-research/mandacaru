@@ -15,7 +15,8 @@ python -c "import mandacaru; print(mandacaru.__version__)"
 
 On Windows, activate the environment with `.venv\Scripts\activate` instead.
 
-The package installs NumPy, SciPy, ASE, Matplotlib, spglib (crystal symmetry for
+The package installs NumPy, SciPy, JAX (the r²SCAN functional of
+`method="dft"` is written in it), ASE, Matplotlib, spglib (crystal symmetry for
 the periodic methods), Hamiltonian-cache dependencies, quantum SDKs and the
 supporting numerical packages listed in `pyproject.toml`.
 Installing a provider's SDK does not require an account on its service. The
@@ -159,7 +160,7 @@ Hamiltonians or state vectors.
 | `docs` | Sphinx, MyST and Furo for building this manual. |
 | `pyarrow` | An alternative Parquet engine for Hamiltonian caches. |
 | `memory` | `psutil`, for the resident-memory line of the `[PERFORMANCE]` block and the QPE memory check (both fall back to the standard library). |
-| `legacy-forces` | JAX, needed only by `force_method="scf-response"`; the default `force_method="rdm"` does not use it. |
+| `dispersion` | `dftd4`, for the D4 correction of `Mandacaru(method="dft", dispersion="d4")`. |
 | `coverage` | Test coverage reporting with pytest-cov. |
 | `dev` | Everything above. |
 

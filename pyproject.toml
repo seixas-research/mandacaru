@@ -45,8 +45,9 @@ classifiers = [
 [project.optional-dependencies]
 docs = ['sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 coverage = ['pytest-cov']
+dispersion = ['dftd4']
 dev = ['pyarrow', 'psutil', 'sphinx>=8,<10', 'myst-parser>=4,<6',
-       'furo>=2024.8.6', 'pytest-cov']
+       'furo>=2024.8.6', 'pytest-cov', 'dftd4']
 
 [tool.pytest.ini_options]
 # `python -m pytest` with no arguments runs the whole suite (there is no CI:

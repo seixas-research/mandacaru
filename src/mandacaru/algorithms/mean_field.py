@@ -8,6 +8,9 @@
 
 """Classical RHF, UHF and GHF drivers behind ``Mandacaru(method=...)``.
 
+The Kohn-Sham driver (``method="dft"``, :mod:`mandacaru.algorithms.dft`) is
+built on the same adapter and result type.
+
 The common geometry builder produces molecular integrals and an MO-basis
 fermionic Hamiltonian.  It also performs the SCF that chooses that basis.
 These drivers reuse its converged SCF result and never build a quantum ansatz,
@@ -102,8 +105,9 @@ class MeanFieldResult:
         """Options for ``Mandacaru(method='adapt-vqe', **options)``.
 
         Direct mode reuses the MO-basis Hamiltonian without repeating the
-        real-space integration or SCF.  Its Hartree-Fock reference determinant
-        is the RHF solution, or the UHF natural-orbital reference for UHF.
+        real-space integration or SCF.  Its reference determinant is the RHF
+        solution, the UHF natural-orbital reference for UHF, or the Kohn-Sham
+        determinant for DFT.
         """
         return {"hamiltonian": self.fermion_hamiltonian,
                 "num_particles": self.num_particles,

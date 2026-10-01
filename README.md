@@ -58,7 +58,7 @@ atoms = Atoms("LiH",
                          [0.0, 0.0, 1.6]],          # H
               cell=[10.0, 10.0, 10.0])
 
-atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "ghf", "vqe" (ansatz="uccsd"|"hva"), subspace methods
+atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "ghf", "dft", "vqe" (ansatz="uccsd"|"hva"), subspace methods
                        basis="HAO",                          # Basis set
                        h=0.10,                               # real-space grid spacing (Å)
                        pool="fermionic",                     # "fermionic" | "qubit" | "qeb" | "ceo" | "ceo-ovp"
@@ -111,9 +111,28 @@ df = pd.DataFrame({"distance": distances, "energy": energies})
 df.to_csv("lih_dissociation.csv", index=False)
 ```
 
+## Kohn-Sham DFT
+
+```python
+from ase.build import molecule
+from mandacaru import Mandacaru
+
+atoms = molecule("H2O")
+atoms.center(vacuum=3.0)
+atoms.calc = Mandacaru(method="dft",
+                       xc="pbe",                              # "lda" (default) | "pbe" | "r2scan"
+                       dispersion="d4",                       # None | "d4" (PBE and r2SCAN; pip install 'mandacaru[dispersion]')
+                       basis={"name": "PAW-LCAO", "size": "DZP"},
+                       h=0.2)
+energy = atoms.get_potential_energy()                         # Energy (eV)
+gap = atoms.calc.result.scf.homo_lumo_gap                     # Kohn-Sham HOMO-LUMO gap (Hartree)
+```
+
 ## Theory
 
 **Classical mean field.** `method="rhf"`, `method="uhf"` and `method="ghf"` run restricted, unrestricted or generalized (spinor) Hartree–Fock without building a circuit. GHF is the one that puts spin-orbit coupling into its Fock operator. Their results export the molecular-orbital Hamiltonian and reference occupation through `result.as_quantum_problem()`, ready for a direct `Mandacaru(method="adapt-vqe", **options)` run. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html).
+
+**Kohn-Sham DFT.** `method="dft"` solves the closed-shell Kohn-Sham problem in the same basis, on the same grid and with the same pseudopotentials, with the LDA, PBE or r²SCAN functional and an optional D4 dispersion correction. Molecules are closed-shell, with analytic forces for relaxations; a periodic geometry is solved as a crystal, with Bloch states on a k-point mesh and smearing for metals (PAW-LCAO). Its result exports the many-body Hamiltonian in the Kohn-Sham orbitals through `result.as_quantum_problem()`, like the Hartree-Fock methods. See the [Kohn-Sham DFT guide](https://mandacaru.readthedocs.io/en/latest/guide/dft.html).
 
 **VQE.** The variational quantum eigensolver prepares a parameterized state |ψ(θ)⟩ = U(θ)|Φ<sub>HF</sub>⟩ on a quantum processor, measures the energy ⟨ψ(θ)|H|ψ(θ)⟩, and lets a classical optimizer update θ to minimize it. By the variational principle the minimum is an upper bound to the ground-state energy, reached exactly when the ansatz can represent the ground state. Mandacaru starts from the Hartree–Fock determinant in the molecular-orbital basis; the circuit is chosen with `ansatz=`, spelled like `basis=`. The default, `ansatz="uccsd"`, is UCCSD.
 

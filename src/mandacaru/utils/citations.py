@@ -57,6 +57,7 @@ _METHOD_KEYS = {
     "rhf": ("Roothaan1951",),
     "uhf": ("PopleNesbet1954",),
     "ghf": ("JimenezHoyos2011",),
+    "dft": ("HohenbergKohn1964", "KohnSham1965"),
     # The circuit a fixed-ansatz VQE optimizes -- here and in subspace-vqe
     # and bloch-vqe -- is cited through _ANSATZ_KEYS.
     "vqe": ("Peruzzo2014",),

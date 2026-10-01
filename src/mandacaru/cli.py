@@ -153,9 +153,11 @@ def build_parser() -> argparse.ArgumentParser:
     from .algorithms.active_space import ACTIVE_SPACE_METHODS
     from .algorithms.ansatz_spec import ANSATZ_NAMES
     from .algorithms.calculator import DEFAULT_METHOD, STABLE_METHODS
+    from .algorithms.dft import DISPERSION_CORRECTIONS
     from .backends.hardware import available_devices
     from .circuits.pools import available_pools
     from .core.mapping import MAPPINGS
+    from .integrals.exchange_correlation import GRID_FUNCTIONALS
     from .optimizers.optim import DEFAULT_OPTIMIZER, NAMED_OPTIMIZERS
 
     parser = argparse.ArgumentParser(
@@ -332,6 +334,13 @@ def build_parser() -> argparse.ArgumentParser:
     solver.add_argument("--ansatz", default=None, choices=ANSATZ_NAMES,
                         help="circuit of --method vqe: uccsd (default) or "
                              "hva, the Hamiltonian variational ansatz")
+    solver.add_argument("--xc", default=None, choices=GRID_FUNCTIONALS,
+                        help="exchange-correlation functional of --method dft "
+                             "(default lda)")
+    solver.add_argument("--dispersion", default=None,
+                        choices=DISPERSION_CORRECTIONS,
+                        help="dispersion correction of --method dft (pbe and "
+                             "r2scan only; needs the dftd4 package)")
     solver.add_argument("--optimizer", default=None,
                         choices=tuple(NAMED_OPTIMIZERS),
                         help=f"classical optimizer (default {DEFAULT_OPTIMIZER}; "
@@ -499,7 +508,8 @@ def solver_options(args) -> dict:
     for name in ("pool", "ansatz", "max_iterations", "txt", "num_states",
                  "multiplicity", "references", "max_steps", "max_length",
                  "length_penalty", "warm_start", "seed", "proposal",
-                 "proposal_temperature", "record", "proposal_model"):
+                 "proposal_temperature", "record", "proposal_model", "xc",
+                 "dispersion"):
         value = getattr(args, name)
         if value is not None:
             options[name] = value

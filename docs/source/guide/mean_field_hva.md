@@ -94,6 +94,10 @@ Givens rotations, and is a complete problem on its own — no separate
 handoff still starts from the occupation-ordered natural-orbital determinant.
 The two starts can have different reference energies.
 
+`method="dft"` is the Kohn-Sham counterpart of RHF: the same closed-shell SCF
+and the same `as_quantum_problem()` handoff, with a density functional in place
+of exact exchange. It has its own guide, {doc}`dft`.
+
 RHF requires equal alpha and beta counts. Classical SCF nuclear forces are not
 yet exposed through these methods because they require self-consistent orbital
 response; the variational-state force expression is not their derivative.

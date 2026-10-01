@@ -7,7 +7,7 @@ optional **JSON dumps** for the objects that are too large to print, and a
 ## What goes where
 
 There is one report -- the blocks described below -- and `txt=` decides *where*
-it goes, on the same principle as GPAW's `txt=`:
+it goes:
 
 | | standard output | the `txt=` file |
 | :--- | :--- | :--- |
@@ -40,7 +40,7 @@ it is refused with a message pointing at `trace=`.
 
 ```{note}
 `txt=` is accepted only by a method whose `run()` goes through this protocol —
-`"rhf"`, `"uhf"`, `"ghf"`, `"vqe"` (including `ansatz="hva"`), `"adapt-vqe"`,
+`"rhf"`, `"uhf"`, `"ghf"`, `"dft"`, `"vqe"` (including `ansatz="hva"`), `"adapt-vqe"`,
 `"vasqa"` and `"valqa"` today — and refused with a message by the others rather than
 leaving an empty file. `"subspace-vqe"` and `"subspace-adapt-vqe"` print their
 own run header, which is not this one.
@@ -170,7 +170,7 @@ differs.
 
 ## A classical mean field
 
-`method="rhf"`, `"uhf"` and `"ghf"` write the same `[SYSTEM]` and `[BASIS]`
+`method="rhf"`, `"uhf"`, `"ghf"` and `"dft"` write the same `[SYSTEM]` and `[BASIS]`
 blocks, a classical `[ELECTRONS]` -- grid, charge, spin, orbitals and electrons,
 with no reference state, mapping, register or qubit Hamiltonian, since none is
 built -- and then two blocks of their own:
@@ -200,6 +200,15 @@ pairing (`spin_orbit_coupling` is in the GHF setup).
 {func}`~mandacaru.utils.logging.parse_output` reads `[SCF SETUP]` under
 `"setup"` and `[SCF SUMMARY]` under `"summary"`, the keys a variational run's
 blocks are read under.
+
+`method="dft"` writes the same two blocks with Kohn-Sham content
+({doc}`dft`). `[SCF SETUP]` adds `xc_functional` and `dispersion` (`NONE` when
+there is none) and states the convergence criteria and the level shift of the
+Kohn-Sham iteration. `[SCF SUMMARY]` adds the `reference_energy_<unit>` of the
+exported Hamiltonian, `hartree_energy_<unit>` and `xc_energy_<unit>`, then
+`core_correction_energy_<unit>` when the basis has a core correction and
+`dispersion_energy_<unit>` when D4 ran, so the total reads as the sum of its
+parts.
 
 ## The `output.txt` log
 

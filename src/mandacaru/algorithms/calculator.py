@@ -89,7 +89,7 @@ DEFAULT_METHOD = "adapt-vqe"
 #: Stable method names accepted by ``method=``.
 #: The periodic names are declared by the module that implements them, so
 #: there is one place to change them.
-STABLE_METHODS = ("rhf", "uhf", "ghf", "vqe", "adapt-vqe",
+STABLE_METHODS = ("rhf", "uhf", "ghf", "dft", "vqe", "adapt-vqe",
                   "subspace-vqe", "subspace-adapt-vqe", "vasqa", "valqa",
                   *BLOCH_METHODS)
 
@@ -143,12 +143,14 @@ def resolve_method(name: str):
         # they are reached from, and ``Mandacaru(method=...)`` the one way in.
         from .adapt_vqe import ADAPTVQE
         from .bloch import _bloch_drivers
+        from .dft import DFTDriver
         from .mean_field import GHFDriver, RHFDriver, UHFDriver
         from .subspace import SubspaceADAPTVQE, SubspaceVQE
         from .valqa import VALQA
         from .vasqa import VASQA
         from .vqe import VQE
         classes = {"rhf": RHFDriver, "uhf": UHFDriver, "ghf": GHFDriver,
+                   "dft": DFTDriver,
                    "vqe": VQE, "adapt-vqe": ADAPTVQE,
                    "subspace-vqe": SubspaceVQE,
                    "subspace-adapt-vqe": SubspaceADAPTVQE, "vasqa": VASQA,
@@ -362,7 +364,11 @@ class Mandacaru(Calculator):
     method : str
         Which solver evaluates the energy -- ``"adapt-vqe"`` (the default),
         classical ``"rhf"`` / ``"uhf"`` / ``"ghf"`` (generalized spinor
-        Hartree-Fock, the mean field with spin-orbit coupling), ``"vqe"`` (a
+        Hartree-Fock, the mean field with spin-orbit coupling), ``"dft"``
+        (closed-shell Kohn-Sham; functional ``xc="lda"`` (default),
+        ``"pbe"`` or ``"r2scan"``, and ``dispersion="d4"`` for the D4
+        correction from the optional ``dftd4`` package, PBE and r2SCAN
+        only), ``"vqe"`` (a
         fixed ansatz, chosen by
         ``ansatz=``: ``"uccsd"`` or the Hamiltonian variational ansatz
         ``"hva"``), or the subspace-search variants
@@ -531,9 +537,9 @@ class Mandacaru(Calculator):
                  population=None, **solver_kwargs):
         Calculator.__init__(self)
         self.method, self._solver_class = resolve_method(method)
-        if self.method in ("rhf", "uhf", "ghf") \
+        if self.method in ("rhf", "uhf", "ghf", "dft") \
                 and measurement_provider is not None:
-            raise ValueError("classical RHF/UHF/GHF has no quantum state to "
+            raise ValueError("classical RHF/UHF/GHF/DFT has no quantum state to "
                              "measure; "
                              "omit measurement_provider=")
         if measurement_provider is not None:
@@ -942,9 +948,11 @@ class Mandacaru(Calculator):
         # A previous step's breakdown must never survive a new geometry.
         self.force_result = None
         if want_forces and getattr(self._solver_class, "classical_mean_field",
-                                   False):
+                                   False) \
+                and not getattr(self._solver_class, "analytic_gradient", False):
             raise NotImplementedError(
-                "RHF/UHF nuclear forces need self-consistent orbital response; "
+                "RHF/UHF/GHF nuclear forces need self-consistent orbital "
+                "response; "
                 "the variational-state gradient cannot be used for a "
                 "classical SCF result")
         if want_forces:
@@ -1038,9 +1046,11 @@ class Mandacaru(Calculator):
         The gradient differentiates *this* energy expression; a configuration
         it does not model must fail here rather than return a plausible number.
         """
-        if getattr(solver, "classical_mean_field", False):
+        if getattr(solver, "classical_mean_field", False) \
+                and not getattr(solver, "analytic_gradient", False):
             raise NotImplementedError(
-                "RHF/UHF nuclear forces need self-consistent orbital response; "
+                "RHF/UHF/GHF nuclear forces need self-consistent orbital "
+                "response; "
                 "the variational-state gradient cannot be used for a "
                 "classical SCF result")
         context = getattr(solver, "_gradient_context", None) or {}
@@ -1587,6 +1597,25 @@ class Mandacaru(Calculator):
                 "nuclear forces need an atom-centered basis whose integrals are "
                 "available; the plane-wave ('PW') family does not qualify. Use "
                 "an atom-centered basis such as 'HAO', 'GTO' or '6-31G(d)'.")
+
+        if getattr(solver, "analytic_gradient", False):
+            # A Kohn-Sham solver differentiates its own energy: no RDMs.
+            from .pseudo_forces import ENERGY_CHECK_TOLERANCE
+
+            result = solver.nuclear_gradient(orbital_delta=self.orbital_delta,
+                                             include_pulay=self.include_pulay)
+            reported = float(solver._from_energy_units(
+                solver.result.optimal_energy, "Ha"))
+            rebuilt = result.details["energy_hartree"]
+            if abs(reported - rebuilt) > ENERGY_CHECK_TOLERANCE:
+                raise RuntimeError(
+                    f"the energy rebuilt for the gradient ({rebuilt:.10f} Ha) "
+                    f"differs from the solver's ({reported:.10f} Ha); the "
+                    "force would not be the gradient of the reported energy")
+            self._check_translational_invariance(result)
+            if self.project_translation and self._projection_applies(result):
+                self._project_translation(result)
+            return result
 
         gamma, gamma2 = self._state_rdms(solver) if rdms is None else rdms
         active_gamma, active_gamma2 = gamma, gamma2

@@ -50,9 +50,22 @@ class _RadialTabulated(BasisFunction):
         self._spline = CubicSpline(self._r, self._values, extrapolate=False)
 
     def radial(self, r) -> np.ndarray:
-        """Interpolated radial function; zero beyond the tabulated range."""
+        """Interpolated radial function; zero beyond the tabulated range.
+
+        Below the first table point the function continues as
+        ``R(r_0) (r / r_0)^l``, as :meth:`~mandacaru.basis.multizeta.
+        TabulatedOrbital.radial` does.  A constant continuation would leave an
+        ``l > 0`` function finite at its own nucleus, where the angular factor
+        is undefined: a grid node on the nucleus then sampled ``R(r_0)``
+        times a direction set by round-off, and the same Bloch sum came out
+        with opposite signs in two equivalent cells.
+        """
         r = np.asarray(r, dtype=float)
-        values = self._spline(np.clip(r, self._r[0], self._r_max))
+        r0 = float(self._r[0])
+        values = self._spline(np.clip(r, r0, self._r_max))
+        if r0 > 0.0 and self.l > 0:
+            values = np.where(r < r0, values * (np.maximum(r, 0.0) / r0)
+                              ** self.l, values)
         return np.where((r > self._r_max) | np.isnan(values), 0.0, values)
 
     def evaluate(self, x, y, z) -> np.ndarray:

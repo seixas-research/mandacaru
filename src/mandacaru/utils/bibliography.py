@@ -95,6 +95,103 @@ _ALGORITHMS = [
   doi     = {10.1021/ct200345a}
 }""", "generalized (spinor) Hartree-Fock", verified=True,
          topics=("ghf", "scf")),
+    _ref("HohenbergKohn1964", """
+@article{HohenbergKohn1964,
+  author  = {Hohenberg, P. and Kohn, W.},
+  title   = {Inhomogeneous Electron Gas},
+  journal = {Phys. Rev.},
+  volume  = {136},
+  pages   = {B864--B871},
+  year    = {1964},
+  doi     = {10.1103/PhysRev.136.B864}
+}""", "density functional theory", verified=False,
+         topics=("dft", "scf")),
+    _ref("KohnSham1965", """
+@article{KohnSham1965,
+  author  = {Kohn, W. and Sham, L. J.},
+  title   = {Self-Consistent Equations Including Exchange and Correlation
+             Effects},
+  journal = {Phys. Rev.},
+  volume  = {140},
+  pages   = {A1133--A1138},
+  year    = {1965},
+  doi     = {10.1103/PhysRev.140.A1133}
+}""", "the Kohn-Sham self-consistent equations", verified=False,
+         topics=("dft", "scf")),
+    _ref("PerdewZunger1981", """
+@article{PerdewZunger1981,
+  author  = {Perdew, J. P. and Zunger, Alex},
+  title   = {Self-interaction correction to density-functional approximations
+             for many-electron systems},
+  journal = {Phys. Rev. B},
+  volume  = {23},
+  pages   = {5048--5079},
+  year    = {1981},
+  doi     = {10.1103/PhysRevB.23.5048}
+}""", "the LDA correlation (xc='lda')", verified=False,
+         topics=("xc", "lda")),
+    _ref("Furness2020", """
+@article{Furness2020,
+  author  = {Furness, James W. and Kaplan, Aaron D. and Ning, Jinliang and
+             Perdew, John P. and Sun, Jianwei},
+  title   = {Accurate and Numerically Efficient {r$^2$SCAN} Meta-Generalized
+             Gradient Approximation},
+  journal = {J. Phys. Chem. Lett.},
+  volume  = {11},
+  pages   = {8208--8215},
+  year    = {2020},
+  doi     = {10.1021/acs.jpclett.0c02405}
+}""", "the r2SCAN meta-GGA (xc='r2scan')", verified=False,
+         topics=("xc", "meta-gga")),
+    _ref("Caldeweyher2019", """
+@article{Caldeweyher2019,
+  author  = {Caldeweyher, Eike and Ehlert, Sebastian and Hansen, Andreas and
+             Neugebauer, Hagen and Spicher, Sebastian and Bannwarth, Christoph
+             and Grimme, Stefan},
+  title   = {A generally applicable atomic-charge dependent London dispersion
+             correction},
+  journal = {J. Chem. Phys.},
+  volume  = {150},
+  pages   = {154122},
+  year    = {2019},
+  doi     = {10.1063/1.5090222}
+}""", "the D4 dispersion correction (dispersion='d4')", verified=False,
+         topics=("dispersion",)),
+    _ref("Mermin1965", """
+@article{Mermin1965,
+  author  = {Mermin, N. David},
+  title   = {Thermal Properties of the Inhomogeneous Electron Gas},
+  journal = {Phys. Rev.},
+  volume  = {137},
+  pages   = {A1441--A1443},
+  year    = {1965},
+  doi     = {10.1103/PhysRev.137.A1441}
+}""", "finite-temperature (smeared) Kohn-Sham occupations", verified=False,
+         topics=("dft", "smearing")),
+    _ref("MethfesselPaxton1989", """
+@article{MethfesselPaxton1989,
+  author  = {Methfessel, M. and Paxton, A. T.},
+  title   = {High-precision sampling for {Brillouin}-zone integration in
+             metals},
+  journal = {Phys. Rev. B},
+  volume  = {40},
+  pages   = {3616--3621},
+  year    = {1989},
+  doi     = {10.1103/PhysRevB.40.3616}
+}""", "Methfessel-Paxton smearing (smearing='methfessel-paxton')",
+         verified=False, topics=("dft", "smearing")),
+    _ref("Kerker1981", """
+@article{Kerker1981,
+  author  = {Kerker, G. P.},
+  title   = {Efficient iteration scheme for self-consistent pseudopotential
+             calculations},
+  journal = {Phys. Rev. B},
+  volume  = {23},
+  pages   = {3082--3084},
+  year    = {1981},
+  doi     = {10.1103/PhysRevB.23.3082}
+}""", "the Kerker preconditioner of the periodic density mixing",
+         verified=False, topics=("dft", "mixing")),
     _ref("Wecker2015", """
 @article{Wecker2015,
   author  = {Wecker, Dave and Hastings, Matthew B. and Troyer, Matthias},

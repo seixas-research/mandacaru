@@ -401,6 +401,17 @@ def xc_potential(r, rho, functional: str = "lda", gradient=None,
         gradient = _radial_derivative(r, rho, nodes)
     gradient = np.asarray(gradient, dtype=float)
 
+    e_xc, df_drho, df_dsigma = _pbe_terms(rho, gradient, relativistic)
+
+    # -(1/r^2) d/dr (r^2 df/dsigma).
+    flux = r * r * df_dsigma
+    divergence = _radial_derivative(r, flux, nodes) / (r * r)
+    return e_xc, df_drho - divergence
+
+
+def _pbe_terms(rho, gradient, relativistic: bool):
+    """``(e_xc, df/drho, df/dsigma)`` of PBE at each point (``sigma`` signed
+    as ``gradient``), with the relativistic exchange factor when asked."""
     e_x = pbe_exchange(rho, gradient)
     e_c = pbe_correlation(rho, gradient)
     (dx_drho, dx_dsigma), (dc_drho, dc_dsigma) = pbe_partials(
@@ -412,13 +423,33 @@ def xc_potential(r, rho, functional: str = "lda", gradient=None,
         dx_drho = phi_e * dx_drho + (4.0 / 3.0) * e_x * (phi_v - phi_e)
         dx_dsigma = phi_e * dx_dsigma
         e_x = e_x * phi_e
-    e_xc = e_x + e_c
-    df_drho, df_dsigma = dx_drho + dc_drho, dx_dsigma + dc_dsigma
+    return e_x + e_c, dx_drho + dc_drho, dx_dsigma + dc_dsigma
 
-    # -(1/r^2) d/dr (r^2 df/dsigma).
-    flux = r * r * df_dsigma
-    divergence = _radial_derivative(r, flux, nodes) / (r * r)
-    return e_xc, df_drho - divergence
+
+def xc_partials(rho, gradient, functional: str = "lda",
+                relativistic: bool = False):
+    r"""``(f, df/drho, df/d|grad rho|)`` at each point of any grid.
+
+    :math:`f = \rho\,\varepsilon_{xc}` is the energy per unit volume.  The
+    pointwise half of :func:`xc_potential`, without the radial divergence, so
+    a three-dimensional grid can take its own derivatives
+    (:mod:`mandacaru.integrals.exchange_correlation`).  ``gradient`` is
+    :math:`|\nabla\rho|` (ignored by the LDA).
+    """
+    key = _resolve(functional)
+    rho = np.asarray(rho, dtype=float)
+    if key == "lda":
+        if relativistic:
+            phi_e, phi_v = relativistic_exchange_factors(rho)
+            e_x, v_x = lda_exchange(rho)
+            e_c, v_c = lda_correlation(rho)
+            e_xc, v_xc = e_x * phi_e + e_c, v_x * phi_v + v_c
+        else:
+            e_xc, v_xc = lda_xc(rho)
+        return rho * e_xc, v_xc, np.zeros_like(rho)
+    gradient = np.asarray(gradient, dtype=float)
+    e_xc, df_drho, df_dg = _pbe_terms(rho, gradient, relativistic)
+    return rho * e_xc, df_drho, df_dg
 
 
 def derivative_nodes(r) -> np.ndarray | None:

@@ -8,8 +8,9 @@
 
 """Variational quantum algorithms.
 
-The stable solvers -- classical RHF/UHF/GHF, VQE (whose circuit, UCCSD or the
-Hamiltonian variational ansatz, is its ``ansatz=`` option), **ADAPT-VQE**
+The stable solvers -- classical RHF/UHF/GHF, Kohn-Sham DFT (``"dft"``),
+VQE (whose circuit, UCCSD or the Hamiltonian variational ansatz, is its
+``ansatz=`` option), **ADAPT-VQE**
 (the default method everywhere), the subspace-search variants and **VASQA**
 (``"vasqa"``, a Markov-chain search over ansatz structures) and **VALQA**
 (``"valqa"``, the same search with a learned operator proposal) -- are

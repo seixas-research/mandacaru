@@ -278,6 +278,11 @@ calculation that later reads it.
 | `frozen_subshells` | W–Rn: `4f`; otherwise none | Move selected occupied subshells into the pseudopotential core; add a scattering channel when needed |
 | `scattering_energy` | `0.25` Ha when freezing the highest angular momentum | Positive first reference for the added scattering channel |
 
+The `xc` argument belongs to the dataset. It is not the functional of a later
+calculation: `Mandacaru(method="dft", xc=...)` chooses its own, and the shipped
+PAW-LCAO datasets are LDA, so a PBE or r2SCAN calculation on them warns about
+the mismatch (see {doc}`dft`).
+
 For an element whose occupied valence channels differ from the automatically
 selected configuration, supply the neutral configuration explicitly. For
 example, [Ce's observed configuration](https://www.nist.gov/pml/atomic-reference-data-electronic-structure-calculations/atomic-reference-data-electronic-8)

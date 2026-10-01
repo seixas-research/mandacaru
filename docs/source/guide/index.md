@@ -6,6 +6,7 @@ fit a large basis on a small qubit register, how to
 remove the qubits a Hamiltonian's symmetries make redundant, how to
 read what a run prints and cite what it used, how to draw the converged state in real space and split it into
 per-atom charges and moments, how to
+run a classical Kohn-Sham DFT calculation on the same basis, how to
 estimate the qubit budget of a run before
 launching it, what fits in memory and what a register too large to simulate can still do, where the Hamiltonian is stored, which quantum SDK builds and executes the circuits, how to
 reach real quantum hardware and what a measurement there costs, how to choose the classical optimizer, and how to control the
@@ -23,6 +24,7 @@ active_space
 tapering
 open_shell
 mean_field_hva
+dft
 interaction_energy
 dry_run
 scalability
