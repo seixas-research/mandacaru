@@ -21,7 +21,7 @@
 #    warm_start=False makes each recorded energy a property of the
 #    architecture; screen_insertions records several measured insertions per
 #    chain state, which is what judges a proposal's choice within a state.
-# 2. train and assess the model with train_proposal_model(): each molecule
+# 2. train and assess the model with fit(): each molecule
 #    is held out in turn, and a model is ready when it orders the insertions
 #    of a state better than the gradient does.
 #
@@ -36,7 +36,7 @@ import numpy as np
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms import train_proposal_model
+from mandacaru.algorithms import fit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "outputs")
@@ -81,7 +81,7 @@ for name, (build, distances) in MOLECULES.items():
               f"operators = {result.num_operators}  "
               f"screened insertions = {result.num_screened_insertions}")
 
-model = train_proposal_model(STORE, fractions=(1.0,))
+model = fit(STORE, fractions=(1.0,))
 point = model.report["curve"][-1]["within_state"]
 print()
 print(f"recorded insertions : {model.report['insertions']} in "

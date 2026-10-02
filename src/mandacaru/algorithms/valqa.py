@@ -8,8 +8,8 @@
 
 r"""VALQA: the Variational Adaptive Learnable Quantum Algorithm.
 
-VALQA is MCAS-VQE's Markov Chain Ansatz Search with a **learned** proposal
-(Learned-Proposal MCAS): the operator an ``insert`` or ``replace`` places is
+VALQA is MCAS-VQE's Markov Chain Ansatz Search with a **learned** proposal:
+the operator an ``insert`` or ``replace`` places is
 drawn from
 
 .. math::
@@ -17,9 +17,8 @@ drawn from
     P(\mu \mid C, H) = (1 - \varepsilon)\, p_{\mathrm{ML}}(\mu \mid C, H)
                      + \varepsilon\, p_{\nabla}(\mu \mid C),
 
-where :math:`p_{\mathrm{ML}}` comes from a graph network over the qubit
-Hamiltonian with a Gaussian-process head
-(:mod:`~mandacaru.algorithms.proposal_model`) and :math:`p_\nabla` is MCAS-VQE's
+where :math:`p_{\mathrm{ML}}` comes from a graph neural network over the
+qubit Hamiltonian (:mod:`~mandacaru.algorithms.proposal_model`) and :math:`p_\nabla` is MCAS-VQE's
 gradient softmax.  Moves, positions, relaxation and the Metropolis-Hastings
 test are MCAS-VQE's: the model is frozen for the run, and the distribution at a
 state is a fixed function of that state, evaluated at the current state for
@@ -32,7 +31,7 @@ over the gradient heuristic on held-out molecules), :math:`\varepsilon = 1`
 and VALQA draws exactly what MCAS-VQE's gradient proposal draws -- the same chain
 for the same seed.  The data comes from the chains of either method, which
 record into the shared store ``MANDACARU_PROPOSAL_DATA`` by default;
-:func:`~mandacaru.algorithms.proposal_model.train_proposal_model` assesses
+:func:`~mandacaru.algorithms.proposal_model.fit` assesses
 it, trains the model, records whether it is ready and saves it in the store,
 where the next VALQA run picks it up.
 
@@ -85,7 +84,7 @@ class VALQA(MarkovChainSearch):
     ----------
     proposal_model : str, path or False, optional
         A model saved by
-        :func:`~mandacaru.algorithms.proposal_model.train_proposal_model`.
+        :func:`~mandacaru.algorithms.proposal_model.fit`.
         ``None`` (default) takes the shared store's model,
         ``$MANDACARU_PROPOSAL_DATA/proposal_model.npz``, when there is one;
         ``False`` uses none.  Without a model, or with one that is not ready,
@@ -97,8 +96,9 @@ class VALQA(MarkovChainSearch):
         evaluated before this chain starts (default ``False``): a ranker
         model takes a sequential Bayesian step on the new within-state pairs
         (:meth:`~mandacaru.algorithms.proposal_model.PairwiseRanker.update`),
-        a graph model conditions its Gaussian process with the network and
-        kernel as trained.  The online model takes the offline model's place
+        a ``"gp"`` model conditions its Gaussian process with the feature
+        weights and kernel as trained, and a ``"graph"`` model is carried
+        over unchanged.  The online model takes the offline model's place
         in the mixture; the gradient proposal keeps its share
         (:math:`\varepsilon`).  The model is still frozen for each chain.  The previous
         geometry's insertions are scored first by the model that has not
@@ -161,6 +161,11 @@ class VALQA(MarkovChainSearch):
             return "none (no previous geometry with a ready model)"
         model, rows, problems = self._handover
         self._handover = None
+        if model.kind == "graph":
+            self._model = model
+            return (f"none (a graph neural network is not updated between "
+                    f"geometries "
+                    f"yet; model {model.version} carried over)")
         examples = training_examples(rows, problems, "hamiltonian")
         n = sum(len(e.target) for e in examples)
         if not n:
@@ -233,7 +238,8 @@ class VALQA(MarkovChainSearch):
             reason = self._model.report.get("reason", "readiness unknown")
             text = f"{gradient}; model {self._model.version} not ready: {reason}"
         else:
-            name = {"graph": "GNN-GP", "ranker": "pairwise ranker"}.get(
+            name = {"graph": "graph neural network (GNN)",
+                    "gp": "Gaussian process", "ranker": "pairwise ranker"}.get(
                 self._model.kind, self._model.kind)
             text = (f"learned {name} (model {self._model.version}) mixed "
                     f"with {gradient}, epsilon {self._model.mixing:g}")

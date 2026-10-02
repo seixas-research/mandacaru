@@ -212,6 +212,70 @@ part; if it is not noise it raises and asks you to choose
 orbitals *within* a degenerate set are fixed only up to a rotation, so which
 member of a π pair you get is arbitrary -- as it is in any code.
 
+## Pictures and animations in Python: `Viewer3D`
+
+Without leaving Python, `Viewer3D` draws the same quantities in three
+dimensions and writes a still `.png` or an animated `.gif`. It takes the
+solved calculator -- the field is built from the converged ansatz and its
+optimized parameters through `volumetric_field`, exactly as above -- or a
+`VolumetricField` already in hand:
+
+```python
+from mandacaru import Camera, Viewer3D
+
+# Antibonding natural orbital as a point cloud, sampled on a finer grid.
+viewer = Viewer3D(atoms.calc, quantity="natural_orbital", index=1, h=0.12)
+viewer.save("no1.png")
+
+# The same orbital as an isosurface, turning once while zooming in and out.
+Viewer3D(atoms.calc, quantity="natural_orbital", index=1, h=0.12,
+         mode="isosurface").animate("no1.gif", frames=120, fps=12,
+                                    zoom=(1.0, 1.8, 1.0))
+```
+
+Two modes are available:
+
+| `mode` | What is drawn |
+|---|---|
+| `"scatter"` (default) | A Monte Carlo cloud of `points` points, drawn with probability $\lvert\phi\rvert^2$ for an orbital and $\lvert n\rvert$ for a density, colored cyan where the field is positive and orange where it is negative |
+| `"isosurface"` | The surfaces $f = \pm f_0$, extracted by marching tetrahedra and lit from the camera. Unless `isovalue=` is given, $f_0$ is chosen so the surface encloses a fraction `enclosed` (default 0.85) of $\int\lvert\phi\rvert^2$ or of $\int\lvert n\rvert$ |
+
+Orbitals, `spin_density` and `difference_density` are drawn with both signs;
+`density` and the spin channels are non-negative and are drawn with one.
+
+`h=` (in Angstrom) re-evaluates the basis functions on a finer grid over the
+same box, like `grid=` above: the calculation's own grid is chosen for the
+integrals, not for pictures, and is usually coarse. An isosurface takes longer
+to render as `h` shrinks; `h=0.10`–`0.15` is a good range for small
+molecules.
+
+### Camera paths
+
+`animate()` builds the path of the camera in three layers:
+
+- `trajectory=`: a list of `Camera(elev, azim, zoom, focus)` keyframes,
+  evenly spaced in time and joined with eased interpolation. `focus` is
+  `None` (the center of the molecule), an atom index, or a point in Angstrom.
+- `rotate=`: `"azimuth"` (default) spins the camera around the vertical
+  axis, `"elevation"` swings it over the top, `turns` times, on top of the
+  trajectory. `rotate=None` turns it off. The spin is periodic, so a looping
+  GIF has no seam.
+- `zoom=`: a number, or keyframes such as `(1, 2, 1)`, multiplied into the
+  trajectory's own zoom.
+
+```python
+# Fly from the whole molecule to atom 0, viewed from above, and back out.
+viewer.animate("fly.gif", frames=150, rotate=None, trajectory=[
+    Camera(elev=15, azim=-60),
+    Camera(elev=60, azim=30, zoom=2.5, focus=0),
+    Camera(elev=15, azim=300)])
+```
+
+`camera_path()` returns the poses `animate()` would use, which is a quick
+way to check a path before rendering it. `frames / fps` is the length of the
+animation in seconds, and the GIF size grows with `frames`, `dpi` and
+`figsize`. The background is transparent unless `background=` names a color.
+
 ## Opening the files
 
 ### VESTA

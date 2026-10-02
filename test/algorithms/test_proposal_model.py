@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 # file: test_proposal_model.py
 
-"""VALQA's learned proposal: the Hamiltonian factor graph, the network, the
-Gaussian-process head, the mixture with the gradient softmax and the
-readiness check.
+"""VALQA's learned proposal: the Hamiltonian factor graph, the graph neural
+network, the Gaussian process and the ranker, the mixture with the gradient
+softmax and the readiness check.
 
 Nothing here trains a real model: the fits are a few Adam steps on a handful
 of rows, enough to exercise the code paths.
@@ -19,8 +19,9 @@ from mandacaru.algorithms.proposal_data import ProblemRecord
 from mandacaru.algorithms.proposal_model import (
     DESCRIPTORS, EMBEDDING, PROJECTION, HamiltonianGraph,
     ProposalModel, assess_data_volume, candidate_rows, compress, embed,
-    features, init_parameters, train_proposal_model, training_examples,
-    fit_pairwise_ranker, uncompress, within_state, PairwiseRanker)
+    features, init_parameters, fit, training_examples,
+    fit_pairwise_ranker, uncompress, within_state, PairwiseRanker,
+    GNNModel, fit_gnn, init_gnn, gnn_scores)
 from mandacaru.circuits.pools import PoolOperator
 from mandacaru.core.mapping import PauliSum
 
@@ -55,7 +56,7 @@ def _synthetic_model(ready=True, use_graph=True, seed=3):
                          descriptor_std=np.ones(len(DESCRIPTORS)),
                          target_mean=0.0, target_std=1.0, train_phi=phi,
                          alpha=alpha, cholesky=chol, ready=ready,
-                         version="synthetic")
+                         kind="gp", version="synthetic")
 
 
 class TestTheFactorGraph:
@@ -283,17 +284,17 @@ class TestPairwiseRanker:
         assert np.isnan(out["none"]["regret"])
 
 
-def _point(graph, ranker, gradient, per_fold=None, folds=4):
+def _point(gp, ranker, gradient, per_fold=None, folds=4):
     """A fabricated full-data curve point for the readiness rule."""
-    per_fold = per_fold or [(graph, ranker, gradient)] * folds
+    per_fold = per_fold or [(gp, ranker, gradient)] * folds
 
     def entry(value):
         return {"spearman": value, "regret": 0.0}
     return {"folds": [{"within_state": {
-                "graph": entry(g), "ranker": entry(r),
+                "gp": entry(g), "ranker": entry(r),
                 "gradient": entry(d), "states": 10}}
             for g, r, d in per_fold],
-            "within_state": {"graph": entry(graph), "ranker": entry(ranker),
+            "within_state": {"gp": entry(gp), "ranker": entry(ranker),
                              "gradient": entry(gradient), "states": 40}}
 
 
@@ -305,10 +306,10 @@ class TestReadiness:
         ready, kind, _ = _readiness(_point(0.46, 0.46, 0.38))
         assert ready and kind == "ranker"
 
-    def test_the_graph_model_has_to_beat_the_ranker(self):
+    def test_the_gaussian_process_has_to_beat_the_ranker(self):
         from mandacaru.algorithms.proposal_model import _readiness
         ready, kind, _ = _readiness(_point(0.55, 0.46, 0.38))
-        assert ready and kind == "graph"
+        assert ready and kind == "gp"
 
     def test_nothing_beats_the_gradient_by_the_margin(self):
         from mandacaru.algorithms.proposal_model import _readiness
@@ -321,6 +322,24 @@ class TestReadiness:
                  (0.3, 0.3, 0.4)]
         ready, _, _ = _readiness(_point(0.3, 0.45, 0.38, folds))
         assert not ready
+
+    def test_the_best_passing_kind_is_chosen(self):
+        from mandacaru.algorithms.proposal_model import _readiness
+        point = _point(0.50, 0.46, 0.38)
+        for f in point["folds"]:
+            f["within_state"]["graph"] = {"spearman": 0.60, "regret": 0.0}
+        point["within_state"]["graph"] = {"spearman": 0.60, "regret": 0.0}
+        ready, kind, _ = _readiness(point)
+        assert ready and kind == "graph"
+
+    def test_a_kind_not_assessed_is_never_chosen(self):
+        from mandacaru.algorithms.proposal_model import _readiness
+        point = _point(0.50, 0.46, 0.38)
+        for f in point["folds"]:
+            del f["within_state"]["gp"], f["within_state"]["ranker"]
+        del point["within_state"]["gp"], point["within_state"]["ranker"]
+        ready, kind, _ = _readiness(point)
+        assert not ready and kind is None
 
     def test_without_screened_states_nothing_is_judged(self):
         from mandacaru.algorithms.proposal_model import _readiness
@@ -363,6 +382,63 @@ class TestTheOnlineRanker:
         assert online.kind == "ranker" and online.version != model.version
         assert online.ranker.pairs == model.ranker.pairs + 4 * 3
         assert model.ranker.pairs < online.ranker.pairs      # copy, not edit
+
+
+class TestTheGraphNeuralNetwork:
+    """``kind="graph"``: the GNN scored by a first-choice loss."""
+
+    def test_it_learns_the_order_of_the_insertions(self):
+        examples = TestPairwiseRanker()._examples(states=12)
+        gnn = fit_gnn(examples, epochs=40)
+        scores = np.concatenate([-gnn.scores(e.graph, e.rows)
+                                 for e in examples])
+        out = within_state({"graph": scores}, examples)
+        assert out["graph"]["spearman"] > 0.9
+
+    def test_without_two_insertions_in_a_state_there_is_nothing_to_fit(self):
+        examples = TestPairwiseRanker()._examples(states=1)
+        for e in examples:
+            e.state = [(i,) for i in range(len(e.target))]
+        assert fit_gnn(examples) is None
+
+    def _gnn_model(self):
+        model = _synthetic_model()
+        model.kind = "graph"
+        model.gnn = GNNModel(params=init_gnn(1),
+                             descriptor_mean=np.zeros(len(DESCRIPTORS)),
+                             descriptor_std=np.ones(len(DESCRIPTORS)))
+        return model
+
+    def test_the_proposal_draws_from_the_gnn_scores(self):
+        model = self._gnn_model()
+        bound = model.bind(_problem())
+        graph = bound.graph
+        rows = candidate_rows(graph, [()] * 3, range(3),
+                              [[0.3, 0.1, 0.0]] * 3, [0.0] * 3)
+        s = gnn_scores(np, {k: np.asarray(v, float) for k, v in
+                            model.gnn.params.items()},
+                       graph.arrays(), rows.occupancy, rows.positional,
+                       rows.operator, rows.descriptors)
+        expected = np.exp((s - s.max()) / model.temperature)
+        np.testing.assert_allclose(bound.learned((), [0.3, 0.1, 0.0], 0.0),
+                                   expected / expected.sum(), rtol=1e-5)
+
+    def test_the_gnn_survives_the_file(self, tmp_path):
+        model = self._gnn_model()
+        again = ProposalModel.load(model.save(tmp_path / "m.npz"))
+        assert again.kind == "graph"
+        assert again.gnn.params.keys() == model.gnn.params.keys()
+        for k, v in model.gnn.params.items():
+            np.testing.assert_array_equal(again.gnn.params[k], v)
+        np.testing.assert_array_equal(again.gnn.descriptor_std,
+                                      model.gnn.descriptor_std)
+        assert again.condition([]) is again       # carried over, not updated
+
+    def test_a_gp_update_keeps_the_trained_gnn(self):
+        model = self._gnn_model()
+        model.kind = "gp"
+        online = model.condition(TestPairwiseRanker()._examples(states=2))
+        assert online.kind == "gp" and online.gnn is model.gnn
 
 
 class TestARankerModel:
@@ -478,7 +554,7 @@ class TestTheModelFile:
         model.mixing, model.kappa, model.temperature = 0.2, 0.5, 2.0
         model.target_mean, model.target_std = 0.1, 3.0
         model.report = {"ready": True, "reason": "synthetic",
-                        "curve": [{"train": 4, "graph": 0.5}]}
+                        "curve": [{"train": 4, "gp": 0.5}]}
         again = ProposalModel.load(model.save(tmp_path / "model.npz"))
         for name in ("use_graph", "ready", "mixing", "kappa", "temperature",
                      "target_mean", "target_std", "report", "version"):
@@ -565,7 +641,7 @@ class TestTheModelFile:
 
 class TestTraining:
     def test_numpy_and_jax_compute_the_same_features(self):
-        """The network is written once; inference must not drift from what
+        """The features are written once; inference must not drift from what
         was trained."""
         import jax
         jax.config.update("jax_enable_x64", True)
@@ -585,22 +661,39 @@ class TestTraining:
         report = assess_data_volume(tmp_path)
         assert report["ready"] is False
         assert "2 molecule group(s)" in report["reason"]
+        assert report["kinds"] == ["graph"]
 
     def test_a_trained_model_is_saved_with_its_report(self, tmp_path):
         _record_toy(tmp_path, formulas=("H2", "LiH", "BeH2"))
-        model = train_proposal_model(tmp_path, tmp_path / "m.npz",
-                                     fractions=(1.0,), steps=5)
+        model = fit(tmp_path, tmp_path / "m.npz", fractions=(1.0,),
+                    gnn_epochs=1)
         again = ProposalModel.load(tmp_path / "m.npz")
         assert again.version == model.version and len(model.version) == 12
-        assert again.report["groups"] == 3
+        assert again.report["groups"] == 3 and again.report["kinds"] == [
+            "graph"]
         assert again.ready == again.report["ready"]
-        assert set(again.report["curve"][0]) >= {"graph", "descriptors",
-                                                 "gradient", "train",
-                                                 "within_state"}
+        assert again.kind == "graph" and again.gnn is not None
+        assert again.ranker is None and again.alpha.size == 0
+        assert set(again.report["curve"][0]) >= {"graph", "gradient",
+                                                 "train", "within_state"}
+        assert "gp" not in again.report["curve"][0]
+
+    def test_the_gaussian_process_is_trained_on_request(self, tmp_path):
+        _record_toy(tmp_path, formulas=("H2", "LiH", "BeH2"))
+        model = fit(tmp_path, tmp_path / "m.npz", fractions=(1.0,),
+                    steps=5, kinds=("gp",))
+        point = model.report["curve"][0]
+        assert {"gp", "descriptors", "gp_wins"} <= set(point)
+        assert "graph" not in point and model.gnn is None
+        assert model.alpha.size > 0 and model.kind == "gp"
+
+    def test_an_unknown_kind_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="kinds must be"):
+            assess_data_volume(tmp_path, kinds=("network",))
 
     def test_mixing_zero_is_refused(self, tmp_path):
         with pytest.raises(ValueError, match="reverse move"):
-            train_proposal_model(tmp_path, tmp_path / "m.npz", mixing=0.0)
+            fit(tmp_path, tmp_path / "m.npz", mixing=0.0)
 
 
 def _record_toy(directory, formulas):
@@ -628,5 +721,5 @@ def test_training_defaults_to_the_shared_store(tmp_path, monkeypatch):
     from mandacaru.algorithms.proposal_data import MODEL_FILE
     monkeypatch.setenv("MANDACARU_PROPOSAL_DATA", str(tmp_path))
     _record_toy(tmp_path, formulas=("H2", "LiH", "BeH2"))
-    model = train_proposal_model(fractions=(1.0,), steps=3)
+    model = fit(fractions=(1.0,), steps=3)
     assert ProposalModel.load(tmp_path / MODEL_FILE).version == model.version

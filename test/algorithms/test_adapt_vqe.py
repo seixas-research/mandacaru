@@ -530,3 +530,48 @@ class TestTheLogOpensBeforeTheBuild:
         assert "ADAPT-VQE (QEBPool)" in text and "[SYSTEM]" in text
         assert "[ELECTRONS]" not in text
         assert parse_output(str(path))["system"]["n_atoms"] == "2"
+
+
+# --------------------------------------------------------------------------- #
+# Recording growth steps (the training data of VALQA's sequence model).
+# --------------------------------------------------------------------------- #
+
+class TestRecording:
+    def _run(self, h2_hamiltonian, **options):
+        return Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                         pool="fermionic", num_particles=(1, 1),
+                         n_spatial_orbitals=2, profile=False, trace=False,
+                         convergence={"gradient": 1e-6}, **options).run()
+
+    def test_one_row_per_growth_step(self, h2_hamiltonian, tmp_path):
+        from mandacaru.algorithms.proposal_data import load_edits
+        result = self._run(h2_hamiltonian, record=tmp_path)
+        rows, problems = load_edits(tmp_path)
+        assert len(rows) == len(result.operators) >= 1
+        prefix = []
+        for row in rows:
+            problem = problems[row["problem"]]
+            assert row["method"] == "ADAPT-VQE" and row["move"] == "insert"
+            assert row["source"] == prefix
+            assert row["position"] == len(prefix)
+            gradients = np.abs(row["source_gradients"])
+            assert len(gradients) == len(problem.pool_labels)
+            # ADAPT appends the operator of the largest gradient.
+            assert row["operator"] == int(np.argmax(gradients))
+            prefix = prefix + [row["operator"]]
+        assert [problems[rows[0]["problem"]].pool_labels[i]
+                for i in prefix] == result.operators
+        energies = np.cumsum([r["delta_energy"] for r in rows])
+        assert energies[-1] == pytest.approx(
+            (result.optimal_energy - result.reference_energy)
+            / HARTREE_TO_EV, abs=1e-9)
+
+    def test_nothing_is_recorded_by_default(self, h2_hamiltonian, tmp_path,
+                                            monkeypatch):
+        monkeypatch.setenv("MANDACARU_PROPOSAL_DATA", str(tmp_path))
+        self._run(h2_hamiltonian)
+        assert not any(tmp_path.iterdir())
+
+    def test_tetris_cannot_record(self, tmp_path):
+        with pytest.raises(ValueError, match="tetris or prune"):
+            Mandacaru(method="adapt-vqe", tetris=True, record=tmp_path)

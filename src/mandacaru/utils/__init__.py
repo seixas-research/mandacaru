@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Utilities (structured logging, run dumps, bibliography, profiling, ...)."""
+"""Utilities (structured logging, run dumps, bibliography, profiling, 3D viewer, ...)."""
 
 from .bibliography import REFERENCES, bibtex
 from .citations import citation_keys, write_references
@@ -18,6 +18,7 @@ from .logging import (Logger, append_block, append_forces,
                       log_steps, parse_output, reset_log)
 from .profiling import (Timings, backend_cores, cpu_count, current_memory_mb,
                          peak_memory_mb)
+from .viewer import Camera, Viewer3D
 
 __all__ = ["Logger", "parse_output", "append_block",
            "append_quantum_echoes", "append_nested_otoc",
@@ -28,5 +29,6 @@ __all__ = ["Logger", "parse_output", "append_block",
            "Timings", "backend_cores", "cpu_count", "current_memory_mb",
            "peak_memory_mb",
            "write_cube", "write_xsf", "write_volumetric",
+           "Viewer3D", "Camera",
            "REFERENCES", "bibtex", "citation_keys",
            "write_references"]

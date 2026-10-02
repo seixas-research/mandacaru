@@ -52,7 +52,7 @@ from .mean_field import MeanFieldResult
 from .subspace import SubspaceADAPTVQEResult, SubspaceVQEResult
 from .mcas_vqe import MCASStep, MCASVQEResult
 from .valqa import VALQAResult
-from .proposal_model import assess_data_volume, train_proposal_model
+from .proposal_model import assess_data_volume, fit
 from .base import format_pauli_sum
 from .calculator import (DEFAULT_METHOD, STABLE_METHODS, Mandacaru,
                          available_methods, experimental_methods,
@@ -117,7 +117,7 @@ __all__ = [
     "MCASVQEResult",
     "VALQAResult",
     "assess_data_volume",
-    "train_proposal_model",
+    "fit",
     "MCASStep",
     "compute_expressibility",
     "ExpressibilityResult",

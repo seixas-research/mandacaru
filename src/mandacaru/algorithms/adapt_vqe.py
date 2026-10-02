@@ -58,6 +58,7 @@ from .calculator import _method_key
 from .convergence import Convergence
 from .deflation import DeflationMixin, deflation_penalty
 from .pool_driver import PoolDriver
+from .proposal_data import EditRecorder, ProblemRecord, resolve_record
 
 if TYPE_CHECKING:
     from ..optimizers.optim import Optimizer
@@ -409,6 +410,16 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         Units used in the ``output.txt`` log.  ``False`` (default) logs energies
         in **eV** and lengths in **Angstrom**; ``True`` logs Hartree and Bohr.
         (ASE's ``get_total_energy`` always returns eV, per the ASE convention.)
+    record : str, Path or bool, optional
+        Record every growth step into an edit store
+        (:mod:`~mandacaru.algorithms.proposal_data`), the training data of
+        VALQA's sequence model: a path names the store, ``True`` the shared
+        store (``MANDACARU_PROPOSAL_DATA``), and ``None`` or ``False`` (the
+        default) records nothing.  Each row is the insertion the step made --
+        the operators so far, the appended pool index, every pool gradient
+        measured at that state and the energy change -- written as the step
+        completes.  Not available with ``tetris`` or ``prune``, whose steps are
+        not one appended operator.
     grid : Grid, optional
         Explicit real-space integration grid for the calculator-mode ``basis``
         builder.  When omitted the grid is generated automatically from the ASE
@@ -535,6 +546,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                  tetris: bool = False,
                  prune: bool = False,
                  atomic_units: bool = False,
+                 record=None,
                  **driver_kwargs):
         # Everything else -- the problem setup, the Hamiltonian cache, the
         # circuit providers, checkpoints -- is a VariationalDriver option and is
@@ -555,6 +567,13 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                 raise ValueError(f"{name} must be True or False, got {value!r}")
         self.tetris = tetris
         self.prune = prune
+        # Recording is opt-in for ADAPT-VQE: None does not mean the shared
+        # store here, unlike the chain methods.
+        self.record = (None if record is None or record is False
+                       else resolve_record(record))
+        if self.record is not None and (tetris or prune):
+            raise ValueError("record= needs one appended operator per growth "
+                             "step; it is not available with tetris or prune")
 
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
@@ -1100,6 +1119,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
 
         iterations: list[AdaptIteration] = []
         selected: list[str] = []
+        recorder = self._open_recorder(ansatz, geometry)
         total_evals = 0
         total_steps = 0
         converged = False
@@ -1165,6 +1185,8 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                     chosen = [self._select_operator(grads, len(selected))]
                 idx = chosen[0]
                 op = self._pool_ops[idx]
+                index = self._pool_index
+                source = [index.get(label) for label in selected]
                 n_new = 0
                 for pick in chosen:
                     n_new += self._grow(ansatz, selected, self._pool_ops[pick],
@@ -1195,6 +1217,22 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                         pruned.append((len(iterations) + 1, dropped))
                         energy = float(self.ansatz_energy(ansatz, params))
                 delta_energy = energy - previous_energy
+                # A row is one appended pool operator after pool operators
+                # only; a coupled-exchange step that grows into several
+                # excitations is not recorded.
+                if recorder is not None and n_new == 1 \
+                        and None not in source:
+                    recorder.write({
+                        "step": len(iterations) + 1, "move": "insert",
+                        "position": len(source), "operator": int(idx),
+                        "source": source, "proposed": source + [int(idx)],
+                        "source_energy": float(previous_energy),
+                        "reference_energy": float(ref_energy),
+                        "delta_energy": float(delta_energy),
+                        "source_gradients": [float(g) for g in grads],
+                        "accepted": True, "nfev": int(result.nfev),
+                        "optimizer_success": bool(result.success),
+                        "screened": False})
                 if not result.success:
                     # The inner optimizer did not certify convergence; the
                     # growth continues from its best point, but the run says so.
@@ -1281,6 +1319,8 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         finally:
             if logger is not None:
                 logger.close()
+            if recorder is not None:
+                recorder.close()
 
         if optimizer_failures:
             steps = ", ".join(str(step) for step, _msg in optimizer_failures)
@@ -1316,6 +1356,27 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
             energy_unit=e_unit)
 
         return result
+
+    @property
+    def _pool_index(self) -> dict:
+        """Pool index of each operator label."""
+        return {op.label: i for i, op in enumerate(self._pool_ops)}
+
+    def _open_recorder(self, ansatz, geometry) -> EditRecorder | None:
+        """The edit store this run's growth steps go into, if ``record``."""
+        if self.record is None:
+            return None
+        import uuid
+        from ..version import __version__
+        from .mcas_vqe import _formula
+        problem = ProblemRecord.from_problem(
+            self.hamiltonian, ansatz.reference_qubits(), self._pool_ops)
+        return EditRecorder(self.record, problem, run={
+            "run": uuid.uuid4().hex[:12], "method": "ADAPT-VQE",
+            "mandacaru": __version__, "formula": _formula(geometry),
+            "pool": getattr(self.pool, "name", "?"),
+            "optimizer": self.optimizer.method,
+            "trajectory": None, "previous_problem": None})
 
     # -- excited states / energy levels (DeflationMixin hook) ------------- #
 

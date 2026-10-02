@@ -48,16 +48,22 @@ MCAS-VQE's gradient proposal draws: the same chain for the same seed.
    without moving it. They are the data that judges a proposal's choice
    *within* a state, which is the decision it actually makes.
 
-2. **Train and assess.** `train_proposal_model()` measures whether the data
-   in the store is enough (see below), trains on all of it and saves the
-   model, with its readiness report, as `proposal_model.npz` in the store.
+2. **Train and assess.** `fit()` measures whether the data
+   in the store is enough (see below), trains the graph neural network on
+   all of it and saves the model, with its readiness report, as
+   `proposal_model.npz` in the store.
 
    ```python
-   from mandacaru.algorithms import train_proposal_model
+   from mandacaru.algorithms import fit
 
-   model = train_proposal_model()
-   print(model.ready, model.report["reason"])
+   model = fit(folds=5)
+   print(model.ready, model.kind, model.report["reason"])
    ```
+
+   `kinds=` names the predictors to train. The default is
+   `("graph",)`, the graph neural network. `"gp"`, a Gaussian process on the
+   same graph features, and `"ranker"`, a pairwise ranker on hand-made
+   descriptors, are trained only when named, for comparison.
 
 3. **Search.** VALQA takes the store's model without being told:
 
@@ -72,8 +78,8 @@ MCAS-VQE's gradient proposal draws: the same chain for the same seed.
    `proposal` line says why. Its version is on the result
    (`result.proposal_model`, `result.model_ready`) and in every recorded
    edit. Retraining replaces the file, and the next run picks it up. The
-   model file has schema 2: a model trained before must be retrained with
-   `train_proposal_model()`, and loading an old file raises a `ValueError`
+   model file has schema 5: a model trained before must be retrained with
+   `fit()`, and loading an old file raises a `ValueError`
    that says so.
 
 On the command line: `--method valqa`, `--proposal-model PATH`,
@@ -141,8 +147,10 @@ Those insertions are first scored by the model that has not seen them
 correlation of that prediction, and the model version before and after. A
 ranker model takes a sequential Bayesian step: its weights are refitted on
 the new within-state pairs with the previous weights as the prior, so the
-offline training is refined, not forgotten. A graph model conditions its
-Gaussian process; its network and kernel stay as trained. Each chain still
+offline training is refined, not forgotten. A `"gp"` model conditions its
+Gaussian process, with its feature weights and kernel as trained. A
+`"graph"` model, the graph neural network, is carried over unchanged: it is
+not updated between geometries yet. Each chain still
 runs with one frozen model, so its
 Metropolis-Hastings ratio stays exact, and the updated model lives for the
 trajectory: the store's model file is not changed. The update needs a ready
@@ -166,7 +174,8 @@ The model is frozen for the run and the distribution at a state depends only
 on that state, so the Metropolis-Hastings ratio stays exact: the forward
 probability is taken at the current state and the reverse at the proposed one.
 
-$p_{\mathrm{ML}}$ comes from three pieces:
+$p_{\mathrm{ML}}$ comes from the graph neural network, `kind="graph"`, in
+three pieces:
 
 - **A factor graph of the Hamiltonian.** One node per qubit, one per
   non-identity Pauli term of $H = c_0 + \sum_\alpha c_\alpha P_\alpha$, and an
@@ -181,48 +190,54 @@ $p_{\mathrm{ML}}$ comes from three pieces:
   sum. A pool generator (a sum of Pauli strings) is embedded from the
   qubit embeddings on each string's support. The same operator therefore gets
   a different representation in a different Hamiltonian.
-- **A Gaussian process.** It predicts the energy change of inserting
-  operator $\mu$ into circuit $C$, with an uncertainty. Its inputs are the
-  graph embeddings (of both geometries' Hamiltonians along a trajectory) plus
-  what is known *before* the insertion is evaluated:
-  the operator's pool gradient, the circuit's operators and length, and the
-  current energy above the reference.
+- **A scoring head.** It gives each pool operator $\mu$ a score $s_\mu$ from
+  the Hamiltonian's embedding, the operator's embedding, the circuit's
+  operators, and what is known *before* the insertion is evaluated: the
+  operator's pool gradient, its multiplicity in the circuit, the circuit's
+  length and the current energy above the reference. A linear term on these
+  descriptors starts the head at a reweighted gradient rule, and a hidden
+  layer of width 64 on the graph features corrects it.
 
-The score $b_\mu = -\mu_\mu + \kappa\sigma_\mu$ favors predicted improvement
-and, through the uncertainty, operators the model has not seen enough of;
-$p_{\mathrm{ML}} = \mathrm{softmax}(b/\tau)$. The score does not depend on the
-insertion slot: positions stay uniform, as in MCAS-VQE.
+The head is trained with a first-choice loss: at every recorded state with
+two or more measured insertions, the softmax of the scores is fitted to a
+target concentrated on the insertions that lowered the energy most. It
+learns which operator to choose, not the size of the energy change.
+$p_{\mathrm{ML}} = \mathrm{softmax}(s/\tau)$. The score does not depend on
+the insertion slot: positions stay uniform, as in MCAS-VQE.
+
+Two other kinds are trained only when named in `kinds=`. `"gp"` replaces the
+scoring head with a Gaussian process that predicts the energy change with an
+uncertainty, scored as $b_\mu = -\mu_\mu + \kappa\sigma_\mu$. `"ranker"`
+is a pairwise logistic ranker on the descriptors alone.
 
 ## Is there enough data?
 
-`train_proposal_model` runs `assess_data_volume`, which answers this on the
+`fit` runs `assess_data_volume`, which answers this on the
 recorded data. It holds out one **molecule** at a time, trains on the others
 at a growing fraction of their edits, and ranks the held-out insertions with
-three predictors:
-
-- the graph model;
-- the same Gaussian process on hand-made descriptors only, with no graph;
-- the gradient heuristic $-|g_\mu|$, which is what MCAS-VQE draws from.
-- a pairwise logistic ranker on the same descriptors, fitted only on the
-  states with several recorded insertions: the simplest model of the choice
-  within a state.
+the gradient heuristic $-|g_\mu|$, which is what MCAS-VQE draws from, and
+with each kind in `kinds`: by default only the graph neural network. Naming
+`"gp"` also assesses the same Gaussian process on hand-made descriptors only,
+with no graph (`"descriptors"`).
 
 A model is **ready** when, over at least three held-out molecules, it
 orders the insertions recorded at one chain state better than the gradient
 does: its mean within-state Spearman correlation must beat the gradient's by
 0.05, and beat it for most held-out molecules. That is the decision the
 proposal makes, and a better ordering moves the whole softmax toward the
-better insertions even when the first choice is the same. The pairwise
-ranker is the first candidate; the graph model is chosen only when it also
-beats the ranker. `train_proposal_model` saves the chosen kind with the model
-(`model.kind`: `"ranker"` or `"graph"`), and the run log names it. A ranker
-model and a graph model can both be updated between geometries (below). The
-judgment needs states with several recorded
-insertions, so record chains with `screen_insertions`. `group_by="hamiltonian"` holds out single geometries instead,
+better insertions even when the first choice is the same. Among the kinds
+that pass, the one with the highest within-state correlation is used (a tie
+goes to the simpler kind). `fit` saves every kind it trained
+and the chosen one (`model.kind`: `"graph"`, `"gp"` or `"ranker"`), and
+the run log names it. With many molecules, `folds=5` holds out a fifth of
+them at a time instead of one at a time, which bounds the cost of training
+the graph neural network once per fold. The judgment needs
+states with several recorded insertions, so record chains with
+`screen_insertions`. `group_by="hamiltonian"` holds out single geometries instead,
 which tests transfer along a potential-energy curve, and
 `group_by="trajectory"` holds out whole trajectories. Those are weaker claims
 than the molecule, and the report records which grouping was used. Both
-`assess_data_volume` and `train_proposal_model` take `group_by`.
+`assess_data_volume` and `fit` take `group_by`.
 
 The correlation above compares insertions across all held-out states, and
 there a large gradient means a large gain almost by construction. The
@@ -235,17 +250,17 @@ correlation is what the readiness rule above uses; the regret and the
 across-state correlations are reported beside it.
 
 `model.report["curve"]` is the learning curve: for each fraction, the
-training labels used and the three correlations. A curve still rising at the
-full fraction says more data would help. A graph model that never separates
-from the descriptor baseline says the representation, not the data volume,
-is the limit.
+training labels used and the correlations of the gradient and of each kind
+assessed. A curve still rising at the full fraction says more data would
+help.
 
 ### What the first data showed
 
 The first measurement (2026-09-30) recorded 942 insertions from MCAS-VQE chains
 on H2, LiH, BeH2, H4, HF and H2O (HAO, frozen core, QEB pool). Holding out
 each molecule in turn, the gradient heuristic ranked the held-out insertions
-at a Spearman correlation of 0.78. The graph model reached 0.67, and the
+at a Spearman correlation of 0.78. The Gaussian process (`"gp"`) reached
+0.67, and the
 descriptor-only model 0.70. The curve was flat between 78 and 400 training
 labels, and stayed flat with every row (785 labels: 0.65). So the model is
 not ready, and more chains on the same molecules
@@ -268,10 +283,10 @@ insertions. Holding out each molecule, over three training seeds:
 | --- | --- | --- | --- |
 | gradient | 0.64 | 0.38 | 0.014 |
 | pairwise ranker | 0.59 | 0.46 | 0.013 |
-| graph model | 0.66 to 0.68 | 0.46 to 0.49 | 0.014 to 0.030 |
+| Gaussian process (`gp`) | 0.66 to 0.68 | 0.46 to 0.49 | 0.014 to 0.030 |
 | descriptors only | 0.40 to 0.49 | 0.25 to 0.33 | 0.037 to 0.072 |
 
-Within a state, both the graph model and a plain pairwise logistic ranker on
+Within a state, both the Gaussian process and a plain pairwise logistic ranker on
 the descriptors order the insertions better than the gradient. Their first
 choice, however, is no better: the regret is the same. Under the
 within-state rule the pairwise ranker is ready (0.459 against 0.383, better

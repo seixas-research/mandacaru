@@ -15,10 +15,13 @@ def __getattr__(name):
     if name == "Mandacaru":
         from . import algorithms
         return getattr(algorithms, name)
+    if name in ("Viewer3D", "Camera"):
+        from .utils import viewer
+        return getattr(viewer, name)
     if name == "BlochCalculator":
         from .algorithms.bloch import RETIRED_BLOCH_CLASS
         raise AttributeError(RETIRED_BLOCH_CLASS)
     raise AttributeError(f"module 'mandacaru' has no attribute {name!r}")
 
 
-__all__ = ["__version__", "Mandacaru"]
+__all__ = ["__version__", "Mandacaru", "Viewer3D", "Camera"]

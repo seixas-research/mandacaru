@@ -19,14 +19,14 @@
 #   from the empty ansatz instead.
 # - record=...: every evaluated proposal, with the screened insertions, is
 #   appended to an edit store, linked along the trajectory.  This is the data
-#   train_proposal_model() learns the proposal from.
+#   fit() learns the proposal from.
 # - update_between_geometries=True: once an offline proposal model that has
 #   passed its readiness check is in use, an online model takes its place:
 #   before each chain the model is updated with the previous geometry's
 #   insertions -- scored first, test-then-train -- and the `model_update`
 #   line reports how well it predicted them.  The gradient proposal keeps its
 #   share of the mixture throughout.  The offline model comes from the shared
-#   store (MANDACARU_PROPOSAL_DATA): train_proposal_model() trains it from
+#   store (MANDACARU_PROPOSAL_DATA): fit() trains it from
 #   recorded MCAS-VQE chains and picks the kind that ranks the insertions of
 #   a state best.  Without a ready model the gradient proposal is in effect,
 #   and the line says why.

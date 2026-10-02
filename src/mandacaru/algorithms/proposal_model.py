@@ -6,8 +6,8 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""The learned operator proposal of VALQA: a Hamiltonian graph network with a
-Gaussian-process head (Learned-Proposal Markov Chain Ansatz Search).
+r"""The learned operator proposal of VALQA: a graph neural network over the
+qubit Hamiltonian that scores the pool's operators.
 
 VALQA draws the operator an ``insert`` or ``replace`` places from
 
@@ -67,9 +67,23 @@ descriptors known **before** it is evaluated: its pool gradient at ``C``
 reference, its multiplicity in ``C`` and the circuit length.  The score does
 not depend on the insertion slot -- positions stay uniform, as in MCAS-VQE.
 
-Gaussian process
-----------------
-A linear map projects the candidate vector to 8 dimensions, where a squared
+The graph neural network (``kind="graph"``)
+-------------------------------------------
+The default model kind scores candidates directly (:func:`gnn_scores`): the
+message passing above, a linear term on the descriptors, and a hidden layer
+on the normalized graph features.  It is trained by :func:`fit_gnn` on
+every state with two or more measured insertions, with a first-choice loss
+(the cross-entropy of the scores' softmax against a target concentrated on
+the insertions that lowered the energy most), in mini-batches, with no cap on
+the rows; its steps scale with the data.  VALQA draws from
+:math:`p_{\mathrm{ML}} = \mathrm{softmax}(s/\tau)` mixed with the gradient
+proposal.
+
+Other kinds, trained on request
+-------------------------------
+``kind="ranker"`` is a linear Bradley-Terry :class:`PairwiseRanker` on the
+descriptors.  ``kind="gp"`` is a Gaussian process on the same graph
+features.  A linear map projects the candidate vector to 8 dimensions, where a squared
 exponential kernel compares candidates.  The prior mean is linear in the
 descriptors, so a candidate far from every training point -- a molecule
 unlike the recorded ones -- falls back to the learned trend in its gradient
@@ -78,7 +92,7 @@ recorded ``insert`` proposals, compressed as
 :math:`t(\Delta E) = \mathrm{sign}(\Delta E)\log(1 + |\Delta E|/\delta)` with
 :math:`\delta = 10^{-5}` Hartree (changes span five decades) and
 standardized; the length penalty is left out because it is the same for
-every insertion.  The network and the kernel are trained together by
+every insertion.  The message passing and the kernel are trained together by
 maximizing the marginal likelihood (a deep kernel) with Adam, on at most
 :data:`MAX_TRAINING_ROWS` rows.  The score of a candidate is
 :math:`b = -\mu + \kappa\sigma_f` (predicted improvement plus latent
@@ -90,8 +104,9 @@ With ``update_between_geometries=True`` VALQA replaces the offline model
 with an online one before each chain (:meth:`ProposalModel.condition`): a
 ranker model updates its weights on the previous geometry's within-state
 pairs, with the offline fit as the prior (:meth:`PairwiseRanker.update`); a
-graph model conditions its Gaussian process, the network and the kernel's
-hyperparameters frozen.  The online model takes the offline model's place in
+``"gp"`` model conditions its Gaussian process, the feature weights and the
+kernel's hyperparameters frozen.  A ``"graph"`` model is carried over
+unchanged.  The online model takes the offline model's place in
 the mixture, and the gradient proposal keeps its share.  The new rows are
 scored first, by the model that has not seen them (test-then-train).  Each chain still runs with one frozen model, so its
 Metropolis-Hastings ratio stays exact.
@@ -101,15 +116,15 @@ Readiness: how much data
 :func:`assess_data_volume` answers whether the recorded edits are enough.  It
 holds out one **group** at a time (a molecule, or a Hamiltonian), trains on
 the rest at growing fractions of the data, and ranks the held-out edits with
-three predictors: this model, the same Gaussian process on the descriptors
-alone (no graph), and the gradient heuristic :math:`-|g_\mu|`.  A model is
+each kind assessed and with the gradient heuristic :math:`-|g_\mu|`.  A
+model is
 **ready** when, over at least :data:`MIN_GROUPS` held-out groups, its mean
 **within-state** Spearman correlation (:func:`within_state`) exceeds the
 gradient's by :data:`READINESS_MARGIN` and beats it in most groups: the
 proposal decides among the insertions of one state, so that is where a model
-has to be better.  Two models compete: the :class:`PairwiseRanker` comes
-first, and the graph model is chosen only when it also beats the ranker.
-The chosen kind is saved with the model.  The across-state correlations are
+has to be better.  When several kinds are assessed, the passing kind with
+the highest correlation is chosen, a tie going to the simpler one
+(:data:`KINDS` order).  The chosen kind is saved with the model.  The across-state correlations are
 reported beside the rule.
 
 That test compares insertions **across** states, where a large gradient means
@@ -171,9 +186,22 @@ DESCRIPTORS = ("support", "x_fraction", "y_fraction", "z_fraction",
 #: out single frames would leak.
 GROUPINGS = ("molecule", "hamiltonian", "trajectory")
 #: Version of the saved model layout (2: two-geometry features, mean and sum
-#: pooling, no signed coefficient; 3: the model kind, graph or pairwise
-#: ranker, chosen by the within-state readiness check).
-MODEL_SCHEMA = 3
+#: pooling, no signed coefficient; 3: the model kind chosen by the
+#: within-state readiness check; 4: the graph neural network; 5: the kinds named
+#: "graph" (the graph neural network), "gp" and "ranker").
+MODEL_SCHEMA = 5
+#: The model kinds, in the order a tie is broken (the simpler first).
+KINDS = ("ranker", "gp", "graph")
+#: Width of the graph neural network's scoring head.
+GNN_HIDDEN = 64
+#: Passes over the training problems; the steps scale with the data.
+GNN_EPOCHS = 100
+#: Problems per mini-batch, and the fewest steps a fit takes.
+GNN_BATCH, GNN_MIN_STEPS = 16, 1000
+#: Adam rate and weight decay of the graph neural network.
+GNN_LEARNING_RATE, GNN_DECAY = 3e-3, 1e-4
+#: Temperature of the first-choice target, in standardized target units.
+GNN_LABEL_TEMPERATURE = 0.3
 
 
 def compress(delta):
@@ -426,6 +454,56 @@ def features(xp, params: dict, graph: dict | None, rows: Candidates,
         z_a[xp.asarray(rows.operator)], descriptors], axis=1)
 
 
+def init_gnn(seed: int = 0) -> dict:
+    """Random weights of the graph neural network: the message passing of
+    :func:`embed` and a scoring head (``float32``)."""
+    rng = np.random.default_rng(seed)
+    base = init_parameters(seed, use_graph=True)
+    params = {k: v for k, v in base.items()
+              if k not in ("projection", "log_signal", "log_noise", "mean",
+                           "mean_weights")}
+    width = EMBEDDING + 3 * HIDDEN + len(DESCRIPTORS)
+    params["w1"] = rng.normal(0.0, 1.0 / math.sqrt(width),
+                              (width, GNN_HIDDEN))
+    params["b1"] = np.zeros(GNN_HIDDEN)
+    params["w2"] = rng.normal(0.0, 1.0 / math.sqrt(GNN_HIDDEN),
+                              GNN_HIDDEN)
+    params["w_desc"] = np.zeros(len(DESCRIPTORS))
+    return {k: np.asarray(v, dtype=np.float32) for k, v in params.items()}
+
+
+def gnn_scores(xp, params: dict, graph: dict, occupancy, positional,
+                   operator, descriptors):
+    r"""The graph neural network's score of each candidate insertion (higher: a
+    larger predicted energy decrease), for ``xp`` = ``numpy`` or
+    ``jax.numpy``.
+
+    .. math::
+
+        s_\mu = \mathbf w_d\cdot\tilde{\mathbf d}_\mu + \mathbf w_2\cdot
+        \tanh\bigl(W_1[\,\mathrm{norm}(\mathbf g_\mu),\,
+        \tilde{\mathbf d}_\mu] + \mathbf b_1\bigr),
+
+    with :math:`\mathbf g_\mu = [\mathbf z_H, \bar{\mathbf z}_C,
+    \bar{\mathbf z}_C^{\,\mathrm{pos}}, \mathbf z_{A_\mu}]` from
+    :func:`embed`, normalized per candidate (the sum-pooled part grows with
+    the number of Pauli terms), and :math:`\tilde{\mathbf d}` the
+    standardized :data:`DESCRIPTORS`.  The linear descriptor term starts the
+    network at a reweighted gradient rule; the hidden layer corrects it with
+    what the Hamiltonian graph says about the operator.
+    """
+    z_h, z_a = embed(xp, params, graph)
+    n = operator.shape[0]
+    g = xp.concatenate([xp.broadcast_to(z_h, (n, z_h.shape[0])),
+                        occupancy @ z_a, positional @ z_a, z_a[operator]],
+                       axis=1)
+    g = (g - g.mean(axis=1, keepdims=True)) \
+        / (g.std(axis=1, keepdims=True) + 1e-6)
+    x = xp.concatenate([g, descriptors], axis=1)
+    return descriptors @ params["w_desc"] \
+        + xp.tanh(x @ params["w1"] + params["b1"]) @ params["w2"]
+
+
 def _kernel(xp, params, a, b):
     squared = ((a[:, None, :] - b[None, :, :]) ** 2).sum(axis=-1)
     return xp.exp(2.0 * params["log_signal"]) * xp.exp(-0.5 * squared)
@@ -446,32 +524,40 @@ def _prior_mean(params, descriptors):
 
 @dataclass
 class ProposalModel:
-    """A trained (or untrained) GNN-GP proposal and its readiness report.
+    """A trained (or untrained) proposal model and its readiness report.
 
-    ``ready`` is what VALQA acts on: an unready model leaves the gradient
-    proposal in effect (:math:`\\varepsilon = 1`).
+    It holds every predictor kind that was trained: the graph neural network
+    (:attr:`gnn`), and on request the Gaussian process (the fields from
+    ``params`` to ``cholesky``, empty when none was trained) and the
+    pairwise ranker (:attr:`ranker`).  ``kind`` names the one that draws
+    the proposals.  ``ready`` is what VALQA acts on: an unready model leaves
+    the gradient proposal in effect (:math:`\\varepsilon = 1`).
     """
 
-    params: dict
-    use_graph: bool
-    descriptor_mean: np.ndarray
-    descriptor_std: np.ndarray
-    target_mean: float
-    target_std: float
-    train_phi: np.ndarray
-    alpha: np.ndarray
-    cholesky: np.ndarray
+    params: dict = field(default_factory=dict)
+    use_graph: bool = True
+    descriptor_mean: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    descriptor_std: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    target_mean: float = 0.0
+    target_std: float = 1.0
+    train_phi: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
+    alpha: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    cholesky: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     ready: bool = False
     mixing: float = DEFAULT_MIXING
     kappa: float = DEFAULT_KAPPA
     temperature: float = DEFAULT_SCORE_TEMPERATURE
     report: dict = field(default_factory=dict)
     version: str = ""
-    #: Which predictor draws the proposals: ``"graph"`` (the Gaussian
+    #: Which predictor draws the proposals, one of :data:`KINDS`:
+    #: ``"graph"`` (the graph neural network), ``"gp"`` (the Gaussian
     #: process) or ``"ranker"`` (:class:`PairwiseRanker`), as the readiness
     #: check chose.
     kind: str = "graph"
     ranker: "PairwiseRanker | None" = None
+    #: The graph neural network (:func:`fit_gnn`): its weights and
+    #: descriptor standardization, ``None`` when none was trained.
+    gnn: "GNNModel | None" = None
 
     # -- prediction -------------------------------------------------------- #
 
@@ -511,8 +597,9 @@ class ProposalModel:
         the online model that takes this one's place.
 
         A ranker model updates its ranker (:meth:`PairwiseRanker.update`).
-        A graph model conditions its Gaussian process; the network, the
-        kernel and the standardization stay as trained.
+        A ``"gp"`` model conditions its Gaussian process; the feature
+        weights, the kernel and the standardization stay as trained.  A
+        ``"graph"`` model is returned unchanged.
 
         The old training residuals are recovered from the posterior,
         :math:`r = K\alpha = L L^\top \alpha`, the new ones are standardized
@@ -524,6 +611,8 @@ class ProposalModel:
             model = replace(self, ranker=self.ranker.update(examples))
             model.version = _version(model)
             return model
+        if self.kind == "graph":
+            return self                     # not updated between geometries
         phis, residuals = [self.train_phi], [
             self.cholesky @ (self.cholesky.T @ self.alpha)]
         for example in examples:
@@ -550,7 +639,7 @@ class ProposalModel:
             train_phi=phi, alpha=alpha, cholesky=chol, ready=self.ready,
             mixing=self.mixing, kappa=self.kappa,
             temperature=self.temperature, report=self.report,
-            kind=self.kind, ranker=self.ranker)
+            kind=self.kind, ranker=self.ranker, gnn=self.gnn)
         model.version = _version(model)
         return model
 
@@ -560,6 +649,11 @@ class ProposalModel:
         path = Path(path).expanduser()
         arrays = {f"param_{name}": np.asarray(value)
                   for name, value in self.params.items()}
+        if self.gnn is not None:
+            arrays.update({f"gnn_{k}": np.asarray(v)
+                           for k, v in self.gnn.params.items()})
+            arrays.update(gnn_desc_mean=self.gnn.descriptor_mean,
+                          gnn_desc_std=self.gnn.descriptor_std)
         if self.ranker is not None:
             if self.ranker.precision is not None:
                 arrays["ranker_precision"] = self.ranker.precision
@@ -602,7 +696,7 @@ class ProposalModel:
             if meta.get("schema") != MODEL_SCHEMA:
                 raise ValueError(
                     f"{path}: model schema {meta.get('schema')!r}, expected "
-                    f"{MODEL_SCHEMA}; retrain it with train_proposal_model(), "
+                    f"{MODEL_SCHEMA}; retrain it with fit(), "
                     f"which rewrites the file from the recorded edits")
             params = {name[len("param_"):]: np.array(data[name])
                       for name in data.files if name.startswith("param_")}
@@ -612,7 +706,15 @@ class ProposalModel:
                 precision=(data["ranker_precision"]
                            if "ranker_precision" in data.files else None))
                 if "ranker_weights" in data.files else None)
-            return cls(kind=str(meta["kind"]), ranker=ranker,params=params, use_graph=bool(meta["use_graph"]),
+            gnn = (GNNModel(
+                params={name[len("gnn_"):]: np.array(data[name])
+                        for name in data.files if name.startswith("gnn_")
+                        and name not in ("gnn_desc_mean", "gnn_desc_std")},
+                descriptor_mean=np.array(data["gnn_desc_mean"]),
+                descriptor_std=np.array(data["gnn_desc_std"]))
+                if "gnn_desc_mean" in data.files else None)
+            return cls(kind=str(meta["kind"]), ranker=ranker, gnn=gnn,
+                       params=params, use_graph=bool(meta["use_graph"]),
                        descriptor_mean=data["descriptor_mean"],
                        descriptor_std=data["descriptor_std"],
                        target_mean=float(meta["target_mean"]),
@@ -639,13 +741,18 @@ class BoundProposal:
                           else None)
 
     def learned(self, architecture, gradients, source_energy) -> np.ndarray:
-        r""":math:`p_{\mathrm{ML}}(\mu|C) = \mathrm{softmax}(b/\tau)`,
-        :math:`b = -\mu + \kappa\sigma_f`, over the whole pool."""
+        r""":math:`p_{\mathrm{ML}}(\mu|C) = \mathrm{softmax}(b/\tau)` over
+        the whole pool: :math:`b` is the graph neural network score
+        (:func:`gnn_scores`), the ranker score, or
+        :math:`-\mu + \kappa\sigma_f` for the Gaussian process."""
         pool = self.graph.pool_descriptors.shape[0]
         rows = candidate_rows(self.graph, [architecture] * pool, range(pool),
                               [gradients] * pool, [source_energy] * pool)
         if self.model.kind == "ranker":
             score = self.model.ranker.scores(rows) / self.model.temperature
+        elif self.model.kind == "graph":
+            score = self.model.gnn.scores(self.graph, rows) \
+                / self.model.temperature
         else:
             mean, std = self.model.predict(self._arrays, rows,
                                            self._previous)
@@ -765,14 +872,14 @@ def _subset(example: _Example, index) -> _Example:
         None if example.state is None else [example.state[i] for i in index])
 
 
-def fit(examples: list[_Example], *, use_graph: bool = True, seed: int = 0,
+def fit_gp(examples: list[_Example], *, use_graph: bool = True, seed: int = 0,
         steps: int = TRAINING_STEPS, max_rows: int = MAX_TRAINING_ROWS,
         learning_rate: float = 0.01, weight_decay: float = 1e-3
         ) -> ProposalModel:
-    """Train the network and the kernel on ``examples`` (marginal likelihood).
+    """Train the ``"gp"`` kind: its feature weights and kernel on ``examples`` (marginal likelihood).
 
     The returned model is **not** ready: readiness is decided by
-    :func:`assess_data_volume`, which :func:`train_proposal_model` runs.
+    :func:`assess_data_volume`, which :func:`fit` runs.
     """
     jax, jnp = _jax()
     rng = np.random.default_rng(seed)
@@ -867,6 +974,10 @@ def _version(model: ProposalModel) -> str:
     digest.update(model.kind.encode())
     if model.ranker is not None:
         digest.update(np.ascontiguousarray(model.ranker.weights).tobytes())
+    if model.gnn is not None:
+        for name in sorted(model.gnn.params):
+            digest.update(np.ascontiguousarray(
+                model.gnn.params[name]).tobytes())
     return digest.hexdigest()[:12]
 
 
@@ -884,9 +995,12 @@ def _spearman(prediction, observed) -> float:
 
 
 def _split(examples, held_out):
+    """``(train, test)``: ``held_out`` is a group or a set of groups."""
+    if not isinstance(held_out, (set, frozenset)):
+        held_out = {held_out}
     train, test = [], []
     for example in examples:
-        inside = np.array([g == held_out for g in example.group])
+        inside = np.array([g in held_out for g in example.group])
         if (~inside).any():
             train.append(_subset(example, np.flatnonzero(~inside)))
         if inside.any():
@@ -1030,6 +1144,169 @@ def fit_pairwise_ranker(examples, l2: float = 1e-2) -> PairwiseRanker | None:
         precision=_logistic_curvature(diff, w) + ridge * np.eye(len(w)))
 
 
+@dataclass
+class GNNModel:
+    """A trained graph neural network (:func:`fit_gnn`) and the descriptor
+    standardization it was trained with."""
+
+    params: dict
+    descriptor_mean: np.ndarray
+    descriptor_std: np.ndarray
+
+    def scores(self, graph: HamiltonianGraph, rows: Candidates) -> np.ndarray:
+        """Higher means a larger predicted energy decrease."""
+        params = {k: np.asarray(v, dtype=float) for k, v in self.params.items()}
+        return gnn_scores(
+            np, params, graph.arrays(), rows.occupancy, rows.positional,
+            rows.operator,
+            (rows.descriptors - self.descriptor_mean) / self.descriptor_std)
+
+
+def _pack_gnn_batch(examples, descriptor_mean, descriptor_std):
+    """Padded ``float32`` arrays of examples that share a register and a pool:
+    terms and rows are padded (a padded term has zero weight and no edges, a
+    padded row is masked out of the loss)."""
+    n_terms = max(e.graph.term_features.shape[0] for e in examples)
+    n_rows = max(len(e.target) for e in examples)
+    graphs = {}
+    for key in examples[0].graph.arrays():
+        shapes = [e.graph.arrays()[key].shape for e in examples]
+        shape = tuple(max(s[i] for s in shapes) for i in range(len(shapes[0])))
+        graphs[key] = np.zeros((len(examples),) + shape, np.float32)
+    pool = examples[0].rows.occupancy.shape[1]
+    rows = {"occupancy": np.zeros((len(examples), n_rows, pool), np.float32),
+            "positional": np.zeros((len(examples), n_rows, pool), np.float32),
+            "operator": np.zeros((len(examples), n_rows), np.int32),
+            "descriptors": np.zeros((len(examples), n_rows, len(DESCRIPTORS)),
+                                    np.float32),
+            "target": np.zeros((len(examples), n_rows), np.float32),
+            "state": np.full((len(examples), n_rows), n_rows - 1, np.int32),
+            "mask": np.zeros((len(examples), n_rows), np.float32)}
+    del n_terms
+    for i, e in enumerate(examples):
+        for key, value in e.graph.arrays().items():
+            graphs[key][(i,) + tuple(slice(0, d) for d in value.shape)] = value
+        r = len(e.target)
+        rows["occupancy"][i, :r] = e.rows.occupancy
+        rows["positional"][i, :r] = e.rows.positional
+        rows["operator"][i, :r] = e.rows.operator
+        rows["descriptors"][i, :r] = (e.rows.descriptors - descriptor_mean) \
+            / descriptor_std
+        rows["target"][i, :r] = e.target
+        states = e.state or [None] * r
+        counts: dict = {}
+        for state in states:
+            counts[state] = counts.get(state, 0) + 1
+        ids = {state: j for j, state in enumerate(dict.fromkeys(states))}
+        for j, state in enumerate(states):
+            if state is not None and counts[state] >= 2:
+                rows["state"][i, j] = ids[state]
+                rows["mask"][i, j] = 1.0
+    return graphs, rows
+
+
+def fit_gnn(examples, *, seed: int = 0, epochs: int = GNN_EPOCHS,
+                batch: int = GNN_BATCH,
+                learning_rate: float = GNN_LEARNING_RATE,
+                weight_decay: float = GNN_DECAY,
+                label_temperature: float = GNN_LABEL_TEMPERATURE
+                ) -> GNNModel | None:
+    r"""Train the graph neural network on every state with two or more measured
+    insertions, with a first-choice loss; ``None`` when there is no such
+    state.
+
+    At a state :math:`S` the network's scores define
+    :math:`p_\mu = e^{s_\mu}/\sum_{\nu\in S}e^{s_\nu}`, the measured energy
+    changes a target :math:`q_\mu \propto e^{-y_\mu/T}` (:math:`y` the
+    standardized compressed change, :math:`T` = ``label_temperature``) that
+    concentrates on the insertions that lowered the energy most, and the loss
+    is :math:`-\sum_{\mu\in S} q_\mu \ln p_\mu`, averaged over states.
+    Mini-batches of ``batch`` problems are drawn within groups that share a
+    register and a pool, padded to one shape so each group compiles once;
+    the number of steps scales with the data (``epochs`` passes over the
+    problems, at least :data:`GNN_MIN_STEPS`).  Adam, ``float32``.
+    """
+    jax, jnp = _jax()
+    examples = [e for e in examples if e.state is not None]
+    trainable = [e for e in examples
+                 if len(e.state) > len(set(e.state))]   # some state has 2+
+    if not trainable:
+        return None
+    descriptors = np.concatenate([e.rows.descriptors for e in trainable])
+    d_mean = descriptors.mean(axis=0)
+    d_std = np.where(descriptors.std(axis=0) > 1e-12, descriptors.std(axis=0),
+                     1.0)
+    target = np.concatenate([e.target for e in trainable])
+    y_mean, y_std = float(target.mean()), float(target.std() or 1.0)
+    buckets: dict = {}
+    for e in trainable:
+        key = (e.graph.qubit_features.shape[0], e.rows.occupancy.shape[1])
+        buckets.setdefault(key, []).append(e)
+    packed = {}
+    for key, group in buckets.items():
+        graphs, rows = _pack_gnn_batch(group, d_mean, d_std)
+        rows["target"] = ((rows["target"] - y_mean) / y_std).astype(np.float32)
+        packed[key] = ({k: jnp.asarray(v) for k, v in graphs.items()},
+                       {k: jnp.asarray(v) for k, v in rows.items()})
+
+    def loss_one(params, graph, rows):
+        s = gnn_scores(jnp, params, graph, rows["occupancy"],
+                           rows["positional"], rows["operator"],
+                           rows["descriptors"])
+        live, seg = rows["mask"] > 0, rows["state"]
+        n = seg.shape[0]
+
+        def seg_logsumexp(v):
+            v = jnp.where(live, v, -1e30)
+            top = jax.ops.segment_max(v, seg, num_segments=n)
+            top = jnp.where(top > -1e29, top, 0.0)
+            z = jax.ops.segment_sum(jnp.where(live, jnp.exp(v - top[seg]), 0.0),
+                                    seg, num_segments=n)
+            return top + jnp.log(jnp.where(z > 0, z, 1.0))
+
+        log_p = jnp.where(live, s - seg_logsumexp(s)[seg], 0.0)
+        t = -rows["target"] / label_temperature
+        q = jnp.where(live, jnp.exp(t - seg_logsumexp(t)[seg]), 0.0)
+        states = jax.ops.segment_max(rows["mask"], seg, num_segments=n).sum()
+        return -(q * log_p).sum(), jnp.maximum(states, 0.0)
+
+    decayed = ("w1", "w2", "to_term", "to_qubit", "term_update",
+               "qubit_update", "readout", "qubit_in", "term_in")
+
+    def batch_loss(params, graphs, rows):
+        total, states = jax.vmap(loss_one, in_axes=(None, 0, 0))(
+            params, graphs, rows)
+        penalty = sum((params[k] ** 2).sum() for k in decayed)
+        return total.sum() / jnp.maximum(states.sum(), 1.0) \
+            + weight_decay * penalty
+
+    step_fn = jax.jit(jax.value_and_grad(batch_loss))
+    params = {k: jnp.asarray(v) for k, v in init_gnn(seed).items()}
+    first = {k: jnp.zeros_like(v) for k, v in params.items()}
+    second = {k: jnp.zeros_like(v) for k, v in params.items()}
+    rng = np.random.default_rng(seed)
+    keys = list(packed)
+    sizes = np.array([len(buckets[k]) for k in keys], dtype=float)
+    steps = max(GNN_MIN_STEPS,
+                math.ceil(epochs * len(trainable) / batch))
+    for t in range(1, steps + 1):
+        key = keys[rng.choice(len(keys), p=sizes / sizes.sum())]
+        graphs, rows = packed[key]
+        pick = jnp.asarray(rng.choice(len(buckets[key]),
+                                      size=min(batch, len(buckets[key])),
+                                      replace=False))
+        _, grads = step_fn(params, {k: v[pick] for k, v in graphs.items()},
+                           {k: v[pick] for k, v in rows.items()})
+        for name in params:
+            first[name] = 0.9 * first[name] + 0.1 * grads[name]
+            second[name] = 0.999 * second[name] + 0.001 * grads[name] ** 2
+            params[name] = params[name] - learning_rate * (
+                first[name] / (1 - 0.9 ** t)) / (
+                jnp.sqrt(second[name] / (1 - 0.999 ** t)) + 1e-8)
+    return GNNModel(params={k: np.asarray(v) for k, v in params.items()},
+                        descriptor_mean=d_mean, descriptor_std=d_std)
+
+
 def _score(model, examples):
     """Held-out predictions of ``model`` on ``examples``, concatenated."""
     predicted = []
@@ -1092,7 +1369,9 @@ def _pooled_within_state(folds) -> dict:
     """The folds' within-state results, weighted by their states."""
     total = sum(f["within_state"]["states"] for f in folds)
     out = {"states": total}
-    for name in ("graph", "descriptors", "gradient", "ranker"):
+    names = [n for n in ("gradient",) + KINDS + ("descriptors",)
+             if folds and n in folds[0]["within_state"]]
+    for name in names:
         out[name] = {}
         for metric in ("spearman", "regret"):
             pairs = [(f["within_state"][name][metric],
@@ -1104,12 +1383,12 @@ def _pooled_within_state(folds) -> dict:
     return out
 
 
-def _graph_won(fold) -> bool:
-    """Whether the graph model out-ranked both baselines on one fold."""
+def _gp_won(fold) -> bool:
+    """Whether the Gaussian process out-ranked both baselines on one fold."""
     baselines = [v for v in (fold["descriptors"], fold["gradient"])
                  if math.isfinite(v)]
-    return math.isfinite(fold["graph"]) and (
-        not baselines or fold["graph"] > max(baselines))
+    return math.isfinite(fold["gp"]) and (
+        not baselines or fold["gp"] > max(baselines))
 
 
 def _readiness(point) -> tuple[bool, str | None, str]:
@@ -1118,11 +1397,12 @@ def _readiness(point) -> tuple[bool, str | None, str]:
     A learned proposal decides among the insertions of one state, so a model
     is judged there: its mean within-state Spearman correlation must exceed
     the gradient's by :data:`READINESS_MARGIN`, and it must beat the gradient
-    in most held-out groups.  The pairwise ranker is the first candidate; the
-    graph model is preferred only when it also beats the ranker.
+    in most held-out groups.  Among the kinds that pass, the one with the
+    highest within-state correlation is chosen; a tie goes to the simpler
+    kind (:data:`KINDS` order).
     """
     def within(fold, name):
-        return fold["within_state"][name]["spearman"]
+        return fold["within_state"].get(name, {}).get("spearman", math.nan)
 
     folds = [f for f in point["folds"]
              if math.isfinite(within(f, "gradient"))]
@@ -1130,23 +1410,25 @@ def _readiness(point) -> tuple[bool, str | None, str]:
         return False, None, (
             f"only {len(folds)} held-out group(s) have states with three or "
             f"more recorded insertions; record chains with screen_insertions")
-    pooled = {name: point["within_state"][name]["spearman"]
-              for name in ("graph", "ranker", "gradient")}
+    pooled = {name: point["within_state"].get(name, {}).get("spearman",
+                                                            math.nan)
+              for name in KINDS + ("gradient",)}
     gradient = pooled["gradient"]
-    verdicts = []
-    for name, rivals in (("graph", ("gradient", "ranker")),
-                         ("ranker", ("gradient",))):
+    passed, verdicts = [], []
+    for name in KINDS:
         value = pooled[name]
-        bar = max(pooled[r] for r in rivals if math.isfinite(pooled[r]))
-        wins = sum(1 for f in folds if math.isfinite(within(f, name)) and all(
-            not math.isfinite(within(f, r)) or within(f, name) > within(f, r)
-            for r in rivals))
-        if math.isfinite(value) and value >= gradient + READINESS_MARGIN \
-                and value > bar - 1e-12 and wins * 2 > len(folds):
-            return True, name, (
-                f"within-state Spearman {value:.3f} against the gradient's "
-                f"{gradient:.3f}, better in {wins} of {len(folds)} groups")
+        if not math.isfinite(value):
+            continue
+        wins = sum(1 for f in folds if math.isfinite(within(f, name))
+                   and within(f, name) > within(f, "gradient"))
+        if value >= gradient + READINESS_MARGIN and wins * 2 > len(folds):
+            passed.append((value, -KINDS.index(name), name, wins))
         verdicts.append(f"{name} {value:.3f} ({wins} of {len(folds)} groups)")
+    if passed:
+        value, _, name, wins = max(passed)
+        return True, name, (
+            f"within-state Spearman {value:.3f} against the gradient's "
+            f"{gradient:.3f}, better in {wins} of {len(folds)} groups")
     return False, None, (
         f"within-state Spearman: gradient {gradient:.3f}, "
         + ", ".join(verdicts) + f"; a model needs the gradient's plus "
@@ -1156,82 +1438,120 @@ def _readiness(point) -> tuple[bool, str | None, str]:
 def assess_data_volume(directory=None, *, group_by: str = "molecule",
                        fractions=(0.25, 0.5, 1.0), seed: int = 0,
                        steps: int = TRAINING_STEPS,
-                       max_rows: int = MAX_TRAINING_ROWS) -> dict:
+                       max_rows: int = MAX_TRAINING_ROWS,
+                       folds: int | None = None,
+                       gnn_epochs: int = GNN_EPOCHS,
+                       kinds=("graph",)) -> dict:
     """The learning curve of the recorded edits in ``directory`` (default:
     the shared store, ``MANDACARU_PROPOSAL_DATA``).
 
     Leave-one-group-out: each group (a molecule's formula, or a Hamiltonian
-    with ``group_by="hamiltonian"``) is held out in turn, the model and the
-    descriptor-only baseline are trained on a ``fraction`` of the other
-    groups' insertions, and all three predictors rank the held-out ones.
-    Returns ``{"curve": [...], "ready": bool, "reason": str, ...}``; each
-    curve point has the training labels used, the mean held-out Spearman
-    correlation of ``"graph"``, ``"descriptors"`` and ``"gradient"``, and the
-    folds the graph model won.
+    with ``group_by="hamiltonian"``) is held out in turn, each model kind in
+    ``kinds`` (:data:`KINDS`) is trained on a ``fraction`` of the other
+    groups' insertions, and it and the gradient rule rank the held-out ones.
+    Returns ``{"curve": [...], "ready": bool, "kind": str | None,
+    "reason": str, ...}``; each curve point has the training labels used,
+    the mean held-out Spearman correlation of ``"gradient"`` and of every
+    kind assessed, and the within-state results.  Assessing ``"gp"`` also
+    assesses its descriptor-only baseline (``"descriptors"``) and counts
+    the folds the Gaussian process won (``"gp_wins"``).
+
+    ``folds`` splits the groups into that many held-out sets (seeded) instead
+    of holding out one group at a time, which bounds the cost when there are
+    many molecules: the graph neural network is trained once per fold.
     """
+    kinds = tuple(kinds)
+    unknown = [k for k in kinds if k not in KINDS]
+    if not kinds or unknown:
+        raise ValueError(f"kinds must be a non-empty subset of {KINDS}, "
+                         f"got {kinds!r}")
     rows, problems = load_edits(directory)
     examples = training_examples(rows, problems, group_by)
     groups = sorted({g for e in examples for g in e.group})
     labels = sum(len(e.target) for e in examples)
     report = {"group_by": group_by, "groups": len(groups),
               "insertions": labels, "problems": len(examples),
-              "rows": len(rows), "curve": []}
+              "rows": len(rows), "kinds": list(kinds), "folds": folds,
+              "curve": []}
     if len(groups) < MIN_GROUPS:
         report.update(ready=False, reason=(
             f"{len(groups)} {group_by} group(s); at least {MIN_GROUPS} are "
             f"needed to hold one out and still train on two"))
         return report
     rng = np.random.default_rng(seed)
+    if folds is None:
+        held_out_sets = [{g} for g in groups]
+    else:
+        order = list(np.random.default_rng(seed).permutation(len(groups)))
+        held_out_sets = [{groups[i] for i in order[k::folds]}
+                         for k in range(min(folds, len(groups)))]
+    n_folds = folds
     for fraction in fractions:
         folds = []
-        for held_out in groups:
+        for held_out in held_out_sets:
             train, test = _split(examples, held_out)
             train = _thin(train, fraction, rng)
             observed = np.concatenate([e.target for e in test])
             n_train = sum(len(e.target) for e in train)
             if len(observed) < 3 or n_train < 2:
                 continue
-            fold = {"held_out": held_out, "train": min(n_train, max_rows),
+            fold = {"held_out": sorted(held_out),
+                    "train": min(n_train, max_rows),
                     "test": len(observed)}
-            scores = {}
-            for name, use_graph in (("graph", True), ("descriptors", False)):
-                model = fit(train, use_graph=use_graph, seed=seed,
-                            steps=steps, max_rows=max_rows)
-                scores[name] = _score(model, test)
-                fold[name] = _spearman(scores[name], observed)
-            scores["gradient"] = -np.concatenate([e.gradient for e in test])
-            fold["gradient"] = _spearman(scores["gradient"], observed)
-            ranker = fit_pairwise_ranker(train)
-            scores["ranker"] = (
-                np.full(len(observed), math.nan) if ranker is None else
-                -np.concatenate([ranker.scores(e.rows) for e in test]))
-            fold["ranker"] = (math.nan if ranker is None
-                              else _spearman(scores["ranker"], observed))
+            scores = {"gradient":
+                      -np.concatenate([e.gradient for e in test])}
+            if "gp" in kinds:
+                for name, use_graph in (("gp", True),
+                                        ("descriptors", False)):
+                    model = fit_gp(train, use_graph=use_graph, seed=seed,
+                                   steps=steps, max_rows=max_rows)
+                    scores[name] = _score(model, test)
+            if "ranker" in kinds:
+                ranker = fit_pairwise_ranker(train)
+                scores["ranker"] = (
+                    np.full(len(observed), math.nan) if ranker is None else
+                    -np.concatenate([ranker.scores(e.rows) for e in test]))
+            if "graph" in kinds:
+                gnn = fit_gnn(train, seed=seed, epochs=gnn_epochs)
+                scores["graph"] = (
+                    np.full(len(observed), math.nan) if gnn is None else
+                    -np.concatenate([gnn.scores(e.graph, e.rows)
+                                     for e in test]))
+            for name, score in scores.items():
+                fold[name] = (_spearman(score, observed)
+                              if np.all(np.isfinite(score)) else math.nan)
             fold["within_state"] = within_state(scores, test)
             folds.append(fold)
         point = {"fraction": fraction, "folds": folds}
-        for name in ("graph", "descriptors", "gradient", "ranker"):
+        names = ["gradient"] + [k for k in KINDS if k in kinds]
+        if "gp" in kinds:
+            names.append("descriptors")
+        for name in names:
             values = [f[name] for f in folds if math.isfinite(f[name])]
             point[name] = float(np.mean(values)) if values else math.nan
         point["train"] = (int(np.mean([f["train"] for f in folds]))
                           if folds else 0)
-        point["graph_wins"] = sum(1 for f in folds if _graph_won(f))
+        if "gp" in kinds:
+            point["gp_wins"] = sum(1 for f in folds if _gp_won(f))
         point["within_state"] = _pooled_within_state(folds)
         report["curve"].append(point)
+    report["folds"] = n_folds
     ready, kind, reason = _readiness(report["curve"][-1])
     report.update(ready=ready, kind=kind, reason=reason)
     return report
 
 
-def train_proposal_model(directory=None, path=None, *,
+def fit(directory=None, path=None, *,
                          group_by: str = "molecule",
                          fractions=(0.25, 0.5, 1.0), seed: int = 0,
                          steps: int = TRAINING_STEPS,
                          max_rows: int = MAX_TRAINING_ROWS,
                          mixing: float = DEFAULT_MIXING,
                          kappa: float = DEFAULT_KAPPA,
-                         temperature: float = DEFAULT_SCORE_TEMPERATURE
-                         ) -> ProposalModel:
+                         temperature: float = DEFAULT_SCORE_TEMPERATURE,
+                         folds: int | None = None,
+                         gnn_epochs: int = GNN_EPOCHS,
+                         kinds=("graph",)) -> ProposalModel:
     """Assess the recorded edits, train on all of them and save the model.
 
     ``directory`` defaults to the shared store (``MANDACARU_PROPOSAL_DATA``)
@@ -1240,6 +1560,14 @@ def train_proposal_model(directory=None, path=None, *,
     saved whether or not it is ready -- with its readiness report -- so a
     retrained file is picked up by the next run; VALQA uses the learned
     proposal only when ``model.ready`` is true.
+
+    ``kinds`` names the predictors to assess and train (:data:`KINDS`): by
+    default only the graph neural network, ``"graph"``; add ``"gp"`` (the
+    Gaussian process on the graph features) or ``"ranker"`` (the pairwise
+    ranker) to compare them.  The file holds every kind trained;
+    ``model.kind`` is the one the readiness check chose (the last of
+    ``kinds`` when none passes).  ``folds`` and ``gnn_epochs`` are passed
+    to :func:`assess_data_volume`.
     """
     if not 0.0 < mixing <= 1.0:
         raise ValueError(f"mixing (epsilon) must be in (0, 1], got {mixing!r}:"
@@ -1251,12 +1579,18 @@ def train_proposal_model(directory=None, path=None, *,
     path = directory / MODEL_FILE if path is None else path
     report = assess_data_volume(directory, group_by=group_by,
                                 fractions=fractions, seed=seed, steps=steps,
-                                max_rows=max_rows)
+                                max_rows=max_rows, folds=folds,
+                                gnn_epochs=gnn_epochs, kinds=kinds)
+    kinds = tuple(kinds)
     rows, problems = load_edits(directory)
     examples = training_examples(rows, problems, group_by)
-    model = fit(examples, seed=seed, steps=steps, max_rows=max_rows)
-    model.ranker = fit_pairwise_ranker(examples)
-    model.kind = report.get("kind") or "graph"
+    model = (fit_gp(examples, seed=seed, steps=steps, max_rows=max_rows)
+             if "gp" in kinds else ProposalModel())
+    if "ranker" in kinds:
+        model.ranker = fit_pairwise_ranker(examples)
+    if "graph" in kinds:
+        model.gnn = fit_gnn(examples, seed=seed, epochs=gnn_epochs)
+    model.kind = report.get("kind") or kinds[-1]
     model.version = _version(model)
     model.ready = bool(report["ready"])
     model.report = report

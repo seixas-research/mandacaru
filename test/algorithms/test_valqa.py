@@ -52,7 +52,7 @@ def _model(path, ready=True, reason="synthetic"):
                   target_std=1.0, train_phi=phi,
                   alpha=np.linalg.solve(k, rng.normal(size=6)),
                   cholesky=np.linalg.cholesky(k), ready=ready,
-                  report={"reason": reason}, version="synthetic",
+                  report={"reason": reason}, version="synthetic", kind="gp",
                   temperature=0.3).save(path)
     return str(path)
 
@@ -170,6 +170,26 @@ class TestTheModelIsFrozenForTheRun:
         np.savez_compressed(path, **arrays)
         with pytest.raises(ValueError, match="model schema"):
             Mandacaru(method="valqa", proposal_model=str(path))
+
+
+class TestAGraphNeuralNetworkModel:
+    def test_the_chain_draws_from_the_gnn(self, h2_hamiltonian, tmp_path):
+        from mandacaru.algorithms.proposal_model import GNNModel, init_gnn
+        path = tmp_path / "n.npz"
+        model = ProposalModel.load(_model(path))
+        model.kind = "graph"
+        model.gnn = GNNModel(params=init_gnn(2),
+                             descriptor_mean=np.zeros(len(DESCRIPTORS)),
+                             descriptor_std=np.ones(len(DESCRIPTORS)))
+        model.save(path)
+        valqa = _chain(h2_hamiltonian, proposal_model=str(path)).run()
+        vasqa = _chain(h2_hamiltonian, method="mcas-vqe").run()
+        assert valqa.model_ready and valqa.proposal_model == "synthetic"
+        assert _trajectory(valqa) != _trajectory(vasqa)
+        for step in valqa.steps:
+            assert np.isfinite(step.log_q_forward)
+            if step.move in ("insert", "replace"):
+                assert np.isfinite(step.log_q_reverse)
 
 
 class TestOptions:

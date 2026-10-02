@@ -53,13 +53,14 @@ schedule.  See :doc:`tutorial/mcas_vqe`.
 Learned Proposals
 ~~~~~~~~~~~~~~~~~
 
-The operator proposal behind ``method="valqa"`` -- a graph network over the
-qubit Hamiltonian with a Gaussian-process head -- and the edit store it is
-trained on.  See :doc:`tutorial/valqa`.
+The operator proposal behind ``method="valqa"`` -- a graph neural network
+over the qubit Hamiltonian that scores the pool's operators -- and the edit
+store it is trained on.  See :doc:`tutorial/valqa`.
 
 .. automodule:: mandacaru.algorithms.proposal_model
-   :members: ProposalModel, HamiltonianGraph, assess_data_volume,
-             train_proposal_model, compress
+   :members: fit, ProposalModel, HamiltonianGraph, assess_data_volume,
+             fit_gnn, GNNModel, gnn_scores, PairwiseRanker,
+             fit_pairwise_ranker, fit_gp, compress
 
 .. automodule:: mandacaru.algorithms.proposal_data
    :members: ProblemRecord, EditRecorder, load_edits
@@ -148,6 +149,11 @@ grid.  See :doc:`guide/visualization`.
    :show-inheritance:
 
 .. automodule:: mandacaru.utils.cube
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: mandacaru.utils.viewer
    :members:
    :undoc-members:
    :show-inheritance:
