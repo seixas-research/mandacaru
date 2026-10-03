@@ -39,6 +39,9 @@ import numpy as np
 
 # --- Physical conversion factors (CODATA-consistent) --------------------- #
 BOHR_TO_ANGSTROM = 0.529177210903
+#: One atomic unit of electric dipole moment (e Bohr) in debye: CODATA
+#: 8.4783536255e-30 C m over 1 D = 1e-21 / c C m = 3.33564095198e-30 C m.
+AU_DIPOLE_TO_DEBYE = 2.541746473
 ANGSTROM_TO_BOHR = 1.0 / BOHR_TO_ANGSTROM  # 1.8897259886...
 HARTREE_TO_EV = 27.211386245988
 EV_TO_HARTREE = 1.0 / HARTREE_TO_EV

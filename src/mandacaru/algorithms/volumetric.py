@@ -699,6 +699,99 @@ def volumetric_field(integrals, gamma, *, quantity: str = "density",
         notes=tuple(notes))
 
 
+@dataclass
+class DipoleMoment:
+    r"""Electric dipole moment of a converged state, in e Bohr.
+
+    :math:`\boldsymbol\mu = \sum_A Z_A\mathbf R_A - \int\mathbf r\,
+    n(\mathbf r)\,d^3r`, the nuclei (or ions, for a pseudopotential basis:
+    the valence charge at each nucleus, the frozen core being spherical) minus
+    the electrons.  For a PAW-LCAO basis the electron density is the smooth
+    density on the grid **plus** the augmentation each atom carries, whose
+    first moments are exactly the compensation charges' monopole and dipole
+    (the monopole placed at its nucleus).  The components are kept apart so
+    each can be checked.
+    """
+
+    total: np.ndarray                   # (3,), e Bohr
+    ionic: np.ndarray                   # sum_A Z_A R_A
+    smooth: np.ndarray                  # int r n_smooth (electrons, positive)
+    augmentation: np.ndarray            # first moment of the augmentation
+    augmentation_charge: float          # electrons the augmentation holds
+    n_electrons: float
+
+    @property
+    def debye(self) -> np.ndarray:
+        from ..units import AU_DIPOLE_TO_DEBYE
+        return self.total * AU_DIPOLE_TO_DEBYE
+
+    @property
+    def magnitude_debye(self) -> float:
+        return float(np.linalg.norm(self.debye))
+
+
+def dipole_moment(integrals, gamma, *, frozen=(), active=None,
+                  n_spatial_orbitals=None) -> DipoleMoment:
+    r"""The :class:`DipoleMoment` of the state whose spin-orbital one-RDM is
+    ``gamma`` (the arguments are :func:`volumetric_field`'s).
+
+    The augmentation moments come from the PAW compensation channels
+    :math:`Q^{A}_{LM}` (complex harmonics, each shape carrying a unit
+    :math:`LM` multipole): :math:`q^A_{LM} = \sum_{pr} Q^{A,LM}_{pr}
+    D_{rp}`, the atom's charge :math:`\sqrt{4\pi}\,q^A_{00}` and its dipole
+    :math:`d_z = \sqrt{4\pi/3}\,q_{10}`,
+    :math:`d_x = \sqrt{8\pi/3}\,(q_{1,-1} - q_{11})/2`,
+    :math:`d_y = \sqrt{8\pi/3}\,(q_{1,-1} + q_{11})/2i`.
+    """
+    expansion = OrbitalExpansion(integrals)
+    M = int(len(integrals.basis) if n_spatial_orbitals is None
+            else n_spatial_orbitals)
+    D_alpha, D_beta = spin_resolved_rdm(gamma, M, frozen, active,
+                                        spinors=_spinors(integrals))
+    D = D_alpha + D_beta
+    values, augmentation_charge = expansion.density(D)
+    grid = expansion.grid
+    coords = np.stack([np.asarray(grid.X, dtype=float).reshape(-1),
+                       np.asarray(grid.Y, dtype=float).reshape(-1),
+                       np.asarray(grid.Z, dtype=float).reshape(-1)])
+    smooth = coords @ np.real(values) * grid.dV
+    positions = [np.asarray(c, dtype=float)
+                 for _z, c in integrals._potentials.nuclei]
+    charges = [float(z) for z, _c in integrals._potentials.nuclei]
+    ionic = sum(z * r for z, r in zip(charges, positions))
+
+    augmentation = np.zeros(3)
+    held = 0.0
+    moments = getattr(integrals, "compensation_moments", None)
+    channels = moments() if moments is not None else {}
+    if channels:
+        D_ao = expansion.mo @ D @ expansion.mo.conj().T
+        q = {key: complex(np.sum(Q * D_ao.T)) for key, Q in channels.items()}
+        for atom in {key[0] for key in q}:
+            charge = np.sqrt(4.0 * np.pi) * q.get((atom, 0, 0), 0.0)
+            q10 = q.get((atom, 1, 0), 0.0)
+            q11 = q.get((atom, 1, 1), 0.0)
+            q1m = q.get((atom, 1, -1), 0.0)
+            local = np.array([
+                np.sqrt(8.0 * np.pi / 3.0) * (q1m - q11) / 2.0,
+                np.sqrt(8.0 * np.pi / 3.0) * (q1m + q11) / 2.0j,
+                np.sqrt(4.0 * np.pi / 3.0) * q10])
+            augmentation += np.real(charge) * positions[atom] \
+                + np.real(local)
+            held += float(np.real(charge))
+        if abs(held - augmentation_charge) > 1e-8 * max(1.0, abs(held)):
+            raise RuntimeError(
+                f"the compensation monopoles hold {held:.10f} electrons but "
+                f"the overlap augmentation {augmentation_charge:.10f}: the "
+                f"multipole convention assumed here does not match")
+    electrons = smooth + augmentation
+    return DipoleMoment(
+        total=np.asarray(ionic, dtype=float) - electrons,
+        ionic=np.asarray(ionic, dtype=float), smooth=smooth,
+        augmentation=augmentation, augmentation_charge=float(held),
+        n_electrons=float(np.real(np.trace(D))))
+
+
 def state_natural_orbitals(integrals, gamma, *, frozen=(),
                            n_spatial_orbitals=None, grid=None,
                            active=None) -> NaturalOrbitals:

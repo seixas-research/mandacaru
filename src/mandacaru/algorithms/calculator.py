@@ -2288,6 +2288,31 @@ class Mandacaru(Calculator):
             num_particles=solver.num_particles, component=component,
             grid=grid, numbers=numbers, active=active)
 
+    def get_dipole_moment(self, atoms=None, *, state=0):
+        """Electric dipole moment of the converged state, in e Angstrom (ASE).
+
+        Nuclei (valence ions for a pseudopotential basis) minus the electron
+        density of the state's one-RDM, with a PAW-LCAO basis's augmentation
+        included (:func:`~mandacaru.algorithms.volumetric.dipole_moment`).  It
+        is the **expectation value** in the state: for a truncated or
+        approximate wavefunction it differs from the energy's field
+        derivative by the orbital response the state lacks.  The full
+        breakdown, in e Bohr and debye, is left on :attr:`dipole_result`.
+        """
+        from ..units import BOHR_TO_ANGSTROM
+        from .volumetric import dipole_moment
+
+        if atoms is not None:
+            self.get_potential_energy(atoms)
+        solver, integrals, frozen, active = self._volumetric_context()
+        psi = self._volumetric_state(solver, state)
+        gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
+        self.dipole_result = dipole_moment(integrals, gamma, frozen=frozen,
+                                           active=active)
+        dipole = self.dipole_result.total * BOHR_TO_ANGSTROM
+        self.results["dipole"] = dipole
+        return dipole
+
     def write_cube(self, path, quantity: str = "density", index: int = 0, *,
                    state=0, component: str = "auto", grid=None, format=None,
                    comment=None):

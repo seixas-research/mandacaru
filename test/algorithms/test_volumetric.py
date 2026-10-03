@@ -607,3 +607,65 @@ class TestContracts:
         gamma, _ = calc._state_rdms(calc.solver, two_body=False)
         with pytest.raises(ValueError, match="atomic numbers"):
             volumetric_field(integrals, gamma, numbers=[1, 1, 1])
+
+
+# --------------------------------------------------------------------------- #
+# The dipole moment.
+# --------------------------------------------------------------------------- #
+
+class TestDipoleMoment:
+    """``Mandacaru.get_dipole_moment``: ions minus electrons, the PAW
+    augmentation's monopole and dipole included.
+
+    Hartree-Fock water (the active space is the four occupied orbitals):
+    PAW-LCAO-DZP gives 2.29 D and ONCVPSP-DZP, which has no augmentation at
+    all, 2.34 D; all-electron 6-31G(d) gives 2.18 D (the literature value of
+    that model is about 2.2 D).  A minimal SZ basis overshoots to 3.2 D.
+    """
+
+    @staticmethod
+    def _water(family="PAW-LCAO", shift=(0.0, 0.0, 0.0)):
+        from ase.build import molecule
+
+        from mandacaru import Mandacaru
+
+        atoms = molecule("H2O")
+        atoms.center(vacuum=3.0)
+        atoms.positions += np.asarray(shift)
+        atoms.calc = Mandacaru(method="adapt-vqe",
+                               basis={"name": family, "size": "DZP"},
+                               h=0.3, active_space={"orbitals": 4},
+                               max_iterations=0, trace=False)
+        atoms.get_potential_energy()
+        atoms.calc.get_dipole_moment()
+        return atoms
+
+    @pytest.fixture(scope="class")
+    def water(self):
+        return self._water()
+
+    def test_it_lies_on_the_symmetry_axis(self, water):
+        # H2O from ase.build lies in the yz plane with its C2 axis along z,
+        # the hydrogens on the -z side: the dipole points from O to the Hs.
+        result = water.calc.dipole_result
+        assert abs(result.debye[0]) < 1e-8 and abs(result.debye[1]) < 1e-8
+        assert result.debye[2] < 0
+        assert result.augmentation_charge > 0.5     # PAW augmentation is in
+        assert result.n_electrons == pytest.approx(8.0, abs=1e-8)
+        assert 1.9 < result.magnitude_debye < 2.7
+
+    def test_the_augmentation_matches_a_family_without_one(self, water):
+        # ONCVPSP is norm-conserving: its smooth density is the whole
+        # density, so agreeing with it checks the PAW augmentation terms.
+        # At h = 0.3 the two differ by 0.17 D, at h = 0.2 by 0.05 D: the
+        # rest is grid resolution.  Without the augmentation the PAW-LCAO
+        # dipole is off by several debye, so this tolerance still tests it.
+        oncv = self._water(family="ONCVPSP")
+        assert oncv.calc.dipole_result.augmentation_charge == 0.0
+        assert oncv.calc.dipole_result.debye[2] == pytest.approx(
+            water.calc.dipole_result.debye[2], abs=0.25)
+
+    def test_a_neutral_molecule_does_not_care_where_it_is(self, water):
+        moved = self._water(shift=(0.3, -0.2, 0.25))
+        assert np.allclose(moved.calc.get_dipole_moment(),
+                           water.calc.get_dipole_moment(), atol=1e-6)

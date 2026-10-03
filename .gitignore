@@ -205,5 +205,6 @@ docs/index.html
 
 # others
 examples/references.bib
+examples/data/
 examples/old/*
 examples/new/outputs/*
