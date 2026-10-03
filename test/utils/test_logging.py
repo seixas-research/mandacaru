@@ -443,8 +443,8 @@ class TestElectronsBlock:
 
     # No "basis": the [BASIS] block owns it (TestBasisBlock below).
     FIELDS = ("grid spacing", "grid points", "kinetic operator", "k-points",
-              "charge", "spin-polarized", "reference state", "frozen core",
-              "active space", "Z2 tapering", "mapping", "Hamiltonian",
+              "charge", "spin-polarized", "reference state", "Z2 tapering",
+              "mapping", "Hamiltonian",
               "spatial orbitals", "electrons (alpha, beta)", "qubits")
 
     @pytest.fixture(scope="class")
@@ -474,10 +474,10 @@ class TestElectronsBlock:
         assert block["grid points"].startswith("18 x 18 x 18 (spacing 0.35")
         assert block["charge"] == "0"
         assert block["reference state"] == "hartree-fock"
-        assert block["frozen core"] == "none"
-        # Never blank: a run that puts every orbital on the register says so, so
-        # a reader can tell the truncation was absent rather than unrecorded.
-        assert block["active space"] == "none (every orbital on the register)"
+        # The [ACTIVE SPACE] block owns the frozen core and the truncation,
+        # and is written only when the register was reduced.
+        assert "frozen core" not in block and "active space" not in block
+        assert "active_space" not in parse_output(out)
         assert block["Z2 tapering"] == "none"
         assert block["kinetic operator"] == "finite difference"
         assert "Monkhorst-Pack" in block["k-points"]
@@ -547,11 +547,11 @@ class TestBasisBlock:
         block = parse_output(out)["basis"]
         assert block["name"] == "PAW-LCAO" and block["family"].startswith("PAW-LCAO (")
         assert block["size"] == "DZ"
-        # The tail-norm scheme is the default, and the line names it rather
+        # The first_zeta scheme is the default, and the line names it rather
         # than printing a bare number: a tail *norm* and a squared-norm
-        # fraction are not comparable.  The output never names another code.
-        assert block["zeta_split"].startswith("tail_norm 0.16, 0.3, 0.6 (norm")
-        assert "GPAW" not in open(out).read()
+        # fraction are not comparable.
+        assert block["zeta_split"].startswith(
+            "first_zeta: tail_norm 0.16, 0.3, 0.6 (norm")
         # The shell follows the confinement: the Gaussian when confined.
         assert block["polarization"].startswith("gaussian")
         assert block["energy_shift"] == "0.1 eV"
@@ -1233,7 +1233,7 @@ class TestStandardOutputIsTheASETable:
     """stdout carries the evolution of energies and forces, nothing else.
 
     The report has a destination -- ``txt=<path>`` -- so standard output is
-    left to what an ASE optimizer prints there, the same split GPAW makes with
+    left to what an ASE optimizer prints there, the usual split for
     ``txt=``.  Without a log file standard output is the only destination there
     is, so **the same blocks** are printed to it.
     """

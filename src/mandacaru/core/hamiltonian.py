@@ -45,6 +45,10 @@ from ..integrals import Grid, IntegralEngine, Potentials
 from ..units import to_bohr
 from .mapping import Fermion
 
+#: Active-space methods whose Hamiltonian is built integral-direct: they
+#: exist to avoid the two-body tensor, so the build never forms it.
+DIRECT_METHODS: tuple[str, ...] = ("dlpno-mp2",)
+
 if TYPE_CHECKING:
     from ..algorithms.hartree_fock import RHFResult, UHFResult
 
@@ -83,6 +87,60 @@ class MeanFieldMixin:
             return cached[1]
         result = RHF(self.one_body(), self.two_body(), n_electrons).run()
         self._last_rhf_result = (int(n_electrons), result)
+        return result
+
+    def direct_coulomb(self):
+        """The :class:`~mandacaru.integrals.direct.DirectCoulomb` of this
+        basis (cached): Coulomb, exchange and orbital integrals without the
+        two-body tensor."""
+        from ..integrals.direct import DirectCoulomb
+
+        if getattr(self, "_direct", None) is None:
+            self._direct = DirectCoulomb(
+                self, box_threshold=getattr(self, "direct_box_threshold",
+                                            None))
+        return self._direct
+
+    def direct_hartree_fock(self, n_electrons: int) -> RHFResult:
+        """Restricted Hartree-Fock with integral-direct Fock builds.
+
+        The orbitals and energy of :meth:`hartree_fock` to round-off, without
+        the two-body tensor (:class:`~mandacaru.algorithms.hartree_fock.DirectRHF`);
+        the result's ``eri_mo`` is ``None``.
+        """
+        from ..algorithms.hartree_fock import DirectRHF
+
+        # Its own cache: the tensor path's result carries eri_mo, this one
+        # does not, and a caller of hartree_fock() must never get this one.
+        cached = getattr(self, "_last_direct_rhf_result", None)
+        if cached is not None and cached[0] == int(n_electrons):
+            return cached[1]
+        from ..integrals.direct import DirectCoulomb
+
+        direct = self.direct_coulomb()
+        X = self._lowdin_x() if self.orthogonalize else None
+
+        def builder(coulomb):
+            def two_electron(D):
+                # The SCF works in the orthonormal basis: D_AO = X D X^H and
+                # F = X^H F_AO X.
+                if X is None:
+                    return coulomb.fock_two_electron(D)
+                return X.conj().T @ coulomb.fock_two_electron(
+                    X @ D @ X.conj().T) @ X
+            return two_electron
+
+        # With local exchange the SCF runs in two stages: local boxes to a
+        # loose tolerance, then the exact (global) exchange to the end, so
+        # the orbitals and energy are the exact SCF's.
+        if direct.box_threshold is None:
+            exact, coarse = builder(direct), None
+        else:
+            exact = builder(DirectCoulomb(self, box_threshold=None))
+            coarse = builder(direct)
+        result = DirectRHF(self.one_body(), exact, n_electrons,
+                           coarse_two_electron=coarse).run()
+        self._last_direct_rhf_result = (int(n_electrons), result)
         return result
 
     def open_shell_hartree_fock(self, n_alpha: int,
@@ -767,7 +825,8 @@ class MolecularIntegrals(MeanFieldMixin):
                               n_electrons: int | None = None,
                               num_particles=None,
                               open_shell: bool | None = None,
-                              active_space=None) -> Fermion:
+                              active_space=None,
+                              direct: bool | None = None) -> Fermion:
         """Assemble the second-quantized :class:`Fermion` Hamiltonian.
 
         Spin-orbitals are ordered alpha-block then beta-block, so the parity
@@ -806,10 +865,21 @@ class MolecularIntegrals(MeanFieldMixin):
         ``"natural"``).  The partition is resolved by
         :func:`~mandacaru.algorithms.active_space.resolve_active_space` and
         left on :attr:`active_space` for the density and the run log.
+
+        ``direct=True`` builds the same Hamiltonian **integral-direct**: an
+        RHF with grid-built Fock matrices, a selection that asks
+        :class:`~mandacaru.algorithms.orbital_integrals.DirectOrbitalIntegrals`
+        for its integrals, the frozen core folded in from its own Coulomb and
+        exchange, and the two-body integrals of the active orbitals only --
+        the :math:`M^4` tensor is never formed (:meth:`_direct_mo_problem`).
+        ``None`` (default) chooses it exactly when the active-space method
+        needs it.
         """
         from ..algorithms.active_space import resolve_active_space_spec
 
         spec = resolve_active_space_spec(active_space)
+        if direct is None:
+            direct = spec is not None and spec.method in DIRECT_METHODS
         frozen = _frozen_indices(spec)
         core_energy = 0.0
         self.active_space = None
@@ -817,6 +887,9 @@ class MolecularIntegrals(MeanFieldMixin):
             h_so, g_so, core_energy, space = self._spinor_problem(
                 n_electrons, num_particles, open_shell, frozen, spec)
             self.active_space = space
+        elif mo_basis and direct:
+            h_so, g_so, core_energy, space = self._direct_mo_problem(
+                n_electrons, num_particles, open_shell, frozen, spec)
         elif mo_basis:
             h_mo, eri_mo, self.mo_coefficients = molecular_orbital_integrals(
                 self, n_electrons, num_particles, open_shell)
@@ -860,6 +933,87 @@ class MolecularIntegrals(MeanFieldMixin):
             H = H + Fermion({(): complex(const)}, n_modes=h_so.shape[0])
         return H
 
+    def _direct_mo_problem(self, n_electrons, num_particles, open_shell,
+                           frozen, spec):
+        r"""``(h_so, g_so, core_energy, space)`` without the two-body tensor.
+
+        The integral-direct counterpart of the tensor path above, equal to it
+        to round-off:
+
+        1. RHF with direct Fock builds (:meth:`direct_hartree_fock`), its
+           orbitals made conjugation-real as the tensor path makes them;
+        2. the partition, chosen by asking a
+           :class:`~mandacaru.algorithms.orbital_integrals.DirectOrbitalIntegrals`
+           for whatever the selector needs;
+        3. the frozen core folded in from its own density:
+           :math:`E_\text{core} = \sum_{i\in\text{core}} (2h_{ii} + G_{ii})`
+           and :math:`h^\text{eff} = h + G` on the active orbitals, with
+           :math:`G = J - \tfrac12 K` of the core density -- exactly
+           :func:`freeze_core_integrals`;
+        4. the two-body integrals of the active orbitals alone,
+           :math:`n^2/2` Poisson solves.
+
+        Closed shell only in this version.
+        """
+        from ..algorithms.orbital_integrals import DirectOrbitalIntegrals
+
+        from ..integrals.direct import LOCAL_BOX_THRESHOLD
+
+        # The SCF runs its bulk on local exchange boxes and finishes on the
+        # exact exchange (DirectRHF's two stages), so the orbitals are the
+        # exact SCF's: C16H34 PAW-LCAO-SZ converged in 584 s against 866 s,
+        # to the same energy.  A caller can set `direct_box_threshold`
+        # itself (None for the exact exchange throughout).
+        if not hasattr(self, "direct_box_threshold"):
+            self.direct_box_threshold = LOCAL_BOX_THRESHOLD
+            self._direct = None
+        n_el, n_alpha, n_beta, open_shell = resolve_reference(
+            n_electrons, num_particles, open_shell)
+        if open_shell:
+            raise NotImplementedError(
+                "the integral-direct build is closed-shell (RHF) only; an "
+                "open-shell reference needs a direct UHF, not written yet")
+        if self.periodic:
+            raise NotImplementedError(
+                "the integral-direct build is molecular only")
+        rhf = self.direct_hartree_fock(n_el)
+        orbitals = self.real_orbitals(rhf.mo_coefficients, (n_el // 2,))
+        self.mo_coefficients = np.asarray(orbitals)
+        provider = DirectOrbitalIntegrals(self, self.mo_coefficients)
+        space = None
+        if frozen or (spec is not None and spec.truncates):
+            from ..algorithms.active_space import resolve_active_space
+
+            space = resolve_active_space(
+                None, None, n_orbitals=self.n_orbitals,
+                num_particles=(n_alpha, n_beta), spec=spec, frozen=frozen,
+                open_shell=False,
+                orbital_symmetry=(self._orbital_symmetry_provider()
+                                  if spec is not None and spec.symmetry
+                                  else None),
+                orbital_integrals=provider)
+            self.active_space = space
+            if space.rotation is not None:
+                self.mo_coefficients = self.mo_coefficients @ space.rotation
+            frozen, active = list(space.frozen), list(space.active)
+        else:
+            active = list(range(self.n_orbitals))
+        C = self.mo_coefficients
+        h_mo = C.conj().T @ provider.h @ C
+        core_energy = 0.0
+        if frozen:
+            Cf = C[:, frozen]
+            G = C.conj().T @ provider.two_electron(
+                2.0 * Cf @ Cf.conj().T) @ C
+            core_energy = float(np.real(sum(2.0 * h_mo[i, i] + G[i, i]
+                                            for i in frozen)))
+            h_mo = h_mo + G
+        h_act = np.real_if_close(h_mo[np.ix_(active, active)])
+        eri_act = np.real_if_close(provider.direct.orbital_integrals(
+            provider.X @ C[:, active]))
+        h_so, g_so = spin_block_integrals(h_act, eri_act)
+        return h_so, g_so, core_energy, space
+
     def _spinor_problem(self, n_electrons, num_particles, open_shell, frozen,
                         spec):
         r"""``(h, g, core_energy, space)`` of a spin-orbit Hamiltonian in the
@@ -888,13 +1042,15 @@ class MolecularIntegrals(MeanFieldMixin):
         h, g = ghf.h_mo, ghf.eri_mo
         if spec is not None and (spec.method != "energy"
                                  or spec.threshold is not None
+                                 or spec.correlating_pairs or spec.symmetry
                                  or isinstance(spec.orbitals, dict)):
             raise NotImplementedError(
                 "with spin-orbit coupling the active space is chosen among "
                 "Kramers pairs of GHF spinors by energy: give 'frozen' and "
                 "'orbitals' as counts (or pair indices); the "
-                f"method={spec.method!r}, 'threshold' and occupied/virtual "
-                "forms rank spatial orbitals, which have no meaning here")
+                f"method={spec.method!r}, 'threshold', occupied/virtual, "
+                "'correlating_pairs' and 'symmetry' forms work on spatial "
+                "orbitals, which have no meaning here")
         n_active_electrons = na + nb - 2 * len(frozen)
         kept = [k for k in range(M) if k not in set(frozen)]
         orbitals = None if spec is None else spec.orbitals
@@ -915,10 +1071,57 @@ class MolecularIntegrals(MeanFieldMixin):
             modes = lambda pairs: [k for k in pairs] + [M + k for k in pairs]
             h, g, core_energy = freeze_spin_orbital_integrals(
                 h, g, modes(frozen), modes(active))
+            # An odd electron count leaves the highest occupied pair with one.
             space = ActiveSpace(n_orbitals=M, frozen=tuple(frozen),
                                 active=tuple(active), deleted=tuple(deleted),
-                                method="energy")
+                                method="energy", n_doubly=(na + nb) // 2,
+                                n_singly=(na + nb) % 2)
         return h, g, core_energy, space
+
+    def _orbital_symmetry_provider(self):
+        """``rotation -> OrbitalSymmetry`` of the current molecular orbitals.
+
+        The point group is found from the basis-function centers, an atom's
+        species being its nuclear charge together with the shape of its basis
+        (two atoms of one element with different basis sets are not
+        equivalent for the orbitals).  ``None`` for a periodic system, whose
+        symmetry is a space group.
+        """
+        from ..algorithms.orbital_symmetry import (operation_matrices,
+                                                   orbital_symmetry,
+                                                   point_group)
+
+        if self.periodic or self.mo_coefficients is None:
+            return None
+        # An atom is known by its functions: their angular momenta and the
+        # value of each s function one Bohr from its center, which tells
+        # elements (and basis sets) apart without the nuclear coordinates.
+        probe = np.array([[0.6, 0.48, 0.64]])
+        centers: dict[tuple, list] = {}
+        for f in self.basis:
+            center = np.asarray(f.center, dtype=float)
+            key = tuple(np.round(center, 6))
+            l = int(getattr(f, "l", -1))
+            radial = 0.0
+            if l == 0:
+                point = center + probe
+                radial = round(float(np.real(f.evaluate(
+                    point[:, 0], point[:, 1], point[:, 2])[0])), 6)
+            centers.setdefault(key, []).append((l, radial))
+        positions = np.array(list(centers), dtype=float)
+        numbers = np.zeros(len(positions))
+        signatures = [tuple(sorted(shells)) for shells in centers.values()]
+        group = point_group(numbers, positions, signatures=signatures)
+        matrices = operation_matrices(self.basis, group, group.center)
+        X = self._lowdin_x()
+        S = self.overlap()
+        mo = np.asarray(self.mo_coefficients)
+
+        def classify(rotation):
+            C = X @ (mo if rotation is None else mo @ rotation)
+            return orbital_symmetry(group, matrices, S, C)
+
+        return classify
 
     def _resolve_active_space(self, h_mo, eri_mo, n_electrons, num_particles,
                               open_shell, frozen, spec):
@@ -943,7 +1146,10 @@ class MolecularIntegrals(MeanFieldMixin):
         space = resolve_active_space(
             h_mo, eri_mo, n_orbitals=self.n_orbitals,
             num_particles=(n_alpha, n_beta), spec=spec, frozen=frozen,
-            reference_occupations=occupations, open_shell=open_shell)
+            reference_occupations=occupations, open_shell=open_shell,
+            orbital_symmetry=(self._orbital_symmetry_provider()
+                              if spec is not None and spec.symmetry
+                              else None))
         self.active_space = space
         return space
 

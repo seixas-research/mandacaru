@@ -201,7 +201,7 @@ class PerElementBasisSet(BasisSet):
 
 
 class NAOBasisSet(BasisSet):
-    """Confined Numerical Atomic Orbitals (SIESTA/Sankey-type).
+    """Confined Numerical Atomic Orbitals (Sankey-type).
 
     Generates one radial function per valence subshell (all ``m``), each solved
     in a hard-wall sphere of radius ``r_c``.  The radial potential uses the
@@ -227,15 +227,18 @@ class NAOBasisSet(BasisSet):
         ``(n_zeta, n_polarization)`` pair.  The default is double-zeta plus
         polarization because single zeta has no radial or angular freedom at
         all; pass ``size="SZ"`` for the older, much cheaper minimal basis.
+    zeta_split : {"first_zeta", "last_zeta"}
+        Which function every extra zeta is split from: the **first** zeta
+        (the default) or the previous, **last** one.  Left unwritten, a
+        ``split_norm`` alone selects ``"last_zeta"``.
     tail_norm : float or sequence
-        GPAW's split-valence scheme, **the default** (``(0.16, 0.3, 0.6)``):
-        the *norm* of the tail each extra zeta leaves outside its split
-        radius, every zeta split from the first one.
+        The parameter of ``"first_zeta"`` (default ``(0.16, 0.3, 0.6)``): the
+        *norm* of the tail each extra zeta leaves outside its split radius.
     split_norm : float
-        Selects the SIESTA-style scheme instead: the fraction of the orbital's
-        *squared* norm left outside the split radius (SIESTA's default is
-        ``0.15``), each zeta split from the previous one with the fraction
-        halved.  Mutually exclusive with ``tail_norm``.
+        The parameter of ``"last_zeta"`` (default ``0.15``): the fraction of
+        the orbital's *squared* norm left outside the split radius, halved for
+        every further zeta.  Each parameter is refused with the other
+        scheme.
     """
 
     method = "NAO"
@@ -243,15 +246,17 @@ class NAOBasisSet(BasisSet):
     def __init__(self, energy_shift: float = DEFAULT_ENERGY_SHIFT,
                  r_c: float | None = None, n_grid: int = 2000,
                  size=DEFAULT_NAO_SIZE, split_norm: float | None = None,
-                 tail_norm=None):
+                 tail_norm=None, zeta_split: str | None = None):
         self.energy_shift = energy_shift
         self.r_c = float(r_c) if r_c is not None \
             else energy_shift_to_rc(energy_shift)
         self.n_grid = n_grid
         self.size = size
         self.n_zeta, self.n_polarization = resolve_zeta(size)
-        self.split_norm, self.tail_norms = resolve_split_scheme(split_norm,
-                                                                tail_norm)
+        self.split_norm, self.tail_norms = resolve_split_scheme(
+            split_norm, tail_norm, zeta_split)
+        self.zeta_split = ("first_zeta" if self.tail_norms is not None
+                           else "last_zeta")
 
     def _solver(self, Z):
         """``(n, l) -> (r, R)`` for a confined orbital of this atom.

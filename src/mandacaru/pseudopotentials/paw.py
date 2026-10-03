@@ -1998,9 +1998,26 @@ def atom_centered_projections(basis, projectors, *,
         points, weights = _projector_sphere(projector,
                                             split_radial=split_radial)
         values = projector.evaluate(*points) * weights
-        for mu, fn in enumerate(basis):
-            C[mu, p] = np.sum(np.conj(fn.evaluate(*points)) * values)
+        for mu in _reaching(basis, projector.center, points):
+            C[mu, p] = np.sum(np.conj(basis[mu].evaluate(*points)) * values)
     return C
+
+
+def _reaching(basis, center, points, margin: float = 0.0):
+    """Indices of the basis functions whose support reaches the sphere of
+    ``points`` around ``center``; the others are exactly zero on it.
+
+    Without this every projector evaluated every basis function, an
+    :math:`N^2` setup cost on a long molecule.
+    """
+    center = np.asarray(center, dtype=float)
+    extent = float(np.sqrt(max(
+        np.max((points[0] - center[0]) ** 2 + (points[1] - center[1]) ** 2
+               + (points[2] - center[2]) ** 2), 0.0))) + margin
+    return [mu for mu, fn in enumerate(basis)
+            if getattr(fn, "support_radius", None) is None
+            or np.linalg.norm(np.asarray(fn.center, dtype=float) - center)
+            <= fn.support_radius + extent]
 
 
 def atom_centered_projection_gradients(basis, projectors,
@@ -2019,7 +2036,8 @@ def atom_centered_projection_gradients(basis, projectors,
         points, weights = _projector_sphere(projector,
                                             split_radial=split_radial)
         values = projector.evaluate(*points) * weights
-        for mu, fn in enumerate(basis):
+        for mu in _reaching(basis, projector.center, points, margin=delta):
+            fn = basis[mu]
             for k in range(3):
                 shift = [0.0, 0.0, 0.0]
                 shift[k] = delta
@@ -2858,9 +2876,9 @@ def from_payload(payload: dict) -> PAWDataset:
 #: the unfiltered basis exactly.
 #:
 #: ``energy_shift = 0.1`` eV makes the default PAW-LCAO basis a
-#: **confined** one, GPAW's default recipe, as for every pseudopotential
-#: family (:data:`~.confinement.CONFINEMENT_DEFAULT_OPTIONS`); the
-#: polarization shell then defaults to GPAW's quasi-Gaussian.
+#: **confined** one, as for every pseudopotential family
+#: (:data:`~.confinement.CONFINEMENT_DEFAULT_OPTIONS`); the polarization shell
+#: then defaults to the quasi-Gaussian.
 PAW_DEFAULT_OPTIONS = {"filter": True, **CONFINEMENT_DEFAULT_OPTIONS}
 
 #: What a PAW-LCAO / UPAW-LCAO basis dict may say beyond the family-independent

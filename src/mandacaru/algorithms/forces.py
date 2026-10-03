@@ -94,13 +94,14 @@ class ForceResult:
     All arrays are ``(n_atoms, 3)`` in **eV/Angstrom**.  :attr:`forces` is what
     ASE consumes (already negated: it is :math:`-dE/d\\mathbf R`); the component
     breakdown keeps the *gradient* convention (:math:`+dE/d\\mathbf R`) so the
-    physics can be inspected term by term.  (The gradient mathematics itself
+    physics can be inspected term by term; it is ``None`` when the gradient
+    was computed without one (an integral-direct active space).  (The gradient mathematics itself
     runs in Hartree/Bohr; the conversion happens once, here.)
     """
 
     forces: np.ndarray                                  # -dE/dR, eV/Angstrom
-    hellmann_feynman: np.ndarray                        # dE/dR, eV/Angstrom
-    pulay: np.ndarray                                   # dE/dR, eV/Angstrom
+    hellmann_feynman: np.ndarray | None                 # dE/dR, eV/Angstrom
+    pulay: np.ndarray | None                            # dE/dR, eV/Angstrom
     gradient: np.ndarray                                # total dE/dR, eV/Angstrom
     n_electrons: float = 0.0                            # tr(gamma), a sanity check
     details: dict = field(default_factory=dict)
@@ -126,6 +127,8 @@ class ForceResult:
     @property
     def pulay_fraction(self) -> float:
         """‖Pulay‖ / ‖total gradient‖ -- how badly Hellmann-Feynman alone fails."""
+        if self.pulay is None:
+            return float("nan")                # no breakdown was computed
         total = float(np.linalg.norm(self.gradient))
         return float(np.linalg.norm(self.pulay) / total) if total > 0 else 0.0
 

@@ -9,7 +9,7 @@
 """The ``energy_shift`` of a PAW-LCAO basis: confined pseudo-atomic orbitals.
 
 ``basis={"name": "PAW-LCAO", "size": "DZP", "energy_shift": 0.1}`` replaces the
-free-atom first zeta by the orbital of the atom in GPAW's smooth confining
+free-atom first zeta by the orbital of the atom in a smooth confining
 potential, with the cutoff radius fixed by how far (in eV) the eigenvalue may
 rise.  These tests pin the option's contract, the radial solver, the defaults
 that must not move, and the molecule path including the forces.
@@ -113,8 +113,8 @@ class TestRadialSolver:
         radii = [confinement_radius(pp, 0, shift)
                  for shift in (0.01, 0.1, 0.3)]
         assert radii[0] > radii[1] > radii[2] > 2.0
-        # GPAW's hydrogen dzp basis at the same 0.1 eV sits at ~6.4 Bohr; the
-        # datasets differ, the recipe does not.
+        # An independent generator's hydrogen dzp basis at the same 0.1 eV
+        # sits at ~6.4 Bohr; the datasets differ, the recipe does not.
         assert radii[1] == pytest.approx(6.68, abs=0.05)
 
     def test_one_shift_gives_each_orbital_its_own_radius(self):
@@ -216,7 +216,7 @@ class TestMolecule:
                                trace=False, **kwargs)
         return atoms.get_potential_energy(), atoms
 
-    def test_the_default_is_gpaws_energy_shift(self):
+    def test_the_default_energy_shift_is_a_tenth_of_an_ev(self):
         from mandacaru.pseudopotentials.confinement import DEFAULT_ENERGY_SHIFT
 
         assert DEFAULT_ENERGY_SHIFT == 0.1
@@ -308,12 +308,12 @@ class TestPlumbing:
         assert "energy_shift {*: 0.1, O: 0.2} eV" in calc.dry_run(water).basis
 
 
-# What GPAW's own generator prints for the same recipe -- measured 2026-09-20
-# with GPAW's `BasisMaker.from_symbol(symbol, xc="LDA").generate(2, 1,
-# energysplit=0.1)`: the sz cutoff, the dz split radius and the polarization
-# Gaussian's characteristic length, per valence channel (Bohr).  The datasets
-# differ (each code pseudizes its own atom), so agreement is close, not exact.
-GPAW_REFERENCE = {
+# What an independent LCAO basis generator prints for the same recipe (LDA,
+# double zeta plus polarization, a 0.1 eV energy shift), measured 2026-09-20:
+# the sz cutoff, the dz split radius and the polarization Gaussian's
+# characteristic length, per valence channel (Bohr).  The datasets differ
+# (each code pseudizes its own atom), so agreement is close, not exact.
+REFERENCE_RECIPE = {
     "H": {"r_c": {0: 6.64}, "r_split": {0: 3.67}, "l_pol": 1, "r_char": 1.395},
     "O": {"r_c": {0: 4.375, 1: 5.34}, "r_split": {0: 2.30, 1: 2.89},
           "l_pol": 2, "r_char": 1.125},
@@ -321,30 +321,31 @@ GPAW_REFERENCE = {
 
 
 @needs_library
-class TestTheGPAWRecipe:
+class TestTheReferenceRecipe:
     """Same ``size``, ``energy_shift``, confining potential, split scheme and
-    polarization function as GPAW's basis generator: the radii must land where
-    GPAW's do."""
+    polarization function as the reference generator: the radii must land
+    where its do."""
 
-    @pytest.mark.parametrize("symbol", sorted(GPAW_REFERENCE))
+    @pytest.mark.parametrize("symbol", sorted(REFERENCE_RECIPE))
     def test_cutoff_and_split_radii(self, symbol):
-        from mandacaru.basis.multizeta import GPAW_TAIL_NORMS, split_radius
+        from mandacaru.basis.multizeta import DEFAULT_TAIL_NORMS, split_radius
 
-        pp, reference = get_paw(symbol), GPAW_REFERENCE[symbol]
+        pp, reference = get_paw(symbol), REFERENCE_RECIPE[symbol]
         r = np.asarray(pp.r)
         for l, expected in reference["r_c"].items():
             orbital = confined_orbital(pp, l, 0.1)
             assert orbital.r_c == pytest.approx(expected, abs=0.06)
-            # GPAW's tail norm is a *norm*: 0.16 -> 0.0256 of the squared norm.
-            split = split_radius(r, orbital.radial, GPAW_TAIL_NORMS[0] ** 2)
+            # The first_zeta tail norm is a *norm*: 0.16 -> 0.0256 of the
+            # squared norm.
+            split = split_radius(r, orbital.radial, DEFAULT_TAIL_NORMS[0] ** 2)
             assert split == pytest.approx(reference["r_split"][l], abs=0.08)
 
-    @pytest.mark.parametrize("symbol", sorted(GPAW_REFERENCE))
+    @pytest.mark.parametrize("symbol", sorted(REFERENCE_RECIPE))
     def test_the_polarization_gaussian(self, symbol):
         from mandacaru.pseudopotentials.confinement import (
             gaussian_polarization)
 
-        pp, reference = get_paw(symbol), GPAW_REFERENCE[symbol]
+        pp, reference = get_paw(symbol), REFERENCE_RECIPE[symbol]
         shell = gaussian_polarization(pp, 0.1)
         assert shell.l == reference["l_pol"]
         assert shell.r_char == pytest.approx(reference["r_char"], abs=0.005)
@@ -370,7 +371,7 @@ class TestTheGPAWRecipe:
 
         assert polarization_channel({0: None}) == 1
         assert polarization_channel({0: None, 1: None}) == 2
-        # A 4s/3d transition metal gets a p shell, as in GPAW -- not an f.
+        # A 4s/3d transition metal gets a p shell -- not an f.
         assert polarization_channel({0: None, 2: None}) == 1
 
 
@@ -387,40 +388,60 @@ class TestSplitSchemes:
         return [float(r[np.nonzero(np.abs(f.radial(r)) > 1e-5)[0][-1]])
                 for f in functions[1:]]
 
-    def test_gpaw_splits_every_zeta_from_the_first(self):
-        from mandacaru.basis.multizeta import GPAW_TAIL_NORMS
+    def test_first_zeta_splits_every_zeta_from_the_first(self):
+        from mandacaru.basis.multizeta import DEFAULT_TAIL_NORMS
 
-        second, third = self._split_radii(tail_norms=GPAW_TAIL_NORMS)
+        second, third = self._split_radii(tail_norms=DEFAULT_TAIL_NORMS)
         assert second == pytest.approx(3.68, abs=0.1)
         assert third < second
 
     def test_the_two_schemes_differ(self):
-        from mandacaru.basis.multizeta import GPAW_TAIL_NORMS
+        from mandacaru.basis.multizeta import DEFAULT_TAIL_NORMS
 
-        gpaw = self._split_radii(tail_norms=GPAW_TAIL_NORMS)
-        siesta = self._split_radii(split_norm=0.15)
+        first = self._split_radii(tail_norms=DEFAULT_TAIL_NORMS)
+        last = self._split_radii(split_norm=0.15)
         # 0.15 of the squared norm is far more tail than a 0.16 norm (0.0256).
-        assert siesta[0] < gpaw[0] - 0.5
+        assert last[0] < first[0] - 0.5
 
-    def test_the_default_is_gpaw_and_split_norm_selects_siesta(self):
-        from mandacaru.basis.multizeta import (GPAW_TAIL_NORMS,
+    def test_zeta_split_names_the_scheme(self):
+        from mandacaru.basis.multizeta import (DEFAULT_TAIL_NORMS,
                                                resolve_split_scheme)
 
-        assert resolve_split_scheme() == (None, GPAW_TAIL_NORMS)
+        assert resolve_split_scheme() == (None, DEFAULT_TAIL_NORMS)
+        assert resolve_split_scheme(zeta_split="first_zeta") == \
+            (None, DEFAULT_TAIL_NORMS)
         assert resolve_split_scheme(tail_norm=0.2) == (None, (0.2, 0.3, 0.6))
+        assert resolve_split_scheme(zeta_split="last_zeta") == (None, None)
+        assert resolve_split_scheme(zeta_split="last_zeta",
+                                    split_norm=0.1) == (0.1, None)
+        # Unwritten, the parameter given picks the scheme.
         assert resolve_split_scheme(split_norm=0.15) == (0.15, None)
-        with pytest.raises(ValueError, match="not both"):
-            resolve_split_scheme(split_norm=0.15, tail_norm=0.16)
-        with pytest.raises(ValueError, match=r"\(0, 1\)"):
-            resolve_split_scheme(tail_norm=1.5)
+
+    @pytest.mark.parametrize("kwargs, match", [
+        ({"split_norm": 0.15, "tail_norm": 0.16}, "parameter of zeta_split"),
+        ({"zeta_split": "first_zeta", "split_norm": 0.15},
+         "parameter of zeta_split='last_zeta'"),
+        ({"zeta_split": "last_zeta", "tail_norm": 0.16},
+         "parameter of zeta_split='first_zeta'"),
+        ({"zeta_split": "previous"}, "zeta_split must be one of"),
+        ({"tail_norm": 1.5}, r"\(0, 1\)"),
+    ])
+    def test_inconsistent_schemes_are_refused(self, kwargs, match):
+        from mandacaru.basis.multizeta import resolve_split_scheme
+
+        with pytest.raises(ValueError, match=match):
+            resolve_split_scheme(**kwargs)
 
     def test_the_all_electron_nao_family_follows(self):
         from mandacaru.basis import BasisSet
-        from mandacaru.basis.multizeta import GPAW_TAIL_NORMS
+        from mandacaru.basis.multizeta import DEFAULT_TAIL_NORMS
 
-        assert BasisSet.build("NAO").tail_norms == GPAW_TAIL_NORMS
-        siesta = BasisSet.build("NAO", split_norm=0.15)
-        assert siesta.tail_norms is None and siesta.split_norm == 0.15
+        default = BasisSet.build("NAO")
+        assert default.tail_norms == DEFAULT_TAIL_NORMS
+        assert default.zeta_split == "first_zeta"
+        last = BasisSet.build("NAO", zeta_split="last_zeta")
+        assert last.tail_norms is None and last.zeta_split == "last_zeta"
+        assert BasisSet.build("NAO", split_norm=0.15).split_norm == 0.15
 
 
 @needs_library
@@ -473,23 +494,40 @@ class TestNewOptionsEndToEnd:
                                    "energy_shift": None})[0]
         assert unconfined == pytest.approx(DZP_UNCONFINED_EV, abs=5e-5)
 
-    def test_the_confinement_is_an_option_with_gpaws_default(self):
+    def test_the_confinement_is_an_option_with_its_default(self):
         from mandacaru.pseudopotentials.confinement import validate_confinement
 
         assert validate_confinement(None) == (12.0, 0.6)
         pp = get_paw("H")
         softer = confined_orbital(pp, 0, 0.1, (6.0, 0.6)).r_c
         assert softer < confined_orbital(pp, 0, 0.1).r_c    # a lower wall
-        for bad in ((12.0, 1.5), (-1.0, 0.6), "gpaw", (12.0,)):
+        for bad in ((12.0, 1.5), (-1.0, 0.6), "soft", (12.0,)):
             with pytest.raises(ValueError, match="confinement"):
                 Mandacaru(method="adapt-vqe",
                           basis={"name": "PAW-LCAO", "confinement": bad})
 
     def test_both_split_options_are_refused_together(self):
-        with pytest.raises(ValueError, match="not both"):
+        with pytest.raises(ValueError, match="parameter of zeta_split"):
             Mandacaru(method="adapt-vqe",
                       basis={"name": "PAW-LCAO", "size": "DZ", "tail_norm": 0.16,
                              "split_norm": 0.15})
+
+    def test_zeta_split_is_a_basis_option(self):
+        """``last_zeta`` builds a different basis from the default
+        ``first_zeta``, and an unknown scheme is refused at construction."""
+        first = Mandacaru(method="adapt-vqe",
+                          basis={"name": "PAW-LCAO", "size": "DZ"})
+        last = Mandacaru(method="adapt-vqe",
+                         basis={"name": "PAW-LCAO", "size": "DZ",
+                                "zeta_split": "last_zeta"})
+        assert first.dry_run(h2()).n_qubits == last.dry_run(h2()).n_qubits
+        with pytest.raises(ValueError, match="zeta_split"):
+            Mandacaru(method="adapt-vqe",
+                      basis={"name": "PAW-LCAO", "zeta_split": "previous"})
+        with pytest.raises(ValueError, match="zeta_split"):
+            Mandacaru(method="adapt-vqe",
+                      basis={"H": {"name": "PAW-LCAO",
+                                   "zeta_split": "previous"}})
 
     def test_the_dry_run_names_the_gaussian_shell(self):
         calc = Mandacaru(method="adapt-vqe",

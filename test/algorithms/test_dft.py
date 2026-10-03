@@ -132,6 +132,18 @@ class TestConvergence:
             _run(atoms, xc=xc, h=0.25, basis={"name": "PAW-LCAO"})
             assert atoms.calc.result.scf.n_iterations < 30
 
+    def test_an_r2scan_scf_does_not_stall(self):
+        """DIIS restarts: this geometry oscillated at 1e-8 Ha for 200
+        iterations with an uninterrupted history (HISTORY.md, 2026-10-02)."""
+        from ase.build import molecule
+        atoms = molecule("H2O")
+        atoms.center(vacuum=3.0)
+        atoms.positions[1] += [0.03, -0.02, 0.04]
+        atoms.positions[0, 2] -= 0.004
+        _run(atoms, xc="r2scan", h=0.25, basis={"name": "PAW-LCAO",
+                                                "size": "DZP"})
+        assert atoms.calc.result.success
+
 
 class TestFunctionals:
     def test_the_gradient_corrections_lower_the_energy_of_h2(self):

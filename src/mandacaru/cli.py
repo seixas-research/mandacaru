@@ -304,9 +304,24 @@ def build_parser() -> argparse.ArgumentParser:
                        help="active_space 'method': how the virtual orbitals "
                             "are ranked -- 'energy' (canonical order), "
                             "'mp2' (frozen natural orbitals of the "
-                            "second-order density) or 'natural' (the "
-                            "open-shell reference's own occupations). "
-                            "Default energy")
+                            "second-order density), 'dlpno-mp2' (the same "
+                            "from local MP2, integral-direct: no two-body "
+                            "tensor, for large bases; closed shell) or "
+                            "'natural' (the open-shell reference's own "
+                            "occupations). Default energy")
+    basis.add_argument("--correlating-pairs", action="store_const",
+                       const=True, default=None,
+                       help="active_space 'correlating_pairs': keep every "
+                            "active occupied orbital's correlating partner "
+                            "(the virtual its pair excitation goes to) "
+                            "active, and no partner of an occupied orbital "
+                            "the count froze. The register keeps its size")
+    basis.add_argument("--active-symmetry", action="store_const", const=True,
+                       default=None,
+                       help="active_space 'symmetry': keep degenerate "
+                            "orbital sets whole and the irreducible "
+                            "representations the target states need. The "
+                            "register keeps its size")
     basis.add_argument("--mapping", default="jordan_wigner",
                        choices=MAPPINGS,
                        help="fermion-to-qubit mapping (default jordan_wigner)")
@@ -412,8 +427,10 @@ def build_parser() -> argparse.ArgumentParser:
     chain.add_argument("--transfer", dest="transfer", action="store_const",
                        const=True, default=None,
                        help="along a relaxation or scan, start each "
-                            "geometry's chain from the previous geometry's "
-                            "ansatz and angles")
+                            "geometry from the previous geometry's ansatz "
+                            "and angles, followed through the orbitals "
+                            "(ADAPT-VQE: re-optimized, then grown only if "
+                            "the gradient asks; MCAS-VQE: the chain's start)")
     chain.add_argument("--transfer-steps", type=int, default=None,
                        metavar="N",
                        help="chain length when the start was transferred "
@@ -555,7 +572,9 @@ def solver_options(args) -> dict:
     # reaches the calculator only when something was asked of it.
     active = {key: getattr(args, flag) for key, flag in (
         ("method", "active_method"), ("orbitals", "active_orbitals"),
-        ("threshold", "active_threshold"), ("frozen", "frozen"))
+        ("threshold", "active_threshold"), ("frozen", "frozen"),
+        ("correlating_pairs", "correlating_pairs"),
+        ("symmetry", "active_symmetry"))
         if getattr(args, flag) is not None}
     if active:
         options["active_space"] = active

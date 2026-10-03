@@ -107,3 +107,93 @@ class TestEnergies:
         atoms.center()
         result = _energy(atoms, 0.25, {"size": "DZP"})
         assert result.extrapolated_energy == pytest.approx(-1.1269, abs=5e-4)
+
+
+def _grid(atoms, nodes):
+    from mandacaru.integrals import Grid
+    cell = np.asarray(atoms.cell)
+    return Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
+                h=float(np.linalg.norm(cell[0])) / nodes, units="angstrom",
+                cell=cell, periodic=True)
+
+
+class TestGridSymmetry:
+    def test_the_grid_decides_which_operations_survive(self):
+        """Diamond's non-symmorphic quarter translations land on 8 or 12
+        nodes per lattice vector, not on 10: there only the 24 operations
+        without them are kept."""
+        assert pp.grid_symmetry(SILICON, _grid(SILICON, 8)).n_operations == 48
+        kept = pp.grid_symmetry(SILICON, _grid(SILICON, 10))
+        assert kept.n_operations == 24 and kept.n_space_group == 48
+        assert np.allclose(kept.info.translations % 1.0, 0.0)
+
+    def test_the_kept_operations_form_a_group(self):
+        symmetry = pp.grid_symmetry(SILICON, _grid(SILICON, 10))
+        perms = {tuple(p) for p in symmetry.permutations}
+        for a in symmetry.permutations[:6]:
+            for b in symmetry.permutations[:6]:
+                assert tuple(a[b]) in perms
+
+    def test_harmonic_rotations_are_unitary_and_compose(self):
+        symmetry = pp.grid_symmetry(SILICON, _grid(SILICON, 8))
+        for rotation in symmetry.rotations:
+            for L, T in rotation.items():
+                assert np.allclose(T.conj().T @ T, np.eye(2 * L + 1))
+
+    def test_symmetrizing_is_a_projection(self):
+        symmetry = pp.grid_symmetry(SILICON, _grid(SILICON, 8))
+        rng = np.random.default_rng(2)
+        field = rng.normal(size=8 ** 3)
+        once = symmetry.field(field)
+        assert np.allclose(symmetry.field(once), once)
+        assert once.sum() == pytest.approx(field.sum())
+        q = {(a, L, M): complex(rng.normal(), rng.normal())
+             for a in range(2) for L in range(3) for M in range(-L, L + 1)}
+        q_once = symmetry.moments(q)
+        q_twice = symmetry.moments(q_once)
+        assert all(abs(q_twice[k] - q_once[k]) < 1e-12 for k in q)
+
+    def test_aluminum_has_sixteen_irreducible_points_on_six_cubed(self):
+        from ase.build import bulk as ase_bulk
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
+            monkhorst_pack_kpts
+        from mandacaru.core.symmetry import irreducible_kpoints
+        al = ase_bulk("Al", "fcc", a=4.05)
+        symmetry = pp.grid_symmetry(al, _grid(al, 10))
+        _size, _gamma, mesh = monkhorst_pack_kpts({"size": (6, 6, 6),
+                                                   "gamma": True})
+        zone = irreducible_kpoints(mesh, symmetry.info)
+        assert len(zone.points) == 16 and zone.weights.sum() == 216
+
+
+class TestTheIrreducibleWedge:
+    @pytest.mark.parametrize("atoms, nodes, kpts, options", [
+        (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter": 200}),
+        (bulk("Mg", "hcp", a=3.21, c=5.21), 10, (3, 3, 2),
+         {"size": "SZP", "filter": 200}),
+    ], ids=["diamond-Si", "hcp-Mg"])
+    def test_it_reproduces_the_time_reversed_mesh(self, atoms, nodes, kpts,
+                                                  options):
+        """The wedge, symmetrized, is the full mesh: to 1e-8 Ha per cell.
+
+        hcp Mg is the case where the operations mix two axes of a grid whose
+        third axis has a different node count.  The grid must resolve the
+        basis: on 8 nodes the 200 eV silicon basis reaches past the Nyquist
+        wave-vector, where an even FFT is not symmetric, and the discretized
+        problem itself is no longer (9 uHa off).
+        """
+        h = float(np.linalg.norm(np.asarray(atoms.cell)[0])) / nodes
+        energies = []
+        for symmetry in (True, False):
+            crystal, context = pp.build_crystal(
+                atoms, h, options, kpts={"size": kpts, "gamma": True},
+                symmetry=symmetry)
+            result = PeriodicKohnSham(
+                crystal, context["n_electrons"], "lda",
+                smearing={"method": "fermi-dirac", "width": 0.1}).run(
+                    tol=1e-10, density_tol=1e-8)
+            energies.append((result.extrapolated_energy,
+                             len(crystal.kpoints)))
+        (wedge, n_wedge), (full, n_full) = energies
+        assert n_wedge < n_full
+        assert wedge == pytest.approx(full, abs=1e-8)

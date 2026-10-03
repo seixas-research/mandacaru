@@ -256,8 +256,14 @@ result.fermi_level, result.free_energy, result.scf.band_gap
   \phi_\mu(\mathbf r - \mathbf R)$, and every matrix element is an integral
   over one cell.
 - **k-points.** `kpts` as for the other periodic methods (a size or
-  `{"size": ..., "gamma": True}`). The mesh is reduced by time reversal
-  ($\mathbf k$ and $-\mathbf k$ give the same density).
+  `{"size": ..., "gamma": True}`). The mesh is reduced to its irreducible
+  wedge by the crystal's space-group operations and time reversal, and the
+  density summed over the wedge is symmetrized back to the full mesh's -- Al
+  on 6x6x6 solves 16 k-points instead of 112, with the same energy. Only
+  operations that map both the real-space grid and the k-mesh onto themselves
+  are used: on 10 nodes per lattice vector silicon keeps 24 of its 48 (the
+  quarter translations miss the nodes), and a 2x1x1 mesh keeps only the
+  operations a 2x1x1 mesh has. `[SCF SETUP]` says how many were used.
 - **Smearing.** `smearing={"method": ..., "width": eV}` with `"fermi-dirac"`
   (default, 0.1 eV), `"gaussian"` or `"methfessel-paxton"`. The reported
   energy is the $\sigma \to 0$ estimate -- $\tfrac12(E + F)$ for Fermi-Dirac
@@ -273,13 +279,19 @@ result.fermi_level, result.free_energy, result.scf.band_gap
   8 Angstrom cell changes by 0.08 mHa between h = 0.25 and 0.18 Angstrom and
   reproduces the converged molecular limit, which the molecular solver itself
   reaches only by extrapolating from h <= 0.12 Angstrom.
+- **Eigenvalues, the Fermi level and the gap.** Eigenvalues and
+  `result.fermi_level` are measured from the cell average of the electrostatic
+  potential of the electrons and point ions (each atom's non-Coulomb local
+  potential included), the usual plane-wave zero, so they do not move with the
+  grid spacing. `result.scf.band_gap` is taken over the k-points of the mesh
+  only: it is an upper bound whenever a band edge lies between them, as
+  silicon's conduction-band minimum does on any small Gamma-centered mesh.
 - **Checks you can rely on.** A k-point mesh reproduces the corresponding
   supercell at Gamma exactly (diamond Si, 2x2x2 mesh against the 16-atom
   supercell: equal to 1e-8 Ha per cell).
 
-Not yet available for crystals: forces and stress, D4, symmetry (IBZ)
-reduction beyond time reversal -- every k-point of the time-reversed mesh is
-solved -- spin polarization, and band structures or densities of states.
+Not yet available for crystals: forces and stress, D4, spin polarization,
+and band structures or densities of states.
 
 ## What is not implemented
 
@@ -291,9 +303,9 @@ The following are refused or unavailable:
   PAW-LCAO only.
 - **D4 with LDA**, and **D4 or forces for a crystal**, as above.
 
-Not implemented yet: symmetry-reduced k-point meshes, band structures along a
-path, projected densities of states and fat bands, the Fermi surface, the
-dielectric constant and hybrid functionals.
+Not implemented yet: band structures along a path, projected densities of
+states and fat bands, the Fermi surface, the dielectric constant and hybrid
+functionals.
 
 ## References
 

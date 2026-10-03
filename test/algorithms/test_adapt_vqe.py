@@ -575,3 +575,92 @@ class TestRecording:
     def test_tetris_cannot_record(self, tmp_path):
         with pytest.raises(ValueError, match="tetris or prune"):
             Mandacaru(method="adapt-vqe", tetris=True, record=tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# Carrying the ansatz from one geometry to the next.
+# --------------------------------------------------------------------------- #
+
+def _lih(distance):
+    atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, distance]])
+    atoms.center(vacuum=3.5)
+    return atoms
+
+
+def _lih_calculator(**options):
+    return Mandacaru(method="adapt-vqe",
+                     basis={"name": "PAW-LCAO", "size": "DZP"}, h=0.3,
+                     active_space={"orbitals": 4, "method": "mp2"},
+                     pool="qeb", max_iterations=20,
+                     optimizer={"method": "BFGS", "maxiter": 500,
+                                "tol": 1e-10},
+                     trace=False, **options)
+
+
+class TestTransfer:
+    """``transfer=True``: each geometry starts from the previous one's
+    ansatz, re-optimized here, and grows only if the gradient asks for it."""
+
+    @pytest.fixture(scope="class")
+    def runs(self):
+        carried = _lih_calculator(transfer=True)
+        atoms = _lih(1.595)
+        atoms.calc = carried
+        atoms.get_potential_energy()
+        moved = _lih(1.580)
+        moved.calc = carried
+        moved.get_potential_energy()
+        fresh = _lih(1.580)
+        fresh.calc = _lih_calculator()
+        fresh.get_potential_energy()
+        return carried.solver.result, fresh.calc.solver.result
+
+    def test_the_previous_ansatz_is_carried_and_relaxed(self, runs):
+        carried, _fresh = runs
+        assert carried.start.startswith("previous geometry's ansatz")
+        assert "orbitals tracked" in carried.start
+
+    def test_it_reaches_the_fresh_energy_for_less(self, runs):
+        carried, fresh = runs
+        # LiH / 4 orbitals: the carried 5-operator ansatz already satisfies
+        # the gradient criterion at the new geometry, so nothing is appended.
+        assert carried.optimal_energy == pytest.approx(fresh.optimal_energy,
+                                                       abs=1e-6)
+        assert carried.num_evaluations < fresh.num_evaluations
+        assert len(set(carried.operators)) == len(carried.operators)
+
+    def test_a_different_system_is_not_carried(self):
+        calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+                         pool="fermionic", max_iterations=4, transfer=True,
+                         trace=False)
+        h2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+        h2.center(vacuum=3.0)
+        h2.calc = calc
+        h2.get_potential_energy()
+        lih = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]])
+        lih.center(vacuum=3.0)
+        lih.calc = calc
+        lih.get_potential_energy()
+        assert "another system or pool" in calc.solver.result.start
+
+
+class TestResumeIntoAnotherGeometry:
+    def test_the_angles_are_relaxed_before_the_gradient_is_read(
+            self, tmp_path):
+        path = tmp_path / "ansatz.json"
+        first = _lih(1.595)
+        first.calc = _lih_calculator(checkpoint=str(path))
+        first.get_potential_energy()
+        moved = _lih(1.580)
+        moved.calc = _lih_calculator(resume=str(path))
+        with pytest.warns(RuntimeWarning, match="different Hamiltonian"):
+            moved.get_potential_energy()
+        result = moved.calc.solver.result
+        assert "re-optimized" in result.start
+        # Relaxed first, the existing operators are not re-selected.
+        assert len(set(result.operators)) == len(result.operators)
+        fresh = _lih(1.580)
+        fresh.calc = _lih_calculator()
+        fresh.get_potential_energy()
+        assert result.optimal_energy == pytest.approx(
+            fresh.calc.solver.result.optimal_energy, abs=1e-6)

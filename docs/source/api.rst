@@ -109,6 +109,36 @@ used to select an active space.  See :doc:`guide/active_space`.
    :undoc-members:
    :show-inheritance:
 
+Local Correlation and DLPNO-MP2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Foster-Boys orbitals, projected atomic orbitals and domains, the
+integral-direct DLPNO-MP2 behind the ``"dlpno-mp2"`` active-space method, and
+the orbital-integral providers it reads.  See :doc:`guide/active_space`.
+
+.. automodule:: mandacaru.algorithms.dlpno_mp2
+   :members:
+
+.. automodule:: mandacaru.algorithms.local_correlation
+   :members:
+
+.. automodule:: mandacaru.algorithms.orbital_integrals
+   :members:
+
+.. automodule:: mandacaru.integrals.direct
+   :members:
+
+Orbital Symmetry
+~~~~~~~~~~~~~~~~
+
+Molecular point groups and how the molecular orbitals transform under them,
+used by the active space's ``symmetry``.  See :doc:`guide/active_space`.
+
+.. automodule:: mandacaru.algorithms.orbital_symmetry
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Z2 Symmetry Tapering
 ~~~~~~~~~~~~~~~~~~~~
 

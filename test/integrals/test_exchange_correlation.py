@@ -29,7 +29,9 @@ def _gaussian(grid, alpha=ALPHA, electrons=2.0):
 
 def _tau(grid, rho, r2):
     """A kinetic-energy density above the von Weizsaecker bound everywhere."""
-    return xc_grid.weizsaecker_tau(grid, rho) + 0.3 * rho * np.exp(-0.2 * r2)
+    grad = xc_grid.gradient(grid, rho)
+    bound = np.sum(grad * grad, axis=0) / (8.0 * np.maximum(rho, 1e-30))
+    return bound + 0.3 * rho * np.exp(-0.2 * r2)
 
 
 class TestSpectralDerivatives:

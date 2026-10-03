@@ -86,6 +86,14 @@ DEFAULT_XC = "lda"
 #: H2 with PBE stalled at 1e-7 for 200 iterations after a 1.7e-10 Ha rise.
 LEVEL_SHIFT_TRIGGER = 1e-6
 
+#: Iterations between restarts of the DIIS history.  Near convergence an
+#: r2SCAN SCF can stall with the extrapolation pinned by stale vectors, the
+#: energy oscillating at 1e-8 Ha for all 200 iterations (H2O, PAW-LCAO DZP,
+#: oxygen displaced by 0.004 Angstrom).  Clearing the history every 10
+#: iterations finished it in 90 (every 15: 111; every 20: 177); LDA and PBE
+#: converge before the first restart matters.
+DIIS_RESTART = 10
+
 #: Dispersion corrections ``dispersion=`` accepts.
 DISPERSION_CORRECTIONS = ("d4",)
 
@@ -133,6 +141,28 @@ class KohnShamResult(RHFResult):
                 f"n_occ={self.n_occupied}, converged={self.converged})")
 
 
+class LazyHamiltonian:
+    """The many-body Hamiltonian in the Kohn-Sham orbitals, built on demand.
+
+    Spin-blocking the integrals allocates :math:`(2M)^4` entries -- 1.6 GB at
+    50 orbitals -- for an operator only the handoff to a quantum method
+    (:meth:`~mandacaru.algorithms.mean_field.MeanFieldResult.as_quantum_problem`)
+    reads.  :class:`~mandacaru.algorithms.mean_field.MeanFieldResult` builds it
+    the first time the attribute is read.
+    """
+
+    def __init__(self, h_mo, eri_mo, constant):
+        self.h_mo = h_mo
+        self.eri_mo = eri_mo
+        self.constant = complex(constant)
+
+    def build(self) -> Fermion:
+        h_so, g_so = spin_block_integrals(self.h_mo, self.eri_mo)
+        n_modes = h_so.shape[0]
+        return (Fermion.from_integrals(h_so, g_so)
+                + Fermion({(): self.constant}, n_modes=n_modes))
+
+
 class KohnSham:
     r"""Closed-shell (restricted) Kohn-Sham SCF in an orthonormal basis.
 
@@ -153,6 +183,9 @@ class KohnSham:
     core_density : (ngrid,) array, optional
         Partial core density added to the valence density inside the
         functional.
+    core_tau : (ngrid,) array, optional
+        The cores' kinetic-energy density, added to a meta-GGA's
+        (:func:`~mandacaru.integrals.exchange_correlation.core_tau_on_grid`).
     relativistic : bool
         Apply the relativistic exchange factor (LDA and PBE), as a
         relativistic dataset was unscreened with.
@@ -160,7 +193,7 @@ class KohnSham:
 
     def __init__(self, h, eri, orbitals, grid, n_electrons: int,
                  functional: str = DEFAULT_XC, core_density=None,
-                 relativistic: bool = False):
+                 relativistic: bool = False, core_tau=None):
         self.h = np.asarray(h, dtype=complex)
         self.eri = np.asarray(eri, dtype=complex)
         self.orbitals = np.asarray(orbitals)
@@ -183,9 +216,8 @@ class KohnSham:
         self._core_tau = None
         if self.meta:
             self._orbital_gradients = xc_grid.gradient(grid, self.orbitals)
-            if self.core_density is not None:
-                self._core_tau = xc_grid.weizsaecker_tau(grid,
-                                                         self.core_density)
+            if core_tau is not None:
+                self._core_tau = np.asarray(core_tau, dtype=float)
 
     # -- the density and its matrices ------------------------------------- #
 
@@ -248,7 +280,8 @@ class KohnSham:
             diis: bool = True) -> KohnShamResult:
         """Iterate to self-consistency from the core guess.
 
-        DIIS-extrapolated, with the Hartree-Fock solver's level shift
+        DIIS-extrapolated, its history cleared every :data:`DIIS_RESTART`
+        iterations, with the Hartree-Fock solver's level shift
         switched on when an iteration raises the energy by more than
         :data:`LEVEL_SHIFT_TRIGGER` and off again once the energy has settled
         below it.  Converged
@@ -264,6 +297,8 @@ class KohnSham:
         it = 0
         for it in range(1, max_iter + 1):
             F, current, _e_h, _e_xc = self._fock(D)
+            if mixer is not None and it % DIIS_RESTART == 0:
+                mixer = DIIS()
             if current > energy + LEVEL_SHIFT_TRIGGER and shift == 0.0:
                 shift = LEVEL_SHIFT
             elif shift and abs(current - energy) < LEVEL_SHIFT_TRIGGER:
@@ -335,13 +370,16 @@ def kohn_sham_solver(integrals, n_electrons: int,
     _warn_functional_mismatch(datasets, functional)
     X = integrals._lowdin_x()
     orbitals = X.T @ integrals._engine._psi
-    core = None
+    core = core_tau = None
     if datasets:
         core = xc_grid.core_density_on_grid(integrals.grid, datasets,
                                             _centers(integrals))
+        if xc_grid.is_meta_gga(functional):
+            core_tau = xc_grid.core_tau_on_grid(integrals.grid, datasets,
+                                                _centers(integrals))
     return KohnSham(integrals.one_body(), integrals.two_body(), orbitals,
                     integrals.grid, n_electrons, functional=functional,
-                    core_density=core,
+                    core_density=core, core_tau=core_tau,
                     relativistic=(functional != "r2scan"
                                   and _datasets_relativistic(datasets)))
 
@@ -414,25 +452,23 @@ class KohnShamField:
     (+ \tfrac12\int\partial_\tau f\,\nabla\psi_\mu^*\cdot\nabla\psi_\nu)`
     when basis functions move by ``dpsi`` under the fixed potential.
     ``hellmann_feynman(atom, k)``: :math:`\int v_{xc}\,\partial\tilde\rho_c
-    /\partial R_{A,k}` (plus the core's von Weizsaecker kinetic-energy density
-    for a meta-GGA) -- the partial core density moves with its atom.
+    /\partial R_{A,k}` (plus :math:`\int\partial_\tau f\,\partial\tau_c/
+    \partial R_{A,k}` for a meta-GGA) -- the partial core density and its
+    kinetic-energy density move with their atom.
     """
 
-    def __init__(self, grid, psi, potential, tau_potential, core_density,
-                 core_functions, centers, delta):
+    def __init__(self, grid, psi, potential, tau_potential, core_functions,
+                 core_tau_functions, centers, delta):
         self.grid = grid
         self.psi = psi
         self.v = potential
         self.v_tau = tau_potential
-        self.core = core_density
         self.core_functions = core_functions
+        self.core_tau_functions = core_tau_functions
         self.centers = centers
         self.delta = float(delta)
         self.grad_psi = (xc_grid.gradient(grid, psi)
                          if tau_potential is not None else None)
-        self.grad_core = (xc_grid.gradient(grid, core_density)
-                          if tau_potential is not None
-                          and core_density is not None else None)
 
     def matrix(self) -> np.ndarray:
         """``V_xc`` over the AO basis (Hartree)."""
@@ -460,16 +496,10 @@ class KohnShamField:
         drho = _moved_radial(function, self.centers[atom], self.grid, k,
                              self.delta)
         value = np.sum(self.v * drho)
-        if self.v_tau is not None:
-            # d(|grad rho|^2 / 8 rho) for the total core density.
-            rho = self.core
-            dgrad = xc_grid.gradient(self.grid, drho)
-            g2 = np.sum(self.grad_core * self.grad_core, axis=0)
-            cross = np.sum(self.grad_core * dgrad, axis=0)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                dtau = np.where(rho > xc_grid.GRADIENT_DENSITY_FLOOR,
-                                cross / (4.0 * rho) - g2 * drho
-                                / (8.0 * rho * rho), 0.0)
+        tau_function = self.core_tau_functions[atom]
+        if self.v_tau is not None and tau_function is not None:
+            dtau = _moved_radial(tau_function, self.centers[atom], self.grid,
+                                 k, self.delta)
             value = value + np.sum(self.v_tau * dtau)
         return float(value * self.grid.dV)
 
@@ -477,6 +507,11 @@ class KohnShamField:
 def _core_functions(datasets):
     """Per atom, ``r -> core density`` for the core correction, or ``None``."""
     return [xc_grid.core_density_function(dataset) for dataset in datasets]
+
+
+def _core_tau_functions(datasets):
+    """Per atom, ``r -> core kinetic-energy density``, or ``None``."""
+    return [xc_grid.core_tau_function(dataset) for dataset in datasets]
 
 
 def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
@@ -513,11 +548,13 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
     terms = xc_grid.evaluate(integrals.grid, rho, solver.functional,
                              relativistic=solver.relativistic, tau=tau)
     datasets = integrals.pseudopotentials or []
+    nothing = [None] * len(integrals.nuclei)
     field = KohnShamField(
         integrals.grid, np.ascontiguousarray(integrals._engine._psi),
-        terms.potential, terms.tau_potential, solver.core_density,
-        _core_functions(datasets) if datasets else
-        [None] * len(integrals.nuclei), _centers(integrals), delta)
+        terms.potential, terms.tau_potential,
+        _core_functions(datasets) if datasets else nothing,
+        _core_tau_functions(datasets) if datasets else nothing,
+        _centers(integrals), delta)
     V_xc = field.matrix()
     X = integrals._lowdin_x()
     P0 = X @ D @ X.conj().T
@@ -628,7 +665,7 @@ class DFTDriver(_MeanFieldDriver):
         a molecule by the shared builder."""
         self._periodic = self._is_periodic(atoms)
         if not self._periodic:
-            return super()._build_hamiltonian(atoms)
+            return self._build_molecular_integrals(atoms)
         from ..pseudopotentials.periodic_paw import build_crystal
         from ._hamiltonian_from_atoms import pseudopotential_family, resolve_basis
 
@@ -650,6 +687,28 @@ class DFTDriver(_MeanFieldDriver):
         self._basis_symbols = list(atoms.get_chemical_symbols())
         n = int(round(context["n_electrons"]))
         return None, (n // 2, n - n // 2), crystal.M
+
+    def _build_molecular_integrals(self, atoms):
+        """The shared builder, stopped after the integrals.
+
+        Kohn-Sham needs ``h``, the two-body tensor and the grid; the RHF
+        orbitals and the second-quantized operator the builder would make
+        next are never used (the Hamiltonian is exported in the Kohn-Sham
+        orbitals instead, and only on demand), and on H2O DZP they were a
+        third of the run.
+        """
+        from ._hamiltonian_from_atoms import build_basis_hamiltonian
+
+        (_none, num_particles, n_orbitals, profile,
+         context) = build_basis_hamiltonian(
+            atoms, self.basis, self.grid, self.h, self.charge,
+            self.n_electrons, spin=self.spin, kinetic=self.kinetic,
+            commensurate=self._grid_commensurate(),
+            active_space=self.active_space, hamiltonian=False)
+        self._integration_profile = profile
+        self._gradient_context = context
+        self._basis_symbols = list(atoms.get_chemical_symbols())
+        return None, num_particles, n_orbitals
 
     def _check_kpts(self) -> None:
         if not self._periodic:
@@ -683,6 +742,8 @@ class DFTDriver(_MeanFieldDriver):
             crystal = ("MonkhorstPack1976", "Pulay1980", "Kerker1981",
                        "MethfesselPaxton1989" if method == "methfessel-paxton"
                        else "Mermin1965")
+            if self._gradient_context["integrals"].symmetry is not None:
+                crystal += ("Togo2018",)          # the space group (spglib)
         config["extras"] = (tuple(config.get("extras", ())) + functional
                             + dispersion + crystal)
         return config
@@ -712,10 +773,8 @@ class DFTDriver(_MeanFieldDriver):
         constant = complex(integrals.constant_energy
                            + integrals.nuclear_repulsion)
         M = integrals.n_orbitals
-        h_so, g_so = spin_block_integrals(self._scf.h_mo, self._scf.eri_mo)
-        hamiltonian = Fermion.from_integrals(h_so, g_so)
-        self.fermion_hamiltonian = hamiltonian + Fermion(
-            {(): constant}, n_modes=2 * M)
+        self.fermion_hamiltonian = LazyHamiltonian(self._scf.h_mo,
+                                                   self._scf.eri_mo, constant)
         self.hamiltonian = self.fermion_hamiltonian
         self.num_particles = full_particles
         self.n_spatial_orbitals = int(M)
@@ -801,7 +860,10 @@ class DFTDriver(_MeanFieldDriver):
         scf = self._scf
         total = (scf.electronic_energy + scf.core_correction_energy
                  + scf.dispersion_energy + constant)
-        result = MeanFieldResult(
+        # Built once, timings included: `dataclasses.replace` would read every
+        # field and so build the lazy Hamiltonian it exists to defer.
+        self._finalize_timings(timings, run_t0)
+        return MeanFieldResult(
             method=self._kind, optimal_energy=self._to_energy_units(total),
             reference_energy=self._to_energy_units(
                 scf.determinant_energy + constant), scf=scf,
@@ -809,9 +871,8 @@ class DFTDriver(_MeanFieldDriver):
             fermion_hamiltonian=self.fermion_hamiltonian,
             num_particles=self.num_particles,
             n_spatial_orbitals=self.n_spatial_orbitals,
-            energy_unit=self._energy_unit_label())
-        self._finalize_timings(timings, run_t0)
-        return replace(result, timings=timings.as_dict())
+            energy_unit=self._energy_unit_label(),
+            timings=timings.as_dict())
 
     def _log_title(self) -> str:
         return f"DFT ({self.xc.upper()})"
@@ -827,8 +888,12 @@ class DFTDriver(_MeanFieldDriver):
             return {
                 "scf_method": "periodic Kohn-Sham (Bloch states)",
                 "xc_functional": self.xc.upper(),
-                "k_points_irreducible": (f"{len(crystal.kpoints)} "
-                                         "(time reversal)"),
+                "k_points_irreducible": (
+                    f"{len(crystal.kpoints)} (time reversal)"
+                    if crystal.symmetry is None else
+                    f"{len(crystal.kpoints)} ({crystal.symmetry.n_operations} "
+                    f"of {crystal.symmetry.n_space_group} space-group "
+                    f"operations on the grid, and time reversal)"),
                 "smearing": f"{method}, {width * HARTREE_TO_EV:g} eV",
                 "max_iterations": defaults["max_iter"].default,
                 "convergence_Hartree": (

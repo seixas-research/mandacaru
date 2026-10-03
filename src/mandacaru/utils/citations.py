@@ -115,11 +115,13 @@ _FAMILY_KEYS = {
 
 #: What an ``active_space`` method cites.  The energy ordering is the canonical
 #: orbital order the mean field already produced, so it adds nothing of its
-#: own; the other two are constructions with papers behind them.
+#: own; the others are constructions with papers behind them.
 _ACTIVE_METHOD_KEYS = {
     "energy": (),
     "mp2": ("Moller1934", "Sosa1989", "TaubeBartlett2005"),
     "natural": ("Loewdin1955",),
+    "dlpno-mp2": ("Moller1934", "Pinski2015", "FosterBoys1960", "Pulay1983",
+                  "Sosa1989"),
 }
 
 

@@ -79,7 +79,8 @@ DEFAULT_FAMILY = "paw-lcao"
 #: pseudo-orbitals, the library directory and the Fourier filter
 #: (:mod:`mandacaru.basis.filtering`) that removes from each radial function
 #: the wave-vectors the real-space grid cannot represent.
-COMMON_OPTIONS = ("size", "split_norm", "tail_norm", "directory", "filter")
+COMMON_OPTIONS = ("size", "zeta_split", "split_norm", "tail_norm",
+                  "directory", "filter")
 
 
 @dataclass(frozen=True)
@@ -99,12 +100,13 @@ class FamilySpec:
         library loader.
     build : callable
         ``build(atoms, grid, h, charge, spin, options, kinetic, *,
-        active_space=None)`` returning the driver
+        active_space=None, hamiltonian=True)`` returning the driver
         5-tuple ``(hamiltonian, num_particles, n_spatial_orbitals,
         integration_profile, context)`` -- exactly what
         :func:`~mandacaru.algorithms._hamiltonian_from_atoms.build_basis_hamiltonian`
-        returns for the all-electron path.  The keyword is always passed, so
-        a builder must accept it (``**kwargs`` forwarded to
+        returns for the all-electron path (with ``hamiltonian=False``, the
+        integrals only and ``None`` in place of the operator).  The keywords
+        are always passed, so a builder must accept them (``**kwargs`` forwarded to
         :func:`build_valence_hamiltonian` is enough, and is what every built-in
         family does): a valence-only basis has no core to freeze but plenty of
         virtual orbitals to drop, so unlike a ``"frozen"`` core, truncation is
@@ -274,14 +276,16 @@ def pseudo_basis_arguments(family, options, *, confinement=None,
     the hooks resolve -- each orbital's cutoff radius, the polarization
     shell's -- for the run log.
 
-    The split-valence scheme is GPAW's unless ``split_norm`` is written
+    The split-valence scheme is ``zeta_split`` -- ``"first_zeta"`` unless
+    written, or ``"last_zeta"`` when only ``split_norm`` is
     (:func:`~mandacaru.basis.multizeta.resolve_split_scheme`).
     """
     from ..basis.multizeta import resolve_split_scheme
 
     spec = resolve_family(family)
     split_norm, tail_norms = resolve_split_scheme(options.get("split_norm"),
-                                                  options.get("tail_norm"))
+                                                  options.get("tail_norm"),
+                                                  options.get("zeta_split"))
     arguments = {"size": options.get("size", "SZ"), "split_norm": split_norm,
                  "tail_norms": tail_norms}
     if "energy_shift" in spec.options:
@@ -296,7 +300,7 @@ def pseudo_basis_arguments(family, options, *, confinement=None,
 
 
 def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
-                              active_space=None,
+                              active_space=None, hamiltonian: bool = True,
                               family: str, load, projectors, coupling,
                               overlap=None, spin_orbit=None,
                               spin_orbit_projectors=None,
@@ -377,9 +381,11 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
         spin_orbit_projectors=so_projectors or None,
         kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"],
         **{potentials_keyword: [potentials[s] for s in symbols]})
-    hamiltonian = integrals.molecular_hamiltonian(
+    # Without `hamiltonian` the caller needs only the integrals (Kohn-Sham
+    # DFT): no RHF orbitals, no MO transform, no second-quantized operator.
+    hamiltonian = (integrals.molecular_hamiltonian(
         mo_basis=True, n_electrons=n_el, num_particles=num_particles,
-        active_space=active_space)
+        active_space=active_space) if hamiltonian else None)
     _warn_unresolved(integrals, basis_fns, h)
 
     # A valence-only basis has no core to freeze, but it does have virtual

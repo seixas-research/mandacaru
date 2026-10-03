@@ -364,7 +364,8 @@ def pseudopotential_family(name):
 #: Pseudo-basis options that describe the *construction* (one recipe for the
 #: whole basis): a per-element basis may write them on any element, but every
 #: element that does must say the same thing.
-SHARED_PSEUDO_OPTIONS = ("tail_norm", "polarization", "confinement")
+SHARED_PSEUDO_OPTIONS = ("zeta_split", "tail_norm", "polarization",
+                         "confinement")
 
 
 def resolve_pseudo_basis(name, options, symbols):
@@ -457,6 +458,10 @@ def resolve_pseudo_basis(name, options, symbols):
                 "basis={'name': ..., 'filter': ..., 'size': {<per element>}}.")
         merged["filter"] = next(iter(filters.values()))
     for key, values in shared.items():
+        if key == "zeta_split":
+            # Compare the schemes, not their spellings.
+            from ..basis.multizeta import validate_zeta_split
+            values = {s: validate_zeta_split(v) for s, v in values.items()}
         if len({repr(v) for v in values.values()}) > 1:
             raise ValueError(
                 f"the basis option {key!r} describes how every atom's basis is "
@@ -524,7 +529,8 @@ def _warn_unresolved(integrals, basis_fns, h):
 
 
 def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
-                                 options, kinetic=None, active_space=None):
+                                 options, kinetic=None, active_space=None,
+                                 hamiltonian: bool = True):
     """Valence-only Hamiltonian from a pseudopotential **family**.
 
     A thin dispatcher: ``family`` is the
@@ -535,8 +541,8 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
     5-tuple as :func:`build_basis_hamiltonian`.  A new family is registered
     with ``register_family`` and needs nothing here.
 
-    ``active_space`` is always forwarded as a keyword, which is part of the
-    ``build`` protocol
+    ``active_space`` and ``hamiltonian`` are always forwarded as keywords,
+    which is part of the ``build`` protocol
     (:class:`~mandacaru.pseudopotentials.families.FamilySpec`): a builder that
     does not accept them raises ``TypeError`` here.  That is deliberate -- a
     family silently dropping an active-space request would return the full
@@ -551,14 +557,20 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
             f"unknown option(s) {unknown} for the {family.label} basis; it "
             f"accepts {list(family.options)}")
     return family.build(atoms, grid, h, charge, spin, dict(options), kinetic,
-                        active_space=active_space)
+                        active_space=active_space, hamiltonian=hamiltonian)
 
 
 def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                             n_electrons, spin: bool = False,
                             kinetic=None, periodic: bool = False,
-                            commensurate=None, active_space=None):
+                            commensurate=None, active_space=None,
+                            hamiltonian: bool = True):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
+
+    ``hamiltonian=False`` stops after the integrals: the first element of the
+    returned 5-tuple is ``None``, and neither the RHF orbitals nor the
+    second-quantized operator are built (what Kohn-Sham DFT needs, which has
+    its own orbitals and exports a Hamiltonian in them only on demand).
 
     ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
     :func:`resolve_basis`).  The plane-wave family (``"PW"``) uses the periodic
@@ -638,13 +650,16 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                 "themselves.  Use `charge` to add or remove electrons.")
         return _pseudopotential_hamiltonian(
             atoms, grid, h, charge, spin, family, options, kinetic=kinetic,
-            active_space=spec)
+            active_space=spec, hamiltonian=hamiltonian)
 
     numbers = atoms.get_atomic_numbers()
     n_el = (int(n_electrons) if n_electrons is not None
             else int(sum(int(z) for z in numbers)) - int(charge))
 
     if _is_plane_wave(name):
+        if not hamiltonian:
+            raise NotImplementedError(
+                "the plane-wave (PW) basis has no integrals-only build")
         return _plane_wave_hamiltonian(atoms, options, n_el, spin, name,
                                        spec)
 
@@ -704,10 +719,11 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
             kinetic=kinetic or DEFAULT_KINETIC["all-electron"])
     # The core arrives at the integrals as explicit indices: "auto" needed the
     # atoms, which only this layer has.
-    hamiltonian = integrals.molecular_hamiltonian(
+    hamiltonian = (integrals.molecular_hamiltonian(
         mo_basis=True, n_electrons=n_el, num_particles=(n_alpha, n_beta),
         active_space=(None if spec is None
                       else replace(spec, frozen=tuple(frozen) or None)))
+        if hamiltonian else None)
     _warn_unresolved(integrals, basis_fns, h)
     # The selector may freeze more than `resolve_frozen` did (the dict form of
     # the 'orbitals' names a count of active occupied orbitals), so the

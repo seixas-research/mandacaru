@@ -258,6 +258,182 @@ def time_reversal_reduce(kpoints_frac, tolerance: float = 1e-8):
 
 
 # --------------------------------------------------------------------------- #
+# Symmetry: the operations the grid carries.
+# --------------------------------------------------------------------------- #
+
+#: Directions used to fit the action of a rotation on the Y_LM of one L.
+ROTATION_SAMPLES = 64
+#: Largest residual / departure from unitarity accepted for those fits.
+ROTATION_TOLERANCE = 1e-10
+
+
+@dataclass
+class GridSymmetry:
+    r"""Space-group operations that map the grid onto itself.
+
+    For every kept operation :math:`x \to Wx + t` (fractional coordinates):
+    ``permutations[s]`` sends grid node ``n`` to the node at :math:`S x_n`,
+    ``atom_maps[s][A]`` is the atom at :math:`S x_A`, and ``rotations[s][L]``
+    the matrix :math:`T^L` with :math:`Y_{LM}(R\hat u) = \sum_{M'}
+    Y_{LM'}(\hat u)\,T^L_{M'M}`, :math:`R` the Cartesian rotation.
+
+    A symmetric quantity is the average of its images, so a density built
+    from the irreducible wedge of the k-mesh becomes the full mesh's:
+    :meth:`field` for the smooth density and the kinetic-energy density,
+    :meth:`moments` for the compensation multipoles.
+    """
+
+    info: object                         # the SymmetryInfo actually used
+    n_space_group: int                   # operations before the grid filter
+    permutations: list
+    atom_maps: list
+    rotations: list
+
+    @property
+    def n_operations(self) -> int:
+        return len(self.permutations)
+
+    def keeping_mesh(self, mesh) -> "GridSymmetry | None":
+        """The operations that also map the k-point ``mesh`` onto itself.
+
+        A 2x1x1 mesh of a cubic crystal is not invariant under the cube's
+        rotations, and neither is the density summed over it: reducing or
+        symmetrizing with an operation the mesh does not share is wrong
+        (1.4 mHa per cell on silicon's 2x1x1 mesh).  ``None`` when nothing
+        beyond the identity survives.
+        """
+        from dataclasses import replace as dc_replace
+
+        mesh = np.asarray(mesh, dtype=float)
+
+        def on_mesh(points):
+            delta = points[:, None, :] - mesh[None, :, :]
+            delta -= np.round(delta)
+            return np.all(np.any(np.all(np.abs(delta) < 1e-8, axis=2),
+                                 axis=1))
+
+        keep = [s for s, W in enumerate(self.info.rotations)
+                if on_mesh(mesh @ np.asarray(W, dtype=float))]
+        if len(keep) <= 1:
+            return None
+        info = dc_replace(self.info,
+                          rotations=np.asarray(self.info.rotations)[keep],
+                          translations=np.asarray(self.info.translations)[keep])
+        return GridSymmetry(
+            info=info, n_space_group=self.n_space_group,
+            permutations=[self.permutations[s] for s in keep],
+            atom_maps=[self.atom_maps[s] for s in keep],
+            rotations=[self.rotations[s] for s in keep])
+
+    def field(self, values) -> np.ndarray:
+        """The average of a flat grid field over the operations."""
+        values = np.asarray(values)
+        return sum(values[perm] for perm in self.permutations) \
+            / self.n_operations
+
+    def moments(self, q: dict) -> dict:
+        """The average of the multipoles ``{(atom, L, M): q}``."""
+        out = {key: 0.0j for key in q}
+        for atom_map, rotation in zip(self.atom_maps, self.rotations):
+            for (atom, L, M) in q:
+                T = rotation[L]
+                source = atom_map[atom]
+                total = 0.0j
+                for Mp in range(-L, L + 1):
+                    value = q.get((source, L, Mp))
+                    if value is not None:
+                        total += T[M + L, Mp + L] * value
+                out[(atom, L, M)] += total
+        return {key: value / self.n_operations for key, value in out.items()}
+
+
+def _harmonic_rotation(R, L: int) -> np.ndarray:
+    """``T`` with ``Y_L(R u) = Y_L(u) T`` for the complex ``Y_LM``."""
+    from ..basis._angular import spherical_harmonic
+    rng = np.random.default_rng(L + 7)
+    u = rng.normal(size=(ROTATION_SAMPLES, 3))
+    u /= np.linalg.norm(u, axis=1)[:, None]
+
+    def harmonics(v):
+        theta = np.arccos(np.clip(v[:, 2], -1.0, 1.0))
+        phi = np.arctan2(v[:, 1], v[:, 0])
+        return np.stack([spherical_harmonic(L, M, theta, phi)
+                         for M in range(-L, L + 1)], axis=1)
+
+    Y = harmonics(u)
+    YR = harmonics(u @ np.asarray(R).T)
+    T, *_ = np.linalg.lstsq(Y, YR, rcond=None)
+    residual = float(np.max(np.abs(Y @ T - YR)))
+    unitary = float(np.max(np.abs(T.conj().T @ T - np.eye(2 * L + 1))))
+    if residual > ROTATION_TOLERANCE or unitary > ROTATION_TOLERANCE:
+        raise RuntimeError(f"rotation of the L = {L} harmonics did not fit "
+                           f"(residual {residual:.1e}, unitarity {unitary:.1e})")
+    return T
+
+
+def grid_symmetry(atoms, grid, max_L: int = 4, symprec: float | None = None):
+    r"""The :class:`GridSymmetry` of a periodic ``atoms`` on ``grid``, or
+    ``None`` when no operation beyond the identity survives.
+
+    An operation is kept when it maps grid nodes onto grid nodes --
+    :math:`W_{ij}N_i/N_j` integral wherever :math:`W_{ij} \neq 0` and
+    :math:`N_it_i` integral -- and every atom onto an atom of the same
+    species.  Those operations form a subgroup (a composition of two that
+    land on nodes lands on nodes), and the k-mesh must be reduced with that
+    subgroup and no larger one: the grid decides it, through ``h``.
+    """
+    from dataclasses import replace as dc_replace
+
+    from ..core.symmetry import DEFAULT_SYMPREC, crystal_symmetry
+
+    info = crystal_symmetry(atoms, DEFAULT_SYMPREC if symprec is None
+                            else symprec)
+    N = np.asarray(grid.shape, dtype=int)
+    lattice = rc.lattice_vectors(grid)
+    inverse = np.linalg.inv(lattice)
+    frac = np.asarray(atoms.get_scaled_positions(wrap=True), dtype=float)
+    numbers = np.asarray(atoms.get_atomic_numbers())
+    n1, n2, n3 = np.meshgrid(*[np.arange(n) for n in N], indexing="ij")
+    nodes = np.stack([n1.ravel(), n2.ravel(), n3.ravel()])
+    keep, permutations, atom_maps, rotations = [], [], [], []
+    for s, (W, t) in enumerate(zip(info.rotations, info.translations)):
+        W = np.asarray(W, dtype=float)
+        scale = W * N[:, None] / N[None, :]
+        shift = t * N
+        if (np.any(np.abs(scale - np.round(scale)) > 1e-9)
+                or np.any(np.abs(shift - np.round(shift)) > 1e-6)):
+            continue
+        image = (np.round(scale).astype(int) @ nodes
+                 + np.round(shift).astype(int)[:, None]) % N[:, None]
+        perm = np.ravel_multi_index(image, tuple(N))
+        mapped = (frac @ W.T + t) % 1.0
+        atom_map = np.full(len(frac), -1)
+        for a, x in enumerate(mapped):
+            delta = frac - x
+            delta -= np.round(delta)
+            match = np.nonzero((np.linalg.norm(delta @ lattice.T, axis=1)
+                                < 1e-4) & (numbers == numbers[a]))[0]
+            if match.size != 1:
+                break
+            atom_map[a] = match[0]
+        if np.any(atom_map < 0):
+            continue
+        R = lattice @ W @ inverse
+        keep.append(s)
+        permutations.append(perm)
+        atom_maps.append(atom_map)
+        rotations.append({L: _harmonic_rotation(R, L)
+                          for L in range(max_L + 1)})
+    if len(keep) <= 1:
+        return None
+    used = dc_replace(info, rotations=np.asarray(info.rotations)[keep],
+                      translations=np.asarray(info.translations)[keep])
+    return GridSymmetry(info=used, n_space_group=info.n_operations,
+                        permutations=permutations, atom_maps=atom_maps,
+                        rotations=rotations)
+
+
+# --------------------------------------------------------------------------- #
 # Sphere quadratures.
 # --------------------------------------------------------------------------- #
 
@@ -320,7 +496,7 @@ class PeriodicPAW:
 
     def __init__(self, basis, atom_of_orbital, projectors, datasets, centers,
                  grid, kpoints, weights, coupling, overlap_blocks,
-                 multipole_blocks, filter_cutoff=None):
+                 multipole_blocks, filter_cutoff=None, symmetry=None):
         from ..core.hamiltonian import assemble_block_matrix
         from .local_split import split_width
 
@@ -336,6 +512,10 @@ class PeriodicPAW:
         self.weights = np.asarray(weights, dtype=float)
         self.sigma = split_width(grid)
         self.filter_cutoff = filter_cutoff
+        #: :class:`GridSymmetry` the k-points were reduced with, or ``None``
+        #: (time reversal only).  Every density assembled from the wedge is
+        #: symmetrized with it.
+        self.symmetry = symmetry
         self.M = len(self.basis)
         self.charges = np.array([float(d.valence_charge)
                                  for d in self.datasets])
@@ -499,6 +679,8 @@ class PeriodicPAW:
                                                 axis=0))
             for channel in self.channels:
                 q[channel] += data.weight * np.sum(P * data.moments[channel].T)
+        if self.symmetry is not None:
+            rho, q = self.symmetry.field(rho), self.symmetry.moments(q)
         return rho, q
 
     def kinetic_energy_density(self, matrices) -> np.ndarray:
@@ -509,7 +691,7 @@ class PeriodicPAW:
             for d in self.bloch_gradients(data.psi, data.k):
                 tau += 0.5 * data.weight * np.real(np.sum(d * (P @ d.conj()),
                                                           axis=0))
-        return tau
+        return tau if self.symmetry is None else self.symmetry.field(tau)
 
     def compensation_grid(self) -> dict:
         r"""``{channel: g_hat(G)}`` on the grid's reciprocal set (filtered)."""
@@ -690,28 +872,50 @@ class PeriodicPAW:
     def core_density(self) -> np.ndarray | None:
         r"""The datasets' smooth cores on the grid, with their images,
         Fourier-filtered at :attr:`filter_cutoff`."""
-        from ..basis.filtering import filter_radial
         from ..integrals.exchange_correlation import xc_core_density
+        return self._place_cores(xc_core_density)
+
+    def core_tau(self) -> np.ndarray | None:
+        r"""The cores' kinetic-energy densities on the grid, with images.
+
+        Each atom's :math:`\tilde\rho_c'^2/8\tilde\rho_c` evaluated radially
+        on the *unfiltered* core (:func:`~mandacaru.integrals.
+        exchange_correlation.core_tau_function`), then filtered like the core
+        density.  The ratio taken after filtering would divide by the
+        filter's ringing tail.
+        """
+        from ..integrals.exchange_correlation import core_tau_function
+
+        def table(dataset):
+            function = core_tau_function(dataset)
+            return (None if function is None
+                    else function(np.asarray(dataset.r, dtype=float)))
+        return self._place_cores(table)
+
+    def _place_cores(self, table) -> np.ndarray | None:
+        """Sum of ``table(dataset)`` (a radial array or ``None``) over atoms
+        and images, Fourier-filtered at :attr:`filter_cutoff`."""
+        from ..basis.filtering import filter_radial
         from scipy.interpolate import CubicSpline
 
         g = self.grid
         x = np.stack(self._grid_points(), axis=1)
         total = None
         for dataset, center in zip(self.datasets, self.centers):
-            core = xc_core_density(dataset)
-            if core is None:
+            values_r = table(dataset)
+            if values_r is None:
                 continue
             r = np.asarray(dataset.r, dtype=float)
             if self.filter_cutoff is not None:
-                core, _info = filter_radial(r, core, 0, self.filter_cutoff,
-                                            warn=False)
-            peak = float(np.max(np.abs(core)))
-            significant = np.nonzero(np.abs(core) > 1e-14 * peak)[0]
+                values_r, _info = filter_radial(r, values_r, 0,
+                                                self.filter_cutoff, warn=False)
+            peak = float(np.max(np.abs(values_r)))
+            significant = np.nonzero(np.abs(values_r) > 1e-14 * peak)[0]
             support = float(r[significant[-1]]) if significant.size else 0.0
-            spline = CubicSpline(r, core)
+            spline = CubicSpline(r, values_r)
             values = np.zeros(g.size)
-            for R in rc.lattice_translations(self.lattice,
-                                             support + 2.0 * self._cell_region()[1]):
+            for R in rc.lattice_translations(
+                    self.lattice, support + 2.0 * self._cell_region()[1]):
                 distance = np.linalg.norm(x - (center + R)[None, :], axis=1)
                 inside = distance <= support
                 values[inside] += spline(distance[inside])
@@ -764,14 +968,18 @@ class PeriodicPAW:
 # --------------------------------------------------------------------------- #
 
 def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
-                  family: str = "paw-lcao", grid=None):
+                  family: str = "paw-lcao", grid=None,
+                  symmetry: bool = True):
     r"""``(crystal, context)`` for a periodic ``atoms`` with a PAW-LCAO basis.
 
     The basis, projectors and dataset blocks are the molecular builder's
     (:func:`~.families.build_valence_hamiltonian`), so a crystal and a molecule
     share every radial function; the grid is the cell itself
-    (``periodic=True``), the k-points a Monkhorst-Pack mesh reduced by time
-    reversal.  No two-body tensor is built: the Kohn-Sham problem needs only
+    (``periodic=True``), the k-points a Monkhorst-Pack mesh reduced to its
+    irreducible wedge by the space-group operations that map both the grid
+    and the mesh onto themselves (:func:`grid_symmetry`,
+    :meth:`GridSymmetry.keeping_mesh`), or by time reversal alone with
+    ``symmetry=False`` or when no such operation survives.  No two-body tensor is built: the Kohn-Sham problem needs only
     the density's potential.
     """
     from ..algorithms._hamiltonian_from_atoms import monkhorst_pack_kpts
@@ -808,7 +1016,16 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
                                     DEFAULT_PROJECTOR_BASIS))
     datasets = [potentials[s] for s in symbols]
     size, gamma, mesh = monkhorst_pack_kpts(kpts)
-    reduced, weights = time_reversal_reduce(mesh)
+    operations = grid_symmetry(atoms, g) if symmetry else None
+    if operations is not None:
+        operations = operations.keeping_mesh(mesh)
+    if operations is not None:
+        from ..core.symmetry import irreducible_kpoints
+        zone = irreducible_kpoints(mesh, operations.info, time_reversal=True)
+        reduced = zone.points
+        weights = zone.weights / zone.weights.sum()
+    else:
+        reduced, weights = time_reversal_reduce(mesh)
     B = rc.reciprocal_vectors(rc.lattice_vectors(g))
     kpoints = reduced @ B.T
     crystal = PeriodicPAW(
@@ -816,7 +1033,8 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
         [to_bohr(p, "angstrom") for p in positions], g, kpoints, weights,
         paw_coupling_blocks(projectors, symbols, potentials),
         paw_overlap_blocks(projectors, symbols, potentials),
-        paw_multipole_blocks(projectors, datasets), filter_cutoff=k_c)
+        paw_multipole_blocks(projectors, datasets), filter_cutoff=k_c,
+        symmetry=operations)
     context = {"crystal": crystal, "atom_of_orbital": atom_of_orbital,
                "n_electrons": float(valence_electrons(symbols, potentials)),
                "pseudopotentials": potentials, "family": family,

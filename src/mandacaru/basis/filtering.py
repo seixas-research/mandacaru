@@ -24,9 +24,9 @@ differentiates that artifact.  Measured on water / PAW-LCAO-SZ, the net force
 
 The standard cure in real-space codes is to remove the unrepresentable
 components from the *radial functions*, once, **before** they are ever sampled
-(SIESTA's ``FilterCutoff``, Anglada & Soler, PRB 73, 115122 (2006); the
-mask-function filter of Wang, and of Tafipolsky & Schmid, JCP 124, 174102
-(2006), which GPAW uses for its projectors).  A band-limited function is
+(Anglada & Soler, PRB 73, 115122 (2006); the mask-function filter of Wang,
+and of Tafipolsky & Schmid, JCP 124, 174102 (2006), also used for
+projectors).  A band-limited function is
 sampled *exactly* by the grid, so its integrals stop depending on where the
 nucleus falls between nodes.
 

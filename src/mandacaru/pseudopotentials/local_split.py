@@ -282,6 +282,19 @@ def _atom_matrices(basis, center, weight, radii, directions, *,
     I = np.zeros((M, M), dtype=complex)
     G = np.zeros((M, M, 3), dtype=complex) if gradients else None
     center = np.asarray(center, dtype=float)
+    # Only functions whose support reaches this sphere contribute; the rest
+    # are exactly zero on every one of its points.  Without this every atom
+    # evaluates every basis function, which made the quadrature N^2 (26100
+    # evaluations, 32 s of a 56 s C8H18 setup).
+    reach = float(np.max(radii)) + (float(delta) if gradients else 0.0)
+    near = [m for m, fn in enumerate(basis)
+            if getattr(fn, "support_radius", None) is None
+            or np.linalg.norm(np.asarray(fn.center, dtype=float) - center)
+            <= fn.support_radius + reach]
+    if not near:
+        return I, G
+    basis = [basis[m] for m in near]
+    block_ix = np.ix_(near, near)
     for start in range(0, radii.size, int(block)):
         stop = min(start + int(block), radii.size)
         r_block = radii[start:stop]
@@ -290,7 +303,7 @@ def _atom_matrices(basis, center, weight, radii, directions, *,
         w_block = weight[start:stop].ravel()
         psi = np.stack([np.asarray(fn.evaluate(*points)).ravel()
                         for fn in basis])
-        I += (np.conj(psi) * w_block) @ psi.T
+        I[block_ix] += (np.conj(psi) * w_block) @ psi.T
         if not gradients:
             continue
         for k in range(3):
@@ -308,7 +321,7 @@ def _atom_matrices(basis, center, weight, radii, directions, *,
                                          for i in range(3)))).ravel()
                 for fn in basis])
             dpsi = (plus - minus) / (2.0 * float(delta))
-            G[:, :, k] += (np.conj(dpsi) * w_block) @ psi.T
+            G[block_ix + (k,)] += (np.conj(dpsi) * w_block) @ psi.T
     return I, G
 
 

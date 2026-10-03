@@ -150,7 +150,7 @@ PAW_BEFORE_BASIS_FILTER = {
     "H2": {"rhf": -1.094860, "adapt": -1.108624},
     "LiH": {"rhf": -0.770423, "adapt": -0.778134}}
 #: The family's **default basis** since 2026-09-20: the four tables above with
-#: the first zeta *confined* (``energy_shift = 0.1`` eV, GPAW's recipe; H 1s at
+#: the first zeta *confined* (``energy_shift = 0.1`` eV; H 1s at
 #: 6.68 Bohr, Li 2s at 11.20).  A mild confinement lowers a minimal basis's
 #: energy -- free-atom orbitals are too diffuse for a molecule -- by 19.3 mHa
 #: for H2 and 1.5 mHa for LiH.  ``{"energy_shift": None}`` reproduces ``PAW``.
@@ -208,8 +208,8 @@ def _unconfined(basis):
     projections, the augmentation, the four auditable energy tables above --
     and all of that was established, and is pinned, with the dataset's own
     free-atom partial wave as the first zeta.  Since 2026-09-20 the family's
-    default basis is a **confined** one (``energy_shift = 0.1`` eV, GPAW's
-    recipe); `TestDefaultBasis` pins that, and `test_paw_energy_shift.py`
+    default basis is a **confined** one (``energy_shift = 0.1`` eV);
+    `TestDefaultBasis` pins that, and `test_paw_energy_shift.py`
     tests the confinement itself.
     """
     options = {"name": basis} if isinstance(basis, str) else dict(basis)
@@ -836,7 +836,7 @@ class TestResolution:
         spec = PSEUDO_FAMILIES["paw-lcao"]
         assert spec.norm_conserving is False and spec.aliases == ()
         assert spec.label == "PAW-LCAO"
-        assert spec.options == ("size", "split_norm", "tail_norm",
+        assert spec.options == ("size", "zeta_split", "split_norm", "tail_norm",
                                 "directory", "filter", "projector_basis",
                                 "energy_shift", "confinement", "polarization")
         # PAW filters and confines its basis by default (the polarization

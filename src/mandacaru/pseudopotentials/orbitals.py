@@ -201,17 +201,17 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     paragraph above requires.  The extra zetas and the polarization shell are
     then split from the confined orbital and inherit its cutoff radius.
 
-    ``tail_norms`` (a sequence, GPAW's ``tailnorm``) switches the extra zetas
-    from the SIESTA-style scheme ``split_norm`` controls to GPAW's: every zeta
-    split from the *first* one, at the radius leaving a tail of that **norm**
-    (see :func:`~mandacaru.basis.multizeta.zeta_tables`).
+    ``tail_norms`` (a sequence) selects ``zeta_split="first_zeta"``: every
+    extra zeta split from the *first* one, at the radius leaving a tail of
+    that **norm**; ``None`` is ``"last_zeta"``, each zeta split from the
+    previous one by ``split_norm`` (see
+    :func:`~mandacaru.basis.multizeta.zeta_tables`).
 
     ``polarization_shape`` (optional) is a callable ``(symbol, potential) ->
     (l, R(r))`` -- or ``None`` to decline for that element -- that replaces the polarization shell built here --
-    :func:`~.confinement.polarization_factory` supplies GPAW's quasi-Gaussian.
+    :func:`~.confinement.polarization_factory` supplies the quasi-Gaussian.
     Further polarization functions are then split-valence refinements of that
-    shape with the *same* ``l``, as GPAW makes them, instead of shells of
-    higher ``l``.
+    shape with the *same* ``l``, instead of shells of higher ``l``.
 
     ``filter_cutoff`` (a wave-vector in Bohr\\ :sup:`-1`, ``None`` = off) runs
     every radial table through the Fourier filter of
@@ -236,7 +236,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     the filter barely moves it.
     """
     from ..basis.filtering import filter_radial, filter_table
-    from ..basis.multizeta import (DEFAULT_SPLIT_NORM, GPAW_TAIL_NORMS,
+    from ..basis.multizeta import (DEFAULT_SPLIT_NORM, DEFAULT_TAIL_NORMS,
                                    orbitals_from_tables, resolve_zeta,
                                    zeta_tables)
 
@@ -348,12 +348,12 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                   else None)
         if custom is not None:
             l, shape = custom
-            # GPAW hands `rsplit_by_norm` the tail norm *unsquared* for these
-            # (it squares it for the valence zetas), so here the numbers are
-            # squared-norm fractions; `zeta_tables` squares what it is given.
-            norms = [np.sqrt(t) for t in (tail_norms or GPAW_TAIL_NORMS)]
+            # For the polarization zetas the tail norms are used *unsquared*
+            # (they are squared-norm fractions here, while the valence zetas
+            # square them); `zeta_tables` squares what it is given.
+            norms = [np.sqrt(t) for t in (tail_norms or DEFAULT_TAIL_NORMS)]
             if tail_norms is None:
-                # The SIESTA-style scheme was asked for: keep it for the
+                # zeta_split="last_zeta" was asked for: keep it for the
                 # polarization zetas too, rather than mixing conventions.
                 norms = None
             for table in zeta_tables(pp.r, shape, l + 1, l, n_polarization,

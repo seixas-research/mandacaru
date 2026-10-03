@@ -27,7 +27,7 @@ afterwards, at the Hamiltonian level, exactly as for `HAO`).
 
 ## Localization by a smooth wall
 
-Where the SIESTA-type `NAO` family confines orbitals in a hard sphere, NAO-AE
+Where the `NAO` family confines orbitals in a hard sphere, NAO-AE
 uses an *exponential wall* that is exactly zero up to an **onset** $r_0$, rises
 smoothly, and diverges at $r_0 + w$:
 

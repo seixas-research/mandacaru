@@ -376,8 +376,10 @@ class Mandacaru(Calculator):
         Markov-chain search over pool-operator sequences, each relaxed by VQE;
         options ``max_steps``, ``min_length`` / ``max_length``,
         ``move_weights``, ``temperature``, ``length_penalty``, ``warm_start``,
-        ``record``, ``seed``), or ``"valqa"`` (the same chain drawing its
-        operators from a learned model, ``proposal_model``).  ADAPT-VQE is the
+        ``record``, ``seed``, ``transfer``), or ``"valqa"`` (the same chain drawing its
+        operators from a learned model, ``proposal_model``).  ADAPT-VQE and
+        MCAS-VQE take ``transfer=True`` to start each geometry of a trajectory
+        from the previous one's ansatz.  ADAPT-VQE is the
         practical choice for anything beyond a couple of orbitals: a fixed UCCSD
         ansatz becomes very slow past ~8 qubits.  A method registered through
         :func:`register_method` is accepted by name as well.
@@ -1340,7 +1342,8 @@ class Mandacaru(Calculator):
         """The double-factorized form of this run's Hamiltonian, or ``None``.
 
         Needs the molecular integrals, so it exists exactly when the run built
-        a basis (not in direct mode, not for a loaded Hamiltonian).  Cheap --
+        a basis (not in direct mode, not for a loaded Hamiltonian, not for an
+        integral-direct active space such as ``"dlpno-mp2"``).  Cheap --
         an ``eigh`` of an ``M^2 x M^2`` matrix, 0.1 s at 24 spin orbitals.
 
         The **constant** is whatever the driver's qubit Hamiltonian carries
@@ -1351,6 +1354,12 @@ class Mandacaru(Calculator):
         solver = self.solver if solver is None else solver
         context = getattr(solver, "_gradient_context", None)
         if not context or context.get("integrals") is None:
+            return None
+        from ..core.hamiltonian import DIRECT_METHODS
+        spec = getattr(solver, "active_space", None)
+        if spec is not None and spec.method in DIRECT_METHODS:
+            # An integral-direct run holds no two-body tensor, and building
+            # the full one here would undo the point of the method.
             return None
         from ..backends.factorization import double_factorization
         from ..core.hamiltonian import (molecular_orbital_integrals,
@@ -1582,8 +1591,9 @@ class Mandacaru(Calculator):
             np.abs(folded.sum(axis=0)).max())
         return type(result)(
             forces=folded,
-            hellmann_feynman=fold(result.hellmann_feynman),
-            pulay=fold(result.pulay),
+            hellmann_feynman=(None if result.hellmann_feynman is None
+                              else fold(result.hellmann_feynman)),
+            pulay=None if result.pulay is None else fold(result.pulay),
             gradient=fold(result.gradient),
             n_electrons=result.n_electrons,
             details=details)
@@ -1623,6 +1633,12 @@ class Mandacaru(Calculator):
             if self.project_translation and self._projection_applies(result):
                 self._project_translation(result)
             return result
+
+        from ..core.hamiltonian import DIRECT_METHODS
+        spec = getattr(solver, "active_space", None)
+        if spec is not None and spec.method in DIRECT_METHODS:
+            return self._direct_active_space_gradient(
+                solver, context, rdms, reference_energy)
 
         gamma, gamma2 = self._state_rdms(solver) if rdms is None else rdms
         active_gamma, active_gamma2 = gamma, gamma2
@@ -1757,6 +1773,60 @@ class Mandacaru(Calculator):
             self._project_translation(legacy)
         return legacy
 
+    def _direct_active_space_gradient(self, solver, context, rdms,
+                                      reference_energy):
+        """Forces of an integral-direct active space (``"dlpno-mp2"``).
+
+        The whole gradient is the central difference of the reduced
+        Hamiltonian (:func:`~mandacaru.algorithms.active_space_forces.active_space_gradient`),
+        contracted with the active-register RDMs: each displaced geometry is
+        rebuilt integral-direct, selector included, so the response of the
+        orbitals and of the active space is in it.  The analytic
+        Hellmann-Feynman/Pulay split is not computed -- it contracts the RDMs,
+        expanded to the whole basis, with the full two-body tensor, the
+        :math:`M^4` object this method exists to avoid -- so the breakdown is
+        reported as unavailable.  The energy check is made in the active space:
+        the reduced Hamiltonian contracted with the same RDMs must give the
+        solver's energy.
+        """
+        from .active_space_forces import (ACTIVE_SPACE_STEP_ANGSTROM,
+                                          active_space_gradient,
+                                          reduced_energy)
+        from .forces import ForceResult
+        from .pseudo_forces import ENERGY_CHECK_TOLERANCE
+
+        integrals = context["integrals"]
+        if getattr(integrals, "active_h_so", None) is None:
+            raise NotImplementedError(
+                "forces of an integral-direct active space need the reduced "
+                "Hamiltonian, which a build without deleted virtual orbitals "
+                "does not keep")
+        gamma, gamma2 = self._state_rdms(solver) if rdms is None else rdms
+        rebuilt = reduced_energy(integrals, gamma, gamma2)
+        if reference_energy is None and not getattr(solver, "shots", 0):
+            reference_energy = float(solver._from_energy_units(
+                solver.result.optimal_energy, "Ha"))
+        if (reference_energy is not None
+                and abs(reference_energy - rebuilt) > ENERGY_CHECK_TOLERANCE):
+            raise RuntimeError(
+                f"the energy rebuilt from the active RDMs and the reduced "
+                f"Hamiltonian ({rebuilt:.10f} Ha) differs from the solver's "
+                f"({reference_energy:.10f} Ha); the force would not be the "
+                f"gradient of the reported energy")
+        gradient = active_space_gradient(self.atoms, solver, gamma, gamma2)
+        result = ForceResult(
+            forces=-gradient, hellmann_feynman=None, pulay=None,
+            gradient=gradient,
+            n_electrons=float(np.real(np.trace(gamma))),
+            details={"energy_hartree": rebuilt,
+                     "active_space_step_angstrom":
+                         ACTIVE_SPACE_STEP_ANGSTROM,
+                     "decomposition": "not available (integral-direct)"})
+        self._check_translational_invariance(result)
+        if self.project_translation and self._projection_applies(result):
+            self._project_translation(result)
+        return result
+
     def _log_forces(self, solver, atoms) -> None:
         """Append the step's forces to the run's report, wherever it goes.
 
@@ -1776,7 +1846,9 @@ class Mandacaru(Calculator):
         details = result.details
         extra = {"force_method": self.force_method,
                  "include_pulay": self.include_pulay,
-                 "pulay_fraction": f"{result.pulay_fraction:.6f}",
+                 "pulay_fraction": (f"{result.pulay_fraction:.6f}"
+                                    if result.pulay is not None else
+                                    result.details.get("decomposition")),
                  "n_electrons": f"{result.n_electrons:.6f}"}
         # The two residuals that say whether this gradient can be trusted: the
         # orbital response it neglects and the net force the grid invents.

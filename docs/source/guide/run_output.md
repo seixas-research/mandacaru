@@ -248,6 +248,7 @@ of blocks -- energies then forces, one pair per step -- in one file:
 [SYSTEM]                        step: 1, this geometry, its cell and spins
 [BASIS]                         the basis that ran: options, radii, datasets
 [ELECTRONS]                     grid, reference, mapping, register, Hamiltonian
+[ACTIVE SPACE]                  only if reduced: selector, occupations, orbitals
 [OPTIMIZATION SETUP]            the optimizer, the gradient, the operator pool
 [ITERATIONS]                    one row per grown operator
 [VARIATIONAL QUANTUM SUMMARY]   the converged state of *this* geometry
@@ -294,7 +295,7 @@ read off the left margin:
     name: PAW-LCAO
     family: PAW-LCAO (projector augmented wave (Bloechl 1994), frozen core, ...)
     size: SZ
-    zeta_split: tail_norm 0.16, 0.3, 0.6 (norm of the tail, every zeta split from the first)
+    zeta_split: first_zeta: tail_norm 0.16, 0.3, 0.6 (norm of the tail, every zeta split from the first)
     projector_basis: raw
     energy_shift: 0.1 eV
     confinement_potential: A exp(-(r_c - r_i)/(r - r_i)) / (r_c - r), A = 12 Ha, r_i = 0.6 r_c
@@ -318,7 +319,7 @@ read off the left margin:
         H       0  1      0             6.6822    3.5361        -6.358289    -6.258289     0.100000
     functions:
         symbol  atoms  functions_per_atom
-        ---------------------------------
+        -------------------------------------
         O       1      4
         H       2      1
 
@@ -330,7 +331,7 @@ read off the left margin:
     charge: 0
     spin-polarized: False (multiplicity 1)
     reference state: hartree-fock
-    frozen core: none
+    Z2 tapering: none
     mapping: Jordan-Wigner
     Hamiltonian: 1079 Pauli terms
     spatial orbitals: 6
@@ -413,8 +414,57 @@ Each fact has **one owner**. The basis is in `[BASIS]` and not repeated in
 repeated in the variational summary. A value written in two blocks can disagree
 with itself, which is worth more than the convenience of not scrolling.
 
+`[ACTIVE SPACE]` records how the register was reduced, and is written only
+when it was: when orbitals were frozen or virtual orbitals deleted
+(`active_space=...`, see {doc}`active_space`). A run that puts every orbital on
+the register has no such block. It names the selector (`method`: `mp2`,
+`natural` or `energy`; `none (frozen core only)` when nothing was ranked), what
+was asked for (`orbitals_requested`, `threshold`, `frozen_requested`,
+`correlating_pairs`, `symmetry`), the
+partition that was actually built -- a count can freeze more than `frozen`
+asked for -- and, for MP2, the correlation energy in the full virtual space.
+Its `orbitals` table lists every spatial orbital, in the selector's ranked
+basis, with its occupancy in the reference (`occupied`, `singly` or
+`virtual`), where it went (`frozen`, `active` or `deleted`) and its occupation
+number when the selector computed one; the `occupation` line says what that
+number is. With `correlating_pairs` or `symmetry` on, those lines say what the
+constraint changed (`brought in`, `displaced`), and the table gains a
+`partner` column or an `irrep` column with a `point_group` line. Water in
+PAW-LCAO-DZP on eight orbitals, both constraints on:
+
+```text
+[ACTIVE SPACE]
+    method: mp2
+    orbitals_requested: 8
+    frozen_requested: none
+    correlating_pairs: on (the ranked selection already satisfied it)
+    symmetry: on (the ranked selection already satisfied it)
+    spatial_orbitals: 23 (0 frozen, 8 active, 15 deleted)
+    point_group: C2v
+    mp2_correlation_energy_Ha: -0.13424985
+    occupation: eigenvalues of the MP2 one-particle density (natural orbitals); frozen rows are its diagonal, since frozen orbitals are not rotated
+    orbitals:
+        index  occupancy  role     irrep  partner  occupation
+        -----------------------------------------------------
+        0      occupied   active   1a1    7        1.99039670
+        1      occupied   active   1b1    6        1.98225191
+        2      occupied   active   2a1    5        1.97772555
+        3      occupied   active   1b2    4        1.97436675
+        4      virtual    active   2b2    3        0.01919443
+        5      virtual    active   3a1    2        0.01608963
+        6      virtual    active   2b1    1        0.00992414
+        7      virtual    active   4a1    0        0.00722908
+        8      virtual    deleted  1a2    -        0.00429837
+        ...
+        22     virtual    deleted  7b2    -        0.00001275
+```
+
+It reads back from `parse_output(path)["active_space"]`, the table as a list of
+rows keyed by the column names.
+
 `[SYSTEM]` says *where the atoms are*, `[ELECTRONS]` *what was solved* (the
-reference state, the frozen core, the charge, the mapping, the register width)
+reference state, the charge, the mapping, the register width), `[ACTIVE SPACE]`
+*which orbitals* the register carries
 and `[OPTIMIZATION SETUP]` *how* it was solved (the optimizer, the gradient, the
 pool, the growth rule, the backend, the device and the shots).
 

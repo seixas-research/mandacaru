@@ -97,14 +97,14 @@ class TestTheCalculator:
         result = atoms.calc.result
         assert result.success and np.isfinite(energy)
         assert result.scf.band_gap is not None and result.scf.band_gap > 0.0
-        assert len(result.scf.kpoints) == 8
+        assert len(result.scf.kpoints) == 3       # 2x2x2 -> irreducible wedge
         assert np.sum(result.scf.weights) == pytest.approx(1.0)
 
     def test_it_cites_the_crystal_machinery(self, silicon):
         atoms, _energy = silicon
         keys = set(atoms.calc.citation_keys())
         assert {"KohnSham1965", "MonkhorstPack1976", "Pulay1980",
-                "Kerker1981", "Mermin1965"} <= keys
+                "Kerker1981", "Mermin1965", "Togo2018"} <= keys
 
     def test_the_valence_charge_is_conserved(self, silicon):
         atoms, _energy = silicon
@@ -127,3 +127,88 @@ class TestTheCalculator:
     def test_an_invalid_smearing_is_refused_by_the_constructor(self):
         with pytest.raises(ValueError, match="smearing"):
             Mandacaru(method="dft", smearing={"method": "cold"})
+
+
+#: Silicon on a grid commensurate with its primitive cell (8 nodes per
+#: lattice vector): small enough for the engine-level tests below.
+SILICON = bulk("Si", "diamond", a=5.43)
+SILICON_BASIS = {"size": "SZ", "filter": 200}
+
+
+def _crystal(h=None, kpts=None):
+    from mandacaru.pseudopotentials.periodic_paw import build_crystal
+    h = float(np.linalg.norm(SILICON.cell[0])) / 8 if h is None else h
+    return build_crystal(SILICON, h, SILICON_BASIS,
+                         kpts=kpts or {"size": (2, 1, 1), "gamma": True})
+
+
+class TestTheKohnShamMatrix:
+    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan"])
+    def test_it_is_the_derivative_of_the_energy(self, functional):
+        r"""``dE = sum_k w_k tr(dP_k H_k)`` for every term of the functional.
+
+        Checked at a non-self-consistent density (the identity holds at any
+        density matrices), along a positive semidefinite step so a meta-GGA's
+        kinetic-energy density stays non-negative; the difference is
+        one-sided and second order.  This is what makes the r2SCAN tau term,
+        built from the gradients of the Bloch sums, the derivative of the
+        energy it adds.
+        """
+        from scipy.linalg import eigh
+        crystal, context = _crystal()
+        ks = pd.PeriodicKohnSham(crystal, context["n_electrons"], functional)
+        rho, q = crystal.initial_density()
+        tau = np.zeros(crystal.grid.size)
+        V, v_tau, w, _terms = ks._potentials(rho, q, tau if ks.meta else None)
+        matrices = []
+        for i, data in enumerate(crystal.kpoint_data):
+            H = ks._hamiltonian(data, V, v_tau, w,
+                                ks._gradients[i] if ks.meta else None)
+            _eps, C = eigh(H, data.overlap)
+            occupied = C[:, :2]
+            matrices.append(2.0 * occupied @ occupied.conj().T)
+
+        def energy(mats):
+            rho_k, q_k = crystal.density(mats)
+            tau_k = ks._tau(mats) if ks.meta else None
+            return sum(ks.energy_terms(mats, rho_k, q_k, tau_k).values())
+
+        rho0, q0 = crystal.density(matrices)
+        tau0 = ks._tau(matrices) if ks.meta else None
+        V, v_tau, w, _terms = ks._potentials(rho0, q0, tau0)
+        rng = np.random.default_rng(11)
+        steps, directional = [], 0.0
+        for i, data in enumerate(crystal.kpoint_data):
+            B = (rng.normal(size=matrices[i].shape)
+                 + 1j * rng.normal(size=matrices[i].shape))
+            step = 1e-3 * (B @ B.conj().T)
+            steps.append(step)
+            H = ks._hamiltonian(data, V, v_tau, w,
+                                ks._gradients[i] if ks.meta else None)
+            directional += data.weight * float(np.real(np.sum(step * H.T)))
+        eps = 1e-4
+        e0 = energy(matrices)
+        e1 = energy([P + eps * d for P, d in zip(matrices, steps)])
+        e2 = energy([P + 2 * eps * d for P, d in zip(matrices, steps)])
+        assert (-3 * e0 + 4 * e1 - e2) / (2 * eps) == pytest.approx(
+            directional, rel=1e-5)
+
+
+class TestTheEigenvalueReference:
+    def test_eigenvalues_do_not_move_with_the_grid(self):
+        """The plane-wave zero: silicon's levels at two grid spacings.
+
+        Before the reference, the lowest level moved by 1.7 eV between
+        h = 0.30 and 0.20 Angstrom while the energy stayed put (HISTORY.md,
+        2026-10-02).
+        """
+        spacing = float(np.linalg.norm(SILICON.cell[0]))
+        levels = []
+        for n in (8, 10):
+            crystal, context = _crystal(h=spacing / n)
+            result = pd.PeriodicKohnSham(crystal, context["n_electrons"],
+                                         "lda").run()
+            levels.append((min(e.min() for e in result.eigenvalues),
+                           result.fermi_level))
+        assert levels[0][0] == pytest.approx(levels[1][0], abs=2e-4)
+        assert levels[0][1] == pytest.approx(levels[1][1], abs=2e-4)

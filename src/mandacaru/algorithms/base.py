@@ -1552,6 +1552,9 @@ class VariationalDriver(Calculator):
                     validate_filter(spec["filter"])
                 if isinstance(spec, dict) and "energy_shift" in spec:
                     validate_energy_shift(spec["energy_shift"])
+                if isinstance(spec, dict) and "zeta_split" in spec:
+                    from ..basis.multizeta import validate_zeta_split
+                    validate_zeta_split(spec["zeta_split"])
             return
         family = pseudopotential_family(name)
         if family is None:
@@ -1567,7 +1570,8 @@ class VariationalDriver(Calculator):
             validate_energy_shift(options["energy_shift"])
         from ..basis.multizeta import resolve_split_scheme
         resolve_split_scheme(options.get("split_norm"),
-                             options.get("tail_norm"))
+                             options.get("tail_norm"),
+                             options.get("zeta_split"))
         if "polarization" in family.options:
             from ..pseudopotentials.confinement import (
                 validate_confinement, validate_polarization)
@@ -1691,7 +1695,7 @@ class VariationalDriver(Calculator):
             spin=self.spin, kinetic=self.kinetic,
             periodic=self.periodic_hamiltonian,
             commensurate=self._grid_commensurate(),
-            active_space=self.active_space)
+            active_space=self._active_space_request())
         self._integration_profile = profile
         # Kept for the nuclear gradient: the integral engine that produced this
         # Hamiltonian, and which atom each basis function belongs to.
@@ -1914,6 +1918,9 @@ class VariationalDriver(Calculator):
         if report is not None:
             logger.write_basis(*report)
         logger.write_electrons(self._electron_fields())
+        report = self._active_space_report()
+        if report is not None:
+            logger.write_active_space(*report)
         return logger
 
     def _spin_polarized_label(self) -> str:
@@ -1931,7 +1938,9 @@ class VariationalDriver(Calculator):
     def _electron_fields(self) -> dict:
         """The ``[ELECTRONS]`` block: how the electronic problem was posed.
 
-        The same values the standard-output header prints, in the same order --
+        The values the standard-output header prints, in the same order, less
+        the frozen core and the active space, which the ``[ACTIVE SPACE]``
+        block owns --
         discretization first (what the integrals were computed on), then the
         encoding and the size of the register and Hamiltonian it produced.  The
         trace is off whenever this file is written, so this is the only place the
@@ -1940,7 +1949,6 @@ class VariationalDriver(Calculator):
         orbitals = (getattr(self, "n_spatial_orbitals", None)
                     or getattr(getattr(self, "pool", None),
                                "n_spatial_orbitals", None))
-        frozen = self._frozen_label()
         # Adding a key here changes the [ELECTRONS] block, whose exact ordered
         # field list is pinned by `test/utils/test_logging.py`
         # (TestElectronsBlock.FIELDS).  That is deliberate -- the block is the
@@ -1953,8 +1961,6 @@ class VariationalDriver(Calculator):
             "charge": str(self.charge),
             "spin-polarized": self._spin_polarized_label(),
             "reference state": str(self.initial_state),
-            "frozen core": str(frozen),
-            "active space": self._active_space_label(),
             "Z2 tapering": self._taper_label(),
             "mapping": MAPPING_LABELS.get(str(self.mapping), str(self.mapping)),
             "Hamiltonian": f"{len(self.hamiltonian.simplify().terms)} "
@@ -1982,6 +1988,104 @@ class VariationalDriver(Calculator):
                         f"(spacing {spacing} Angstrom)")
         return {"grid spacing": f"{self.h:g} Angstrom (requested)",
                 "grid points": realized}
+
+    #: What the ``[ACTIVE SPACE]`` occupation column is, per selector.  The
+    #: MP2 selector diagonalizes the active blocks only, so a frozen row is a
+    #: diagonal element and every other row an eigenvalue.
+    _OCCUPATION_SOURCES = {
+        "mp2": "eigenvalues of the MP2 one-particle density (natural "
+               "orbitals); frozen rows are its diagonal, since frozen "
+               "orbitals are not rotated",
+        "dlpno-mp2": "eigenvalues of the local (DLPNO) MP2 one-particle "
+                     "density, pair natural orbitals cut at occupation "
+                     "1e-08, domains at differential overlap 0.01 and "
+                     "distant pairs below an estimated 1e-06 Ha left to "
+                     "their dipole estimate; frozen rows are its diagonal",
+        "natural": "eigenvalues of the open-shell reference's one-particle "
+                   "density (its natural occupations)",
+    }
+
+    def _active_space_request(self):
+        """The ``active_space`` spec with the solver's target state count.
+
+        ``symmetry`` keeps the orbitals the target states need, and how many
+        states that is belongs to the solver (a subspace method's
+        ``num_states``), not to the option.
+        """
+        from dataclasses import replace
+
+        spec = self.active_space
+        states = int(getattr(self, "num_states", 1) or 1)
+        if spec is None or not spec.symmetry or states == spec.states:
+            return spec
+        return replace(spec, states=states)
+
+    def _active_space_report(self):
+        """``(fields, tables)`` of the ``[ACTIVE SPACE]`` block, or ``None``.
+
+        ``None`` when every orbital reaches the register.  Otherwise the
+        partition that was actually built -- a count or a threshold can freeze
+        more than ``"frozen"`` asked for -- with every spatial orbital's
+        reference occupancy, its role and, when the selector computed one, its
+        occupation number.  Indices are those of the selector's ranked basis.
+        """
+        space = (getattr(self, "_gradient_context", None) or {}).get(
+            "active_space")
+        if space is None or not (space.truncated or space.frozen):
+            return None
+        spec = self.active_space
+        # Only a truncation ranks anything: a frozen core alone keeps the
+        # default method name without having run it.
+        method = space.method if space.truncated else "none (frozen core only)"
+        fields = {"method": method}
+        if spec is not None:
+            if spec.orbitals is not None:
+                orbitals = spec.orbitals
+                fields["orbitals_requested"] = (
+                    list(orbitals) if isinstance(orbitals, tuple)
+                    else orbitals)
+            if spec.threshold is not None:
+                fields["threshold"] = f"{spec.threshold:g}"
+            fields["frozen_requested"] = self._frozen_label()
+            notes = dict(space.notes)
+            for key in ("correlating_pairs", "symmetry"):
+                if getattr(spec, key):
+                    fields[key] = notes.get(key, "on")
+                else:
+                    fields[key] = "off"
+        fields["spatial_orbitals"] = (
+            f"{space.n_orbitals} ({len(space.frozen)} frozen, "
+            f"{space.n_active} active, {len(space.deleted)} deleted)")
+        if space.point_group is not None:
+            fields["point_group"] = space.point_group
+        if space.correlation_energy is not None:
+            fields["mp2_correlation_energy_Ha"] = (
+                f"{space.correlation_energy:.8f}")
+        occupations = (None if space.occupations is None or not space.truncated
+                       else np.asarray(space.occupations, dtype=float))
+        fields["occupation"] = (
+            self._OCCUPATION_SOURCES.get(space.method, space.method)
+            if occupations is not None else
+            "none (the selector computed no occupation numbers)")
+        heading = ["index", "occupancy", "role"]
+        if space.irreps:
+            heading.append("irrep")
+        if space.partners:
+            heading.append("partner")
+        if occupations is not None:
+            heading.append("occupation")
+        rows = [heading]
+        for p in range(space.n_orbitals):
+            row = [str(p), space.occupancy(p) or "-", space.role(p)]
+            if space.irreps:
+                row.append(space.irreps[p])
+            if space.partners:
+                partner = space.partner(p)
+                row.append("-" if partner is None else str(partner))
+            if occupations is not None:
+                row.append(f"{occupations[p]:.8f}")
+            rows.append(row)
+        return fields, {"orbitals": rows}
 
     def _frozen_label(self) -> str:
         """The requested frozen core, for the header and the run log."""

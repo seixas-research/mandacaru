@@ -131,10 +131,13 @@ def fermi_level(eigenvalues, weights, n_electrons: float, method: str,
     def count(mu):
         return 2.0 * float(np.sum(w * occupation((eps - mu) / width, method)))
 
-    lo, hi = eps.min() - 20.0 * width, eps.max() + 20.0 * width
-    if count(hi) < n_electrons - 1e-9:
-        raise ValueError(f"the basis holds only {count(hi):.3f} electrons per "
+    capacity = 2.0 * float(np.sum(w))
+    if capacity < n_electrons - 1e-9:
+        raise ValueError(f"the basis holds only {capacity:.3f} electrons per "
                          f"cell, fewer than the {n_electrons:g} required")
+    # 60 widths: every smearing function is 1 to machine precision there, so
+    # a basis that holds exactly the electron count still brackets mu.
+    lo, hi = eps.min() - 60.0 * width, eps.max() + 60.0 * width
     for _ in range(200):
         mid = 0.5 * (lo + hi)
         if count(mid) < n_electrons:
@@ -230,7 +233,14 @@ class PulayMixer:
 
 @dataclass
 class PeriodicKohnShamResult:
-    """A converged periodic Kohn-Sham calculation (Hartree, per cell)."""
+    """A converged periodic Kohn-Sham calculation (Hartree, per cell).
+
+    ``eigenvalues`` and ``fermi_level`` are measured from the cell average of
+    the electrostatic potential of the electrons and the *point* ions, each
+    atom's non-Coulomb local potential included -- the usual plane-wave
+    reference (:meth:`PeriodicKohnSham.eigenvalue_reference`).  Without it the
+    zero would move with the grid spacing.
+    """
 
     functional: str
     free_energy: float                  # F = E - sigma S
@@ -248,9 +258,15 @@ class PeriodicKohnShamResult:
 
     @property
     def band_gap(self) -> float | None:
-        """Conduction-band minimum minus valence-band maximum over the mesh
-        (Hartree), or ``None`` for a metal -- when the Fermi level lies inside
-        the range some band spans across the k-points."""
+        """Conduction-band minimum minus valence-band maximum **over the
+        mesh** (Hartree), or ``None`` for a metal -- when the Fermi level lies
+        inside the range some band spans across the k-points.
+
+        Only the k-points of the mesh are seen, so this is an upper bound on
+        the true gap whenever a band edge lies between them (silicon's
+        conduction-band minimum, ~85 % of the way to X, is on no small
+        Gamma-centered mesh).
+        """
         bands = np.array([np.asarray(e) for e in self.eigenvalues])
         lowest, highest = bands.min(axis=0), bands.max(axis=0)
         mu = self.fermi_level
@@ -277,8 +293,7 @@ class PeriodicKohnSham:
         self.relativistic = bool(relativistic)
         self.constant = float(constant)
         self.core = crystal.core_density()
-        self._core_tau = (xc_grid.weizsaecker_tau(crystal.grid, self.core)
-                          if self.meta and self.core is not None else None)
+        self._core_tau = crystal.core_tau() if self.meta else None
         self.U, self.U_ion, self.E_ion = crystal.dense_coulomb()
         self.ion_constant = crystal.ion_constants()
         self.ion_grid = crystal.ion_charge()
@@ -319,7 +334,19 @@ class PeriodicKohnSham:
             dense = np.sum(np.conj(qv) * self.U[:, a]) + np.conj(self.U_ion[a])
             w[ch] = (smooth + dense + self.short_range[ch]
                      - self.onsite.get(ch, 0.0))
-        return V_es + terms.potential, terms.tau_potential, w, terms
+        V, v_tau = V_es + terms.potential, terms.tau_potential
+        symmetry = c.symmetry
+        if symmetry is not None:
+            # The energy sees the density only through its symmetrized form,
+            # so its exact derivative is the symmetrized potential.  The two
+            # differ only where the spectral gradients do not commute with
+            # the operations -- the Nyquist plane of an even grid -- but a
+            # Kohn-Sham matrix that is not the derivative of the energy is a
+            # wrong one there.
+            V = symmetry.field(V)
+            if v_tau is not None:
+                v_tau = symmetry.field(v_tau)
+        return V, v_tau, w, terms
 
     def _hamiltonian(self, data, V, v_tau, w, gradients=None) -> np.ndarray:
         psi, dV = data.psi, self.crystal.grid.dV
@@ -411,13 +438,34 @@ class PeriodicKohnSham:
         extrapolated = (free if self.method == "methfessel-paxton"
                         else 0.5 * (energy + free))
         terms["entropy"] = entropy_term
+        reference = self.eigenvalue_reference()
         return PeriodicKohnShamResult(
             functional=self.functional, free_energy=free, energy=energy,
-            extrapolated_energy=extrapolated, fermi_level=mu,
+            extrapolated_energy=extrapolated, fermi_level=mu + reference,
             kpoints=c.kpoints, weights=c.weights,
-            eigenvalues=eigenvalues, occupations=occupations,
+            eigenvalues=[e + reference for e in eigenvalues],
+            occupations=occupations,
             converged=converged, n_iterations=it,
             smearing=(self.method, self.width), terms=terms)
+
+    def eigenvalue_reference(self) -> float:
+        r"""Constant (Hartree) that moves the eigenvalues to the plane-wave zero.
+
+        The grid carries the long-range half of each local potential, the
+        potential of a Gaussian ion of width :math:`\sigma`, with
+        :math:`\mathbf G = 0` dropped; the short-range half is integrated on
+        spheres and keeps its cell average.  That average holds
+        :math:`-\int Z\,\mathrm{erfc}(r/\sqrt2\sigma)/r\,d^3r / \Omega =
+        -2\pi Z\sigma^2/\Omega` per atom, the difference between a Gaussian
+        and a point ion -- and :math:`\sigma` is tied to the grid spacing, so
+        it moved every eigenvalue with ``h`` (silicon's lowest level by
+        1.7 eV between h = 0.30 and 0.20 Angstrom).  Adding it back measures
+        the eigenvalues from the point-ion average; the occupations, which
+        depend only on :math:`\varepsilon - \mu`, are unaffected.
+        """
+        c = self.crystal
+        return float(2.0 * np.pi * c.sigma ** 2 * np.sum(c.charges)
+                     / c.volume)
 
     def _tau(self, matrices) -> np.ndarray:
         tau = np.zeros(self.crystal.grid.size)

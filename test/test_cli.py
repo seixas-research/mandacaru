@@ -137,7 +137,8 @@ class TestMarkovChainOptions:
         assert raised.value.code == 2
 
     @pytest.mark.parametrize("flag", [["--max-steps", "5"], ["--seed", "1"],
-                                      ["--no-warm-start"], ["--transfer"],
+                                      ["--no-warm-start"],
+                                      ["--transfer-steps", "5"],
                                       ["--proposal", "uniform"],
                                       ["--temperature", "0.1"]])
     def test_another_method_refuses_them(self, flag, capsys):
@@ -146,6 +147,13 @@ class TestMarkovChainOptions:
                   *flag])
         assert raised.value.code == 2
         assert "does not take" in capsys.readouterr().err
+
+    def test_adapt_vqe_takes_transfer(self, capsys):
+        # ADAPT-VQE carries its ansatz between geometries too; the
+        # chain-only transfer controls stay refused (the case above).
+        assert main(["H2", "--cell", "6", "--method", "adapt-vqe",
+                     "--dry-run", "--transfer", "--transfer-threshold",
+                     "0.8"]) == 0
 
     def test_a_mcas_vqe_dry_run_accepts_them(self, capsys):
         assert main(["H2", "--cell", "6", "--method", "mcas-vqe", "--dry-run",

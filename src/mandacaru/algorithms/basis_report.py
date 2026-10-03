@@ -17,7 +17,7 @@ This module collects them from the Hamiltonian builder's ``context`` into the
 two things a log block is made of: keyed ``fields`` and named ``tables``.
 
 It is the record a comparison against another code is made from (the same
-``size`` and ``energy_shift`` in GPAW, say), so it reports what was *used*:
+``size`` and ``energy_shift`` there), so it reports what was *used*:
 every orbital's cutoff radius and the eigenvalue shift actually achieved, not
 the number that was asked for.
 """
@@ -82,12 +82,12 @@ def _pseudo_report(name, context, symbols, fields, tables):
     tail_norms = pseudo_basis_arguments(family.name, options).get("tail_norms")
     if tail_norms is not None:
         fields["zeta_split"] = (
-            "tail_norm " + ", ".join(f"{t:g}" for t in tail_norms)
+            "first_zeta: tail_norm " + ", ".join(f"{t:g}" for t in tail_norms)
             + " (norm of the tail, every zeta split from the first)")
     else:
         fields["zeta_split"] = (
-            "split_norm " + _option_text(options.get("split_norm")
-                                         or DEFAULT_SPLIT_NORM)
+            "last_zeta: split_norm " + _option_text(options.get("split_norm")
+                                                    or DEFAULT_SPLIT_NORM)
             + " (squared norm of the tail, each zeta split from the previous"
               " one, halved per zeta)")
     if "projector_basis" in family.options:

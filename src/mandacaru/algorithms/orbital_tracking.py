@@ -228,3 +228,39 @@ def transfer_ansatz(operators, angles, match: OrbitalMatch, n_orbitals: int,
         renamed.append(result[0])
         angles[k] *= result[1]
     return renamed, angles
+
+
+def carry_ansatz(operators, angles, previous_orbitals, integrals,
+                 num_particles, pool_labels,
+                 threshold: float = DEFAULT_TRANSFER_THRESHOLD):
+    """The previous geometry's ansatz in this geometry's orbitals.
+
+    Returns ``(operators, angles, description)`` -- the operator labels
+    renamed and the angles' signs fixed through the orbital matching
+    (:func:`transfer_ansatz`), and a line saying how -- or ``(None, None,
+    reason)`` when the ansatz cannot be carried: the orbitals of either
+    geometry are not available, the best match of some orbital falls below
+    ``threshold``, or an operator cannot be followed through the matching.
+    ``previous_orbitals`` is the previous geometry's :class:`OrbitalSnapshot`
+    (or the reason it has none).
+    """
+    current = OrbitalSnapshot.from_integrals(
+        integrals, int(previous_orbitals.coefficients.shape[1])
+        if isinstance(previous_orbitals, OrbitalSnapshot) else 0)
+    if isinstance(previous_orbitals, str) or isinstance(current, str):
+        reason = (previous_orbitals if isinstance(previous_orbitals, str)
+                  else current)
+        return None, None, f"orbitals not tracked: {reason}"
+    overlap = orbital_overlap(previous_orbitals, current, integrals.grid)
+    n_orbitals = len(overlap)
+    match = match_orbitals(overlap, occupation_blocks(n_orbitals,
+                                                      num_particles))
+    if match.confidence < threshold:
+        return None, None, (f"smallest matched orbital overlap "
+                            f"{match.confidence:.3f} < transfer_threshold "
+                            f"{threshold:g}")
+    moved = transfer_ansatz(operators, angles, match, n_orbitals,
+                            pool_labels)
+    if isinstance(moved, str):
+        return None, None, moved
+    return moved[0], moved[1], match.describe()

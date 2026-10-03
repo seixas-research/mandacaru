@@ -62,9 +62,56 @@ starts the optimization from the stored angles.
 
 A checkpoint resumes only into the register it was written for: the qubit
 count, the mapping and the reference determinant must
-match, or the run refuses with a message saying which does not.  With
-`checkpoint` and `resume` set to the same path, each geometry of a relaxation
-warm-starts from the previous one.
+match, or the run refuses with a message saying which does not.
+
+A checkpoint written for **another Hamiltonian** -- the previous geometry of
+a relaxation, a changed charge -- is a warm start, not a continuation. Its
+angles are optimal there, not here, so ADAPT-VQE first re-optimizes all of
+them under this run's Hamiltonian, and only then reads the pool gradients.
+At angles left over from the other problem, the gradients would mostly
+measure the stale angles, and the operators already in the ansatz would be
+selected again. After the re-optimization the gradient alone decides: below
+the convergence threshold the stored ansatz stands as it is, otherwise
+operators are appended to it. The result's `start` and the run log's
+`[OPTIMIZATION SETUP]` say which happened.
+
+## Carrying the ansatz along a relaxation
+
+Within one geometry optimization, `transfer=True` does the same without a
+file, and follows the molecular orbitals between the geometries:
+
+```python
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis={"name": "PAW-LCAO", "size": "DZP"},
+                       active_space={"orbitals": 4, "method": "mp2"},
+                       transfer=True)
+BFGS(atoms).run(fmax=0.05)
+```
+
+Each geometry starts from the operator sequence and angles the previous one
+ended with. The orbitals are matched between the two geometries
+({mod}`~mandacaru.algorithms.orbital_tracking`): an operator is renamed where
+two orbitals swapped places, and its angle changes sign where an orbital
+did. The angles are re-optimized, and the pool gradient then decides whether
+the carried ansatz stands as it is or grows. The carried start is kept only
+if it lies below the reference energy. It is refused, with the reason in the
+log's `start` line, when the previous geometry was another system or pool,
+when an orbital's best match falls below `transfer_threshold` (0.9), or when
+an operator cannot be followed through the matching.
+
+On a LiH relaxation (PAW-LCAO-DZP, four MP2 natural orbitals, `qeb`), the
+carried steps took 48 and 36 energy evaluations, against 150 from the empty
+ansatz, and reached the same energy to 1e-8 eV. Two earlier steps were
+refused: an MP2 natural orbital rotates strongly when the bond moves
+0.19 Angstrom, and its best match fell to 0.72 and then to 0. Small steps,
+or the canonical (`"energy"`) orbitals, keep the matching above the
+threshold more often.
+
+`checkpoint` and `resume` on the same path also carry the ansatz between
+runs or processes, but without orbital tracking, because the file holds no
+basis. The file must already exist: on the first geometry of a relaxation
+there is nothing to resume, so use `transfer=True` there, or resume from a
+file that a previous run wrote.
 
 ## The file as a standalone object
 

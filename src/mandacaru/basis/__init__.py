@@ -13,7 +13,7 @@ grid), so any of them drops straight into the integral engine.  Built-ins:
 
 * :class:`HydrogenicAtomicOrbital` -- analytic hydrogen-like orbitals (with Slater
   effective charges);
-* :class:`NumericalAtomicOrbital` -- confined Sankey/SIESTA-type numerical
+* :class:`NumericalAtomicOrbital` -- confined Sankey-type numerical
   orbitals on a radial grid;
 * the **NAO-AE** family (:mod:`mandacaru.basis.nao_ae`) -- all-electron
   numerical atomic orbitals: the LDA atom's own shells under a smooth wall,

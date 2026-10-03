@@ -30,6 +30,7 @@ import pytest
 from ase import Atoms
 
 from mandacaru.algorithms.active_space import (ACTIVE_SPACE_METHODS,
+                                               correlating_partners,
                                                DEFAULT_OCCUPATION_THRESHOLD,
                                                ActiveSpace,
                                                normalize_orbitals,
@@ -272,6 +273,145 @@ class TestAnExplicitOrbitalList:
 # The selectors.
 # --------------------------------------------------------------------------- #
 
+@pytest.fixture(scope="module")
+def h2_pair_mo():
+    """Two H2 molecules side by side: two doubly occupied orbitals."""
+    pair = _integrals("H4", [(0, 0, 0), (0, 0, 0.74), (0, 1.6, 0),
+                             (0, 1.6, 0.74)], "6-31G")
+    h_mo, eri_mo, _orbitals = molecular_orbital_integrals(pair, 4, (2, 2),
+                                                          None)
+    return np.real(h_mo), np.real(eri_mo)
+
+
+def _determinant_energy(h_mo, eri_mo, n_doubly):
+    """Closed-shell determinant energy (electronic) in the given basis."""
+    o = slice(0, n_doubly)
+    J = np.einsum("iijj->ij", eri_mo[o, o, o, o])
+    K = np.einsum("ijji->ij", eri_mo[o, o, o, o])
+    return float(2.0 * np.trace(h_mo[o, o]) + np.sum(2.0 * J - K))
+
+
+class TestTheActiveOccupiedNaturalOrbitals:
+    """``"mp2"`` diagonalizes the density over the active doubly occupied
+    orbitals too, so every active row is an eigenvalue."""
+
+    def test_the_active_occupations_are_eigenvalues(self, h2_pair_mo):
+        from mandacaru.algorithms.mp2 import mp2_natural_orbitals
+        from mandacaru.algorithms.mp2 import rotate_integrals
+
+        h_mo, eri_mo = h2_pair_mo
+        space = resolve_active_space(h_mo, eri_mo, n_orbitals=8,
+                                     num_particles=(2, 2),
+                                     spec=spec(orbitals=4, method="mp2"))
+        block = mp2_natural_orbitals(h_mo, eri_mo, 2).occupied_density
+        expected = np.sort(np.linalg.eigvalsh(block))[::-1]
+        assert np.allclose(space.occupations[:2], expected, atol=1e-12)
+        # Natural orbitals: the density is diagonal in the rotated basis.
+        R = space.rotation
+        assert np.allclose(R.T @ R, np.eye(8), atol=1e-12)
+        assert np.allclose(R[:2, 2:], 0.0, atol=1e-12)
+        # The determinant, and so the Hartree-Fock energy, is unchanged.
+        h_new, eri_new = rotate_integrals(h_mo, eri_mo, R)
+        assert _determinant_energy(np.real(h_new), np.real(eri_new), 2) == \
+            pytest.approx(_determinant_energy(h_mo, eri_mo, 2), abs=1e-10)
+
+    def test_a_frozen_orbital_is_not_rotated(self, h2_pair_mo):
+        h_mo, eri_mo = h2_pair_mo
+        space = resolve_active_space(h_mo, eri_mo, n_orbitals=8,
+                                     num_particles=(2, 2),
+                                     spec=spec(orbitals=3, method="mp2"),
+                                     frozen=(0,))
+        assert space.frozen == (0,)
+        assert np.allclose(space.rotation[:, 0], np.eye(8)[:, 0], atol=1e-12)
+
+
+class TestCorrelatingPairs:
+    """``correlating_pairs`` keeps each active occupied orbital's partner --
+    the virtual its pair excitation goes to -- and bars the partner of an
+    occupied orbital the count froze."""
+
+    def test_the_h2_bonding_orbital_pairs_with_the_leading_natural_orbital(
+            self, h2_mo):
+        h_mo, eri_mo = h2_mo
+        space = resolve_active_space(
+            h_mo, eri_mo, n_orbitals=4, num_particles=(1, 1),
+            spec=spec(orbitals=2, method="mp2", correlating_pairs=True))
+        assert space.partners == ((0, 1),)
+        assert space.active == (0, 1)
+        assert space.partner(1) == 0
+
+    def test_two_occupied_orbitals_get_two_distinct_partners(self,
+                                                            h2_pair_mo):
+        h_mo, eri_mo = h2_pair_mo
+        space = resolve_active_space(
+            h_mo, eri_mo, n_orbitals=8, num_particles=(2, 2),
+            spec=spec(orbitals=4, method="mp2", correlating_pairs=True))
+        partners = dict(space.partners)
+        assert sorted(partners) == [0, 1]
+        assert len(set(partners.values())) == 2
+        assert set(partners.values()) <= set(space.active)
+
+    def test_a_count_frozen_orbital_bars_its_partner(self, h2_pair_mo):
+        h_mo, eri_mo = h2_pair_mo
+        orbitals = {"occupied": 1, "virtual": 2}
+        plain = resolve_active_space(
+            h_mo, eri_mo, n_orbitals=8, num_particles=(2, 2),
+            spec=spec(orbitals=orbitals, method="mp2"))
+        paired = resolve_active_space(
+            h_mo, eri_mo, n_orbitals=8, num_particles=(2, 2),
+            spec=spec(orbitals=orbitals, method="mp2",
+                      correlating_pairs=True))
+        assert paired.frozen == plain.frozen == (0,)
+        barred = dict(paired.partners)[0]
+        assert barred in plain.active and barred not in paired.active
+        # The register keeps the size that was asked for.
+        assert paired.n_active == plain.n_active == 3
+        assert dict(paired.partners)[1] in paired.active
+        assert paired.notes[0][0] == "correlating_pairs"
+        assert "displaced" in paired.notes[0][1]
+
+    def test_a_count_too_small_for_the_partners_is_refused(self, h2_pair_mo):
+        h_mo, eri_mo = h2_pair_mo
+        with pytest.raises(ValueError, match="raise 'orbitals' by 1"):
+            resolve_active_space(
+                h_mo, eri_mo, n_orbitals=8, num_particles=(2, 2),
+                spec=spec(orbitals=3, method="mp2", correlating_pairs=True))
+
+    def test_an_explicit_list_is_checked_not_changed(self, h2_mo):
+        h_mo, eri_mo = h2_mo
+        from mandacaru.algorithms.orbital_integrals import \
+            TensorOrbitalIntegrals
+
+        partner = correlating_partners(TensorOrbitalIntegrals(h_mo, eri_mo),
+                                       [0], [1, 2, 3], [2, 0, 0, 0])[0][1]
+        other = next(a for a in (1, 2, 3) if a != partner)
+        with pytest.raises(ValueError, match="correlating partner"):
+            resolve_active_space(
+                h_mo, eri_mo, n_orbitals=4, num_particles=(1, 1),
+                spec=spec(orbitals=[0, other], correlating_pairs=True))
+
+    def test_symmetry_needs_a_geometry(self, h2_mo):
+        h_mo, eri_mo = h2_mo
+        with pytest.raises(ValueError, match="needs the molecule's geometry"):
+            resolve_active_space(
+                h_mo, eri_mo, n_orbitals=4, num_particles=(1, 1),
+                spec=spec(orbitals=2, method="mp2", symmetry=True))
+
+    def test_the_solver_sets_the_target_state_count(self):
+        from mandacaru import Mandacaru
+
+        calc = Mandacaru(method="subspace-vqe", num_states=3,
+                         active_space={"orbitals": 4, "symmetry": True})
+        assert calc.solver._active_space_request().states == 3
+        ground = Mandacaru(method="adapt-vqe",
+                           active_space={"orbitals": 4, "symmetry": True})
+        assert ground.solver._active_space_request().states == 1
+
+    def test_the_flags_must_be_bools(self):
+        with pytest.raises(TypeError, match="is a bool"):
+            spec(orbitals=4, correlating_pairs="yes")
+
+
 class TestTheSelectors:
     def test_the_energy_selector_needs_no_integrals(self):
         space = resolve_active_space(n_orbitals=8, num_particles=(2, 2),
@@ -280,7 +420,7 @@ class TestTheSelectors:
         assert space.occupations is None
         assert space.correlation_energy is None
 
-    def test_the_mp2_selector_rotates_only_the_virtual_block(self, h2_mo):
+    def test_the_mp2_selector_never_mixes_occupied_and_virtual(self, h2_mo):
         h_mo, eri_mo = h2_mo
         space = resolve_active_space(h_mo, eri_mo, n_orbitals=4,
                                     num_particles=(1, 1),
@@ -371,6 +511,14 @@ class TestTheSummary:
     def test_an_untruncated_space_does_not_claim_a_ranking(self):
         space = ActiveSpace(n_orbitals=4, active=(0, 1, 2, 3))
         assert "ranked by" not in space.summary()
+
+    def test_every_orbital_has_an_occupancy_and_a_role(self):
+        space = resolve_active_space(n_orbitals=6, num_particles=(3, 2),
+                                     spec=spec(orbitals=4), frozen=(0,))
+        assert [space.occupancy(p) for p in range(6)] == [
+            "occupied", "occupied", "singly", "virtual", "virtual", "virtual"]
+        assert [space.role(p) for p in range(6)] == [
+            "frozen", "active", "active", "active", "active", "deleted"]
 
 
 # --------------------------------------------------------------------------- #
@@ -510,6 +658,35 @@ class TestThroughTheCalculator:
         assert context["active"] == space.active
         assert context["deleted"] == space.deleted
 
+    def test_the_run_log_block_lists_every_orbital(self, truncated_paw_run,
+                                                   tmp_path):
+        from mandacaru.utils.logging import Logger, parse_output
+
+        atoms, _energy = truncated_paw_run
+        out = str(tmp_path / "output.txt")
+        with Logger(out, n_qubits=8) as logger:
+            logger.write_system()
+            logger.write_active_space(
+                *atoms.calc.solver._active_space_report())
+        block = parse_output(out)["active_space"]
+        assert block["method"] == "mp2"
+        assert block["orbitals_requested"] == "4"
+        assert block["spatial_orbitals"] == \
+            "12 (0 frozen, 4 active, 8 deleted)"
+        assert float(block["mp2_correlation_energy_Ha"]) < 0.0
+        assert block["occupation"].startswith("eigenvalues of the MP2")
+        rows = block["orbitals"]
+        assert [row["index"] for row in rows] == list(range(12))
+        assert [row["occupancy"] for row in rows] == \
+            ["occupied"] + ["virtual"] * 11
+        assert [row["role"] for row in rows] == \
+            ["active"] * 4 + ["deleted"] * 8
+        # The virtual natural occupations, most populated first, and the
+        # occupied one just below 2.
+        virtual = [row["occupation"] for row in rows[1:]]
+        assert virtual == sorted(virtual, reverse=True)
+        assert 1.9 < rows[0]["occupation"] < 2.0
+
     def test_the_log_line_names_the_truncation(self, truncated_paw_run):
         atoms, _energy = truncated_paw_run
         line = atoms.calc.solver._active_space_label()
@@ -607,7 +784,8 @@ class TestThroughTheCalculator:
         metadata = record["metadata"]
         assert metadata["active_space"] == {
             "method": "energy", "orbitals": {"occupied": 1, "virtual": 3},
-            "threshold": None, "frozen": None}
+            "threshold": None, "frozen": None, "correlating_pairs": False,
+            "symmetry": False}
 
 
 # --------------------------------------------------------------------------- #

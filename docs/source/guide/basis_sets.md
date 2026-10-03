@@ -59,9 +59,9 @@ basis={"name": "NAO", "size": "DZP", "energy_shift": 0.03}
 `energy_shift` (eV, default 0.03) sets the confinement radius
 $r_c = \pi/\sqrt{2\delta E}$ in atomic units (convert the energy shift to
 Hartree to evaluate this expression); a smaller shift means a longer-ranged, more
-diffuse orbital. `tail_norm` (GPAW's scheme, the default) or `split_norm` (the
-SIESTA-style alternative) controls where each extra zeta is split off -- see
-*How the extra zetas are built* below.
+diffuse orbital. `zeta_split` (`"first_zeta"`, the default, or `"last_zeta"`)
+says which function each extra zeta is split from, and `tail_norm` or
+`split_norm` where -- see *How the extra zetas are built* below.
 
 The cost is set by how many functions each size produces, and **every function
 becomes two spin orbitals, hence two qubits**:
@@ -93,24 +93,27 @@ R_2(r) = \begin{cases} R(r) - r^{l}(a - b r^{2}), & r < r_s \\ 0, & r \ge r_s. \
 $R_2$ is strictly shorter-ranged than $R$ and vanishes smoothly at $r_s$, so it
 is cheap to integrate and injects no discontinuity.
 
-*Where* to split is a convention, and SIESTA and GPAW do not share it.
-Mandacaru follows **GPAW** by default and offers SIESTA's as the alternative:
+*What* to split, and *where*, is a convention, and LCAO codes do not share
+one. `zeta_split` names the two Mandacaru offers:
 
-| | `tail_norm` -- GPAW (**default**) | `split_norm` -- SIESTA-style |
+| | `"first_zeta"` (**default**), parameter `tail_norm` | `"last_zeta"`, parameter `split_norm` |
 | :--- | :--- | :--- |
 | the number is | the **norm** of the tail, $\bigl(\int_{r_s}^{r_c}\lvert R\rvert^2 r^2dr\bigr)^{1/2}$ | its **squared norm**, $\int_{r_s}^{r_c}\lvert R\rvert^2 r^2dr$ |
 | values | `(0.16, 0.3, 0.6)` for zetas 2, 3, 4 | `0.15`, halved for each further zeta |
 | each zeta splits | the **first** zeta | the **previous** zeta |
 
 ```python
-basis={"name": "NAO", "size": "TZP"}                      # GPAW's scheme
-basis={"name": "NAO", "size": "TZP", "tail_norm": 0.2}    # ... a longer tail
-basis={"name": "NAO", "size": "TZP", "split_norm": 0.15}  # the SIESTA-style one
+basis={"name": "NAO", "size": "TZP"}                             # first_zeta
+basis={"name": "NAO", "size": "TZP", "tail_norm": 0.2}           # ... a longer tail
+basis={"name": "NAO", "size": "TZP", "zeta_split": "last_zeta"}  # last_zeta, 0.15
+basis={"name": "NAO", "size": "TZP", "split_norm": 0.1}          # last_zeta, 0.1
 ```
 
 The numbers are not comparable digit for digit: a tail norm of 0.16 is a
-squared-norm fraction of 0.0256, so GPAW's extra zetas are **longer-ranged**.
-Giving both options is refused. Where each hydrogen 1s zeta ends (a₀, default
+squared-norm fraction of 0.0256, so `first_zeta`'s extra zetas are
+**longer-ranged**. Each parameter belongs to its scheme: `tail_norm` with
+`"last_zeta"`, or `split_norm` with `"first_zeta"`, is refused, and a
+`split_norm` written without `zeta_split` selects `"last_zeta"`. Where each hydrogen 1s zeta ends (a₀, default
 `energy_shift`):
 
 | Zeta | `tail_norm` (default) | `split_norm=0.15` |
@@ -119,9 +122,9 @@ Giving both options is refused. Where each hydrogen 1s zeta ends (a₀, default
 | 3 | 2.71 | 1.34 |
 | 4 | 1.61 | 0.87 |
 
-The same two options, with the same default, apply to the pseudopotential
+The same options, with the same default, apply to the pseudopotential
 families -- see [Pseudopotentials](pseudopotentials.md), which also compares the
-radii with the ones GPAW's own basis generator produces.
+radii with the ones an independent LCAO basis generator produces.
 
 Polarization shells are solved in the same confining sphere at $l_{\max}+1$,
 using the lowest principal quantum number that angular momentum allows, so they

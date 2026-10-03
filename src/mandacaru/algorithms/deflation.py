@@ -161,6 +161,16 @@ class DeflationMixin:
         self._check_kpts()
         if int(num_states) < 1:
             raise ValueError("num_states must be >= 1")
+        spec = getattr(self, "active_space", None)
+        if spec is not None and spec.symmetry and int(num_states) > 1:
+            import warnings
+            warnings.warn(
+                f"the active space was chosen with symmetry=True for the "
+                f"ground state only; the {int(num_states) - 1} excited "
+                f"state(s) asked for here may need orbitals of symmetries it "
+                f"left out.  A subspace method (num_states=) chooses the "
+                f"active space for its excited states too.",
+                RuntimeWarning, stacklevel=2)
         if beta is None:
             beta = spectral_width_beta(self.hamiltonian)
         beta = float(beta)

@@ -39,11 +39,17 @@ Partial core densities
 A dataset unscreened with a core density inside :math:`v_{xc}` (the nonlinear
 core correction) needs that same density added wherever the functional is
 evaluated: :func:`xc_core_density` picks it per dataset and
-:func:`core_density_on_grid` sums it on the grid.  For a meta-GGA the core
-contributes its von Weizsaecker kinetic-energy density,
-:math:`\tau_c = |\nabla\tilde\rho_c|^2/8\tilde\rho_c`, the exact one for a
+:func:`core_density_on_grid` sums it on the grid.  For a meta-GGA each atom's
+core also contributes its von Weizsaecker kinetic-energy density,
+:math:`\tau_c = \tilde\rho_c'^2/8\tilde\rho_c`, the exact one for a
 single-orbital density and the one that leaves the core iso-orbital
-(:math:`\bar\alpha = 0`) on its own.
+(:math:`\bar\alpha = 0`) on its own.  It is evaluated **radially**
+(:func:`core_tau_function`) and placed on the grid like the core density
+(:func:`core_tau_on_grid`), never as :math:`|\nabla\rho|^2/8\rho` of the
+sampled density: that divides by the density wherever it is small, and a
+sampled or Fourier-filtered core is small with a finite gradient exactly
+where its tail rings -- the spikes moved with the atoms and made the r2SCAN
+energy of bulk silicon rough by 170 uHa.
 
 Adding a core density changes what the energy of the isolated reference atom
 evaluates to.  :func:`core_correction_offset` is the per-atom constant that
@@ -189,15 +195,6 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
                    tau_potential=df_dtau)
 
 
-def weizsaecker_tau(grid, density: np.ndarray) -> np.ndarray:
-    r""":math:`|\nabla\rho|^2/8\rho` on the grid, zero below the floor."""
-    rho = np.asarray(density, dtype=float)
-    grad = gradient(grid, rho)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(rho > GRADIENT_DENSITY_FLOOR,
-                        np.sum(grad * grad, axis=0) / (8.0 * rho), 0.0)
-
-
 # --------------------------------------------------------------------------- #
 # Partial core densities.
 # --------------------------------------------------------------------------- #
@@ -232,9 +229,27 @@ def core_density_function(dataset):
     A cubic spline of the radial table, zero beyond it.  Linear interpolation
     would put a kink at every table node, and a grid point crossing one as
     its atom moves makes the energy rough at the micro-Hartree level -- too
-    rough for a finite-difference check of the force, and visible in a
-    meta-GGA, which also differentiates the core density for its
-    kinetic-energy density.
+    rough for a finite-difference check of the force.
+    """
+    core = xc_core_density(dataset)
+    if core is None:
+        return None
+    return _radial_spline(np.asarray(dataset.r, dtype=float), core)
+
+
+#: Below this fraction of its peak a core density's kinetic-energy density
+#: is taken as zero (the ratio is then all round-off).
+CORE_TAU_FLOOR = 1e-12
+
+
+def core_tau_function(dataset):
+    r"""``r -> tau_c`` of ``dataset``'s core correction, or ``None``.
+
+    :math:`\tau_c = \tilde\rho_c'(r)^2 / 8\tilde\rho_c(r)` from the cubic
+    spline of the radial table and its derivative, zero below
+    :data:`CORE_TAU_FLOOR` of the core's peak; itself splined, so it is as
+    smooth as the core.  A smooth core decays smoothly, and so does this
+    ratio.
     """
     core = xc_core_density(dataset)
     if core is None:
@@ -243,6 +258,18 @@ def core_density_function(dataset):
 
     r = np.asarray(dataset.r, dtype=float)
     spline = CubicSpline(r, core)
+    slope = spline.derivative()(r)
+    floor = CORE_TAU_FLOOR * float(np.max(np.abs(core)))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tau = np.where(core > floor, slope * slope / (8.0 * core), 0.0)
+    return _radial_spline(r, tau)
+
+
+def _radial_spline(r, values):
+    """``radius -> values`` by a cubic spline, zero beyond the table."""
+    from scipy.interpolate import CubicSpline
+
+    spline = CubicSpline(r, values)
     edge = float(r[-1])
 
     def function(radius):
@@ -252,16 +279,19 @@ def core_density_function(dataset):
     return function
 
 
-def core_density_on_grid(grid, datasets, centers) -> np.ndarray | None:
-    r"""Sum of the datasets' partial core densities on the flat grid.
+def core_tau_on_grid(grid, datasets, centers) -> np.ndarray | None:
+    """Sum of the atoms' core kinetic-energy densities on the flat grid.
 
-    ``centers`` are the atomic positions **in Bohr** (the frame of
-    :class:`~mandacaru.integrals.potentials.Potentials`), one per dataset.
+    The counterpart of :func:`core_density_on_grid`, same frame and same
     ``None`` when no dataset carries a core correction.
     """
+    return _place(grid, [core_tau_function(d) for d in datasets or ()],
+                  centers)
+
+
+def _place(grid, functions, centers) -> np.ndarray | None:
     total = None
-    for dataset, center in zip(datasets or (), centers):
-        function = core_density_function(dataset)
+    for function, center in zip(functions, centers):
         if function is None:
             continue
         distance = np.sqrt((grid.X - center[0]) ** 2
@@ -270,6 +300,17 @@ def core_density_on_grid(grid, datasets, centers) -> np.ndarray | None:
         values = function(distance)
         total = values if total is None else total + values
     return total
+
+
+def core_density_on_grid(grid, datasets, centers) -> np.ndarray | None:
+    r"""Sum of the datasets' partial core densities on the flat grid.
+
+    ``centers`` are the atomic positions **in Bohr** (the frame of
+    :class:`~mandacaru.integrals.potentials.Potentials`), one per dataset.
+    ``None`` when no dataset carries a core correction.
+    """
+    return _place(grid, [core_density_function(d) for d in datasets or ()],
+                  centers)
 
 
 def _valence_xc_terms(r, valence, core, functional, relativistic):

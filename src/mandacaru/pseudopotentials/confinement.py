@@ -12,7 +12,7 @@ basis (PAW-LCAO, UPAW-LCAO and ONCVPSP).
 Without this module the first zeta of such a basis is the dataset's bound smooth
 partial wave -- the valence orbital of the **free** atom, which has no range of
 its own (a lithium 2s still carries 1e-4 of its norm beyond 14 Bohr).  LCAO
-codes (SIESTA, GPAW) instead use the orbital of the atom inside a confining
+codes instead commonly use the orbital of the atom inside a confining
 potential, and name the confinement by what it costs: the ``energy_shift`` is
 how far the confined eigenvalue lies above the free one, and it *defines* the
 cutoff radius :math:`r_c` of each orbital (Sankey and Niklewski 1989; Artacho
@@ -21,9 +21,9 @@ that is tight for a compact orbital and generous for a diffuse one.
 
 The operator is untouched.  The projectors, the couplings ``D``, the overlap
 ``q`` and the local potential all come from the dataset; only the *trial
-function* changes, exactly as in GPAW, whose basis generator confines the atom
-and keeps the setup.  The confined orbital is the lowest solution of the same
-generalized radial problem the dataset's bound wave solves,
+function* changes: the atom is confined, the dataset is kept.  The confined
+orbital is the lowest solution of the same generalized radial problem the
+dataset's bound wave solves,
 
 .. math::
 
@@ -44,22 +44,19 @@ with the smooth confining potential of Junquera *et al.* (PRB 64, 235111),
 which is flat (all derivatives zero) at the inner radius :math:`r_i` and
 diverges at :math:`r_c`, so the orbital and every derivative of it vanish at
 the cutoff -- a hard wall leaves a kink there, which a real-space grid pays
-for.  The amplitude :math:`A` = 12 Ha and :math:`r_i = 0.6\,r_c` are **GPAW's
-defaults** (``vconf_args=(12.0, 0.6)`` of ``BasisMaker.generate`` in
-``gpaw/atom/basis.py``, and the functional form of
-``get_confinement_potential`` in ``gpaw/atom/all_electron.py`` -- both read
-from the GPAW source, not recalled), chosen on purpose: with the same
-``energy_shift`` and the same ``size`` a Mandacaru PAW-LCAO basis is then built by the same recipe as the GPAW LCAO basis it is compared
-with.  (The *datasets* still differ -- each code pseudizes its own atom -- so
-the radii agree closely, not identically.)
+for.  The amplitude :math:`A` = 12 Ha and :math:`r_i = 0.6\,r_c` are a common
+default for this potential, chosen on purpose: with the same ``energy_shift``
+and the same ``size``, a PAW-LCAO basis built here follows the same recipe as
+the LCAO bases it is compared with.  (The *datasets* still differ -- each code
+pseudizes its own atom -- so the radii agree closely, not identically.)
 
 For the norm-conserving family the overlap is the identity (``q = 0``):
 ONCVPSP solves with its own local potential and projectors.  Each dataset supplies its operator through
 ``channel_operator_on(l, r)``, which returns the grid, the potential, the
 ``u``-form projectors, ``D`` and ``q``.
 
-``energy_shift`` is in **eV**, like GPAW's ``energysplit`` and like the
-``energy_shift`` of the all-electron ``"NAO"`` family.  It is on by default at
+``energy_shift`` is in **eV**, like the ``energy_shift`` of the
+all-electron ``"NAO"`` family.  It is on by default at
 :data:`DEFAULT_ENERGY_SHIFT` for every family that offers it; ``None`` /
 ``False`` / ``0`` keep the free-atom orbital.
 """
@@ -72,15 +69,15 @@ import numpy as np
 
 from ..units import EV_TO_HARTREE, HARTREE_TO_EV
 
-#: Amplitude ``A`` (Hartree) of the confining potential -- GPAW's default.
+#: Amplitude ``A`` (Hartree) of the confining potential.
 CONFINEMENT_AMPLITUDE = 12.0
 
-#: Inner radius of the confining potential as a fraction of ``r_c`` -- GPAW's
-#: default.  Below it the atom is untouched.
+#: Inner radius of the confining potential as a fraction of ``r_c``.  Below
+#: it the atom is untouched.
 CONFINEMENT_INNER_FRACTION = 0.6
 
 #: The ``energy_shift`` (eV) a pseudopotential basis uses when the basis dict
-#: does not say: GPAW's ``energysplit`` default.  ``"energy_shift": None``
+#: does not say.  ``"energy_shift": None``
 #: restores the unconfined free-atom orbital.
 DEFAULT_ENERGY_SHIFT = 0.1
 
@@ -92,18 +89,16 @@ CONFINEMENT_OPTIONS = ("energy_shift", "confinement", "polarization")
 CONFINEMENT_DEFAULT_OPTIONS = {"energy_shift": DEFAULT_ENERGY_SHIFT}
 
 #: Which polarization shell a pseudopotential basis builds (``polarization=``).
-#: ``"gaussian"``: GPAW's quasi-Gaussian, :func:`gaussian_polarization` -- the
+#: ``"gaussian"``: the quasi-Gaussian of :func:`gaussian_polarization` -- the
 #: default **wherever the orbital is confined**, since the Gaussian takes its
 #: cutoff from the confined orbital.  ``"orbital"``: :math:`r^k R_{outer}(r)`,
 #: split off the outermost channel -- Mandacaru's original, and what an
 #: unconfined element falls back to when the option is left unwritten.
 POLARIZATION_KINDS = ("gaussian", "orbital")
 
-#: GPAW sizes its polarization Gaussian from the cutoff the base orbital has at
-#: a **fixed** 0.3 eV shift -- whatever ``energy_shift`` the basis itself uses --
-#: confined with its default potential: ``rchar = 0.25 * rc(0.3 eV)``
-#: (``default_rchar_rel`` and the ``rcut_by_energy(j_pol, .3, 1e-2, 6.,
-#: (12., .6))`` call of ``BasisMaker.generate``).
+#: The polarization Gaussian is sized from the cutoff the base orbital has at
+#: a **fixed** 0.3 eV shift -- whatever ``energy_shift`` the basis itself
+#: uses -- confined with the default potential: ``r_char = 0.25 * r_c(0.3 eV)``.
 POLARIZATION_REFERENCE_SHIFT = 0.3
 POLARIZATION_CHARACTER_FRACTION = 0.25
 
@@ -172,7 +167,7 @@ def validate_polarization(kind):
     if kind is None:
         return None
     key = str(kind).strip().lower().replace("-", "_")
-    key = {"quasi_gaussian": "gaussian", "gpaw": "gaussian"}.get(key, key)
+    key = {"quasi_gaussian": "gaussian"}.get(key, key)
     if key not in POLARIZATION_KINDS:
         raise ValueError(
             f"polarization must be one of {list(POLARIZATION_KINDS)}, got "
@@ -200,7 +195,7 @@ def resolve_polarization(kind, energy_shift, symbol=None) -> str:
 def validate_confinement(spec) -> tuple[float, float]:
     """Normalize the ``confinement`` option, ``(amplitude_Ha, r_i / r_c)``.
 
-    ``None`` is GPAW's ``vconf_args`` default, ``(12.0, 0.6)``.
+    ``None`` is the default, ``(12.0, 0.6)``.
     """
     if spec is None:
         return CONFINEMENT_AMPLITUDE, CONFINEMENT_INNER_FRACTION
@@ -443,7 +438,7 @@ def confined_orbital(pp, l: int, energy_shift: float,
     """The confined orbital of channel ``l`` for ``energy_shift`` (eV), cached
     per dataset -- the root search costs a second or two per channel and a
     relaxation would otherwise repeat it at every geometry.  ``confinement`` is
-    the ``(amplitude, r_i / r_c)`` pair (``None`` = GPAW's)."""
+    the ``(amplitude, r_i / r_c)`` pair (``None`` = the default)."""
     from scipy.interpolate import CubicSpline
 
     l = int(l)
@@ -502,11 +497,11 @@ def first_zeta_factory(energy_shift, record: dict | None = None,
 
 
 # --------------------------------------------------------------------------- #
-# GPAW's polarization function.
+# The quasi-Gaussian polarization function.
 # --------------------------------------------------------------------------- #
 
 def quasi_gaussian(r, alpha: float, r_cut: float) -> np.ndarray:
-    r"""GPAW's ``QuasiGaussian``: :math:`e^{-\alpha r^2} - (a - b r^2)` inside
+    r"""The quasi-Gaussian :math:`e^{-\alpha r^2} - (a - b r^2)` inside
     ``r_cut`` and zero beyond, with :math:`a = (1 + \alpha r_c^2)
     e^{-\alpha r_c^2}`, :math:`b = \alpha e^{-\alpha r_c^2}` so that the value
     *and* the slope vanish at the cutoff."""
@@ -520,7 +515,7 @@ def quasi_gaussian(r, alpha: float, r_cut: float) -> np.ndarray:
 
 
 def polarization_channel(channels) -> int:
-    """Angular momentum of the polarization shell, by GPAW's rule: the first
+    """Angular momentum of the polarization shell: the first
     ``l`` **missing** among the valence channels, else ``l_max + 1`` (so a
     4s/3d transition metal is polarized with a p shell, not an f shell)."""
     present = {int(l) for l in channels}
@@ -545,13 +540,13 @@ class GaussianPolarization:
 
 def gaussian_polarization(pp, energy_shift: float, confinement=None
                           ) -> GaussianPolarization:
-    r"""GPAW's polarization function for the dataset ``pp``.
+    r"""The quasi-Gaussian polarization function for the dataset ``pp``.
 
-    As ``BasisMaker.generate`` builds it: the shell has the angular momentum of
+    The shell has the angular momentum of
     :func:`polarization_channel`; it is based on the valence channel one below,
     whose cutoff (at the basis's own ``energy_shift``) becomes the function's
     ``r_cut``; its width is ``r_char = 0.25 * r_c(0.3 eV)`` with that reference
-    cutoff always taken at 0.3 eV in GPAW's default potential; and
+    cutoff always taken at 0.3 eV in the default potential; and
     :math:`R(r) = r^l\,[e^{-r^2/r_{char}^2} - (a - b r^2)]`, normalized.
     """
     l_pol = polarization_channel(pp.channels)

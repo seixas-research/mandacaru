@@ -852,6 +852,43 @@ _BASES = [
   doi     = {10.1135/cccc20050837}
 }""", "frozen natural orbitals as a systematic basis truncation",
          verified=False, topics=("fno", "active-space")),
+    _ref("Pinski2015", """
+@article{Pinski2015,
+  author  = {Pinski, Peter and Riplinger, Christoph and Valeev, Edward F. and
+             Neese, Frank},
+  title   = {Sparse maps---{A} systematic infrastructure for reduced-scaling
+             electronic structure methods. {I}. {A}n efficient and simple
+             linear scaling local {MP2} method that uses an intermediate basis
+             of pair natural orbitals},
+  journal = {J. Chem. Phys.},
+  volume  = {143},
+  pages   = {034108},
+  year    = {2015},
+  doi     = {10.1063/1.4926879}
+}""", "DLPNO-MP2, the local pair natural orbital MP2 active-space selector",
+         verified=False, topics=("mp2", "active-space", "local-correlation")),
+    _ref("FosterBoys1960", """
+@article{FosterBoys1960,
+  author  = {Foster, J. M. and Boys, S. F.},
+  title   = {Canonical Configurational Interaction Procedure},
+  journal = {Rev. Mod. Phys.},
+  volume  = {32},
+  pages   = {300--302},
+  year    = {1960},
+  doi     = {10.1103/RevModPhys.32.300}
+}""", "Foster-Boys localized orbitals (DLPNO-MP2's occupied space)",
+         verified=False, topics=("localization", "local-correlation")),
+    _ref("Pulay1983", """
+@article{Pulay1983,
+  author  = {Pulay, Peter},
+  title   = {Localizability of dynamic electron correlation},
+  journal = {Chem. Phys. Lett.},
+  volume  = {100},
+  pages   = {151--154},
+  year    = {1983},
+  doi     = {10.1016/0009-2614(83)80703-9}
+}""", "projected atomic orbitals and local correlation domains",
+         verified=False, topics=("local-correlation",)),
     _ref("Rozzi2006", """
 @article{Rozzi2006,
   author  = {Rozzi, Carlo A. and Varsano, Daniele and Marini, Andrea and

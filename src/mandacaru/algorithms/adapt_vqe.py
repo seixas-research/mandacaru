@@ -210,6 +210,9 @@ class ADAPTVQEResult:
     optimizer_failures: list = field(default_factory=list)
     #: ``(iteration, label)`` of every operator ``prune=True`` took back out.
     pruned_operators: list = field(default_factory=list)
+    #: Where the run started: the empty ansatz, a checkpoint, or the
+    #: previous geometry's ansatz (``transfer=True``), and why.
+    start: str | None = None
     metrics: CircuitMetrics | None = None     # final compiled-circuit metrics
     timings: dict | None = None               # per-stage wall time / cores / memory
     integration_profile: dict | None = None   # real-space integration profile
@@ -420,6 +423,20 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         measured at that state and the energy change -- written as the step
         completes.  Not available with ``tetris`` or ``prune``, whose steps are
         not one appended operator.
+    transfer : bool
+        Along an ASE trajectory (a relaxation, a scan, dynamics), start each
+        geometry from the ansatz the previous geometry ended with -- its
+        operators and angles, followed through the molecular orbitals
+        (:mod:`~mandacaru.algorithms.orbital_tracking`) -- re-optimize every
+        angle here, and let the pool gradient decide whether it stands as it
+        is or grows (default ``False``).  It is kept only if its relaxed
+        energy lies below the reference, and refused, with the reason in the
+        result's ``start``, for another system or pool, an orbital match below
+        ``transfer_threshold``, or an operator the matching cannot follow.
+    transfer_threshold : float, optional
+        Smallest matched orbital overlap at which the ansatz is still carried
+        (default
+        :data:`~mandacaru.algorithms.orbital_tracking.DEFAULT_TRANSFER_THRESHOLD`).
     grid : Grid, optional
         Explicit real-space integration grid for the calculator-mode ``basis``
         builder.  When omitted the grid is generated automatically from the ASE
@@ -547,6 +564,8 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                  prune: bool = False,
                  atomic_units: bool = False,
                  record=None,
+                 transfer: bool = False,
+                 transfer_threshold: float | None = None,
                  **driver_kwargs):
         # Everything else -- the problem setup, the Hamiltonian cache, the
         # circuit providers, checkpoints -- is a VariationalDriver option and is
@@ -574,6 +593,22 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         if self.record is not None and (tetris or prune):
             raise ValueError("record= needs one appended operator per growth "
                              "step; it is not available with tetris or prune")
+
+        from .orbital_tracking import DEFAULT_TRANSFER_THRESHOLD
+
+        if not isinstance(transfer, bool):
+            raise ValueError(f"transfer must be True or False, got "
+                             f"{transfer!r}")
+        #: Start each geometry of an ASE trajectory from the ansatz the
+        #: previous one reported (:meth:`inherit_ansatz`).
+        self.transfer = transfer
+        self.transfer_threshold = float(
+            DEFAULT_TRANSFER_THRESHOLD if transfer_threshold is None
+            else transfer_threshold)
+        self._inherited = None
+        #: Where the last run started from, one line for the log and the
+        #: result.
+        self.start = None
 
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
@@ -795,6 +830,96 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         """
         return int(np.argmax(np.abs(grads)))
 
+    # -- transfer between geometries -------------------------------------- #
+
+    def inherit_ansatz(self, previous) -> None:
+        """Take over the ansatz ``previous`` -- the solver of the preceding
+        geometry -- grew, when ``transfer=True``.
+
+        The ASE calculator calls this on each new geometry's solver before
+        running it.  Only an ADAPT-VQE run that finished passes its ansatz
+        on, with the molecular orbitals it was expressed in.
+        """
+        from .orbital_tracking import OrbitalSnapshot
+
+        if not self.transfer or type(previous) is not type(self):
+            return
+        result = getattr(previous, "result", None)
+        ansatz = getattr(previous, "ansatz", None)
+        if not isinstance(result, ADAPTVQEResult) or ansatz is None:
+            return
+        context = getattr(previous, "_gradient_context", None) or {}
+        pool = getattr(previous, "pool", None)
+        self._inherited = {
+            "operators": [op.label for op in ansatz.operators],
+            "angles": np.asarray(result.optimal_parameters, dtype=float),
+            "pool_labels": [op.label for op in previous._pool_ops],
+            "symbols": getattr(previous, "_basis_symbols", None),
+            "orbitals": OrbitalSnapshot.from_integrals(
+                context.get("integrals"),
+                getattr(pool, "n_spatial_orbitals", 0)),
+        }
+
+    def _transferred_start(self, ansatz: AdaptAnsatz, ref_energy: float,
+                           max_iterations: int):
+        """The previous geometry's ansatz, relaxed here, as a restored
+        start -- or ``None`` and the reason it is not used.
+
+        The operators are followed through the orbital matching
+        (:func:`~mandacaru.algorithms.orbital_tracking.carry_ansatz`), every
+        angle is re-optimized under this geometry's Hamiltonian, and the
+        result is kept only if it lies below the reference energy.  The
+        growth loop then screens the pool gradients at that optimum: below
+        the convergence threshold the carried ansatz is this geometry's
+        answer as it stands, otherwise operators are appended to it.
+        """
+        from .orbital_tracking import carry_ansatz
+
+        inherited = self._inherited
+        labels = [op.label for op in self._pool_ops]
+        if inherited["symbols"] != getattr(self, "_basis_symbols", None) \
+                or inherited["pool_labels"] != labels:
+            return None, ("empty ansatz (transfer refused: another system or "
+                          "pool than the previous geometry's)")
+        context = getattr(self, "_gradient_context", None) or {}
+        operators, angles, how = carry_ansatz(
+            inherited["operators"], inherited["angles"],
+            inherited["orbitals"], context.get("integrals"),
+            self.pool.num_particles, labels, self.transfer_threshold)
+        if operators is None:
+            return None, f"empty ansatz (transfer refused: {how})"
+        if not operators:
+            return None, "empty ansatz (the previous geometry's was empty)"
+        if len(operators) > max_iterations:
+            return None, (f"empty ansatz (transfer refused: "
+                          f"{len(operators)} operators > max_iterations "
+                          f"{max_iterations})")
+        index = self._pool_index
+        ops = [self._pool_ops[index[label]] for label in operators]
+        trial = self._new_ansatz()
+        for op in ops:
+            trial.append(op)
+        relaxed = self._optimize_all(lambda t: self.ansatz_energy(trial, t),
+                                     np.asarray(angles, dtype=float))
+        energy = float(relaxed.fun)
+        if not energy < ref_energy:
+            return None, (f"empty ansatz (the relaxed transferred ansatz, "
+                          f"{self._to_energy_units(energy):.8f} "
+                          f"{self._energy_unit_label()}, is not below the "
+                          f"reference)")
+        for op in ops:
+            ansatz.append(op)
+        failures = ([] if relaxed.success
+                    else [(0, f"transferred ansatz: {relaxed.message}")])
+        return {"parameters": np.asarray(relaxed.x, dtype=float),
+                "selected": [op.label for op in ops], "iterations": [],
+                "num_evaluations": int(relaxed.nfev),
+                "optimizer_steps": int(relaxed.nit or 0),
+                "optimizer_failures": failures, "energy": energy,
+                "same_problem": False, "transferred": True}, (
+            f"previous geometry's ansatz, {len(ops)} operator(s), angles "
+            f"re-optimized here; {how}")
+
     # -- checkpoint / resume helpers ------------------------------------- #
 
     def _iteration_payload(self, it: AdaptIteration) -> dict:
@@ -981,7 +1106,15 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         sign that anything preceded it.
         """
         if restored is None:
-            return {}
+            return ({} if self.start in (None, "empty ansatz")
+                    else {"start": self.start})
+        if restored.get("transferred"):
+            return {
+                "start": self.start,
+                "transferred_operators": len(restored["selected"]),
+                "transferred_energy_" + self._energy_unit_label():
+                    f"{self._to_energy_units(restored['energy']):.10f}",
+            }
         return {
             "resumed_from": str(self.resume_path),
             "restored_operators": len(restored["selected"]),
@@ -1108,6 +1241,31 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                 raise ValueError("pass either initial_parameters or resume=, "
                                  "not both")
             params = restored["parameters"]
+            self.start = f"resumed from {self.resume_path}"
+            if not restored["same_problem"] and params.size:
+                # A checkpoint written for another Hamiltonian (a previous
+                # geometry) holds angles that are optimal there, not here: the
+                # pool gradients at those angles would mostly measure that and
+                # re-select operators the ansatz already has.  Relax them
+                # first, then screen.
+                relaxed = self._optimize_all(
+                    lambda t: self.ansatz_energy(ansatz, t), params)
+                params = np.asarray(relaxed.x, dtype=float)
+                restored["parameters"] = params
+                restored["energy"] = float(relaxed.fun)
+                restored["num_evaluations"] += int(relaxed.nfev)
+                restored["optimizer_steps"] += int(relaxed.nit or 0)
+                self.start += " (angles re-optimized for this Hamiltonian)"
+        elif self._inherited is not None:
+            if initial_parameters is not None:
+                raise ValueError("pass either initial_parameters or "
+                                 "transfer=True, not both")
+            restored, self.start = self._transferred_start(
+                ansatz, ref_energy, max_iterations)
+            if restored is not None:
+                params = restored["parameters"]
+        else:
+            self.start = "empty ansatz"
 
         # Banner to standard output *before* any data is written to the log.
         self._show_banner()
@@ -1162,6 +1320,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         # operator count unchanged and would otherwise loop forever.
         step_budget = (PRUNE_STEP_BUDGET * max_iterations if self.prune
                        else max_iterations)
+        carried = restored is not None and not restored["same_problem"]
         try:
             while len(selected) < max_iterations and len(iterations) < step_budget:
                 if getattr(self, "run_budget_exhausted", None):
@@ -1173,7 +1332,14 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                         ansatz.reference_state()
                     grads = self._gradients(psi)
                 max_grad = _max_abs(grads)
-                if convergence.reached(max_grad, delta_energy):
+                if convergence.reached(max_grad, delta_energy) or (
+                        carried and delta_energy is None
+                        and convergence.gradient is not None
+                        and max_grad < convergence.gradient):
+                    # An ansatz carried from another Hamiltonian (the previous
+                    # geometry) has no growth step whose energy change the
+                    # energy criterion could read: at its relaxed optimum the
+                    # gradient alone decides whether it stands as it is.
                     converged = True
                     break
                 # `op` is what the screening *selected* and what the iteration
@@ -1350,6 +1516,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
             optimizer_steps=total_steps,
             optimizer_failures=optimizer_failures,
             pruned_operators=pruned,
+            start=self.start,
             metrics=metrics,
             timings=timings.as_dict(),
             integration_profile=self._integration_profile,

@@ -224,6 +224,11 @@ class RHF:
     def _electronic_energy(self, D: np.ndarray, F: np.ndarray) -> float:
         return float(np.real(0.5 * np.sum(D * (self.h + F).T)))
 
+    def _mo_integrals(self, C: np.ndarray):
+        """``(h_mo, eri_mo)`` in the orbitals ``C``."""
+        return transform_integrals(self.h, self.eri, C)
+
+
     def run(self, max_iter: int = 200, tol: float = 1e-9,
             diis: bool = True, guesses: int = 2) -> RHFResult:
         """Run the SCF and return the lowest converged :class:`RHFResult`.
@@ -285,15 +290,89 @@ class RHF:
                 break
             D, energy = D_new, current
 
-        F = 0.5 * (self._fock(D) + self._fock(D).conj().T)
+        F = self._fock(D)
+        F = 0.5 * (F + F.conj().T)
         eps, _C_final = np.linalg.eigh(F)          # canonical orbital energies
         energy = self._electronic_energy(D, F)
-        h_mo, eri_mo = transform_integrals(self.h, self.eri, C)
+        h_mo, eri_mo = self._mo_integrals(C)
         return RHFResult(
             electronic_energy=energy, mo_energies=np.real(eps),
             mo_coefficients=C, n_occupied=self.n_occ, converged=converged,
-            h_mo=np.real_if_close(h_mo), eri_mo=np.real_if_close(eri_mo),
+            h_mo=np.real_if_close(h_mo),
+            eri_mo=None if eri_mo is None else np.real_if_close(eri_mo),
             n_iterations=it)
+
+
+#: Tolerance (energy and density) the coarse stage of a two-stage
+#: :class:`DirectRHF` is converged to before the exact builder takes over;
+#: above the local exchange's ~1e-7 Ha noise.
+COARSE_TOLERANCE = 1e-5
+
+#: Iterations the coarse stage may take before the exact builder takes over
+#: regardless.
+COARSE_MAX_ITERATIONS = 60
+
+
+class DirectRHF(RHF):
+    r"""Closed-shell RHF whose Fock matrix is built without the two-body tensor.
+
+    The same SCF as :class:`RHF` (DIIS, level shift, two starting guesses);
+    only the two-electron term differs: ``two_electron(D)`` returns
+    :math:`J[D] - \tfrac12 K[D]` in the orthonormal basis, built directly on
+    the grid (:class:`~mandacaru.integrals.direct.DirectCoulomb`).  The result
+    carries ``eri_mo = None``: an integral-direct calculation never forms the
+    :math:`M^4` molecular-orbital tensor, and asks for the integrals of the
+    orbitals it keeps instead.
+    """
+
+    def __init__(self, h: np.ndarray, two_electron, n_electrons: int,
+                 coarse_two_electron=None):
+        self.h = np.asarray(h, dtype=complex)
+        self.eri = None
+        self._exact = two_electron
+        self._coarse = coarse_two_electron
+        self._two_electron = (coarse_two_electron
+                              if coarse_two_electron is not None
+                              else two_electron)
+        self.M = self.h.shape[0]
+        if n_electrons % 2 != 0:
+            raise ValueError("RHF requires an even number of electrons")
+        self.n_electrons = int(n_electrons)
+        self.n_occ = self.n_electrons // 2
+        if self.n_occ > self.M:
+            raise ValueError(
+                f"{n_electrons} electrons need > {self.M} spatial orbitals")
+
+    def _fock(self, D: np.ndarray) -> np.ndarray:
+        return self.h + self._two_electron(D)
+
+    def _scf(self, D: np.ndarray, max_iter: int, tol: float,
+             diis: bool) -> RHFResult:
+        """One SCF run; in two stages when a coarse builder is given.
+
+        The coarse (local-exchange) Fock matrix is not a smooth function of
+        the density -- its boxes and kept functions are re-chosen from each
+        iterate, a ~1e-7 Ha noise at the default threshold -- so an SCF on it
+        alone does not reach a 1e-9 tolerance (C16H34: 200 iterations without
+        converging, where the exact one took 29).  It is run to
+        :data:`COARSE_TOLERANCE`, and the exact builder finishes from that
+        density, so the result is the exact SCF's.
+        """
+        if self._coarse is None:
+            return super()._scf(D, max_iter, tol, diis)
+        self._two_electron = self._coarse
+        first = super()._scf(D, min(max_iter, COARSE_MAX_ITERATIONS),
+                             max(tol, COARSE_TOLERANCE), diis)
+        self._two_electron = self._exact
+        second = super()._scf(self._density(first.mo_coefficients),
+                              max_iter, tol, diis)
+        self._two_electron = self._coarse
+        second.n_iterations = first.n_iterations + second.n_iterations
+        second.coarse_iterations = first.n_iterations
+        return second
+
+    def _mo_integrals(self, C: np.ndarray):
+        return C.conj().T @ self.h @ C, None
 
 
 @dataclass

@@ -114,17 +114,17 @@ def test_hellmann_feynman_and_pulay(h2):
     assert np.abs(forces.sum(axis=0)).max() < 0.15      # grid egg-box only
     assert np.abs(forces[:, :2]).max() < 0.1
     # 0.75 A is just *outside* the PAW-LCAO-DZP minimum, which sits at 0.733 A with
-    # the family's default basis since 2026-09-20 -- confined (0.1 eV), GPAW's
-    # split-valence scheme, GPAW's Gaussian polarization -- against 0.741
-    # (experiment) and 0.750 (plane-wave PBE).  The history of this line is the
-    # history of the basis: 0.807 A before the compensation charge gained its
-    # electron-ion attraction (< -1), 0.712 A with the SIESTA-style split and
-    # free-atom orbitals (> 1.0; kept reproducible below), 0.760 A with GPAW's
-    # split alone (< 0).
+    # the family's default basis since 2026-09-20 -- confined (0.1 eV), the
+    # first_zeta split-valence scheme, the Gaussian polarization -- against
+    # 0.741 (experiment) and 0.750 (plane-wave PBE).  The history of this line
+    # is the history of the basis: 0.807 A before the compensation charge
+    # gained its electron-ion attraction (< -1), 0.712 A with the last_zeta
+    # split and free-atom orbitals (> 1.0; kept reproducible below), 0.760 A
+    # with the first_zeta split alone (< 0).
     assert 0.3 < bond_force(forces) < 1.2
 
 
-def test_the_siesta_split_is_still_available():
+def test_the_last_zeta_split_is_still_available():
     atoms = dimer("H2", 0.75, 8.0)
     atoms.calc = calculator(h=0.25, basis={**BASIS, "split_norm": 0.15,
                                            "energy_shift": None})

@@ -354,7 +354,8 @@ def _pseudo_basis_count(atoms, family, options):
     parts = [size_label, filter_label(options.get("filter"))]
     if "energy_shift" in family.options:
         # Named always, like the filter: "unconfined" is a statement about the
-        # basis too, and the one a GPAW comparison has to get right.
+        # basis too, and the one a comparison with another LCAO code has to
+        # get right.
         from ..pseudopotentials.confinement import energy_shift_label
         parts.append(energy_shift_label(options.get("energy_shift")))
         from ..pseudopotentials.confinement import resolve_polarization

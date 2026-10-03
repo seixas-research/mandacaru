@@ -189,12 +189,20 @@ class MP2Result:
         semicanonicalization) and the virtual natural orbitals, ordered to match
         ``virtual_occupations``, on the virtual block.  Applying it to the MO
         coefficients gives those orbitals in the underlying basis.
+    occupied_density : ndarray
+        The spin-summed density's occupied block, ``2 + D_oo`` on its
+        diagonal, in the basis ``rotation`` leaves the occupied orbitals in.
+        Its diagonal is ``occupied_occupations``; a caller that wants occupied
+        natural orbitals diagonalizes the part of it it is free to rotate
+        (:func:`~mandacaru.algorithms.active_space.resolve_active_space`
+        does, over the active doubly occupied orbitals only).
     """
 
     correlation_energy: float
     occupied_occupations: np.ndarray
     virtual_occupations: np.ndarray
     rotation: np.ndarray
+    occupied_density: np.ndarray | None = None
 
     @property
     def occupations(self) -> np.ndarray:
@@ -399,7 +407,8 @@ def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
     return MP2Result(correlation_energy=float(correlation),
                      occupied_occupations=2.0 + np.real(np.diag(d_oo)),
                      virtual_occupations=vir_values,
-                     rotation=canonical @ natural)
+                     rotation=canonical @ natural,
+                     occupied_density=2.0 * np.eye(n_occ) + np.real(d_oo))
 
 
 # --------------------------------------------------------------------------- #
@@ -587,4 +596,6 @@ def open_shell_mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
     return MP2Result(correlation_energy=float(correlation),
                      occupied_occupations=reference + np.diag(gamma)[:n_high],
                      virtual_occupations=vir_values,
-                     rotation=natural)
+                     rotation=natural,
+                     occupied_density=(np.diag(reference)
+                                       + gamma[:n_high, :n_high]))

@@ -8,8 +8,7 @@
 
 r"""Numerical Atomic Orbitals (Sankey-type, radially confined).
 
-Following the SIESTA methodology, an NAO is a numerical radial function times a
-spherical harmonic,
+An NAO is a numerical radial function times a spherical harmonic,
 
 .. math::
 
@@ -49,7 +48,7 @@ from ..units import EV_TO_HARTREE, to_bohr
 from ._angular import spherical_coords, spherical_harmonic
 from .base import BasisFunction
 
-#: Default energy shift (eV) setting the confinement radius, as in SIESTA.
+#: Default energy shift (eV) setting the confinement radius.
 DEFAULT_ENERGY_SHIFT = 0.03
 
 

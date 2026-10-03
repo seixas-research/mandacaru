@@ -23,6 +23,9 @@ method's own:
 * an **electrons** block with how the electronic problem was posed -- grid,
   kinetic operator, k-points, spin, the fermion-to-qubit mapping and the
   size of the register and Hamiltonian it produced;
+* an **active space** block, only when orbitals were frozen or deleted: the
+  selector that ranked them, its occupation numbers and where every spatial
+  orbital went;
 * an **optimization setup** block naming the classical optimizer, the method's
   own settings (the operator pool, the fixed ansatz, the chain's schedule) and
   the reference (Hartree-Fock) energy the run starts from;
@@ -430,7 +433,24 @@ class Logger:
         column names, written as an aligned table one level deeper.  Cells must
         not contain spaces: a reader splits the rows on whitespace.
         """
-        self._emit("[BASIS]")
+        self._write_fields_and_tables("BASIS", fields, tables)
+
+    def write_active_space(self, fields: dict,
+                           tables: dict | None = None) -> None:
+        """Write the ``[ACTIVE SPACE]`` block: how the register was reduced.
+
+        Written only when orbitals were frozen or deleted.  ``fields`` name the
+        selector and what it was asked for; the ``orbitals`` table lists every
+        spatial orbital with its reference occupancy, where it went (frozen,
+        active or deleted) and, when the selector computed one, its occupation
+        number.  Laid out as ``[BASIS]`` is, and read back the same way.
+        """
+        self._write_fields_and_tables("ACTIVE SPACE", fields, tables)
+
+    def _write_fields_and_tables(self, section: str, fields: dict,
+                                 tables: dict | None) -> None:
+        """A block of keyed lines followed by aligned tables."""
+        self._emit(f"[{section}]")
         for key, value in fields.items():
             if value is not None:
                 self._emit_body(f"{key}: {value}")
@@ -1526,7 +1546,7 @@ _PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs",
 
 #: Section markers of the protocol, mapped to the key they fill (the step
 #: markers are handled separately: they open a new geometry step).
-_SECTIONS = {"[BASIS]": "basis",
+_SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space",
              "[NESTED OTOC]": "nested_otoc",
              "[QUANTUM ECHOES]": "quantum_echoes",
              "[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
@@ -1561,6 +1581,8 @@ def parse_output(path: str) -> dict:
     tables remain readable; current reports point to a separate CSV file.
     ``[NESTED OTOC]`` is returned under ``nested_otoc`` with metadata and
     dimensionless correlator samples; its CSV contains signed frequencies.
+    ``[BASIS]`` and ``[ACTIVE SPACE]`` are returned under ``basis`` and
+    ``active_space``, their tables as lists of rows keyed by column name.
 
     A file written by a geometry optimization holds one block per step
     (see the module docstring).  ``result["steps"]`` is the list of those blocks,
@@ -1627,10 +1649,10 @@ def parse_output(path: str) -> dict:
                     step["performance"] = {"stages_s": {}}
                 elif section in ("electrons", "measurement"):
                     step[section] = {}
-                elif section == "basis":
+                elif section in ("basis", "active_space"):
                     table = None
                     basis_columns = None
-                    step["basis"] = {}
+                    step[section] = {}
                 elif section in ("quantum_echoes", "nested_otoc"):
                     table = None
                     echo_columns = None
@@ -1701,8 +1723,8 @@ def parse_output(path: str) -> dict:
                     else:
                         numeric = number(value)
                         block[key] = value if numeric is None else numeric
-            elif section == "basis":
-                block = step["basis"]
+            elif section in ("basis", "active_space"):
+                block = step[section]
                 if stripped.endswith(":") and indent < len(INDENT) * 2:
                     table = stripped[:-1]          # "datasets", "orbitals", ...
                     basis_columns = None

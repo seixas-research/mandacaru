@@ -82,6 +82,16 @@ class MeanFieldResult:
     #: Wall-clock stages, resources and the total, as for the quantum drivers.
     timings: dict | None = None
 
+    def __getattribute__(self, name):
+        # A Kohn-Sham result carries its Hamiltonian as a recipe
+        # (`dft.LazyHamiltonian`) and builds it the first time it is read.
+        value = object.__getattribute__(self, name)
+        if name == "fermion_hamiltonian" and hasattr(value, "build") \
+                and not isinstance(value, Fermion):
+            value = value.build()
+            object.__setattr__(self, name, value)
+        return value
+
     @property
     def success(self) -> bool:
         """Whether the underlying SCF converged."""

@@ -100,3 +100,43 @@ def test_examples_never_write_with_a_bare_relative_path(script):
         f"{os.path.relpath(script, REPO)} writes {hits} with a bare relative "
         "path, which lands in the current working directory; build the path "
         "from the script's own location (os.path.join(DATA, ...)).")
+
+
+#: Names of other electronic-structure codes, which no file may carry: a
+#: scheme or option is named by what it does, never by the code that
+#: popularized it.  Spelled reversed so this file does not carry them either.
+_FOREIGN_CODES = tuple(name[::-1] for name in ("wapg", "atseis", "psav"))
+#: The only files allowed to name them: the harness rules and the gitignored
+#: development log.
+_MAY_NAME_CODES = {"CLAUDE.md", "HISTORY.md"}
+
+
+def _repository_files():
+    """Tracked files plus untracked ones git does not ignore."""
+    import subprocess
+
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=REPO, capture_output=True, check=True).stdout
+    return sorted({name for name in listed.decode().split("\0") if name})
+
+
+def test_no_file_names_another_code():
+    pattern = re.compile("|".join(_FOREIGN_CODES).encode(), re.IGNORECASE)
+    hits = []
+    for name in _repository_files():
+        path = os.path.join(REPO, name)
+        if name in _MAY_NAME_CODES or not os.path.isfile(path):
+            continue
+        if pattern.search(name.encode()):
+            hits.append(name)
+            continue
+        with open(path, "rb") as fh:
+            content = fh.read()
+        # Binary data (images, Parquet, trajectories) can match four letters
+        # by chance; the rule is about what people write.
+        if b"\0" not in content and pattern.search(content):
+            hits.append(name)
+    assert not hits, (
+        f"files naming another electronic-structure code: {hits}. Name a "
+        "scheme by what it does (CLAUDE.md hard rule).")
