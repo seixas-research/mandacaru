@@ -1498,10 +1498,23 @@ class Mandacaru(Calculator):
         the state (a density, a natural orbital) needs only the one-body RDM,
         and building the two-body one costs ``M**4`` inner products it would
         throw away.
+
+        A mean-field solver (RHF, UHF, DFT) is one determinant: its one-RDM
+        comes from its orbitals (``solver.mean_field_rdm()``), with no state
+        vector built, and a two-body RDM is refused.
         """
         from .rdm import (one_rdm, pauli_expectations, rdm_qubit_operators,
                           rdms_from_expectations, two_rdm)
 
+        if psi is None and hasattr(solver, "mean_field_rdm"):
+            # A mean-field run is one determinant: its RDM comes from the
+            # orbitals, with no state vector (2^(2M) amplitudes) built.
+            if two_body:
+                raise NotImplementedError(
+                    f"method {self.method!r} is a mean-field determinant, and "
+                    "the quantity asked for needs a two-body RDM, which is "
+                    "computed only for quantum (correlated) states")
+            return solver.mean_field_rdm(), None
         if psi is None:
             psi = self._converged_state(solver)
         n_qubits = int(solver.n_qubits)
@@ -2255,6 +2268,9 @@ class Mandacaru(Calculator):
             return np.asarray(state, dtype=complex).ravel()
         index = int(state)
         if index == 0:
+            # ``None`` lets `_state_rdms` take the mean-field route.
+            if hasattr(solver, "mean_field_rdm"):
+                return None
             return self._converged_state(solver)
         states = getattr(solver.result, "states", None)
         if states is None or index >= len(states):

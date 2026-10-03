@@ -767,6 +767,9 @@ class DFTDriver(_MeanFieldDriver):
             raise NotImplementedError(
                 "method='dft' is closed-shell (n_alpha = n_beta) for now")
         self._scf = kohn_sham(integrals, sum(full_particles), self.xc)
+        # The exported Hamiltonian and every one-particle picture (density,
+        # populations, cube files) are in the Kohn-Sham orbitals.
+        integrals.mo_coefficients = np.asarray(self._scf.mo_coefficients)
         if self.dispersion:
             self._scf.dispersion_energy = d4_dispersion_energy(self.atoms,
                                                                self.xc)
@@ -801,6 +804,9 @@ class DFTDriver(_MeanFieldDriver):
                           and _datasets_relativistic(datasets)),
             constant=constant)
         self._scf = solver.run()
+        # Kept for the non-self-consistent spectra: it holds the converged
+        # potential (`PeriodicKohnSham.bands`).
+        self._periodic_solver = solver
         self.fermion_hamiltonian = None
         self.hamiltonian = None
         self.num_particles = tuple(int(n) for n in num_particles)
@@ -837,6 +843,234 @@ class DFTDriver(_MeanFieldDriver):
         result.details["energy_hartree"] += (scf.core_correction_energy
                                              + scf.dispersion_energy)
         return result
+
+    # -- spectra: eigenvalues, bands, densities of states ------------------- #
+
+    def _require_scf(self):
+        if getattr(self, "_scf", None) is None:
+            raise ValueError(
+                "the Kohn-Sham spectrum needs a converged run, so the energy "
+                "has to have been computed first: atoms.calc = "
+                "Mandacaru(method='dft', ...); atoms.get_potential_energy().")
+        return self._scf
+
+    def _require_crystal(self, what: str):
+        self._require_scf()
+        if not self._periodic:
+            raise NotImplementedError(
+                f"{what} needs a periodic geometry: a molecule has discrete "
+                "levels and no k-dependence.  Use calc.dos() or calc.pdos() "
+                "for its broadened spectrum.")
+        return self._gradient_context["integrals"]
+
+    def _orbital_shells(self) -> list:
+        """``(atom, l)`` of every basis function, in the matrices' order."""
+        context = self._gradient_context
+        basis = list(context["integrals"].basis)
+        owners = list(context["atom_of_orbital"])
+        if (not self._periodic and (context.get("frozen")
+                                    or context.get("active_space"))) \
+                or len(basis) != len(owners):
+            raise NotImplementedError(
+                "the projected spectrum needs every basis function in the "
+                "Kohn-Sham problem; this run froze or removed some")
+        return [(int(a), int(f.l)) for a, f in zip(owners, basis)]
+
+    def mean_field_rdm(self) -> np.ndarray:
+        """The Kohn-Sham determinant's one-RDM (molecules).
+
+        A crystal's density is k-resolved and augmented on the cell grid; the
+        partitions and cube writers of a molecule do not apply to it yet.
+        """
+        if self._periodic:
+            raise NotImplementedError(
+                "population analysis, cube files and dipoles of a periodic "
+                "Kohn-Sham run are not wired yet; calc.pdos() gives the "
+                "per-atom projections of the states")
+        return super().mean_field_rdm()
+
+    def get_number_of_spins(self) -> int:
+        """1: the Kohn-Sham problem is spin-restricted."""
+        return 1
+
+    def get_ibz_k_points(self) -> np.ndarray:
+        """The SCF k-points (fractional), reduced; Gamma for a molecule."""
+        self._require_scf()
+        if not self._periodic:
+            return np.zeros((1, 3))
+        return np.asarray(self._gradient_context["kpoints_fractional"], float)
+
+    def get_k_point_weights(self) -> np.ndarray:
+        """Weights of :meth:`get_ibz_k_points`, summing to one."""
+        scf = self._require_scf()
+        return (np.asarray(scf.weights, float) if self._periodic
+                else np.ones(1))
+
+    def get_eigenvalues(self, kpt: int = 0, spin: int = 0) -> np.ndarray:
+        """Kohn-Sham eigenvalues (eV) at the ``kpt``-th irreducible k-point.
+
+        Crystals are on the plane-wave reference of
+        :meth:`~mandacaru.algorithms.periodic_dft.PeriodicKohnSham.eigenvalue_reference`.
+        """
+        from ..units import HARTREE_TO_EV
+
+        scf = self._require_scf()
+        if spin != 0:
+            raise ValueError("the Kohn-Sham problem is spin-restricted: "
+                             "spin must be 0")
+        values = (scf.eigenvalues[kpt] if self._periodic
+                  else [scf.mo_energies][kpt])
+        return np.asarray(values, dtype=float) * HARTREE_TO_EV
+
+    def get_fermi_level(self) -> float:
+        """The Fermi level (eV); midway between HOMO and LUMO for a molecule."""
+        from ..units import HARTREE_TO_EV
+
+        scf = self._require_scf()
+        if self._periodic:
+            return float(scf.fermi_level) * HARTREE_TO_EV
+        levels = np.asarray(scf.mo_energies, dtype=float)
+        n = int(scf.n_occupied)
+        homo = levels[n - 1]
+        mu = homo if n >= len(levels) else 0.5 * (homo + levels[n])
+        return float(mu) * HARTREE_TO_EV
+
+    def _band_path(self, path, npoints: int):
+        """The path in the cell the potential was converged in: ``self.atoms``
+        is the copy ASE's ``calculate`` stored, not the user's Atoms."""
+        atoms = self.atoms
+        return atoms.cell.bandpath(path, npoints=int(npoints),
+                                   pbc=atoms.get_pbc())
+
+    def band_structure(self, path=None, npoints: int = 100):
+        """Non-self-consistent Kohn-Sham bands along a high-symmetry path.
+
+        The converged potential is frozen and :math:`H(\\mathbf k)` is
+        diagonalized at every point of ``path`` -- a string such as
+        ``"GXWKGLUWLK"``, or ``None`` for the lattice's own path -- so the
+        bands are continuous, not limited to the SCF mesh.  Returns ASE's
+        :class:`~ase.spectrum.band_structure.BandStructure` (eV, one spin
+        channel, ``reference`` the Fermi level); ``.plot()`` draws it.
+        """
+        from ase.spectrum.band_structure import BandStructure
+
+        from ..units import HARTREE_TO_EV
+
+        crystal = self._require_crystal("a band structure")
+        bandpath = self._band_path(path, npoints)
+        eigenvalues, _ = self._periodic_solver.bands(
+            crystal.cartesian_kpoints(bandpath.kpts))
+        self._cite("SetyawanCurtarolo2010")
+        return BandStructure(bandpath, eigenvalues[None] * HARTREE_TO_EV,
+                             reference=self.get_fermi_level())
+
+    def fat_bands(self, path=None, npoints: int = 100):
+        """:meth:`band_structure` plus each state's weight on each atomic shell.
+
+        Returns ``(band_structure, weights)``; ``weights[(atom, l)]`` is a
+        ``(n_kpoints, n_bands)`` array of Loewdin weights, and the weights of
+        one state sum to one over every ``(atom, l)``.
+        """
+        from ase.spectrum.band_structure import BandStructure
+
+        from ..units import HARTREE_TO_EV
+
+        crystal = self._require_crystal("fat bands")
+        bandpath = self._band_path(path, npoints)
+        eigenvalues, weights = self._periodic_solver.bands(
+            crystal.cartesian_kpoints(bandpath.kpts), projections=True)
+        self._cite("SetyawanCurtarolo2010", "Loewdin1950")
+        shells = self._orbital_shells()
+        grouped = {}
+        for mu, shell in enumerate(shells):
+            grouped[shell] = grouped.get(shell, 0.0) + weights[:, mu, :]
+        structure = BandStructure(bandpath, eigenvalues[None] * HARTREE_TO_EV,
+                                  reference=self.get_fermi_level())
+        return structure, dict(sorted(grouped.items()))
+
+    def _spectrum(self, kpts, projections: bool):
+        """``(eigenvalues eV (nk, n), weights (nk,), state weights, symmetry)``.
+
+        ``kpts=None`` is the SCF mesh; any other mesh is diagonalized
+        non-self-consistently after the same symmetry reduction.
+        """
+        from ..units import HARTREE_TO_EV
+
+        scf = self._require_scf()
+        if not self._periodic:
+            if kpts is not None:
+                raise ValueError("kpts samples a crystal's Brillouin zone; "
+                                 "a molecule has none")
+            C = np.asarray(scf.mo_coefficients)
+            levels = np.asarray(scf.mo_energies, dtype=float)[None]
+            state = (np.abs(C) ** 2)[None] if projections else None
+            return levels * HARTREE_TO_EV, np.ones(1), state, None
+        crystal = self._gradient_context["integrals"]
+        if kpts is None and not projections:
+            return (np.array(scf.eigenvalues) * HARTREE_TO_EV,
+                    np.asarray(scf.weights, float), None, crystal.symmetry)
+        from ..pseudopotentials.periodic_paw import reduce_mesh
+        from ._hamiltonian_from_atoms import monkhorst_pack_kpts
+
+        spec = (kpts if kpts is not None
+                else {"size": tuple(self.kpts), "gamma": self.kpts_gamma})
+        _size, _gamma, mesh = monkhorst_pack_kpts(spec)
+        points, weights, symmetry = reduce_mesh(mesh, crystal.symmetry)
+        eigenvalues, state = self._periodic_solver.bands(
+            crystal.cartesian_kpoints(points), projections=projections)
+        return eigenvalues * HARTREE_TO_EV, weights, state, symmetry
+
+    @staticmethod
+    def _energy_axis(eigenvalues, width: float, npoints: int, energies):
+        if energies is not None:
+            return np.asarray(energies, dtype=float)
+        return np.linspace(eigenvalues.min() - 5.0 * width,
+                           eigenvalues.max() + 5.0 * width, int(npoints))
+
+    def dos(self, width: float = 0.1, npoints: int = 2001, kpts=None,
+            energies=None):
+        """Gaussian-broadened density of states, ``(energies, dos)``.
+
+        ``energies`` in eV (on the eigenvalues' reference -- subtract
+        :meth:`get_fermi_level` to center it), ``dos`` in states/eV per cell
+        (per molecule), both spins: it integrates to twice the number of
+        bands.  ``width`` is the Gaussian's standard deviation (eV).  A
+        crystal's ``kpts`` (a mesh, as for the calculator) is diagonalized
+        non-self-consistently -- a denser mesh than the SCF one gives a
+        smoother curve; ``None`` uses the SCF mesh.
+        """
+        from .periodic_dft import broadened_dos
+
+        eigenvalues, weights, _state, _sym = self._spectrum(kpts, False)
+        axis = self._energy_axis(eigenvalues, width, npoints, energies)
+        return axis, broadened_dos(axis, eigenvalues, weights, width)
+
+    def pdos(self, width: float = 0.1, npoints: int = 2001, kpts=None,
+             energies=None):
+        """Density of states projected on atomic shells, ``(energies, pdos)``.
+
+        ``pdos[(atom, l)]`` is the share of :meth:`dos` carried by the
+        Loewdin-orthogonalized orbitals of angular momentum ``l`` on atom
+        ``atom`` (index into the Atoms); the shells sum to the total.  On a
+        symmetry-reduced mesh each atom's share is averaged over the atoms
+        the operations map it to, which makes it the full mesh's.
+        """
+        from .periodic_dft import broadened_dos
+
+        eigenvalues, weights, state, symmetry = self._spectrum(kpts, True)
+        axis = self._energy_axis(eigenvalues, width, npoints, energies)
+        per_orbital = broadened_dos(axis, eigenvalues, weights, width,
+                                    state_weights=state)
+        self._cite("Loewdin1950")
+        grouped = {}
+        for mu, shell in enumerate(self._orbital_shells()):
+            grouped[shell] = grouped.get(shell, 0.0) + per_orbital[:, mu]
+        if symmetry is not None:
+            maps = symmetry.atom_maps
+            grouped = {(atom, l): sum(grouped.get((int(m[atom]), l), 0.0)
+                                      for m in maps) / len(maps)
+                       for (atom, l) in grouped}
+        return axis, dict(sorted(grouped.items()))
 
     def _result(self, timings, run_t0) -> MeanFieldResult:
         """The :class:`MeanFieldResult` of the Kohn-Sham SCF.

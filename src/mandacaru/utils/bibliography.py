@@ -769,6 +769,18 @@ _BASES = [
   doi     = {10.1103/PhysRevB.13.5188}
 }""", "the Brillouin-zone sampling `kpts` resolves", verified=False,
          topics=("periodic",)),
+    _ref("SetyawanCurtarolo2010", """
+@article{SetyawanCurtarolo2010,
+  author  = {Setyawan, Wahyu and Curtarolo, Stefano},
+  title   = {High-throughput electronic band structure calculations:
+             {C}hallenges and tools},
+  journal = {Comput. Mater. Sci.},
+  volume  = {49},
+  pages   = {299--312},
+  year    = {2010},
+  doi     = {10.1016/j.commatsci.2010.05.010}
+}""", "the default high-symmetry band path of each Bravais lattice",
+         verified=False, topics=("periodic",)),
     _ref("Lehmann1954", """
 @article{Lehmann1954,
   author  = {Lehmann, Harry},

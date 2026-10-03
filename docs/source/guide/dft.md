@@ -158,7 +158,16 @@ the dataset warning described above.
 The Kohn-Sham eigenvalues also give the molecular density of states: the
 levels, each broadened by a Gaussian, of one isolated molecule. This is a
 picture of its orbital energies at the Gamma point, not a band structure; see
+the "Bands and densities of states" section below and
 [the density-of-states example](../../../examples/new/04_DFT_H2O_dos.py).
+
+## Populations, cube files and dipoles of a molecule
+
+For a molecule, `method="dft"` (like `"rhf"` and `"uhf"`) gives the one-particle
+analyses of the converged state: Hirshfeld populations
+(`population="hirshfeld"`), `atoms.calc.get_charges()`, `write_cube`,
+`get_dipole_moment()` and `natural_orbitals`. A crystal refuses all of them,
+with a pointer to `pdos`, which gives the per-atom projection of its states.
 
 ## Reading the run log
 
@@ -291,7 +300,79 @@ result.fermi_level, result.free_energy, result.scf.band_gap
   supercell: equal to 1e-8 Ha per cell).
 
 Not yet available for crystals: forces and stress, D4, spin polarization,
-and band structures or densities of states.
+and populations, cube files and dipoles (use `pdos` for the per-atom picture).
+
+## Bands and densities of states
+
+After `atoms.get_potential_energy()`, the converged potential can be reused
+without another SCF. Every method below is reached as `atoms.calc.<name>`.
+
+```python
+from ase.build import bulk
+from mandacaru import Mandacaru
+
+si = bulk("Si", "diamond", a=5.43)
+si.calc = Mandacaru(method="dft", xc="lda", h=0.25,
+                    kpts={"size": (4, 4, 4), "gamma": True},
+                    basis={"name": "PAW-LCAO", "size": "DZP"})
+si.get_potential_energy()
+
+bands = si.calc.band_structure(path="LGXWKG", npoints=80)
+bands.plot()                                      # ASE BandStructure
+
+structure, weights = si.calc.fat_bands(path="LGXWKG", npoints=80)
+energies, dos = si.calc.dos(width=0.1, kpts=(8, 8, 8))
+energies, pdos = si.calc.pdos(width=0.1, kpts=(8, 8, 8))
+energies = energies - si.calc.get_fermi_level()   # center on the Fermi level
+```
+
+- **`band_structure(path=None, npoints=100)`** freezes the converged potential
+  and diagonalizes $H(\mathbf k)$ at every point of `path`: a string of
+  high-symmetry labels such as `"LGXWKG"`, or `None` for the lattice's own
+  path. It is non-self-consistent, so the bands are continuous along the path
+  and not limited to the SCF mesh. It returns an ASE `BandStructure` (eV, one
+  spin channel, `reference` the Fermi level) and `.plot()` draws it. Crystals
+  only: a molecule has no Brillouin zone and refuses it.
+- **`fat_bands(path=None, npoints=100)`** returns `(band_structure, weights)`.
+  `weights[(atom, l)]` is a `(n_kpoints, n_bands)` array of the Loewdin weight
+  of each state on the shell of angular momentum `l` of atom `atom`; the weights
+  of one state sum to one over every `(atom, l)`.
+- **`dos(width=0.1, npoints=2001, kpts=None, energies=None)`** returns
+  `(energies, dos)`. Energies are in eV and `dos` is in states/eV per cell (per
+  molecule), counting both spins, so it integrates to twice the number of
+  bands. `width` is the standard deviation of the Gaussian, in eV. `kpts=` takes
+  a mesh like the calculator's own and diagonalizes it non-self-consistently
+  after the same symmetry reduction, so a mesh denser than the SCF one gives a
+  smoother curve; `None` uses the SCF mesh. A molecule has no `kpts`: passing
+  one is refused.
+- **`pdos(...)`** takes the same arguments and returns `(energies, pdos)` with
+  `pdos[(atom, l)]`, the part of the total carried by the Loewdin-orthogonalized
+  orbitals of angular momentum `l` on atom `atom` (an index into the `Atoms`).
+  The shells sum to the total. On a symmetry-reduced mesh each atom's share is
+  averaged over the atoms the operations map it to, which makes it the full
+  mesh's. A molecule works the same way, with one "k-point" and the squared
+  orbital coefficients in the Loewdin basis. Like any division of a state
+  between atoms, the shares depend on the basis: diffuse functions on one
+  atom overlap its neighbors, and the symmetric orthogonalization spreads
+  that overlap evenly. Water's lowest level is 68 % oxygen in an SZ basis
+  and 50 % in DZP (Mulliken: 80 % and 64 %), while the lone pair stays
+  oxygen's. Compare shares within one basis, not across bases.
+- **The energy reference.** The energies are on the eigenvalues' own reference
+  (the plane-wave zero for a crystal, see above), not on the Fermi level.
+  Subtract `atoms.calc.get_fermi_level()` to center a plot. For a molecule the
+  Fermi level lies midway between the HOMO and the LUMO.
+
+The ASE getters are available too: `get_eigenvalues(kpt=0, spin=0)` in eV at
+the `kpt`-th irreducible SCF k-point (`spin` must be 0, the problem is
+spin-restricted), `get_fermi_level()` in eV, `get_ibz_k_points()` (fractional,
+reduced), `get_k_point_weights()` (summing to one) and `get_number_of_spins()`
+(always 1).
+
+The mesh band gap in `result.scf.band_gap` is an upper bound whenever a band
+edge lies between the mesh points; the gap along a `band_structure` path shows
+how much. See [the silicon bands example](../../../examples/new/08_DFT_Si_bands.py)
+and, for a molecule, [the density-of-states
+example](../../../examples/new/04_DFT_H2O_dos.py).
 
 ## What is not implemented
 
@@ -303,8 +384,7 @@ The following are refused or unavailable:
   PAW-LCAO only.
 - **D4 with LDA**, and **D4 or forces for a crystal**, as above.
 
-Not implemented yet: band structures along a path, projected densities of
-states and fat bands, the Fermi surface, the dielectric constant and hybrid
+Not implemented yet: the Fermi surface, the dielectric constant and hybrid
 functionals.
 
 ## References

@@ -10,7 +10,9 @@
 #
 # A molecule has discrete levels, so the "density of states" here is the list of
 # Kohn-Sham eigenvalues with each level (two electrons per spatial orbital)
-# smeared by a Gaussian of width SIGMA.  It is a picture of the orbital
+# smeared by a Gaussian of standard deviation SIGMA; atoms.calc.dos() does the
+# broadening and atoms.calc.pdos() splits it among the atoms, from the weight
+# of each orbital on them (Loewdin projection).  It is a picture of the orbital
 # energies of one isolated molecule at the Gamma point: not a band structure,
 # and the gap between the highest occupied and lowest unoccupied level is an
 # orbital-energy gap, not an excitation energy.
@@ -25,7 +27,6 @@ import matplotlib
 matplotlib.use("Agg")                                     # write the file, no window
 import matplotlib.pyplot as plt
 import numpy as np
-from ase import units
 from ase.build import molecule
 
 from mandacaru import Mandacaru
@@ -52,7 +53,7 @@ atoms.calc = Mandacaru(method="dft",
 atoms.get_potential_energy()
 scf = atoms.calc.result.scf
 
-eigenvalues = scf.mo_energies * units.Hartree             # Kohn-Sham levels (eV)
+eigenvalues = atoms.calc.get_eigenvalues()                # Kohn-Sham levels (eV)
 n_occupied = scf.n_occupied                               # doubly occupied orbitals
 homo = eigenvalues[n_occupied - 1]
 lumo = eigenvalues[n_occupied]
@@ -61,24 +62,23 @@ low = eigenvalues[0] - 4.0 * SIGMA
 high = homo + ABOVE_HOMO
 energy = np.linspace(low, high, 2000)
 
+# Total density of states (states / eV, both spins; SIGMA is the Gaussian's
+# standard deviation) and its projection on the shells of each atom.  The
+# levels are on the eigenvalue reference, as are the HOMO and LUMO above.
+energy, total = atoms.calc.dos(width=SIGMA, energies=energy)
+energy, projected = atoms.calc.pdos(width=SIGMA, energies=energy)
 
-def broadened(levels):
-    """Sum of Gaussians, two electrons per spatial level (states / eV)."""
-    levels = np.asarray(levels)[:, None]
-    peaks = np.exp(-0.5 * ((energy[None, :] - levels) / SIGMA) ** 2)
-    return 2.0 * peaks.sum(axis=0) / (SIGMA * np.sqrt(2.0 * np.pi))
-
-
-occupied = broadened(eigenvalues[:n_occupied])
-unoccupied = broadened(eigenvalues[n_occupied:])
+# Sum the shells of every atom of one element: the O and the two H.
+symbols = atoms.get_chemical_symbols()
+by_element = {}
+for (atom, _l), curve in projected.items():
+    by_element[symbols[atom]] = by_element.get(symbols[atom], 0.0) + curve
 
 fig, ax = plt.subplots(figsize=(6.0, 4.0))
-ax.fill_between(energy, occupied, color="tab:blue", alpha=0.35,
-                label="occupied")
-ax.plot(energy, occupied, color="tab:blue")
-ax.fill_between(energy, unoccupied, color="tab:orange", alpha=0.35,
-                label="unoccupied")
-ax.plot(energy, unoccupied, color="tab:orange")
+ax.fill_between(energy, total, color="lightgray", alpha=0.6)
+ax.plot(energy, total, color="black", label="total")
+for element, color in (("O", "tab:red"), ("H", "tab:blue")):
+    ax.plot(energy, by_element[element], color=color, label=f"{element} (all atoms)")
 ax.vlines(eigenvalues[eigenvalues < high], 0.0, -0.4, color="black", lw=0.8)
 ax.axvline(homo, color="gray", ls="--", lw=0.8)
 ax.axvline(lumo, color="gray", ls=":", lw=0.8)

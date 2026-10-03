@@ -173,6 +173,8 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
     radial table and a center -- the ``m`` components of one shell -- share
     the geometry and the radial interpolation of every image.
     """
+    from scipy.sparse import csr_matrix
+
     from ..basis._angular import spherical_harmonic
 
     x, y, z = (np.asarray(c, dtype=float).ravel() for c in points)
@@ -191,6 +193,12 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
         reach = support + float(region_radius)
         offset = float(np.linalg.norm(center - region_center))
         shared = _shell_key(first) is not None
+        # Every image's values are independent of k: collect them as one
+        # sparse (image x point) matrix per function and apply all the
+        # k-points' phases in a single product, instead of scattering
+        # nk x points per image.
+        translations, rows, cols = [], [], []
+        values = {mu: [] for mu in members}
         for R in rc.lattice_translations(lattice, reach + offset):
             origin = center + R
             if np.linalg.norm(origin - region_center) > reach:
@@ -206,22 +214,29 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
             if not np.any(inside):
                 continue
             idx, r = idx[inside], r[inside]
-            phases = np.exp(1j * (kpoints @ R))
+            rows.append(np.full(idx.size, len(translations)))
+            cols.append(idx)
+            translations.append(R)
             if shared:
                 theta = np.arccos(np.clip(dz[idx] / np.maximum(r, 1e-300),
                                           -1.0, 1.0))
                 phi = np.arctan2(dy[idx], dx[idx])
                 radial = first.radial(r)
                 for mu in members:
-                    values = radial * spherical_harmonic(
-                        functions[mu].l, functions[mu].m, theta, phi)
-                    out[:, mu, idx] += phases[:, None] * values[None, :]
+                    values[mu].append(radial * spherical_harmonic(
+                        functions[mu].l, functions[mu].m, theta, phi))
             else:
                 for mu in members:
-                    values = functions[mu].evaluate(x[idx] - R[0],
-                                                    y[idx] - R[1],
-                                                    z[idx] - R[2])
-                    out[:, mu, idx] += phases[:, None] * values[None, :]
+                    values[mu].append(functions[mu].evaluate(
+                        x[idx] - R[0], y[idx] - R[1], z[idx] - R[2]))
+        if not translations:
+            continue
+        phases = np.exp(1j * (kpoints @ np.array(translations).T))  # (nk, n_R)
+        rows, cols = np.concatenate(rows), np.concatenate(cols)
+        for mu in members:
+            images = csr_matrix((np.concatenate(values[mu]), (rows, cols)),
+                                shape=(len(translations), x.size))
+            out[:, mu, :] += (images.T @ phases.T).T
     return out
 
 
@@ -556,27 +571,39 @@ class PeriodicPAW:
         return center, radius
 
     def _kpoints(self) -> list:
-        """:class:`KPointMatrices` of every k-point.
+        """:class:`KPointMatrices` of the crystal's own (reduced) k-points."""
+        return self.kpoint_matrices(self.kpoints, self.weights)
 
+    def cartesian_kpoints(self, fractional) -> np.ndarray:
+        """Fractional k-points (reciprocal-lattice units) in Bohr^-1."""
+        B = rc.reciprocal_vectors(self.lattice)
+        return np.atleast_2d(np.asarray(fractional, dtype=float)) @ B.T
+
+    def kpoint_matrices(self, kpoints, weights=None) -> list:
+        """:class:`KPointMatrices` at arbitrary Cartesian ``kpoints`` (Bohr^-1).
+
+        ``weights`` defaults to zero: points off the SCF mesh carry none.
         Each region's Bloch sums -- the cell grid, every projector sphere and
         every short-range sphere -- are evaluated for a block of k-points at
         a time: the images and their radial values do not depend on k, so a
         block shares them, and the block size bounds the memory
         (:data:`KPOINT_BLOCK_BYTES`).
         """
+        all_kpoints = np.atleast_2d(np.asarray(kpoints, dtype=float))
+        all_weights = (np.zeros(len(all_kpoints)) if weights is None
+                       else np.asarray(weights, dtype=float))
         center, radius = self._cell_region()
-        largest = max(self.grid.size, 131072)
-        block = max(1, int(KPOINT_BLOCK_BYTES // (16 * self.M * largest)))
+        block = self.kpoint_block()
         dV = self.grid.dV
         out = []
-        for start in range(0, len(self.kpoints), block):
-            kpoints = self.kpoints[start:start + block]
+        for start in range(0, len(all_kpoints), block):
+            kpoints = all_kpoints[start:start + block]
             psi_all = bloch_values(self.basis, self.lattice, kpoints,
                                    self._grid_points(), center, radius)
             C_all = self._projections(kpoints)
             V_all = self._short_range_local(kpoints)
             for i, k in enumerate(kpoints):
-                weight = self.weights[start + i]
+                weight = all_weights[start + i]
                 psi, C = psi_all[i], C_all[i]
                 S = (psi.conj() @ psi.T) * dV + C @ self.q_overlap @ C.conj().T
                 fixed = (self._kinetic(psi, k) + V_all[i]
@@ -591,6 +618,11 @@ class PeriodicPAW:
                     fixed=0.5 * (fixed + fixed.conj().T), projections=C,
                     moments=moments))
         return out
+
+    def kpoint_block(self) -> int:
+        """How many k-points' Bloch sums fit :data:`KPOINT_BLOCK_BYTES`."""
+        largest = max(self.grid.size, 131072)
+        return max(1, int(KPOINT_BLOCK_BYTES // (16 * self.M * largest)))
 
     def _periodic_part(self, psi, k):
         """``u = e^{-i k.r} chi`` on the grid, transformed: ``(M, n1, n2, n3)``."""
@@ -683,12 +715,19 @@ class PeriodicPAW:
             rho, q = self.symmetry.field(rho), self.symmetry.moments(q)
         return rho, q
 
-    def kinetic_energy_density(self, matrices) -> np.ndarray:
+    def kinetic_energy_density(self, matrices, gradients=None) -> np.ndarray:
         r""":math:`\tau = \tfrac12\sum_k w_k \sum P^k_{\mu\nu}
-        \nabla\chi_\mu\cdot\nabla\chi^*_\nu`."""
+        \nabla\chi_\mu\cdot\nabla\chi^*_\nu`, symmetrized like the density.
+
+        ``gradients`` (per k-point, :meth:`bloch_gradients`) reuses ones a
+        caller already holds -- the SCF evaluates tau every iteration.
+        """
+        if gradients is None:
+            gradients = [self.bloch_gradients(d.psi, d.k)
+                         for d in self.kpoint_data]
         tau = np.zeros(self.grid.size)
-        for data, P in zip(self.kpoint_data, matrices):
-            for d in self.bloch_gradients(data.psi, data.k):
+        for data, P, grads in zip(self.kpoint_data, matrices, gradients):
+            for d in grads:
                 tau += 0.5 * data.weight * np.real(np.sum(d * (P @ d.conj()),
                                                           axis=0))
         return tau if self.symmetry is None else self.symmetry.field(tau)
@@ -967,6 +1006,24 @@ class PeriodicPAW:
 # Building a crystal from a geometry.
 # --------------------------------------------------------------------------- #
 
+def reduce_mesh(mesh, operations=None):
+    """``(points, weights, operations)`` of a fractional k-mesh's wedge.
+
+    ``operations`` (a :class:`GridSymmetry`) is first restricted to the
+    subgroup that maps ``mesh`` onto itself; with none left, or none given,
+    the mesh is reduced by time reversal alone and ``operations`` comes back
+    ``None``.  ``weights`` sum to one.
+    """
+    if operations is not None:
+        operations = operations.keeping_mesh(mesh)
+    if operations is None:
+        reduced, weights = time_reversal_reduce(mesh)
+        return reduced, weights, None
+    from ..core.symmetry import irreducible_kpoints
+    zone = irreducible_kpoints(mesh, operations.info, time_reversal=True)
+    return zone.points, zone.weights / zone.weights.sum(), operations
+
+
 def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
                   family: str = "paw-lcao", grid=None,
                   symmetry: bool = True):
@@ -1017,15 +1074,7 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
     datasets = [potentials[s] for s in symbols]
     size, gamma, mesh = monkhorst_pack_kpts(kpts)
     operations = grid_symmetry(atoms, g) if symmetry else None
-    if operations is not None:
-        operations = operations.keeping_mesh(mesh)
-    if operations is not None:
-        from ..core.symmetry import irreducible_kpoints
-        zone = irreducible_kpoints(mesh, operations.info, time_reversal=True)
-        reduced = zone.points
-        weights = zone.weights / zone.weights.sum()
-    else:
-        reduced, weights = time_reversal_reduce(mesh)
+    reduced, weights, operations = reduce_mesh(mesh, operations)
     B = rc.reciprocal_vectors(rc.lattice_vectors(g))
     kpoints = reduced @ B.T
     crystal = PeriodicPAW(

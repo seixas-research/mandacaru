@@ -339,6 +339,43 @@ class _MeanFieldDriver(VariationalDriver):
         self._finalize_timings(timings, run_t0)
         return replace(result, timings=timings.as_dict())
 
+    def mean_field_rdm(self) -> np.ndarray:
+        r"""Spin-orbital one-RDM of the SCF determinant, alpha block first.
+
+        In the model orbitals (``result.model_orbitals``), the basis the
+        exported Hamiltonian and every one-particle picture use:
+        :math:`D^\sigma = A_\sigma A_\sigma^\dagger` with
+        :math:`A_\sigma = V^\dagger C^\sigma_{occ}`.  A determinant's
+        density needs no state vector, so populations, cube files and dipoles
+        cost nothing beyond the SCF -- whatever the register width.
+        """
+        scf = self._scf
+        if isinstance(scf, GHFResult):
+            raise NotImplementedError(
+                "the one-particle picture of a GHF determinant (spinor modes) "
+                "is not wired")
+        context = self._gradient_context or {}
+        if context.get("frozen") or context.get("active") is not None:
+            raise NotImplementedError(
+                "the mean-field density with an active space is not wired; "
+                "run without active_space for populations and cube files")
+        V = np.asarray(self.result.model_orbitals)
+        if isinstance(scf, UHFResult):
+            n_alpha, n_beta = self.num_particles
+            occupied = (scf.mo_coefficients_alpha[:, :n_alpha],
+                        scf.mo_coefficients_beta[:, :n_beta])
+        else:
+            C = np.asarray(scf.mo_coefficients)[:, :scf.n_occupied]
+            occupied = (C, C)
+        blocks = []
+        for C in occupied:
+            A = V.conj().T @ np.asarray(C)
+            blocks.append(A @ A.conj().T)
+        M = V.shape[1]
+        gamma = np.zeros((2 * M, 2 * M), dtype=complex)
+        gamma[:M, :M], gamma[M:, M:] = blocks
+        return gamma
+
     # -- the run log ------------------------------------------------------ #
 
     def _log_title(self) -> str:

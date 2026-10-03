@@ -167,20 +167,23 @@ class TestGridSymmetry:
 
 
 class TestTheIrreducibleWedge:
-    @pytest.mark.parametrize("atoms, nodes, kpts, options", [
-        (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter": 200}),
+    @pytest.mark.parametrize("atoms, nodes, kpts, options, functional", [
+        (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter": 200}, "lda"),
         (bulk("Mg", "hcp", a=3.21, c=5.21), 10, (3, 3, 2),
-         {"size": "SZP", "filter": 200}),
-    ], ids=["diamond-Si", "hcp-Mg"])
+         {"size": "SZP", "filter": 200}, "lda"),
+        (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter": 200}, "r2scan"),
+    ], ids=["diamond-Si", "hcp-Mg", "diamond-Si-r2scan"])
     def test_it_reproduces_the_time_reversed_mesh(self, atoms, nodes, kpts,
-                                                  options):
+                                                  options, functional):
         """The wedge, symmetrized, is the full mesh: to 1e-8 Ha per cell.
 
         hcp Mg is the case where the operations mix two axes of a grid whose
         third axis has a different node count.  The grid must resolve the
         basis: on 8 nodes the 200 eV silicon basis reaches past the Nyquist
         wave-vector, where an even FFT is not symmetric, and the discretized
-        problem itself is no longer (9 uHa off).
+        problem itself is no longer (9 uHa off).  r2SCAN checks that the
+        kinetic-energy density is symmetrized like the density: summed over
+        the wedge alone it was 2.9e-4 Ha off.
         """
         h = float(np.linalg.norm(np.asarray(atoms.cell)[0])) / nodes
         energies = []
@@ -189,11 +192,36 @@ class TestTheIrreducibleWedge:
                 atoms, h, options, kpts={"size": kpts, "gamma": True},
                 symmetry=symmetry)
             result = PeriodicKohnSham(
-                crystal, context["n_electrons"], "lda",
+                crystal, context["n_electrons"], functional,
                 smearing={"method": "fermi-dirac", "width": 0.1}).run(
                     tol=1e-10, density_tol=1e-8)
             energies.append((result.extrapolated_energy,
                              len(crystal.kpoints)))
         (wedge, n_wedge), (full, n_full) = energies
         assert n_wedge < n_full
-        assert wedge == pytest.approx(full, abs=1e-8)
+        # A gradient-dependent functional also carries the grid's own
+        # rotation residual -- spectral gradients see an FFT box the
+        # operations do not map onto itself -- which falls steeply with h
+        # (1.6e-8 Ha here; HISTORY 2026-10-03).
+        tolerance = 1e-8 if functional == "lda" else 5e-8
+        assert wedge == pytest.approx(full, abs=tolerance)
+
+
+def test_bloch_sums_are_the_image_sums():
+    """``bloch_values`` against the plain sum over lattice images of
+    ``exp(i k.R) chi(r - R)``, at random points and k."""
+    crystal, _context = pp.build_crystal(SILICON, SILICON_H, SILICON_BASIS)
+    rng = np.random.default_rng(5)
+    center, radius = crystal._cell_region()
+    points = center + rng.uniform(-0.5, 0.5, size=(40, 3)) * radius
+    kpoints = crystal.cartesian_kpoints(rng.random((3, 3)))
+    values = pp.bloch_values(crystal.basis, crystal.lattice, kpoints,
+                             tuple(points.T), center, radius)
+    reach = max(pp._support(f) for f in crystal.basis) + 2 * radius
+    expected = np.zeros_like(values)
+    for R in rc.lattice_translations(crystal.lattice, reach + radius):
+        phases = np.exp(1j * (kpoints @ R))
+        for mu, function in enumerate(crystal.basis):
+            chi = function.evaluate(*(points - R).T)
+            expected[:, mu, :] += phases[:, None] * chi[None, :]
+    assert np.abs(values - expected).max() < 1e-12 * np.abs(expected).max()

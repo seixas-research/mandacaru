@@ -212,3 +212,135 @@ class TestTheEigenvalueReference:
                            result.fermi_level))
         assert levels[0][0] == pytest.approx(levels[1][0], abs=2e-4)
         assert levels[0][1] == pytest.approx(levels[1][1], abs=2e-4)
+
+
+class TestTheSpectrum:
+    """Non-self-consistent bands, densities of states and fat bands."""
+
+    def test_the_bands_at_the_mesh_are_the_scf_eigenvalues(self, silicon):
+        """The frozen potential is the one the SCF eigenvalues came from."""
+        atoms, _energy = silicon
+        solver = atoms.calc.solver
+        crystal = solver._gradient_context["integrals"]
+        bands, _ = solver._periodic_solver.bands(crystal.kpoints)
+        assert np.abs(bands - np.array(atoms.calc.result.scf.eigenvalues)
+                      ).max() < 1e-10
+
+    def test_the_wedge_stands_for_the_whole_mesh(self, silicon):
+        """Every point of the full 2x2x2 mesh has the levels of its wedge
+        representative: the symmetrized potential is symmetric.  To the
+        accuracy of the projector and short-range sphere quadratures, whose
+        angular grids the point group does not map onto themselves (4e-8 Ha
+        here)."""
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
+            monkhorst_pack_kpts)
+        atoms, _energy = silicon
+        solver = atoms.calc.solver
+        crystal = solver._gradient_context["integrals"]
+        _size, _gamma, mesh = monkhorst_pack_kpts({"size": (2, 2, 2),
+                                                   "gamma": True})
+        full, _ = solver._periodic_solver.bands(crystal.cartesian_kpoints(mesh))
+        wedge = np.array(atoms.calc.result.scf.eigenvalues)
+        for levels in full:
+            assert np.abs(wedge - levels).max(axis=1).min() < 1e-6
+
+    def test_loewdin_weights_partition_every_state(self, silicon):
+        atoms, _energy = silicon
+        solver = atoms.calc.solver
+        crystal = solver._gradient_context["integrals"]
+        _bands, weights = solver._periodic_solver.bands(
+            crystal.cartesian_kpoints([[0.1, 0.2, 0.3]]), projections=True)
+        assert weights.min() >= 0.0
+        assert np.allclose(weights.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_the_dos_counts_the_bands_and_the_electrons(self, silicon):
+        atoms, _energy = silicon
+        energies, dos = atoms.calc.dos(width=0.05)
+        n_bands = len(atoms.calc.get_eigenvalues(0))
+        assert np.trapezoid(dos, energies) == pytest.approx(2 * n_bands,
+                                                            rel=1e-6)
+        below = energies < atoms.calc.get_fermi_level()
+        assert np.trapezoid(dos[below], energies[below]) == pytest.approx(
+            8.0, abs=1e-3)
+
+    def test_the_pdos_sums_to_the_dos(self, silicon):
+        atoms, _energy = silicon
+        energies, dos = atoms.calc.dos(width=0.1, npoints=801)
+        _energies, pdos = atoms.calc.pdos(width=0.1, npoints=801)
+        assert set(pdos) == {(0, 0), (0, 1), (1, 0), (1, 1)}
+        assert np.abs(sum(pdos.values()) - dos).max() < 1e-8 * dos.max()
+        assert "Loewdin1950" in atoms.calc.citation_keys()
+
+    def test_a_reduced_mesh_gives_the_full_mesh_pdos(self, silicon):
+        """3x3x3 is reduced to its wedge, and each atom's share averaged over
+        the atoms the operations map it to: the result is the full mesh's,
+        computed here by brute force."""
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
+            monkhorst_pack_kpts)
+        atoms, _energy = silicon
+        calc, solver = atoms.calc, atoms.calc.solver
+        crystal = solver._gradient_context["integrals"]
+        axis, pdos = calc.pdos(width=0.1, npoints=401, kpts=(3, 3, 3))
+        _size, _gamma, mesh = monkhorst_pack_kpts((3, 3, 3))
+        levels, weights = solver._periodic_solver.bands(
+            crystal.cartesian_kpoints(mesh), projections=True)
+        per_orbital = pd.broadened_dos(
+            axis, levels * 27.211386245988, np.full(len(mesh), 1 / len(mesh)),
+            0.1, state_weights=weights)
+        full = {}
+        for mu, shell in enumerate(solver._orbital_shells()):
+            full[shell] = full.get(shell, 0.0) + per_orbital[:, mu]
+        # 1.3e-6 of the peak: the sphere quadratures' 4e-8 Ha asymmetry
+        # moving 0.1 eV Gaussians.  Without the atom-map averaging the two
+        # atoms differ by 1.3e-5 on this grid, which keeps quarter
+        # translations off its nodes.
+        scale = max(v.max() for v in full.values())
+        for shell, values in full.items():
+            assert np.abs(pdos[shell] - values).max() < 5e-6 * scale
+
+    def test_the_band_structure_follows_the_path(self, silicon):
+        from ase.spectrum.band_structure import BandStructure
+        atoms, _energy = silicon
+        bs = atoms.calc.band_structure(path="GXL", npoints=12)
+        assert isinstance(bs, BandStructure)
+        assert bs.energies.shape == (1, 12, len(atoms.calc.get_eigenvalues(0)))
+        assert bs.reference == pytest.approx(atoms.calc.get_fermi_level())
+        # Gamma is on the SCF mesh: the path's first point is the SCF's.
+        assert np.allclose(bs.energies[0, 0], atoms.calc.get_eigenvalues(0),
+                           atol=1e-8)
+        assert "SetyawanCurtarolo2010" in atoms.calc.citation_keys()
+
+    def test_path_points_on_the_mesh_have_the_scf_levels(self, silicon):
+        """X and L of the fcc path lie on the Gamma-centered 2x2x2 mesh: the
+        path's fractional k and the crystal's convention agree."""
+        atoms, _energy = silicon
+        bs = atoms.calc.band_structure(path="GXL", npoints=9)
+        scf = np.array([atoms.calc.get_eigenvalues(k) for k in range(3)])
+        special = bs.path.special_points
+        for label in ("X", "L"):
+            index = int(np.argmin(np.linalg.norm(
+                bs.path.kpts - special[label], axis=1)))
+            assert np.allclose(bs.path.kpts[index], special[label])
+            assert np.abs(scf - bs.energies[0, index]).max(axis=1).min() \
+                < 1e-5
+
+    def test_fat_bands_weights_sum_to_one(self, silicon):
+        atoms, _energy = silicon
+        bs, weights = atoms.calc.fat_bands(path="GX", npoints=5)
+        assert np.allclose(sum(weights.values()), 1.0, atol=1e-10)
+        assert next(iter(weights.values())).shape == bs.energies.shape[1:]
+
+    def test_the_ase_getters(self, silicon):
+        atoms, _energy = silicon
+        calc = atoms.calc
+        assert calc.get_number_of_spins() == 1
+        assert calc.get_ibz_k_points().shape == (3, 3)
+        assert calc.get_k_point_weights().sum() == pytest.approx(1.0)
+        with pytest.raises(ValueError, match="spin"):
+            calc.get_eigenvalues(0, spin=1)
+
+
+def test_crystal_populations_are_refused_with_a_pointer(silicon):
+    atoms, _energy = silicon
+    with pytest.raises(NotImplementedError, match="pdos"):
+        atoms.calc.get_charges()

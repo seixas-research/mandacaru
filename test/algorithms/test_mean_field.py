@@ -236,3 +236,62 @@ def test_rhf_summary_reports_the_frontier_orbitals(tmp_path):
     scf = atoms.calc.result.scf
     assert float(summary["homo_lumo_gap_eV"]) == pytest.approx(
         from_hartree(scf.homo_lumo_gap, "eV"), abs=1e-6)
+
+
+class TestTheDeterminantDensity:
+    """Populations, densities and dipoles of a mean-field run come from its
+    orbitals: no state vector is built (DZP water would need 2^46 amplitudes)."""
+
+    @staticmethod
+    def _water(method, **options):
+        from ase.build import molecule
+        atoms = molecule("H2O")
+        atoms.center(vacuum=2.5)
+        atoms.calc = Mandacaru(method=method, h=0.3, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"},
+                               population="hirshfeld", **options)
+        atoms.get_potential_energy()
+        return atoms
+
+    @pytest.mark.parametrize("method", ["rhf", "dft"])
+    def test_a_closed_shell_run_reports_charges_and_a_dipole(self, method):
+        atoms = self._water(method)
+        calc = atoms.calc
+        charges = calc.results["charges"]
+        assert charges.sum() == pytest.approx(0.0, abs=1e-8)
+        assert charges[0] < 0.0 < charges[1]                 # O pulls charge
+        assert charges[1] == pytest.approx(charges[2], abs=1e-6)
+        assert calc.get_total_magnetic_moment() == pytest.approx(0.0, abs=1e-10)
+        occupations = calc.natural_orbitals().occupations
+        assert np.allclose(occupations, np.round(occupations), atol=1e-8)
+        assert occupations.sum() == pytest.approx(8.0)
+        dipole = calc.get_dipole_moment()
+        assert abs(dipole[2]) > 0.1 and np.allclose(dipole[:2], 0.0, atol=1e-6)
+
+    def test_the_rdm_is_the_determinants(self):
+        """Idempotent, with the electron count in each spin block."""
+        atoms = self._water("dft")
+        gamma = atoms.calc.solver.mean_field_rdm()
+        M = gamma.shape[0] // 2
+        for block in (gamma[:M, :M], gamma[M:, M:]):
+            assert np.allclose(block @ block, block, atol=1e-10)
+            assert np.trace(block).real == pytest.approx(4.0)
+
+    def test_an_open_shell_uhf_run_has_its_moment_on_the_atoms(self):
+        from ase.build import molecule
+        atoms = molecule("O2")
+        atoms.center(vacuum=2.5)
+        atoms.set_initial_magnetic_moments([1.0, 1.0])
+        atoms.calc = Mandacaru(method="uhf", h=0.3, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"},
+                               population="hirshfeld")
+        atoms.get_potential_energy()
+        assert atoms.calc.get_total_magnetic_moment() == pytest.approx(2.0)
+        assert np.allclose(atoms.calc.results["magmoms"], 1.0, atol=1e-6)
+        # UHF orbitals and the natural-orbital model basis are both in the
+        # Loewdin basis: the RDM is idempotent with 7 and 5 electrons.
+        gamma = atoms.calc.solver.mean_field_rdm()
+        M = gamma.shape[0] // 2
+        for block, count in ((gamma[:M, :M], 7.0), (gamma[M:, M:], 5.0)):
+            assert np.allclose(block @ block, block, atol=1e-10)
+            assert np.trace(block).real == pytest.approx(count)

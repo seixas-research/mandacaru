@@ -33,6 +33,12 @@ derivatives of), and the :math:`\sigma \to 0` estimate
 :math:`E_0 = \tfrac12(E + F)` for Fermi-Dirac and Gaussian smearing, or
 :math:`F` itself for Methfessel-Paxton, whose free energy is already
 correct to :math:`O(\sigma^3)`.
+
+After convergence the potential is frozen and :meth:`PeriodicKohnSham.bands`
+diagonalizes :math:`H(\mathbf k)` at any k-point -- a band path, or a dense
+mesh for the density of states -- with, on request, each state's Loewdin
+weights on the atomic orbitals (:func:`loewdin_weights`), from which the
+projected density of states and fat bands follow (:func:`broadened_dos`).
 """
 
 from __future__ import annotations
@@ -58,6 +64,50 @@ MIXING_BETA = 0.25
 #: Kerker wave-vector (Bohr^-1): long-wavelength density residuals are damped
 #: by ``G^2 / (G^2 + q0^2)``.
 KERKER_Q0 = 1.0
+
+
+# --------------------------------------------------------------------------- #
+# Densities of states.
+# --------------------------------------------------------------------------- #
+
+def loewdin_weights(S, C) -> np.ndarray:
+    r"""``|S^{1/2} C|^2``: each state's weight on each orbital, ``(M, n)``.
+
+    The states are :math:`S`-orthonormal, so the columns of
+    :math:`S^{1/2}C` are orthonormal and every column of the result is
+    non-negative and sums to one -- a partition of each state over the
+    symmetrically orthogonalized atomic orbitals.
+    """
+    s, U = np.linalg.eigh(S)
+    root = (U * np.sqrt(np.clip(s, 0.0, None))) @ U.conj().T
+    return np.abs(root @ C) ** 2
+
+
+def broadened_dos(energies, eigenvalues, weights, width: float,
+                  state_weights=None) -> np.ndarray:
+    r"""Gaussian-broadened density of states, both spins, per cell.
+
+    :math:`g(E) = 2\sum_k w_k \sum_n \delta_\sigma(E - \varepsilon_{nk})`
+    with :math:`\delta_\sigma` a normalized Gaussian of standard deviation
+    ``width`` -- so :math:`\int g = 2 n_{bands}`.  ``energies``,
+    ``eigenvalues`` (``(nk, n)``) and ``width`` share one unit; ``weights``
+    (``(nk,)``) sum to one.  With ``state_weights`` (``(nk, M, n)``) the
+    result is ``(len(energies), M)``, one column per orbital, and its rows sum
+    to the total.
+    """
+    energies = np.asarray(energies, dtype=float)
+    width = float(width)
+    if width <= 0.0:
+        raise ValueError(f"the broadening width must be positive, got {width}")
+    norm = 2.0 / (width * np.sqrt(2.0 * np.pi))
+    out = None
+    for k, (eps, w) in enumerate(zip(eigenvalues, weights)):
+        x = (energies[:, None] - np.asarray(eps, dtype=float)[None, :]) / width
+        peaks = norm * float(w) * np.exp(-0.5 * x * x)        # (nE, n)
+        term = (peaks.sum(axis=1) if state_weights is None
+                else peaks @ np.asarray(state_weights[k]).T)
+        out = term if out is None else out + term
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -303,6 +353,9 @@ class PeriodicKohnSham:
         self._gradients = ([crystal.bloch_gradients(d.psi, d.k)
                             for d in crystal.kpoint_data] if self.meta
                            else None)
+        #: ``(V, v_tau, w)`` that produced the converged eigenvalues -- set by
+        #: :meth:`run`, read by :meth:`bands`.
+        self.potentials = None
 
     # -- the effective Hamiltonian ------------------------------------------ #
 
@@ -435,6 +488,9 @@ class PeriodicKohnSham:
             rho, q = mixer.mix(rho, q, rho_out, q_out)
             if self.meta:
                 tau = tau_out
+        # The potentials of the last diagonalization, not of the output
+        # density: those are the ones the reported eigenvalues belong to.
+        self.potentials = (V, v_tau, w)
         extrapolated = (free if self.method == "methfessel-paxton"
                         else 0.5 * (energy + free))
         terms["entropy"] = entropy_term
@@ -447,6 +503,40 @@ class PeriodicKohnSham:
             occupations=occupations,
             converged=converged, n_iterations=it,
             smearing=(self.method, self.width), terms=terms)
+
+    def bands(self, kpoints, projections: bool = False):
+        r"""Non-self-consistent eigenvalues at Cartesian ``kpoints`` (Bohr^-1).
+
+        The converged potential is frozen and :math:`H(\mathbf k)` built and
+        diagonalized at each point, a block of k-points at a time so the
+        Bloch sums of a long path or a dense mesh are never all held.  At a
+        k-point of the SCF mesh it returns the SCF eigenvalues.
+
+        Returns ``(eigenvalues, weights)``: ``(nk, M)`` in Hartree, on the
+        same reference as the result's (:meth:`eigenvalue_reference`), and
+        with ``projections`` the ``(nk, M, M)`` Loewdin weights
+        (:func:`loewdin_weights`; ``weights[k, mu, n]`` of state ``n`` on
+        orbital ``mu``), else ``None``.
+        """
+        if self.potentials is None:
+            raise RuntimeError("bands() needs a converged run() first")
+        V, v_tau, w = self.potentials
+        c = self.crystal
+        kpoints = np.atleast_2d(np.asarray(kpoints, dtype=float))
+        reference = self.eigenvalue_reference()
+        block = c.kpoint_block()
+        eigenvalues, weights = [], []
+        for start in range(0, len(kpoints), block):
+            for data in c.kpoint_matrices(kpoints[start:start + block]):
+                gradients = (c.bloch_gradients(data.psi, data.k)
+                             if self.meta else None)
+                H = self._hamiltonian(data, V, v_tau, w, gradients)
+                eps, C = eigh(H, data.overlap)
+                eigenvalues.append(eps + reference)
+                if projections:
+                    weights.append(loewdin_weights(data.overlap, C))
+        return (np.array(eigenvalues),
+                np.array(weights) if projections else None)
 
     def eigenvalue_reference(self) -> float:
         r"""Constant (Hartree) that moves the eigenvalues to the plane-wave zero.
@@ -468,10 +558,5 @@ class PeriodicKohnSham:
                      / c.volume)
 
     def _tau(self, matrices) -> np.ndarray:
-        tau = np.zeros(self.crystal.grid.size)
-        for data, P, grads in zip(self.crystal.kpoint_data, matrices,
-                                  self._gradients):
-            for d in grads:
-                tau += 0.5 * data.weight * np.real(np.sum(d * (P @ d.conj()),
-                                                          axis=0))
-        return tau
+        """The crystal's (symmetrized) tau, from the cached Bloch gradients."""
+        return self.crystal.kinetic_energy_density(matrices, self._gradients)

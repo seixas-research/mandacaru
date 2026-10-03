@@ -292,3 +292,48 @@ class TestOptions:
     def test_a_measurement_provider_is_refused(self):
         with pytest.raises(ValueError, match="no quantum state"):
             Mandacaru(method="dft", measurement_provider=object())
+
+
+@pytest.fixture(scope="module")
+def water_szp():
+    """H2O in a small PAW-LCAO basis with polarization: s, p and d shells."""
+    from ase.build import molecule
+    atoms = molecule("H2O")
+    atoms.center(vacuum=2.5)
+    _run(atoms, xc="lda", h=0.3, basis={"name": "PAW-LCAO", "size": "SZP"})
+    return atoms
+
+
+class TestTheMolecularSpectrum:
+    def test_the_dos_holds_every_level_and_the_electrons(self, water_szp):
+        calc = water_szp.calc
+        energies, dos = calc.dos(width=0.1)
+        levels = calc.get_eigenvalues()
+        assert np.trapezoid(dos, energies) == pytest.approx(2 * len(levels),
+                                                            rel=1e-6)
+        mu = calc.get_fermi_level()
+        assert levels[3] < mu < levels[4]                  # 8 valence electrons
+        below = energies < mu
+        assert np.trapezoid(dos[below], energies[below]) == pytest.approx(
+            8.0, abs=1e-6)
+
+    def test_the_pdos_splits_the_dos_by_atom_and_shell(self, water_szp):
+        calc = water_szp.calc
+        _energies, dos = calc.dos(width=0.1)
+        _energies, pdos = calc.pdos(width=0.1)
+        assert np.abs(sum(pdos.values()) - dos).max() < 1e-8 * dos.max()
+        assert (0, 2) in pdos and (1, 1) in pdos       # O d and H p shells
+        assert all(np.all(v >= -1e-12) for v in pdos.values())
+
+    def test_a_molecule_has_no_band_structure_or_k_mesh(self, water_szp):
+        calc = water_szp.calc
+        with pytest.raises(NotImplementedError, match="periodic"):
+            calc.band_structure()
+        with pytest.raises(ValueError, match="Brillouin"):
+            calc.dos(kpts=(2, 2, 2))
+        assert calc.get_ibz_k_points().shape == (1, 3)
+
+    def test_the_spectrum_needs_a_run(self):
+        calc = Mandacaru(method="dft", trace=False)
+        with pytest.raises(ValueError, match="get_potential_energy"):
+            calc.dos()
