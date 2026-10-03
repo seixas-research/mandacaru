@@ -88,3 +88,54 @@ def spherical_harmonic(l: int, m: int, theta, phi) -> np.ndarray:
     if m < 0:
         value = (-1) ** order * np.conj(value)
     return value
+
+
+def spherical_harmonic_gradient(l: int, m: int, x, y, z):
+    r"""``(Y, (dY/dx, dY/dy, dY/dz))`` of :func:`spherical_harmonic` at the
+    Cartesian offsets ``x, y, z`` (``r > 0``), analytically.
+
+    Written as :math:`Y_l^m = Q_{lm}(z/r)\,((x + iy)/r)^m` for
+    :math:`m \ge 0` -- :math:`Q_{lm}` the normalized associated Legendre
+    function without its :math:`\sin^m\theta` -- a form smooth in Cartesian
+    coordinates, so there is no pole on the z axis; :math:`m < 0` follows
+    from :math:`Y_l^{-m} = (-1)^m\overline{Y_l^m}`.  The C Bloch kernel
+    (``mandacaru_bloch.c``) evaluates the same expressions.
+    """
+    l, m = int(l), int(m)
+    order = abs(m)
+    x, y, z = (np.asarray(c, dtype=float) for c in (x, y, z))
+    r = np.sqrt(x * x + y * y + z * z)
+    u = z / r
+    w = (x + 1j * y) / r
+    q0 = np.full(u.shape, 1.0 / np.sqrt(4.0 * np.pi))
+    for k in range(1, order + 1):
+        q0 = q0 * -np.sqrt((2.0 * k + 1.0) / (2.0 * k))
+    d0 = np.zeros(u.shape)
+    if l == order:
+        Q, dQ = q0, d0
+    else:
+        q1 = np.sqrt(2.0 * order + 3.0) * u * q0
+        d1 = np.sqrt(2.0 * order + 3.0) * q0
+        for degree in range(order + 2, l + 1):
+            a = np.sqrt((4.0 * degree * degree - 1.0)
+                        / (degree * degree - order * order))
+            b = np.sqrt(((degree - 1.0) ** 2 - order * order)
+                        / (4.0 * (degree - 1.0) ** 2 - 1.0))
+            q0, d0, q1, d1 = (q1, d1, a * (u * q1 - b * q0),
+                              a * (q1 + u * d1 - b * d0))
+        Q, dQ = q1, d1
+    wm = w ** order
+    wm1 = w ** (order - 1) if order else np.zeros(u.shape)
+    value = Q * wm
+    gradient = []
+    for axis, xa in enumerate((x, y, z)):
+        du = ((1.0 if axis == 2 else 0.0) - u * xa / r) / r
+        e = (1.0, 1j, 0.0)[axis]
+        dw = (e - w * xa / r) / r
+        gradient.append(dQ * du * wm + Q * order * wm1 * dw)
+    if m < 0:
+        sign = (-1) ** order
+        value = sign * np.conj(value)
+        gradient = [sign * np.conj(g) for g in gradient]
+    return value, tuple(gradient)
+

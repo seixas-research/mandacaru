@@ -20,9 +20,13 @@ Design
   ``False`` and vectorized NumPy reference implementations are used instead, so
   the package is always importable and testable.
 
-The backend is deliberately *basis-agnostic*: it consumes **sampled values**
-``psi[i, :]`` on the grid, never analytic orbital forms.  Injecting Wannier (or
-any other) functions therefore requires no change here.
+The integral kernels are *basis-agnostic*: they consume **sampled values**
+``psi[i, :]`` on the grid, never analytic orbital forms, so injecting Wannier
+(or any other) functions requires no change to them.  Two kernels are not:
+the crystal Bloch sums (``mandacaru_bloch.c``) evaluate a shell's radial
+cubic spline and complex spherical harmonics themselves, and the Bader ascent
+(``mandacaru_bader.c``) climbs a density's gradient field; each has the NumPy
+path it replaces as its fallback and reference.
 """
 
 from __future__ import annotations
@@ -148,6 +152,47 @@ def _bind(lib):
         _C128_W,                     # out_P (M * P)
     ]
 
+    lib.mandacaru_bloch_shell.restype = None
+    lib.mandacaru_bloch_shell.argtypes = [
+        _F64, _F64, _F64,            # x, y, z (npts)
+        ctypes.c_long,               # npts
+        _F64,                        # center (3)
+        _F64,                        # translations (n_images * 3)
+        ctypes.c_int,                # n_images
+        _C128,                       # phases (nk * n_images)
+        ctypes.c_int,                # nk
+        ctypes.c_double,             # support
+        _F64,                        # breaks (nb)
+        _F64,                        # coeffs ((nb - 1) * 4)
+        ctypes.c_int,                # nb
+        ctypes.c_double,             # rc (zero at r >= rc)
+        ctypes.c_int,                # l
+        ctypes.c_int,                # derivative (-1, or the axis)
+        ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),   # ms (nm)
+        ndpointer(dtype=np.int64, flags="C_CONTIGUOUS"),   # rows (nm)
+        ctypes.c_int,                # nm
+        ctypes.c_long,               # M
+        _C128_W,                     # out (nk * M * npts)
+    ]
+
+    _I32_W = ndpointer(dtype=np.int32, flags="C_CONTIGUOUS,WRITEABLE")
+    _I64 = ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
+    _F64_W = ndpointer(dtype=np.float64, flags="C_CONTIGUOUS,WRITEABLE")
+    lib.mandacaru_bader_ascent.restype = None
+    lib.mandacaru_bader_ascent.argtypes = [
+        _F64, ctypes.c_long,         # starts (n * 3), n
+        _F64, _F64, _F64,            # node gradient, index components
+        ctypes.c_int, ctypes.c_int, ctypes.c_int,   # grid shape
+        ctypes.c_int,                # periodic
+        _F64, _F64, _F64,            # A, A_inv (3 x 3), origin (3)
+        _F64, _F64,                  # lattice, its inverse (3 x 3)
+        _F64, _F64, ctypes.c_int,    # positions, fractional, n_atoms
+        _I64, _F64, _F64, _F64,      # core offsets, r, slope, support
+        ctypes.c_double, ctypes.c_double,           # step, capture
+        ctypes.c_int, ctypes.c_int, ctypes.c_double,  # steps, window, stall
+        _I32_W, _F64_W,              # owner (n), final index (n * 3)
+    ]
+
     lib.mandacaru_num_threads.restype = ctypes.c_int
     lib.mandacaru_num_threads.argtypes = []
     return lib
@@ -162,6 +207,8 @@ HAS_C_BACKEND = _LIB is not None
 # --------------------------------------------------------------------------- #
 
 _SRC_DIR = _PKG_DIR / "csrc"
+#: The library's translation units (CMakeLists.txt lists the same).
+_SOURCES = ("mandacaru_integrals.c", "mandacaru_bloch.c", "mandacaru_bader.c")
 _BUILD_DIR = _SRC_DIR / "build"
 _BUILD_TIMEOUT = 600.0        # seconds; a compile that runs longer is abandoned
 _build_attempted = False       # one compile attempt per process
@@ -303,9 +350,9 @@ def _compile_attempts(system: str, build_dir: Path) -> list[list[list[str]]]:
     # tool chain no longer means no library at all.
     if cc is None or system == "Windows":
         return attempts
-    source = str(_SRC_DIR / "mandacaru_integrals.c")
+    sources = [str(_SRC_DIR / name) for name in _SOURCES]
     common = [cc, "-std=c11", "-O3", "-ffast-math", "-funroll-loops", "-fPIC",
-              f"-I{_SRC_DIR}", source]
+              f"-I{_SRC_DIR}", *sources]
     if system == "Darwin":
         link = ["-dynamiclib", "-o", str(build_dir / _LIB_NAMES["Darwin"])]
         attempts.append([common + ["-fopenmp"] + link])
@@ -635,6 +682,81 @@ def kb_projections(psi_stack, chi_stack, dV):
                                   float(dV), out)
         return out
     return (np.conj(psi_stack) @ chi_stack.T) * dV
+
+
+def bloch_shell(points, center, translations, phases, support, spline, l,
+                ms, rows, out, derivative: int = -1) -> bool:
+    """Accumulate one shell's Bloch sums into ``out`` (``(nk, M, npts)``).
+
+    ``spline`` is ``(breaks, coeffs, rc)``: the breakpoints and the
+    ``(n - 1, 4)`` cubic coefficients of the radial function's spline, and
+    the radius at which it is cut off.  ``derivative`` (0, 1, 2) sums the
+    functions' Cartesian derivative along that axis instead.  Returns
+    ``False`` -- having done nothing -- without the C backend; the caller
+    then evaluates the shell itself.
+    """
+    if not HAS_C_BACKEND or not hasattr(_LIB, "mandacaru_bloch_shell"):
+        return False
+    x, y, z = (np.ascontiguousarray(c, dtype=np.float64) for c in points)
+    breaks, coeffs, rc = spline
+    translations = np.ascontiguousarray(translations, dtype=np.float64)
+    phases = np.ascontiguousarray(phases, dtype=np.complex128)
+    _LIB.mandacaru_bloch_shell(
+        x, y, z, x.size, np.ascontiguousarray(center, dtype=np.float64),
+        translations, len(translations), phases, phases.shape[0],
+        float(support), np.ascontiguousarray(breaks, dtype=np.float64),
+        np.ascontiguousarray(coeffs, dtype=np.float64), len(breaks),
+        float(rc), int(l), int(derivative),
+        np.ascontiguousarray(ms, dtype=np.int32),
+        np.ascontiguousarray(rows, dtype=np.int64), len(ms), out.shape[1],
+        out)
+    return True
+
+
+def bader_ascent(starts, node_gradient, periodic, A, A_inv, origin, lattice,
+                 positions, cores, step_length, capture, max_steps,
+                 stall_window, stall_distance):
+    """Climb from every index in ``starts`` (``(n, 3)``); see
+    ``csrc/mandacaru_bader.c``.  ``cores`` is a per-atom list of ``None`` or
+    ``(r, slope, support)``.  Returns ``(owner, final_index)`` -- the atom
+    each trajectory was captured by, or -1 with where it stopped -- or
+    ``None`` without the C backend."""
+    if not HAS_C_BACKEND or not hasattr(_LIB, "mandacaru_bader_ascent"):
+        return None
+    f64 = lambda a: np.ascontiguousarray(a, dtype=np.float64)  # noqa: E731
+    starts = f64(starts).reshape(-1, 3)
+    shape = node_gradient[0].shape
+    positions = f64(positions).reshape(-1, 3)
+    if periodic:
+        L = f64(lattice)
+        L_inv = f64(np.linalg.inv(L))
+        fractional = f64(positions @ L_inv.T)
+    else:
+        L = L_inv = f64(np.eye(3))
+        fractional = positions
+    offsets, rs, slopes, supports = [0], [], [], []
+    for core in cores:
+        if core is None:
+            supports.append(0.0)
+        else:
+            r, slope, support = core
+            rs.append(f64(r))
+            slopes.append(f64(slope))
+            supports.append(float(support))
+        offsets.append(offsets[-1] + (0 if core is None else len(core[0])))
+    core_r = f64(np.concatenate(rs)) if rs else np.zeros(1)
+    core_slope = f64(np.concatenate(slopes)) if slopes else np.zeros(1)
+    owner = np.empty(len(starts), dtype=np.int32)
+    final = np.empty((len(starts), 3))
+    _LIB.mandacaru_bader_ascent(
+        starts, len(starts), *(f64(g) for g in node_gradient),
+        shape[0], shape[1], shape[2], int(bool(periodic)), f64(A),
+        f64(A_inv), f64(origin), L, L_inv, positions, fractional,
+        len(positions), np.asarray(offsets, dtype=np.int64), core_r,
+        core_slope, f64(supports), float(step_length), float(capture),
+        int(max_steps), int(stall_window), float(stall_distance), owner,
+        final)
+    return owner, final
 
 
 def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0,

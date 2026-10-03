@@ -938,6 +938,40 @@ class Logger:
                 self._emit_body(f"{key}: {value}")
         self._emit(_BANNER if framed else "")
 
+    def write_scf_iterations(self, rows, energy_unit: str) -> None:
+        """Write ``[SCF ITERATIONS]``: one row per self-consistency iteration.
+
+        ``rows`` are :func:`~mandacaru.algorithms.periodic_dft.scf_record`
+        dicts with the energies already in ``energy_unit``.  The columns are
+        single tokens -- ``iter``, ``time_s`` (seconds since the SCF began),
+        ``energy_<unit>``, ``dE_<unit>`` (``-`` on the first row),
+        ``residual`` (what the convergence test measures: the density
+        residual in electrons for a crystal, the largest density-matrix
+        change for a molecule) and, for a spin-polarized crystal,
+        ``moment_muB``.
+        """
+        rows = list(rows)
+        if not rows:
+            return
+        spin = any("moment" in row for row in rows)
+        columns = [("iter", 5), ("time_s", 9), (f"energy_{energy_unit}", 20),
+                   (f"dE_{energy_unit}", 18), ("residual", 12)]
+        if spin:
+            columns.append(("moment_muB", 11))
+        self._emit("[SCF ITERATIONS]")
+        heading = " ".join(f"{name:>{width}}" for name, width in columns)
+        self._emit_body(heading, "-" * len(heading))
+        for row in rows:
+            cells = [f"{row['iter']:>5d}", f"{row['time']:>9.3f}",
+                     f"{row['energy']:>20.10f}",
+                     (f"{'-':>18}" if row["dE"] is None
+                      else f"{row['dE']:>+18.10f}"),
+                     f"{row['residual']:>12.3e}"]
+            if spin:
+                cells.append(f"{row.get('moment', 0.0):>11.6f}")
+            self._emit_body(" ".join(cells))
+        self._emit("")
+
     # -- footer / teardown ------------------------------------------------- #
 
     def close(self) -> None:
@@ -1554,6 +1588,7 @@ _SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space",
              # The classical SCF's setup and summary are read under the same
              # keys as a variational run's, so a reader asks one question.
              "[SCF SETUP]": "setup", "[SCF SUMMARY]": "summary",
+             "[SCF ITERATIONS]": "scf_iterations",
              "[MARKOV CHAIN]": "markov_chain",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
              "[VARIATIONAL QUANTUM SUMMARY]": "summary",
@@ -1636,6 +1671,9 @@ def parse_output(path: str) -> dict:
                 section = _SECTIONS[stripped]
                 if section == "iterations":
                     columns = []
+                elif section == "scf_iterations":
+                    columns = []
+                    step["scf_iterations"] = []
                 elif section == "markov_chain":
                     columns = []
                     step["markov_chain"] = []
@@ -1855,6 +1893,16 @@ def parse_output(path: str) -> dict:
                 entry["accepted"] = record.get("acc") == "yes"
                 entry["energy_unit"] = energy_unit
                 step["markov_chain"].append(entry)
+            elif section == "scf_iterations":
+                if not stripped or set(stripped) == {"-"}:
+                    continue
+                if not columns:
+                    columns = stripped.split()
+                    continue
+                step["scf_iterations"].append({
+                    name: (int(value) if name == "iter" else
+                           None if value == "-" else float(value))
+                    for name, value in zip(columns, stripped.split())})
             elif section == "iterations":
                 if stripped.startswith("operator_pool:") or stripped.startswith("["):
                     continue

@@ -109,6 +109,36 @@ void mandacaru_kb_project(const double _Complex *psi,
                         int M, int P, long ngrid, double dV,
                         double _Complex *out_P);
 
+/* Bloch sums of one shell of R(r) Y_lm functions (mandacaru_bloch.c):
+ * out[k, rows[i], j] += sum_R phases[k, R] R(|r_j - c - R|) Y_l^{ms[i]}, or
+ * of its Cartesian derivative along `derivative` (0, 1, 2; -1 for none). */
+void mandacaru_bloch_shell(const double *x, const double *y, const double *z,
+                           long npts, const double *center,
+                           const double *translations, int n_images,
+                           const double _Complex *phases, int nk,
+                           double support,
+                           const double *breaks, const double *coeffs, int nb,
+                           double rc, int l, int derivative,
+                           const int *ms, const long *rows, int nm, long M,
+                           double _Complex *out);
+
+/* Steepest-ascent trajectories for the Bader partition (mandacaru_bader.c):
+ * owner[s] is the captured atom, or -1 (stalled / out of steps) with the
+ * stopping point in final_index. */
+void mandacaru_bader_ascent(const double *starts, long n_starts,
+                            const double *gx, const double *gy,
+                            const double *gz, int n0, int n1, int n2,
+                            int periodic, const double *A,
+                            const double *A_inv, const double *origin,
+                            const double *L, const double *L_inv,
+                            const double *positions, const double *frac_atoms,
+                            int n_atoms, const long *core_offsets,
+                            const double *core_r, const double *core_slope,
+                            const double *core_support, double step_length,
+                            double capture, int max_steps, int stall_window,
+                            double stall_distance, int *owner,
+                            double *final_index);
+
 #ifdef __cplusplus
 }
 #endif

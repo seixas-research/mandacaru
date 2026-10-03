@@ -266,6 +266,70 @@ def _grid(r_c: float, doubling: int) -> np.ndarray:
     return (r_c / n) * np.arange(1, n)
 
 
+def _lowest_eigenvalue(r, v, p_u, D, q) -> float:
+    r"""Lowest eigenvalue of the pencil of
+    :func:`~.paw._generalized_matrices`, without forming it.
+
+    ``H = T + U D U^T`` and ``S = I + U q U^T``, with ``T`` tridiagonal and
+    ``U = \sqrt h\,X^T`` one column per projector.  The number of
+    eigenvalues below :math:`\sigma` is the inertia of
+    :math:`H - \sigma S` (``S`` is positive definite), which Haynsworth's
+    formula splits into that of :math:`T - \sigma` -- from ``T``'s own
+    eigenvalues -- and of a matrix the size of the projector count; the
+    count is bisected to the eigenvalue.  A dense generalized solve of the
+    free level (the wall at the table's end, 2849 nodes) cost 1.4 s per
+    channel and was most of a crystal's setup; this costs milliseconds and
+    agrees to round-off.
+    """
+    from scipy.linalg import eigh, eigvalsh_tridiagonal, solve_banded
+
+    h = float(r[1] - r[0])
+    n = r.size
+    diagonal = 1.0 / h ** 2 + np.asarray(v, dtype=float)
+    off = np.full(n - 1, -0.5 / h ** 2)
+    levels = eigvalsh_tridiagonal(diagonal, off)
+    if not p_u:
+        return float(levels[0])
+    U = np.sqrt(h) * np.array(p_u).T
+    D = np.asarray(D, dtype=float)
+    q = np.asarray(q, dtype=float)
+    band = np.zeros((3, n))
+    band[0, 1:] = off
+    band[2, :-1] = off
+
+    def below(sigma):
+        """How many eigenvalues of the pencil lie below ``sigma``."""
+        beta, V = eigh(D - sigma * q)
+        keep = np.abs(beta) > 1e-14 * max(1.0, float(np.max(np.abs(beta))))
+        count = int(np.searchsorted(levels, sigma))
+        if not np.any(keep):
+            return count
+        W = U @ V[:, keep]
+        band[1] = diagonal - sigma
+        solved = solve_banded((1, 1), band, W)
+        inner = -np.diag(1.0 / beta[keep]) - W.T @ solved
+        count += int(np.sum(np.linalg.eigvalsh(inner) < 0.0))
+        count -= int(np.sum(beta[keep] > 0.0))        # -1/beta < 0
+        return count
+
+    scale = max(1.0, abs(float(levels[0])))
+    lo = float(levels[0]) - scale
+    while below(lo) > 0:
+        lo -= 2.0 * (abs(lo) + 1.0)
+    hi = float(levels[0])
+    while below(hi) < 1:
+        hi += 2.0 * (abs(hi) + 1.0)
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if mid in (lo, hi):
+            break
+        if below(mid) >= 1:
+            hi = mid
+        else:
+            lo = mid
+    return 0.5 * (lo + hi)
+
+
 def _solve(pp, l: int, r_c: float, amplitude: float, inner_fraction: float,
            vectors: bool):
     """Lowest generalized eigenpair on the fine and the coarse grid."""
@@ -278,11 +342,10 @@ def _solve(pp, l: int, r_c: float, amplitude: float, inner_fraction: float,
         r = _grid(r_c, doubling)
         r, v, p_u, D, q = pp.channel_operator_on(l, r)
         v = v + confinement_potential(r, r_c, amplitude, inner_fraction)
-        H, S = _generalized_matrices(r, v, p_u, D, q)
         if not vectors:
-            energy = eigh(H, S, eigvals_only=True, subset_by_index=[0, 0])[0]
-            out.append((r, None, S, float(energy)))
+            out.append((r, None, None, _lowest_eigenvalue(r, v, p_u, D, q)))
             continue
+        H, S = _generalized_matrices(r, v, p_u, D, q)
         values, states = eigh(H, S, subset_by_index=[0, 0])
         out.append((r, states[:, 0], S, float(values[0])))
     return out

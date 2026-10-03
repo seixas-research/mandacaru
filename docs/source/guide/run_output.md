@@ -219,6 +219,28 @@ exported Hamiltonian, `hartree_energy_<unit>` and `xc_energy_<unit>`, then
 `dispersion_energy_<unit>` when D4 ran, so the total reads as the sum of its
 parts.
 
+Between the two, a Kohn-Sham run writes `[SCF ITERATIONS]`, one row per
+iteration, so the convergence can be followed and diagnosed:
+
+```text
+[SCF ITERATIONS]
+     iter    time_s            energy_eV              dE_eV     residual  moment_muB
+    --------------------------------------------------------------------------------
+        1     0.167      -366.8600438496                  -    6.872e+00    0.000001
+        2     0.172      -366.8962799616      -0.0362361119    5.212e+00    0.000000
+      ...
+       19     0.254      -366.9776701675      +0.0000000009    7.906e-06    0.000000
+```
+
+`time_s` is the time since the SCF began; `energy_<unit>` is the Kohn-Sham
+electronic energy of a molecule (no constants: the summary adds them) and the
+free energy of a crystal; `dE_<unit>` its change (`-` on the first row);
+`residual` what the convergence test measures -- the largest density-matrix
+change of a molecule, the density residual (electrons) of a crystal; and a
+spin-polarized crystal adds `moment_muB`, the moment per cell.
+`parse_output` returns the rows under `"scf_iterations"`, one dict per row
+keyed by the column headings.
+
 ## The `output.txt` log
 
 `txt=` writes the machine-readable protocol of

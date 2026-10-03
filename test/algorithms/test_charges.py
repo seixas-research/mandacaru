@@ -24,8 +24,8 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms.charges import (PARTITION_METHODS, atomic_weights,
-                                          free_atom_density,
+from mandacaru.algorithms.charges import (PARTITION_METHODS, WEIGHT_METHODS,
+                                          atomic_weights, free_atom_density,
                                           reference_subshells)
 
 pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -91,22 +91,23 @@ class TestTheReferenceAtoms:
 class TestTheWeights:
     """Whatever the convention, the weights are a partition of unity."""
 
-    @pytest.mark.parametrize("method", PARTITION_METHODS)
+    @pytest.mark.parametrize("method", WEIGHT_METHODS)
     def test_they_sum_to_one_everywhere(self, method):
         calc = solved(lih(), h=0.30)
         integrals = calc.solver._gradient_context["integrals"]
         grid = integrals.grid
         positions = np.array([R for _Z, R in integrals._potentials.nuclei])
-        density = calc.volumetric_field("density").data
-        weights = atomic_weights(method, grid, positions, numbers=[3, 1],
-                                 density=density)
+        weights = atomic_weights(method, grid, positions, numbers=[3, 1])
         assert weights.shape == (2,) + tuple(grid.shape)
         assert np.allclose(weights.sum(axis=0), 1.0)
         assert np.all(weights >= -1e-12)
 
     def test_an_unknown_partition_is_refused(self):
-        with pytest.raises(ValueError, match="unknown partition"):
+        with pytest.raises(ValueError, match="unknown weight partition"):
             atomic_weights("mulliken", None, [[0.0, 0.0, 0.0]])
+        # Bader's basins are traced, not a weight on the nodes.
+        with pytest.raises(ValueError, match="bader_populations"):
+            atomic_weights("bader", None, [[0.0, 0.0, 0.0]])
 
 
 class TestChargesSumToTheSystemCharge:
@@ -146,15 +147,14 @@ class TestSymmetry:
             charges = solved(h2(), h=h).atomic_partition("voronoi").charges
             assert np.allclose(charges, 0.0, atol=1e-9), h
 
-    def test_bader_converges_to_it(self):
-        """On-grid Bader resolves the basin boundary to one grid spacing.
-
-        It is the partition that most repays a fine grid: the artifact on a
-        symmetric dimer is ~0.1 e at h = 0.25 and vanishes by h = 0.15.
-        """
-        coarse = abs(solved(h2(), h=0.25).atomic_partition("bader").charges[0])
-        fine = abs(solved(h2(), h=0.15).atomic_partition("bader").charges[0])
-        assert fine < 1e-9 < coarse
+    @pytest.mark.parametrize("h", [0.30, 0.25])
+    def test_bader_is_neutral_too(self, h):
+        """The continuous ascent with boundary refinement: the bond midplane
+        is a whole plane of points exactly on the zero-flux surface, split
+        evenly.  The on-grid ascent this replaced charged H2 by 0.1 e at
+        h = 0.25 (and by 0.08 e before the refinement)."""
+        charges = solved(h2(), h=h).atomic_partition("bader").charges
+        assert np.allclose(charges, 0.0, atol=1e-6)
 
 
 class TestPolarity:
@@ -274,18 +274,17 @@ class TestTheASESurface:
             calc.get_charges()
 
 
-class TestTheCoarseGridFailure:
-    def test_bader_says_so_when_it_cannot_separate_two_atoms(self):
-        """One basin for two nuclei hands an atom zero electrons.
-
-        It is the one silent catastrophe of the method, so it warns instead.
-        """
+class TestTheCoarseGrid:
+    def test_bader_still_separates_two_atoms(self):
+        """H2 at h = 0.30: the on-grid ascent merged the two basins and
+        handed one atom no electrons; the continuous one, on an
+        interpolation of the density, separates them."""
         calc = solved(h2(), h=0.30)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             partition = calc.atomic_partition("bader")
-        assert any("no basin" in str(w.message) for w in caught)
-        assert np.isclose(min(partition.populations), 0.0)
+        assert not any("no basin" in str(w.message) for w in caught)
+        assert np.allclose(partition.populations, 1.0, atol=1e-6)
 
 
 class TestWhatGetsWrittenToAFile:
@@ -371,3 +370,80 @@ def test_the_summary_reports_every_atom():
     text = calc.atomic_partition("hirshfeld").summary()
     assert "hirshfeld" in text and "total" in text
     assert len(text.splitlines()) >= 4
+
+
+class TestCrystals:
+    """Partitions of a periodic Kohn-Sham density (``partition_crystal``)."""
+
+    @staticmethod
+    def _crystal(atoms, nodes):
+        from mandacaru.pseudopotentials.periodic_paw import build_crystal
+        from mandacaru.algorithms.periodic_dft import PeriodicKohnSham
+        h = float(np.linalg.norm(np.asarray(atoms.cell)[0])) / nodes
+        crystal, context = build_crystal(atoms, h, {"size": "SZ",
+                                                    "filter": 400})
+        solver = PeriodicKohnSham(crystal, context["n_electrons"], "lda")
+        solver.run()
+        return crystal, solver.density_matrices, atoms.get_atomic_numbers()
+
+    def test_equivalent_atoms_are_neutral_in_silicon(self):
+        """On a grid that keeps all 48 operations the two atoms are
+        equivalent, so every partition gives zero.  Bader needs the frozen
+        core: silicon's valence density peaks at the bond centers, and a
+        valence-only ascent handed those basins to one atom (+-1 e)."""
+        from ase.build import bulk
+        from mandacaru.algorithms.charges import partition_crystal
+        crystal, matrices, numbers = self._crystal(bulk("Si", "diamond",
+                                                        a=5.43), 12)
+        for method in PARTITION_METHODS:
+            partition = partition_crystal(crystal, matrices, method=method,
+                                          numbers=numbers)
+            assert partition.grid_electrons == pytest.approx(8.0, abs=1e-8)
+            # Bader's precision is its trajectories' (step, gradient): 2e-3.
+            tolerance = 5e-3 if method == "bader" else 1e-3
+            assert np.allclose(partition.charges, 0.0, atol=tolerance)
+
+    def test_rocksalt_lih_is_ionic_in_the_expected_order(self):
+        """Li gives its electron to H in all three, and the conventions rank
+        as they do for molecules: Hirshfeld < Voronoi < Bader."""
+        from ase.build import bulk
+        from mandacaru.algorithms.charges import partition_crystal
+        crystal, matrices, numbers = self._crystal(bulk("LiH", "rocksalt",
+                                                        a=4.0), 12)
+        charge = {method: partition_crystal(crystal, matrices, method=method,
+                                            numbers=numbers).charges
+                  for method in PARTITION_METHODS}
+        for values in charge.values():
+            assert values.sum() == pytest.approx(0.0, abs=1e-8)
+            assert values[0] > 0.0 > values[1]
+        assert 0.0 < charge["hirshfeld"][0] < charge["voronoi"][0] \
+            < charge["bader"][0] <= 1.0 + 1e-3
+
+
+def test_crystal_bader_is_converged_and_shift_invariant():
+    """Rocksalt LiH (SZ, 4x4x4, 10 nodes): Li +0.843 against the continuous
+    reference +0.847 (Vera, 2026-10-03; the on-grid ascent gave 0.75-0.81
+    and moved 0.01 e with a shift of the atoms), and a rigid shift of the
+    atoms by 0.3 of a grid step moves it by about 1e-3 e."""
+    from ase.build import bulk
+    from mandacaru.algorithms.charges import partition_crystal
+    from mandacaru.algorithms.periodic_dft import PeriodicKohnSham
+    from mandacaru.pseudopotentials.periodic_paw import build_crystal
+
+    def lithium_charge(shift):
+        atoms = bulk("LiH", "rocksalt", a=4.0)
+        h = float(np.linalg.norm(atoms.cell[0])) / 10
+        direction = np.array([1.0, 0.7, 0.4]) / np.linalg.norm([1.0, 0.7, 0.4])
+        atoms.positions += shift * h * direction
+        crystal, context = build_crystal(atoms, h, {"size": "SZ",
+                                                    "filter": 400},
+                                         kpts=(4, 4, 4))
+        solver = PeriodicKohnSham(crystal, context["n_electrons"], "lda")
+        solver.run()
+        return partition_crystal(crystal, solver.density_matrices,
+                                 method="bader",
+                                 numbers=atoms.get_atomic_numbers()).charges[0]
+
+    plain, shifted = lithium_charge(0.0), lithium_charge(0.3)
+    assert plain == pytest.approx(0.847, abs=0.01)
+    assert shifted == pytest.approx(plain, abs=3e-3)

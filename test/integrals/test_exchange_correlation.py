@@ -183,3 +183,59 @@ class TestOptions:
     def test_an_unknown_functional_is_refused(self):
         with pytest.raises(ValueError, match="unknown exchange-correlation"):
             xc_grid.resolve_functional("b3lyp")
+
+
+class TestSpinPolarized:
+    """`evaluate_spin`: the potentials of each channel on the grid."""
+
+    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan"])
+    def test_equal_channels_give_the_unpolarized_terms(self, functional):
+        grid = _grid()
+        rho, r2 = _gaussian(grid)
+        tau = _tau(grid, rho, r2)
+        spin = xc_grid.evaluate_spin(grid, 0.5 * rho, 0.5 * rho, functional,
+                                     tau_up=0.5 * tau, tau_dn=0.5 * tau)
+        plain = xc_grid.evaluate(grid, rho, functional, tau=tau)
+        assert spin.energy == pytest.approx(plain.energy, rel=1e-12)
+        # A channel at rho/2 crosses the density floor before the total does:
+        # below it (rho ~ 1e-12) the two conventions differ by v itself.
+        live = rho > 1e-10
+        for potential in (spin.potential_up, spin.potential_dn):
+            assert np.allclose(potential[live], plain.potential[live],
+                               rtol=1e-9, atol=1e-12)
+
+    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan"])
+    @pytest.mark.parametrize("channel", ["up", "dn"])
+    def test_each_potential_is_its_functional_derivative(self, functional,
+                                                         channel):
+        r"""``dE/de = int v_sigma delta`` perturbing one channel, on a
+        density that is fully polarized away from the center (a spin-up tail
+        with no spin-down)."""
+        grid = _grid()
+        rho, r2 = _gaussian(grid)
+        up = rho
+        dn = 0.5 * rho * np.exp(-0.8 * r2)
+        tau_up, tau_dn = _tau(grid, up, r2), _tau(grid, dn, r2)
+        # The perturbation lives where its channel does: added to an empty
+        # channel, E_x ~ rho^(4/3) is not differentiable at zero and the
+        # difference quotient picks up an eps^(1/3) term.
+        shape = 1.0 + 0.3 * grid.Y.reshape(-1)
+        delta = 0.1 * (up if channel == "up" else dn) * shape
+        eps = 1e-4
+
+        def energy(u, d):
+            return xc_grid.evaluate_spin(grid, u, d, functional,
+                                         tau_up=tau_up, tau_dn=tau_dn).energy
+
+        terms = xc_grid.evaluate_spin(grid, up, dn, functional,
+                                      tau_up=tau_up, tau_dn=tau_dn)
+        if channel == "up":
+            numeric = (energy(up + eps * delta, dn)
+                       - energy(up - eps * delta, dn)) / (2 * eps)
+            potential = terms.potential_up
+        else:
+            numeric = (energy(up, dn + eps * delta)
+                       - energy(up, dn - eps * delta)) / (2 * eps)
+            potential = terms.potential_dn
+        assert numeric == pytest.approx(np.sum(potential * delta) * grid.dV,
+                                        rel=1e-5)

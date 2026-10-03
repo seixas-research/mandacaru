@@ -306,6 +306,8 @@ class _MeanFieldDriver(VariationalDriver):
                 logger.write_block("SCF SETUP", self._scf_setup_fields())
             result = self._result(timings, run_t0)
             if logger is not None:
+                logger.write_scf_iterations(self._scf_iteration_rows(),
+                                            self._energy_unit_label())
                 logger.write_block("SCF SUMMARY", self._scf_summary_fields(
                     result), framed=True)
         finally:
@@ -421,6 +423,18 @@ class _MeanFieldDriver(VariationalDriver):
                 getattr(integrals, "spin_orbit_coupling", None)))
         fields["energy_unit"] = self._energy_unit_label()
         return fields
+
+    def _scf_iteration_rows(self) -> list:
+        """``[SCF ITERATIONS]`` rows, energies in the run's unit: the SCF's
+        ``history`` if it keeps one (the Kohn-Sham solvers do)."""
+        rows = []
+        for record in getattr(self._scf, "history", None) or []:
+            row = dict(record)
+            row["energy"] = self._to_energy_units(record["energy"])
+            if record["dE"] is not None:
+                row["dE"] = self._to_energy_units(record["dE"])
+            rows.append(row)
+        return rows
 
     def _scf_summary_fields(self, result: MeanFieldResult) -> dict:
         """``[SCF SUMMARY]``: the converged determinant and its energy."""

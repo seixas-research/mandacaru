@@ -119,11 +119,6 @@ class TestTheCalculator:
         with pytest.raises(NotImplementedError, match="PAW-LCAO"):
             atoms.get_potential_energy()
 
-    def test_crystal_forces_are_refused(self, silicon):
-        atoms, _energy = silicon
-        with pytest.raises(NotImplementedError, match="periodic"):
-            atoms.get_forces()
-
     def test_an_invalid_smearing_is_refused_by_the_constructor(self):
         with pytest.raises(ValueError, match="smearing"):
             Mandacaru(method="dft", smearing={"method": "cold"})
@@ -340,7 +335,162 @@ class TestTheSpectrum:
             calc.get_eigenvalues(0, spin=1)
 
 
-def test_crystal_populations_are_refused_with_a_pointer(silicon):
+def _oxygen_box():
+    """O2 in a periodic box, both moments up: a spin crystal at Gamma."""
+    from ase.build import molecule
+    atoms = molecule("O2")
+    atoms.set_cell([7.0, 7.0, 7.5])
+    atoms.center()
+    atoms.pbc = True
+    atoms.set_initial_magnetic_moments([1.0, 1.0])
+    return atoms
+
+
+@pytest.mark.parametrize("name", ["silicon", "oxygen"])
+def test_the_log_holds_every_crystal_iteration(name, tmp_path):
+    """``[SCF ITERATIONS]`` of a crystal: the free energy per iteration, its
+    last row the summary's free energy, its residual the density's; a spin
+    crystal adds the moment, ending on the summary's."""
+    from mandacaru.utils.logging import parse_output, reset_log
+    if name == "silicon":
+        atoms = bulk("Si", "diamond", a=5.43)
+        extra = {"kpts": {"size": (2, 2, 2), "gamma": True}}
+    else:
+        atoms, extra = _oxygen_box(), {}
+    path = str(tmp_path / f"{name}.txt")
+    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.34, txt=path,
+                           trace=False,
+                           smearing={"method": "fermi-dirac", "width": 0.01},
+                           basis={"name": "PAW-LCAO", "size": "SZ",
+                                  "filter": 200}, **extra)
+    atoms.get_potential_energy()
+    reset_log(path)
+    parsed = parse_output(path)
+    rows = parsed["scf_iterations"]
+    assert len(rows) == atoms.calc.result.scf.n_iterations
+    assert rows[-1]["energy_eV"] == pytest.approx(
+        float(parsed["summary"]["free_energy_eV"]), abs=1e-9)
+    assert rows[-1]["residual"] < 1e-5
+    if name == "oxygen":
+        assert rows[-1]["moment_muB"] == pytest.approx(
+            float(parsed["summary"]["magnetic_moment_bohr_magneton"]),
+            abs=1e-6)
+        assert rows[-1]["moment_muB"] == pytest.approx(2.0, abs=0.05)
+    else:
+        assert "moment_muB" not in rows[-1]
+
+
+def test_crystal_populations_go_through_the_calculator(silicon):
+    """``get_charges`` / ``atomic_partition`` reach the crystal partition;
+    every method accounts for all eight valence electrons."""
     atoms, _energy = silicon
-    with pytest.raises(NotImplementedError, match="pdos"):
-        atoms.calc.get_charges()
+    calc = atoms.calc
+    for method in ("hirshfeld", "voronoi", "bader"):
+        partition = calc.atomic_partition(method)
+        assert partition.grid_electrons == pytest.approx(8.0, abs=1e-8)
+        assert partition.charges.sum() == pytest.approx(0.0, abs=1e-8)
+    assert np.allclose(calc.get_charges(),
+                       calc.atomic_partition("hirshfeld").charges)
+    assert calc.get_total_magnetic_moment() == 0.0
+    with pytest.raises(NotImplementedError, match="cube files"):
+        calc.write_cube("unused.cube")
+    with pytest.raises(NotImplementedError, match="grid="):
+        calc.atomic_partition("voronoi", grid=object())
+
+
+class TestSpinPolarized:
+    """A crystal with initial magnetic moments runs spin-polarized."""
+
+    @pytest.fixture(scope="class")
+    def oxygen(self):
+        """O2 in a periodic box at Gamma, and the molecular unrestricted run
+        on the same box, basis and spacing."""
+        from ase.build import molecule
+        out = {}
+        for pbc in (False, True):
+            atoms = molecule("O2")
+            atoms.set_cell([7.0, 7.0, 7.5])
+            atoms.center()
+            atoms.pbc = pbc
+            atoms.set_initial_magnetic_moments([1.0, 1.0])
+            extra = ({"smearing": {"method": "fermi-dirac", "width": 0.01}}
+                     if pbc else {})
+            atoms.calc = Mandacaru(method="dft", xc="lda", h=0.3, trace=False,
+                                   basis={"name": "PAW-LCAO", "size": "SZ",
+                                          "filter": 300},
+                                   population="hirshfeld", **extra)
+            atoms.get_potential_energy()
+            out[pbc] = atoms
+        return out
+
+    def test_the_triplet_matches_the_molecular_unrestricted_run(self, oxygen):
+        """Moment, per-atom moments and the pi* exchange splitting (1.558 vs
+        1.555 eV); absolute levels sit on different references."""
+        crystal, molecule = oxygen[True], oxygen[False]
+        for atoms in (crystal, molecule):
+            assert atoms.calc.get_number_of_spins() == 2
+            assert atoms.calc.get_total_magnetic_moment() == pytest.approx(
+                2.0, abs=1e-6)
+            assert np.allclose(atoms.calc.results["magmoms"], 1.0, atol=2e-3)
+
+        def splitting(atoms):
+            up = atoms.calc.get_eigenvalues(spin=0)
+            down = atoms.calc.get_eigenvalues(spin=1)
+            return down[5] - up[5]
+        assert splitting(crystal) == pytest.approx(splitting(molecule),
+                                                   abs=0.02)
+
+    def test_spectra_carry_both_channels(self, oxygen):
+        calc = oxygen[True].calc
+        energies, dos = calc.dos(width=0.05)
+        below = energies < calc.get_fermi_level()
+        assert np.trapezoid(dos[below], energies[below]) == pytest.approx(
+            12.0, abs=1e-3)
+        bs = calc.band_structure(path="GX", npoints=3)
+        assert bs.energies.shape[0] == 2
+
+    def test_spin_crystal_forces_are_refused(self, oxygen):
+        with pytest.raises(NotImplementedError, match="spin-polarized"):
+            oxygen[True].get_forces()
+
+
+def test_opposite_moments_keep_an_antiferromagnet():
+    """Diamond Si with +1 / -1 on its two atoms: the operations that swap them
+    would average the magnetization away, so they are not kept."""
+    from mandacaru.integrals import Grid
+    from mandacaru.pseudopotentials.periodic_paw import grid_symmetry
+    atoms = bulk("Si", "diamond", a=5.43)
+    cell = atoms.cell.array
+    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
+                h=float(np.linalg.norm(cell[0])) / 12, units="angstrom",
+                cell=cell, periodic=True)
+    plain = grid_symmetry(atoms, grid)
+    atoms.set_initial_magnetic_moments([1.0, -1.0])
+    magnetic = grid_symmetry(atoms, grid)
+    assert plain.n_operations == 48
+    assert magnetic.n_operations == 24
+    for atom_map in magnetic.atom_maps:
+        assert list(atom_map) == [0, 1]
+
+
+@pytest.mark.slow
+def test_a_small_starting_moment_reaches_the_ferromagnet():
+    """bcc Fe from 0.5 Bohr magneton: DIIS from the first iteration
+    extrapolated the moment through zero onto the non-magnetic stationary
+    point (m = 0, 0.28 eV higher); the linear warm-up lets it grow first.
+    Both starts reach the same state."""
+    states = []
+    for start in (0.5, 2.5):
+        atoms = bulk("Fe", "bcc", a=2.87)
+        atoms.set_initial_magnetic_moments([start])
+        atoms.calc = Mandacaru(method="dft", xc="lda", h=0.25, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "SZP"},
+                               kpts={"size": (4, 4, 4), "gamma": True},
+                               smearing={"method": "fermi-dirac",
+                                         "width": 0.1})
+        energy = atoms.get_potential_energy()
+        states.append((energy, atoms.calc.get_total_magnetic_moment()))
+    (e_small, m_small), (e_large, m_large) = states
+    assert m_small > 1.0
+    assert m_small == pytest.approx(m_large, abs=1e-4)
+    assert e_small == pytest.approx(e_large, abs=1e-5)

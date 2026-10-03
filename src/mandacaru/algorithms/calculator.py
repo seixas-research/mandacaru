@@ -365,7 +365,8 @@ class Mandacaru(Calculator):
         Which solver evaluates the energy -- ``"adapt-vqe"`` (the default),
         classical ``"rhf"`` / ``"uhf"`` / ``"ghf"`` (generalized spinor
         Hartree-Fock, the mean field with spin-orbit coupling), ``"dft"``
-        (closed-shell Kohn-Sham; functional ``xc="lda"`` (default),
+        (Kohn-Sham, restricted or spin-unrestricted; functional
+        ``xc="lda"`` (default),
         ``"pbe"`` or ``"r2scan"``, and ``dispersion="d4"`` for the D4
         correction from the optional ``dftd4`` package, PBE and r2SCAN
         only), ``"vqe"`` (a
@@ -1005,7 +1006,13 @@ class Mandacaru(Calculator):
             energy_ev = measured["energy_eV"]
 
         self.results["energy"] = energy_ev
-        self.results["free_energy"] = energy_ev
+        # A smeared crystal reports E(sigma -> 0) as its energy; its forces
+        # and stress are derivatives of F = E - sigma S, which is what ASE's
+        # `force_consistent` optimizers and cell filters must see.
+        free = getattr(getattr(solver, "result", None), "free_energy", None)
+        self.results["free_energy"] = (
+            energy_ev if free is None
+            else float(solver._from_energy_units(free, "eV")))
         if measured is not None:
             self._log_measurement(solver, measured)
 
@@ -2187,9 +2194,11 @@ class Mandacaru(Calculator):
                 and residual > TRANSLATIONAL_RESIDUAL_FRACTION * largest):
             warnings.warn(
                 f"the forces do not sum to zero (net |sum F| = {residual:.3g} "
-                f"eV/Angstrom against a largest force of {largest:.3g}): a "
-                f"free molecule feels no net force, so this is grid artifact, "
-                f"not physics. The frozen-grid energy is not translation "
+                f"eV/Angstrom against a largest force of {largest:.3g}): "
+                f"translating every atom together -- a free molecule, or a "
+                f"crystal's atoms in their cell -- changes nothing physical, "
+                f"so this is grid artifact, not physics. The frozen-grid "
+                f"energy is not translation "
                 f"invariant at this spacing. Refine h and check both energy "
                 f"and forces across grid spacings and molecular positions; "
                 f"a pseudopotential can reduce, but does not eliminate, "
@@ -2425,6 +2434,26 @@ class Mandacaru(Calculator):
         from .pseudo_forces import spatial_rdms
 
         solver = self.solver
+        geometry = atoms if atoms is not None else self.atoms
+        if getattr(solver, "crystal_stress", None) is not None and \
+                geometry is not None and bool(np.any(geometry.pbc)):
+            # Kohn-Sham of a crystal: an ASE cell filter asks for the stress
+            # before anything else, and the crystal is built with the energy
+            # -- so the energy comes first.
+            if atoms is not None or getattr(solver, "result", None) is None:
+                self.get_potential_energy(geometry)
+            solver = self.solver
+        if getattr(solver, "crystal_stress", None) is not None and \
+                getattr(solver, "_periodic", False):
+            # Periodic Kohn-Sham: the converged state carried through the
+            # strains, no RDMs (`crystal_forces.crystal_stress`).
+            tensor = solver.crystal_stress(
+                strain=None if strain is None else float(strain))
+            tensor = tensor * from_hartree(1.0, "eV") / BOHR_TO_ANGSTROM ** 3
+            self.results["stress"] = (np.array([tensor[a, b]
+                                                for a, b in VOIGT])
+                                      if voigt else tensor)
+            return self.results["stress"]
         if not getattr(solver, "periodic_hamiltonian", False):
             raise NotImplementedError(
                 f"method {self.method!r} is not periodic, so there is no cell "
@@ -2679,13 +2708,55 @@ class Mandacaru(Calculator):
         """
         from .charges import partition_state
 
-        solver, integrals, frozen, active = self._volumetric_context()
-        psi = self._volumetric_state(solver, state)
-        gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
-        numbers = (None if self.atoms is None
-                   else self.atoms.get_atomic_numbers())
-        return partition_state(integrals, gamma, method=method, frozen=frozen,
-                               numbers=numbers, grid=grid, active=active)
+        # The converged state's partition is computed once per method:
+        # `population=`, `get_charges` and `get_magnetic_moments` all ask for
+        # it, and a Bader one traces the density's basins.  Held with the
+        # result object it belongs to (every new calculation replaces it; the
+        # reference, unlike an id, cannot be recycled).
+        cacheable = grid is None and isinstance(state, (int, np.integer)) \
+            and int(state) == 0
+        key = str(method).strip().lower()
+        result = getattr(self.solver, "result", None)
+        cache = self.__dict__.setdefault("_partition_cache", {})
+        if cacheable and key in cache and cache[key][0] is result:
+            return cache[key][1]
+        crystal = self._crystal_partition_route(state, grid)
+        if crystal is not None:
+            partition = crystal(method, numbers=(
+                None if self.atoms is None
+                else self.atoms.get_atomic_numbers()))
+        else:
+            solver, integrals, frozen, active = self._volumetric_context()
+            psi = self._volumetric_state(solver, state)
+            gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
+            numbers = (None if self.atoms is None
+                       else self.atoms.get_atomic_numbers())
+            partition = partition_state(integrals, gamma, method=method,
+                                        frozen=frozen, numbers=numbers,
+                                        grid=grid, active=active)
+        if cacheable and result is not None:
+            for stale in [k for k, (r, _p) in cache.items() if r is not result]:
+                del cache[stale]
+            cache[key] = (result, partition)
+        return partition
+
+    def _crystal_partition_route(self, state, grid):
+        """The solver's own crystal partition when it is periodic Kohn-Sham,
+        else ``None`` (the molecular route through the orbital expansion)."""
+        solver = self.solver
+        route = getattr(solver, "crystal_partition", None)
+        if route is None or not getattr(solver, "_periodic", False):
+            return None
+        if getattr(solver, "result", None) is None:
+            raise RuntimeError(
+                "nothing has been solved yet: attach the calculator to an "
+                "Atoms object and ask for an energy first")
+        if grid is not None or not (isinstance(state, (int, np.integer))
+                                    and int(state) == 0):
+            raise NotImplementedError(
+                "a crystal is partitioned on its own cell grid and its one "
+                "converged state: grid= and state= are not supported")
+        return route
 
     def _store_population(self) -> None:
         """Put ``charges`` / ``magmoms`` / ``magmom`` in ``results``.
@@ -2756,6 +2827,12 @@ class Mandacaru(Calculator):
         """
         if atoms is not None:
             self.atoms = atoms.copy()
+        if self._crystal_partition_route(0, None) is not None:
+            # A crystal's moment from its occupations, N_up - N_down per cell
+            # (zero for a spin-restricted run).
+            moment = float(getattr(self.solver._scf, "magnetic_moment", 0.0))
+            self.results["magmom"] = moment
+            return moment
         solver, integrals, frozen, active = self._volumetric_context()
         gamma, _ = self._state_rdms(solver, two_body=False)
         moment = _spin_moment(gamma, len(integrals.basis), frozen, active)

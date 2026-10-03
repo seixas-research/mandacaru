@@ -30,7 +30,8 @@ if(APPLE)
     set(CMAKE_MACOSX_RPATH ON)
 endif()
 
-add_library(mandacaru_integrals SHARED mandacaru_integrals.c)
+add_library(mandacaru_integrals SHARED mandacaru_integrals.c mandacaru_bloch.c
+            mandacaru_bader.c)
 target_include_directories(mandacaru_integrals PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # --- OpenMP -----------------------------------------------------------------

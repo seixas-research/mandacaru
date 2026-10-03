@@ -132,6 +132,34 @@ class TestConvergence:
             _run(atoms, xc=xc, h=0.25, basis={"name": "PAW-LCAO"})
             assert atoms.calc.result.scf.n_iterations < 30
 
+    def test_the_log_holds_every_iteration(self, tmp_path):
+        """``[SCF ITERATIONS]``: one row per iteration, ending where the
+        convergence test stopped and on the energy the summary reports."""
+        from mandacaru.utils.logging import parse_output, reset_log
+        path = str(tmp_path / "dft.txt")
+        atoms = h2()
+        atoms.calc = Mandacaru(method="dft", xc="lda", h=0.35, txt=path,
+                               trace=False)
+        energy = atoms.get_potential_energy()
+        reset_log(path)
+        parsed = parse_output(path)
+        rows = parsed["scf_iterations"]
+        scf = atoms.calc.result.scf
+        assert [r["iter"] for r in rows] == list(range(1, scf.n_iterations
+                                                       + 1))
+        assert rows[0]["dE_eV"] is None
+        for before, after in zip(rows, rows[1:]):
+            assert after["dE_eV"] == pytest.approx(
+                after["energy_eV"] - before["energy_eV"], abs=2e-10)
+            assert after["time_s"] >= before["time_s"]
+        assert rows[-1]["residual"] < 1e-8           # what stopped it
+        # The last row is the converged electronic energy; the summary adds
+        # the constants, so the two differ by exactly those.
+        constant = float(parsed["summary"]["optimal_energy_eV"]) - \
+            rows[-1]["energy_eV"]
+        assert energy == pytest.approx(rows[-1]["energy_eV"] + constant,
+                                       abs=1e-9)
+
     def test_an_r2scan_scf_does_not_stall(self):
         """DIIS restarts: this geometry oscillated at 1e-8 Ha for 200
         iterations with an uninterrupted history (HISTORY.md, 2026-10-02)."""
@@ -283,11 +311,16 @@ class TestOptions:
         with pytest.raises(ValueError, match="unknown exchange-correlation"):
             Mandacaru(method="dft", xc="b3lyp")
 
-    def test_an_open_shell_is_refused(self):
+    def test_a_hydrogen_atom_runs_fully_polarized(self):
+        """One electron: an empty spin-down channel everywhere -- the
+        full-polarization limit of the spin functionals, end to end."""
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[6] * 3)
         atoms.calc = Mandacaru(method="dft", h=0.35, trace=False)
-        with pytest.raises(NotImplementedError, match="closed-shell"):
-            atoms.get_potential_energy()
+        energy = atoms.get_potential_energy()
+        scf = atoms.calc.result.scf
+        assert np.isfinite(energy) and atoms.calc.result.success
+        assert (scf.n_alpha, scf.n_beta) == (1, 0)
+        assert atoms.calc.get_total_magnetic_moment() == pytest.approx(1.0)
 
     def test_a_measurement_provider_is_refused(self):
         with pytest.raises(ValueError, match="no quantum state"):
@@ -337,3 +370,86 @@ class TestTheMolecularSpectrum:
         calc = Mandacaru(method="dft", trace=False)
         with pytest.raises(ValueError, match="get_potential_energy"):
             calc.dos()
+
+
+def _oxygen(moments):
+    from ase.build import molecule
+    atoms = molecule("O2")
+    atoms.center(vacuum=2.5)
+    atoms.set_initial_magnetic_moments(moments)
+    return atoms
+
+
+@pytest.fixture(scope="module")
+def oxygen_triplet():
+    atoms = _oxygen([1.0, 1.0])
+    _run(atoms, xc="lda", h=0.3, basis={"name": "PAW-LCAO", "size": "SZ"},
+         population="hirshfeld")
+    return atoms
+
+
+class TestUnrestricted:
+    """Spin-unrestricted Kohn-Sham, selected by n_alpha != n_beta."""
+
+    def test_triplet_oxygen_is_below_the_closed_shell_singlet(
+            self, oxygen_triplet):
+        """The closed-shell singlet puts two electrons in one of the two
+        degenerate pi* orbitals; Hund's triplet is ~1.3 eV lower (SZ, LDA)."""
+        singlet = _oxygen([0.0, 0.0])
+        e_singlet = _run(singlet, xc="lda", h=0.3,
+                         basis={"name": "PAW-LCAO", "size": "SZ"})
+        e_triplet = oxygen_triplet.get_potential_energy()
+        assert -1.6 < e_triplet - e_singlet < -0.9
+        assert singlet.calc.get_number_of_spins() == 1
+
+    def test_the_moment_and_the_spin_channels(self, oxygen_triplet):
+        calc = oxygen_triplet.calc
+        scf = calc.result.scf
+        assert calc.result.success
+        assert (scf.n_alpha, scf.n_beta) == (7, 5)
+        assert calc.get_number_of_spins() == 2
+        assert calc.get_total_magnetic_moment() == pytest.approx(2.0)
+        assert np.allclose(calc.results["magmoms"], 1.0, atol=1e-3)
+        assert scf.spin_contamination < 0.01
+        assert len(calc.get_eigenvalues(spin=1)) == len(
+            calc.get_eigenvalues(spin=0))
+        energies, dos = calc.dos(width=0.1)
+        below = energies < calc.get_fermi_level()
+        assert np.trapezoid(dos[below], energies[below]) == pytest.approx(
+            12.0, abs=1e-6)
+
+    def test_the_many_body_problem_is_exported_in_natural_orbitals(
+            self, oxygen_triplet):
+        result = oxygen_triplet.calc.result
+        assert np.allclose(result.model_orbitals,
+                           result.scf.natural_orbitals)
+        assert result.num_particles == (7, 5)
+        problem = result.as_quantum_problem()
+        assert problem["num_particles"] == (7, 5)
+
+    @pytest.mark.parametrize("xc", ["lda", "pbe"])
+    def test_unrestricted_forces_are_the_derivative_of_the_energy(self, xc):
+        """The OH radical (seven valence electrons, so unrestricted): the
+        spin-averaged gradient plus the magnetization term, against
+        Richardson-extrapolated central differences on the frozen grid."""
+        atoms = Atoms("OH", positions=[[0, 0, 0], [0.08, 0, 1.02]],
+                      cell=[6, 6, 7])
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", xc=xc, h=0.3, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        atoms.get_forces()
+        result = atoms.calc.force_result
+        assert atoms.calc.result.num_particles == (4, 3)
+
+        def energy(atom, k, step):
+            moved = atoms.copy()
+            moved.positions[atom, k] += step
+            moved.calc = atoms.calc
+            return moved.get_potential_energy()
+
+        for atom, k in ((1, 2), (1, 0)):
+            coarse, fine = (-(energy(atom, k, s) - energy(atom, k, -s))
+                            / (2 * s) for s in (0.004, 0.002))
+            numerical = fine + (fine - coarse) / 3.0
+            assert result.unprojected[atom, k] == pytest.approx(numerical,
+                                                                abs=1e-4)

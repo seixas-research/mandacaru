@@ -118,6 +118,18 @@ _ALGORITHMS = [
   doi     = {10.1103/PhysRev.140.A1133}
 }""", "the Kohn-Sham self-consistent equations", verified=False,
          topics=("dft", "scf")),
+    _ref("vonBarthHedin1972", """
+@article{vonBarthHedin1972,
+  author  = {von Barth, U. and Hedin, L.},
+  title   = {A local exchange-correlation potential for the spin polarized
+             case: {I}},
+  journal = {J. Phys. C: Solid State Phys.},
+  volume  = {5},
+  pages   = {1629--1642},
+  year    = {1972},
+  doi     = {10.1088/0022-3719/5/13/012}
+}""", "the spin interpolation of the local spin-density correlation",
+         verified=False, topics=("xc", "spin")),
     _ref("PerdewZunger1981", """
 @article{PerdewZunger1981,
   author  = {Perdew, J. P. and Zunger, Alex},

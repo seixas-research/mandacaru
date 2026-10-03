@@ -110,13 +110,82 @@ SUPPORT_TOLERANCE = 1e-12
 _SUPPORTS: dict = {}
 
 
+class BasisGradient:
+    r"""The Cartesian derivative :math:`\partial_a(R\,Y_{lm})` of a
+    tabulated basis function, as a basis function of its own.
+
+    A crystal force needs :math:`\langle\partial\chi_\mu|O|\chi_\nu\rangle`
+    for every matrix :math:`O` the Hamiltonian is built of; with these in the
+    basis, the same builder produces them (the C Bloch kernel evaluates them
+    analytically, :meth:`evaluate` is its NumPy reference).  ``center`` is
+    the parent's, and moves with it.
+    """
+
+    def __init__(self, parent, axis: int):
+        self.parent = parent
+        self.axis = int(axis)
+        self.l, self.m = int(parent.l), int(parent.m)
+        self.center = np.asarray(parent.center, dtype=float).copy()
+
+    def evaluate(self, x, y, z) -> np.ndarray:
+        """Sample the derivative at Cartesian points (Bohr)."""
+        from ..basis._angular import spherical_harmonic_gradient
+        dx, dy, dz = (np.asarray(c, dtype=float) - o
+                      for c, o in zip((x, y, z), self.center))
+        r = np.sqrt(dx * dx + dy * dy + dz * dz)
+        out = np.zeros(r.shape, dtype=complex)
+        away = r >= 1e-12
+        if np.any(away):
+            Y, gradient = spherical_harmonic_gradient(
+                self.l, self.m, dx[away], dy[away], dz[away])
+            ra = r[away]
+            offset = (dx, dy, dz)[self.axis][away]
+            out[away] = (radial_slope(self.parent, ra) * offset / ra * Y
+                         + self.parent.radial(ra) * gradient[self.axis])
+        if np.any(~away) and self.l == 1:
+            # At the nucleus only a p function has a gradient: R ~ R'(0) r.
+            c0 = 1.0 / np.sqrt(4.0 * np.pi)
+            if self.m == 0:
+                value = np.sqrt(3.0) * c0 if self.axis == 2 else 0.0
+            else:
+                value = -np.sqrt(1.5) * c0 * (1.0, 1j, 0.0)[self.axis]
+                if self.m < 0:
+                    value = -np.conj(value)
+            out[~away] = radial_slope(self.parent, np.zeros(1))[0] * value
+        return out
+
+
+def radial_slope(function, r) -> np.ndarray:
+    """``dR/dr`` of a tabulated function's radial spline, with its
+    continuation ``R(r_0)(r / r_0)^l`` below the first breakpoint and zero
+    past its cutoff -- the derivative of ``function.radial``."""
+    breaks, coeffs, rc_ = _radial_spline(function)
+    r = np.asarray(r, dtype=float)
+    x0, x_end = float(breaks[0]), float(breaks[-1])
+    index = np.clip(np.searchsorted(breaks, r, side="right") - 1, 0,
+                    len(breaks) - 2)
+    t = r - breaks[index]
+    c = coeffs[index]
+    slope = (3.0 * c[:, 0] * t + 2.0 * c[:, 1]) * t + c[:, 2]
+    l = int(function.l)
+    if x0 > 0.0:
+        edge = float(function.radial(np.array([x0]))[0])
+        inner = (l * edge * (np.maximum(r, 0.0) / x0) ** (l - 1) / x0
+                 if l > 0 else np.zeros_like(r))
+        slope = np.where(r < x0, inner, slope)
+    return np.where((r > x_end) | (r >= rc_), 0.0, slope)
+
+
 def _radial_table(function):
     """``(r, values)`` of a tabulated radial function, or ``None``.
 
     Both layouts in use: a multiple-zeta :class:`~mandacaru.basis.multizeta.
     TabulatedOrbital` keeps a ``table``; a pseudo-atomic orbital keeps the
-    arrays themselves (``_r``, ``_values``).
+    arrays themselves (``_r``, ``_values``); a :class:`BasisGradient` has its
+    parent's.
     """
+    if isinstance(function, BasisGradient):
+        return _radial_table(function.parent)
     table = getattr(function, "table", None)
     if table is not None:
         return table.r, table.values
@@ -155,12 +224,61 @@ def _support(function) -> float:
 
 
 def _shell_key(function):
-    """Functions that share a radial table and a center differ only in ``m``."""
+    """Functions that share a radial table and a center differ only in ``m``
+    (and gradients also by their axis)."""
+    if isinstance(function, BasisGradient):
+        key = _shell_key(function.parent)
+        return None if key is None else (key[0], tuple(
+            np.round(np.asarray(function.center, float), 12)),
+            "d", function.axis)
     table = _radial_table(function)
     if table is None or not hasattr(function, "radial"):
         return None
     return (id(table[1]),
             tuple(np.round(np.asarray(function.center, float), 12)))
+
+
+def _radial_spline(function):
+    """``(breaks, coeffs, rc)`` of a tabulated function's radial spline, as
+    the C Bloch kernel evaluates it, or ``None`` for any other radial form.
+
+    Both layouts continue below the first breakpoint as
+    ``R(r_0) (r / r_0)^l`` and vanish past the last one; a multiple-zeta
+    orbital is also cut at its confinement radius (``r >= r_c``).
+    """
+    if isinstance(function, BasisGradient):
+        return _radial_spline(function.parent)
+    spline = getattr(function, "_spline", None)
+    if spline is None or _radial_table(function) is None \
+            or not hasattr(spline, "c") or spline.c.shape[0] != 4:
+        return None
+    rc = float(getattr(function, "r_c", np.inf))
+    return (np.asarray(spline.x, dtype=float),
+            np.ascontiguousarray(np.asarray(spline.c, dtype=float).T),
+            rc if np.isfinite(rc) else np.inf)
+
+
+#: ``(r_g, L) -> (q, F_L(q))`` of a compensation shape (see
+#: :meth:`PeriodicPAW._shape_table`).
+_SHAPE_TABLES: dict = {}
+
+#: Quadrature points per call when a sphere's Bloch sums are streamed: the
+#: values at every point and k-point at once ran to gigabytes (262k points,
+#: 50 k-points of a band path).
+SPHERE_CHUNK = 16384
+
+
+def _sphere_chunks(points, *arrays):
+    """Yield ``(points, *arrays)`` chunks of a quadrature, its points sorted
+    into 1-Bohr bins (a sum over the points does not depend on their order,
+    and :func:`bloch_values` then has nothing to un-permute)."""
+    x, y, z = (np.asarray(c, dtype=float).ravel() for c in points)
+    order = np.lexsort((np.floor(z), np.floor(y), np.floor(x)))
+    x, y, z = x[order], y[order], z[order]
+    arrays = [np.asarray(a).ravel()[order] for a in arrays]
+    for start in range(0, x.size, SPHERE_CHUNK):
+        part = slice(start, start + SPHERE_CHUNK)
+        yield ((x[part], y[part], z[part]), *[a[part] for a in arrays])
 
 
 def bloch_values(functions, lattice, kpoints, points, region_center,
@@ -176,8 +294,14 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
     from scipy.sparse import csr_matrix
 
     from ..basis._angular import spherical_harmonic
+    from ..integrals import _backend as backend
 
     x, y, z = (np.asarray(c, dtype=float).ravel() for c in points)
+    # The points are visited in 1-Bohr bins: the C kernel culls lattice
+    # images per block of consecutive points, which a quadrature sphere's
+    # radial-major order would spread over the whole sphere.
+    order = np.lexsort((np.floor(z), np.floor(y), np.floor(x)))
+    x, y, z = x[order], y[order], z[order]
     kpoints = np.atleast_2d(np.asarray(kpoints, dtype=float))
     out = np.zeros((len(kpoints), len(functions), x.size), dtype=complex)
     region_center = np.asarray(region_center, dtype=float)
@@ -192,7 +316,25 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
         support = _support(first)
         reach = support + float(region_radius)
         offset = float(np.linalg.norm(center - region_center))
-        shared = _shell_key(first) is not None
+        gradient = isinstance(first, BasisGradient)
+        shared = _shell_key(first) is not None and not gradient
+        spline = _radial_spline(first) if (shared or gradient) else None
+        if spline is not None and backend.HAS_C_BACKEND:
+            # The C kernel tests every candidate image against every point
+            # itself, and evaluates and phases what lies inside its support.
+            candidates = [R for R in rc.lattice_translations(
+                lattice, reach + offset)
+                if np.linalg.norm(center + R - region_center) <= reach]
+            if not candidates:
+                continue
+            translations = np.array(candidates, dtype=float)
+            phases = np.exp(1j * (kpoints @ translations.T))  # (nk, n_R)
+            if backend.bloch_shell(
+                    (x, y, z), center, translations, phases, support,
+                    spline, first.l, [functions[mu].m for mu in members],
+                    members, out,
+                    derivative=first.axis if gradient else -1):
+                continue
         # Every image's values are independent of k: collect them as one
         # sparse (image x point) matrix per function and apply all the
         # k-points' phases in a single product, instead of scattering
@@ -214,13 +356,14 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
             if not np.any(inside):
                 continue
             idx, r = idx[inside], r[inside]
+            ddx, ddy, ddz = dx[idx], dy[idx], dz[idx]
             rows.append(np.full(idx.size, len(translations)))
             cols.append(idx)
             translations.append(R)
             if shared:
-                theta = np.arccos(np.clip(dz[idx] / np.maximum(r, 1e-300),
+                theta = np.arccos(np.clip(ddz / np.maximum(r, 1e-300),
                                           -1.0, 1.0))
-                phi = np.arctan2(dy[idx], dx[idx])
+                phi = np.arctan2(ddy, ddx)
                 radial = first.radial(r)
                 for mu in members:
                     values[mu].append(radial * spherical_harmonic(
@@ -237,7 +380,11 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
             images = csr_matrix((np.concatenate(values[mu]), (rows, cols)),
                                 shape=(len(translations), x.size))
             out[:, mu, :] += (images.T @ phases.T).T
-    return out
+    if np.array_equal(order, np.arange(order.size)):
+        return out
+    restored = np.empty_like(out)
+    restored[:, :, order] = out
+    return restored
 
 
 def time_reversal_reduce(kpoints_frac, tolerance: float = 1e-8):
@@ -393,9 +540,10 @@ def grid_symmetry(atoms, grid, max_L: int = 4, symprec: float | None = None):
     An operation is kept when it maps grid nodes onto grid nodes --
     :math:`W_{ij}N_i/N_j` integral wherever :math:`W_{ij} \neq 0` and
     :math:`N_it_i` integral -- and every atom onto an atom of the same
-    species.  Those operations form a subgroup (a composition of two that
-    land on nodes lands on nodes), and the k-mesh must be reduced with that
-    subgroup and no larger one: the grid decides it, through ``h``.
+    species and initial magnetic moment.  Those operations form a subgroup
+    (a composition of two that land on nodes lands on nodes), and the k-mesh
+    must be reduced with that subgroup and no larger one: the grid decides
+    it, through ``h``.
     """
     from dataclasses import replace as dc_replace
 
@@ -407,7 +555,15 @@ def grid_symmetry(atoms, grid, max_L: int = 4, symprec: float | None = None):
     lattice = rc.lattice_vectors(grid)
     inverse = np.linalg.inv(lattice)
     frac = np.asarray(atoms.get_scaled_positions(wrap=True), dtype=float)
-    numbers = np.asarray(atoms.get_atomic_numbers())
+    # An atom maps onto one of the same element *and* initial moment: an
+    # operation swapping two opposite moments (an antiferromagnet) would
+    # otherwise average the magnetization away.
+    keys = sorted({(int(z), round(float(mag), 6)) for z, mag in
+                   zip(atoms.get_atomic_numbers(),
+                       atoms.get_initial_magnetic_moments())})
+    numbers = np.array([keys.index((int(z), round(float(mag), 6)))
+                        for z, mag in zip(atoms.get_atomic_numbers(),
+                                          atoms.get_initial_magnetic_moments())])
     n1, n2, n3 = np.meshgrid(*[np.arange(n) for n in N], indexing="ij")
     nodes = np.stack([n1.ravel(), n2.ravel(), n3.ravel()])
     keep, permutations, atom_maps, rotations = [], [], [], []
@@ -547,7 +703,6 @@ class PeriodicPAW:
         self.kernel = rc.coulomb_kernel(self.G)
         self._compensation_grid = None
         self._compensation_coulomb = None
-        self._shape_tables: dict = {}
         self.kpoint_data = self._kpoints()
 
     # -- per k-point -------------------------------------------------------- #
@@ -652,7 +807,7 @@ class PeriodicPAW:
             out.append(u.reshape(len(psi), -1) * phase[None, :])
         return np.stack(out)
 
-    def _projections(self, kpoints) -> np.ndarray:
+    def _projections(self, kpoints, only=None) -> np.ndarray:
         r"""``C[k, mu, p]`` :math:`= \langle\chi_{\mu\mathbf k}|\tilde p_p\rangle`.
 
         Projectors of one atom with the same cutoff share one sphere rule, so
@@ -663,35 +818,47 @@ class PeriodicPAW:
                      dtype=complex)
         spheres: dict = {}
         for p, projector in enumerate(self.projectors):
+            if only is not None and p not in only:
+                continue             # left zero: the caller wants these alone
             key = (projector.atom_index, round(float(projector.r_cut), 12))
             spheres.setdefault(key, []).append(p)
         for members in spheres.values():
             first = self.projectors[members[0]]
             points, weights = _projector_sphere(first)
-            chi = bloch_values(self.basis, self.lattice, kpoints, points,
-                               first.center, float(first.r_cut))
-            for p in members:
-                values = (self.projectors[p].evaluate(*points).ravel()
-                          * weights.ravel())
-                C[:, :, p] = np.einsum("kmx,x->km", chi.conj(), values)
+            values = np.stack([self.projectors[p].evaluate(*points).ravel()
+                               * weights.ravel() for p in members])
+            for part, *columns in _sphere_chunks(points, *values):
+                chi = bloch_values(self.basis, self.lattice, kpoints, part,
+                                   first.center, float(first.r_cut))
+                C[:, :, members] += np.einsum("kmx,px->kmp", chi.conj(),
+                                              np.stack(columns))
         return C
 
     def _short_range_local(self, kpoints) -> np.ndarray:
         """``V_sr[k]`` -- the short-range local term at ``kpoints``."""
+        return sum(self.short_range_atom(atom, kpoints)
+                   for atom in range(len(self.datasets)))
+
+    def short_range_atom(self, atom, kpoints, center=None) -> np.ndarray:
+        """``(nk, M, M)``: atom ``atom``'s short-range local potential between
+        the Bloch sums, its sphere centered at ``center`` (default: the atom).
+        The force differentiates it by moving the sphere alone."""
         from .local_split import (AZIMUTHAL_POINTS, POLAR_POINTS,
                                   RADIAL_POINTS, local_cutoff,
                                   short_range_potential, short_range_radius)
+        dataset = self.datasets[atom]
+        center = self.centers[atom] if center is None else np.asarray(center,
+                                                                      float)
+        radius = short_range_radius(dataset, self.sigma)
+        points, weights, r, _dirs = _sphere_rule(
+            center, radius, RADIAL_POINTS, POLAR_POINTS, AZIMUTHAL_POINTS,
+            panel=local_cutoff(dataset))
+        potential = np.repeat(short_range_potential(dataset, self.sigma, r),
+                              weights.size // r.size)
         out = np.zeros((len(kpoints), self.M, self.M), dtype=complex)
-        for atom, dataset in enumerate(self.datasets):
-            radius = short_range_radius(dataset, self.sigma)
-            points, weights, r, _dirs = _sphere_rule(
-                self.centers[atom], radius, RADIAL_POINTS, POLAR_POINTS,
-                AZIMUTHAL_POINTS, panel=local_cutoff(dataset))
-            potential = np.repeat(short_range_potential(dataset, self.sigma, r),
-                                  weights.size // r.size)
-            chi = bloch_values(self.basis, self.lattice, kpoints, points,
-                               self.centers[atom], radius)
-            weighted = weights * potential
+        for part, weighted in _sphere_chunks(points, weights * potential):
+            chi = bloch_values(self.basis, self.lattice, kpoints, part,
+                               center, radius)
             for i in range(len(kpoints)):
                 out[i] += (chi[i].conj() * weighted) @ chi[i].T
         return out
@@ -757,14 +924,16 @@ class PeriodicPAW:
         from .multipoles import shape_function
         r_g = float(self.datasets[atom].compensation_radius)
         key = (round(r_g, 12), int(L))
-        cached = self._shape_tables.get(key)
+        # Shared by every crystal: a strained cell or a relaxation step
+        # rebuilt the same transforms.
+        cached = _SHAPE_TABLES.get(key)
         if cached is not None and cached[0][-1] >= q_max:
             return cached
         top = max(q_max, COMPENSATION_CUTOFF, SHAPE_TABLE_MAX)
         q = np.linspace(0.0, top, int(top / SHAPE_TABLE_STEP) + 1)
         r = np.linspace(0.0, r_g, SHAPE_POINTS)
         table = (q, rc.radial_transform(r, shape_function(r, r_g, L), L, q))
-        self._shape_tables[key] = table
+        _SHAPE_TABLES[key] = table
         return table
 
     def ion_charge(self) -> np.ndarray:
@@ -828,18 +997,20 @@ class PeriodicPAW:
 
     # -- the constants ------------------------------------------------------ #
 
-    def ion_constants(self) -> float:
+    def ion_constants(self, centers=None) -> float:
         r"""Point-ion energy minus the Gaussian ions' reciprocal energy.
 
         :math:`-\sum_A Z_A^2/(2\sqrt\pi\sigma) + \tfrac12\sum'_{A,B,\mathbf R}
-        Z_AZ_B\,\mathrm{erfc}(d/2\sigma)/d`.
+        Z_AZ_B\,\mathrm{erfc}(d/2\sigma)/d`, at ``centers`` (default: the
+        atoms').
         """
         sigma = self.sigma
+        centers = self.centers if centers is None else centers
         energy = -float(np.sum(self.charges ** 2)) / (2.0 * np.sqrt(np.pi)
                                                      * sigma)
         reach = ION_PAIR_REACH * sigma
-        for a, (Za, Ra) in enumerate(zip(self.charges, self.centers)):
-            for b, (Zb, Rb) in enumerate(zip(self.charges, self.centers)):
+        for a, (Za, Ra) in enumerate(zip(self.charges, centers)):
+            for b, (Zb, Rb) in enumerate(zip(self.charges, centers)):
                 d0 = Rb - Ra
                 for R in rc.lattice_translations(self.lattice,
                                                  reach + np.linalg.norm(d0)):
@@ -869,20 +1040,24 @@ class PeriodicPAW:
                                       * np.trapezoid(integrand, r))
         return out
 
-    def short_range_ion_compensation(self) -> dict:
+    def short_range_ion_compensation(self, centers=None, atom=None) -> dict:
         r"""``{channel: int g_A,LM sum' v^sr_B}`` over every other atom and
-        image (the short-range half of :meth:`~.paw.PAWIntegrals.compensation_ionic_at`)."""
+        image (the short-range half of :meth:`~.paw.PAWIntegrals.compensation_ionic_at`),
+        at ``centers`` (default: the atoms').  With ``atom`` only the terms
+        that atom takes part in -- its own shapes, and every shape against its
+        potential -- which is all a displacement of it changes."""
         from ..basis._angular import spherical_harmonic
         from .local_split import short_range_potential, short_range_radius
         from .multipoles import shape_function
         from .paw import (COMPENSATION_RADIAL_POINTS,
                           PROJECTION_AZIMUTHAL_POINTS, PROJECTION_POLAR_POINTS)
 
+        centers = self.centers if centers is None else centers
         out = {}
-        for atom, L, M in self.channels:
-            r_g = float(self.datasets[atom].compensation_radius)
+        for owner, L, M in self.channels:
+            r_g = float(self.datasets[owner].compensation_radius)
             points, weights, r, dirs = _sphere_rule(
-                self.centers[atom], r_g, COMPENSATION_RADIAL_POINTS,
+                centers[owner], r_g, COMPENSATION_RADIAL_POINTS,
                 PROJECTION_POLAR_POINTS, PROJECTION_AZIMUTHAL_POINTS)
             theta = np.arccos(np.clip(dirs[2], -1.0, 1.0))
             phi = np.arctan2(dirs[1], dirs[0])
@@ -891,21 +1066,23 @@ class PeriodicPAW:
             x = np.stack(points, axis=1)
             total = 0.0j
             for other, dataset in enumerate(self.datasets):
+                if atom is not None and atom not in (other, owner):
+                    continue
                 reach = short_range_radius(dataset, self.sigma) + r_g
-                d0 = self.centers[atom] - self.centers[other]
+                d0 = centers[owner] - centers[other]
                 for R in rc.lattice_translations(self.lattice,
                                                  reach + np.linalg.norm(d0)):
-                    if other == atom and np.linalg.norm(R) < 1e-10:
+                    if other == owner and np.linalg.norm(R) < 1e-10:
                         continue
                     if np.linalg.norm(d0 - R) > reach:
                         continue
                     distance = np.linalg.norm(
-                        x - (self.centers[other] + R)[None, :], axis=1)
+                        x - (centers[other] + R)[None, :], axis=1)
                     total += np.sum(weights * density
                                     * short_range_potential(dataset,
                                                             self.sigma,
                                                             distance))
-            out[(atom, L, M)] = total
+            out[(owner, L, M)] = total
         return out
 
     def core_density(self) -> np.ndarray | None:
@@ -934,32 +1111,42 @@ class PeriodicPAW:
     def _place_cores(self, table) -> np.ndarray | None:
         """Sum of ``table(dataset)`` (a radial array or ``None``) over atoms
         and images, Fourier-filtered at :attr:`filter_cutoff`."""
+        total = None
+        for atom in range(len(self.datasets)):
+            values = self.place_core(atom, table)
+            if values is not None:
+                total = values if total is None else total + values
+        return total
+
+    def place_core(self, atom, table, center=None) -> np.ndarray | None:
+        """Atom ``atom``'s share of :meth:`_place_cores`, centered at
+        ``center`` (default: the atom) -- what a force moves."""
         from ..basis.filtering import filter_radial
         from scipy.interpolate import CubicSpline
 
         g = self.grid
         x = np.stack(self._grid_points(), axis=1)
-        total = None
-        for dataset, center in zip(self.datasets, self.centers):
-            values_r = table(dataset)
-            if values_r is None:
-                continue
-            r = np.asarray(dataset.r, dtype=float)
-            if self.filter_cutoff is not None:
-                values_r, _info = filter_radial(r, values_r, 0,
-                                                self.filter_cutoff, warn=False)
-            peak = float(np.max(np.abs(values_r)))
-            significant = np.nonzero(np.abs(values_r) > 1e-14 * peak)[0]
-            support = float(r[significant[-1]]) if significant.size else 0.0
-            spline = CubicSpline(r, values_r)
-            values = np.zeros(g.size)
-            for R in rc.lattice_translations(
-                    self.lattice, support + 2.0 * self._cell_region()[1]):
-                distance = np.linalg.norm(x - (center + R)[None, :], axis=1)
-                inside = distance <= support
-                values[inside] += spline(distance[inside])
-            total = values if total is None else total + values
-        return total
+        dataset = self.datasets[atom]
+        center = self.centers[atom] if center is None else np.asarray(center,
+                                                                      float)
+        values_r = table(dataset)
+        if values_r is None:
+            return None
+        r = np.asarray(dataset.r, dtype=float)
+        if self.filter_cutoff is not None:
+            values_r, _info = filter_radial(r, values_r, 0,
+                                            self.filter_cutoff, warn=False)
+        peak = float(np.max(np.abs(values_r)))
+        significant = np.nonzero(np.abs(values_r) > 1e-14 * peak)[0]
+        support = float(r[significant[-1]]) if significant.size else 0.0
+        spline = CubicSpline(r, values_r)
+        values = np.zeros(g.size)
+        for R in rc.lattice_translations(
+                self.lattice, support + 2.0 * self._cell_region()[1]):
+            distance = np.linalg.norm(x - (center + R)[None, :], axis=1)
+            inside = distance <= support
+            values[inside] += spline(distance[inside])
+        return values
 
     def initial_density(self) -> tuple[np.ndarray, dict]:
         """Superposed smooth valence densities and reference monopoles."""
@@ -984,6 +1171,35 @@ class PeriodicPAW:
                 q[(atom, 0, 0)] = dataset.compensation_charge / np.sqrt(4.0
                                                                        * np.pi)
         return rho, q
+
+    def initial_magnetization(self, moments) -> np.ndarray:
+        r"""The starting magnetization :math:`n_\uparrow - n_\downarrow`:
+        each atom's superposed valence density weighted by its initial moment
+        over its valence charge (clamped to that charge, so neither spin
+        density starts negative)."""
+        from scipy.interpolate import CubicSpline
+        x = np.stack(self._grid_points(), axis=1)
+        m = np.zeros(self.grid.size)
+        moments = np.zeros(len(self.datasets)) if moments is None else \
+            np.asarray(moments, dtype=float)
+        for dataset, center, moment in zip(self.datasets, self.centers,
+                                           moments):
+            charge = float(dataset.valence_charge)
+            if moment == 0.0 or charge <= 0.0:
+                continue
+            fraction = float(np.clip(moment / charge, -1.0, 1.0))
+            r = np.asarray(dataset.r, dtype=float)
+            values = np.asarray(dataset.valence_density, dtype=float)
+            peak = float(np.max(np.abs(values)))
+            significant = np.nonzero(np.abs(values) > 1e-12 * peak)[0]
+            support = float(r[significant[-1]])
+            spline = CubicSpline(r, values)
+            for R in rc.lattice_translations(
+                    self.lattice, support + 2.0 * self._cell_region()[1]):
+                distance = np.linalg.norm(x - (center + R)[None, :], axis=1)
+                inside = distance <= support
+                m[inside] += fraction * spline(distance[inside])
+        return m
 
     @property
     def n_electrons_neutral(self) -> float:
@@ -1048,6 +1264,12 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
     from .paw import (DEFAULT_PROJECTOR_BASIS, get_paw, get_upaw,
                       paw_coupling_blocks, paw_multipole_blocks,
                       paw_overlap_blocks, paw_projectors)
+
+    # The Bloch sums and the Bader ascent run in the C library: compile it
+    # (or a stale copy missing their symbols, as a tree synced from another
+    # machine has) before anything is sampled, as the molecular engine does.
+    from ..integrals import _backend
+    _backend.warn_fallback(_backend.ensure_backend())
 
     options = resolve_family(family).resolved_options(dict(options or {}))
     load = get_upaw if family == "upaw-lcao" else get_paw

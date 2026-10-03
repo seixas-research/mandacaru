@@ -195,6 +195,73 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
                    tau_potential=df_dtau)
 
 
+@dataclass(frozen=True)
+class SpinXCTerms:
+    """The spin-polarized functional on one pair of densities: ``energy``
+    (Hartree), the flat potentials of each channel and, for a meta-GGA, the
+    two :math:`\\partial f/\\partial\\tau_\\sigma`."""
+
+    energy: float
+    potential_up: np.ndarray
+    potential_dn: np.ndarray
+    tau_potential_up: np.ndarray | None = None
+    tau_potential_dn: np.ndarray | None = None
+
+
+def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
+                  relativistic: bool = False, tau_up=None, tau_dn=None
+                  ) -> SpinXCTerms:
+    r"""The spin-polarized :func:`evaluate`: ``E_xc`` and each channel's
+    :math:`v_\sigma = \partial f/\partial\rho_\sigma -
+    \nabla\cdot(2\,\partial f/\partial\sigma_{\sigma\sigma}\nabla\rho_\sigma
+    + \partial f/\partial\sigma_{\uparrow\downarrow}\nabla\rho_{\bar\sigma})`
+    (:mod:`mandacaru.basis.xc_spin`).  A spin-unpolarized partial core is the
+    caller's to split: half of it in each channel.
+    """
+    from ..basis.xc_spin import spin_partials
+
+    key = resolve_functional(functional)
+    up = np.maximum(np.asarray(density_up, dtype=float), 0.0)
+    dn = np.maximum(np.asarray(density_dn, dtype=float), 0.0)
+    dV = grid.dV
+    if key == "lda":
+        f, v_up, v_dn, *_ = spin_partials("lda", up, dn,
+                                          relativistic=relativistic)
+        return SpinXCTerms(energy=float(np.sum(f) * dV), potential_up=v_up,
+                           potential_dn=v_dn)
+    # As `evaluate`: the gradients of the full densities, and the gradient
+    # terms (not the densities) dropped below the floor -- masking the
+    # densities themselves would ring through the spectral derivative.
+    weighted = (up + dn) > GRADIENT_DENSITY_FLOOR
+    grad_up, grad_dn = gradient(grid, up), gradient(grid, dn)
+    s_uu = np.where(weighted, np.sum(grad_up * grad_up, axis=0), 0.0)
+    s_ud = np.where(weighted, np.sum(grad_up * grad_dn, axis=0), 0.0)
+    s_dd = np.where(weighted, np.sum(grad_dn * grad_dn, axis=0), 0.0)
+    if key == "r2scan":
+        if tau_up is None or tau_dn is None:
+            raise ValueError("a meta-GGA needs the kinetic-energy densities")
+        tau_up = np.asarray(tau_up, dtype=float)
+        tau_dn = np.asarray(tau_dn, dtype=float)
+        # The meta-GGA is not evaluated below the floor at all, as in
+        # `evaluate` (its iso-orbital indicator is noise there).
+        up, dn = np.where(weighted, up, 0.0), np.where(weighted, dn, 0.0)
+    f, v_up, v_dn, d_uu, d_ud, d_dd, t_up, t_dn = spin_partials(
+        key, up, dn, s_uu, s_ud, s_dd, tau_up, tau_dn,
+        relativistic=relativistic)
+    d_uu, d_ud, d_dd = (np.where(weighted, d, 0.0)
+                        for d in (d_uu, d_ud, d_dd))
+    potential_up = v_up - divergence(grid, 2.0 * d_uu * grad_up
+                                     + d_ud * grad_dn)
+    potential_dn = v_dn - divergence(grid, 2.0 * d_dd * grad_dn
+                                     + d_ud * grad_up)
+    meta = key == "r2scan"
+    return SpinXCTerms(energy=float(np.sum(f) * dV),
+                       potential_up=np.asarray(potential_up, dtype=float),
+                       potential_dn=np.asarray(potential_dn, dtype=float),
+                       tau_potential_up=t_up if meta else None,
+                       tau_potential_dn=t_dn if meta else None)
+
+
 # --------------------------------------------------------------------------- #
 # Partial core densities.
 # --------------------------------------------------------------------------- #

@@ -449,7 +449,41 @@ def mask_function(r, r_inner: float, r_outer: float) -> np.ndarray:
 # The filter itself.
 # --------------------------------------------------------------------------- #
 
-def filter_radial(r, values, l: int, k_c: float, *,
+#: ``key -> (filtered, info)``: a radial table's filter is a pure function of
+#: the table and the options, and every crystal build (a strained cell for the
+#: stress, each relaxation step) asked for the same ones again.
+_FILTERED: dict = {}
+
+
+def filter_radial(r, values, l: int, k_c: float, **options):
+    """Remove the content above ``k_c`` from one radial table (memoized; see
+    :func:`_filter_radial` for the options).  The returned array is a copy,
+    free for the caller to modify."""
+    import hashlib
+
+    r = np.asarray(r, dtype=float)
+    values = np.asarray(values, dtype=float)
+    digest = hashlib.sha1(r.tobytes())
+    digest.update(values.tobytes())
+    key = (digest.hexdigest(), int(l), float(k_c),
+           tuple(sorted((k, v) for k, v in options.items() if k != "warn")))
+    cached = _FILTERED.get(key)
+    if cached is None:
+        # Computed with its warnings on and recorded, so that a cached call
+        # warns exactly as the first one did.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            filtered, info = _filter_radial(r, values, l, k_c,
+                                            **{**options, "warn": True})
+        cached = (filtered, info, [(w.message, w.category) for w in caught])
+        _FILTERED[key] = cached
+    if options.get("warn", True):
+        for message, category in cached[2]:
+            warnings.warn(message, category, stacklevel=2)
+    return cached[0].copy(), cached[1]
+
+
+def _filter_radial(r, values, l: int, k_c: float, *,
                   method: str = DEFAULT_FILTER_METHOD,
                   rolloff: float = ROLLOFF_FRACTION,
                   oversample: int = TRANSFORM_OVERSAMPLE,

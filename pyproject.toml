@@ -56,12 +56,13 @@ testpaths = ["test"]
 # `-m "not slow"` is what keeps a bare run inside the session budget that
 # `test/conftest.py` enforces.  The slow mark is for tests that *generate* a
 # pseudopotential from scratch: a scalar-relativistic reference atom costs
-# 20-40 s per element, and the suite has dozens of them.  Nothing is skipped
+# 20-40 s per element, and the suite has dozens of them -- and for the crystal
+# force and stress checks, a minute or more each.  Nothing is skipped
 # silently -- `python -m pytest -m slow` runs exactly those, and
 # `python -m pytest -m ""` runs everything.
 addopts = "-q -m 'not slow'"
 markers = [
-    "slow: generates a pseudopotential or PAW-LCAO dataset from scratch",
+    "slow: generates a pseudopotential or PAW-LCAO dataset from scratch, or computes crystal forces or stress",
 ]
 filterwarnings = [
     # A fallback to the NumPy kernels is announced once; it is not a failure.

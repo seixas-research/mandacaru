@@ -52,11 +52,16 @@ $N_A = \int w_A n\, d^3r$ and $q_A = Z_A - N_A$.
   deciding, not the physics.
 
 `bader`
-: The zero-flux partition, on the grid: every node walks uphill along the
-  steepest density gradient until it stops, and nodes reaching the same
-  maximum are one basin (Henkelman *et al.*, *Comput. Mater. Sci.* **36**,
-  354, 2006). It follows the density rather than a reference and gives the
-  largest charges of the three.
+: The zero-flux partition: every point climbs the density along its steepest
+  gradient, and the points reaching the same nucleus are one basin. The
+  ascent is **continuous** -- on a cubic-spline interpolation of the density,
+  from every point of a twice-refined grid -- and the points next to a basin
+  boundary are traced again from eight sub-voxel offsets and averaged, so the
+  zero-flux surface is resolved below the grid spacing. It follows the
+  density rather than a reference and gives the largest charges of the
+  three. (An ascent that walks from node to node steers along the grid's own
+  directions: it underestimated cation charges by 0.04--0.2 e at ordinary
+  spacings and moved them with a shift of the atoms against the grid.)
 
 LiH at 1.6 Å, HAO, `h=0.20` — same state, three answers:
 
@@ -64,7 +69,7 @@ LiH at 1.6 Å, HAO, `h=0.20` — same state, three answers:
 | --- | --- | --- |
 | hirshfeld | +0.689 | −0.689 |
 | voronoi | +0.803 | −0.803 |
-| bader | +0.924 | −0.924 |
+| bader | +0.921 | −0.921 |
 
 They agree on the sign and on the total, and that is the honest extent of the
 agreement. Quote the method with the number.
@@ -77,34 +82,44 @@ whose charges must both be zero:
 
 | `h` (Å) | hirshfeld | voronoi | bader |
 | --- | --- | --- | --- |
-| 0.30 | 0 | 0 | **±1.0** (one basin) |
-| 0.25 | 0 | 0 | ±0.098 |
-| 0.20 | 0 | 0 | ±0.092 |
-| 0.15 | 0 | 0 | 0 |
+| 0.30 | 0 | 0 | 0 |
+| 0.25 | 0 | 0 | 0 |
+| 0.20 | 0 | 0 | 0 |
 
 Voronoi is exact because a node lying exactly on the dividing plane is **split
 between the tied atoms** rather than given to one of them; without that it
-charges H₂ by 0.16 e at some spacings and by nothing at others. Bader splits
-its separatrix ties the same way, which halves the artifact but cannot remove
-it — a node *off* the boundary whose ascent path crosses it still goes one way.
+charges H₂ by 0.16 e at some spacings and by nothing at others. Bader's
+boundary refinement does the same for the points on its zero-flux surface: a
+symmetric grid puts a whole plane of them exactly on the bond midplane, where
+round-off alone would pick the side (0.08 e of charge before the refinement).
 
-```{warning}
-At `h = 0.30` Å the grid cannot separate the two protons, the density has a
-single maximum, and one atom is left with **no basin and no electrons**. That
-is the one silent catastrophe of the method, so it raises a `RuntimeWarning`
-naming the starved atoms instead. Bader is the partition that most repays a
-fine grid; `hirshfeld` needs no basin at all.
+A partition can only be as converged as the density it cuts: in the
+all-electron `HAO` basis LiH's density itself moves with `h` (Hirshfeld
++0.68 / +0.63 / +0.69 at h = 0.30 / 0.25 / 0.20), and Bader follows it. In a
+crystal at fixed density, the continuous ascent is converged by about ten
+nodes per lattice vector (rocksalt LiH +0.843 / +0.847 / +0.847 at 10 / 12 / 16)
+and moves by about 1e-3 e with a shift of the atoms against the grid.
+
+```{note}
+An atom that no trajectory reaches -- possible only on a grid far too coarse
+for its density -- would get no basin and no electrons; it raises a
+`RuntimeWarning` naming the atom instead.
 ```
 
 ## Pseudopotentials
 
 `Z_A` is the charge the *Hamiltonian* carries, so for a pseudopotential run it
 is the valence charge (O is 6, not 8) and `q_A` is still the physical partial
-charge. Two things follow automatically:
+charge. Three things follow automatically:
 
 * the Hirshfeld reference becomes the **valence** free atom, so the
   stockholder fractions are not weighted by core density that is not on the
   grid to share;
+* Bader's ascent climbs the valence density **plus the free atoms' frozen
+  cores**, added analytically: a valence density need not peak at the
+  nuclei (covalent silicon's maxima sit at its bond centers, and a
+  valence-only ascent gave those basins to one atom), while valence plus
+  core does. Only the valence density is integrated;
 * for PAW-LCAO the grid holds the *smooth* density, and the charge inside each
   augmentation sphere is added back to its own atom from
   $C_A q_A C_A^\dagger$ — that term is block-diagonal per atom, so the

@@ -678,6 +678,11 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 pulay[atom, k] = energy.directional(
                     S0, h0, g0, _hermitian(dS), _hermitian(dh), dg,
                     algebraic_step, dh_so=dh_so)
+                if field is not None and hasattr(field, "spin_term"):
+                    # A spin-resolved potential: the magnetization part the
+                    # spin-averaged energy does not see.
+                    pulay[atom, k] += field.spin_term(
+                        S0, _hermitian(dS), dpsi, algebraic_step)
 
             # ---------------- Hellmann-Feynman: the operators of `atom` move --
             w_loc = _moved_radial(atom_potentials[atom], centers[atom],
@@ -756,6 +761,10 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
             hf[atom, k] = energy.directional(
                 S0, h0, g0, _hermitian(dS) if dS is not None else None,
                 _hermitian(dh), dg, algebraic_step, dh_so=dh_so)
+            if field is not None and hasattr(field, "spin_term") \
+                    and dS is not None:
+                hf[atom, k] += field.spin_term(S0, _hermitian(dS), None,
+                                               algebraic_step)
             if field is not None:
                 hf[atom, k] += field.hellmann_feynman(atom, k)
 
