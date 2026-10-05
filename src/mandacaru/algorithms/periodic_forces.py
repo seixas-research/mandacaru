@@ -142,7 +142,7 @@ def _matrices(integrals, stack, external):
                               kinetic=integrals.kinetic)
         overlap = (np.conj(stack) @ stack.T) * integrals.grid.dV
         overlap = 0.5 * (overlap + overlap.conj().T)
-        g = engine.two_body(method="fft", energy_units="Ha")
+        g = engine.two_body(energy_units="Ha")
     finally:
         engine._psi = original
     return overlap, 0.5 * ((T + V) + (T + V).conj().T), g

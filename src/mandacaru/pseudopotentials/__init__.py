@@ -9,21 +9,18 @@
 """Pseudopotentials: valence-only Hamiltonians for the real-space engine.
 
 Organized in **families** (:mod:`.families`, registry :data:`PSEUDO_FAMILIES`).
-Three are shipped, all generated from Mandacaru's own self-consistent atom
+Two are shipped, both generated from Mandacaru's own self-consistent atom
 (:mod:`mandacaru.basis.atomic_solver`) on the shared dataset layout
-(:mod:`.dataset`): ``"oncvpsp"`` (alias ``"oncv"``),
-Hamann's optimized norm-conserving Vanderbilt potentials with two projectors
-per channel (:mod:`.oncv`); ``"paw-lcao"``, Bloechl's projector augmented-wave
-datasets with an overlap correction and frozen one-center terms
-(:mod:`.paw`); and ``"upaw-lcao"`` (alias ``"unitary-paw-lcao"``), the PAW construction
-with a vanishing norm deficit, generated on demand.  The datasets are not part
-of the package: each family's library is a repository checkout that an
-environment variable names -- ``MANDACARU_ONCVPSP_PATH``,
-``MANDACARU_PAW_PATH``, set with ``mandacaru --set-oncvpsp/--set-paw DIR``
--- holding one folder per set
-(``lda-sr/`` by default) (:mod:`.environment`).  The valence
-pseudo-atomic orbitals and projectors are sampled on the real-space grid by
-:mod:`.orbitals`.  A family is selected **as a basis**: ``basis="ONCVPSP"``, ``basis={"name": "PAW-LCAO", "size": "DZP"}`` on any driver
+(:mod:`.dataset`) with the radial machinery of :mod:`.partial_waves`:
+``"paw-lcao"``, Bloechl's projector augmented-wave datasets with an overlap
+correction and frozen one-center terms (:mod:`.paw`); and ``"upaw-lcao"``
+(alias ``"unitary-paw-lcao"``), the PAW construction with a vanishing norm
+deficit, generated on demand.  The datasets are not part of the package: the
+library is a repository checkout that ``MANDACARU_PAW_PATH`` names, set with
+``mandacaru --set-paw DIR``, holding one folder per set (``lda-sr/`` by
+default) (:mod:`.environment`).  The valence pseudo-atomic orbitals and
+projectors are sampled on the real-space grid by :mod:`.orbitals`.  A family
+is selected **as a basis**: ``basis="PAW-LCAO"``, ``basis={"name": "PAW-LCAO", "size": "DZP"}`` on any driver
 (the family name is a basis name, with the multiple-zeta size hierarchy as
 its options); see the *Pseudopotentials* guide of the manual.
 """
@@ -40,14 +37,7 @@ from .io import (FORMAT_VERSION, LIBRARY_ELEMENTS, LIBRARY_Z_MAX,
                  save_pseudopotential)
 from .orbitals import (KBProjector, PseudoAtomicOrbital, pseudo_basis,
                        valence_electrons)
-from .oncv import (MissingStateError, ONCV_FAMILY, ONCVChannel,
-                   ONCVIntegrals, ONCVPseudoPotential,
-                   build_oncv_library, check_oncv_channel,
-                   diagonalized_projectors, generate_oncv, get_oncv,
-                   log_derivative_ae, log_derivative_ps, missing_bound_states,
-                   oncv_coupling_blocks,
-                   oncv_library_path, oncv_projectors, radial_spectrum,
-                   report_oncv)
+from .partial_waves import log_derivative_ae
 from .paw import (PAW_FAMILY, PAWChannel, PAWDataset, PAWIntegrals,
                   build_paw_library, check_paw_channel, compensation_coulomb,
                   compensation_potential, compensation_shape, generate_paw,
@@ -69,14 +59,7 @@ __all__ = [
     "available_elements", "library_file", "load_pseudopotential",
     "save_pseudopotential",
     "KBProjector", "PseudoAtomicOrbital", "pseudo_basis", "valence_electrons",
-    "MissingStateError", "ONCV_FAMILY", "ONCVChannel", "ONCVIntegrals",
-    "ONCVPseudoPotential",
-    "build_oncv_library",
-    "check_oncv_channel", "diagonalized_projectors", "generate_oncv",
-    "get_oncv", "log_derivative_ae", "log_derivative_ps",
-    "missing_bound_states",
-    "oncv_coupling_blocks", "oncv_library_path", "oncv_projectors",
-    "radial_spectrum", "report_oncv",
+    "log_derivative_ae",
     "PAW_FAMILY", "PAWChannel", "PAWDataset", "PAWIntegrals",
     "build_paw_library", "check_paw_channel", "compensation_coulomb",
     "compensation_potential", "compensation_shape", "generate_paw", "get_paw",

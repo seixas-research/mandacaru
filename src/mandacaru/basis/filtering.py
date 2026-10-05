@@ -127,9 +127,8 @@ filtered function is slightly better).
 
 So the default is per family (:attr:`~mandacaru.pseudopotentials.families.FamilySpec.default_options`):
 **on for PAW-LCAO and UPAW-LCAO**, whose smooth partial waves are built band-limited
-(:func:`~mandacaru.pseudopotentials.oncv.optimize_pseudo_waves` minimizes the
-kinetic energy beyond ``q_cut``) so the filter has little to take, and **off
-for ONCVPSP**, whose orbitals are not optimized that way.
+(:func:`~mandacaru.pseudopotentials.partial_waves.optimize_pseudo_waves` minimizes the
+kinetic energy beyond ``q_cut``) so the filter has little to take.
 ``basis={"name": "PAW-LCAO", "filter": False}`` restores the unfiltered basis
 exactly.  The measured prices and benefits are in
 ``docs/source/guide/pseudopotentials.md``.

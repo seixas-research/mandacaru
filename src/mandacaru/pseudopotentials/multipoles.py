@@ -226,7 +226,7 @@ def partial_waves(dataset, l: int):
     one-center Coulomb tables -- read that divergence until 2026-09-27, and
     the s-d moments of the 3d elements came out ~100x too large.
     """
-    from .oncv import _bessel_table
+    from .partial_waves import _bessel_table
 
     channel = dataset.channels[int(l)]
     r = np.asarray(dataset.r, dtype=float)
@@ -276,7 +276,8 @@ def _harmonics(channels, theta, phi) -> np.ndarray:
 
 
 def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
-                             displacement, points: int = 50) -> np.ndarray:
+                             displacement, points: int = 50,
+                             potential=None) -> np.ndarray:
     r"""All ``int int g_A,LM(1) g_B,L'M'(2)/r_12`` at once.
 
     Returns ``(len(channels_a), len(channels_b))``.  The per-pair form would
@@ -288,6 +289,10 @@ def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
     ``displacement`` is :math:`\mathbf R_B - \mathbf R_A`.  Unlike the
     monopole case the answer depends on the *direction* as well as the
     distance, which is exactly what the missing dipole terms describe.
+
+    ``potential(radius, r_g, L)`` replaces the Coulomb potential of the A
+    shapes (:func:`shape_potential`) -- a screened hybrid passes the
+    long-range one, :func:`~.onecenter.long_range_shape_potential`.
     """
     displacement = np.asarray(displacement, dtype=float)
     channels_a, channels_b = list(channels_a), list(channels_b)
@@ -306,7 +311,8 @@ def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
     azimuth_a = np.arctan2(rel[:, :, 1], rel[:, :, 0])
 
     # Potentials of every A multipole at the B quadrature points.
-    v_a = np.stack([shape_potential(dist, r_a, L)
+    potential = shape_potential if potential is None else potential
+    v_a = np.stack([potential(dist, r_a, L)
                     * spherical_harmonic(L, M, polar_a, azimuth_a)
                     for L, M in channels_a])                    # (na, nr, nang)
     # Densities of every B multipole on the same points.

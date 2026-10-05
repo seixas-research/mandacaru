@@ -18,10 +18,9 @@ Four things are pinned here, in this order:
 2. **the option** -- ``True`` / ``"auto"`` / a number in eV / ``False``
    accepted, everything else refused with a clear message, in the single-family
    and the per-element form and in the dry run;
-3. **the default** -- on for PAW-LCAO and UPAW-LCAO, off for ONCVPSP, declared
-   in the registry, and ``filter=False`` reproducing the unfiltered basis
-   **byte for byte** (this is what keeps every pinned ONCVPSP number
-   still valid and makes the PAW-LCAO flip auditable);
+3. **the default** -- on for PAW-LCAO and UPAW-LCAO, declared in the
+   registry, and ``filter=False`` reproducing the unfiltered basis **byte for
+   byte** (this is what makes the PAW-LCAO flip auditable);
 4. **what it buys** -- the rigid-shift energy ripple shrinks, and the analytic
    force is still the derivative of the calculator's own energy.
 
@@ -314,7 +313,7 @@ class TestOption:
         chose it is tabulated on the constant."""
         assert FILTER_NYQUIST_FRACTION == 1.0
 
-    @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO", "ONCVPSP"])
+    @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])
     def test_every_family_accepts_the_option(self, family):
         spec = PSEUDO_FAMILIES[family.lower()]
         assert "filter" in spec.options
@@ -372,7 +371,7 @@ class TestOption:
 
 class TestDefault:
     @pytest.mark.parametrize("family, expected", [
-        ("paw-lcao", True), ("upaw-lcao", True), ("oncvpsp", None),
+        ("paw-lcao", True), ("upaw-lcao", True),
     ])
     def test_declared_in_the_registry(self, family, expected):
         """The default lives in one place -- the family spec -- so a new
@@ -391,12 +390,7 @@ class TestDefault:
             FILTER_NYQUIST_FRACTION * np.pi / (0.25 * ANGSTROM_TO_BOHR),
             rel=0.05)              # the realized spacing, not exactly h
 
-    def test_the_norm_conserving_family_stays_opt_in(self):
-        assert build(h2(), "oncvpsp", 0.25)[4]["filter_cutoff"] is None
-        assert build(h2(), {"name": "oncvpsp", "filter": True},
-                     0.25)[4]["filter_cutoff"] is not None
-
-    @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao", "oncvpsp"])
+    @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao"])
     def test_filter_off_is_byte_identical_to_an_unfiltered_basis(self, family):
         """``filter=False`` must reproduce the historical basis **exactly**.
 
@@ -404,8 +398,7 @@ class TestDefault:
         to itself.  Against what the construction was *before* the option
         existed: the SZ first zeta is the dataset's own ``pseudo_radial``, and
         the DZP tables are exactly what ``zeta_tables`` returns from it.  This
-        is what keeps every pinned ONCVPSP number valid and makes the
-        PAW-LCAO flip a decision rather than a drift.
+        is what makes the PAW-LCAO flip a decision rather than a drift.
         """
         spec = PSEUDO_FAMILIES[family]
         symbols, positions = ["H", "H"], np.array([[0.0, 0.0, 0.0],
@@ -480,7 +473,6 @@ class TestDefault:
         assert on.n_qubits == off.n_qubits and on.per_atom == off.per_atom
         assert "filtered (auto: 1 x Nyquist)" in on.basis
         assert "unfiltered" in off.basis
-        assert "unfiltered" in estimate_qubits(water(), basis="ONCVPSP").basis
         explicit = count_basis_functions(water(),
                                          {"name": "PAW-LCAO", "filter": 700.0})[1]
         assert "filtered (700 eV)" in explicit

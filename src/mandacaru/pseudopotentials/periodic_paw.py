@@ -67,12 +67,13 @@ The conventions that make the energy the molecular one in a large cell
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.special import erfc
 
 from ..integrals import reciprocal as rc
+from ..integrals._backend import single_threaded_blas
 
 #: Reciprocal-space cutoff (Bohr^-1) of the sums among the compact charges
 #: (compensation multipoles and Gaussian ions).  The shapes vanish at r_g with
@@ -635,7 +636,6 @@ class KPointMatrices:
     overlap: np.ndarray                 # augmented S(k)
     fixed: np.ndarray                   # T + V_sr + C D^ion C^dagger
     projections: np.ndarray             # C(k), (M, P)
-    moments: dict = field(default_factory=dict)   # {(A, L, M): Q(k)}
 
 
 class PeriodicPAW:
@@ -734,6 +734,7 @@ class PeriodicPAW:
         B = rc.reciprocal_vectors(self.lattice)
         return np.atleast_2d(np.asarray(fractional, dtype=float)) @ B.T
 
+    @single_threaded_blas
     def kpoint_matrices(self, kpoints, weights=None) -> list:
         """:class:`KPointMatrices` at arbitrary Cartesian ``kpoints`` (Bohr^-1).
 
@@ -763,15 +764,10 @@ class PeriodicPAW:
                 S = (psi.conj() @ psi.T) * dV + C @ self.q_overlap @ C.conj().T
                 fixed = (self._kinetic(psi, k) + V_all[i]
                          + C @ self.D_ion @ C.conj().T)
-                moments = {}
-                for (atom, L, M), blk in self.multipole_blocks.items():
-                    Ca = C[:, self._positions[atom]]
-                    moments[(atom, L, M)] = Ca @ blk @ Ca.conj().T
                 out.append(KPointMatrices(
                     k=np.asarray(k, float), weight=float(weight), psi=psi,
                     overlap=0.5 * (S + S.conj().T),
-                    fixed=0.5 * (fixed + fixed.conj().T), projections=C,
-                    moments=moments))
+                    fixed=0.5 * (fixed + fixed.conj().T), projections=C))
         return out
 
     def kpoint_block(self) -> int:
@@ -865,22 +861,58 @@ class PeriodicPAW:
 
     # -- charges ------------------------------------------------------------ #
 
-    def density(self, matrices) -> tuple[np.ndarray, dict]:
+    def density(self, matrices, kpoint_data=None) -> tuple[np.ndarray, dict]:
         r"""``(n~, q)`` of k-resolved density matrices ``P_k``.
 
         :math:`\tilde n = \sum_k w_k \sum_{\mu\nu} P^k_{\mu\nu}\chi_\mu\chi_\nu^*`
-        and :math:`q^A_{LM} = \sum_k w_k \operatorname{tr}(P^k Q^A_{LM}(k))`.
+        and :math:`q^A_{LM} = \sum_k w_k \operatorname{tr}(P^k Q^A_{LM}(k))`,
+        the moments through :meth:`moment_traces`.  ``kpoint_data`` names
+        the k-points ``matrices`` belong to (default: the crystal's own).
         """
+        kpoint_data = self.kpoint_data if kpoint_data is None else kpoint_data
+        if len(kpoint_data) != len(matrices):
+            raise ValueError(f"{len(matrices)} density matrices for "
+                             f"{len(kpoint_data)} k-points")
         rho = np.zeros(self.grid.size)
-        q = {c: 0.0j for c in self.channels}
-        for data, P in zip(self.kpoint_data, matrices):
+        R = np.zeros((len(self.projectors),) * 2, dtype=complex)
+        for data, P in zip(kpoint_data, matrices):
             rho += data.weight * np.real(np.sum(data.psi * (P @ data.psi.conj()),
                                                 axis=0))
-            for channel in self.channels:
-                q[channel] += data.weight * np.sum(P * data.moments[channel].T)
+            C = data.projections
+            R += data.weight * (C.conj().T @ P @ C)
+        q = self.moment_traces(R)
         if self.symmetry is not None:
             rho, q = self.symmetry.field(rho), self.symmetry.moments(q)
         return rho, q
+
+    # -- compensation moments ----------------------------------------------- #
+    #
+    # Each moment operator Q^A_LM(k) = C_A blk C_A^dagger has the rank of atom
+    # A's projector block, so neither the Hamiltonian nor the density needs
+    # it as a dense M x M matrix: both go through the (P, P) projector space.
+    # Dense, they took 72 M^2 complex numbers per k-point for 8 silicon atoms
+    # and 6.4 GB per k-point for 64.
+
+    def moment_operator(self, w) -> np.ndarray:
+        r"""``(P, P)``: :math:`\sum_{A,LM} w^A_{LM}\,\mathrm{blk}^A_{LM}` on
+        each atom's projector block, so that
+        :math:`\sum w^A_{LM} Q^A_{LM}(k) = C(k)\,D\,C(k)^\dagger`."""
+        D = np.zeros((len(self.projectors),) * 2, dtype=complex)
+        for channel, blk in self.multipole_blocks.items():
+            block = np.ix_(self._positions[channel[0]],
+                           self._positions[channel[0]])
+            D[block] += w[channel] * blk
+        return D
+
+    def moment_traces(self, R) -> dict:
+        r"""``{(A, L, M): q}`` of the projected density matrix
+        :math:`R = \sum_k w_k C(k)^\dagger P^k C(k)` (``(P, P)``):
+        :math:`q^A_{LM} = \operatorname{tr}(R_{AA}\,\mathrm{blk}^A_{LM})`."""
+        q = {}
+        for channel, blk in self.multipole_blocks.items():
+            own = self._positions[channel[0]]
+            q[channel] = np.sum(R[np.ix_(own, own)] * blk.T)
+        return q
 
     def kinetic_energy_density(self, matrices, gradients=None) -> np.ndarray:
         r""":math:`\tau = \tfrac12\sum_k w_k \sum P^k_{\mu\nu}
@@ -902,15 +934,88 @@ class PeriodicPAW:
     def compensation_grid(self) -> dict:
         r"""``{channel: g_hat(G)}`` on the grid's reciprocal set (filtered)."""
         if self._compensation_grid is None:
-            norm = rc.spherical(self.G)[0]
-            out = {}
-            for atom, L, M in self.channels:
-                out[(atom, L, M)] = rc.multipole_transform(
-                    self.G, self.centers[atom], self._shape_transform(atom, L,
-                                                                      norm),
-                    L, M)
-            self._compensation_grid = out
+            transforms = self.compensation_transforms(self.G)
+            self._compensation_grid = dict(zip(self.channels, transforms))
         return self._compensation_grid
+
+    def compensation_transforms(self, vectors) -> np.ndarray:
+        r"""``(n_ch, ...)``: every channel's compensation shape,
+        :math:`\int e^{-i\mathbf g\cdot\mathbf r}\hat g_{LM}(\mathbf r -
+        \mathbf R_A)\,d\mathbf r`, at the vectors ``(3, ...)``."""
+        vectors = np.asarray(vectors, dtype=float)
+        norm = rc.spherical(vectors)[0]
+        if not self.channels:
+            return np.zeros((0,) + vectors.shape[1:], dtype=complex)
+        return np.stack([rc.multipole_transform(
+            vectors, self.centers[atom], self._shape_transform(atom, L, norm),
+            L, M) for atom, L, M in self.channels])
+
+    def projector_columns(self, atom) -> list:
+        """The columns of the projections ``C[:, p]`` that hold ``atom``'s
+        projectors."""
+        return list(self._positions.get(atom, []))
+
+    def bloch_sums(self, kpoints) -> np.ndarray:
+        """``(nk, M, ngrid)``: the basis' Bloch sums on the grid at the
+        Cartesian ``kpoints``."""
+        center, radius = self._cell_region()
+        return bloch_values(self.basis, self.lattice,
+                            np.atleast_2d(np.asarray(kpoints, dtype=float)),
+                            self._grid_points(), center, radius)
+
+    def projections(self, kpoints) -> np.ndarray:
+        r"""``(nk, M, P)``: :math:`\langle\chi_{\mu\mathbf k}|\tilde
+        p_p\rangle` at the Cartesian ``kpoints``."""
+        return self._projections(np.atleast_2d(np.asarray(kpoints,
+                                                          dtype=float)))
+
+    def _dense_set(self, shift) -> np.ndarray:
+        r"""``(3, n)``: the dense set's vectors :math:`\mathbf G + \mathbf p`
+        within :data:`COMPENSATION_CUTOFF`."""
+        shift = np.asarray(shift, dtype=float)
+        B = rc.reciprocal_vectors(self.lattice)
+        Gs = rc.lattice_translations(
+            B, COMPENSATION_CUTOFF + float(np.linalg.norm(shift))).T
+        Gs = Gs + shift[:, None]
+        return Gs[:, np.sum(Gs * Gs, axis=0) <= COMPENSATION_CUTOFF ** 2]
+
+    def dense_compensation_gradient(self, shift, kernel) -> np.ndarray:
+        r"""``(3, n_ch, n_ch)``: :meth:`dense_compensation`'s sum with each
+        term weighted by :math:`i(\mathbf G + \mathbf p)` (no tail) -- its
+        derivative when atom A moves is this times
+        :math:`\delta_{aA} - \delta_{bA}`."""
+        Gs = self._dense_set(shift)
+        n = len(self.channels)
+        out = np.zeros((3, n, n), dtype=complex)
+        for start in range(0, Gs.shape[1], DENSE_BLOCK):
+            G = Gs[:, start:start + DENSE_BLOCK]
+            F = self.compensation_transforms(G)
+            v = kernel(np.sum(G * G, axis=0))
+            for d in range(3):
+                out[d] += (F.conj() * (v * 1j * G[d])) @ F.T
+        return out / self.volume
+
+    def dense_compensation(self, shift, kernel) -> np.ndarray:
+        r"""``(n_ch, n_ch)``: :math:`\tfrac1\Omega\sum_{\mathbf G}
+        v(|\mathbf G + \mathbf p|)\,\hat g_a^*\hat g_b` over the dense
+        set (:data:`COMPENSATION_CUTOFF`) at the wave vector ``shift``
+        :math:`\mathbf p`, with the on-site tail of :meth:`dense_coulomb`.
+
+        The compensation charges of Bloch pair densities between themselves
+        -- a screened hybrid's exchange; ``kernel`` maps :math:`|\mathbf G
+        + \mathbf p|^2` to the kernel, which also weights the tail.
+        """
+        Gs = self._dense_set(shift)
+        n = len(self.channels)
+        U = np.zeros((n, n), dtype=complex)
+        for start in range(0, Gs.shape[1], DENSE_BLOCK):
+            G = Gs[:, start:start + DENSE_BLOCK]
+            F = self.compensation_transforms(G)
+            U += (F.conj() * kernel(np.sum(G * G, axis=0))) @ F.T
+        U /= self.volume
+        for a, (atom, L, _M) in enumerate(self.channels):
+            U[a, a] += self._tail(atom, L, kernel)
+        return U
 
     def _shape_transform(self, atom, L, q) -> np.ndarray:
         r""":math:`F_L(q)` of atom ``atom``'s compensation shape, interpolated
@@ -978,13 +1083,18 @@ class PeriodicPAW:
         self._compensation_coulomb = (U, U_ion, E_ion)
         return self._compensation_coulomb
 
-    def _tail(self, atom, L) -> float:
+    def _tail(self, atom, L, kernel=None) -> float:
         r""":math:`8\int_{q_c}^\infty F_L(q)^2\,dq` -- the on-site
         self-energy of a unit :math:`g_LY_{LM}` beyond
-        :data:`COMPENSATION_CUTOFF` (the images' share there averages out)."""
+        :data:`COMPENSATION_CUTOFF` (the images' share there averages out)
+        -- under the bare kernel, or under ``kernel`` (a function of
+        :math:`q^2`) weighted by its ratio to the bare one."""
         table_q, table_F = self._shape_table(atom, L, SHAPE_TABLE_MAX)
         keep = table_q >= COMPENSATION_CUTOFF
-        return float(8.0 * np.trapezoid(table_F[keep] ** 2, table_q[keep]))
+        q = table_q[keep]
+        ratio = (1.0 if kernel is None
+                 else kernel(q * q) * q * q / (4.0 * np.pi))
+        return float(8.0 * np.trapezoid(table_F[keep] ** 2 * ratio, q))
 
     def _ion_transform(self, G) -> np.ndarray:
         """The Gaussian ions at the reciprocal vectors ``G`` (electron sign)."""
@@ -1240,6 +1350,7 @@ def reduce_mesh(mesh, operations=None):
     return zone.points, zone.weights / zone.weights.sum(), operations
 
 
+@single_threaded_blas
 def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
                   family: str = "paw-lcao", grid=None,
                   symmetry: bool = True):

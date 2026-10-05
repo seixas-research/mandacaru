@@ -2,7 +2,7 @@
 import pytest
 
 from mandacaru.pseudopotentials.build_cli import (
-    FAMILIES, _frozen_subshells, _reference_occupations, build_parser, main)
+    FAMILIES, build_parser, main)
 from mandacaru.pseudopotentials.io import load_pseudopotential
 
 
@@ -22,74 +22,17 @@ def test_the_example_command_parses():
     assert args.element == ["Fe"]
 
 
-def test_oncv_reference_occupations_are_explicit_and_validated(capsys):
-    """A targeted neutral reference may add a bound d channel."""
-    from mandacaru.pseudopotentials.oncv import _validate_reference_configuration
-
-    configuration = _reference_occupations(
-        "Ce", ["4f=1", "5d=1", "6s=2"])
-    assert configuration[(4, 3)] == 1
-    assert configuration[(5, 2)] == 1
-    assert _validate_reference_configuration(58, configuration) == configuration
-    with pytest.raises(SystemExit):
-        main(["--pp", "ONCV", "--element", "Ce", "--occupations", "4f=0"])
-    assert "exactly 58 electrons" in capsys.readouterr().err
-    with pytest.raises(SystemExit):
-        main(["--pp", "PAW", "--element", "Ce", "--occupations", "4f=1"])
-    assert "requires --pp ONCV" in capsys.readouterr().err
-    with pytest.raises(SystemExit):
-        main(["--pp", "ONCV", "--all", "--z-max", "1",
-              "--occupations", "1s=1"])
-    assert "one --element" in capsys.readouterr().err
-    with pytest.raises(SystemExit):
-        main(["--pp", "ONCV", "--element", "Ce",
-              "--occupations", "4f=15", "5d=1"])
-    assert "invalid occupation" in capsys.readouterr().err
-
-
-def test_oncv_reference_occupations_survive_the_file(tmp_path, capsys):
-    """The build command records the reference used for its channels."""
-    code = main(["--pp", "ONCV", "--element", "H", "--occupations", "1s=1",
-                 "--output", str(tmp_path)])
-    assert code == 0, capsys.readouterr().out
-    loaded = load_pseudopotential(tmp_path / "oncvpsp" / "H.parquet")
-    assert loaded.reference_configuration == {(1, 0): 1.0}
-
-
-def test_oncv_frozen_subshell_option_is_validated(capsys):
-    """The CLI accepts subshell labels for selected ONCV atoms only."""
-    assert _frozen_subshells(["4f"]) == ((4, 3),)
-    with pytest.raises(ValueError, match="invalid frozen subshell"):
-        _frozen_subshells(["4g"])
-    with pytest.raises(SystemExit):
-        main(["--pp", "PAW", "--element", "Bi", "--freeze-subshell", "4f"])
-    assert "requires --pp ONCV" in capsys.readouterr().err
-    args = build_parser().parse_args(
-        ["--pp", "ONCV", "--element", "Bi", "Pb",
-         "--freeze-subshell", "4f"])
-    assert args.element == ["Bi", "Pb"]
-    with pytest.raises(SystemExit):
-        main(["--pp", "ONCV", "--all", "--freeze-subshell", "4f"])
-    assert "requires --pp ONCV and --element" in capsys.readouterr().err
-
-
-def test_oncv_extra_channel_option_is_validated(capsys):
-    args = build_parser().parse_args(
-        ["--pp", "ONCV", "--element", "La", "--extra-l", "1"])
-    assert args.extra_l == 1
-    with pytest.raises(SystemExit):
-        main(["--pp", "PAW", "--element", "La", "--extra-l", "1"])
-    assert "requires --pp ONCV" in capsys.readouterr().err
-    with pytest.raises(SystemExit):
-        main(["--pp", "ONCV", "--element", "La", "--extra-l", "-1"])
-    assert "nonnegative" in capsys.readouterr().err
-
-
 @pytest.mark.parametrize("spelling, family", [
     ("PAW", "paw-lcao"), ("paw-lcao", "paw-lcao"), ("UPAW", "upaw-lcao"),
-    ("ONCV", "oncvpsp"), ("ONCVPSP", "oncvpsp")])
+    ("upaw-lcao", "upaw-lcao")])
 def test_family_spellings(spelling, family):
     assert FAMILIES[spelling.lower()] == family
+
+
+def test_an_unknown_family_is_a_usage_error(capsys):
+    with pytest.raises(SystemExit):
+        main(["--pp", "GTH", "--element", "H"])
+    assert "--pp must be one of PAW, UPAW" in capsys.readouterr().err
 
 
 def test_an_unknown_element_is_a_usage_error(capsys):
@@ -105,7 +48,7 @@ def test_install_and_output_are_exclusive(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("pp, family", [("PAW", "paw-lcao"),
-                                        ("ONCV", "oncvpsp")])
+                                        ("UPAW", "upaw-lcao")])
 def test_it_writes_a_loadable_dataset(tmp_path, capsys, pp, family):
     code = main(["--pp", pp, "--relativistic", "--xc", "LDA", "--element",
                  "H", "--output", str(tmp_path)])
@@ -159,3 +102,30 @@ def test_install_writes_into_the_functional_folder(tmp_path, monkeypatch,
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(tmp_path))
     assert main(["--pp", "PAW", "--element", "H", "--install"]) == 0
     assert (tmp_path / "lda-sr" / "H.parquet").is_file()
+
+
+def _blas_threads():
+    import numpy
+    from threadpoolctl import threadpool_info
+
+    numpy.ones((2, 2)) @ numpy.ones((2, 2))       # the BLAS pool is loaded
+
+    return max(pool["num_threads"] for pool in threadpool_info()
+               if pool["user_api"] == "blas")
+
+
+def test_a_worker_shares_the_cores_out():
+    """Each build worker gets its share of the physical cores, not a pool as
+    wide as the machine (seven workers ran 48 threads each on 12 cores)."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    from mandacaru.integrals._backend import grid_blas_threads
+    from mandacaru.pseudopotentials.build_cli import (_limit_threads,
+                                                     worker_threads)
+
+    assert worker_threads(1) == grid_blas_threads()
+    assert worker_threads(10_000) == 1
+    with ProcessPoolExecutor(max_workers=1, initializer=_limit_threads,
+                             initargs=(1,)) as pool:
+        assert pool.submit(_blas_threads).result() == 1
+

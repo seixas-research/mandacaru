@@ -16,6 +16,7 @@ dependencies = [
     'numpy>=2.0.0',
     'jax',
     'scipy',
+    'threadpoolctl',      # one BLAS thread beside the OpenMP kernels
     'ase',
     'spglib',
     'matplotlib',
@@ -116,6 +117,5 @@ replacement = '](https://github.com/seixas-research/mandacaru/blob/main/LICENSE)
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mandacaru"]
-# No pseudopotential data ships in the wheel: the ONCVPSP and PAW-LCAO
-# libraries live in the mandacaru-oncvpsp and mandacaru-paw
-# repositories, found through MANDACARU_{ONCVPSP,PAW}_PATH.
+# No pseudopotential data ships in the wheel: the PAW-LCAO library lives in
+# the mandacaru-paw repository, found through MANDACARU_PAW_PATH.

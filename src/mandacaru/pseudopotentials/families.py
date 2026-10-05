@@ -27,7 +27,7 @@ block matrix :math:`Q` that turns the basis overlap into
 The registry :data:`PSEUDO_FAMILIES` maps a family name to its
 :class:`FamilySpec`.  **A family is selected through the** ``basis``
 **argument of any driver**, exactly like an all-electron family:
-``basis="PAW-LCAO"``, ``basis={"name": "ONCVPSP", "size": "DZP"}``, or a per-element
+``basis="PAW-LCAO"``, ``basis={"name": "PAW-LCAO", "size": "DZP"}``, or a per-element
 mapping ``{"O": {"name": "PAW-LCAO", "size": "DZP"}, "H": "PAW-LCAO"}``.  The drivers
 only ever see the spec: :func:`mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis`
 recognizes a registered family name (:func:`lookup_family`) and
@@ -37,12 +37,6 @@ dispatches to ``spec.build``.  A new family is added with
 a basis name.
 
 Registered today:
-
-``"oncvpsp"`` (alias ``"oncv"``; :mod:`.oncv`)
-    Hamann's **optimized norm-conserving Vanderbilt** potentials -- two
-    projectors per channel with a :math:`2\times2` coupling block, a
-    polynomial local potential that is not a channel, no overlap correction.
-    Registered when :mod:`.oncv` is imported (the package does so).
 
 ``"paw-lcao"`` (:mod:`.paw`)
     Bloechl's **projector augmented-wave** datasets -- two partial waves and
@@ -113,7 +107,7 @@ class FamilySpec:
         a request a pseudopotential family has to be able to honor.
     norm_conserving : bool
         Whether the family's projectors leave the basis overlap untouched
-        (``True`` for ONCVPSP; PAW-LCAO carries an overlap correction).
+        (``False`` for PAW-LCAO, which carries an overlap correction).
     aliases : tuple of str
         Alternative names resolving to this family.
     options : tuple of str
@@ -123,8 +117,7 @@ class FamilySpec:
     default_options : dict
         Option values this family uses when the user does not say
         (``{"filter": True}`` for PAW-LCAO / UPAW-LCAO, whose smooth partial waves are
-        built to be band-limited and lose little by being filtered, while
-        ONCVPSP leaves it off).  Declaring the default **here** rather
+        built to be band-limited and lose little by being filtered).  Declaring the default **here** rather
         than in the builder is what keeps it discoverable: one place says what
         every family does, a new family declares its own, and
         :meth:`resolved_options` is the only merge.  Every key must be in
@@ -224,7 +217,7 @@ def family_listing() -> str:
 def lookup_family(name) -> FamilySpec | None:
     """The :class:`FamilySpec` registered under ``name``, or ``None``.
 
-    Case-insensitive, aliases accepted (``"PAW-LCAO"``, ``"oncv"``);
+    Case-insensitive, aliases accepted (``"PAW-LCAO"``, ``"unitary-paw-lcao"``);
     anything that is not a registered family name -- ``"HAO"``, ``"cc-pVTZ"``,
     a per-element mapping -- gives ``None``.  This is how
     :func:`~mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis` tells a

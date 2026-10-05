@@ -77,6 +77,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..integrals._backend import single_threaded_blas
+
 #: The partitions :func:`atomic_weights` knows.
 PARTITION_METHODS = ("hirshfeld", "voronoi", "bader")
 
@@ -688,8 +690,8 @@ def _augmentation_by_atom(integrals, orbitals, n_atoms: int) -> np.ndarray:
 
     :math:`S - \\tilde S = C q C^\\dagger` is block-diagonal over the projector
     channels ``(atom, l, m)``, so restricting ``C`` to one atom's columns
-    splits it exactly -- no sharing rule is involved.  Zero for every
-    norm-conserving and all-electron basis, which carry no such term.
+    splits it exactly -- no sharing rule is involved.  Zero for an
+    all-electron basis, which carries no such term.
     """
     out = np.zeros(n_atoms, dtype=float)
     if getattr(integrals, "nonlocal_overlap", None) is None:
@@ -834,6 +836,7 @@ def partition_state(integrals, gamma, *, method: str = "hirshfeld",
 # From a converged crystal.
 # --------------------------------------------------------------------------- #
 
+@single_threaded_blas
 def partition_crystal(crystal, matrices, *, method: str = "hirshfeld",
                       numbers=None) -> AtomicPartition:
     r"""Split a periodic Kohn-Sham density between the atoms of the cell.

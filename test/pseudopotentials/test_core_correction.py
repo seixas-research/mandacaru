@@ -143,42 +143,42 @@ class TestThePartialCoreDensity:
 
 @pytest.mark.slow
 class TestInTheGenerators:
-    """What the correction changes about a pseudopotential, end to end."""
+    """What the correction changes about a PAW-LCAO dataset, end to end."""
 
     @pytest.fixture(scope="class")
     def oxygen(self):
-        from mandacaru.pseudopotentials.oncv import generate_oncv
+        from mandacaru.pseudopotentials.paw import generate_paw
 
-        with_nlcc = generate_oncv("O", points=4000, r_max=20.0)
-        without = generate_oncv("O", points=4000, r_max=20.0, nlcc=False)
+        with_nlcc = generate_paw("O", points=4000, r_max=20.0)
+        without = generate_paw("O", points=4000, r_max=20.0, nlcc=False)
         return with_nlcc, without
 
     def test_it_is_on_by_default_and_recorded(self, oxygen):
         with_nlcc, without = oxygen
-        assert with_nlcc.has_core_correction
-        assert not without.has_core_correction
+        assert with_nlcc.nlcc["applied"] and not without.nlcc["applied"]
         assert with_nlcc.nlcc["r_nlcc"] > 0.0
 
     def test_the_partial_core_holds_less_than_the_true_core(self, oxygen):
-        with_nlcc, _without = oxygen
-        assert 0.0 < with_nlcc.core_charge() < 2.0
+        record = oxygen[0].nlcc
+        assert 0.0 < record["partial_core_electrons"] < record["core_electrons"]
+        assert record["core_electrons"] == pytest.approx(2.0, abs=1e-9)
 
     def test_it_changes_the_ionic_local_potential(self, oxygen):
         """The correction acts in the unscreening; if it did not move
-        v_local it would not be doing anything."""
+        v_local it would not be doing anything (oxygen's smooth core is
+        small, 7e-5 electrons, and moves it by ~1e-5 Ha)."""
         with_nlcc, without = oxygen
-        assert np.max(np.abs(with_nlcc.v_local - without.v_local)) > 1e-3
+        assert np.max(np.abs(with_nlcc.v_local - without.v_local)) > 1e-6
 
-    def test_switching_it_off_reproduces_the_uncorrected_potential(self):
-        from mandacaru.pseudopotentials.oncv import generate_oncv
+    def test_switching_it_off_reproduces_the_uncorrected_potential(self, oxygen):
+        from mandacaru.pseudopotentials.paw import generate_paw
 
-        a = generate_oncv("O", points=4000, r_max=20.0, nlcc=False)
-        b = generate_oncv("O", points=4000, r_max=20.0, nlcc=False)
-        assert np.array_equal(a.v_local, b.v_local)
+        again = generate_paw("O", points=4000, r_max=20.0, nlcc=False)
+        assert np.array_equal(again.v_local, oxygen[1].v_local)
 
     def test_hydrogen_has_no_core_to_correct(self):
-        from mandacaru.pseudopotentials.oncv import generate_oncv
+        from mandacaru.pseudopotentials.paw import generate_paw
 
-        pp = generate_oncv("H", points=3000, r_max=20.0)
-        assert not pp.has_core_correction
-        assert pp.core_charge() == 0.0
+        pp = generate_paw("H", points=3000, r_max=20.0)
+        assert not pp.nlcc["applied"]
+        assert "no core" in pp.nlcc["reason"]

@@ -31,9 +31,28 @@ constant of the integrals and, with a core correction, the per-atom offset
 that keeps the valence-only energy zero
 (:func:`~mandacaru.integrals.exchange_correlation.core_correction_offset`).
 
-Functionals: LDA, PBE and the r\ :sup:`2`\ SCAN meta-GGA, whose
+Functionals: LDA, PBE, the r\ :sup:`2`\ SCAN meta-GGA, whose
 kinetic-energy density :math:`\tau = \tfrac12\sum_{pq}D_{pq}\nabla\phi_p
-\cdot\nabla\phi_q^*` is built from spectral gradients of the orbitals.  The
+\cdot\nabla\phi_q^*` is built from spectral gradients of the orbitals, and
+the screened hybrid HSE06 (molecules and crystals):
+
+.. math::
+
+    E_{xc} = E_{xc}^{\rm sl}[\rho]
+        - \tfrac a4 \sum_{pqrs} D_{sr} D_{qp}\,\langle pr|sq\rangle^{\rm SR},
+    \qquad
+    F \mathrel{+}= -\tfrac a2 K^{\rm SR}[D],
+
+with :math:`a = 1/4`, the semilocal part from
+:mod:`mandacaru.basis.hse` and the short-range tensor
+:math:`\langle pq|\operatorname{erfc}(\omega r_{12})/r_{12}|rs\rangle` the
+full one minus the long-range one over the same pair densities
+(:meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.short_range_two_body`).
+On PAW-LCAO those are the augmented pair densities, and each augmentation
+sphere adds its one-center exact exchange and removes its share of the
+frozen one-center semilocal exchange
+(:mod:`mandacaru.pseudopotentials.onecenter`).  Like the meta-GGA it is
+solved in the generalized Kohn-Sham sense (a nonlocal operator).  The
 D4 dispersion correction (``dispersion="d4"``) is added from the external
 ``dftd4`` library, parameterized for the functional that ran.
 
@@ -53,8 +72,7 @@ Restricted for a closed shell, unrestricted when ``n_alpha != n_beta``
 (:class:`UnrestrictedKohnSham`).  A **periodic** geometry (any ``atoms.pbc``)
 takes the crystal path instead -- Bloch states on a Monkhorst-Pack mesh with
 smearing, spin-polarized when the atoms carry initial moments, PAW-LCAO only
-(:mod:`~mandacaru.algorithms.periodic_dft`); it has no dispersion yet, and a
-spin-polarized crystal no forces or stress.
+(:mod:`~mandacaru.algorithms.periodic_dft`); it has no dispersion yet.
 
 The converged Kohn-Sham orbitals are exported like the Hartree-Fock ones: the
 result carries the many-body Hamiltonian written in them, so
@@ -103,7 +121,7 @@ DIIS_RESTART = 10
 DISPERSION_CORRECTIONS = ("d4",)
 
 #: The functionals D4 is parameterized for, by the ``dftd4`` method name.
-D4_METHODS = {"pbe": "pbe", "r2scan": "r2scan"}
+D4_METHODS = {"pbe": "pbe", "r2scan": "r2scan", "hse06": "hse06"}
 
 
 @dataclass
@@ -120,6 +138,8 @@ class KohnShamResult(RHFResult):
     functional: str = DEFAULT_XC
     hartree_energy: float = 0.0
     xc_energy: float = 0.0
+    #: A hybrid's exact-exchange part of ``xc_energy`` (zero otherwise).
+    exact_exchange_energy: float = 0.0
     core_correction_energy: float = 0.0
     dispersion_energy: float = 0.0
     #: One record per iteration (:func:`~.periodic_dft.scf_record`), for the
@@ -187,7 +207,10 @@ class KohnSham:
     n_electrons : int
         Even electron count.
     functional : str
-        ``"lda"``, ``"pbe"`` or ``"r2scan"``.
+        ``"lda"``, ``"pbe"``, ``"r2scan"`` or ``"hse06"``.  HSE06's hole
+        model bends its reduced gradient continuously from s = 1
+        (:data:`~mandacaru.basis.hse.S_BEND_OFFSET`), so its forces are the
+        energy's derivative.
     core_density : (ngrid,) array, optional
         Partial core density added to the valence density inside the
         functional.
@@ -197,11 +220,31 @@ class KohnSham:
     relativistic : bool
         Apply the relativistic exchange factor (LDA and PBE), as a
         relativistic dataset was unscreened with.
+    short_range_eri : (M, M, M, M) array, optional
+        A hybrid's exchange tensor, ``<pq|erfc(omega r12)/r12|rs>`` in the
+        same basis and layout as ``eri``; required by a hybrid
+        (:data:`~mandacaru.integrals.exchange_correlation.HYBRIDS`).
+    screening : (float, float), optional
+        A hybrid's ``(omega, fraction)``; the functional's own by default.
+        ``omega`` must be the one ``short_range_eri`` was built with.
+    one_center : (ndarray, object), optional
+        A hybrid's PAW-LCAO one-center terms: the projections ``C`` (``(M,
+        P)``, this basis) and the
+        :class:`~mandacaru.pseudopotentials.onecenter.OneCenterHybrid` built
+        with the same ``screening``.  Its energy at :math:`C^\dagger D C` is
+        part of the exchange-correlation energy and :math:`C O C^\dagger` of
+        the operator.
+
+    A hybrid is solved in the generalized Kohn-Sham sense, as the meta-GGA
+    is: the operator is the derivative of the energy with respect to the
+    density matrix, here with the nonlocal
+    :math:`-\tfrac a2 K^{\rm SR}[D]` alongside the semilocal potential.
     """
 
     def __init__(self, h, eri, orbitals, grid, n_electrons: int,
                  functional: str = DEFAULT_XC, core_density=None,
-                 relativistic: bool = False, core_tau=None):
+                 relativistic: bool = False, core_tau=None,
+                 short_range_eri=None, screening=None, one_center=None):
         self.h = np.asarray(h, dtype=complex)
         self.eri = np.asarray(eri, dtype=complex)
         self.orbitals = np.asarray(orbitals)
@@ -210,6 +253,22 @@ class KohnSham:
         self._set_electrons(n_electrons)
         self.functional = xc_grid.resolve_functional(functional)
         self.relativistic = bool(relativistic)
+        self.screening = None
+        self.short_range_eri = None
+        if xc_grid.is_hybrid(self.functional):
+            if short_range_eri is None:
+                raise ValueError(f"xc={self.functional!r} is a hybrid: it "
+                                 "needs its short-range exchange tensor")
+            self.screening = tuple(float(v) for v in (
+                screening if screening is not None
+                else xc_grid.HYBRIDS[self.functional]))
+            self.short_range_eri = np.asarray(short_range_eri, dtype=complex)
+        self.one_center = None
+        if one_center is not None and self.screening is not None:
+            projections, terms = one_center
+            self.one_center = (np.asarray(projections, dtype=complex), terms)
+        #: The exact-exchange part of the last exchange-correlation energy.
+        self.exact_exchange_energy = 0.0
         self.core_density = (None if core_density is None
                              else np.asarray(core_density, dtype=float))
         self.meta = xc_grid.is_meta_gga(self.functional)
@@ -254,9 +313,22 @@ class KohnSham:
         # entering as D_sr (see RHF._fock).
         return np.einsum("sr,prqs->pq", D, self.eri, optimize=True)
 
+    def _exchange_matrix(self, R) -> np.ndarray:
+        r""":math:`K_{pq} = \sum_{rs} R_{sr}\langle pr|sq\rangle^{\rm SR}`,
+        the short-range exchange matrix of a hybrid."""
+        return np.einsum("sr,prsq->pq", R, self.short_range_eri,
+                         optimize=True)
+
     def _xc(self, D):
-        """``(E_xc, V_xc)``: the functional's energy and its matrix."""
-        rho = self.density(D)
+        """``(E_xc, V_xc)``: the functional's energy and its matrix.
+
+        A hybrid's short-range exact exchange is included in both:
+        :math:`-\\tfrac a4\\,\\mathrm{tr}(D K[D])` and
+        :math:`-\\tfrac a2 K[D]` (``D`` holds both spins); the semilocal
+        short-range exchange it replaces is the valence density's
+        (:func:`~mandacaru.integrals.exchange_correlation.evaluate`).
+        """
+        valence = rho = self.density(D)
         if self.core_density is not None:
             rho = rho + self.core_density
         tau = None
@@ -265,7 +337,9 @@ class KohnSham:
             if self._core_tau is not None:
                 tau = tau + self._core_tau
         terms = xc_grid.evaluate(self.grid, rho, self.functional,
-                                 relativistic=self.relativistic, tau=tau)
+                                 relativistic=self.relativistic, tau=tau,
+                                 screening=self.screening,
+                                 exchange_density=valence)
         phi = self.orbitals
         dV = self.grid.dV
         V = (phi.conj() * terms.potential) @ phi.T * dV
@@ -274,7 +348,21 @@ class KohnSham:
             weight = 0.5 * terms.tau_potential
             for dphi in self._orbital_gradients:
                 V = V + (dphi.conj() * weight) @ dphi.T * dV
-        return terms.energy, 0.5 * (V + V.conj().T)
+        energy = terms.energy
+        if self.screening is not None:
+            fraction = self.screening[1]
+            K = self._exchange_matrix(D)
+            self.exact_exchange_energy = -0.25 * fraction * float(
+                np.real(np.sum(D * K.T)))
+            energy = energy + self.exact_exchange_energy
+            V = V - 0.5 * fraction * K
+            if self.one_center is not None:
+                C, hybrid = self.one_center
+                spheres = hybrid.evaluate(C.conj().T @ D @ C)
+                self.exact_exchange_energy += spheres.exact_exchange
+                energy = energy + spheres.energy
+                V = V + C @ spheres.operators[0] @ C.conj().T
+        return energy, 0.5 * (V + V.conj().T)
 
     def _fock(self, D):
         """``(F, E_elec, E_H, E_xc)`` at the density matrix ``D``."""
@@ -338,7 +426,8 @@ class KohnSham:
             mo_coefficients=C, n_occupied=self.n_occ, converged=converged,
             h_mo=np.real_if_close(h_mo), eri_mo=np.real_if_close(eri_mo),
             n_iterations=it, functional=self.functional,
-            hartree_energy=e_hartree, xc_energy=e_xc, history=history)
+            hartree_energy=e_hartree, xc_energy=e_xc, history=history,
+            exact_exchange_energy=self.exact_exchange_energy)
 
 
 @dataclass
@@ -355,6 +444,8 @@ class KohnShamUResult(UHFResult):
     functional: str = DEFAULT_XC
     hartree_energy: float = 0.0
     xc_energy: float = 0.0
+    #: A hybrid's exact-exchange part of ``xc_energy`` (zero otherwise).
+    exact_exchange_energy: float = 0.0
     core_correction_energy: float = 0.0
     dispersion_energy: float = 0.0
     #: One record per iteration (:func:`~.periodic_dft.scf_record`).
@@ -401,9 +492,11 @@ class UnrestrictedKohnSham(KohnSham):
             0.5 * self.core_density
         rho = []
         tau = []
+        valence = []
         for D in (Da, Db):
-            rho.append(self.density(D) + (0.0 if half_core is None
-                                          else half_core))
+            valence.append(self.density(D))
+            rho.append(valence[-1] + (0.0 if half_core is None
+                                      else half_core))
             if self.meta:
                 t = self.kinetic_energy_density(D)
                 tau.append(t + (0.0 if self._core_tau is None
@@ -412,17 +505,39 @@ class UnrestrictedKohnSham(KohnSham):
             self.grid, rho[0], rho[1], self.functional,
             relativistic=self.relativistic,
             tau_up=tau[0] if self.meta else None,
-            tau_dn=tau[1] if self.meta else None)
+            tau_dn=tau[1] if self.meta else None, screening=self.screening,
+            exchange_densities=valence)
         phi, dV = self.orbitals, self.grid.dV
+        energy = terms.energy
+        exact = 0.0
         matrices = []
-        for v, v_tau in ((terms.potential_up, terms.tau_potential_up),
-                         (terms.potential_dn, terms.tau_potential_dn)):
+        spheres = None
+        if self.one_center is not None:
+            # The one-center terms of both channels at once: the frozen
+            # semilocal part depends on their sum.
+            C, hybrid = self.one_center
+            spheres = hybrid.evaluate(C.conj().T @ Da @ C,
+                                      C.conj().T @ Db @ C)
+            exact += spheres.exact_exchange
+            energy += spheres.semilocal
+        for s, (D, v, v_tau) in enumerate((
+                (Da, terms.potential_up, terms.tau_potential_up),
+                (Db, terms.potential_dn, terms.tau_potential_dn))):
             V = (phi.conj() * v) @ phi.T * dV
             if v_tau is not None:
                 for dphi in self._orbital_gradients:
                     V = V + (dphi.conj() * (0.5 * v_tau)) @ dphi.T * dV
+            if self.screening is not None:
+                # -(a/2) tr(D_s K[D_s]) per spin, and its derivative -a K.
+                fraction = self.screening[1]
+                K = self._exchange_matrix(D)
+                exact -= 0.5 * fraction * float(np.real(np.sum(D * K.T)))
+                V = V - fraction * K
+            if spheres is not None:
+                V = V + C @ spheres.operators[s] @ C.conj().T
             matrices.append(0.5 * (V + V.conj().T))
-        return terms.energy, matrices[0], matrices[1]
+        self.exact_exchange_energy = exact
+        return energy + exact, matrices[0], matrices[1]
 
     def _fock_pair(self, Da, Db):
         """``(F_alpha, F_beta, E_elec, E_H, E_xc)``."""
@@ -502,7 +617,8 @@ class UnrestrictedKohnSham(KohnSham):
             h_mo=np.real_if_close(h_mo), eri_mo=np.real_if_close(eri_mo),
             converged=converged, n_iterations=it, reference_energy=reference,
             functional=self.functional, hartree_energy=e_hartree,
-            xc_energy=e_xc, history=history)
+            xc_energy=e_xc, history=history,
+            exact_exchange_energy=self.exact_exchange_energy)
 
 
 def _datasets_relativistic(datasets) -> bool:
@@ -526,14 +642,29 @@ def _warn_functional_mismatch(datasets, functional: str) -> None:
             "datasets use different functionals", RuntimeWarning, stacklevel=3)
 
 
+def _hybrid_setup(functional: str) -> dict:
+    """``[SCF SETUP]``'s ``exact_exchange`` entry of a hybrid, else empty."""
+    if not xc_grid.is_hybrid(functional):
+        return {}
+    omega, fraction = xc_grid.HYBRIDS[xc_grid.resolve_functional(functional)]
+    return {"exact_exchange": (
+        f"{fraction:g} of the short-range exchange, erfc(omega r)/r with "
+        f"omega = {omega:g} 1/Bohr (generalized Kohn-Sham)")}
+
+
 def kohn_sham_solver(integrals, n_electrons: int,
-                     functional: str = DEFAULT_XC, spins=None) -> KohnSham:
+                     functional: str = DEFAULT_XC, spins=None,
+                     screening=None) -> KohnSham:
     """The :class:`KohnSham` problem of ``integrals``, not yet solved --
     :class:`UnrestrictedKohnSham` when ``spins = (n_alpha, n_beta)`` differ.
 
     ``integrals`` is a :class:`~mandacaru.core.hamiltonian.MolecularIntegrals`
     (or its PAW-LCAO subclass) in its orthonormalized basis; the orbitals are
-    taken from the same grid samples its integrals were computed from.
+    taken from the same grid samples its integrals were computed from.  A
+    hybrid builds its short-range exchange tensor here
+    (:meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.short_range_two_body`);
+    ``screening = (omega, fraction)``
+    overrides the functional's own parameters.
     """
     if not getattr(integrals, "orthogonalize", False):
         raise ValueError("Kohn-Sham needs the Loewdin-orthonormalized basis")
@@ -558,8 +689,20 @@ def kohn_sham_solver(integrals, n_electrons: int,
                                                 _centers(integrals))
     options = dict(functional=functional, core_density=core,
                    core_tau=core_tau,
-                   relativistic=(functional != "r2scan"
+                   relativistic=(xc_grid.takes_relativistic_exchange(functional)
                                  and _datasets_relativistic(datasets)))
+    if xc_grid.is_hybrid(functional):
+        screening = tuple(float(v) for v in (
+            screening if screening is not None
+            else xc_grid.HYBRIDS[functional]))
+        options.update(screening=screening,
+                       short_range_eri=integrals.short_range_two_body(
+                           screening[0]))
+        spheres = integrals.one_center_hybrid(*screening)
+        if spheres is not None:
+            X = integrals._lowdin_x()
+            options.update(one_center=(X.conj().T @ integrals.projections(),
+                                       spheres))
     if spins is not None and int(spins[0]) != int(spins[1]):
         return UnrestrictedKohnSham(integrals.one_body(),
                                     integrals.two_body(), orbitals,
@@ -575,11 +718,13 @@ def _centers(integrals):
 
 
 def kohn_sham(integrals, n_electrons: int, functional: str = DEFAULT_XC,
-              spins=None, **run_options):
+              spins=None, screening=None, **run_options):
     """Solve the Kohn-Sham problem on ``integrals``: restricted, or
-    unrestricted when ``spins = (n_alpha, n_beta)`` differ."""
+    unrestricted when ``spins = (n_alpha, n_beta)`` differ (``screening``
+    as for :func:`kohn_sham_solver`)."""
     result = kohn_sham_solver(integrals, n_electrons, functional,
-                              spins=spins).run(**run_options)
+                              spins=spins, screening=screening
+                              ).run(**run_options)
     result.core_correction_energy = float(
         sum(xc_grid.core_correction_offset(d)
             for d in integrals.pseudopotentials or []))
@@ -640,14 +785,18 @@ class KohnShamField:
     ``hellmann_feynman(atom, k)``: :math:`\int v_{xc}\,\partial\tilde\rho_c
     /\partial R_{A,k}` (plus :math:`\int\partial_\tau f\,\partial\tau_c/
     \partial R_{A,k}` for a meta-GGA) -- the partial core density and its
-    kinetic-energy density move with their atom.
+    kinetic-energy density move with their atom.  ``core_potential``, when
+    given, is the potential the moving core sees instead of ``potential``: a
+    hybrid's semilocal short-range exchange is the valence density's alone,
+    so its potential acts on the orbitals but not on the core.
     """
 
     def __init__(self, grid, psi, potential, tau_potential, core_functions,
-                 core_tau_functions, centers, delta):
+                 core_tau_functions, centers, delta, core_potential=None):
         self.grid = grid
         self.psi = psi
         self.v = potential
+        self.v_core = potential if core_potential is None else core_potential
         self.v_tau = tau_potential
         self.core_functions = core_functions
         self.core_tau_functions = core_tau_functions
@@ -692,7 +841,7 @@ class KohnShamField:
         from .pseudo_forces import _moved_radial
         drho = _moved_radial(function, self.centers[atom], self.grid, k,
                              self.delta)
-        value = np.sum(self.v * drho)
+        value = np.sum(self.v_core * drho)
         tau_function = self.core_tau_functions[atom]
         if self.v_tau is not None and tau_function is not None:
             dtau = _moved_radial(tau_function, self.centers[atom], self.grid,
@@ -718,9 +867,10 @@ class UnrestrictedKohnShamField(KohnShamField):
 
     def __init__(self, grid, psi, v_mean, v_tau_mean, v_half, v_tau_half,
                  magnetization, core_functions, core_tau_functions, centers,
-                 delta):
+                 delta, core_potential=None):
         super().__init__(grid, psi, v_mean, v_tau_mean, core_functions,
-                         core_tau_functions, centers, delta)
+                         core_tau_functions, centers, delta,
+                         core_potential=core_potential)
         if self.grad_psi is None and v_tau_half is not None:
             self.grad_psi = xc_grid.gradient(grid, psi)
         self.v_half = v_half
@@ -769,6 +919,16 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
     :class:`~mandacaru.algorithms.forces.ForceResult` (eV/Angstrom) whose
     ``details["energy_hartree"]`` is the rebuilt total energy without the
     dispersion and core-correction constants.
+
+    A hybrid's exact exchange is linearized like the semilocal potential:
+    its derivative with respect to the density matrix, :math:`-\tfrac a2
+    K^{\rm SR}` plus the PAW-LCAO one-center operator :math:`C O
+    C^\dagger`, joins the fixed one-body matrix (which carries the overlap
+    dependence of :math:`P = S^{-1/2}DS^{-1/2}`), and the derivatives of the
+    short-range tensor and of the projections are
+    :class:`~mandacaru.algorithms.pseudo_forces.ScreenedExchange`'s.  The
+    partial core moves under the potential without the semilocal
+    short-range exchange, which is the valence density's.
     """
     from .forces import DEFAULT_ORBITAL_DELTA
     from .pseudo_forces import pseudo_nuclear_gradient
@@ -782,7 +942,7 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
     solver = kohn_sham_solver(integrals, n_electrons, scf.functional)
     C = scf.mo_coefficients
     D = solver._density_matrix(C)
-    rho = solver.density(D)
+    valence = rho = solver.density(D)
     if solver.core_density is not None:
         rho = rho + solver.core_density
     tau = None
@@ -791,7 +951,15 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
         if solver._core_tau is not None:
             tau = tau + solver._core_tau
     terms = xc_grid.evaluate(integrals.grid, rho, solver.functional,
-                             relativistic=solver.relativistic, tau=tau)
+                             relativistic=solver.relativistic, tau=tau,
+                             screening=solver.screening,
+                             exchange_density=valence)
+    core_potential = None
+    if solver.screening is not None and solver.core_density is not None:
+        core_potential = xc_grid.evaluate(
+            integrals.grid, rho, solver.functional,
+            relativistic=solver.relativistic,
+            screening=(solver.screening[0], 0.0)).potential
     datasets = integrals.pseudopotentials or []
     nothing = [None] * len(integrals.nuclei)
     field = KohnShamField(
@@ -799,16 +967,67 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
         terms.potential, terms.tau_potential,
         _core_functions(datasets) if datasets else nothing,
         _core_tau_functions(datasets) if datasets else nothing,
-        _centers(integrals), delta)
+        _centers(integrals), delta, core_potential=core_potential)
     V_xc = field.matrix()
     X = integrals._lowdin_x()
     P0 = X @ D @ X.conj().T
-    constant = terms.energy - float(np.real(np.sum(P0 * V_xc.T)))
+    e_xc = terms.energy
+    exchange = None
+    if solver.screening is not None:
+        e_exact, V_exact, operators = _exact_exchange_terms(solver, [D])
+        e_xc += e_exact
+        root = np.linalg.inv(X)                       # S^(1/2)
+        V_xc = V_xc + root @ V_exact[0] @ root
+        exchange = _screened_exchange(solver, [(-0.25, P0)], operators)
+    constant = e_xc - float(np.real(np.sum(P0 * V_xc.T)))
     energy = KohnShamEnergy(D, V_xc, constant)
     return pseudo_nuclear_gradient(
         integrals, None, None, atom_of_orbital=atom_of_orbital,
         orbital_delta=delta, include_pulay=include_pulay,
-        orbital_gradient=False, energy=energy, field=field)
+        orbital_gradient=False, energy=energy, field=field,
+        exchange=exchange)
+
+
+def _exact_exchange_terms(solver, densities):
+    r"""``(E, [V_sigma], [O_sigma])`` of a hybrid's exact exchange in the
+    solver's (Loewdin) basis.
+
+    ``densities`` is ``[D]`` for a closed shell (both spins) or ``[D_a,
+    D_b]``.  ``E`` is the grid and one-center exact exchange plus the
+    one-center frozen semilocal term; ``V_sigma`` its derivative matrices
+    (:math:`-\tfrac a2 K[D]` or :math:`-a K[D_\sigma]`, plus
+    :math:`C O_\sigma C^\dagger`); ``O_sigma`` the one-center ``(P, P)``
+    operators, or ``None`` without augmentation spheres.
+    """
+    fraction = solver.screening[1]
+    closed = len(densities) == 1
+    weight = 0.25 if closed else 0.5
+    energy = 0.0
+    matrices = []
+    for D in densities:
+        K = solver._exchange_matrix(D)
+        energy -= weight * fraction * float(np.real(np.sum(D * K.T)))
+        matrices.append(-2.0 * weight * fraction * K)
+    operators = None
+    if solver.one_center is not None:
+        C, spheres = solver.one_center
+        terms = spheres.evaluate(*[C.conj().T @ D @ C for D in densities])
+        energy += terms.energy
+        operators = list(terms.operators)
+        matrices = [V + C @ O @ C.conj().T
+                    for V, O in zip(matrices, operators)]
+    return energy, matrices, operators
+
+
+def _screened_exchange(solver, densities, operators):
+    """The :class:`~.pseudo_forces.ScreenedExchange` of ``solver``'s hybrid
+    over the AO ``densities = [(weight / fraction, P), ...]``."""
+    from .pseudo_forces import ScreenedExchange
+
+    omega, fraction = solver.screening
+    return ScreenedExchange(
+        omega=omega, densities=[(w * fraction, P) for w, P in densities],
+        operators=operators)
 
 
 def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
@@ -827,11 +1046,20 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         half_tau = (0.0 if solver._core_tau is None
                     else 0.5 * solver._core_tau)
         tau = [solver.kinetic_energy_density(D) + half_tau for D in (Da, Db)]
+    valence = [solver.density(Da), solver.density(Db)]
     terms = xc_grid.evaluate_spin(
-        integrals.grid, solver.density(Da) + half_core,
-        solver.density(Db) + half_core, solver.functional,
-        relativistic=solver.relativistic, tau_up=tau[0], tau_dn=tau[1])
+        integrals.grid, valence[0] + half_core, valence[1] + half_core,
+        solver.functional, relativistic=solver.relativistic, tau_up=tau[0],
+        tau_dn=tau[1], screening=solver.screening,
+        exchange_densities=valence)
     meta = terms.tau_potential_up is not None
+    core_potential = None
+    if solver.screening is not None and solver.core_density is not None:
+        bare = xc_grid.evaluate_spin(
+            integrals.grid, valence[0] + half_core, valence[1] + half_core,
+            solver.functional, relativistic=solver.relativistic,
+            screening=(solver.screening[0], 0.0))
+        core_potential = 0.5 * (bare.potential_up + bare.potential_dn)
 
     def mean(a, b):
         return None if a is None else 0.5 * (a + b)
@@ -850,20 +1078,34 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         Da - Db,
         _core_functions(datasets) if datasets else nothing,
         _core_tau_functions(datasets) if datasets else nothing,
-        _centers(integrals), delta)
+        _centers(integrals), delta, core_potential=core_potential)
     V_mean = field.matrix()
     X = integrals._lowdin_x()
     D = Da + Db
     P0 = X @ D @ X.conj().T
+    e_xc = terms.energy
+    exchange = None
+    if solver.screening is not None:
+        e_exact, (Va, Vb), operators = _exact_exchange_terms(solver,
+                                                             [Da, Db])
+        e_xc += e_exact
+        root = np.linalg.inv(X)                       # S^(1/2)
+        V_mean = V_mean + root @ (0.5 * (Va + Vb)) @ root
+        field.delta_matrix = (field.delta_matrix
+                              + root @ (0.5 * (Va - Vb)) @ root)
+        exchange = _screened_exchange(
+            solver, [(-0.5, X @ Da @ X.conj().T), (-0.5, X @ Db @ X.conj().T)],
+            operators)
     # The constant keeps the energy's value exact at the reference: the
     # magnetization part's value stays in it, its derivative comes from
     # `field.spin_term`.
-    constant = terms.energy - float(np.real(np.sum(P0 * V_mean.T)))
+    constant = e_xc - float(np.real(np.sum(P0 * V_mean.T)))
     energy = KohnShamEnergy(D, V_mean, constant)
     return pseudo_nuclear_gradient(
         integrals, None, None, atom_of_orbital=atom_of_orbital,
         orbital_delta=delta, include_pulay=include_pulay,
-        orbital_gradient=False, energy=energy, field=field)
+        orbital_gradient=False, energy=energy, field=field,
+        exchange=exchange)
 
 
 def d4_dispersion_gradient(atoms, functional: str) -> np.ndarray:
@@ -1033,8 +1275,19 @@ class DFTDriver(_MeanFieldDriver):
         config = super()._citation_config()
         functional = {"lda": ("PerdewZunger1981",),
                       "pbe": ("PBE1996", "PerdewWang1992"),
-                      "r2scan": ("Furness2020", "PerdewWang1992")}[self.xc]
+                      "r2scan": ("Furness2020", "PerdewWang1992"),
+                      "hse06": ("Heyd2003", "Krukau2006", "PBE1996",
+                                "PerdewWang1992")}[self.xc]
         dispersion = ("Caldeweyher2019",) if self.dispersion else ()
+        paw_exchange = ()
+        if xc_grid.is_hybrid(self.xc):
+            from ._hamiltonian_from_atoms import (pseudopotential_family,
+                                                  resolve_basis)
+            family = pseudopotential_family(resolve_basis(self.basis)[0])
+            if family is not None and family.name in ("paw-lcao",
+                                                      "upaw-lcao"):
+                # The one-center exact exchange of the augmentation spheres.
+                paw_exchange = ("Paier2005",)
         crystal = ()
         if self._periodic:
             from .periodic_dft import resolve_smearing
@@ -1052,7 +1305,7 @@ class DFTDriver(_MeanFieldDriver):
             # the Perdew-Wang uniform gas, already cited.
             spin = ("vonBarthHedin1972",)
         config["extras"] = (tuple(config.get("extras", ())) + functional
-                            + dispersion + crystal + spin)
+                            + paw_exchange + dispersion + crystal + spin)
         return config
 
     def _configure(self, hamiltonian: Fermion, num_particles: tuple[int, int],
@@ -1108,7 +1361,7 @@ class DFTDriver(_MeanFieldDriver):
                                for d in datasets))
         solver = PeriodicKohnSham(
             crystal, context["n_electrons"], self.xc, smearing=self.smearing,
-            relativistic=(self.xc != "r2scan"
+            relativistic=(xc_grid.takes_relativistic_exchange(self.xc)
                           and _datasets_relativistic(datasets)),
             constant=constant,
             magnetic_moments=self.atoms.get_initial_magnetic_moments())
@@ -1541,6 +1794,7 @@ class DFTDriver(_MeanFieldDriver):
             return {
                 "scf_method": "periodic Kohn-Sham (Bloch states)",
                 "xc_functional": self.xc.upper(),
+                **_hybrid_setup(self.xc),
                 "k_points_irreducible": (
                     f"{len(crystal.kpoints)} (time reversal)"
                     if crystal.symmetry is None else
@@ -1564,11 +1818,13 @@ class DFTDriver(_MeanFieldDriver):
                 "energy_unit": self._energy_unit_label(),
             }
         defaults = inspect.signature(KohnSham.run).parameters
+        hybrid = _hybrid_setup(self.xc)
         return {
             "scf_method": ("unrestricted Kohn-Sham (open shell)"
                            if self._unrestricted() else
                            "restricted Kohn-Sham (closed shell)"),
             "xc_functional": self.xc.upper(),
+            **hybrid,
             "dispersion": (self.dispersion or "none").upper(),
             "max_iterations": defaults["max_iter"].default,
             "convergence_Hartree": (f"{defaults['tol'].default:g} (energy "
@@ -1607,6 +1863,11 @@ class DFTDriver(_MeanFieldDriver):
         fields[f"hartree_energy_{unit}"] = \
             f"{to_unit(scf.hartree_energy):.10f}"
         fields[f"xc_energy_{unit}"] = f"{to_unit(scf.xc_energy):.10f}"
+        if xc_grid.is_hybrid(self.xc):
+            # Part of xc_energy, reported as its own fact: the share of the
+            # exchange-correlation energy that the exact exchange carries.
+            fields[f"exact_exchange_energy_{unit}"] = \
+                f"{to_unit(scf.exact_exchange_energy):.10f}"
         if scf.core_correction_energy:
             fields[f"core_correction_energy_{unit}"] = \
                 f"{to_unit(scf.core_correction_energy):.10f}"

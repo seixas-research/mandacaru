@@ -41,10 +41,12 @@ import time
 import warnings
 from ctypes.util import find_library
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 
 import numpy as np
 from numpy.ctypeslib import ndpointer
+from threadpoolctl import threadpool_limits
 
 _PKG_DIR = Path(__file__).resolve().parent
 
@@ -124,21 +126,6 @@ def _bind(lib):
         ctypes.c_double,             # dV
         _C128_W,                     # out_T (M * M)
         _C128_W,                     # out_V (M * M)
-    ]
-
-    # Renamed from `mandacaru_two_body` when the self node gained an explicit
-    # Green's-function value: an older library lacks the symbol, fails to bind
-    # and is rebuilt (see `check_backend`).
-    lib.mandacaru_two_body_g0.restype = None
-    lib.mandacaru_two_body_g0.argtypes = [
-        _C128,                       # psi (M * ngrid)
-        _F64, _F64, _F64,            # xg, yg, zg (ngrid)
-        ctypes.c_int,                # M
-        ctypes.c_int,                # ngrid
-        ctypes.c_double,             # dV
-        ctypes.c_double,             # softening
-        ctypes.c_double,             # g_self (Coulomb value at r12 = 0)
-        _C128_W,                     # out_eri (M^4)
     ]
 
     lib.mandacaru_kb_project.restype = None
@@ -550,6 +537,51 @@ def warn_fallback(status: BackendStatus) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# BLAS beside the OpenMP kernels.
+# --------------------------------------------------------------------------- #
+
+def single_threaded_blas(function):
+    """Run ``function`` with every loaded BLAS limited to one thread.
+
+    The crystal workflow alternates small dense linear algebra -- ``M x M``
+    eigensolves and products per k-point, ``M`` in the tens to hundreds --
+    with this library's OpenMP kernels (Bloch sums, Bader).  A threaded BLAS
+    loses on both counts there.  Measured with OpenBLAS on 12 cores / 24
+    threads: it starts a team for matrices too small to split (a 26 x 26
+    generalized ``eigh`` took 13 ms on 24 threads, 0.1 ms on one), and the
+    Bloch kernel ran 1.8x slower beside a threaded BLAS, even with its
+    threads lowered again between the two.  Other BLAS builds (MKL,
+    Accelerate) are limited the same way but were not measured.
+
+    The caller's setting (``OPENBLAS_NUM_THREADS`` included) is overridden
+    for the call and restored afterwards, so nested calls are harmless.  The
+    limit is applied per call rather than once at import, because NumPy and
+    SciPy each load their own BLAS and the second may not be loaded yet.
+    """
+
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        with threadpool_limits(limits=1, user_api="blas"):
+            return function(*args, **kwargs)
+
+    return wrapper
+
+
+def grid_blas_threads() -> int:
+    """BLAS threads for a product over the grid where no OpenMP kernel runs.
+
+    One per physical core: the products of the Kohn-Sham matrix and the
+    density with the Bloch sums (``M x ngrid``) are large enough to split,
+    and inside the SCF loop no OpenMP region waits for the cores.  Hardware
+    threads beyond the cores lost (``M = 832``: 2.3 s on 12 threads, 2.9 s on
+    24, 14.4 s on one).
+    """
+    import psutil
+
+    return max(1, psutil.cpu_count(logical=False) or os.cpu_count() or 1)
+
+
+# --------------------------------------------------------------------------- #
 # Public API (C-accelerated when available, NumPy fallback otherwise).
 # --------------------------------------------------------------------------- #
 
@@ -759,51 +791,6 @@ def bader_ascent(starts, node_gradient, periodic, A, A_inv, origin, lattice,
     return owner, final
 
 
-def two_body_tensor(psi_stack, xg, yg, zg, dV, softening=0.0,
-                    self_potential=None):
-    """Electron-repulsion tensor ``<ab|cd>`` for ``M`` sampled functions.
-
-    ``eri[a, b, c, d] = ∫∫ psi_a*(1) psi_c(1) (1/r12) psi_b*(2) psi_d(2) dV1 dV2``
-    -- physicists' notation, electron 1 carrying the index pair ``(a, c)`` and
-    electron 2 the pair ``(b, d)``.
-
-    Parameters
-    ----------
-    softening : float
-        Regularizes ``r12`` for *distinct* nodes (``1/sqrt(r12^2 + s^2)``).
-    self_potential : float, optional
-        The Coulomb value at ``r12 = 0`` -- the node's own voxel.  Pass the
-        cell average ``int_cell d^3r/|r| / dV``
-        (:func:`~mandacaru.integrals.poisson.voxel_self_potential`), which is what
-        the FFT path uses, so the two methods integrate the *same* operator.
-        The default assumes a cubic voxel of volume ``dV``; a bare ``1/1e-15``
-        clamp (the old behavior) would put ~1e15 on every diagonal.
-    """
-    if self_potential is None:
-        from .poisson import CUBE_SELF_CONSTANT
-        self_potential = CUBE_SELF_CONSTANT / float(dV) ** (1.0 / 3.0)
-    psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
-    xg = np.ascontiguousarray(xg, dtype=np.float64)
-    yg = np.ascontiguousarray(yg, dtype=np.float64)
-    zg = np.ascontiguousarray(zg, dtype=np.float64)
-    M = psi_stack.shape[0]
-    ngrid = psi_stack.shape[1]
-    eri = np.zeros((M, M, M, M), dtype=np.complex128)
-
-    _check_samples(psi_stack, ngrid, "two_body_tensor")
-    if not (xg.size == yg.size == zg.size == ngrid):
-        raise ValueError(f"two_body_tensor: coordinate arrays of sizes "
-                         f"{xg.size}, {yg.size}, {zg.size} for a "
-                         f"{ngrid}-node grid")
-    if HAS_C_BACKEND:
-        _LIB.mandacaru_two_body_g0(psi_stack.reshape(-1), xg, yg, zg, M, ngrid,
-                                   float(dV), float(softening),
-                                   float(self_potential), eri.reshape(-1))
-        return _check_filled(eri, psi_stack, "two-body tensor")
-    return _two_body_numpy(psi_stack, xg, yg, zg, dV, softening,
-                           self_potential)
-
-
 # --------------------------------------------------------------------------- #
 # NumPy reference fallbacks (mirror the C kernels exactly).
 # --------------------------------------------------------------------------- #
@@ -861,28 +848,3 @@ def _one_body_numpy(psi_stack, Vext, ginv, dV, shape):
             V[a, b] = np.sum(conj_a * Vext * psi_stack[b]) * dV
     return T, V
 
-
-def _two_body_numpy(psi_stack, xg, yg, zg, dV, softening, self_potential):
-    M = psi_stack.shape[0]
-    ngrid = psi_stack.shape[1]
-    eri = np.zeros((M, M, M, M), dtype=np.complex128)
-    # Coulomb potential of each density pair rho_bd, then contract with rho_ac.
-    for b in range(M):
-        for d in range(M):
-            rho2 = np.conj(psi_stack[b]) * psi_stack[d]          # (ngrid,)
-            phi = np.empty(ngrid, dtype=np.complex128)
-            for i in range(ngrid):
-                dxr = xg[i] - xg
-                dyr = yg[i] - yg
-                dzr = zg[i] - zg
-                r2 = dxr * dxr + dyr * dyr + dzr * dzr
-                # The r12 = 0 node carries the voxel's own Coulomb average.
-                green = np.where(r2 > 0.0,
-                                 1.0 / np.sqrt(r2 + softening * softening),
-                                 self_potential)
-                phi[i] = np.sum(rho2 * green) * dV
-            for a in range(M):
-                for c in range(M):
-                    rho1 = np.conj(psi_stack[a]) * psi_stack[c]
-                    eri[a, b, c, d] = np.sum(rho1 * phi) * dV
-    return eri

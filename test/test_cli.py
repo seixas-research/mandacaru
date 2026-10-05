@@ -166,15 +166,14 @@ class TestMarkovChainOptions:
 
 
 class TestLibraryVariables:
-    """``--set-paw/--set-oncvpsp/--set-upaw`` and ``--pseudo-status``, on a
+    """``--set-paw/--set-upaw`` and ``--pseudo-status``, on a
     temporary home directory: the user's own shell files are never touched."""
 
     @pytest.fixture
     def home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("SHELL", "/bin/zsh")
-        for variable in ("MANDACARU_PAW_PATH", "MANDACARU_ONCVPSP_PATH",
-                         "MANDACARU_UPAW_PATH"):
+        for variable in ("MANDACARU_PAW_PATH", "MANDACARU_UPAW_PATH"):
             # setenv first so monkeypatch records the original state, even
             # when unset: `--set-*` writes os.environ itself, and a bare
             # delenv of an unset variable would not undo that at teardown.
@@ -202,23 +201,21 @@ class TestLibraryVariables:
     def test_both_at_once_and_a_relative_path(self, home, capsys,
                                               monkeypatch):
         monkeypatch.chdir(home)
-        for name in ("mandacaru-paw", "mandacaru-oncvpsp"):
+        for name in ("mandacaru-paw", "mandacaru-upaw"):
             self._checkout(home, name)
         assert main(["--set-paw", "mandacaru-paw",
-                     "--set-oncvpsp", "mandacaru-oncvpsp"]) == 0
+                     "--set-upaw", "mandacaru-upaw"]) == 0
         text = (home / ".zshrc").read_text()
-        for variable, name in (("PAW", "paw"), ("ONCVPSP", "oncvpsp")):
+        for variable, name in (("PAW", "paw"), ("UPAW", "upaw")):
             # Recorded absolute, so it means the same thing from anywhere.
             assert f"MANDACARU_{variable}_PATH={home}/mandacaru-{name}" in text
         capsys.readouterr()
         assert main(["--pseudo-status"]) == 0
-        assert capsys.readouterr().out.count("lda-sr/: 1 datasets") == 2
+        assert "lda-sr/: 1 datasets" in capsys.readouterr().out
 
     def test_upaw_is_optional_but_can_be_set(self, home, capsys):
-        for name in ("mandacaru-paw", "mandacaru-oncvpsp"):
-            self._checkout(home, name)
-        assert main(["--set-paw", str(home / "mandacaru-paw"),
-                     "--set-oncvpsp", str(home / "mandacaru-oncvpsp")]) == 0
+        self._checkout(home, "mandacaru-paw")
+        assert main(["--set-paw", str(home / "mandacaru-paw")]) == 0
         capsys.readouterr()
         # Unset UPAW: reported as optional, and the status still passes.
         assert main(["--pseudo-status"]) == 0
@@ -241,7 +238,7 @@ class TestLibraryVariables:
         assert "added to" in capsys.readouterr().out
 
     def test_a_missing_directory_writes_nothing(self, home, capsys):
-        assert main(["--set-oncvpsp", str(home / "nowhere")]) == 1
+        assert main(["--set-paw", str(home / "nowhere")]) == 1
         assert "is not a directory" in capsys.readouterr().out
         assert not (home / ".zshrc").exists()
 
@@ -265,13 +262,13 @@ class TestLibraryVariables:
         assert main(["--pseudo-status"]) == 1
         assert "MANDACARU_PAW_PATH is not set" in capsys.readouterr().out
 
-    @pytest.mark.parametrize("flag", ["--link-paw-lcao", "--link-oncvpsp"])
+    @pytest.mark.parametrize("flag", ["--link-paw-lcao"])
     def test_the_link_flags_are_gone(self, flag, capsys):
         with pytest.raises(SystemExit):
             main([flag, "/tmp"])
         assert "unrecognized arguments" in capsys.readouterr().err
 
     def test_a_run_without_its_library_says_how_to_fix_it(self, home, capsys):
-        assert main(["H2O", "--cell", "8", "--basis", "ONCVPSP",
+        assert main(["H2O", "--cell", "8", "--basis", "PAW-LCAO",
                      "--dry-run"]) == 2
-        assert "mandacaru --set-oncvpsp" in capsys.readouterr().err
+        assert "mandacaru --set-paw" in capsys.readouterr().err

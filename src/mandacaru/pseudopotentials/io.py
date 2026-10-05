@@ -13,8 +13,7 @@ and solving a nonlinear fit per channel -- a second or two per element.  That is
 far too slow to repeat inside a geometry optimization, and it is also pure
 overhead: the result depends only on the element, never on the molecule.  So each
 family's library is generated once and kept in a repository of its own
-(``$MANDACARU_PAW_PATH/lda-sr/``, ``$MANDACARU_ONCVPSP_PATH/lda-sr/``;
-:mod:`.environment`).
+(``$MANDACARU_PAW_PATH/lda-sr/``; :mod:`.environment`).
 
 File formats
 ------------
@@ -53,8 +52,6 @@ FORMAT_TAG = "mandacaru-pseudopotential"
 #: Current schema version.  Version 2 added the ``family`` field, which every
 #: readable file carries.
 FORMAT_VERSION = 2
-#: Family whose files carry several projectors per channel (see :mod:`.oncv`).
-ONCV_FAMILY = "oncvpsp"
 #: Family whose files carry partial waves, projectors and one-center matrices
 #: (see :mod:`.paw`).
 PAW_FAMILY = "paw-lcao"
@@ -66,8 +63,7 @@ UPAW_FAMILY = "upaw-lcao"
 #: (``to_payload`` / ``from_payload``).  Several families may share one codec
 #: (UPAW-LCAO *is* a :class:`~.paw.PAWDataset`), so this maps family -> layout and
 #: is not invertible.
-TABLE_FAMILIES = {ONCV_FAMILY: ".oncv", PAW_FAMILY: ".paw",
-                  UPAW_FAMILY: ".paw"}
+TABLE_FAMILIES = {PAW_FAMILY: ".paw", UPAW_FAMILY: ".paw"}
 
 
 def _codec(family: str):
@@ -78,12 +74,9 @@ def _codec(family: str):
 
 def _table_record(pp) -> str | None:
     """The table family ``pp`` is an instance of, or ``None``."""
-    from .oncv import ONCVPseudoPotential
     from .paw import PAWDataset
     if isinstance(pp, PAWDataset):
         return PAW_FAMILY
-    if isinstance(pp, ONCVPseudoPotential):
-        return ONCV_FAMILY
     return None
 
 #: File formats understood by ``format=``.
@@ -204,9 +197,9 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
     layout = _table_record(pp)
     if layout is None:
         raise TypeError(
-            f"cannot write a {type(pp).__name__}: only ONCVPSP and PAW-LCAO "
+            f"cannot write a {type(pp).__name__}: only PAW-LCAO and UPAW-LCAO "
             "datasets have a file layout")
-    # ONCVPSP / PAW-LCAO records carry several projectors per channel, coupling
+    # PAW-LCAO records carry several projectors per channel, coupling
     # matrices, partial waves...; their payload is assembled by their own
     # module and every radial table lives under ``radial_tables``.  A
     # record may declare a *variant* of that layout's family (UPAW-LCAO is a
@@ -221,17 +214,17 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
 
 
 def _defects_record(defects):
-    from .oncv import defects_record
+    from .partial_waves import defects_record
     return defects_record(defects)
 
 
 def _read_defects(record):
-    from .oncv import read_defects
+    from .partial_waves import read_defects
     return read_defects(record)
 
 
 def _warn_defects(dataset, family):
-    from .oncv import warn_defects
+    from .partial_waves import warn_defects
     warn_defects(dataset, family)
 
 
@@ -333,7 +326,7 @@ def load_pseudopotential(path, format: str | None = None,
     from .families import canonical_family_name
     if "family" not in payload or "radial_tables" not in payload:
         raise ValueError(
-            f"{path!r} is not an ONCVPSP or PAW-LCAO dataset (no family, or "
+            f"{path!r} is not a PAW-LCAO or UPAW-LCAO dataset (no family, or "
             "no radial tables); this build cannot read it")
     family = canonical_family_name(payload["family"])
     if family not in TABLE_FAMILIES:

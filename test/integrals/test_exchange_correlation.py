@@ -129,13 +129,6 @@ def _dataset(**fields):
 
 
 class TestCoreDensities:
-    def test_a_norm_conserving_dataset_uses_its_partial_core(self):
-        r = np.linspace(0.0, 10.0, 2001)
-        core = np.exp(-4.0 * r * r)
-        dataset = _dataset(core_density=core, nlcc={"applied": True})
-        assert xc_grid.xc_core_density(dataset) is core or np.array_equal(
-            xc_grid.xc_core_density(dataset), core)
-
     def test_a_paw_dataset_uses_its_smooth_core_not_the_true_one(self):
         r = np.linspace(0.0, 10.0, 2001)
         dataset = _dataset(core_density=np.exp(-50.0 * r * r),
@@ -162,7 +155,9 @@ class TestCoreDensities:
     def test_the_core_lands_on_the_grid_at_its_atom(self):
         grid = _grid(h=0.4)
         r = np.linspace(0.0, 10.0, 2001)
-        dataset = _dataset(core_density=np.exp(-r * r), nlcc={"applied": True})
+        dataset = _dataset(core_density=np.exp(-9.0 * r * r),
+                           smooth_core_density=np.exp(-r * r),
+                           nlcc={"applied": True, "source": "smooth_core"})
         center = np.array([1.0, 0.0, 0.0])
         values = xc_grid.core_density_on_grid(grid, [dataset], [center])
         nearest = np.argmax(values)
@@ -239,3 +234,87 @@ class TestSpinPolarized:
             potential = terms.potential_dn
         assert numeric == pytest.approx(np.sum(potential * delta) * grid.dV,
                                         rel=1e-5)
+
+
+class TestHybrid:
+    """The semilocal part of HSE06 (``screening=``)."""
+
+    SCREENING = xc_grid.HYBRIDS["hse06"]
+
+    def test_without_its_exact_exchange_it_is_refused(self):
+        grid = _grid(h=0.4)
+        rho, _r2 = _gaussian(grid)
+        with pytest.raises(ValueError, match="hybrid"):
+            xc_grid.evaluate(grid, rho, "hse06")
+        with pytest.raises(ValueError, match="hybrid"):
+            xc_grid.evaluate_spin(grid, 0.5 * rho, 0.5 * rho, "hse06")
+
+    def test_screening_removes_part_of_the_exchange(self):
+        """``fraction`` of the short-range exchange is taken out: the
+        semilocal part rises, and by less than the full exchange would."""
+        grid = _grid()
+        rho, _r2 = _gaussian(grid)
+        full = xc_grid.evaluate(grid, rho, "hse06",
+                                screening=(0.11, 0.0)).energy
+        hybrid = xc_grid.evaluate(grid, rho, "hse06",
+                                  screening=self.SCREENING).energy
+        pbe = xc_grid.evaluate(grid, rho, "pbe").energy
+        assert full == pytest.approx(pbe, rel=5e-3)
+        assert full < hybrid < full + 0.25 * abs(full)
+
+    @pytest.mark.parametrize("exchange", ["same", "valence"])
+    def test_the_potential_is_the_functional_derivative(self, exchange):
+        r"""``dE/de = int v delta``, the short-range exchange taken on the
+        whole density or on a valence part of it (a fixed core added to the
+        rest, the way a partial core enters)."""
+        grid = _grid()
+        rho, r2 = _gaussian(grid)
+        core = 0.4 * np.exp(-3.0 * r2) if exchange == "valence" else 0.0
+        delta = 0.05 * np.exp(-0.5 * r2) * (1.0 + 0.3 * grid.X.reshape(-1))
+        eps = 1e-4
+
+        def terms(valence):
+            return xc_grid.evaluate(
+                grid, valence + core, "hse06", screening=self.SCREENING,
+                exchange_density=valence if exchange == "valence" else None)
+
+        directional = np.sum(terms(rho).potential * delta) * grid.dV
+        assert (terms(rho + eps * delta).energy
+                - terms(rho - eps * delta).energy) / (2.0 * eps) \
+            == pytest.approx(directional, rel=1e-5)
+
+    def test_equal_channels_give_the_unpolarized_terms(self):
+        grid = _grid()
+        rho, _r2 = _gaussian(grid)
+        spin = xc_grid.evaluate_spin(grid, 0.5 * rho, 0.5 * rho, "hse06",
+                                     screening=self.SCREENING)
+        plain = xc_grid.evaluate(grid, rho, "hse06", screening=self.SCREENING)
+        assert spin.energy == pytest.approx(plain.energy, rel=1e-10)
+        live = rho > 1e-10
+        for potential in (spin.potential_up, spin.potential_dn):
+            assert np.allclose(potential[live], plain.potential[live],
+                               rtol=1e-8, atol=1e-11)
+
+    def test_each_spin_potential_is_its_functional_derivative(self):
+        grid = _grid()
+        rho, r2 = _gaussian(grid)
+        up, dn = rho, 0.5 * rho * np.exp(-0.8 * r2)
+        delta = 0.1 * dn * (1.0 + 0.3 * grid.Y.reshape(-1))
+        eps = 1e-4
+
+        def energy(d):
+            return xc_grid.evaluate_spin(grid, up, d, "hse06",
+                                         screening=self.SCREENING).energy
+
+        potential = xc_grid.evaluate_spin(grid, up, dn, "hse06",
+                                          screening=self.SCREENING
+                                          ).potential_dn
+        assert (energy(dn + eps * delta) - energy(dn - eps * delta)) \
+            / (2 * eps) == pytest.approx(
+                np.sum(potential * delta) * grid.dV, rel=1e-5)
+
+    def test_hse_spellings_resolve(self):
+        assert xc_grid.resolve_functional("HSE06") == "hse06"
+        assert xc_grid.resolve_functional("hse") == "hse06"
+        assert xc_grid.is_hybrid("hse06") and not xc_grid.is_hybrid("pbe")
+        assert not xc_grid.takes_relativistic_exchange("hse06")

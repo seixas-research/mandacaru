@@ -28,7 +28,7 @@
 /* ------------------------------------------------------------------------ */
 
 /* u'' = f u + s, outward from u[start], u[start+1] (already set in u).
- * Same arithmetic, in the same order, as oncv.numerov_outward. */
+ * Same arithmetic, in the same order, as partial_waves.numerov_outward. */
 void mandacaru_numerov_outward(int n, const double *f, const double *s,
                                double h2, int start, double *u)
 {
@@ -43,7 +43,7 @@ void mandacaru_numerov_outward(int n, const double *f, const double *s,
 }
 
 /* Homogeneous inward recursion from u[n-1], u[n-2] (already set) down to
- * index stop.  Same arithmetic as oncv._numerov_inward. */
+ * index stop.  Same arithmetic as partial_waves._numerov_inward. */
 void mandacaru_numerov_inward(int n, const double *f, double h2, int stop,
                               double *u)
 {

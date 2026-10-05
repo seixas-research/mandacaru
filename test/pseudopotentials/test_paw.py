@@ -13,9 +13,8 @@ Atomic checks (radial, cheap) on freshly generated H, Li and O -- projector
 duality, the generalized eigenproblem, the reconstruction of the all-electron
 wave (the transformation the method is named after), logarithmic derivatives
 -- and the molecular checks on H2 (0.74 A, h = 0.25 A, 6 A cell) and LiH
-(1.6 A, h = 0.30 / 0.25 A, 8 A cell) against the ONCVPSP energies pinned in
-``test_oncv``.  The
-overlap correction makes these the first runs through the augmented overlap
+(1.6 A, h = 0.30 / 0.25 A, 8 A cell) against pinned energies.  The overlap
+correction makes these the first runs through the augmented overlap
 ``S + C q C^dagger`` with a nonzero ``q``.
 """
 
@@ -36,7 +35,7 @@ from mandacaru.core.hamiltonian import projector_blocks
 from mandacaru.pseudopotentials import (
     PSEUDO_FAMILIES, PAWChannel, PAWDataset, PAWIntegrals, check_paw_channel,
     compensation_coulomb, compensation_potential, compensation_shape,
-    family_names, generate_paw, get_oncv, get_paw,
+    family_names, generate_paw, get_paw,
     load_pseudopotential, log_derivative_ae, log_derivative_paw,
     lookup_family, paw_library_path,
     paw_spectrum, reconstruct_ae, report_paw, resolve_family,
@@ -45,11 +44,10 @@ from mandacaru.pseudopotentials import paw
 from mandacaru.pseudopotentials.io import library_elements
 from mandacaru.pseudopotentials.environment import LibraryPathError
 from mandacaru.pseudopotentials.io import available_elements, detect_format
-from mandacaru.pseudopotentials.oncv import oncv_library_path
 from mandacaru.units import HARTREE_TO_EV
 
 # --------------------------------------------------------------------------- #
-# Test systems (identical to test_oncv).
+# Test systems.
 # --------------------------------------------------------------------------- #
 
 H2_H, H2_CELL = 0.25, 6.0
@@ -72,9 +70,6 @@ def lih():
 
 SYSTEMS = {"H2": (h2, H2_H), "LiH": (lih, LIH_H)}
 
-#: ONCVPSP energies (Hartree) pinned by the sibling test file, same grids.
-ONCV = {"H2": {"rhf": -1.044179, "adapt": -1.058561},
-        "LiH": {"rhf": -0.774343, "adapt": -0.782341}}
 #: PAW energies with the shipped library (H: rc 1.30, deficit 0.05,
 #: Delta 0.5; Li: rc 2.60, deficit 0.02, Delta 0.5).  Re-measured 2026-09-17,
 #: when the compensation charge gained the electron-ion attraction it was
@@ -173,8 +168,6 @@ PAW_BEFORE_COMPENSATION_ATTRACTION = {
 PIN_TOL = 2e-3
 #: sqrt(4 pi): the monopole moment is a Y_00 coefficient (see TestOverlap).
 SQRT_4PI = np.sqrt(4.0 * np.pi)
-#: Agreement asked of the three families: 0.1 Ha (2.7 eV).
-FAMILY_TOL = 0.1
 
 _GENERATED: dict = {}
 
@@ -483,7 +476,7 @@ class TestAtomic:
         """Aluminum (s 2.68, p 3.43 Bohr): r_cl follows the larger cutoff, the
         s projectors extend past their own r_cut to it, and the channel is
         still dual, symmetric and ghost-free."""
-        from mandacaru.pseudopotentials import oncv, paw
+        from mandacaru.pseudopotentials import partial_waves, paw
         pp = generated("Al")
         s, p = pp.channels[0], pp.channels[1]
         assert pp.r_cut_local > s.r_cut
@@ -493,20 +486,20 @@ class TestAtomic:
         assert np.abs(np.asarray(s.projectors)[:, shell]).max() > 0.0
         assert np.all(np.asarray(s.projectors)[:, pp.r > pp.r_cut_local] == 0.0)
         assert s.duality_error < 1e-10 and s.asymmetry < 1e-6
-        assert oncv.ghost_errors(pp, paw._paw_levels) == {}
+        assert partial_waves.ghost_errors(pp, paw._paw_levels) == {}
 
     def test_the_local_potential_alone_binds_no_ghost(self):
         """Iron's p channel has no projectors.  With r_cl at 0.9 x the compact
         3d cutoff, the bare all-electron well bound a p level at -4.6 Ha
         (4p: -0.05); with r_cl at the 4s cutoff it binds nothing extra."""
-        from mandacaru.pseudopotentials import oncv, paw
+        from mandacaru.pseudopotentials import partial_waves, paw
         atom = generated("Fe").atom
         # The historical construction: the compact local radius and no raise
         # of the local potential (iron's default is now 10 Ha).
         old = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
                            r_cut_local=0.828, local_shift=0.0)
         assert old.unconstructed_ghosts()[1] < -4.0
-        assert 1 in oncv.ghost_errors(old, paw._paw_levels)
+        assert 1 in partial_waves.ghost_errors(old, paw._paw_levels)
         new = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom)
         assert new.unconstructed_ghosts() == {}
 
@@ -524,7 +517,7 @@ class TestAtomic:
 # --------------------------------------------------------------------------- #
 
 #: One element from each population the 2026-09-24 ghost census found
-#: ghosted (PAW-LCAO only, both families, ONCVPSP only, first rows, d, f, p).
+#: ghosted (first rows, d, f, p).
 GHOST_SWEEP = ["B", "Na", "Cl", "Fe", "Cu", "Ga", "Ba", "La", "W", "Bi"]
 
 
@@ -560,11 +553,11 @@ class TestLibrary:
     @pytest.mark.parametrize("symbol", GHOST_SWEEP)
     def test_no_shipped_channel_holds_a_ghost(self, symbol):
         """An extra state below the reference, with the reference level
-        displaced to second place (:func:`~mandacaru.pseudopotentials.oncv.
-        ghost_errors`), in one element of every population the 2026-09-24
+        displaced to second place (:func:`~mandacaru.pseudopotentials.
+        partial_waves.ghost_errors`), in one element of every population the 2026-09-24
         census found ghosted.  The whole library is the slow test below."""
-        from mandacaru.pseudopotentials import oncv
-        assert oncv.ghost_errors(get_paw(symbol), paw._paw_levels) == {}
+        from mandacaru.pseudopotentials import partial_waves
+        assert partial_waves.ghost_errors(get_paw(symbol), paw._paw_levels) == {}
 
     def test_lithium_smooth_waves_are_nodeless(self):
         """The PBE lithium shipped until 2026-09-27 had both 2s partial waves
@@ -671,8 +664,8 @@ class TestLibrary:
     @pytest.mark.slow
     @pytest.mark.parametrize("symbol", library_elements())
     def test_no_shipped_dataset_holds_a_ghost(self, symbol):
-        from mandacaru.pseudopotentials import oncv
-        assert oncv.ghost_errors(get_paw(symbol), paw._paw_levels) == {}
+        from mandacaru.pseudopotentials import partial_waves
+        assert partial_waves.ghost_errors(get_paw(symbol), paw._paw_levels) == {}
 
     def test_shipped_h_matches_a_fresh_generation(self):
         shipped, fresh = get_paw("H"), generated("H")
@@ -743,11 +736,7 @@ class TestLibrary:
         assert "regenerate" in str(hits[0].message)
         paw._CACHE.clear()
 
-    def test_loaders_refuse_the_other_families(self, tmp_path):
-        with pytest.raises(ValueError, match="not 'oncvpsp'"):
-            get_oncv("H", paw_library_path())
-        with pytest.raises(ValueError, match="not 'paw-lcao'"):
-            get_paw("H", oncv_library_path())
+    def test_a_missing_dataset_names_the_family(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="PAW-LCAO"):
             get_paw("Xe", directory=str(tmp_path))
 
@@ -762,7 +751,7 @@ class TestIO:
         remove; the file keeps it, and every load warns."""
         import copy
 
-        from mandacaru.pseudopotentials.oncv import GhostStateWarning
+        from mandacaru.pseudopotentials.partial_waves import GhostStateWarning
         pp = copy.copy(generated("H"))
         pp.defects = {"ghosts": {0: -5.03}, "phases": {3: (0.09, 0.09)}}
         assert "GHOSTED" in repr(pp) and "SCATTERING OFF" in repr(pp)
@@ -816,11 +805,6 @@ class TestIO:
                                                           tmp_path / f"O2.{fmt}"))
         assert np.array_equal(again.projectors[1][1], back.projectors[1][1])
 
-    def test_other_families_load_unchanged(self):
-        oncv = get_oncv("O")
-        assert type(oncv).__name__ == "ONCVPseudoPotential"
-        assert oncv.family == "oncvpsp" and len(oncv.projectors[0]) == 2
-
 class TestResolution:
     @pytest.mark.parametrize("name", ["paw-lcao", "PAW-LCAO", " Paw-LCAO "])
     def test_names(self, name):
@@ -829,7 +813,7 @@ class TestResolution:
         assert "paw-lcao" in family_names()
 
     def test_unknown_family_lists_them_all(self):
-        with pytest.raises(ValueError, match="'oncvpsp'.*'paw-lcao'.*'upaw-lcao'"):
+        with pytest.raises(ValueError, match="'paw-lcao'.*'upaw-lcao'"):
             resolve_family("gth")
 
     def test_spec_and_basis_selection(self):
@@ -1010,12 +994,12 @@ class TestOverlap:
 
 
 # --------------------------------------------------------------------------- #
-# (c) Molecular energies against ONCV; hardness.
+# (c) Molecular energies; hardness.
 # --------------------------------------------------------------------------- #
 
 class TestMolecular:
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
-    def test_rhf_and_fci_against_the_other_families(self, name):
+    def test_rhf_and_fci(self, name):
         H, particles, n_orb, _profile, context = _build(name, "paw-lcao")
         ints = context["integrals"]
         assert n_orb == 2 and particles == (1, 1)
@@ -1023,13 +1007,9 @@ class TestMolecular:
         e_rhf = _total(ints, context["n_electrons"])
         e_fci = _fci(H)
         print(f"\n{name}: PAW RHF {e_rhf * HARTREE_TO_EV:.4f} eV, FCI "
-              f"{e_fci * HARTREE_TO_EV:.4f} eV  ({e_rhf:.6f} / {e_fci:.6f} Ha; "
-              f"ONCV RHF {ONCV[name]['rhf']:.6f}; "
-              f"PAW-LCAO - ONCV = {(e_rhf - ONCV[name]['rhf']) * HARTREE_TO_EV:+.3f} eV)")
+              f"{e_fci * HARTREE_TO_EV:.4f} eV  ({e_rhf:.6f} / {e_fci:.6f} Ha)")
         assert np.isfinite(e_rhf) and np.isfinite(e_fci)
         assert e_fci <= e_rhf + 1e-9
-        assert abs(e_rhf - ONCV[name]["rhf"]) < FAMILY_TOL
-        assert abs(e_fci - ONCV[name]["adapt"]) < FAMILY_TOL
         assert e_rhf == pytest.approx(PAW[name]["rhf"], abs=PIN_TOL)
         assert e_fci == pytest.approx(PAW[name]["adapt"], abs=PIN_TOL)
 
@@ -1083,7 +1063,7 @@ class TestMolecular:
         result = atoms.calc.result
         energy = result.in_units("Ha")          # the pins are Hartree; results eV
         print(f"\n{name}: PAW ADAPT-VQE {result.optimal_energy:.4f} eV "
-              f"({energy:.6f} Ha; ONCV {ONCV[name]['adapt']:.6f})")
+              f"({energy:.6f} Ha)")
         assert atoms.calc.n_qubits == 4
         assert result.energy_unit == "eV"
         assert np.isfinite(result.optimal_energy)
@@ -1093,7 +1073,6 @@ class TestMolecular:
         assert energy <= PAW_DEFAULT[name]["rhf"] + PIN_TOL
         # ... and the confinement is what moved it from the unconfined pin.
         assert energy < PAW[name]["adapt"]
-        assert abs(energy - ONCV[name]["adapt"]) < FAMILY_TOL
 
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
     def test_hardness_at_a_quarter_angstrom(self, name):
@@ -1114,7 +1093,6 @@ class TestMolecular:
         e25 = _total(_build("LiH", "paw-lcao", h=0.25)[4]["integrals"], 2)
         print(f"\nLiH PAW RHF: h=0.30 {e30:.6f}, h=0.25 {e25:.6f} Ha")
         assert abs(e25 - e30) < 0.02
-        assert abs(e25 - ONCV["LiH"]["rhf"]) < FAMILY_TOL
 
     def test_size_hierarchy_is_variational(self):
         sz = _build("H2", "paw-lcao")[4]["integrals"]

@@ -10,7 +10,10 @@
 
 Using one spacing for every axis made the same physical problem give different
 energies on axis permutations of an anisotropic grid (a factor of four for
-``(0.4, 0.2, 0.3)`` vs ``(0.2, 0.4, 0.3)`` Bohr).
+``(0.4, 0.2, 0.3)`` vs ``(0.2, 0.4, 0.3)`` Bohr).  The solver is checked
+against the closed-form self interaction of a Gaussian on anisotropic and
+skewed samplings; the voxel self-potential -- the periodic truncated kernel's
+``d = 0`` node -- against quadrature.
 """
 
 import numpy as np
@@ -29,28 +32,15 @@ def gaussian_grid(spacings, half=4.0):
     return grid, np.exp(-r2).reshape(-1).astype(complex)
 
 
-def skewed_grid(cell, h=0.5):
-    """A Gaussian sampled on the skewed lattice of ``cell``."""
-    grid = Grid(center=[0.0, 0.0, 0.0], h=h, units="bohr",
-                cell=np.asarray(cell, dtype=float), skew=True)
-    r2 = grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2
-    return grid, np.exp(-r2).reshape(-1).astype(complex)
+#: ``int int exp(-r1^2) exp(-r2^2) / r12`` -- two unit-exponent Gaussians,
+#: ``pi^3 * 2 sqrt(mu/pi)`` with ``mu = 1/2``.
+GAUSSIAN_SELF_INTERACTION = np.pi ** 2.5 * np.sqrt(2.0)
 
 
 def self_integral(grid, rho):
     """``sum rho Phi dV`` -- the density's Coulomb self interaction."""
     phi = PoissonFFTSolver(grid.shape, step=grid.step).solve(rho)
     return float(np.real(np.sum(rho.conj() * phi) * grid.dV))
-
-
-def direct_self_integral(grid, rho):
-    """The same convolution summed in real space, with the same self term."""
-    x, y, z = (c.reshape(-1) for c in (grid.X, grid.Y, grid.Z))
-    d = np.sqrt((x[:, None] - x[None, :]) ** 2 + (y[:, None] - y[None, :]) ** 2
-                + (z[:, None] - z[None, :]) ** 2)
-    green = np.divide(1.0, d, out=np.zeros_like(d), where=d > 0)
-    np.fill_diagonal(green, voxel_self_potential(grid.step) / grid.dV)
-    return float(np.real(rho.conj() @ (green @ rho)) * grid.dV ** 2)
 
 
 class TestCellSelfPotential:
@@ -80,22 +70,14 @@ class TestAnisotropicCoulomb:
         reference = self_integral(*gaussian_grid(base))
         for permutation in ([0.2, 0.4, 0.3], [0.3, 0.2, 0.4], [0.2, 0.3, 0.4]):
             value = self_integral(*gaussian_grid(permutation))
-            assert value == pytest.approx(reference, rel=2e-3), permutation
+            assert value == pytest.approx(reference, rel=1e-10), permutation
 
-    def test_matches_an_independent_direct_sum(self):
-        """Same convolution, summed in real space with the same cell self term."""
-        grid, rho = gaussian_grid([0.5, 0.3, 0.4], half=1.5)
-        assert self_integral(grid, rho) == pytest.approx(
-            direct_self_integral(grid, rho), rel=1e-10)
-
-    def test_isotropic_result_is_unchanged(self):
-        """A cubic grid still integrates as before (pinned energies must hold)."""
-        grid, rho = gaussian_grid([0.3, 0.3, 0.3])
-        legacy = PoissonFFTSolver(grid.shape, grid.dx,
-                                  self_const=CUBE_SELF_CONSTANT)
-        phi = legacy.solve(rho)
-        legacy_value = float(np.real(np.sum(rho.conj() * phi) * grid.dV))
-        assert self_integral(grid, rho) == pytest.approx(legacy_value, rel=1e-7)
+    @pytest.mark.parametrize("spacings", [(0.4, 0.2, 0.3), (0.5, 0.3, 0.4)])
+    def test_matches_the_closed_form(self, spacings):
+        """Spectral at the singularity: exact to 1e-8 on an anisotropic
+        sampling."""
+        assert self_integral(*gaussian_grid(spacings)) == pytest.approx(
+            GAUSSIAN_SELF_INTERACTION, rel=1e-8)
 
 
 class TestVoxelSelfPotential:
@@ -126,38 +108,23 @@ class TestVoxelSelfPotential:
 
 
 class TestSkewedGrids:
-    """A skewed lattice is a Bravais lattice: the convolution still holds."""
+    """A skewed lattice is a Bravais lattice: the convolution still holds,
+    and the spectral part's wave vectors come from the skewed padded cell."""
 
-    CELL = np.array([[3.0, 0.0, 0.0], [1.2, 2.8, 0.0], [0.4, 0.5, 2.6]])
-
-    def test_matches_an_independent_direct_sum(self):
-        grid, rho = skewed_grid(self.CELL, h=0.9)
-        assert not grid.is_orthogonal
-        assert self_integral(grid, rho) == pytest.approx(
-            direct_self_integral(grid, rho), rel=1e-10)
+    CELL = 3.0 * np.array([[3.0, 0.0, 0.0], [1.2, 2.8, 0.0], [0.4, 0.5, 2.6]])
 
     @pytest.mark.parametrize("skew", [True, False])
-    def test_fft_and_direct_agree_on_the_same_operator(self, skew):
-        """Both paths now use the same voxel self-energy, so they must match.
-
-        Before, the direct kernel clamped its own ``r12 = 0`` distance to
-        1e-15 and returned ~1e12 for this integral.
-        """
-        from mandacaru.basis import HydrogenicAtomicOrbital
-        from mandacaru.integrals import IntegralEngine
-
-        grid = Grid(center=[0.0, 0.0, 0.0], h=0.6, units="bohr",
+    def test_matches_the_closed_form(self, skew):
+        grid = Grid(center=[0.0, 0.0, 0.0], h=0.45, units="bohr",
                     cell=self.CELL, skew=skew)
-        orbital = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0.0, 0.0, 0.0],
-                                    units="bohr")
-        engine = IntegralEngine([orbital], grid)
-        fft = engine.two_body(method="fft", energy_units="Ha")[0, 0, 0, 0].real
-        direct = engine.two_body(method="direct", energy_units="Ha",
-                                 softening=0.0)[0, 0, 0, 0].real
-        assert fft == pytest.approx(direct, rel=1e-10)
-        assert 0.0 < fft < 2.0                 # the exact 1s value is 0.625 Ha
+        assert grid.is_orthogonal is not skew
+        r2 = grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2
+        rho = np.exp(-r2).reshape(-1).astype(complex)
+        assert self_integral(grid, rho) == pytest.approx(
+            GAUSSIAN_SELF_INTERACTION, rel=1e-8)
 
     def test_a_skewed_cell_beats_its_bounding_box_on_volume(self):
         """Sanity: the skewed sampling really uses the skewed voxel volume."""
-        grid, _rho = skewed_grid(self.CELL, h=0.9)
+        grid = Grid(center=[0.0, 0.0, 0.0], h=0.9, units="bohr",
+                    cell=self.CELL / 3.0, skew=True)
         assert grid.dV == pytest.approx(abs(np.linalg.det(grid.step)), rel=1e-12)

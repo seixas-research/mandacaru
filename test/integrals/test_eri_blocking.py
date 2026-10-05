@@ -45,7 +45,7 @@ class TestBlockedHermitianERI:
     def test_matches_the_dense_contraction(self, budget_mb):
         eng = _engine()
         ref = _dense_reference(eng)
-        eri = eng.two_body("fft", energy_units="Ha", max_memory_mb=budget_mb)
+        eri = eng.two_body(energy_units="Ha", max_memory_mb=budget_mb)
         assert np.abs(eri - ref).max() < 1e-12
 
     def test_block_size_follows_the_budget(self):
@@ -60,7 +60,7 @@ class TestBlockedHermitianERI:
     def test_tensor_symmetries_hold_for_every_block_size(self):
         eng = _engine()
         for budget in (1e-3, None):
-            eri = eng.two_body("fft", energy_units="Ha", max_memory_mb=budget)
+            eri = eng.two_body(energy_units="Ha", max_memory_mb=budget)
             assert np.abs(eri - eri.transpose(1, 0, 3, 2)).max() < 1e-12
             assert np.abs(eri - np.conj(eri.transpose(2, 3, 0, 1))).max() < 1e-12
 

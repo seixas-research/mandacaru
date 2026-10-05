@@ -225,3 +225,54 @@ def test_bloch_sums_are_the_image_sums():
             chi = function.evaluate(*(points - R).T)
             expected[:, mu, :] += phases[:, None] * chi[None, :]
     assert np.abs(values - expected).max() < 1e-12 * np.abs(expected).max()
+
+
+class TestTheProjectorSpaceMoments:
+    r"""``Q^A_LM(k) = C_A blk C_A^\dagger`` is never formed: the Hamiltonian
+    term and the moments go through the ``(P, P)`` projector space."""
+
+    @pytest.fixture(scope="class")
+    def solver(self):
+        crystal, context = pp.build_crystal(
+            SILICON, SILICON_H, SILICON_BASIS,
+            kpts={"size": (2, 1, 1), "gamma": True})
+        solver = PeriodicKohnSham(crystal, context["n_electrons"], "lda")
+        solver.run()
+        return solver
+
+    @staticmethod
+    def _dense(crystal, data):
+        C = data.projections
+        return {ch: C[:, crystal.projector_columns(ch[0])] @ blk
+                @ C[:, crystal.projector_columns(ch[0])].conj().T
+                for ch, blk in crystal.multipole_blocks.items()}
+
+    def test_the_operator_is_the_weighted_sum_of_the_dense_ones(self, solver):
+        crystal = solver.crystal
+        _V, _v_tau, w = solver.potentials
+        D = crystal.moment_operator(w)
+        for data in crystal.kpoint_data:
+            dense = sum(w[ch] * Q for ch, Q in self._dense(crystal,
+                                                           data).items())
+            C = data.projections
+            assert np.allclose(C @ D @ C.conj().T, dense, atol=1e-13)
+
+    def test_the_traces_are_the_dense_moments(self, solver):
+        crystal = solver.crystal
+        expected = {ch: 0.0j for ch in crystal.channels}
+        R = 0.0
+        for data, P in zip(crystal.kpoint_data, solver.density_matrices):
+            for ch, Q in self._dense(crystal, data).items():
+                expected[ch] += data.weight * np.sum(P * Q.T)
+            C = data.projections
+            R = R + data.weight * (C.conj().T @ P @ C)
+        q = crystal.moment_traces(R)
+        for ch in crystal.channels:
+            assert q[ch] == pytest.approx(expected[ch], abs=1e-13)
+
+
+def test_the_crystal_build_runs_single_threaded_blas():
+    """BLAS on one thread beside the OpenMP kernels
+    (:func:`~mandacaru.integrals._backend.single_threaded_blas`)."""
+    for function in (pp.build_crystal, pp.PeriodicPAW.kpoint_matrices):
+        assert getattr(function, "__wrapped__", None) is not None

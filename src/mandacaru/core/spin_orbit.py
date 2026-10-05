@@ -8,17 +8,15 @@
 
 r"""Spin-orbit coupling as a one-body term of the many-body Hamiltonian.
 
-A pseudopotential generated with ``relativity="dirac"`` carries a spin-orbit
-term alongside its ordinary channels, built the same way by both generators
-that offer it: :func:`mandacaru.pseudopotentials.oncv.generate_oncv` and
-:func:`mandacaru.pseudopotentials.paw.generate_paw` construct the two ``j``
-branches of each :math:`l` separately and store their (2j+1) average and
+A PAW-LCAO dataset generated with ``relativity="dirac"`` carries a spin-orbit
+term alongside its ordinary channels:
+:func:`mandacaru.pseudopotentials.paw.generate_paw` constructs the two ``j``
+branches of each :math:`l` separately and stores their (2j+1) average and
 their difference on the union of the two branches' projectors
-(:func:`~mandacaru.pseudopotentials.paw.j_resolved_spin_orbit`).  ONCVPSP's
-term acts through its ordinary projectors, whose channels are the j branches;
-PAW-LCAO's through a projector set of its own, the union of each channel's two
-branches (:func:`~mandacaru.pseudopotentials.paw.paw_spin_orbit_projectors`),
-added to the scalar Hamiltonian.  Each :math:`l` has a
+(:func:`~mandacaru.pseudopotentials.paw.j_resolved_spin_orbit`).  The term
+acts through that projector set, the union of each channel's two branches
+(:func:`~mandacaru.pseudopotentials.paw.paw_spin_orbit_projectors`), added to
+the scalar Hamiltonian.  Each :math:`l` has a
 separable radial part and the angular operator
 :math:`\mathbf{L}\cdot\mathbf{S}`,
 
@@ -144,8 +142,7 @@ def spin_orbit_pair(left, right, projectors, blocks) -> np.ndarray:
         ``C[mu, p] = <phi_mu|chi_p>`` on the spin-orbit projectors, the
         ``(M, P)`` array
         :meth:`~.hamiltonian.MolecularIntegrals.spin_orbit_projections`
-        returns: for ONCVPSP the ordinary projectors (the radial parts of the
-        two ``j`` branches), for PAW-LCAO the union set of
+        returns: the union set of
         :func:`~mandacaru.pseudopotentials.paw.paw_spin_orbit_projectors`.
     projectors : list
         The :class:`~mandacaru.pseudopotentials.orbitals.KBProjector` list, for

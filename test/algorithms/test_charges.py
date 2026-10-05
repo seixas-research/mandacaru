@@ -26,6 +26,7 @@ from ase import Atoms
 from mandacaru import Mandacaru
 from mandacaru.algorithms.charges import (PARTITION_METHODS, WEIGHT_METHODS,
                                           atomic_weights, free_atom_density,
+                                          partition_crystal,
                                           reference_subshells)
 
 pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -447,3 +448,10 @@ def test_crystal_bader_is_converged_and_shift_invariant():
     plain, shifted = lithium_charge(0.0), lithium_charge(0.3)
     assert plain == pytest.approx(0.847, abs=0.01)
     assert shifted == pytest.approx(plain, abs=3e-3)
+
+
+def test_the_crystal_partition_runs_single_threaded_blas():
+    """BLAS on one thread beside the OpenMP kernels
+    (:func:`~mandacaru.integrals._backend.single_threaded_blas`)."""
+    for function in (partition_crystal,):
+        assert getattr(function, "__wrapped__", None) is not None

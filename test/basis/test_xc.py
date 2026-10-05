@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from mandacaru.basis.atomic_solver import lda_correlation, lda_xc
+from mandacaru.basis.xc_spin import spin_partials
 from mandacaru.basis.xc import (DENSITY_FLOOR, FUNCTIONALS, PBE_KAPPA,
                                 RELATIVISTIC_SERIES_BETA, pbe_correlation,
                                 pbe_exchange, pw92_correlation,
@@ -52,6 +53,34 @@ class TestPerdewWang92:
 
     def test_correlation_is_negative(self):
         assert np.all(pw92_correlation(np.array([1e-3, 0.1, 10.0]))[0] < 0)
+
+
+class TestPerdewZunger:
+    """The two forms meet at :math:`r_s = 1` with no jump in the energy or
+    the potential (the published C, D left 3.2e-5 Ha there), restricted
+    and spin-polarized alike."""
+
+    RS = np.array([1.0 - 1e-10, 1.0 + 1e-10])
+
+    def test_the_restricted_form_is_continuous_at_rs_one(self):
+        rho = 3.0 / (4.0 * np.pi * self.RS ** 3)
+        e_c, v_c = lda_correlation(rho)
+        assert abs(e_c[0] - e_c[1]) < 1e-10
+        assert abs(v_c[0] - v_c[1]) < 1e-10
+
+    @pytest.mark.parametrize("zeta", [0.0, 0.5, 1.0 - 1e-9])
+    def test_the_polarized_form_is_continuous_at_rs_one(self, zeta):
+        rho = 3.0 / (4.0 * np.pi * self.RS ** 3)
+        up, dn = 0.5 * rho * (1 + zeta), 0.5 * rho * (1 - zeta)
+        f, v_up, v_dn = spin_partials("lda", up, dn)[:3]
+        assert abs(f[0] / rho[0] - f[1] / rho[1]) < 1e-9
+        assert abs(v_up[0] - v_up[1]) < 1e-8
+        assert abs(v_dn[0] - v_dn[1]) < 1e-8
+
+    def test_the_spin_form_reduces_to_the_restricted_one(self):
+        rho = np.array([1e-3, 0.05, 0.2387, 1.0, 10.0])
+        f = spin_partials("lda", 0.5 * rho, 0.5 * rho)[0]
+        assert np.allclose(f, rho * lda_xc(rho)[0], rtol=1e-12, atol=0)
 
 
 class TestPBEReducesToItsUniformLimit:

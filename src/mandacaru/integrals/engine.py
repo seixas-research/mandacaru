@@ -326,9 +326,8 @@ class IntegralEngine:
 
     # -- two body ---------------------------------------------------------- #
 
-    def two_body(self, method: str = "fft", softening: float = 0.0,
-                 energy_units: str = "eV", max_memory_mb: float | None = None,
-                 solver=None):
+    def two_body(self, energy_units: str = "eV",
+                 max_memory_mb: float | None = None, solver=None):
         r"""Electron-repulsion tensor over the basis, physicists' notation.
 
         Returns ``eri[a, b, c, d] = <ab|cd>``,
@@ -344,17 +343,15 @@ class IntegralEngine:
         i.e. electron 1 carries the index pair ``(a, c)`` and electron 2 the pair
         ``(b, d)``.  (In chemists' notation this is ``(ac|bd)``.)
 
+        The pair potentials come from the O(N log N) FFT Poisson solver
+        (:class:`~mandacaru.integrals.poisson.PoissonFFTSolver`), spectral at
+        the :math:`1/r` singularity, so nothing singular is sampled.  It
+        follows the grid's own step vectors, so anisotropic *and* skewed
+        (non-orthogonal) grids are integrated with the right distances and
+        volume.
+
         Parameters
         ----------
-        method : {"fft", "direct"}
-            ``"fft"`` (default) uses the O(N log N) FFT Poisson solver with a
-            physically correct voxel self-energy -- fast and accurate.  It
-            follows the grid's own step vectors, so anisotropic *and* skewed
-            (non-orthogonal) grids are integrated with the right distances and
-            volume.  ``"direct"`` uses the O(N^2) real-space double sum in the C
-            backend (kept as a reference / for non-uniform sampling).
-        softening : float
-            Only used by ``method="direct"``: regularizes ``r12 -> 0``.
         energy_units : {"eV", "Ha"}
             Unit of the returned tensor (default ``"eV"``); the integrals are
             computed in Hartree and converted on return.
@@ -369,26 +366,10 @@ class IntegralEngine:
             kernel -- the Wigner-Seitz-truncated bare ``1/r`` of
             :class:`~mandacaru.core.mpc.TruncatedCoulombSolver`, for the
             exchange-correlation hole -- so the two can be subtracted term by
-            term.  ``method="direct"`` ignores it.
+            term.
         """
-        if method == "fft":
-            with self.timings.time("two-body integrals (fft)"):
-                eri = self._two_body_fft(max_memory_mb, solver=solver)
-        elif method == "direct":
-            from .poisson import voxel_self_potential
-
-            xg, yg, zg = self.grid.flat_coords()
-            # The same voxel self-energy the FFT kernel uses, so the two
-            # methods integrate the same operator and can be compared.
-            self_potential = voxel_self_potential(self.grid.step) / self.grid.dV
-            # The backend already returns the physicists'-ordered tensor
-            # eri[a,b,c,d] = <ab|cd> (electron 1 carries indices a, c).
-            with self.timings.time("two-body integrals (direct)"):
-                eri = _backend.two_body_tensor(self._psi, xg, yg, zg,
-                                               self.grid.dV, softening,
-                                               self_potential=self_potential)
-        else:
-            raise ValueError(f"unknown two-body method {method!r}")
+        with self.timings.time("two-body integrals (fft)"):
+            eri = self._two_body_fft(max_memory_mb, solver=solver)
         return from_hartree(eri, energy_units)
 
     def _two_body_fft(self, max_memory_mb: float | None = None, solver=None):

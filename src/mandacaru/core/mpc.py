@@ -84,10 +84,10 @@ is the check that caught it and is kept for that reason.
 
 **The self node keeps the voxel average.**  The :math:`\mathbf d = 0` node of
 the kernel carries :math:`\frac{1}{dV}\int_{\text{voxel}} d^3r / |r|`
-(:func:`~mandacaru.integrals.poisson.voxel_self_potential`), exactly as the
-isolated solver does, rather than an ad-hoc softening.  The same node is
-treated the same way in :math:`g^{\text{E}}`, so it cancels in
-:math:`f - g^{\text{E}}` to the accuracy of that treatment.
+(:func:`~mandacaru.integrals.poisson.voxel_self_potential`) rather than an
+ad-hoc softening.  The same node is treated the same way in
+:math:`g^{\text{E}}`, so it cancels in :math:`f - g^{\text{E}}` to the
+accuracy of that treatment.
 """
 
 from __future__ import annotations
@@ -188,8 +188,7 @@ def wigner_seitz_kernel(shape, step, shells: int = MINIMUM_IMAGE_SHELLS):
     radius = np.sqrt(best)
     with np.errstate(divide="ignore"):
         kernel = np.where(radius > 0.0, 1.0 / radius, 0.0)
-    # The d = 0 node carries the voxel's own average of 1/r, as the isolated
-    # solver does, so the two kernels differ only where the physics differs.
+    # The d = 0 node carries the voxel's own average of 1/r.
     volume = abs(float(np.linalg.det(step)))
     kernel[0, 0, 0] = voxel_self_potential(step) / volume
     return kernel

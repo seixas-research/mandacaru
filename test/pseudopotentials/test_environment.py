@@ -6,7 +6,7 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Library locations from ``MANDACARU_{ONCVPSP,PAW,UPAW}_PATH``
+"""Library locations from ``MANDACARU_{PAW,UPAW}_PATH``
 (:mod:`mandacaru.pseudopotentials.environment`)."""
 
 import os
@@ -28,7 +28,6 @@ def checkout(tmp_path):
 
 
 @pytest.mark.parametrize("family, flag", [("paw-lcao", "--set-paw"),
-                                          ("oncvpsp", "--set-oncvpsp"),
                                           ("upaw-lcao", "--set-upaw")])
 def test_an_unset_variable_names_the_command_that_sets_it(monkeypatch, family,
                                                           flag):
@@ -38,9 +37,9 @@ def test_an_unset_variable_names_the_command_that_sets_it(monkeypatch, family,
     assert f"{FAMILY_VARIABLES[family]} is not set" in str(error.value)
 
 
-def test_an_alias_resolves_to_its_family(monkeypatch, checkout):
-    monkeypatch.setenv("MANDACARU_ONCVPSP_PATH", str(checkout))
-    assert library_directory("oncv") == os.path.join(str(checkout), "lda-sr")
+def test_names_are_case_insensitive(monkeypatch, checkout):
+    monkeypatch.setenv("MANDACARU_PAW_PATH", str(checkout))
+    assert library_directory("PAW-LCAO") == os.path.join(str(checkout), "lda-sr")
 
 
 def test_a_path_that_is_not_a_directory_is_refused(monkeypatch, tmp_path):
@@ -50,17 +49,17 @@ def test_a_path_that_is_not_a_directory_is_refused(monkeypatch, tmp_path):
 
 
 def test_the_functional_picks_the_subdirectory(monkeypatch, checkout):
-    monkeypatch.setenv("MANDACARU_ONCVPSP_PATH", str(checkout))
-    assert library_directory("oncvpsp") == os.path.join(str(checkout),
-                                                        "lda-sr")
+    monkeypatch.setenv("MANDACARU_PAW_PATH", str(checkout))
+    assert library_directory("paw-lcao") == os.path.join(str(checkout),
+                                                         "lda-sr")
     with pytest.raises(LibraryPathError,
                        match=r"has no pbe/ folder \(it has: lda-sr\)"):
-        library_directory("oncvpsp", "pbe")
+        library_directory("paw-lcao", "pbe")
     # For writing, a missing functional folder is simply where to create it.
-    assert library_directory("oncvpsp", "PBE", must_exist=False) == \
+    assert library_directory("paw-lcao", "PBE", must_exist=False) == \
         os.path.join(str(checkout), "pbe")
     with pytest.raises(ValueError, match="xc must be one of"):
-        library_directory("oncvpsp", "b3lyp")
+        library_directory("paw-lcao", "b3lyp")
 
 
 def test_paw_ships_a_scalar_and_a_dirac_lda_set(monkeypatch, paw_checkout):
@@ -79,10 +78,10 @@ def test_the_variable_is_read_when_it_is_needed(monkeypatch, checkout,
                                                 tmp_path_factory):
     other = tmp_path_factory.mktemp("other")
     (other / "lda-sr").mkdir()
-    monkeypatch.setenv("MANDACARU_ONCVPSP_PATH", str(checkout))
-    first = library_directory("oncvpsp")
-    monkeypatch.setenv("MANDACARU_ONCVPSP_PATH", str(other))
-    assert library_directory("oncvpsp") != first
+    monkeypatch.setenv("MANDACARU_PAW_PATH", str(checkout))
+    first = library_directory("paw-lcao")
+    monkeypatch.setenv("MANDACARU_PAW_PATH", str(other))
+    assert library_directory("paw-lcao") != first
 
 
 def test_a_directory_option_bypasses_the_variable(monkeypatch, tmp_path):
@@ -103,7 +102,7 @@ def test_upaw_is_generated_on_demand_without_the_variable(monkeypatch,
     monkeypatch.setenv("MANDACARU_UPAW_PATH", str(checkout))
     assert upaw_directory() == os.path.join(str(checkout), "lda")
     # UPAW-LCAO keeps one folder per functional; the scalar-relativistic
-    # ``lda-sr/`` naming is for the three shipped libraries.
+    # ``lda-sr/`` naming is for the shipped library.
     # Optional does not mean unchecked: a variable that names no directory
     # is still an error.
     monkeypatch.setenv("MANDACARU_UPAW_PATH",
@@ -115,26 +114,27 @@ def test_upaw_is_generated_on_demand_without_the_variable(monkeypatch,
 def test_status_reports_every_family(monkeypatch, paw_checkout,
                                     tmp_path_factory):
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    monkeypatch.delenv("MANDACARU_ONCVPSP_PATH", raising=False)
     monkeypatch.setenv("MANDACARU_UPAW_PATH",
                        str(tmp_path_factory.mktemp("x") / "missing"))
     lines = {line.split()[0]: line for line in status_lines()}
+    assert set(lines) == {"paw-lcao", "upaw-lcao"}
     assert "lda-sr/: 1 datasets" in lines["paw-lcao"]
     assert "lda-dirac/: 1 datasets" in lines["paw-lcao"]
-    assert "not set" in lines["oncvpsp"] and "--set-oncvpsp" in lines["oncvpsp"]
     assert "NOT A DIRECTORY" in lines["upaw-lcao"]
+    monkeypatch.delenv("MANDACARU_PAW_PATH")
+    lines = {line.split()[0]: line for line in status_lines()}
+    assert "not set" in lines["paw-lcao"] and "--set-paw" in lines["paw-lcao"]
 
 
 def test_a_loader_refuses_before_any_file_is_read(monkeypatch):
-    from mandacaru.pseudopotentials import get_oncv, get_paw
+    from mandacaru.pseudopotentials import get_paw
 
     for variable in FAMILY_VARIABLES.values():
         monkeypatch.delenv(variable, raising=False)
     # UPAW-LCAO is optional: without its variable it is generated on demand,
-    # so only the two required families are asked to refuse here.
-    for load, flag in ((get_paw, "--set-paw"), (get_oncv, "--set-oncvpsp")):
-        with pytest.raises(LibraryPathError, match=flag):
-            load("H")
+    # so only PAW-LCAO is asked to refuse here.
+    with pytest.raises(LibraryPathError, match="--set-paw"):
+        get_paw("H")
 
 
 def test_a_calculation_stops_before_it_starts(monkeypatch):

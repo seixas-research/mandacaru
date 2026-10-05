@@ -182,9 +182,6 @@ def build_parser() -> argparse.ArgumentParser:
                              "MANDACARU_PAW_PATH in ~/.zshrc or ~/.bashrc "
                              "(asking before replacing a different value), "
                              "then exit.")
-    parser.add_argument("--set-oncvpsp", metavar="DIR", default=None,
-                        help="the same for the ONCVPSP datasets "
-                             "(mandacaru-oncvpsp, MANDACARU_ONCVPSP_PATH).")
     parser.add_argument("--set-upaw", metavar="DIR", default=None,
                         help="the same for the UPAW-LCAO datasets "
                              "(mandacaru-upaw, MANDACARU_UPAW_PATH); optional, "
@@ -256,7 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "(6-31+G*, 6-311+G(2df,2p), ...), Dunning "
                             "(cc-pVDZ, aug-cc-pVTZ, cc-pCVDZ) or Karlsruhe "
                             "(def2-SVP, def2-TZVP, ...) -- or a "
-                            "pseudopotential family, ONCVPSP or PAW-LCAO, "
+                            "pseudopotential family, PAW-LCAO or UPAW-LCAO, "
                             "for a valence-only "
                             "run (size=DZP etc. through --basis-option)")
     basis.add_argument("--basis-option", action="append", type=_key_value,
@@ -696,7 +693,7 @@ def build_backend_command() -> int:
 
 
 def set_library_command(settings: dict) -> int:
-    """``mandacaru --set-paw DIR`` / ``--set-oncvpsp DIR`` / ``--set-upaw DIR``.
+    """``mandacaru --set-paw DIR`` / ``--set-upaw DIR``.
 
     ``settings`` maps a family to the directory given for it.  Each directory
     must exist; it is recorded, absolute, as the family's variable in the
@@ -812,7 +809,7 @@ def main(argv=None) -> int:
     if args.build_backend:
         return build_backend_command()
     settings = {family: path for family, path in (
-        ("paw-lcao", args.set_paw), ("oncvpsp", args.set_oncvpsp), ("upaw-lcao", args.set_upaw))
+        ("paw-lcao", args.set_paw), ("upaw-lcao", args.set_upaw))
         if path is not None}
     if settings:
         return set_library_command(settings)

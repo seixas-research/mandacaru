@@ -105,7 +105,7 @@ class TestRoundTrip:
         assert load_pseudopotential(path).r.size == silicon.r.size // 4
 
     def test_a_decimated_grid_starts_one_step_from_the_origin(self):
-        """The PAW-LCAO and ONCVPSP grids are r_k = k h; every Numerov
+        """The PAW-LCAO grids are r_k = k h; every Numerov
         diagnostic of a loaded dataset prepends r = 0 and takes r[1] - r[0]
         as its step, so the stored grid must be k (stride h) -- not
         h, 5h, 9h, ..., whose first step differs from the rest."""

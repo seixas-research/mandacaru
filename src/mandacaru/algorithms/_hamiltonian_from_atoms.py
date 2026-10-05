@@ -157,7 +157,7 @@ def resolve_basis(basis):
     ``{"name": "GTO", "n_gaussians": 3}``,
     ``{"name": "6-31G(d)"}``, the plane-wave basis
     ``{"name": "PW", "energy_cutoff": 300}``, or a **pseudopotential family**
-    -- ``"ONCVPSP"`` (alias ``"ONCV"``), ``"PAW-LCAO"`` -- with the same size hierarchy as its options,
+    -- ``"PAW-LCAO"``, ``"UPAW-LCAO"`` -- with the same size hierarchy as its options,
     ``{"name": "PAW-LCAO", "size": "DZP"}`` (see :func:`pseudopotential_family`).
     Returns the name string and a dict of the remaining keyword options.
 
@@ -190,7 +190,7 @@ def with_library_folder(basis, folder: str):
     """``basis`` with every library-backed pseudopotential entry pointed at
     ``<checkout>/<folder>`` of its family (``Mandacaru(directory=folder)``).
 
-    The PAW-LCAO and ONCVPSP entries -- a name, a ``{"name": ...}``
+    The PAW-LCAO entries -- a name, a ``{"name": ...}``
     dict, or the values of a per-element mapping -- gain the basis option
     ``directory`` set to that folder, resolved against the family's own
     library variable (``MANDACARU_PAW_PATH`` for PAW-LCAO).  An entry that
@@ -226,7 +226,7 @@ def with_library_folder(basis, folder: str):
         raise ValueError(
             f"directory={folder!r} selects a folder of a pseudopotential "
             f"library, but basis={basis!r} reads none; use a PAW-LCAO "
-            f"or ONCVPSP basis, or omit directory=")
+            f"basis, or omit directory=")
     return result
 
 
@@ -340,7 +340,7 @@ def _check_retired_basis_name(name):
         raise ValueError(
             f"basis {name!r} is no longer a basis name: the pseudopotential "
             "family is now selected through the basis itself -- "
-            "basis='ONCVPSP' (alias 'ONCV') or basis='PAW-LCAO', with the size "
+            "basis='PAW-LCAO' or basis='UPAW-LCAO', with the size "
             "hierarchy as options: basis={'name': 'PAW-LCAO', 'size': 'DZP'}")
 
 
@@ -349,8 +349,7 @@ def pseudopotential_family(name):
     name selects, or ``None`` for an all-electron (or plane-wave) family.
 
     The registry :data:`~mandacaru.pseudopotentials.families.PSEUDO_FAMILIES`
-    is the single source of truth: ``"ONCVPSP"`` / ``"ONCV"``, ``"PAW-LCAO"``
-    and ``"UPAW-LCAO"`` today, plus anything added with
+    is the single source of truth: ``"PAW-LCAO"`` and ``"UPAW-LCAO"`` today, plus anything added with
     :func:`~mandacaru.pseudopotentials.families.register_family`.  Names are
     case-insensitive.
     """
@@ -499,7 +498,7 @@ def _warn_unresolved(integrals, basis_fns, h):
     """Warn about basis functions / projectors the grid does not resolve."""
     import warnings
     functions, projectors = integrals.unresolved()
-    # PAW-LCAO and ONCVPSP integrate the projector overlaps on atom-centered
+    # PAW-LCAO integrates the projector overlaps on atom-centered
     # spheres. Their grid norm ratios remain useful diagnostics, but an
     # unresolved grid projector no longer enters the nonlocal Hamiltonian.
     if getattr(integrals, "exact_projections", False):
@@ -575,7 +574,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     ``basis`` is a name string or a ``{"name": ..., <options>}`` dict (see
     :func:`resolve_basis`).  The plane-wave family (``"PW"``) uses the periodic
     :class:`~mandacaru.core.PlaneWaveIntegrals` engine; a **pseudopotential
-    family** (``"ONCVPSP"`` / ``"PAW-LCAO"``, see
+    family** (``"PAW-LCAO"`` / ``"UPAW-LCAO"``, see
     :func:`pseudopotential_family`) builds the valence-only Hamiltonian of
     that family -- the core electrons are removed, the basis is the smooth
     pseudo-atomic orbitals and the ``-Z/r`` potential is replaced by the

@@ -17,7 +17,8 @@ On Windows, activate the environment with `.venv\Scripts\activate` instead.
 
 The package installs NumPy, SciPy, JAX (the r²SCAN functional of
 `method="dft"` is written in it), ASE, Matplotlib, spglib (crystal symmetry for
-the periodic methods), Hamiltonian-cache dependencies, quantum SDKs and the
+the periodic methods), threadpoolctl (keeps BLAS single-threaded beside the
+OpenMP kernels), Hamiltonian-cache dependencies, quantum SDKs and the
 supporting numerical packages listed in `pyproject.toml`.
 Installing a provider's SDK does not require an account on its service. The
 introductory LiH examples run locally without credentials.
@@ -44,23 +45,19 @@ not what the tests, or a calculation, actually run.
 
 ## Pseudopotential datasets
 
-None of the generated families ships with the package: **ONCVPSP**,
-**PAW-LCAO** and **UPAW-LCAO** each live in their own repository — about
-110 MB and 190 MB for all 92 elements of the first two — and an environment
-variable names the checkout Mandacaru reads from:
+None of the generated families ships with the package: **PAW-LCAO** and
+**UPAW-LCAO** each live in their own repository — about 190 MB for all 92
+elements of PAW-LCAO — and an environment variable names the checkout
+Mandacaru reads from:
 
 | basis | variable | repository |
 | :--- | :--- | :--- |
-| `ONCVPSP` | `MANDACARU_ONCVPSP_PATH` | `mandacaru-oncvpsp` |
 | `PAW-LCAO` | `MANDACARU_PAW_PATH` | `mandacaru-paw` |
 | `UPAW-LCAO` | `MANDACARU_UPAW_PATH` | `mandacaru-upaw` (optional) |
 
 ```bash
 git clone https://github.com/seixas-research/mandacaru-paw.git
 mandacaru --set-paw mandacaru-paw
-
-git clone https://github.com/seixas-research/mandacaru-oncvpsp.git
-mandacaru --set-oncvpsp mandacaru-oncvpsp
 
 git clone https://github.com/seixas-research/mandacaru-upaw.git
 mandacaru --set-upaw mandacaru-upaw
@@ -72,9 +69,9 @@ Each `--set-*` command writes `export MANDACARU_..._PATH=DIR` into `~/.zshrc`
 or `~/.bashrc` (whichever `$SHELL` reads), asking `[Y/n]` before replacing a
 different value; open a new terminal, or `source` the file, for the variable
 to take effect in your shell. Inside a checkout the datasets sit one folder
-per set (`<checkout>/lda-sr/<Symbol>.parquet` — every family's
-scalar-relativistic LDA set, and the default); PAW-LCAO also has
-`lda-dirac/` (the spin-orbit set) and ONCVPSP an empty `pbe/`. A calculation
+per set (`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic
+LDA set, and the default); PAW-LCAO also has
+`lda-dirac/` (the spin-orbit set). A calculation
 reads `lda-sr/` unless the calculator names another folder:
 
 ```python
@@ -82,11 +79,11 @@ atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO",
                        directory="lda-dirac")  # $MANDACARU_PAW_PATH/lda-dirac/
 ```
 
-Without this, `basis="PAW-LCAO"` and `basis="ONCVPSP"` raise a
+Without this, `basis="PAW-LCAO"` raises a
 `LibraryPathError` that repeats the matching `--set-*` command; the all-electron
 bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. A
 basis option `directory=...` (a full path) overrides the variable for one run.
-An ONCVPSP or PAW-LCAO dataset whose own recorded functional disagrees with
+A PAW-LCAO dataset whose own recorded functional disagrees with
 the folder it was loaded from is refused, so a file cannot be
 read as the wrong functional by being copied into the wrong folder.
 

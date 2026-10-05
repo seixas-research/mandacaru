@@ -28,6 +28,11 @@ which is not a function of the density, so its derivative
 (:attr:`XCTerms.tau_potential`) and enters the Kohn-Sham matrix as
 :math:`\tfrac12\int \partial_\tau f\,\nabla\phi_p^*\cdot\nabla\phi_q`.
 
+A screened hybrid (:data:`HYBRIDS`, HSE06 from :mod:`mandacaru.basis.hse`)
+is evaluated here only in its semilocal part, and only when the caller says
+it adds the short-range exact exchange (``screening=``): a hybrid without it
+would be a different functional.
+
 Gradients and divergences are spectral (FFT) derivatives over the grid, with
 the reciprocal vectors of the cell it spans, so skewed cells are handled
 exactly.  A molecular grid is a zero-padded box rather than a period, which is
@@ -64,15 +69,23 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..basis import hse
 from ..basis.xc import DENSITY_FLOOR, xc_partials, xc_potential
 
 #: Functionals the grid evaluator accepts, as ``Mandacaru(method="dft", xc=...)``.
-GRID_FUNCTIONALS = ("lda", "pbe", "r2scan")
+GRID_FUNCTIONALS = ("lda", "pbe", "r2scan", "hse06")
 
 #: Spellings accepted for each functional.
 _ALIASES = {"lda": "lda", "pz": "lda", "pz81": "lda", "ldapz": "lda",
             "pbe": "pbe", "gga": "pbe", "ggapbe": "pbe",
-            "r2scan": "r2scan", "r²scan": "r2scan", "mggar2scan": "r2scan"}
+            "r2scan": "r2scan", "r²scan": "r2scan", "mggar2scan": "r2scan",
+            "hse06": "hse06", "hse": "hse06"}
+
+#: Screened hybrids: ``(omega, fraction)`` -- the range separation (1/Bohr)
+#: and the fraction of short-range exchange that is exact.  The grid
+#: evaluates their semilocal part only; the Kohn-Sham solver adds
+#: ``fraction`` of the short-range exact exchange.
+HYBRIDS = {"hse06": (hse.OMEGA, hse.EXACT_FRACTION)}
 
 #: Below this density the gradient terms are dropped on the grid.  The reduced
 #: gradient diverges in the exponential tail, where the density carries no
@@ -81,7 +94,8 @@ GRADIENT_DENSITY_FLOOR = 1e-10
 
 
 def resolve_functional(name: str) -> str:
-    """Canonical name (``"lda"``, ``"pbe"`` or ``"r2scan"``) of a spec."""
+    """Canonical name (``"lda"``, ``"pbe"``, ``"r2scan"`` or ``"hse06"``)
+    of a spec."""
     key = str(name).strip().lower().replace("-", "").replace("_", "")
     if key not in _ALIASES:
         raise ValueError(
@@ -93,6 +107,37 @@ def resolve_functional(name: str) -> str:
 def is_meta_gga(name: str) -> bool:
     """Whether the functional depends on the kinetic-energy density."""
     return resolve_functional(name) == "r2scan"
+
+
+def is_hybrid(name: str) -> bool:
+    """Whether the functional mixes in exact exchange (:data:`HYBRIDS`)."""
+    return resolve_functional(name) in HYBRIDS
+
+
+def takes_relativistic_exchange(name: str) -> bool:
+    """Whether the relativistic exchange factor applies (LDA and PBE).
+
+    r\\ :sup:`2`\\ SCAN has no relativistic form, and a hybrid's exact
+    exchange has none either, so neither takes the factor.
+    """
+    return resolve_functional(name) in ("lda", "pbe")
+
+
+def _screening(key: str, screening):
+    """The ``(omega, fraction)`` a hybrid's semilocal part is evaluated with.
+
+    A hybrid without its exact-exchange part is a different functional, so
+    the caller has to say it adds that part by passing ``screening``
+    (:data:`HYBRIDS` holds the defaults).
+    """
+    if key not in HYBRIDS:
+        return None
+    if screening is None:
+        raise ValueError(
+            f"xc={key!r} is a hybrid: the grid evaluates only its semilocal "
+            "part, and the solver must add the short-range exact exchange "
+            "and say so by passing screening=(omega, fraction).")
+    return float(screening[0]), float(screening[1])
 
 
 @dataclass(frozen=True)
@@ -145,9 +190,38 @@ def divergence(grid, vector: np.ndarray) -> np.ndarray:
     return np.real(np.fft.ifftn(total)).reshape(-1)
 
 
+def _clipped(raw, potential) -> np.ndarray:
+    """The potential of a density the functional clipped at zero: the
+    functional sees ``max(raw, 0)``, so its derivative in ``raw`` vanishes
+    where ``raw`` is negative (half a filtered partial core can make a
+    spin channel's density slightly negative where the channel is empty)."""
+    return np.where(np.asarray(raw, dtype=float) < 0.0, 0.0, potential)
+
+
+def _short_range_exchange(grid, density, omega: float, scale: float = 1.0):
+    r""":math:`E_x^{\rm SR}` and :math:`v_x^{\rm SR}` of one density, for the
+    hole-model exchange of :func:`~mandacaru.basis.hse.short_range_partials`.
+
+    ``scale`` is the spin scaling: a channel's exchange is
+    :math:`\tfrac12 E_x[2\rho_\sigma]`, which is ``scale = 2`` applied to
+    :math:`\rho_\sigma` (energy halved, potential at the doubled density).
+    """
+    rho = scale * np.maximum(np.asarray(density, dtype=float), 0.0)
+    grad = gradient(grid, rho)
+    weighted = rho > GRADIENT_DENSITY_FLOOR
+    sigma = np.where(weighted, np.sum(grad * grad, axis=0), 0.0)
+    f, df_drho, df_dsigma = hse.short_range_partials(rho, sigma, omega)
+    df_dsigma = np.where(weighted, df_dsigma, 0.0)
+    # d/d rho_s of (1/scale) E[scale rho_s] is the potential of E evaluated
+    # at the scaled density.
+    potential = _clipped(density, df_drho
+                         - divergence(grid, 2.0 * df_dsigma * grad))
+    return float(np.sum(f) * grid.dV) / scale, potential
+
+
 def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
-             relativistic: bool = False, tau: np.ndarray | None = None
-             ) -> XCTerms:
+             relativistic: bool = False, tau: np.ndarray | None = None,
+             screening=None, exchange_density=None) -> XCTerms:
     r"""``E_xc``, ``v_xc`` (and ``df/dtau``) of a flat density on ``grid``.
 
     Parameters
@@ -158,23 +232,41 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         Electron density on the flat grid (electrons per Bohr^3), any partial
         core already added.
     functional : str
-        ``"lda"``, ``"pbe"`` or ``"r2scan"`` (:func:`resolve_functional`).
+        ``"lda"``, ``"pbe"``, ``"r2scan"`` or ``"hse06"``
+        (:func:`resolve_functional`).
     relativistic : bool
         The relativistic exchange factor of a relativistic reference atom
         (LDA and PBE; see :func:`~mandacaru.basis.xc.relativistic_exchange_factors`).
     tau : ndarray, optional
         Kinetic-energy density on the grid; required by a meta-GGA.
+    screening : (float, float), optional
+        ``(omega, fraction)`` of a hybrid (:data:`HYBRIDS`), required by one.
+        Only the semilocal part is evaluated here -- the full-range
+        exchange and the correlation of ``density``, minus ``fraction``
+        times the short-range exchange of ``exchange_density`` -- and
+        passing this states that the caller adds ``fraction`` of the
+        short-range exact exchange.
+    exchange_density : ndarray, optional
+        A hybrid's: the density whose short-range semilocal exchange the
+        exact exchange replaces -- the valence density, the one the orbitals
+        carry (default ``density``).  A partial core stays with its full
+        semilocal exchange, core-valence included: it has no orbitals to
+        take exact exchange from.  The potential is the derivative with
+        respect to the valence density, which both parts depend on alike.
     """
     key = resolve_functional(functional)
+    screening = _screening(key, screening)
     rho = np.maximum(np.asarray(density, dtype=float), 0.0)
     dV = grid.dV
     if key == "lda":
         f, df_drho, _ = xc_partials(rho, None, "lda", relativistic)
-        return XCTerms(energy=float(np.sum(f) * dV), potential=df_drho)
+        return XCTerms(energy=float(np.sum(f) * dV),
+                       potential=_clipped(density, df_drho))
 
     grad = gradient(grid, rho)
     weighted = rho > GRADIENT_DENSITY_FLOOR
     sigma = np.where(weighted, np.sum(grad * grad, axis=0), 0.0)
+    df_dtau = None
     if key == "pbe":
         g = np.sqrt(sigma)
         f, df_drho, df_dg = xc_partials(rho, g, "pbe", relativistic)
@@ -182,15 +274,31 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         with np.errstate(divide="ignore", invalid="ignore"):
             df_dsigma = np.where(weighted & (g > 0.0) & (rho > DENSITY_FLOOR),
                                  0.5 * df_dg / g, 0.0)
-        df_dtau = None
+    elif key in HYBRIDS:
+        # The full-range part through the spin-resolved kernel at zeta = 0:
+        # f(rho, sigma) = F(rho/2, rho/2, sigma/4, sigma/4, sigma/4).
+        from ..basis.xc_spin import spin_partials
+        quarter = 0.25 * sigma
+        f, v_up, v_dn, d_uu, d_ud, d_dd, _t, _u = spin_partials(
+            key, 0.5 * rho, 0.5 * rho, quarter, quarter, quarter)
+        df_drho = 0.5 * (v_up + v_dn)
+        df_dsigma = np.where(weighted, 0.25 * (d_uu + d_ud + d_dd), 0.0)
     else:
         if tau is None:
             raise ValueError("a meta-GGA needs the kinetic-energy density tau")
         from ..basis import r2scan
         f, df_drho, df_dsigma, df_dtau = r2scan.partials(
             np.where(weighted, rho, 0.0), sigma, np.asarray(tau, dtype=float))
-    potential = df_drho - divergence(grid, 2.0 * df_dsigma * grad)
-    return XCTerms(energy=float(np.sum(f) * dV),
+    potential = _clipped(density, df_drho
+                         - divergence(grid, 2.0 * df_dsigma * grad))
+    energy = float(np.sum(f) * dV)
+    if screening is not None and screening[1] != 0.0:
+        omega, fraction = screening
+        exchange = rho if exchange_density is None else exchange_density
+        e_sr, v_sr = _short_range_exchange(grid, exchange, omega)
+        energy -= fraction * e_sr
+        potential = potential - fraction * v_sr
+    return XCTerms(energy=energy,
                    potential=np.asarray(potential, dtype=float),
                    tau_potential=df_dtau)
 
@@ -209,26 +317,31 @@ class SpinXCTerms:
 
 
 def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
-                  relativistic: bool = False, tau_up=None, tau_dn=None
-                  ) -> SpinXCTerms:
+                  relativistic: bool = False, tau_up=None, tau_dn=None,
+                  screening=None, exchange_densities=None) -> SpinXCTerms:
     r"""The spin-polarized :func:`evaluate`: ``E_xc`` and each channel's
     :math:`v_\sigma = \partial f/\partial\rho_\sigma -
     \nabla\cdot(2\,\partial f/\partial\sigma_{\sigma\sigma}\nabla\rho_\sigma
     + \partial f/\partial\sigma_{\uparrow\downarrow}\nabla\rho_{\bar\sigma})`
     (:mod:`mandacaru.basis.xc_spin`).  A spin-unpolarized partial core is the
-    caller's to split: half of it in each channel.
+    caller's to split: half of it in each channel.  ``screening`` as for
+    :func:`evaluate`; ``exchange_densities`` is the ``(up, down)`` pair of
+    its ``exchange_density`` (the short-range exchange of each channel
+    follows the exact spin scaling).
     """
     from ..basis.xc_spin import spin_partials
 
     key = resolve_functional(functional)
+    screening = _screening(key, screening)
     up = np.maximum(np.asarray(density_up, dtype=float), 0.0)
     dn = np.maximum(np.asarray(density_dn, dtype=float), 0.0)
     dV = grid.dV
     if key == "lda":
         f, v_up, v_dn, *_ = spin_partials("lda", up, dn,
                                           relativistic=relativistic)
-        return SpinXCTerms(energy=float(np.sum(f) * dV), potential_up=v_up,
-                           potential_dn=v_dn)
+        return SpinXCTerms(energy=float(np.sum(f) * dV),
+                           potential_up=_clipped(density_up, v_up),
+                           potential_dn=_clipped(density_dn, v_dn))
     # As `evaluate`: the gradients of the full densities, and the gradient
     # terms (not the densities) dropped below the floor -- masking the
     # densities themselves would ring through the spectral derivative.
@@ -250,12 +363,22 @@ def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
         relativistic=relativistic)
     d_uu, d_ud, d_dd = (np.where(weighted, d, 0.0)
                         for d in (d_uu, d_ud, d_dd))
-    potential_up = v_up - divergence(grid, 2.0 * d_uu * grad_up
-                                     + d_ud * grad_dn)
-    potential_dn = v_dn - divergence(grid, 2.0 * d_dd * grad_dn
-                                     + d_ud * grad_up)
+    potential_up = _clipped(density_up, v_up - divergence(
+        grid, 2.0 * d_uu * grad_up + d_ud * grad_dn))
+    potential_dn = _clipped(density_dn, v_dn - divergence(
+        grid, 2.0 * d_dd * grad_dn + d_ud * grad_up))
+    energy = float(np.sum(f) * dV)
+    if screening is not None and screening[1] != 0.0:
+        omega, fraction = screening
+        pair = ((up, dn) if exchange_densities is None
+                else exchange_densities)
+        e_up, w_up = _short_range_exchange(grid, pair[0], omega, scale=2.0)
+        e_dn, w_dn = _short_range_exchange(grid, pair[1], omega, scale=2.0)
+        energy -= fraction * (e_up + e_dn)
+        potential_up = potential_up - fraction * w_up
+        potential_dn = potential_dn - fraction * w_dn
     meta = key == "r2scan"
-    return SpinXCTerms(energy=float(np.sum(f) * dV),
+    return SpinXCTerms(energy=energy,
                        potential_up=np.asarray(potential_up, dtype=float),
                        potential_dn=np.asarray(potential_dn, dtype=float),
                        tau_potential_up=t_up if meta else None,
@@ -269,22 +392,18 @@ def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
 def xc_core_density(dataset) -> np.ndarray | None:
     """The radial core density ``dataset`` was unscreened with, or ``None``.
 
-    A norm-conserving dataset stores exactly that density as
-    ``core_density``.  A PAW-LCAO dataset stores the **true** core there and
+    A PAW-LCAO dataset stores the **true** core as ``core_density`` and
     unscreens with its smooth core ``smooth_core_density``.
     """
     record = getattr(dataset, "nlcc", None) or {}
     if not record.get("applied"):
         return None
-    if hasattr(dataset, "smooth_core_density"):
-        if record.get("source") != "smooth_core":
-            raise NotImplementedError(
-                f"the {dataset.symbol} dataset was unscreened with a core "
-                f"density re-pseudized at r_nlcc = {record.get('r_nlcc')}, "
-                "which the dataset does not store")
-        core = dataset.smooth_core_density
-    else:
-        core = dataset.core_density
+    if record.get("source") != "smooth_core":
+        raise NotImplementedError(
+            f"the {dataset.symbol} dataset was unscreened with a core "
+            f"density re-pseudized at r_nlcc = {record.get('r_nlcc')}, "
+            "which the dataset does not store")
+    core = dataset.smooth_core_density
     if core is None or not np.any(core):
         return None
     return np.asarray(core, dtype=float)

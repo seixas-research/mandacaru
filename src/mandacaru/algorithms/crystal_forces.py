@@ -65,21 +65,37 @@ term, and the entropy does not change.  Only the strains the space group
 leaves unchanged are applied (:func:`invariant_strains`: one for a cubic
 crystal, six without symmetry), each keeping the irreducible k-points: two
 rebuilds of a cubic crystal.
+
+Spin polarization
+-----------------
+A spin-polarized crystal is re-diagonalized per channel, with one Fermi
+level over both channels' levels and one electron per state.  Its matrix
+terms are sums over the channels, :math:`\sum_s\mathrm{tr}(P_s\,\partial
+H_s) - \mathrm{tr}(W_s\,\partial S)`, each channel's :math:`H_s` at its
+own potential (and, for a hybrid, its own :math:`-aK_s`); the electrostatic
+terms see the total density and moments; each channel's functional took
+half the partial core, so the core moves under the mean of the two
+channels' potentials.  The stress carries each channel's states and
+evaluates the spin energy.
 """
 
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 
 import numpy as np
-from scipy.linalg import eigh
 
 from ..integrals import reciprocal as rc
+from ..integrals._backend import single_threaded_blas
+from .periodic_device import make_device
 from .periodic_dft import entropy, fermi_level, occupation
 
 #: Displacement (Bohr) of the compensation charges, ion sums and partial cores
 #: whose derivatives are central differences (the basis and the operators'
-#: matrices are differentiated analytically).
+#: matrices are differentiated analytically), Richardson-extrapolated with
+#: half the step (:func:`_richardson`): a cramped cell (O2 in a 4 A box) put
+#: 6e-5 eV/A into the plain central difference.
 DEFAULT_DELTA = 1.0e-3
 
 #: Half-amplitude of the symmetric strains of the stress.
@@ -146,8 +162,40 @@ def invariant_strains(c) -> list:
             for vector in vectors[:, keep].T]
 
 
+# --------------------------------------------------------------------------- #
+# The hybrid's terms: every piece of the Kohn-Sham matrix that depends on how
+# the solver stores and builds its exact exchange is behind this helper.
+# --------------------------------------------------------------------------- #
+
+def _hybrid_hamiltonian_terms(solver, channel: int, *, device=None,
+                              kpoint_data=None) -> np.ndarray:
+    r"""Spin channel ``channel``'s hybrid correction to its Kohn-Sham matrix,
+    ``(nk, M, M)``: :math:`-s\,K + C\,O\,C^\dagger` with :math:`K` the
+    short-range exchange of the channel's occupied states of the output
+    density matrices, held fixed, :math:`O` the spheres' one-center operator
+    of those states, and ``s``
+    :meth:`~.periodic_dft.PeriodicKohnSham._exchange_scale` (:math:`a/2`
+    when a state holds both spins, :math:`a` in a channel).
+
+    Over the SCF basis through ``device`` (the re-diagonalization of
+    :func:`kpoint_state`), or over any basis -- the extended one of the
+    Pulay terms -- from ``kpoint_data`` (its own projections).
+    """
+    states, operators = solver._hybrid_output
+    if device is not None:
+        kpoint_data = device.kpoint_data
+        K = device.exchange_matrices(solver.exchange, states[channel])
+    else:
+        K = solver.exchange.matrices(kpoint_data, states[channel])
+    O = operators[channel]
+    scale = solver._exchange_scale()
+    return np.stack([-scale * Kk + d.projections @ O @ d.projections.conj().T
+                     for Kk, d in zip(K, kpoint_data)])
+
+
 def kpoint_state(solver):
-    """``(kpoints, weights, P, W, potentials)`` of the converged crystal on
+    """A dict of the converged crystal's state (``kpoints``, ``weights``,
+    ``P``, ``W``, ``potentials``, per-channel entries for a spin crystal) on
     its own irreducible k-points (the SCF's: by the space group and time
     reversal, or time reversal alone without symmetry).
 
@@ -157,44 +205,89 @@ def kpoint_state(solver):
     eigenvalues.  A quantity summed over these points with their weights is
     the full mesh's after :func:`symmetrize_vectors` (a force) or the
     projection on :func:`invariant_strains` (a stress).
+
+    A spin-polarized crystal is diagonalized per channel, each at its own
+    potential (and, for a hybrid, its own exchange), with one Fermi level
+    over both channels' levels and one electron per state, as its SCF.
+    ``channels`` holds one entry per channel -- its density and
+    energy-weighted matrices, states, occupations and potentials -- and
+    ``P`` and ``W`` are their sums over the channels (the
+    single channel of a restricted crystal, which holds both spins).
     """
     c = solver.crystal
+    spin = solver.n_spins == 2
     rho, q, tau = solver.output_density
-    V, v_tau, w, terms = solver._potentials(rho, q, tau)
+    if spin:
+        up, dn = rho
+        V, v_tau, w, terms = solver._potentials_spin(up, dn, q, *tau)
+        potentials = list(zip(V, v_tau))
+        density = (up + dn, q, tau)
+    else:
+        V, v_tau, w, terms = solver._potentials(rho, q, tau)
+        potentials = [(V, v_tau)]
+        density = (rho, q, tau)
+    n_channels = len(potentials)
     kpoints = np.asarray(c.kpoints, dtype=float)
     weights = np.asarray(c.weights, dtype=float)
     B = rc.reciprocal_vectors(c.lattice)
     points = kpoints @ np.linalg.inv(B).T
-    eigenvalues, vectors, overlaps = [], [], []
+    eigenvalues = [[] for _s in range(n_channels)]
+    vectors = [[] for _s in range(n_channels)]
+    overlaps = []
     block = c.kpoint_block()
     for start in range(0, len(kpoints), block):
-        for data in c.kpoint_matrices(kpoints[start:start + block]):
-            gradients = (c.bloch_gradients(data.psi, data.k)
-                         if solver.meta else None)
-            H = solver._hamiltonian(data, V, v_tau, w, gradients)
-            eps, C = eigh(H, data.overlap)
-            eigenvalues.append(eps)
-            vectors.append(C)
-            overlaps.append(data.overlap)
-    mu = fermi_level(eigenvalues, weights, solver.n_electrons, solver.method,
-                     solver.width)
-    P, W, occupations = [], [], []
-    for eps, C in zip(eigenvalues, vectors):
-        x = (eps - mu) / solver.width
-        f = 2.0 * occupation(x, solver.method)
-        occupations.append(f)
-        P.append((C * f) @ C.conj().T)
-        W.append((C * (f * eps)) @ C.conj().T)
+        data = c.kpoint_matrices(kpoints[start:start + block])
+        gradients = ([c.bloch_gradients(d.psi, d.k) for d in data]
+                     if solver.meta else None)
+        device = make_device(c, data, gradients)
+        for s, (V_s, v_tau_s) in enumerate(potentials):
+            H = device.hamiltonians(V_s, v_tau_s, w)
+            if solver.screening is not None:
+                H = H + _hybrid_hamiltonian_terms(solver, s, device=device)
+            eps, C = device.eigensolve(H)
+            eigenvalues[s].extend(eps)
+            vectors[s].extend(C)
+        overlaps.extend(d.overlap for d in data)
+    if spin:
+        # One electron per state, one Fermi level over both channels.
+        mu = fermi_level(eigenvalues[0] + eigenvalues[1], list(weights) * 2,
+                         solver.n_electrons, solver.method, solver.width,
+                         degeneracy=1.0)
+        degeneracy = 1.0
+    else:
+        mu = fermi_level(eigenvalues[0], weights, solver.n_electrons,
+                         solver.method, solver.width)
+        degeneracy = 2.0
+    channels = []
+    for s in range(n_channels):
+        P, W, occupations = [], [], []
+        for eps, C in zip(eigenvalues[s], vectors[s]):
+            x = (eps - mu) / solver.width
+            f = degeneracy * occupation(x, solver.method)
+            occupations.append(f)
+            P.append((C * f) @ C.conj().T)
+            W.append((C * (f * eps)) @ C.conj().T)
+        channels.append({
+            "P": P, "W": W, "vectors": vectors[s],
+            "occupations": occupations, "eigenvalues": eigenvalues[s],
+            "V": potentials[s][0], "v_tau": potentials[s][1]})
     entropy_term = -solver.width * sum(
-        wk * 2.0 * float(np.sum(entropy((e - mu) / solver.width,
-                                        solver.method)))
-        for wk, e in zip(weights, eigenvalues))
+        wk * degeneracy * float(np.sum(entropy((e - mu) / solver.width,
+                                               solver.method)))
+        for channel in channels
+        for wk, e in zip(weights, channel["eigenvalues"]))
+    if spin:
+        P_total = [a + b for a, b in zip(channels[0]["P"], channels[1]["P"])]
+        W_total = [a + b for a, b in zip(channels[0]["W"], channels[1]["W"])]
+    else:
+        P_total, W_total = channels[0]["P"], channels[0]["W"]
     return {"kpoints": kpoints, "weights": np.asarray(weights, float),
-            "fractional": points, "P": P, "W": W, "vectors": vectors,
-            "overlaps": overlaps, "occupations": occupations,
-            "eigenvalues": eigenvalues, "fermi_level": mu,
+            "fractional": points, "P": P_total, "W": W_total,
+            "channels": channels, "spin": spin,
+            "overlaps": overlaps, "fermi_level": mu,
             "entropy_term": entropy_term,
-            "potentials": (V, v_tau, w, terms), "density": (rho, q, tau)}
+            "potentials": (V, v_tau, w, terms), "density": density,
+            "channel_densities": rho if spin else None}
 
 
 def _trace(A, B) -> float:
@@ -221,12 +314,18 @@ def _matrix_terms(solver, state):
     operator together changes nothing, at fixed k -- so a projector's column
     of the projections and a short-range sphere's matrix are differentiated
     by all the derivatives, with the sign reversed.
+
+    A spin-polarized crystal's Pulay term is a sum over its channels,
+    :math:`\sum_s \mathrm{tr}(P_s\,dH_s) - \mathrm{tr}(W\,dS)`, each
+    channel's matrix at its own potential (and exchange); the operators
+    that move -- spheres, projectors, the compensation moments' ``w`` -- are
+    the same in both channels and see the summed ``P`` and ``W``.
     """
-    from ..pseudopotentials.periodic_paw import (BasisGradient,
-                                                 KPointMatrices, bloch_values)
+    from ..pseudopotentials.periodic_paw import BasisGradient, KPointMatrices
 
     c = solver.crystal
-    V, v_tau, w, _terms = state["potentials"]
+    _V, _v_tau, w, _terms = state["potentials"]
+    channels = state["channels"]
     M, n_atoms = c.M, len(c.centers)
     owner = np.asarray(c.atom_of_orbital)
     extended = list(c.basis) + [BasisGradient(f, axis) for axis in range(3)
@@ -240,14 +339,12 @@ def _matrix_terms(solver, state):
     pulay = np.zeros((n_atoms, 3))
     hf = np.zeros((n_atoms, 3))
     kpoints, weights = state["kpoints"], state["weights"]
-    center, radius = ext._cell_region()
     block = ext.kpoint_block()
     base = np.arange(M)
     for start in range(0, len(kpoints), block):
         chunk = kpoints[start:start + block]
-        psi_all = bloch_values(ext.basis, ext.lattice, chunk,
-                               ext._grid_points(), center, radius)
-        C_all = ext._projections(chunk)
+        psi_all = ext.bloch_sums(chunk)
+        C_all = ext.projections(chunk)
         spheres = [ext.short_range_atom(atom, chunk)
                    for atom in range(n_atoms)]
         for i, k in enumerate(chunk):
@@ -256,26 +353,51 @@ def _matrix_terms(solver, state):
             S = (psi.conj() @ psi.T) * c.grid.dV + C @ c.q_overlap @ C.conj().T
             fixed = (ext._kinetic(psi, k) + sum(v[i] for v in spheres)
                      + C @ c.D_ion @ C.conj().T)
-            moments = {ch: C[:, c._positions[ch[0]]] @ blk
-                       @ C[:, c._positions[ch[0]]].conj().T
-                       for ch, blk in c.multipole_blocks.items()}
             data = KPointMatrices(k=np.asarray(k, float), weight=0.0, psi=psi,
-                                  overlap=S, fixed=fixed, projections=C,
-                                  moments=moments)
+                                  overlap=S, fixed=fixed, projections=C)
             gradients = (ext.bloch_gradients(psi, k) if solver.meta
                          else None)
-            H = solver._hamiltonian(data, V, v_tau, w, gradients)
+            # The exchange is symmetric between its k side and its q side,
+            # so moving every function at fixed coefficients is twice
+            # moving the k side with the occupied states fixed: each
+            # channel's -s K over the extended basis (s = a/2 restricted, a
+            # per spin channel), through the same Pulay contraction as the
+            # local terms.  Not through a device: the extended overlap need
+            # not have a Cholesky factor.
+            H_channels = []
+            for s, channel in enumerate(channels):
+                H = solver._hamiltonian(data, channel["V"], channel["v_tau"],
+                                        w, gradients)
+                if solver.screening is not None:
+                    H = H + _hybrid_hamiltonian_terms(
+                        solver, s, kpoint_data=[data])[0]
+                H_channels.append(H)
             P, W, wk = state["P"][index], state["W"][index], weights[index]
+            P_channels = [channel["P"][index] for channel in channels]
             C0 = C[base]
+            if solver.screening is not None:
+                # The compensation charges of each channel's exchange pairs:
+                # their projectors and shapes move.
+                states = solver._hybrid_output[0]
+                for s, P_s in enumerate(P_channels):
+                    hf += wk * solver.exchange.compensation_gradient(
+                        SimpleNamespace(k=data.k, psi=psi[base],
+                                        projections=C0),
+                        states[s], P_s, [C[grad[d]] for d in range(3)],
+                        solver._exchange_scale())
             for d in range(3):
                 g = grad[d]
-                G_H, G_S = H[np.ix_(g, base)], S[np.ix_(g, base)]
+                G_Hs = [H[np.ix_(g, base)] for H in H_channels]
+                G_S = S[np.ix_(g, base)]
                 # Pulay: one atom's functions move.
                 for atom in range(n_atoms):
                     own = (owner == atom).astype(float)
-                    dH = -(own[:, None] * G_H + G_H.conj().T * own[None, :])
+                    band = sum(
+                        _trace(P_s, -(own[:, None] * G_H
+                                      + G_H.conj().T * own[None, :]))
+                        for P_s, G_H in zip(P_channels, G_Hs))
                     dS = -(own[:, None] * G_S + G_S.conj().T * own[None, :])
-                    pulay[atom, d] += wk * (_trace(P, dH) - _trace(W, dS))
+                    pulay[atom, d] += wk * (band - _trace(W, dS))
                 # A short-range sphere moves: minus all functions moving.
                 for atom in range(n_atoms):
                     G_V = spheres[atom][i][np.ix_(g, base)]
@@ -283,12 +405,13 @@ def _matrix_terms(solver, state):
                 # A projector moves: minus all functions moving, its column.
                 dC_all = C[g]
                 for atom in range(n_atoms):
-                    columns = c._positions.get(atom, [])
+                    columns = c.projector_columns(atom)
                     if not columns:
                         continue
                     dC = np.zeros_like(C0)
                     dC[:, columns] = dC_all[:, columns]
-                    dH = dC @ c.D_ion @ C0.conj().T + C0 @ c.D_ion @ dC.conj().T
+                    dH = (dC @ c.D_ion @ C0.conj().T
+                          + C0 @ c.D_ion @ dC.conj().T)
                     dS = (dC @ c.q_overlap @ C0.conj().T
                           + C0 @ c.q_overlap @ dC.conj().T)
                     Ca, dCa = C0[:, columns], dC[:, columns]
@@ -297,6 +420,14 @@ def _matrix_terms(solver, state):
                             dH = dH + w[ch] * (dCa @ blk @ Ca.conj().T
                                                + Ca @ blk @ dCa.conj().T)
                     hf[atom, d] += wk * (_trace(P, dH) - _trace(W, dS))
+                    if solver.screening is not None:
+                        # The spheres' one-center operator, per channel,
+                        # moves as the nonlocal projector term does.
+                        for P_s, O in zip(P_channels,
+                                          solver._hybrid_output[1]):
+                            dO = (dC @ O @ C0.conj().T
+                                  + C0 @ O @ dC.conj().T)
+                            hf[atom, d] += wk * _trace(P_s, dO)
     return pulay, hf
 
 
@@ -356,6 +487,12 @@ def _electrostatic(solver, state):
     return out
 
 
+def _richardson(central, delta):
+    """``(4 D(delta/2) - D(delta)) / 3`` of the central difference
+    ``central(h)``: the step's h^2 error cancels."""
+    return (4.0 * central(0.5 * delta) - central(delta)) / 3.0
+
+
 def _displaced(function, centers, atom, d, delta):
     """Central difference of ``function(centers)`` as ``atom`` moves along
     ``d``."""
@@ -373,45 +510,99 @@ def _sum_terms(solver, state, atom, delta):
     _rho, q, _tau = state["density"]
     out = np.zeros(3)
     for d in range(3):
-        plus, minus = _displaced(
-            lambda centers: c.short_range_ion_compensation(centers, atom=atom),
-            c.centers, atom, d, delta)
-        out[d] += float(np.real(sum(q[ch] * (plus[ch] - minus[ch])
-                                    for ch in c.channels))) / (2.0 * delta)
-        plus, minus = _displaced(c.ion_constants, c.centers, atom, d, delta)
-        out[d] += (plus - minus) / (2.0 * delta)
+        def central(h, d=d):
+            plus, minus = _displaced(
+                lambda centers: c.short_range_ion_compensation(centers,
+                                                               atom=atom),
+                c.centers, atom, d, h)
+            value = float(np.real(sum(q[ch] * (plus[ch] - minus[ch])
+                                      for ch in c.channels))) / (2.0 * h)
+            plus, minus = _displaced(c.ion_constants, c.centers, atom, d, h)
+            return value + (plus - minus) / (2.0 * h)
+        out[d] = _richardson(central, delta)
     return out
 
 
-def _core_terms(solver, state, atom, delta):
+def _core_potentials(solver, state):
+    """``(potential, tau_potential)`` the partial core moves under.
+
+    Restricted: the exchange-correlation potential of the valence plus the
+    core.  Spin-polarized: each channel's functional took half the core, so
+    the core moves under the mean of the two channels' potentials.  A hybrid
+    replaces the short-range semilocal exchange of the valence (channels)
+    only; the core sees the potential without it -- ``screening=(omega,
+    0)``.
+    """
+    from ..integrals.exchange_correlation import evaluate, evaluate_spin
+
+    c = solver.crystal
+    _V, _v_tau, _w, terms = state["potentials"]
+    if not state["spin"]:
+        potential = terms.potential
+        if solver.screening is not None:
+            rho, _q, _tau = state["density"]
+            core = 0.0 if solver.core is None else solver.core
+            potential = evaluate(c.grid, rho + core, solver.functional,
+                                 relativistic=solver.relativistic,
+                                 screening=(solver.screening[0],
+                                            0.0)).potential
+        return potential, terms.tau_potential
+    up, dn = state["channel_densities"]
+    half = 0.0 if solver.core is None else 0.5 * solver.core
+    if solver.screening is not None:
+        tau_up, tau_dn = state["density"][2]
+        half_tau = (0.0 if solver._core_tau is None
+                    else 0.5 * solver._core_tau)
+        terms = evaluate_spin(
+            c.grid, up + half, dn + half, solver.functional,
+            relativistic=solver.relativistic,
+            tau_up=tau_up + half_tau if solver.meta else None,
+            tau_dn=tau_dn + half_tau if solver.meta else None,
+            screening=(solver.screening[0], 0.0), exchange_densities=(up, dn))
+    tau_potential = (None if terms.tau_potential_up is None
+                     else 0.5 * (terms.tau_potential_up
+                                 + terms.tau_potential_dn))
+    # Each channel took half the core; where a channel's density is
+    # negative the functional clipped it and reports no potential there
+    # (`exchange_correlation._clipped`).
+    potential = 0.5 * (terms.potential_up + terms.potential_dn)
+    return potential, tau_potential
+
+
+def _core_terms(solver, state, atom, delta, potentials=None):
     """``(3,)``: ``atom``'s partial core (and its kinetic-energy density)
-    moves under the exchange-correlation potential."""
+    moves under the exchange-correlation potential
+    (:func:`_core_potentials`, computed here unless given)."""
     from ..integrals.exchange_correlation import (core_tau_function,
                                                   xc_core_density)
 
     c = solver.crystal
-    _V, _v_tau, _w, terms = state["potentials"]
+    potential, tau_potential = (_core_potentials(solver, state)
+                                if potentials is None else potentials)
     out = np.zeros(3)
-    tables = [(xc_core_density, terms.potential)]
-    if solver.meta and terms.tau_potential is not None:
+    tables = [(xc_core_density, potential)]
+    if solver.meta and tau_potential is not None:
         def tau_table(dataset):
             function = core_tau_function(dataset)
             return (None if function is None
                     else function(np.asarray(dataset.r, dtype=float)))
-        tables.append((tau_table, terms.tau_potential))
+        tables.append((tau_table, tau_potential))
     for table, potential in tables:
         if c.place_core(atom, table) is None:
             continue
         for d in range(3):
-            shift = np.zeros(3)
-            shift[d] = delta
-            plus = c.place_core(atom, table, c.centers[atom] + shift)
-            minus = c.place_core(atom, table, c.centers[atom] - shift)
-            out[d] += float(np.sum(potential * (plus - minus))) \
-                * c.grid.dV / (2.0 * delta)
+            def central(h, d=d, table=table, potential=potential):
+                shift = np.zeros(3)
+                shift[d] = h
+                plus = c.place_core(atom, table, c.centers[atom] + shift)
+                minus = c.place_core(atom, table, c.centers[atom] - shift)
+                return float(np.sum(potential * (plus - minus))) \
+                    * c.grid.dV / (2.0 * h)
+            out[d] += _richardson(central, delta)
     return out
 
 
+@single_threaded_blas
 def crystal_gradient(solver, *, delta: float = DEFAULT_DELTA,
                      include_pulay: bool = True):
     r"""Analytic :math:`dF/d\mathbf R` of a converged
@@ -428,14 +619,16 @@ def crystal_gradient(solver, *, delta: float = DEFAULT_DELTA,
     The matrix terms use the states of the output density's potential and the
     explicit terms that density itself; the two differ by the SCF residual,
     to first order -- converge tightly (``density_tol``) for a precise force.
+
+    A spin-polarized crystal's matrix terms are summed over its channels
+    (:func:`kpoint_state`, :func:`_matrix_terms`); the electrostatic terms
+    see the total density and moments, and the partial core the mean of the
+    channels' potentials (each channel's functional took half of it).
     """
     from .forces import HA_BOHR_TO_EV_ANGSTROM, ForceResult
 
     if solver.output_density is None:
         raise RuntimeError("the crystal gradient needs a converged run()")
-    if solver.n_spins == 2:
-        raise NotImplementedError(
-            "forces of a spin-polarized crystal are not implemented yet")
     c = solver.crystal
     state = kpoint_state(solver)
     n_atoms = len(c.centers)
@@ -443,13 +636,15 @@ def crystal_gradient(solver, *, delta: float = DEFAULT_DELTA,
     if not include_pulay:
         pulay = np.zeros_like(pulay)
     hf = hf + _electrostatic(solver, state)
+    core = _core_potentials(solver, state)
     for atom in range(n_atoms):
         hf[atom] += (_sum_terms(solver, state, atom, delta)
-                     + _core_terms(solver, state, atom, delta))
+                     + _core_terms(solver, state, atom, delta, core))
     hf = symmetrize_vectors(c, hf) * HA_BOHR_TO_EV_ANGSTROM
     pulay = symmetrize_vectors(c, pulay) * HA_BOHR_TO_EV_ANGSTROM
     gradient = hf + pulay
-    details = {"method": "kohn-sham (crystal)", "include_pulay":
+    details = {"method": "kohn-sham (crystal)", "n_spins": solver.n_spins,
+               "include_pulay":
                bool(include_pulay), "n_kpoints": len(state["kpoints"]),
                "n_symmetry_operations": len(_operations(c)),
                "net_force_vector": (-gradient).sum(axis=0)}
@@ -478,7 +673,9 @@ def carried_energy(solver, state, atoms, options, family, kpts,
     with the spacing.  Each k-point's states move as
     :math:`C(\varepsilon) = S(\varepsilon)^{-1/2}S(0)^{1/2}C(0)` at fixed
     occupations, so the entropy is unchanged and only :math:`E` is returned.
-    ``symmetry`` keeps the space group (a strain from
+    A spin-polarized state carries each channel's states and evaluates the
+    spin energy (each channel's exchange-correlation and, for a hybrid, each
+    channel's exact exchange).  ``symmetry`` keeps the space group (a strain from
     :func:`invariant_strains` does), so the strained crystal is reduced to
     the same irreducible k-points as the state.
     """
@@ -512,18 +709,41 @@ def carried_energy(solver, state, atoms, options, family, kpts,
     strained_solver = PeriodicKohnSham(
         crystal, solver.n_electrons, solver.functional,
         smearing=None, relativistic=solver.relativistic,
-        constant=solver.constant)
-    matrices = []
-    for data, C0, S0, f in zip(crystal.kpoint_data, state["vectors"],
-                               state["overlaps"], state["occupations"]):
-        C = _matrix_power(data.overlap, -0.5) @ _matrix_power(S0, 0.5) @ C0
-        matrices.append((C * f) @ C.conj().T)
-    rho, q = crystal.density(matrices)
-    tau = strained_solver._tau(matrices) if strained_solver.meta else None
-    return float(sum(strained_solver.energy_terms(matrices, rho, q,
-                                                  tau).values()))
+        constant=solver.constant, screening=solver.screening,
+        magnetic_moments=solver.initial_moments if state["spin"] else None)
+    carry = [_matrix_power(data.overlap, -0.5) @ _matrix_power(S0, 0.5)
+             for data, S0 in zip(crystal.kpoint_data, state["overlaps"])]
+    carried = []                  # per channel: (vectors, matrices)
+    for channel in state["channels"]:
+        vectors = [T @ C0 for T, C0 in zip(carry, channel["vectors"])]
+        carried.append((vectors, [(C * f) @ C.conj().T for C, f in
+                                  zip(vectors, channel["occupations"])]))
+    if state["spin"]:
+        (up, q_up), (dn, q_dn) = (crystal.density(carried[0][1]),
+                                  crystal.density(carried[1][1]))
+        q = {ch: q_up[ch] + q_dn[ch] for ch in crystal.channels}
+        tau = ((strained_solver._tau(carried[0][1]),
+                strained_solver._tau(carried[1][1]))
+               if strained_solver.meta else None)
+        total = [a + b for a, b in zip(carried[0][1], carried[1][1])]
+        energy = float(sum(strained_solver.energy_terms(total, (up, dn), q,
+                                                        tau).values()))
+    else:
+        matrices = carried[0][1]
+        rho, q = crystal.density(matrices)
+        tau = strained_solver._tau(matrices) if strained_solver.meta else None
+        energy = float(sum(strained_solver.energy_terms(matrices, rho, q,
+                                                        tau).values()))
+    if strained_solver.screening is not None:
+        # One call over the channels: the spheres' frozen terms enter once.
+        energy += strained_solver.hybrid_terms(
+            strained_solver.device, [vectors for vectors, _m in carried],
+            [channel["occupations"] for channel in state["channels"]],
+            [matrices for _v, matrices in carried])[0]
+    return energy
 
 
+@single_threaded_blas
 def crystal_stress(solver, atoms, options, family, kpts, *,
                    strain: float = DEFAULT_STRAIN):
     r"""``(3, 3)`` stress (Hartree/Bohr^3), ASE's sign: :math:`\Omega^{-1}
@@ -538,9 +758,6 @@ def crystal_stress(solver, atoms, options, family, kpts, *,
     """
     from ..units import to_bohr
 
-    if solver.n_spins == 2:
-        raise NotImplementedError(
-            "the stress of a spin-polarized crystal is not implemented yet")
     c = solver.crystal
     state = kpoint_state(solver)
     cell = to_bohr(np.asarray(atoms.get_cell(), dtype=float), "angstrom")

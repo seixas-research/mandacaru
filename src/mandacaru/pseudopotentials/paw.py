@@ -13,10 +13,10 @@ Phys. Rev. B **50**, 17953 (1994), in its frozen-core, one-center-expansion
 form, with the one-center energies **linearized around the reference atom**
 (a fixed coupling matrix :math:`D^0` per species, the "frozen augmentation"
 that makes a PAW-LCAO dataset behave like an ultrasoft pseudopotential).  Written
-from scratch on the same LDA radial atom as the ONCVPSP family
-(:mod:`mandacaru.basis.atomic_solver`), reusing the Numerov partial
-waves, the spherical-Bessel machinery and the polynomial local potential of
-:mod:`.oncv`.  Nothing is read from tables.
+from scratch on Mandacaru's own radial atom
+(:mod:`mandacaru.basis.atomic_solver`), with the Numerov partial waves, the
+spherical-Bessel machinery and the polynomial local potential of
+:mod:`.partial_waves`.  Nothing is read from tables.
 
 The transformation
 ------------------
@@ -50,20 +50,20 @@ Construction (per species, :func:`generate_paw`)
 1. **Reference atom.**  Self-consistent spherical LDA atom; the frozen core
    density :math:`n_c` (all subshells below the valence) and, for every
    valence :math:`l`, two all-electron partial waves: the bound valence state
-   (Numerov, :func:`~.oncv.bound_state`) and the scattering state at
+   (Numerov, :func:`~.partial_waves.bound_state`) and the scattering state at
    :math:`\varepsilon_1 + \Delta` (:data:`DEFAULT_ENERGY_OFFSET` = 1 Ha,
-   normalized to one inside :math:`r_c`) -- the same pair ONCVPSP uses.
+   normalized to one inside :math:`r_c`).
 2. **Smooth partial waves.**  Inside :math:`r_c`,
    :math:`\tilde\varphi_i = \sum_{n=1}^{8} c_{in} j_l(q_n r)` at the
    interleaved zeros of :math:`j_l` and :math:`j_l'`
-   (:func:`~.oncv.bessel_wavevectors`), matched in value and first three
-   derivatives to the all-electron wave (:func:`~.oncv.matching_targets`) and,
+   (:func:`~.partial_waves.bessel_wavevectors`), matched in value and first three
+   derivatives to the all-electron wave (:func:`~.partial_waves.matching_targets`) and,
    in the four remaining degrees of freedom, with the residual kinetic energy
    beyond :math:`q_c` = 5 Bohr⁻¹ minimized (:func:`smooth_partial_waves`).
    **No norm condition is imposed** -- that is the point of PAW-LCAO; the norm
    deficit becomes :math:`q_{ij}`.
 3. **Local potential.**  The even-polynomial continuation of the screened
-   all-electron potential inside :math:`r_{cl}` (:func:`~.oncv.polynomial_local_potential`,
+   all-electron potential inside :math:`r_{cl}` (:func:`~.partial_waves.polynomial_local_potential`,
    :math:`r_{cl}` = :data:`DEFAULT_LOCAL_FACTOR` × the smallest :math:`r_c`),
    the "screened" :math:`\tilde v^{scr}`.  Any smooth continuation would do;
    this one needs no zero potential :math:`\bar v`.
@@ -137,6 +137,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -149,7 +150,7 @@ from ..basis.atomic_solver import (AtomicResult, hartree_potential,
 from ..core.hamiltonian import MolecularIntegrals, projector_blocks
 from .confinement import CONFINEMENT_DEFAULT_OPTIONS, CONFINEMENT_OPTIONS
 from .dataset import Channel, PseudoPotential, _valence_configuration
-from .oncv import (INNER_POINTS, Q_MAX, Q_STEP,
+from .partial_waves import (INNER_POINTS, Q_MAX, Q_STEP,
                    PseudoWaves, _bessel_table, _bessel_transform_table,
                    _inner_grid, _log_derivative_of_u,
                    _pseudo_waves_record, _radial_f, _resample, _snap,
@@ -176,7 +177,7 @@ UPAW_FAMILY = "upaw-lcao"
 DEFAULT_N_BESSEL = 8
 #: Per-dataset exceptions to :data:`DEFAULT_N_BESSEL`, keyed by element and
 #: functional.  The norm-constrained minimization that shapes the smooth
-#: waves (:func:`~.oncv.constrained_minimum`) has two nearly degenerate
+#: waves (:func:`~.partial_waves.constrained_minimum`) has two nearly degenerate
 #: minima for lithium's 2s pair, one nodeless and one with a node inside
 #: ``r_cut``, and which one it lands on turns on details of the reference
 #: atom.  At 8 functions the LDA pair is nodeless and the PBE pair has a
@@ -242,8 +243,8 @@ DEFAULT_ENERGY_OFFSETS = {"H": 0.5, "Li": 0.5, "Co": 2.0, "Ni": 2.0,
 DEFAULT_RC_FACTOR = 1.3
 #: Local-potential radius as a multiple of the smallest augmentation radius.
 DEFAULT_LOCAL_FACTOR = 0.9
-#: Per-element augmentation radii (Bohr); the ONCVPSP values, which the
-#: molecular tests showed to be resolvable on a 0.25-0.30 Angstrom grid.
+#: Per-element augmentation radii (Bohr), which the molecular tests showed
+#: to be resolvable on a 0.25-0.30 Angstrom grid.
 DEFAULT_CUTOFFS = {
     "H": {0: 1.30},
     "Li": {0: 2.60},
@@ -279,9 +280,8 @@ DEFAULT_CUTOFFS = {
 #: Per-element raise of the local potential at the origin (Hartree, Hamann's
 #: ``dvloc0``).  The polynomial continuation of the screened all-electron
 #: potential is deep enough (O: -5.8 Ha at the origin) to bind a spurious
-#: 1s-like state of its own in the s channel of the first row; unlike the
-#: near-singular ONCVPSP coupling, the PAW-LCAO projector term does not push it
-#: away, so the local potential is raised until the s spectrum has nothing
+#: 1s-like state of its own in the s channel of the first row; the PAW-LCAO
+#: projector term does not push it away, so the local potential is raised until the s spectrum has nothing
 #: between the bound state and the box states.
 #: Fe and Zn at 10 Ha: their PBE local potentials otherwise bind a p-channel
 #: ghost (-1.2 / -1.5 Ha) the repair used to remove at 5 Ha, and at 10 Ha the d
@@ -293,8 +293,7 @@ DEFAULT_LOCAL_SHIFTS = {"C": 12.0, "N": 10.0, "O": 6.0, "F": 8.0,
 #: be made to scatter like the atom (0.49-0.65 rad, the flag every Tl-Rn
 #: dataset carried) and its Dirac branches missed the 4f levels by 7-15 mHa.
 #: Frozen, it joins the nonlinear core correction and an empty f channel
-#: scattering at :data:`FROZEN_SCATTERING_ENERGY` represents the f response,
-#: as ONCVPSP does (:data:`~.oncv.DEFAULT_FROZEN_SUBSHELLS`).
+#: scattering at :data:`FROZEN_SCATTERING_ENERGY` represents the f response.
 DEFAULT_FROZEN_SUBSHELLS = {symbol: ((4, 3),) for symbol in
                             ("Tl", "Pb", "Bi", "Po", "At", "Rn")}
 #: Per-dataset repairs of the d-block and 6p libraries (HISTORY.md, 2026-09-28,
@@ -475,7 +474,7 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
     remaining freedom.  **The norm is not conserved.**  With a
     ``norm_deficit`` :math:`s` (the default, :data:`DEFAULT_NORM_DEFICIT`)
     the inner-norm matrix is set to :math:`(1-s)` times the all-electron one
-    (:func:`~.oncv.optimize_pseudo_waves` with ``norm_factor = 1 - s``), so
+    (:func:`~.partial_waves.optimize_pseudo_waves` with ``norm_factor = 1 - s``), so
     the overlap correction :math:`q_{ij} = s\,\langle\varphi_i|\varphi_j
     \rangle_{r<r_c}` is positive definite and the PAW-LCAO overlap operator is
     bounded below by one -- a dataset built with free (unconstrained) waves,
@@ -483,8 +482,8 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
     are nearly proportional in the core, their dual projectors are large,
     and an indefinite :math:`q` makes :math:`1 + \sum|\tilde p\rangle q
     \langle\tilde p|` singular (Li, O at every cutoff tried).  The returned
-    :attr:`~.oncv.PseudoWaves.achieved` inner norms differ from the
-    all-electron :attr:`~.oncv.PseudoWaves.norms` by exactly :math:`q`.
+    :attr:`~.partial_waves.PseudoWaves.achieved` inner norms differ from the
+    all-electron :attr:`~.partial_waves.PseudoWaves.norms` by exactly :math:`q`.
 
     ``norm_deficit=0`` is the **unitary PAW-LCAO** (UPAW-LCAO) of Ivanov *et al.*
     (arXiv:2408.03159): :math:`q \equiv 0` makes :math:`T^\dagger T = I`, so the
@@ -512,7 +511,7 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
         # The deficit scales whatever the correct norm target is, so a
         # relativistic reference atom needs nothing extra here: the Wronskian
         # form is already what `optimize_pseudo_waves` conserves
-        # (:func:`~.oncv.norm_targets`), and `norm_factor` multiplies it.
+        # (:func:`~.partial_waves.norm_targets`), and `norm_factor` multiplies it.
         return optimize_pseudo_waves(r, v_ae, l, waves, energies, r_cut,
                                      q_cut=q_cut, n_bessel=n_bessel,
                                      norm_factor=1.0 - float(norm_deficit),
@@ -958,20 +957,20 @@ class PAWDataset(PseudoPotential):
     frozen_subshells: tuple = ()
     #: ``l -> D_SO``, the one-center spin-orbit difference of the channel.
     #: Empty unless the dataset was generated with ``relativity="dirac"``.
-    #: Unlike the ONCVPSP family, these multiply the dataset's **own**
-    #: projectors -- there is one set per l, not one per j -- so the overlap
+    #: These multiply the dataset's **own** projectors -- there is one set
+    #: per l, not one per j -- so the overlap
     #: operator is untouched and stays diagonal in spin.
     spin_orbit: dict = field(default_factory=dict)
     #: What its generator could not remove (``ghosts="flag"``):
     #: ``{"ghosts": {l: eps_0 - eps_ref}, "phases": {l: (near, far)}}``.
     #: Empty for a clean dataset.  Stored in the file; loading a dataset that
-    #: has any raises a :class:`~.oncv.GhostStateWarning`.
+    #: has any raises a :class:`~.partial_waves.GhostStateWarning`.
     defects: dict = field(default_factory=dict)
 
     def unconstructed_ghosts(self) -> dict:
         """Ghost states the local potential alone binds in a channel without
-        projectors (:func:`~.oncv.local_potential_ghosts`)."""
-        from .oncv import local_potential_ghosts
+        projectors (:func:`~.partial_waves.local_potential_ghosts`)."""
+        from .partial_waves import local_potential_ghosts
         return local_potential_ghosts(self)
 
     def projector_radius(self, l: int) -> float:
@@ -1125,8 +1124,7 @@ def j_resolved_spin_orbit(symbol, atom, valence_config, cutoffs, rc_factor,
     and :math:`-(l+1)/2` on :math:`j = l-1/2`; both are built on the union of
     the two branches' projectors, the average with the :math:`(2j+1)` weights
     and the difference scaled by :math:`2/(2l+1)`, so each :math:`j` is
-    recovered exactly (ONCVPSP stores its branches the same way,
-    :func:`~.oncv._combine_j_channels`).
+    recovered exactly.
 
     The branches are unitary so that the overlap stays spin-free: their
     overlap corrections are ~1e-4, where a j-dependent :math:`q` would give the
@@ -1150,7 +1148,7 @@ def j_resolved_spin_orbit(symbol, atom, valence_config, cutoffs, rc_factor,
 
     from ase.data import atomic_numbers
 
-    from .oncv import reference_waves
+    from .partial_waves import reference_waves
 
     r, v_ae = atom.r, atom.v_effective
     z_eff = float(atomic_numbers[symbol])
@@ -1217,6 +1215,41 @@ def j_resolved_spin_orbit(symbol, atom, valence_config, cutoffs, rc_factor,
     return out
 
 
+def _validate_frozen_subshells(
+        valence: dict[tuple[int, int], float],
+        frozen_subshells: Sequence[tuple[int, int]] | None
+) -> tuple[tuple[int, int], ...]:
+    """Validate occupied valence subshells selected for the frozen core.
+
+    The full neutral atom is still solved. Only the pseudopotential's
+    valence/core partition changes, so a deep filled shell such as Bi 4f14
+    can remain in the nonlinear core correction while its f channel is
+    represented by positive-energy scattering projectors.
+    """
+    from numbers import Integral
+
+    if frozen_subshells is None:
+        return ()
+    if not isinstance(frozen_subshells, (tuple, list)):
+        raise TypeError("frozen_subshells must be a list of (n, l) pairs")
+    result: set[tuple[int, int]] = set()
+    for orbital in frozen_subshells:
+        if (not isinstance(orbital, tuple) or len(orbital) != 2
+                or any(isinstance(x, bool) or not isinstance(x, Integral)
+                       for x in orbital)):
+            raise ValueError("frozen_subshells must contain (n, l) "
+                             "integer pairs")
+        key = (int(orbital[0]), int(orbital[1]))
+        if key not in valence:
+            raise ValueError(f"{key} is not an occupied valence subshell")
+        if key in result:
+            raise ValueError(f"duplicate frozen subshell {key}")
+        result.add(key)
+    if len(result) == len(valence):
+        raise ValueError("at least one occupied valence subshell must remain")
+    return tuple(sorted(result))
+
+
 def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTOR,
                  r_cut_local: float | None = None,
                  local_factor: float = DEFAULT_LOCAL_FACTOR,
@@ -1272,10 +1305,24 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         Spherical Bessel functions per smooth partial wave; defaults to
         :data:`DEFAULT_N_BESSEL_BY_DATASET` for the element and functional,
         else the s-channel repair's count, else :data:`DEFAULT_N_BESSEL`.
-    q_cut, points, r_max, atom, ghosts
-        As in :func:`~.oncv.generate_oncv`; the ghost search is
-        :func:`~.oncv.ghost_free`, with the spectrum of the generalized
-        problem (:func:`paw_spectrum`).
+    q_cut : float
+        Wave-vector cutoff of the residual kinetic energy (Bohr^-1).
+    points : int, optional
+        Radial grid points of the all-electron atom; default
+        :func:`~.partial_waves.generation_points` (finer for heavier atoms).
+    r_max : float
+        Radial extent of the all-electron atom (Bohr).
+    atom : AtomicResult, optional
+        A reference atom already solved with the same ``xc`` and
+        ``relativity`` (the ghost search shares one across its attempts).
+    ghosts : str
+        ``"repair"`` (the default) rebuilds a construction that binds a ghost
+        state or scatters wrongly; ``"refuse"`` raises
+        :class:`~.partial_waves.GhostStateError` instead; ``"flag"`` keeps the
+        least defective construction and records its defects; ``"keep"``
+        returns it unexamined.  The search is
+        :func:`~.partial_waves.ghost_free`, with the spectrum of the
+        generalized problem (:func:`paw_spectrum`).
     """
     if ghosts != "keep":
         options = {k: v for k, v in locals().items()
@@ -1284,9 +1331,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         # ghost the deficit itself causes (iron, cutoffs untouched).  And
         # when the cutoffs have to be balanced, a positive deficit with those
         # large augmentation spheres is ghost-free but does not bind: CuH at
-        # deficit 0.1 has its minimum at 1.8 Angstrom and disagrees with the
-        # ONCVPSP curve by 1-2 eV; at deficit 0 both minima are at 1.46 and
-        # the curves agree to 0.07-0.3 eV (HISTORY.md, 2026-09-24).
+        # deficit 0.1 has its minimum at 1.8 Angstrom, against 1.46 at
+        # deficit 0 (HISTORY.md, 2026-09-24).
         return ghost_free(generate_paw, _paw_levels, log_derivative_paw,
                           symbol, options, ghosts,
                           overrides={"norm_deficit": 0.0},
@@ -1316,11 +1362,10 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                                   if points is None else int(points)),
                           r_max=r_max, tolerance=1e-7, mixing=0.25,
                           xc=xc, relativity=relativity)
-    from .oncv import check_reference_atom
+    from .partial_waves import check_reference_atom
     check_reference_atom(atom, xc, relativity)
     valence_config, core_config = _valence_configuration(
         atomic_number, configuration=atom.occupations)
-    from .oncv import _validate_frozen_subshells
     frozen = _validate_frozen_subshells(
         valence_config, DEFAULT_FROZEN_SUBSHELLS.get(symbol, ())
         if frozen_subshells is None else frozen_subshells)
@@ -1419,8 +1464,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     # correction is on.  PAW-LCAO already carries `smooth_core`, the pseudized
     # frozen core it needs for its one-center energies, so the correction
     # here is a matter of *including* that density in v_xc rather than
-    # building a second one: what the Louie-Froyen-Cohen sin(Br)/r form does
-    # for a norm-conserving family, `pseudize_density` has already done.
+    # building a second one: `pseudize_density` has already smoothed it.
     nlcc_details = {"applied": False, "r_nlcc": None,
                     "reason": ("not requested" if nlcc is False
                                else "the atom has no core to correct for")}
@@ -1575,7 +1619,7 @@ def paw_spectrum(pp: PAWDataset, l: int, n_states: int = 3,
 
 def _paw_levels(pp, l: int) -> np.ndarray:
     """The two lowest eigenvalues of one PAW-LCAO channel
-    (:func:`~.oncv.ghost_free`)."""
+    (:func:`~.partial_waves.ghost_free`)."""
     return paw_spectrum(pp, l, n_states=2)
 
 
@@ -1627,9 +1671,9 @@ def reconstruct_ae(pp: PAWDataset, l: int, r: np.ndarray, u: np.ndarray
 def log_derivative_paw(pp: PAWDataset, l: int, energy: float,
                        r_cut: float | None = None) -> float:
     r"""Smooth logarithmic derivative :math:`\tilde R'/\tilde R` at ``r_cut``
-    of the generalized problem at ``energy``: :func:`~.oncv.log_derivative_ps`
-    with the projectors :math:`\tilde p_i` and the energy-dependent coupling
-    :math:`D^{scr} - E\,q`.  Equals the all-electron one at the reference
+    of the generalized problem at ``energy``: the outward Numerov integration
+    of the smooth radial equation with the projectors :math:`\tilde p_i` and
+    the energy-dependent coupling :math:`D^{scr} - E\,q`.  Equals the all-electron one at the reference
     energies (and, for a good dataset, in between)."""
     l = int(l)
     # Past the projectors, where the smooth wave obeys the all-electron
@@ -1797,7 +1841,7 @@ def intruding_s_miss(pp) -> float | None:
 
 
 def _intruding_s_acceptance(pp) -> dict:
-    """The repair search's PAW-LCAO acceptance (:func:`~.oncv.ghost_free`)."""
+    """The repair search's PAW-LCAO acceptance (:func:`~.partial_waves.ghost_free`)."""
     miss = intruding_s_miss(pp)
     if miss is None or miss < INTRUDING_S_TOLERANCE:
         return {}
@@ -1889,18 +1933,31 @@ def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
     return _blocks(projectors, symbols, datasets, "coupling")
 
 
-def _multipole_grid_potential(radius, dx, dy, dz, r_g, L, M):
-    """``v_L(r) Y_LM`` sampled on grid offsets from one center."""
+def _multipole_grid_potential(radius, dx, dy, dz, r_g, L, M, potential=None):
+    """``v_L(r) Y_LM`` sampled on grid offsets from one center
+    (``potential(radius, r_g, L)`` in place of the Coulomb one)."""
     from .multipoles import shape_potential
     from ..basis._angular import spherical_harmonic
 
-    v = shape_potential(radius, r_g, L)
+    v = (shape_potential if potential is None else potential)(radius, r_g, L)
     if int(L) == 0:
         return v * spherical_harmonic(0, 0, 0.0, 0.0)
     safe = np.maximum(radius, 1e-300)
     theta = np.arccos(np.clip(dz / safe, -1.0, 1.0))
     phi = np.arctan2(dy, dx)
     return v * spherical_harmonic(int(L), int(M), theta, phi)
+
+
+def long_range_multipole_potential(omega: float):
+    """``potential(radius, r_g, L)`` of a compensation multipole under the
+    long-range kernel (:func:`~.onecenter.long_range_shape_potential`), in the
+    form :func:`_multipole_grid_potential` and
+    :func:`~.multipoles.multipole_coulomb_matrix` take."""
+    from .onecenter import long_range_shape_potential
+
+    def potential(radius, r_g, L):
+        return long_range_shape_potential(radius, r_g, L, float(omega))
+    return potential
 
 
 def paw_multipole_blocks(projectors, datasets_by_atom) -> dict:
@@ -1968,7 +2025,7 @@ def _projector_sphere(projector, *, split_radial: bool = False):
     angular = np.repeat(wt, n_phi) * (2.0 * np.pi / n_phi)
     r_cut = float(projector.r_cut)
     channel_cut = float(getattr(projector, "channel_r_cut", r_cut))
-    # An ONCV projector continued from its own cutoff to the local radius
+    # A projector continued from its own cutoff to the local radius
     # changes formula at channel_cut.  Put that junction on a panel boundary
     # so the radial rule sees smooth functions on both sides.
     edges = ([0.0, channel_cut, r_cut]
@@ -2411,6 +2468,95 @@ class PAWIntegrals(MolecularIntegrals):
                 aug += U[i, j] * np.einsum("pr,qs->pqrs", Qa, Qs[cb])
         return aug
 
+    # -- a screened hybrid's exchange ---------------------------------------- #
+
+    def long_range_compensation(self, omega: float):
+        r"""``(W, U)`` of the compensation multipoles under the long-range
+        kernel :math:`\operatorname{erf}(\omega r_{12})/r_{12}` -- the
+        counterparts of :meth:`compensation_potentials` and
+        :meth:`compensation_coulomb`, with the shapes' long-range potentials
+        (:func:`~.onecenter.long_range_shape_potential`) sampled on the grid
+        for :math:`W` and integrated over the partner shape for :math:`U`
+        (symmetrized: the quadrature is symmetric only to its accuracy).
+        Cached per ``omega``.
+        """
+        from .multipoles import multipole_coulomb_matrix
+
+        omega = float(omega)
+        cache = self.__dict__.setdefault("_long_range_compensation", {})
+        if omega in cache:
+            return cache[omega]
+        psi = self._engine._psi
+        X, Y, Z = (self.grid.X.ravel(), self.grid.Y.ravel(),
+                   self.grid.Z.ravel())
+        channels = self.multipole_channels()
+        potential = long_range_multipole_potential(omega)
+        W = {}
+        for atom, L, M in channels:
+            _z, center = self._potentials.nuclei[atom]
+            dx, dy, dz = X - center[0], Y - center[1], Z - center[2]
+            radius = np.sqrt(dx * dx + dy * dy + dz * dz)
+            v = _multipole_grid_potential(
+                radius, dx, dy, dz, self.datasets[atom].compensation_radius,
+                L, M, potential=potential)
+            W[(atom, L, M)] = (np.conj(psi) * v) @ psi.T * self.grid.dV
+        index = {c: i for i, c in enumerate(channels)}
+        per_atom: dict = {}
+        for atom, L, M in channels:
+            per_atom.setdefault(atom, []).append((L, M))
+        U = np.zeros((len(channels), len(channels)), dtype=complex)
+        for a, levels_a in per_atom.items():
+            for b, levels_b in per_atom.items():
+                displacement = (np.asarray(self._potentials.nuclei[b][1])
+                                - np.asarray(self._potentials.nuclei[a][1]))
+                block = multipole_coulomb_matrix(
+                    self.datasets[a].compensation_radius, levels_a,
+                    self.datasets[b].compensation_radius, levels_b,
+                    displacement, potential=potential)
+                for i, la in enumerate(levels_a):
+                    for j, lb in enumerate(levels_b):
+                        U[index[(a,) + la], index[(b,) + lb]] = block[i, j]
+        cache[omega] = (W, 0.5 * (U + U.T))
+        return cache[omega]
+
+    def long_range_augmentation(self, omega: float):
+        r""":meth:`two_body_augmentation` under the long-range kernel
+        :math:`\operatorname{erf}(\omega r_{12})/r_{12}`, or ``None``.
+
+        The same three terms -- :math:`Q^A W^{A,\rm LR} + W^{A,\rm LR} Q^A +
+        \sum_{AB} Q^A U^{\rm LR}_{AB} Q^B` -- over
+        :meth:`long_range_compensation`.
+        :meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.short_range_two_body`
+        subtracts it from the augmented tensor, so the exact exchange of a
+        hybrid sees the compensation charges under the erfc kernel.
+        """
+        omega = float(omega)
+        Qs = self.compensation_moments()
+        if not Qs or omega == 0.0:
+            return None
+        W, U = self.long_range_compensation(omega)
+        channels = self.multipole_channels()
+        M_ = self.n_orbitals
+        out = np.zeros((M_, M_, M_, M_), dtype=complex)
+        for i, channel in enumerate(channels):
+            # Q (W + U Q / 2) + (W + U Q / 2) Q: U is symmetric.
+            T = W[channel] + 0.5 * sum(U[i, j] * Qs[other]
+                                       for j, other in enumerate(channels))
+            out += np.einsum("pr,qs->pqrs", Qs[channel], T)
+            out += np.einsum("pr,qs->pqrs", T, Qs[channel])
+        return out
+
+    def one_center_hybrid(self, omega: float, fraction: float):
+        r"""The one-center terms of a screened hybrid
+        (:class:`~.onecenter.OneCenterHybrid`) over :attr:`kb_projectors`.
+
+        They act through :meth:`projections`; the Kohn-Sham solver contracts
+        them with the projected density matrix :math:`C^\dagger D C`.
+        """
+        from .onecenter import OneCenterHybrid
+        return OneCenterHybrid(self.kb_projectors, self.datasets, omega,
+                               fraction)
+
 
 
 def paw_library_path(directory=None, xc: str = DEFAULT_XC, *,
@@ -2498,7 +2644,7 @@ def upaw_library_path(directory=None, xc: str = DEFAULT_XC) -> str | None:
 def get_upaw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
     """Load ``symbol`` from the UPAW-LCAO library, **or generate it** (cached).
 
-    Unlike the other families, UPAW-LCAO has no shipped library: there is no
+    Unlike PAW-LCAO, UPAW-LCAO has no shipped library: there is no
     sibling data repository for it, and requiring a 92-element build before the
     option can be tried at all would make it unusable.  Generation is a few
     seconds per element (H 0.4 s, O 2.2 s, measured) and the result is cached
@@ -2584,7 +2730,7 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
               loader=None, family=None, **active):
     r"""Valence-only Hamiltonian from PAW-LCAO datasets.
 
-    Same 5-tuple as the other families: the basis is the bound smooth
+    The family driver 5-tuple: the basis is the bound smooth
     partial waves (with the ``size`` hierarchy), the external potential the
     ionic local potential, the nonlocal term :math:`C D^{ion} C^\dagger`, the
     overlap :math:`\tilde S + C q C^\dagger`, the two-body tensor augmented
@@ -2868,11 +3014,10 @@ def from_payload(payload: dict) -> PAWDataset:
 
 #: Both PAW-LCAO families filter their basis by default (see
 #: :mod:`mandacaru.basis.filtering`).  A PAW-LCAO smooth partial wave is already
-#: *built* to be band-limited -- :func:`~.oncv.optimize_pseudo_waves` minimizes
+#: *built* to be band-limited -- :func:`~.partial_waves.optimize_pseudo_waves` minimizes
 #: the kinetic energy beyond ``q_cut`` -- so removing what is left above the
 #: grid's Nyquist wave-vector costs little and takes most of the egg-box with
-#: it; the norm-conserving families keep it opt-in because their orbitals are
-#: not optimized that way.  ``basis={"name": "PAW-LCAO", "filter": False}`` restores
+#: it.  ``basis={"name": "PAW-LCAO", "filter": False}`` restores
 #: the unfiltered basis exactly.
 #:
 #: ``energy_shift = 0.1`` eV makes the default PAW-LCAO basis a

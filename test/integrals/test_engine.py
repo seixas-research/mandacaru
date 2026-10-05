@@ -7,7 +7,6 @@ import pytest
 from mandacaru.basis import HydrogenicAtomicOrbital
 from mandacaru.integrals import (Grid, IntegralEngine, PoissonFFTSolver,
                                  Potentials, _backend)
-from mandacaru.integrals.poisson import cell_self_potential
 from mandacaru.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
 # The physics core is validated in atomic units (Bohr, Hartree); the grids below
@@ -24,7 +23,7 @@ def h1s_engine():
 class TestPoissonFFT:
     def test_1s_self_repulsion_matches_exact(self, h1s_engine):
         # (1s 1s | 1s 1s) = 5/8 Ha exactly for the hydrogen 1s orbital.
-        J = h1s_engine.two_body(method="fft", energy_units="Ha")[0, 0, 0, 0].real
+        J = h1s_engine.two_body(energy_units="Ha")[0, 0, 0, 0].real
         assert abs(J - 0.625) < 0.02
 
     def test_converges_toward_exact_with_resolution(self):
@@ -33,12 +32,12 @@ class TestPoissonFFT:
             grid = Grid(center=[0, 0, 0], box_size=12.0, h=h, units="bohr")
             eng = IntegralEngine([HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, units="bohr")],
                                  grid)
-            J = eng.two_body(method="fft", energy_units="Ha")[0, 0, 0, 0].real
+            J = eng.two_body(energy_units="Ha")[0, 0, 0, 0].real
             errs.append(abs(J - 0.625))
         assert errs[1] < errs[0]  # finer grid is closer to the exact value
 
     def test_eri_is_real_and_positive_diagonal(self, h1s_engine):
-        J = h1s_engine.two_body(method="fft")[0, 0, 0, 0]
+        J = h1s_engine.two_body()[0, 0, 0, 0]
         assert abs(J.imag) < 1e-10
         assert J.real > 0
 
@@ -46,7 +45,7 @@ class TestPoissonFFT:
         grid = Grid(center=[0, 0, 0], box_size=8.0, h=0.84, units="bohr")
         basis = [HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, units="bohr"),
                  HydrogenicAtomicOrbital(2, 1, 0, Z=1.0, units="bohr")]
-        eri = IntegralEngine(basis, grid).two_body(method="fft")
+        eri = IntegralEngine(basis, grid).two_body()
         # Physicists' <ab|cd>: the full 8-fold symmetry of a real basis set.
         # The electron-1/2 bra-swaps <ab|cd>==<cb|ad>==<ad|cb> are the ones that
         # distinguish the physicists' convention from the chemists' (ab|cd).
@@ -59,8 +58,8 @@ class TestPoissonFFT:
 class TestUnits:
     def test_engine_returns_eV_by_default(self, h1s_engine):
         # Default frontend unit is eV; explicit Ha recovers the atomic value.
-        J_ev = h1s_engine.two_body(method="fft")[0, 0, 0, 0].real
-        J_ha = h1s_engine.two_body(method="fft", energy_units="Ha")[0, 0, 0, 0].real
+        J_ev = h1s_engine.two_body()[0, 0, 0, 0].real
+        J_ha = h1s_engine.two_body(energy_units="Ha")[0, 0, 0, 0].real
         assert abs(J_ev - 0.625 * HARTREE_TO_EV) < 0.02 * HARTREE_TO_EV
         assert np.isclose(J_ev, J_ha * HARTREE_TO_EV)
 
@@ -150,32 +149,21 @@ class TestPotentials:
         assert V[0, 0].real < 0  # attractive well
 
 
-class TestPoissonSolverDirect:
-    def test_solver_matches_direct_convolution_on_tiny_grid(self):
-        # On a tiny grid, compare the FFT solver to the explicit O(N^2) sum
-        # with the SAME self-energy on the diagonal cell -> must agree.
-        # h = 1.2 a0 over box 3.0 a0 keeps this at a tiny 6^3 grid.
+class TestPoissonSolverSymmetry:
+    def test_the_kernel_is_real_and_symmetric(self):
+        """What the tensor's Hermitian-pair assembly relies on: Phi of a
+        conjugated density is the conjugated Phi, and <a, Phi[b]> =
+        <Phi[a], b> -- on a tiny 6^3 grid, where the solver pads past the
+        spectral part's reach."""
         grid = Grid(center=[0, 0, 0], box_size=3.0, h=1.2, units="bohr")
         rng = np.random.default_rng(0)
-        rho = (rng.standard_normal(grid.size)
-               + 1j * rng.standard_normal(grid.size))
-
+        a, b = (rng.standard_normal(grid.size)
+                + 1j * rng.standard_normal(grid.size) for _ in range(2))
         solver = PoissonFFTSolver(grid.points, grid.dx)
-        phi_fft = solver.solve(rho)
-        # The same rule the solver uses: the cell's own average of 1/r.
-        self_energy = cell_self_potential(grid.dx, grid.dy, grid.dz) / grid.dV
-
-        xg, yg, zg = grid.flat_coords()
-        n = grid.size
-        phi_ref = np.zeros(n, dtype=complex)
-        G0 = self_energy
-        for i in range(n):
-            d = np.sqrt((xg[i] - xg) ** 2 + (yg[i] - yg) ** 2
-                        + (zg[i] - zg) ** 2)
-            kern = np.where(d > 0, np.divide(1.0, d, where=d > 0, out=None), G0)
-            phi_ref[i] = np.sum(rho * kern) * grid.dV
-
-        assert np.allclose(phi_fft, phi_ref, atol=1e-10)
+        assert np.allclose(solver.solve(a.conj()), solver.solve(a).conj(),
+                           atol=1e-12)
+        assert np.sum(a * solver.solve(b)) == pytest.approx(
+            np.sum(solver.solve(a) * b), rel=1e-12)
 
 
 class TestProjectionKernel:

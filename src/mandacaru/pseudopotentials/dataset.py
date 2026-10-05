@@ -28,8 +28,8 @@ grids already handle comfortably.
 This module holds what the families have in common: :class:`Channel` (one
 angular-momentum channel), :class:`PseudoPotential` (the per-element record
 the valence basis, the local potential sampler and the multiple-zeta hierarchy
-read), and two helpers of their generators.  The families themselves --
-ONCVPSP (:mod:`.oncv`) and PAW-LCAO (:mod:`.paw`) -- subclass both.
+read), and two helpers of their generators.  The family itself --
+PAW-LCAO and its unitary variant (:mod:`.paw`) -- subclasses both.
 """
 
 from __future__ import annotations

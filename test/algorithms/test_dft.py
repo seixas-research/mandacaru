@@ -31,7 +31,7 @@ def _run(atoms, **options):
     return atoms.get_potential_energy()
 
 
-@pytest.fixture(scope="module", params=["lda", "pbe", "r2scan"])
+@pytest.fixture(scope="module", params=["lda", "pbe", "r2scan", "hse06"])
 def converged(request):
     """An H2 Kohn-Sham run in a basis with more than one function per atom."""
     atoms = h2()
@@ -62,10 +62,9 @@ class TestTheRun:
         _xc, atoms, _energy = converged
         integrals = atoms.calc.solver._gradient_context["integrals"]
         scf = atoms.calc.result.scf
-        X = integrals._lowdin_x()
-        solver = dft.KohnSham(integrals.one_body(), integrals.two_body(),
-                              X.T @ integrals._engine._psi, integrals.grid, 2,
-                              functional=scf.functional)
+        # The solver of the run: the grid samples, and for a hybrid the
+        # short-range exchange tensor (its nonlocal potential is in F too).
+        solver = dft.kohn_sham_solver(integrals, 2, scf.functional)
         C = scf.mo_coefficients
         D = 2.0 * np.outer(C[:, 0], C[:, 0].conj())
         rng = np.random.default_rng(7)
@@ -112,9 +111,17 @@ class TestTheRun:
         xc, atoms, _energy = converged
         keys = atoms.calc.citation_keys()
         assert {"HohenbergKohn1964", "KohnSham1965"} <= set(keys)
-        expected = {"lda": "PerdewZunger1981", "pbe": "PBE1996",
-                    "r2scan": "Furness2020"}[xc]
-        assert expected in keys
+        expected = {"lda": {"PerdewZunger1981"}, "pbe": {"PBE1996"},
+                    "r2scan": {"Furness2020"},
+                    "hse06": {"Heyd2003", "Krukau2006", "PBE1996"}}[xc]
+        assert expected <= set(keys)
+        assert "Paier2005" not in keys          # no augmentation spheres
+
+    def test_a_paw_hybrid_cites_the_one_center_exchange(self):
+        atoms = h2()
+        _run(atoms, xc="hse06", h=0.35, basis={"name": "PAW-LCAO",
+                                                "size": "SZ"})
+        assert "Paier2005" in atoms.calc.citation_keys()
 
 
 class TestConvergence:
@@ -453,3 +460,186 @@ class TestUnrestricted:
             numerical = fine + (fine - coarse) / 3.0
             assert result.unprojected[atom, k] == pytest.approx(numerical,
                                                                 abs=1e-4)
+
+
+@pytest.fixture(scope="module")
+def h2_hybrid():
+    """H2 with HSE06 in a basis with more than one function per atom."""
+    atoms = h2()
+    _run(atoms, xc="hse06", h=0.3, basis=NAO_DZ)
+    return atoms
+
+
+@pytest.fixture(scope="module")
+def h2_paw():
+    """H2 on PAW-LCAO (LDA): the integrals a hybrid's terms are built from."""
+    atoms = h2()
+    _run(atoms, xc="lda", h=0.35, basis={"name": "PAW-LCAO"})
+    return atoms
+
+
+class TestHybrid:
+    """``xc="hse06"``: generalized Kohn-Sham with short-range exact exchange."""
+
+    def test_the_exact_exchange_is_part_of_the_xc_energy(self, h2_hybrid):
+        scf = h2_hybrid.calc.result.scf
+        assert scf.functional == "hse06"
+        assert scf.exact_exchange_energy < 0.0
+        assert scf.xc_energy < scf.exact_exchange_energy
+        log = h2_hybrid.calc.solver._scf_summary_fields(h2_hybrid.calc.result)
+        assert float(log["exact_exchange_energy_eV"]) == pytest.approx(
+            from_hartree(scf.exact_exchange_energy, "eV"))
+
+    def test_the_hybrid_opens_the_gap_and_lowers_the_homo(self, h2_hybrid):
+        """The textbook effect: HSE06 - PBE moves the H2 HOMO down by ~1.2
+        eV (an independent all-electron aug-cc-pVQZ calculation: -1.219 eV)."""
+        pbe = h2()
+        _run(pbe, xc="pbe", h=0.3, basis=NAO_DZ)
+        shift = (h2_hybrid.calc.get_eigenvalues()[0]
+                 - pbe.calc.get_eigenvalues()[0])
+        assert -1.5 < shift < -0.9
+        assert h2_hybrid.calc.result.scf.homo_lumo_gap > \
+            pbe.calc.result.scf.homo_lumo_gap
+
+    def test_the_two_screening_limits(self, h2_hybrid):
+        r"""At fixed density: :math:`\omega \to 0` is the PBE0-like hybrid
+        (a quarter of the full exact exchange for a quarter of the full
+        semilocal one), :math:`\omega \to \infty` the unscreened semilocal
+        functional alone."""
+        from mandacaru.algorithms import dft
+        from mandacaru.integrals import exchange_correlation as xc_grid
+        integrals = h2_hybrid.calc.solver._gradient_context["integrals"]
+        scf = h2_hybrid.calc.result.scf
+        grid = integrals.grid
+        reference = dft.kohn_sham_solver(integrals, 2, "hse06")
+        D = reference._density_matrix(scf.mo_coefficients)
+        rho = reference.density(D)
+        semilocal = xc_grid.evaluate(grid, rho, "hse06",
+                                     screening=(0.11, 0.0)).energy
+
+        pbe0 = dft.kohn_sham_solver(integrals, 2, "hse06",
+                                    screening=(0.0, 0.25))
+        K = np.einsum("sr,prsq->pq", D, integrals.two_body())
+        exact = -0.25 * float(np.real(np.sum(D * K.T)))     # E_x^HF
+        without_exchange = xc_grid.evaluate(grid, rho, "hse06",
+                                            screening=(0.0, 1.0)).energy
+        expected = (semilocal - 0.25 * (semilocal - without_exchange)
+                    + 0.25 * exact)
+        assert pbe0._xc(D)[0] == pytest.approx(expected, abs=1e-10)
+
+        unscreened = dft.kohn_sham_solver(integrals, 2, "hse06",
+                                          screening=(1e3, 0.25))
+        assert unscreened._xc(D)[0] == pytest.approx(semilocal, abs=1e-5)
+
+    def test_full_exact_exchange_cancels_the_self_interaction(self):
+        """One electron, fraction 1, no screening: the exact exchange is
+        minus the Hartree energy -- the contraction and its spin factor."""
+        from mandacaru.algorithms import dft
+        atoms = Atoms("H", positions=[[0, 0, 0]], cell=[6] * 3)
+        _run(atoms, h=0.35)
+        integrals = atoms.calc.solver._gradient_context["integrals"]
+        scf = atoms.calc.result.scf
+        solver = dft.kohn_sham_solver(integrals, 1, "hse06", spins=(1, 0),
+                                      screening=(0.0, 1.0))
+        Da = solver._spin_density(scf.mo_coefficients_alpha, 1)
+        Db = np.zeros_like(Da)
+        _fa, _fb, _e, hartree, _xc = solver._fock_pair(Da, Db)
+        assert solver.exact_exchange_energy == pytest.approx(-hartree,
+                                                             rel=1e-12)
+
+    def test_the_unrestricted_energy_is_stationary(self):
+        r"""``dE = sum_s tr(F_s dD_s)`` with the exact-exchange term in each
+        channel's operator."""
+        from mandacaru.algorithms import dft
+        atoms = Atoms("H", positions=[[0, 0, 0]], cell=[6] * 3)
+        _run(atoms, h=0.35, xc="hse06", basis=NAO_DZ)
+        integrals = atoms.calc.solver._gradient_context["integrals"]
+        scf = atoms.calc.result.scf
+        solver = dft.kohn_sham_solver(integrals, 1, "hse06", spins=(1, 0))
+        Da = solver._spin_density(scf.mo_coefficients_alpha, 1)
+        Db = 0.1 * Da
+        rng = np.random.default_rng(5)
+        B = rng.normal(size=Da.shape) + 1j * rng.normal(size=Da.shape)
+        delta_a = 1e-2 * (B @ B.conj().T)
+        delta_b = 0.5 * delta_a.T
+        eps = 1e-4
+        Fa, Fb, e0, _h, _x = solver._fock_pair(Da, Db)
+        e1 = solver._fock_pair(Da + eps * delta_a, Db + eps * delta_b)[2]
+        e2 = solver._fock_pair(Da + 2 * eps * delta_a,
+                               Db + 2 * eps * delta_b)[2]
+        directional = float(np.real(np.sum(Fa.T * delta_a)
+                                    + np.sum(Fb.T * delta_b)))
+        assert (-3 * e0 + 4 * e1 - e2) / (2 * eps) == pytest.approx(
+            directional, rel=1e-5)
+
+    def test_paw_exchange_sees_the_compensation_charges(self, h2_paw):
+        r"""On PAW-LCAO the exchange tensor is the augmented pair densities':
+        unscreened it is the full tensor, and its long-range part is
+        :math:`2\omega/\sqrt\pi\,\delta_{pr}\delta_{qs}` at small omega --
+        the augmented pair densities, not the smooth ones, carry the
+        orthonormal basis's unit charges."""
+        integrals = h2_paw.calc.solver._gradient_context["integrals"]
+        assert integrals._ao_two_body_terms()[1] is not None
+        assert np.allclose(integrals.short_range_two_body(0.0),
+                           integrals.two_body(), atol=1e-12)
+        w1, w2 = 0.005, 0.01
+        long_range = (integrals.short_range_two_body(w1)
+                      - integrals.short_range_two_body(w2)).real
+        M = integrals.n_orbitals
+        expected = (2.0 * (w2 - w1) / np.sqrt(np.pi)
+                    * np.einsum("pr,qs->pqrs", np.eye(M), np.eye(M)))
+        assert np.allclose(long_range, expected, atol=2e-5)
+
+    def test_paw_one_center_terms_are_in_the_energy_and_the_operator(
+            self, h2_paw):
+        """The augmentation spheres' exact exchange and frozen semilocal
+        exchange are part of ``E_xc``, and the operator is still its
+        derivative."""
+        from mandacaru.algorithms import dft
+        integrals = h2_paw.calc.solver._gradient_context["integrals"]
+        scf = h2_paw.calc.result.scf
+        solver = dft.kohn_sham_solver(integrals, 2, "hse06")
+        assert solver.one_center is not None
+        D = solver._density_matrix(scf.mo_coefficients)
+        C, spheres = solver.one_center
+        terms = spheres.evaluate(C.conj().T @ D @ C)
+        assert terms.exact_exchange < 0.0 and terms.semilocal != 0.0
+        e_xc = solver._xc(D)[0]
+        solver.one_center = None
+        assert e_xc - solver._xc(D)[0] == pytest.approx(terms.energy,
+                                                        abs=1e-12)
+        solver.one_center = (C, spheres)
+        rng = np.random.default_rng(7)
+        B = rng.normal(size=D.shape) + 1j * rng.normal(size=D.shape)
+        delta = 1e-2 * (B @ B.conj().T)
+        eps = 1e-4
+        F, e0, _h, _x = solver._fock(D)
+        e1 = solver._fock(D + eps * delta)[1]
+        e2 = solver._fock(D + 2 * eps * delta)[1]
+        directional = float(np.real(np.sum(F.T * delta)))
+        assert (-3 * e0 + 4 * e1 - e2) / (2 * eps) == pytest.approx(
+            directional, rel=1e-5)
+
+    def test_forces_are_the_derivative_of_the_energy(self):
+        """The short-range tensor's derivative is the full one's minus the
+        long-range one's; against Richardson-extrapolated central
+        differences on the frozen grid (H2 tilted off its axis, so both
+        components are nonzero)."""
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0.05, 0, 0.74]],
+                      cell=[6] * 3)
+        _run(atoms, xc="hse06", h=0.3, basis=NAO_DZ)
+        atoms.get_forces()
+        result = atoms.calc.force_result
+        assert result.details["energy_hartree"] == pytest.approx(
+            to_hartree(atoms.get_potential_energy(), "eV"), abs=1e-8)
+
+        def energy(step):
+            moved = atoms.copy()
+            moved.positions[1, 2] += step
+            moved.calc = atoms.calc
+            return moved.get_potential_energy()
+
+        coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
+                        for s in (0.004, 0.002))
+        numerical = fine + (fine - coarse) / 3.0
+        assert result.unprojected[1, 2] == pytest.approx(numerical, abs=1e-4)

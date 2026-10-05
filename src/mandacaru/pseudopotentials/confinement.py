@@ -7,7 +7,7 @@
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
 r"""Confined pseudo-atomic orbitals: the ``energy_shift`` of a pseudopotential
-basis (PAW-LCAO, UPAW-LCAO and ONCVPSP).
+basis (PAW-LCAO and UPAW-LCAO).
 
 Without this module the first zeta of such a basis is the dataset's bound smooth
 partial wave -- the valence orbital of the **free** atom, which has no range of
@@ -50,14 +50,13 @@ and the same ``size``, a PAW-LCAO basis built here follows the same recipe as
 the LCAO bases it is compared with.  (The *datasets* still differ -- each code
 pseudizes its own atom -- so the radii agree closely, not identically.)
 
-For the norm-conserving family the overlap is the identity (``q = 0``):
-ONCVPSP solves with its own local potential and projectors.  Each dataset supplies its operator through
-``channel_operator_on(l, r)``, which returns the grid, the potential, the
-``u``-form projectors, ``D`` and ``q``.
+Each dataset supplies its operator through ``channel_operator_on(l, r)``,
+which returns the grid, the potential, the ``u``-form projectors, ``D`` and
+``q``.
 
 ``energy_shift`` is in **eV**, like the ``energy_shift`` of the
 all-electron ``"NAO"`` family.  It is on by default at
-:data:`DEFAULT_ENERGY_SHIFT` for every family that offers it; ``None`` /
+:data:`DEFAULT_ENERGY_SHIFT` for PAW-LCAO and UPAW-LCAO; ``None`` /
 ``False`` / ``0`` keep the free-atom orbital.
 """
 
@@ -81,9 +80,8 @@ CONFINEMENT_INNER_FRACTION = 0.6
 #: restores the unconfined free-atom orbital.
 DEFAULT_ENERGY_SHIFT = 0.1
 
-#: The basis options this module provides, shared by every family whose
-#: datasets define ``channel_operator_on`` -- PAW-LCAO, UPAW-LCAO and
-#: ONCVPSP -- and their defaults (the polarization shell is derived from the
+#: The basis options this module provides to PAW-LCAO and UPAW-LCAO, whose
+#: datasets define ``channel_operator_on``, and their defaults (the polarization shell is derived from the
 #: confinement, :func:`resolve_polarization`, so it has none of its own).
 CONFINEMENT_OPTIONS = ("energy_shift", "confinement", "polarization")
 CONFINEMENT_DEFAULT_OPTIONS = {"energy_shift": DEFAULT_ENERGY_SHIFT}

@@ -62,8 +62,7 @@ def test_compensation_keeps_the_copper_coulomb_tensor_positive():
         atoms, {"name": "PAW-LCAO", "size": "SZ"}, None, 0.25, 0, None,
         spin=True)
     integrals = context["integrals"]
-    grid = np.asarray(integrals._engine.two_body(method="fft",
-                                                 energy_units="Ha"))
+    grid = np.asarray(integrals._engine.two_body(energy_units="Ha"))
     total = grid + np.asarray(integrals.two_body_augmentation())
 
     def lowest(tensor):

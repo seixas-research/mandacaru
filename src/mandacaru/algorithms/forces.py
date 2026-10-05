@@ -632,7 +632,7 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
     T, V = integrals._engine.one_body(external, energy_units="Ha")
     one_body = T + V + integrals.kb_nonlocal()
     h_ao = np.real(0.5 * (one_body + one_body.conj().T))
-    eri_ao = np.real(integrals._engine.two_body(method="fft", energy_units="Ha"))
+    eri_ao = np.real(integrals._engine.two_body(energy_units="Ha"))
 
     de_ds, de_dh, de_dg = integral_gradients(
         S, h_ao, eri_ao, gamma, gamma2, n_electrons=n_electrons,

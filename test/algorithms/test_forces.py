@@ -119,8 +119,7 @@ class TestJaxEnergyLayer:
         T, V = integrals._engine.one_body(
             integrals._potentials.nuclear_potential, energy_units="Ha")
         h = np.real(0.5 * ((T + V) + (T + V).conj().T))
-        eri = np.real(integrals._engine.two_body(method="fft",
-                                                 energy_units="Ha"))
+        eri = np.real(integrals._engine.two_body(energy_units="Ha"))
         return S, h, eri
 
     def test_reproduces_the_driver_energy(self, fixed_grid):

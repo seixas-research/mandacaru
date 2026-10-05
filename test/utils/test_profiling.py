@@ -86,7 +86,7 @@ class TestIntegrationProfile:
         eng = IntegralEngine(orb, g)
         eng.one_body(lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape),
                      energy_units="Ha")
-        eng.two_body(method="fft", energy_units="Ha")
+        eng.two_body(energy_units="Ha")
         prof = eng.integration_profile()
         assert "one-body integrals" in prof["stages_s"]
         assert any("two-body" in k for k in prof["stages_s"])

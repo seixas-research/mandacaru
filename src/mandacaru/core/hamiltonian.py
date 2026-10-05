@@ -290,10 +290,10 @@ class MolecularIntegrals(MeanFieldMixin):
         #: ``relativity="dirac"`` -- see :mod:`mandacaru.core.spin_orbit`.
         self.spin_orbit_coupling = (dict(spin_orbit_coupling)
                                     if spin_orbit_coupling else {})
-        #: The projectors the spin-orbit term acts through: the same as the
-        #: nonlocal term's for ONCVPSP (whose channels are the j branches),
-        #: their own set for PAW-LCAO (the union of each channel's two j
-        #: branches, :func:`~mandacaru.pseudopotentials.paw.j_resolved_spin_orbit`).
+        #: The projectors the spin-orbit term acts through: a set of its own
+        #: when given (PAW-LCAO: the union of each channel's two j branches,
+        #: :func:`~mandacaru.pseudopotentials.paw.j_resolved_spin_orbit`),
+        #: else the nonlocal term's.
         self._own_spin_orbit_projectors = spin_orbit_projectors is not None
         self.spin_orbit_projectors = (list(spin_orbit_projectors)
                                       if spin_orbit_projectors is not None
@@ -504,7 +504,7 @@ class MolecularIntegrals(MeanFieldMixin):
         r"""``C[mu, p] = <phi_mu|chi_p>`` on the spin-orbit projectors.
 
         :meth:`projections` itself when the term shares the nonlocal
-        projectors (ONCVPSP); otherwise computed the same way, once, with
+        projectors; otherwise computed the same way, once, with
         :attr:`spin_orbit_resolution_ratios` filled alongside.
         """
         if not self._own_spin_orbit_projectors:
@@ -631,6 +631,27 @@ class MolecularIntegrals(MeanFieldMixin):
         """
         return None
 
+    def long_range_augmentation(self, omega: float):
+        r""":meth:`two_body_augmentation` under the long-range kernel
+        :math:`\operatorname{erf}(\omega r_{12})/r_{12}`, or ``None``.
+
+        What :meth:`short_range_two_body` subtracts from the augmentation so
+        that a screened hybrid's exchange sees the extra pair densities under
+        the short-range kernel.  The plain basis has nothing to add.
+        """
+        return None
+
+    def one_center_hybrid(self, omega: float, fraction: float):
+        r"""A screened hybrid's terms inside augmentation spheres, or ``None``.
+
+        A family whose integrals carry one-center corrections returns an
+        object with ``evaluate(density[, density_down])`` over the projected
+        density matrix :math:`C^\dagger D C` -- PAW-LCAO's
+        :class:`~mandacaru.pseudopotentials.onecenter.OneCenterHybrid`.  The
+        plain basis has none.
+        """
+        return None
+
     def _compute(self):
         """Build both integral blocks (kept for callers that need both)."""
         self._compute_one_body()
@@ -709,7 +730,7 @@ class MolecularIntegrals(MeanFieldMixin):
             there is no rotation to reuse.  Asking for a tensor in a basis that
             does not exist yet would otherwise silently return the Loewdin one.
         """
-        eri = self._engine.two_body(method="fft", energy_units="Ha",
+        eri = self._engine.two_body(energy_units="Ha",
                                     solver=solver)
         augmentation = self.two_body_augmentation()
         if augmentation is not None:
@@ -730,6 +751,64 @@ class MolecularIntegrals(MeanFieldMixin):
                 "tensor in the Loewdin-orthonormalized basis.")
         return np.einsum("ap,bq,cr,ds,abcd->pqrs",
                          V.conj(), V.conj(), V, V, eri, optimize=True)
+
+    def short_range_two_body(self, omega: float) -> np.ndarray:
+        r"""``<pq|erfc(omega r12)/r12|rs>`` in the Loewdin basis (Hartree) --
+        a screened hybrid's exchange tensor.
+
+        The grid pair densities under the screened kernel
+        (:class:`~mandacaru.integrals.poisson.PoissonFFTSolver` with
+        ``omega``: spectral at the singularity, exact for the densities the
+        grid resolves), plus a family's augmentation under the bare kernel
+        minus :meth:`long_range_augmentation`.  ``omega = 0`` is the full
+        tensor itself -- the Hartree term's kernel, built the same way -- so
+        the tensor is continuous in ``omega`` and an unscreened one-electron
+        exchange cancels its Hartree energy exactly.
+
+        On PAW-LCAO the pair densities are the augmented ones, smooth plus
+        compensation charges, as for the Hartree term; the one-center
+        remainder of the exchange and of the semilocal exchange it replaces
+        are :meth:`one_center_hybrid`'s (see
+        :mod:`mandacaru.pseudopotentials.onecenter`).  The compensation
+        charges without those one-center terms lowered the HSE06 energy of
+        H2O by 0.12 Ha against PBE.  Cached per ``omega``.
+        """
+        from ..integrals.poisson import PoissonFFTSolver
+
+        if getattr(self, "periodic", False):
+            raise NotImplementedError(
+                "the short-range tensor is built with the isolated (zero-"
+                "padded) kernel; a periodic cell needs the reciprocal-space one")
+        omega = float(omega)
+        cache = self.__dict__.setdefault("_short_range_eri", {})
+        if omega in cache:
+            return cache[omega]
+        if omega < 0.0:
+            raise ValueError(f"omega must be >= 0, got {omega!r}")
+        if omega == 0.0:
+            eri, _augmentation = self._ao_two_body_terms()
+        else:
+            # The grid pairs under the spectral short-range kernel; the
+            # compensation charges' terms are analytic: the bare ones minus
+            # their long-range part.  The full tensor is not needed (when a
+            # Kohn-Sham run has built it for its Hartree term, its cached
+            # augmentation is reused).
+            augmentation = (self._augmentation_ao if self._eri_ao is not None
+                            else self.two_body_augmentation())
+            grid = self.grid
+            solver = PoissonFFTSolver(grid.shape, step=grid.step, omega=omega)
+            eri = self._engine.two_body(energy_units="Ha",
+                                        solver=solver)
+            if augmentation is not None:
+                eri = eri + np.asarray(augmentation)
+                eri = eri - np.asarray(self.long_range_augmentation(omega))
+        if self.orthogonalize:
+            X = self._lowdin_x()
+            # The conjugation pattern of _compute_two_body.
+            eri = np.einsum("ap,bq,cr,ds,abcd->pqrs",
+                            X.conj(), X.conj(), X, X, eri, optimize=True)
+        cache[omega] = eri
+        return eri
 
     def unresolved(self, tolerance: float = RESOLUTION_TOLERANCE):
         """Indices of basis functions and projectors the grid does not resolve.
@@ -769,7 +848,7 @@ class MolecularIntegrals(MeanFieldMixin):
         build is the most expensive step of the whole Hamiltonian.
         """
         if self._eri_ao is None:
-            eri = self._engine.two_body(method="fft", energy_units="Ha")
+            eri = self._engine.two_body(energy_units="Ha")
             augmentation = self.two_body_augmentation()
             if augmentation is not None:
                 eri = eri + np.asarray(augmentation)

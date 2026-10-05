@@ -19,13 +19,12 @@
 pip install mandacaru
 ```
 
-No pseudopotential data ships with the package. ONCVPSP, PAW-LCAO and
-UPAW-LCAO each live in their own repository, and an environment variable
-names the checkout Mandacaru reads from:
+No pseudopotential data ships with the package. PAW-LCAO and UPAW-LCAO
+each live in their own repository, and an environment variable names the
+checkout Mandacaru reads from:
 
 | basis | variable | repository |
 | :--- | :--- | :--- |
-| `ONCVPSP` | `MANDACARU_ONCVPSP_PATH` | `mandacaru-oncvpsp` |
 | `PAW-LCAO` | `MANDACARU_PAW_PATH` | `mandacaru-paw` |
 | `UPAW-LCAO` | `MANDACARU_UPAW_PATH` | `mandacaru-upaw` |
 
@@ -35,10 +34,9 @@ mandacaru --set-paw mandacaru-paw     # writes ~/.zshrc or ~/.bashrc, asking bef
 mandacaru --pseudo-status             # each variable, where it points, and how many datasets it serves
 ```
 
-Datasets sit one folder per set inside each checkout
-(`<checkout>/lda-sr/<Symbol>.parquet` — every family's scalar-relativistic
-LDA set, and the default); PAW-LCAO also has `lda-dirac/` and ONCVPSP an empty
-`pbe/`. A calculation reads `lda-sr/` by default and
+Datasets sit one folder per set inside the checkout
+(`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic LDA set, and
+the default); PAW-LCAO also has `lda-dirac/`. A calculation reads `lda-sr/` by default and
 another folder with `Mandacaru(..., directory="lda-dirac")`; a dataset whose
 own functional disagrees with the folder it is loaded from is refused. The
 all-electron bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need none
@@ -120,7 +118,7 @@ from mandacaru import Mandacaru
 atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="dft",
-                       xc="pbe",                              # "lda" (default) | "pbe" | "r2scan"
+                       xc="pbe",                              # "lda" (default) | "pbe" | "r2scan" | "hse06"
                        dispersion="d4",                       # None | "d4" (PBE and r2SCAN; pip install 'mandacaru[dispersion]')
                        basis={"name": "PAW-LCAO", "size": "DZP"},
                        h=0.2)

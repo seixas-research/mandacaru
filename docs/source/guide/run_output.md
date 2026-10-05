@@ -217,7 +217,11 @@ Kohn-Sham iteration. `[SCF SUMMARY]` adds the `reference_energy_<unit>` of the
 exported Hamiltonian, `hartree_energy_<unit>` and `xc_energy_<unit>`, then
 `core_correction_energy_<unit>` when the basis has a core correction and
 `dispersion_energy_<unit>` when D4 ran, so the total reads as the sum of its
-parts.
+parts. A hybrid (`xc="hse06"`) adds `exact_exchange` to `[SCF SETUP]` (the
+fraction and the range separation) and `exact_exchange_energy_<unit>` to
+`[SCF SUMMARY]`: the part of `xc_energy_<unit>` the exact exchange carries,
+not a further term of the sum. A crystal's summary holds no energy terms, so
+a hybrid crystal adds only the `[SCF SETUP]` entry.
 
 Between the two, a Kohn-Sham run writes `[SCF ITERATIONS]`, one row per
 iteration, so the convergence can be followed and diagnosed:

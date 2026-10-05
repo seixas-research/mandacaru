@@ -449,10 +449,6 @@ class TestSpinPolarized:
         bs = calc.band_structure(path="GX", npoints=3)
         assert bs.energies.shape[0] == 2
 
-    def test_spin_crystal_forces_are_refused(self, oxygen):
-        with pytest.raises(NotImplementedError, match="spin-polarized"):
-            oxygen[True].get_forces()
-
 
 def test_opposite_moments_keep_an_antiferromagnet():
     """Diamond Si with +1 / -1 on its two atoms: the operations that swap them
@@ -494,3 +490,129 @@ def test_a_small_starting_moment_reaches_the_ferromagnet():
     assert m_small > 1.0
     assert m_small == pytest.approx(m_large, abs=1e-4)
     assert e_small == pytest.approx(e_large, abs=1e-5)
+
+
+class TestScreenedHybrid:
+    """HSE06 in a crystal: the short-range exact exchange of the whole mesh
+    in the Kohn-Sham matrix (:mod:`mandacaru.algorithms.periodic_exchange`)."""
+
+    H = float(np.linalg.norm(SILICON.cell[0])) / 9      # odd grid, 9^3
+    KPTS = {"size": (2, 2, 2), "gamma": True}
+
+    @pytest.fixture(scope="class")
+    def pair(self):
+        """``{xc: (solver, result)}`` for PBE and HSE06 on one crystal."""
+        crystal, context = _crystal(h=self.H, kpts=self.KPTS)
+        out = {}
+        for xc in ("pbe", "hse06"):
+            solver = pd.PeriodicKohnSham(crystal, context["n_electrons"], xc)
+            out[xc] = (solver, solver.run())
+        return out
+
+    def test_the_gap_opens_and_the_exchange_lowers_the_energy(self, pair):
+        _solver, pbe = pair["pbe"]
+        _solver, hse = pair["hse06"]
+        assert hse.converged
+        assert hse.terms["exact_exchange"] < 0.0
+        assert "exact_exchange" not in pbe.terms
+        assert hse.band_gap > pbe.band_gap + 0.01
+
+    def test_bands_on_the_mesh_are_the_scf_eigenvalues(self, pair):
+        """To the SCF's tolerance on the hybrid's operators: the bands take
+        the output states' exchange, the last diagonalization the mixed one
+        (they differ by less than HYBRID_TOL)."""
+        solver, result = pair["hse06"]
+        eigenvalues, _w = solver.bands(solver.crystal.kpoints)
+        assert np.allclose(eigenvalues, np.array(result.eigenvalues),
+                           atol=pd.HYBRID_TOL)
+
+    def test_a_long_range_omega_switches_the_exact_exchange_off(self, pair):
+        """omega -> infinity: both short-range exchanges -- the exact one
+        (grid and spheres) and the semilocal one it replaces -- vanish,
+        leaving the semilocal functional the hybrid is built on (fraction
+        0).  Each tends to its local limit pi/omega^2 times a density
+        integral, and those largely cancel: the difference falls 7x, 11x,
+        27x per doubling from omega = 2.5 and is ~3e-7 Ha at omega = 40.
+        (omega = 1000 would need ~10^4 angular nodes in the spheres.)"""
+        solver, _result = pair["hse06"]
+        energies = []
+        for screening in ((40.0, 0.25), (0.11, 0.0)):
+            other = pd.PeriodicKohnSham(solver.crystal, solver.n_electrons,
+                                        "hse06", screening=screening)
+            energies.append(other.run().free_energy)
+        assert energies[0] == pytest.approx(energies[1], abs=1e-6)
+
+    def test_a_spin_crystal_that_loses_its_moment_is_the_restricted_one(
+            self, pair):
+        """Each channel's -a K (one electron per state) against the
+        restricted -a/2 K (two)."""
+        solver, result = pair["hse06"]
+        spin = pd.PeriodicKohnSham(solver.crystal, solver.n_electrons,
+                                   "hse06", magnetic_moments=[0.2, 0.2])
+        polarized = spin.run()
+        assert abs(polarized.magnetic_moment) < 1e-4
+        assert polarized.free_energy == pytest.approx(result.free_energy,
+                                                      abs=1e-6)
+
+    def test_it_cites_the_one_center_exchange(self):
+        atoms = SILICON.copy()
+        atoms.calc = Mandacaru(method="dft", xc="hse06", h=self.H,
+                               trace=False,
+                               basis={"name": "PAW-LCAO", **SILICON_BASIS},
+                               kpts={"size": (2, 1, 1), "gamma": True})
+        atoms.get_potential_energy()
+        assert "Paier2005" in atoms.calc.citation_keys()
+
+    def test_a_spin_crystals_stress_reaches_ase(self, monkeypatch):
+        """A spin-polarized hybrid crystal's stress is not refused: the
+        calculator runs its SCF and hands the converged spin solver to the
+        crystal stress (replaced here by a known tensor; the tensor itself
+        is checked against strained crystals in test_crystal_forces.py)."""
+        from mandacaru.algorithms import crystal_forces
+        from mandacaru.units import BOHR_TO_ANGSTROM, HARTREE_TO_EV
+        seen = []
+
+        def known(solver, *args, **kwargs):
+            seen.append((solver.n_spins, solver.screening))
+            return np.diag([1.0, 2.0, 3.0]) * 1e-4
+
+        monkeypatch.setattr(crystal_forces, "crystal_stress", known)
+        from .test_crystal_forces import _li2h
+        atoms = _li2h()
+        atoms.calc = Mandacaru(method="dft", xc="hse06", h=0.4, trace=False,
+                               basis={"name": "PAW-LCAO", **SILICON_BASIS},
+                               smearing={"method": "fermi-dirac",
+                                         "width": 0.1})
+        stress = atoms.get_stress()
+        assert atoms.calc.get_number_of_spins() == 2
+        from mandacaru.integrals.exchange_correlation import HYBRIDS
+        assert seen == [(2, tuple(HYBRIDS["hse06"]))]
+        scale = 1e-4 * HARTREE_TO_EV / BOHR_TO_ANGSTROM ** 3
+        assert np.allclose(stress, np.array([1, 2, 3, 0, 0, 0]) * scale)
+
+
+def test_the_crystal_scf_runs_single_threaded_blas():
+    """BLAS on one thread beside the OpenMP kernels
+    (:func:`~mandacaru.integrals._backend.single_threaded_blas`)."""
+    for function in (pd.PeriodicKohnSham.run, pd.PeriodicKohnSham.bands):
+        assert getattr(function, "__wrapped__", None) is not None
+
+
+def test_the_mixers_coefficients_come_from_the_density_alone():
+    """A hybrid's operators ride along with the density's DIIS coefficients:
+    the next density does not depend on the operators' residuals (thousands
+    of them outweighed the density and stalled a metal)."""
+    crystal, _context = _crystal()
+    rng = np.random.default_rng(4)
+    rho = [np.abs(rng.normal(size=crystal.grid.size)) for _ in range(4)]
+    q = {c: 0.0j for c in crystal.channels}
+    outputs = {}
+    for scale in (1.0, 1e3):
+        mixer = pd.PulayMixer(crystal)
+        K = [scale * rng.normal(size=(2, 3)) for _ in range(4)]
+        for i in range(3):
+            density, _q, extra = mixer.mix(rho[i], q, rho[i + 1], q,
+                                           extra_in=[K[i]],
+                                           extra_out=[K[i + 1]])
+        outputs[scale] = density
+    assert np.allclose(outputs[1.0], outputs[1e3], atol=1e-12)

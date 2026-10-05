@@ -8,24 +8,22 @@
 
 """Where the pseudopotential libraries live: one environment variable each.
 
-The ONCVPSP, PAW-LCAO and UPAW-LCAO datasets are not part of the
-package.  Each family lives in a repository of its own
-(``mandacaru-oncvpsp``, ``mandacaru-paw``, ``mandacaru-upaw``), and an
-environment variable names the checkout:
+The PAW-LCAO and UPAW-LCAO datasets are not part of the package.  Each
+family lives in a repository of its own (``mandacaru-paw``,
+``mandacaru-upaw``), and an environment variable names the checkout:
 
 ====================  ==========================  ==========================
 family                variable                    set it with
 ====================  ==========================  ==========================
-``oncvpsp``           ``MANDACARU_ONCVPSP_PATH``  ``mandacaru --set-oncvpsp DIR``
 ``paw-lcao``          ``MANDACARU_PAW_PATH``      ``mandacaru --set-paw DIR``
 ``upaw-lcao``         ``MANDACARU_UPAW_PATH``     ``mandacaru --set-upaw DIR``
 ====================  ==========================  ==========================
 
 Inside a checkout the datasets sit one directory per set, named for its
-functional and relativistic treatment (:data:`LIBRARY_FOLDERS`): every family
-ships ``lda-sr/`` (scalar-relativistic LDA, the default); PAW-LCAO adds
-``lda-dirac/`` (with the spin-orbit term).  A set without an entry, such as ONCVPSP's PBE, sits in
-the folder named for the functional (``pbe/``).
+functional and relativistic treatment (:data:`LIBRARY_FOLDERS`): PAW-LCAO
+ships ``lda-sr/`` (scalar-relativistic LDA, the default) and ``lda-dirac/``
+(with the spin-orbit term).  A set without an entry sits in the folder named
+for the functional (``pbe/``).
 UPAW-LCAO is the one optional library: without ``MANDACARU_UPAW_PATH`` its
 datasets are generated on demand (a few seconds per element), so an unset
 variable is not an error for it (:data:`OPTIONAL_FAMILIES`).
@@ -43,15 +41,12 @@ from __future__ import annotations
 import os
 
 #: Family -> the environment variable naming its repository checkout.
-FAMILY_VARIABLES = {"oncvpsp": "MANDACARU_ONCVPSP_PATH",
-                    "paw-lcao": "MANDACARU_PAW_PATH",
+FAMILY_VARIABLES = {"paw-lcao": "MANDACARU_PAW_PATH",
                     "upaw-lcao": "MANDACARU_UPAW_PATH"}
 #: Family -> the ``mandacaru`` flag that sets its variable.
-SET_FLAGS = {"oncvpsp": "--set-oncvpsp",
-             "paw-lcao": "--set-paw", "upaw-lcao": "--set-upaw"}
+SET_FLAGS = {"paw-lcao": "--set-paw", "upaw-lcao": "--set-upaw"}
 #: Family -> the repository that holds its datasets.
-REPOSITORIES = {"oncvpsp": "mandacaru-oncvpsp",
-                "paw-lcao": "mandacaru-paw", "upaw-lcao": "mandacaru-upaw"}
+REPOSITORIES = {"paw-lcao": "mandacaru-paw", "upaw-lcao": "mandacaru-upaw"}
 #: Families that work without their variable: UPAW-LCAO is generated on
 #: demand when there is no library to read.
 OPTIONAL_FAMILIES = ("upaw-lcao",)
@@ -61,10 +56,9 @@ FUNCTIONALS = ("lda", "pbe")
 DEFAULT_XC = "lda"
 #: The folder of a set inside a family's checkout, where it is not simply
 #: named for its functional.
-LIBRARY_FOLDERS = {("oncvpsp", "lda", "scalar"): "lda-sr",
-                   ("paw-lcao", "lda", "scalar"): "lda-sr",
+LIBRARY_FOLDERS = {("paw-lcao", "lda", "scalar"): "lda-sr",
                    ("paw-lcao", "lda", "dirac"): "lda-dirac"}
-#: The folder ``Mandacaru(directory=...)`` reads by default, every family's
+#: The folder ``Mandacaru(directory=...)`` reads by default, the
 #: scalar-relativistic LDA set.
 DEFAULT_LIBRARY_FOLDER = "lda-sr"
 
@@ -174,14 +168,14 @@ def library_directory(family: str, xc: str = DEFAULT_XC, directory=None, *,
 #: Families whose library is laid out as ``<checkout>/<folder>/``, the folder
 #: a calculation selects with ``Mandacaru(directory=...)``.  UPAW-LCAO is
 #: generated on demand into its own library and is not one of them.
-FOLDER_FAMILIES = ("oncvpsp", "paw-lcao")
+FOLDER_FAMILIES = ("paw-lcao",)
 
 
 def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
     """``<checkout>/<folder>`` of ``family``'s library, which must exist.
 
     ``folder`` is one directory name inside the checkout -- ``"lda-sr"``,
-    ``"lda-dirac"`` for PAW-LCAO, ``"pbe"`` for ONCVPSP, or any other set placed beside them -- not a path: a
+    ``"lda-dirac"``, or any other set placed beside them -- not a path: a
     separator, ``"."`` or ``".."`` is refused, so a calculation cannot reach
     outside the library its variable names.  A caller's own folder anywhere
     on disk is the basis option ``directory=`` instead.

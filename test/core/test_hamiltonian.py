@@ -117,3 +117,45 @@ class TestMolecularHamiltonian:
 
 def _herm(m):
     return 0.5 * (m + m.conj().T)
+
+
+class TestShortRangeTwoBody:
+    """``short_range_two_body``: a screened hybrid's exchange tensor."""
+
+    def test_without_screening_it_is_the_full_tensor(self, h2_integrals):
+        assert np.allclose(h2_integrals.short_range_two_body(0.0),
+                           h2_integrals.two_body(), atol=1e-13)
+
+    def test_it_keeps_the_symmetries_and_shrinks_with_omega(self,
+                                                            h2_integrals):
+        full = h2_integrals.two_body().real
+        previous = full
+        for omega in (0.11, 0.5, 2.0):
+            eri = h2_integrals.short_range_two_body(omega)
+            assert np.abs(eri.imag).max() < 1e-9
+            eri = eri.real
+            assert np.allclose(eri, eri.transpose(2, 1, 0, 3), atol=1e-8)
+            assert np.allclose(eri, eri.transpose(2, 3, 0, 1), atol=1e-8)
+            diagonal = np.einsum("pppp->p", eri)
+            assert np.all(diagonal > 0.0)
+            assert np.all(diagonal < np.einsum("pppp->p", previous))
+            previous = eri
+
+    def test_the_long_range_part_is_omega_over_root_pi_at_short_range(
+            self, h2_integrals):
+        r"""For :math:`\omega` much smaller than the orbitals' inverse size,
+        :math:`\operatorname{erf}(\omega r)/r \approx 2\omega/\sqrt\pi`, so
+        two short-range tensors differ by :math:`2(\omega_2 -
+        \omega_1)/\sqrt\pi\,\delta_{pr}\delta_{qs}` in an orthonormal
+        basis."""
+        w1, w2 = 0.005, 0.01
+        long_range = (h2_integrals.short_range_two_body(w1)
+                      - h2_integrals.short_range_two_body(w2)).real
+        M = h2_integrals.n_orbitals
+        expected = (2.0 * (w2 - w1) / np.sqrt(np.pi)
+                    * np.einsum("pr,qs->pqrs", np.eye(M), np.eye(M)))
+        assert np.allclose(long_range, expected, atol=2e-5)
+
+    def test_negative_omega_is_refused(self, h2_integrals):
+        with pytest.raises(ValueError, match="omega"):
+            h2_integrals.short_range_two_body(-0.1)

@@ -3,8 +3,8 @@
 
 """Relativity, GGA and spin-orbit coupling in a PAW-LCAO dataset.
 
-PAW-LCAO's relativistic story differs from ONCVPSP's in one respect worth stating
-plainly: a ``relativity="dirac"`` **PAW-LCAO** dataset is scalar-relativistic
+One fact about PAW-LCAO's relativistic story is worth stating plainly: a
+``relativity="dirac"`` **PAW-LCAO** dataset is scalar-relativistic
 partial waves plus a spin-orbit *term*, not a j-resolved augmentation sphere.
 The reason is the overlap operator.  ``S = 1 + sum |p~> q <p~|`` is the metric
 of the generalized eigenproblem, and a j-dependent ``q`` would give that
@@ -80,10 +80,9 @@ class TestTheOneCenterIdentitiesStillClose:
 
     def test_the_conserved_norm_differs_from_the_overlap(self):
         """If it did not, none of the above would be saying anything."""
-        from mandacaru.pseudopotentials.oncv import (inner_overlaps,
-                                                     norm_targets)
         from mandacaru.basis.atomic_solver import solve_atom
-        from mandacaru.pseudopotentials.oncv import bound_state, scattering_wave
+        from mandacaru.pseudopotentials.partial_waves import (
+            bound_state, inner_overlaps, norm_targets, scattering_wave)
 
         atom = solve_atom(8, points=4000, r_max=20.0, tolerance=1e-6,
                           relativity="scalar")

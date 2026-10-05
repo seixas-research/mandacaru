@@ -52,7 +52,7 @@ class TestUnitarity:
     the construction rather than a tolerance to be loosened.  ``q`` is the
     charge the smooth density is missing, so it is a plain inner product; the
     norm the Vanderbilt condition conserves is the M-weighted one (a
-    Wronskian -- :func:`~mandacaru.pseudopotentials.oncv.norm_targets`).  The
+    Wronskian -- :func:`~mandacaru.pseudopotentials.partial_waves.norm_targets`).  The
     two are the same matrix at ``M = 1`` and differ at ``O(c^-2)`` when they
     are not, so a relativistic UPAW-LCAO dataset cannot be both exactly
     unitary *and* Vanderbilt-consistent.  Measured on hydrogen: ``5.7e-15``

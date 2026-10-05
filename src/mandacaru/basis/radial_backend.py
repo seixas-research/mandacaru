@@ -12,7 +12,7 @@ compiler, no dependencies), loads it with :mod:`ctypes`, and routes
   a symmetric tridiagonal matrix (Sturm bisection to full precision, then
   inverse iteration);
 * :func:`numerov_outward_kernel` / :func:`numerov_inward_kernel` -- the
-  recursions of :func:`mandacaru.pseudopotentials.oncv.numerov_outward` and
+  recursions of :func:`mandacaru.pseudopotentials.partial_waves.numerov_outward` and
   ``_numerov_inward``, same arithmetic in the same order.
 
 Every kernel keeps its Python reference implementation, used when the library

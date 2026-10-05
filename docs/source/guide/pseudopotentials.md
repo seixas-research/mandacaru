@@ -4,17 +4,15 @@ A pseudopotential replaces an atom's core electrons and the singular $-Z/r$
 potential by a smooth, valence-only problem. In Mandacaru a pseudopotential
 **family is a basis name**, selected exactly like `"HAO"` or `"cc-pVTZ"`:
 
-```python
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="ONCVPSP",     # Hamann's optimized norm-conserving Vanderbilt
+                       basis="PAW-LCAO",    # Bloechl's projector augmented wave
                        h=0.25)
 atoms.calc = Mandacaru(method="vqe",
-                       basis={"name": "PAW-LCAO", "size": "DZP"},   # Bloechl's PAW-LCAO, polarized double zeta
+                       basis={"name": "PAW-LCAO", "size": "DZP"},   # polarized double zeta
                        h=0.25)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="UPAW-LCAO",   # the unitary PAW-LCAO variant
                        h=0.25)
-```
 
 That basis turns an all-electron calculation into a valence-only one: the core
 electrons are removed (oxygen keeps 6 of its 8), the basis becomes the family's
@@ -30,12 +28,11 @@ raises an error that names the families instead of aliasing to one.
 
 ## Families
 
-Three families are shipped, all generated from scratch by Mandacaru's own LDA
+Two families are shipped, all generated from scratch by Mandacaru's own LDA
 radial atomic solver (`mandacaru.basis.atomic_solver`):
 
 | Basis name | Aliases | Family | Projectors | Overlap | Library |
 |---|---|---|---|---|---|
-| `"ONCVPSP"` | `"ONCV"` | Hamann's optimized norm-conserving Vanderbilt (below) | two per channel, $2\times2$ coupling | none | `mandacaru-oncvpsp`, H–U |
 | `"PAW-LCAO"` | — | Blöchl's projector augmented wave (below) | two per channel, $2\times2$ coupling | $S + C\,q\,C^\dagger$ | `mandacaru-paw`, H–U |
 | `"UPAW-LCAO"` | `"unitary-paw-lcao"` | the same, with a **unitary** transformation ($q = 0$, below) | two per channel, $2\times2$ coupling | $S$ (unaugmented) | generated on demand |
 
@@ -46,8 +43,7 @@ Names are case-insensitive. Each family accepts the options `size`,
 `projector_basis="raw"|"dual"`, `energy_shift`, `confinement` and
 `polarization` (*Confined orbitals*, below). Any other key — or an all-electron option such
 as `tier` — is refused before an integral is computed. A family may give an
-option a **default of its own**: PAW-LCAO and UPAW-LCAO declare `filter=True`, the
-norm-conserving family, ONCVPSP, leaves it off.
+option a **default of its own**: PAW-LCAO and UPAW-LCAO declare `filter=True`.
 
 `"PAW-LCAO"` is the recommended pseudopotential family. `"UPAW-LCAO"` is an option — the
 same construction with a unitary transformation — and the measurements that
@@ -58,7 +54,6 @@ element uses the *same* family:
 
 ```python
 basis={"O": {"name": "PAW-LCAO", "size": "DZP"}, "H": {"name": "PAW-LCAO"}}
-basis={"O": {"name": "ONCVPSP", "size": "DZP"}, "*": "ONCVPSP"}     # "*" = every other element
 ```
 
 Mixing a pseudopotential family with an all-electron family across elements
@@ -76,14 +71,14 @@ from mandacaru.pseudopotentials import (
     PSEUDO_FAMILIES, FamilySpec, family_names, lookup_family,
     register_family, resolve_family)
 
-family_names()      # ['paw-lcao', 'oncvpsp', 'upaw-lcao', 'oncv', 'unitary-paw-lcao']
-spec = resolve_family("ONCV")          # -> PSEUDO_FAMILIES["oncvpsp"]
-spec.name, spec.aliases, spec.label    # "oncvpsp", ("oncv",), "ONCVPSP"
+family_names()      # ['paw-lcao', 'upaw-lcao', 'unitary-paw-lcao']
+spec = resolve_family("unitary-paw-lcao")   # -> PSEUDO_FAMILIES["upaw-lcao"]
+spec.name, spec.aliases, spec.label    # "upaw-lcao", ("unitary-paw-lcao",), "UPAW-LCAO"
 spec.options       # (..., "filter", "energy_shift", "confinement", "polarization")
-spec.default_options       # {"energy_shift": 0.1} -- PAW-LCAO/UPAW-LCAO also {"filter": True}
+spec.default_options       # {"filter": True, "energy_shift": 0.1}
 spec.resolved_options({"size": "DZ"})  # the defaults with the user's options on top
-spec.norm_conserving                   # True
-spec.generate("O")                     # generate_oncv("O")
+spec.norm_conserving                   # False
+spec.generate("O")                     # generate_upaw("O")
 spec.get("O")                          # the (cached) library loader
 spec.build(atoms, grid, h, charge, spin, options, kinetic)
 lookup_family("HAO")                   # None -- an all-electron basis name
@@ -110,26 +105,14 @@ register_family(FamilySpec(name="gth", description="...",
 and its name immediately works as a basis name — `basis="GTH"` — on every
 driver, in the dry run and on the command line, with no change to any of them.
 
-## ONCVPSP: optimized norm-conserving Vanderbilt potentials
+## The shared radial machinery
 
-`"oncvpsp"` (alias `"oncv"`) is D. R. Hamann's construction, *Phys. Rev. B*
-**88**, 085117 (2013), written from scratch in
-`mandacaru.pseudopotentials.oncv` on Mandacaru's own LDA radial atomic
-solver:
-
-```python
-atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="ONCVPSP",                        # or "ONCV"
-                       h=0.25)
-atoms.calc = Mandacaru(method="vqe",
-                       basis={"name": "ONCVPSP", "size": "DZP"},
-                       h=0.25)
-```
-
-It has **two projectors per angular-momentum channel** built from two
-reference energies, and a local potential that is *not* one of the channels —
-so the s channel of H and Li carries projectors too, and H₂/LiH genuinely run
-through the $2\times2$ Vanderbilt blocks of the general separable form.
+PAW-LCAO and UPAW-LCAO are generated by one radial construction, in
+`mandacaru.pseudopotentials.partial_waves`, on Mandacaru's own LDA radial
+atomic solver. The smooth partial waves follow D. R. Hamann's optimized
+construction, *Phys. Rev. B* **88**, 085117 (2013); this section describes the
+parts both families share, and the *PAW-LCAO* section below adds what makes
+them projector augmented waves.
 
 ### Construction
 
@@ -143,9 +126,8 @@ through the $2\times2$ Vanderbilt blocks of the general separable form.
    shooting (`bound_state`) so it satisfies the radial equation to fourth
    order; $\varphi_2$ is a second bound state of that $l$ if the atom has one,
    otherwise the scattering state at $\varepsilon_2 = \varepsilon_1 + \Delta$
-   with $\Delta = 1$ Ha (`energy_offset`), integrated outward and normalized
-   to one inside $r_c$.
-2. **Pseudo partial waves.** Inside $r_c$, $\tilde\varphi_i = \sum_{n=1}^{8}
+   (`energy_offset`), integrated outward and normalized to one inside $r_c$.
+2. **Smooth partial waves.** Inside $r_c$, $\tilde\varphi_i = \sum_{n=1}^{8}
    c_{in}\,j_l(q_n r)$ with the $q_n$ the interleaved zeros of $j_l$ and
    $j_l'$ at $r_c$ (`bessel_wavevectors`). The RRKJ choice — every basis
    function carrying the AE logarithmic derivative — is *not* usable here:
@@ -154,9 +136,10 @@ through the $2\times2$ Vanderbilt blocks of the general separable form.
    third-derivative condition becomes a combination of the value and
    second-derivative conditions. Constraints: value and first three
    derivatives at $r_c$ (Hamann's `ncon = 4`, the targets taken from the AE
-   radial equation, `matching_targets`) and the **generalized norm
-   conservation** $\langle\tilde\varphi_i|\tilde\varphi_j\rangle_{r<r_c}
-   = \langle\varphi_i|\varphi_j\rangle_{r<r_c}$ for all $i, j$. In the
+   radial equation, `matching_targets`) and the inner norm matrix
+   $\langle\tilde\varphi_i|\tilde\varphi_j\rangle_{r<r_c}$, which is set to a
+   multiple of the all-electron one (`norm_factor`; 1 is Hamann's generalized
+   norm conservation). In the
    remaining freedom the **residual kinetic energy**
    $E^r_i(q_c) = \tfrac12\int_{q_c}^\infty q^4|\tilde\varphi_i(q)|^2\,dq$
    ($q_c = 5$ Bohr⁻¹, `q_cut`; the transform of the whole wave, AE tail
@@ -164,106 +147,24 @@ through the $2\times2$ Vanderbilt blocks of the general separable form.
    through their null space and the one quadratic constraint (the wave's own
    norm) is a Lagrange multiplier found as a one-dimensional root on the
    Moré–Sorensen branch (`constrained_minimum`). No SLSQP; the norm matrix is
-   satisfied to 1e-14.
+   satisfied to 1e-14 (`optimize_pseudo_waves`).
 3. **Local potential.** An even polynomial continuation of the screened AE
-   potential inside $r_{cl} = 0.9\,\max_l r_c$ (value and four derivatives
+   potential inside $r_{cl} = 0.9\,\min_l r_c$ (value and four derivatives
    matched, `polynomial_local_potential`; Hamann's `dvloc0` shift of the
    origin value is available as `local_shift`, default 0), unscreened with
    the Hartree and LDA xc potentials of the pseudo valence density.
-4. **Projectors and coupling.** Inside $r_c$, because
-   $T_l\,j_l(qr) = \tfrac12 q^2 j_l(qr)$, the projectors are analytic:
-   $\chi_i = \sum_n c_{in}(\varepsilon_i -
-   \tfrac12 q_n^2 - V^{scr}_{loc})\,j_l(q_n r)$. Where $r_{cl}>r_c$,
-   the matched all-electron wave and the local potential continue each
-   projector through $r_{cl}$; it vanishes beyond the larger radius.
-   $B_{ij} = \langle\tilde\varphi_i|\chi_j\rangle$ must be symmetric by
-   generalized norm conservation — the generator asserts an asymmetry below
-   1e-5 Ha (achieved: 7e-11 H, 3e-10 Li, 1e-9 O) — and $D = B^{-1}$
-   symmetrized is the $2\times2$ block passed as `nonlocal_coupling` for
-   every `(atom, l, m)`. The raw Vanderbilt form is what is stored and used
-   (its off-diagonal coupling is real and asserted nonzero);
-   `diagonalized_projectors` gives Hamann's orthogonalized pair with a
-   diagonal coupling — the same operator to 1e-9.
-
-Defaults (`DEFAULT_CUTOFFS`, Bohr): H 1.30; Li 2.60; C 1.50; N 1.45; O 1.45;
-F 1.40 (both channels). Lithium is deliberately *not* pushed further out —
-at $r_c = 3.0$ the LiH energy jumps by 0.15 Ha and at 3.3 Bohr the s channel
-grows a ghost state at −0.83 Ha (also at 2.2 Bohr): the polynomial local
-potential over so wide a core no longer resembles the atom. The coupling
-matrices are large ($|D|$ up to ~300 Ha for H) because $B$ has one small
-eigenvalue: the two partial waves at $\varepsilon_1$ and $\varepsilon_1+1$ Ha
-are nearly proportional in the core. That is harmless to first order — the
-nonlocal energy error of the bound wave is exactly $2\,\delta p_1$, the
-$1/b$ cancels — and only the second-order term sees $\|D\|$; $\Delta = 2$ Ha
-would halve $\|D\|$ but degrades the log-derivative match between the
-references (O midpoint 8e-7 → 3e-4) while moving the H₂/LiH energies by only
-4e-5 Ha, so $\Delta = 1$ stays.
-
-### Validation (pinned by `test/pseudopotentials/test_oncv.py`)
-
-Atomic, on the radial grid (freshly generated potentials; `check_oncv_channel`,
-`radial_spectrum` = 3-point Laplacian on a 0.01/0.02 Bohr resampled grid,
-Richardson-extrapolated, `log_derivative_ps` solving the nonlocal radial
-equation exactly through the homogeneous + two inhomogeneous Numerov
-solutions):
-
-| | $r_c$ | $\varepsilon_1, \varepsilon_2$ (Ha) | lowest eigenvalue − $\varepsilon_1$ | $\vert\Delta L\vert$ at $\varepsilon_1$ / $\varepsilon_2$ / midpoint | $E^r$ (Ha) |
-|---|---|---|---|---|---|
-| H s | 1.30 | −0.234, +0.766 | −5.5e-8 | 1.8e-6 / 5.2e-5 / 5.9e-6 | 5.6e-4, 4.8e-3 |
-| Li s | 2.60 | −0.106, +0.894 | +7.4e-9 | 3.0e-8 / 1.1e-5 / 2.5e-3 (L = −1.84) | 5.0e-7, 8.0e-5 |
-| O s | 1.45 | −0.871, +0.129 | −4.3e-8 | 3.0e-7 / 1.7e-4 / 8.2e-6 | 1.7e-4, 2.3e-3 |
-| O p | 1.45 | −0.338, +0.662 | +9.5e-8 | 7.0e-7 / 5.2e-6 / 3.0e-4 | 3.9e-2, 1.9e-1 |
-
-No ghost state below $\varepsilon_1$ in any channel (the next eigenvalue is a
-box state above zero), pseudo = AE beyond $r_c$ to 1e-14, norm matrix to
-1e-10 or better. The O 2p residual is large at $q_c = 5$ Bohr⁻¹ — a 12.5 Ha
-plane-wave cutoff — as it is for any first-row 2p; it is a diagnostic, not a
-failure, and the shipped C/N/F potentials behave the same.
-
-Molecular (H₂ 0.74 Å at h = 0.25 Å, LiH 1.6 Å at
-h = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4 iterations):
-
-| | RHF | FCI = ADAPT |
-|---|---|---|
-| H₂ | −1.044179 | −1.058561 |
-| LiH | −0.774343 | −0.782341 |
-
-The ONCV $r_c$ for LiH sits on a stable plateau ($r_c$ = 2.4–2.6 give
-−0.7747/−0.7743 Ha). The
-nonlocal matrix is nonzero and Hermitian to 1e-17; four projectors per
-molecule (two radial × one $m$ × two atoms) in two $2\times2$ blocks with
-nonzero off-diagonal coupling. DZP on H₂ (20 qubits, RHF only) lowers the
-RHF energy to −1.1428 Ha.
-
-**Hardness at h = 0.25/0.30 Å** (`resolution_ratios` $T_{grid}/T_{exact}$
-of the basis, `kb_resolution_ratios` grid/radial norm of the projectors):
-H₂ basis 0.975, projectors 0.86/0.97; LiH basis 1.166/0.959, projectors
-1.00/1.00/1.12/1.06 — all inside the ±25 % band the
-driver warns at. The ONCV second projector (built from the
-scattering wave) is the hardest object, still within 14 %.
-
-### Library and files
-
-`$MANDACARU_ONCVPSP_PATH/lda-sr/{H,Li,C,N,O,F}.parquet` (70–220 kB each,
-decimated to 0.02 Bohr), regenerated with
-`build_oncv_library(["H", "Li", "C", "N", "O", "F"])`; `get_oncv(symbol,
-directory)` is the family's loader (`directory` defaults to
-`$MANDACARU_ONCVPSP_PATH/lda-sr` for LDA). The
-record is `ONCVPseudoPotential` (a `PseudoPotential`
-subclass: `channels[l]` are `ONCVChannel`s carrying `reference_energies`,
-`wavevectors`, `wave_coefficients`, `pseudo_waves`, `projectors` (two),
-`coupling`, `vanderbilt`, `residual_kinetic`; `projectors[l]` is the list of
-the two radial projectors, `coupling[l]` the block, `v_local_screened`,
-`r_cut_local`, `q_cut`, `energy_offset`). Files are the same Parquet/JSON
-scheme with `"family": "oncvpsp"` (format version 2; radial tables under
-`radial_tables` — `pseudo_wave_l{l}_{i}`, `projector_l{l}_{i}`,
-`v_local_screened` — and the scalars in the metadata); `io.py` dispatches on
-the family. Generation takes 0.5 s (H) to
-2.5 s (F).
+4. **Ghost and scattering checks.** The generator checks that the local
+   potential and the projectors bind no spurious state below the valence
+   level and that the logarithmic derivative of the smooth system matches the
+   all-electron one (`ghost_free`, `log_derivative_ae`). A failing candidate is
+   repaired by local shifts and cutoff adjustments; what cannot be repaired is
+   refused, kept or flagged on the dataset as the `ghosts` mode says
+   (`"repair"`, `"refuse"`, `"keep"`, `"flag"`), and a flagged dataset warns
+   with `GhostStateWarning` when it is loaded.
 
 ### The reference atom and the channel set
 
-Several arguments of `generate_oncv` change what the pseudopotential is built
+Several arguments of `generate_paw` change what the pseudopotential is built
 *from*. They are generation-time only: they change the dataset, never the
 calculation that later reads it.
 
@@ -274,97 +175,14 @@ calculation that later reads it.
 | `nlcc` | `True` | Partial core density; `True` matches where $\rho_c = \rho_v$, a float sets the radius |
 | `extra_l` | `0`, La: `1` | Empty channels above the highest occupied valence $l$; a bound non-core atom level is the first reference when present, otherwise both references scatter |
 | `points`, `r_max` | per element | The radial grid of the reference atom |
-| `reference_configuration` | selected neutral configuration | Explicit complete occupation map `{(n, l): electrons}` for the reference atom |
-| `frozen_subshells` | W–Rn: `4f`; otherwise none | Move selected occupied subshells into the pseudopotential core; add a scattering channel when needed |
-| `scattering_energy` | `0.25` Ha when freezing the highest angular momentum | Positive first reference for the added scattering channel |
+| `frozen_subshells` | Tl–Rn: `4f`; otherwise none | Move selected occupied subshells into the pseudopotential core |
 
 The `xc` argument belongs to the dataset. It is not the functional of a later
 calculation: `Mandacaru(method="dft", xc=...)` chooses its own, and the shipped
 PAW-LCAO datasets are LDA, so a PBE or r2SCAN calculation on them warns about
 the mismatch (see {doc}`dft`).
 
-For an element whose occupied valence channels differ from the automatically
-selected configuration, supply the neutral configuration explicitly. For
-example, [Ce's observed configuration](https://www.nist.gov/pml/atomic-reference-data-electronic-structure-calculations/atomic-reference-data-electronic-8)
-is $4f^1 5d^1 6s^2$ and includes an occupied 5d
-channel that an Aufbau $4f^2 6s^2$ reference omits:
-
-```shell
-mandacaru-build --pp ONCV --element Ce --relativistic --xc LDA \
-  --occupations 4f=1 5d=1 6s=2 --check --output staging
-```
-
-`--occupations` is available for one ONCV element at a time. The command
-starts with the neutral configuration, applies the listed subshell changes,
-and checks orbital capacities and total electron count. The complete
-reference occupation map is saved with each newly generated dataset so it
-can be audited after loading. A missing occupied channel requires a new
-reference atom and regenerated projectors; adding an `extra_l` scattering
-channel alone does not supply the missing occupied state. The generator also
-checks that the reference SCF converged before pseudizing its orbitals.
-
-An audit against [NIST's neutral-atom configurations](https://math.nist.gov/DFTdata/atomdata/configuration.html)
-corrected the occupied s/d counts for Cr, Cu, Nb, Mo, Ru, Rh, Ag, Pt and Au,
-as well as the previously absent d channels in Ce, Gd, Pa and U. **Pd and Th
-still use non-neutral reference occupations:** Pd has 4d8 5s2 instead of
-4d10, and Th has 5f1 6d1 7s2 instead of 6d2 7s2. Their installed reference
-atoms and local channels have no detected bound ghost, but neutral-reference
-trials produced extra s/p states and were rejected. Use those datasets with
-this occupation and transferability limitation in mind.
-
-For a deep filled shell, freezing it can be more stable than constructing a
-negative-energy second projector. For example, Bi's $4f^{14}$ lies well below
-the chemically active $5d^{10}6s^26p^3$ shells. This command retains the full
-neutral reference atom, moves $4f^{14}$ to the frozen core, and constructs a
-positive-energy $f$ scattering channel:
-
-```shell
-mandacaru-build --pp ONCV --element Bi --freeze-subshell 4f \
-  --check --output staging
-```
-
-The valence charge becomes 15 and the $f$ references are $+0.25$ and $+1.25$
-Ha. This follows the frozen-$4f$ partition and positive-energy $f$ channel in
-the [official ONCVPSP Bi input](https://github.com/oncvpsp/oncvpsp/blob/master/tests/data/83_Bi.dat).
-The generated file records the frozen subshells and scattering energy.
-For elements sharing the same frozen shell, `--element W Re Os` and
-`--freeze-subshell 4f` can be combined with `--workers` for a batch build.
-The generator rejects any optimized ONCV projector whose high-momentum residual
-kinetic energy exceeds $10^4$ Ha; loading older files with such a divergent
-residual warns instead of silently accepting them. Atomic phase and bound-state
-checks remain necessary for every candidate.
-
-The generator checks both bound levels and scattering phases. If the initial
-dataset fails, ONCV repair tries local shifts, then modest contractions of
-only the widest cutoff or targeted expansions of a compact highest-$l$ cutoff,
-including absolute radii for exceptionally small semicore channels, then
-balanced cutoffs. These focused adjustments can restore an $f$-channel
-phase match without stretching it to the diffuse $s$ cutoff.
-After ghost and phase repair, `missing_bound_states` also counts non-core
-all-electron and pseudo bound levels on the same 24-Bohr box through one
-angular momentum above the highest channel. A deficit below -0.01 Ha raises
-`MissingStateError` and prevents the file from being written. The cutoff
-excludes very shallow, box-sensitive levels, so a full library audit must
-still check those separately. La is a concrete case: its neutral atom has an
-empty but bound 4f level, while its old local f channel binds none.
-Newly generated files retain the expected non-core counts, box radius and
-energy floor. `missing_bound_states` can repeat this count after loading a
-file; older files without the record still require the all-electron atom.
-The f-block can also have an empty bound d level between occupied s and f
-channels. ONCVPSP adds a zero-occupation bound d projector in that case;
-cerium's repaired 5d level is -0.0813 Ha. These extra projector channels do
-not enlarge the minimal valence basis.
-
-Use `--check` to print the diagnostics, and inspect any `FLAGGED` dataset
-before installing it. A clean atomic check should be followed by tests of
-other atomic configurations and representative bonded systems before treating
-a new dataset as transferable, as in the
-[ONCVPSP users' guide](https://oncvpsp.github.io/oncvpsp/users_guide/).
-
-**`relativity="none"` with `nlcc=False` reproduces the pre-relativistic
-construction bit for bit.** Both new defaults change every generated dataset.
-
-#### Relativity
+### Relativity
 
 The Dirac radial pair collapses *exactly* onto one equation for the large
 component, and the only place $j$ survives is a single $\kappa M'P/Mr$ term —
@@ -389,7 +207,7 @@ meant for a Schrödinger calculation — so **the generalized norm condition
 changes**. What has to be conserved is
 $-W_{ij}(r_c)/2(\varepsilon_j-\varepsilon_i)$, a Wronskian, which equals the
 inner overlap only as $M \to 1$. Conserving the overlap instead leaves the
-Vanderbilt matrix asymmetric by $1.4\times10^{-4}$ Ha for oxygen against a
+coupling matrix asymmetric by $1.4\times10^{-4}$ Ha for oxygen against a
 $10^{-5}$ tolerance, and refining the grid does not help. With the Wronskian
 the logarithmic derivative of the *smooth* system reproduces the
 *relativistic* all-electron one to $4\times10^{-7}$ at the reference energy.
@@ -430,8 +248,7 @@ significant digit. Spin-orbit splittings themselves are not affected by this:
 $l = 0$ carries none, and every channel that does carry one is $p$ or higher,
 converging at the clean rate.
 ```
-
-#### Nonlinear core correction
+### Nonlinear core correction
 
 Unscreening subtracts $V_{xc}[\tilde\rho_v]$, but the all-electron potential
 was screened by $V_{xc}[\rho_c + \rho_v]$, and $V_{xc}$ is not linear. The
@@ -445,22 +262,6 @@ correction has nothing to act on and is not performed. The generation-time
 half, which is where the nonlinearity is committed, is. `core_density` is
 stored and reported so a DFT consumer of the dataset can do the rest.
 
-### Still not implemented
-
-The second reference energy is a fixed offset rather than Hamann's
-per-element tuned values. Departures from the paper: the Bessel wave vectors
-are the interleaved zeros rather than Hamann's own choice; the scattering tail
-entering the residual energy is tapered between $3r_c$ and $5r_c$ (it does not
-decay); $r_{cl}$ is a fixed fraction of the smallest $r_c$; and the raw
-Vanderbilt coupling is kept instead of the orthogonalized projectors
-(equivalent operator).
-
-A point-nucleus Dirac s or p$_{1/2}$ state behaves like $r^\gamma$ with
-$\gamma = \sqrt{\kappa^2 - (Z\alpha)^2} < 1$, and **a uniform radial grid
-cannot converge that at second order**: gold's 1s is 1.6 % off and improves
-only as $h^{1.5}$, against the clean rate 2.00 of its 2p$_{3/2}$ ($\gamma =
-1.92$). It affects deep core levels, not the valence channels or the
-splittings a pseudopotential is built from.
 
 ## PAW-LCAO: projector augmented waves
 
@@ -470,9 +271,10 @@ one-center energies **linearized around the reference atom** — a fixed
 per-species coupling matrix $D^0$, which makes the dataset behave like an
 ultrasoft pseudopotential with an exact PAW-LCAO reconstruction of the atomic
 partial waves. Written from scratch in
-`mandacaru.pseudopotentials.paw` on the same LDA radial atom as
-the ONCVPSP family, reusing the Numerov partial waves, the Bessel
-machinery and the polynomial local potential of the ONCVPSP module:
+`mandacaru.pseudopotentials.paw` on the same LDA radial atom,
+reusing the Numerov partial waves, the Bessel machinery and the polynomial
+local potential of `mandacaru.pseudopotentials.partial_waves` (see
+*The shared radial machinery*, above):
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
@@ -483,8 +285,8 @@ atoms.calc = Mandacaru(method="vqe",
                        h=0.25)
 ```
 
-The name has no alias; `family_names()` lists `paw-lcao`, `oncvpsp`,
-`upaw-lcao` first (and the unknown-family error names all three).
+The name has no alias; `family_names()` lists `paw-lcao` first, then
+`upaw-lcao` (and the unknown-family error names both).
 
 ### The transformation
 
@@ -522,7 +324,7 @@ through Löwdin, RHF and UHF.
    $n_c$ (every subshell below the valence) and, per valence $l$, two
    all-electron partial waves: the bound state (Numerov, `bound_state`) and
    the scattering state at $\varepsilon_1 + \Delta$ normalized to one inside
-   $r_c$ — the ONCVPSP pair. $\Delta$ is 1 Ha except for H and Li (0.5 Ha,
+   $r_c$. $\Delta$ is 1 Ha except for H and Li (0.5 Ha,
    `DEFAULT_ENERGY_OFFSETS`): lithium's wave at +1 Ha sits at a pole of the
    logarithmic derivative ($L = +24$ at $r_c$) and the smooth pair then grows
    nodes and a ghost; for hydrogen +0.5 Ha gives a softer second projector.
@@ -532,7 +334,7 @@ through Löwdin, RHF and UHF.
    kinetic energy beyond $q_c = 5$ Bohr⁻¹ minimized. **The norm is not
    conserved**, but it is *controlled*: the inner-norm matrix is set to
    $(1-s)$ times the all-electron one (`optimize_pseudo_waves(...,
-   norm_factor=1-s)`, the ONCVPSP optimizer with a scaled target), so
+   norm_factor=1-s)`, the same optimizer with a scaled target), so
    $q = s\,\langle\varphi_i|\varphi_j\rangle_{r<r_c}$ is **positive
    definite by construction** and $S \ge 1$. The deficit $s$ is per element
    (`DEFAULT_NORM_DEFICITS`: H 0.05, Li 0.02, C 0.10, N/O/F 0.15; the
@@ -551,8 +353,8 @@ through Löwdin, RHF and UHF.
    `dvloc0` for the first row (`DEFAULT_LOCAL_SHIFTS`: C 12, N 10, O 6, F 8
    Ha). Without the raise the continued potential (O: −5.8 Ha at the origin)
    binds a spurious 1s-like state of its own in the s channel — a ghost 0.6–1
-   Ha below $\varepsilon_{2s}$ — which the near-singular ONCVPSP coupling
-   suppresses but the PAW-LCAO projector term does not; the raise is chosen so the
+   Ha below $\varepsilon_{2s}$ — which the projector term does
+   not suppress; the raise is chosen so the
    s spectrum has nothing between the bound state and the box states.
 4. **Projectors** (`assemble_paw_channel`). $\chi_i = (\varepsilon_i - T -
    \tilde v^{scr})\tilde\varphi_i$ inside $r_c$ (analytic, $T j_l = \tfrac12
@@ -575,7 +377,7 @@ through Löwdin, RHF and UHF.
    \propto (1 - r^2/r_g^2)^3$ inside $r_g = \min_l r_c$
    (`compensation_shape`, analytic potential `compensation_potential`),
    restores neutrality with the ion outside the sphere. Unscreening follows
-   ONCVPSP's convention: $\tilde v^{ion} = \tilde v^{scr} -
+   the norm-conserving convention: $\tilde v^{ion} = \tilde v^{scr} -
    v_H[\tilde n_v + \hat n] - v_{xc}[\tilde n_v]$ (→ $-Z_{ion}/r$ outside),
    and the coupling loses the Hartree screening of the augmentation,
    $D^{ion} = D^{scr} - q\int v_H[\tilde n_v + \hat n]\,g$
@@ -591,7 +393,7 @@ through Löwdin, RHF and UHF.
    Li +0.0006, C +0.030, N +0.053, O −0.107, F −0.570 Ha. It enters every
    molecular Hamiltonian through the new
    `MolecularIntegrals.constant_energy` (next to the nuclear repulsion, also
-   in `hartree_fock_hamiltonian`), so PAW-LCAO totals are comparable with ONCVPSP's.
+   in `hartree_fock_hamiltonian`).
 
 ### In a molecule (`build_paw`, `PAWIntegrals`)
 
@@ -702,7 +504,7 @@ dual 0.78/0.77). The local potential is interpolated with a cubic spline
 
 ### Forces (`algorithms/pseudo_forces.py`)
 
-`atoms.get_forces()` with `basis="PAW-LCAO"` (or `"ONCVPSP"`) returns the
+`atoms.get_forces()` with `basis="PAW-LCAO"` returns the
 Hellmann–Feynman plus Pulay force of the converged state. With the reduced
 density matrices $D$, $\Gamma$ and the molecular orbitals $V$ held fixed,
 
@@ -758,7 +560,7 @@ almost entirely — while the LiH bond forces from 2.1 to 3.2 Å match within
 Atomic, freshly generated (`check_paw_channel`: `paw_spectrum` = the
 generalized problem with the 3-point Laplacian on 0.01/0.02 Bohr grids,
 Richardson-extrapolated; `paw_eigenstate` + `reconstruct_ae` at 0.005 Bohr for
-the first row; `log_derivative_paw` = the ONCVPSP exact nonlocal Numerov
+the first row; `log_derivative_paw` = the exact nonlocal Numerov
 solve with the energy-dependent coupling $D^{scr} - Eq$):
 
 | | $r_c$ | $s$ | $q_{11}$ | duality | lowest eigenvalue − $\varepsilon_1$ | next state | $\vert\varphi_{rec}-\varphi_{AE}\vert$ | $\vert\Delta L\vert$ at $\varepsilon_1$ / $\varepsilon_2$ / midpoint |
@@ -781,25 +583,24 @@ Molecular (H₂ 0.74 Å at h = 0.25 Å, LiH 1.6 Å
 at h = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4
 iterations; energies in eV as the user sees them, Hartree in parentheses):
 
-| | PAW-LCAO RHF | PAW-LCAO FCI = ADAPT | ONCV RHF / ADAPT | PAW-LCAO − ONCV |
-|---|---|---|---|---|
-| H₂ | −28.662 eV (−1.053292) | −29.046 eV (−1.067402) | −1.044179 / −1.058561 | −0.248 eV |
-| LiH | −20.693 eV (−0.760451) | −20.924 eV (−0.768954) | −0.774343 / −0.782341 | +0.378 eV |
+| | PAW-LCAO RHF | PAW-LCAO FCI = ADAPT |
+|---|---|---|
+| H₂ | −28.662 eV (−1.053292) | −29.046 eV (−1.067402) |
+| LiH | −20.693 eV (−0.760451) | −20.924 eV (−0.768954) |
 
-PAW-LCAO agrees with ONCVPSP on both molecules (within 0.05 Ha, against the
-0.1 Ha asked). On H₂ the augmented
+On H₂ the augmented
 overlap has eigenvalues 0.203 / 1.809 (bare 0.199 / 1.757), the
 Löwdin-orthonormalized overlap is the identity to 1e-16, and the augmented
 two-body tensor keeps the pair-density symmetries to 1e-12. DZ on H₂ (8
 qubits, RHF −1.1399 Ha) is variational against SZ.
 
 **Hardness at h = 0.25 Å** (`resolution_ratios` of the basis,
-`kb_resolution_ratios` of the raw projectors): H₂ basis 0.98 (ONCV 0.975),
-projectors 0.90 / 0.78; LiH basis 1.219 / 0.975 (ONCV 1.227 / 0.971),
+`kb_resolution_ratios` of the raw projectors): H₂ basis 0.98,
+projectors 0.90 / 0.78; LiH basis 1.219 / 0.975,
 projectors 1.00 / 1.00 / 0.88 / 0.85 — all inside the ±25 % band. The second
 H projector, built from the scattering wave, is the hardest object; at
-h = 0.35 Å (0.66 Bohr) neither family's H projectors are resolved and both
-give nonsense.
+h = 0.35 Å (0.66 Bohr) the H projectors are not resolved and the result is
+nonsense.
 
 ### Library and files
 
@@ -807,8 +608,7 @@ give nonsense.
 0.02 Bohr; 9.6 s to regenerate with `build_paw_library()`; `get_paw(symbol,
 directory)` is the family's loader, `paw_library_path()` its directory
 (`$MANDACARU_PAW_PATH/lda-sr` by default, `lda-dirac` for
-`relativity="dirac"`), ONCVPSP files, in their own repository,
-untouched). The record is `PAWDataset` (a `PseudoPotential` subclass:
+`relativity="dirac"`). The record is `PAWDataset` (a `PseudoPotential` subclass:
 `channels[l]` are `PAWChannel`s with `reference_energies`, `ae_waves`,
 `pseudo_waves`, `projectors` (dual), `raw_projectors`, `overlap_correction`
 $q$, `kinetic_difference` $\Delta T$, `potential_difference`,
@@ -830,10 +630,10 @@ trips are lossless and idempotent (tested).
 
 ### Relativity, GGA and spin-orbit coupling
 
-`generate_paw` takes the same `xc`, `relativity`, `nlcc` and `extra_l`
-arguments as `generate_oncv`, with the same defaults (`"lda"`, `"scalar"`,
-`True`, `0`), and `relativity="none", nlcc=False` reproduces the
-pre-relativistic dataset.
+`generate_paw` takes the `xc`, `relativity`, `nlcc` and `extra_l` arguments
+described under *The shared radial machinery*, with the defaults `"lda"`,
+`"scalar"`, `True` and `0`; `relativity="none", nlcc=False` gives the plain
+non-relativistic construction without a partial core.
 
 **A relativistic reference atom also uses relativistic exchange.** Near a
 heavy nucleus the Fermi momentum $k_F = (3\pi^2\rho)^{1/3}$ is no longer small
@@ -854,16 +654,17 @@ semicore 5p and 4f by 6–20 mHa. It lowers the core's exchange by tens of
 Hartree, and changes the spin-orbit splittings by at most 1.3 %.
 
 ```{note}
-The same honest limit applies here as for ONCVPSP: a relativistic $s$-channel
+A relativistic $s$-channel
 eigenvalue does not converge cleanly on this grid (the $r^\gamma$ cusp of a
 point-nucleus Dirac state), so treat a valence relativistic shift as good to
 about 10-15 % at production grid densities, not better -- see the
-*Relativity* subsection under ONCVPSP, above, for the measured table. It does
+*Relativity* subsection under *The shared radial machinery*, above, for the
+measured table. It does
 not touch the spin-orbit splittings below, which come entirely from $p$ and
 higher channels.
 ```
 
-Two things differ from ONCVPSP, and both follow from PAW-LCAO's overlap operator.
+Two things follow from PAW-LCAO's overlap operator.
 
 **A Dirac PAW-LCAO dataset is scalar-relativistic partial waves plus a
 $j$-resolved spin-orbit term, not a $j$-resolved augmentation sphere.**
@@ -948,8 +749,7 @@ nothing to correct.
   `energies["core_valence_xc_omitted"]` (Li −1.54, O −4.60 Ha).
 * **HF/FCI valence with LDA-generated datasets.** The molecule's exchange and
   correlation are exact within the augmented Coulomb tensor, while the
-  one-center xc corrections were linearized at the LDA level — the same
-  inconsistency ONCVPSP carries.
+  one-center xc corrections were linearized at the LDA level.
 * **Two partial waves per channel**, at $\varepsilon_1$ and
   $\varepsilon_1 + \Delta$ (a per-dataset $\Delta$ only where a repair
   needed one), no projectors above the valence $l$ unless `extra_l` asks for
@@ -958,9 +758,7 @@ nothing to correct.
   pseudization (the price of a guaranteed positive definite overlap with this
   pair of reference waves). The shipped sets are LDA, scalar-relativistic or
   Dirac (*Relativity, GGA and spin-orbit coupling*, above).
-* **Not norm-conserving, but by a controlled amount** ($s$ = 2–15 %): the
-  softness gain over ONCVPSP is correspondingly modest (H₂ basis ratio 0.98
-  vs 0.975).
+* **Not norm-conserving, but by a controlled amount** ($s$ = 2–15 %).
 
 ## UPAW-LCAO: a unitary transformation
 
@@ -1080,14 +878,14 @@ H^{NL} = C\,D\,C^\dagger, \qquad C_{\mu p} = \langle\phi_\mu|\chi_p\rangle ,
 
 where $C$ (`MolecularIntegrals.projections()`, an $M\times P$ matrix) contains
 the basis–projector overlaps and $D$ is a **block-diagonal** $P\times P$
-coupling matrix. ONCVPSP and PAW-LCAO integrate $C$ on atom-centered spheres.
+coupling matrix. PAW-LCAO integrates $C$ on atom-centered spheres.
 Each projector
 carries three labels — `atom_index`, `channel = (l, m)` and a radial `index`
 within that channel — and $D$ has one block per `(atom, l, m)`, of size
 $n\times n$ for $n$ radial projectors in that channel. The family supplies the
 blocks as `nonlocal_coupling={(atom, l, m): block}`.
 
-ONCVPSP and PAW-LCAO fill $2\times2$ blocks; the machinery
+PAW-LCAO fills $2\times2$ blocks; the machinery
 (`projector_blocks`, `assemble_block_matrix` in `mandacaru.core.hamiltonian`)
 validates and assembles them. A family with a single Kleinman–Bylander
 projector per channel would instead supply the $1\times1$ block $[E^{KB}_l]$,
@@ -1109,8 +907,8 @@ S \;\to\; S + C\,Q\,C^\dagger ,
 (`MolecularIntegrals.overlap()`; the grid overlap alone is `bare_overlap()`),
 so the orthonormalized one- and two-body integrals — and everything downstream,
 RHF, the UHF natural orbitals, the qubit Hamiltonian — see the augmented
-metric automatically. ONCVPSP passes `None`; `Q = 0` reproduces
-the plain Hamiltonian exactly. The PAW-LCAO family is the first to use it (its $q$
+metric automatically. Passing `None` (or `Q = 0`) reproduces
+the plain Hamiltonian exactly. The PAW-LCAO family uses it (its $q$
 blocks), together with two further hooks on `MolecularIntegrals`:
 `two_body_augmentation()` (a correction added to the grid two-body tensor —
 the compensation-charge terms) and `constant_energy` (an additive constant
@@ -1140,35 +938,30 @@ optimization on this grid is not merely inaccurate — it does not converge.
 
 ## The pseudopotential libraries
 
-None of the three generated families ships inside the package. Each lives in
-a repository of its own — `mandacaru-oncvpsp`,
-`mandacaru-paw`, `mandacaru-upaw` — and an environment variable names the
-checkout Mandacaru reads from:
+None of the generated families ships inside the package. Each lives in
+a repository of its own — `mandacaru-paw`, `mandacaru-upaw` — and an
+environment variable names the checkout Mandacaru reads from:
 
 | family | variable | set it with |
 |---|---|---|
-| `oncvpsp` | `MANDACARU_ONCVPSP_PATH` | `mandacaru --set-oncvpsp DIR` |
 | `paw-lcao` | `MANDACARU_PAW_PATH` | `mandacaru --set-paw DIR` |
 | `upaw-lcao` | `MANDACARU_UPAW_PATH` | `mandacaru --set-upaw DIR` (optional) |
 
 ```bash
-git clone https://github.com/seixas-research/mandacaru-oncvpsp.git
-mandacaru --set-oncvpsp mandacaru-oncvpsp
-
 git clone https://github.com/seixas-research/mandacaru-paw.git
 mandacaru --set-paw mandacaru-paw
 
 mandacaru --pseudo-status        # each variable, where it points, and how many datasets it serves
 ```
 
-`--set-oncvpsp` / `--set-paw` / `--set-upaw` write `export
+`--set-paw` / `--set-upaw` write `export
 MANDACARU_..._PATH=DIR` into `~/.zshrc` or `~/.bashrc` (whichever `$SHELL`
 reads), asking `[Y/n]` before replacing a different value; open a new
 terminal, or `source` the file, for the variable to take effect in your
 shell. Inside a checkout the datasets sit one folder per set —
-`<checkout>/lda-sr/<Symbol>.parquet`, every family's scalar-relativistic LDA
-set and the default — with `<checkout>/lda-dirac/` added by the PAW-LCAO
-library and `<checkout>/pbe/` by the ONCVPSP library.
+`<checkout>/lda-sr/<Symbol>.parquet`, the scalar-relativistic LDA set and the
+default — with `<checkout>/lda-dirac/` added by the PAW-LCAO
+library.
 `MANDACARU_UPAW_PATH` is the one optional variable: UPAW-LCAO is generated on
 demand without it (*Datasets* above).
 
@@ -1181,23 +974,22 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        directory="lda-dirac")   # $MANDACARU_PAW_PATH/lda-dirac/
 ```
 
-The same folder name is looked for in the ONCVPSP library when
-that is the basis, and a per-element basis mapping has each of its library
-entries pointed there; with the default `directory="lda-sr"` every family
-reads its own scalar-relativistic set unchanged. `directory=` takes the name
+A per-element basis mapping has each of its library
+entries pointed at the same folder name; with the default `directory="lda-sr"`
+every entry reads the scalar-relativistic set unchanged. `directory=` takes the name
 of one folder inside the checkout, not a path; a missing folder raises
 `LibraryPathError` listing the ones present, and naming a folder with a basis
 that reads no library is refused. It is not ASE's working directory, which
 the calculator leaves as it is.
 
-Each family's own module is the loader — `get_oncv(symbol, directory)`,
-`get_paw(symbol, directory)`, `get_upaw(symbol, directory)` — all accepting
+Each family's own module is the loader —
+`get_paw(symbol, directory)`, `get_upaw(symbol, directory)` — both accepting
 `directory=None` to fall back to the library variable and its default
 `lda-sr/` set; `available_elements(directory)` (from
-`mandacaru.pseudopotentials.io`) lists what a directory holds. The ONCVPSP
-and PAW-LCAO datasets cover **every element with Z ≤ 92** (H through U),
+`mandacaru.pseudopotentials.io`) lists what a directory holds. The PAW-LCAO
+datasets cover **every element with Z ≤ 92** (H through U),
 generated from scratch by Mandacaru's own LDA radial atomic solver; the
-checkouts (all 92 elements) are about 110 MB and 190 MB.
+checkout (all 92 elements) is about 190 MB.
 
 A calculation that needs a variable that is unset, or that names something
 that is not a directory, raises `LibraryPathError`
@@ -1214,9 +1006,9 @@ optional library: without `MANDACARU_UPAW_PATH` a missing dataset is
 generated on demand (*Datasets* above) rather than raising
 `LibraryPathError`. A library built with `mandacaru-build --pp UPAW
 --install` goes to `$MANDACARU_UPAW_PATH/<xc>/`, inside that checkout. The
-ONCVPSP and PAW-LCAO libraries are regenerated or extended the same way,
-with `mandacaru-build --pp ONCV --all --install` or `--pp PAW --all
---install` (or `build_oncv_library`/`build_paw_library` from Python, above).
+PAW-LCAO library is regenerated or extended the same way,
+with `mandacaru-build --pp PAW --all --install`
+(or `build_paw_library` from Python, above).
 
 ## File format
 
@@ -1242,13 +1034,12 @@ load_pseudopotential("mystery.dat")  # magic bytes
 
 Every file records its `family` (format version 2); a file without the
 field, or without `radial_tables`, is refused rather than guessed at — this
-build reads only ONCVPSP and PAW-LCAO table layouts (UPAW-LCAO sharing
-PAW-LCAO's).
+build reads only the PAW-LCAO table layout (UPAW-LCAO sharing it).
 
 ```{note}
 Saving is lossless and idempotent: `load` then `save` returns the same tables.
 The library is decimated once at generation time
-(`build_oncv_library`/`build_paw_library`/`build_upaw_library(..., stride=...)`,
+(`build_paw_library`/`build_upaw_library(..., stride=...)`,
 4 by default) because the generation grid must resolve the all-electron core
 while the smooth result does not need it. `save_pseudopotential` itself defaults
 to `stride=1`, so repeated round trips never compound.
@@ -1268,7 +1059,7 @@ from the outermost channel:
 
 ```python
 Mandacaru(method="adapt-vqe",
-          basis={"name": "ONCVPSP", "size": "DZP"},
+          basis={"name": "PAW-LCAO", "size": "DZP"},
           h=0.15)
 ```
 
@@ -1300,11 +1091,10 @@ Mandacaru(method="adapt-vqe",
 ```
 
 `energy_shift` is in **eV** (as for [the NAO family](basis_sets.md)) and is accepted by every pseudopotential family:
-`"PAW-LCAO"`, `"UPAW-LCAO"` and `"ONCVPSP"`, together with
-`confinement` and `polarization`. **The default is 0.1 eV** for all three
--- so a plain `basis="PAW-LCAO"` or `basis="ONCVPSP"` is a
-confined basis, and an ONCVPSP and a PAW-LCAO calculation of the same molecule
-use bases built by the same recipe.
+`"PAW-LCAO"` and `"UPAW-LCAO"`, together with
+`confinement` and `polarization`. **The default is 0.1 eV** for both
+-- so a plain `basis="PAW-LCAO"` is a
+confined basis.
 `None`, `False` or `0` switch the confinement off and restore the free-atom
 orbitals; every PAW-LCAO energy quoted in this guide outside this section was
 computed that way, with confinement off rather than at the default. A `{symbol: eV}`
@@ -1326,33 +1116,8 @@ problem the stored wave solves, with a confining potential added,
 ```
 
 and the radius `r_c` found by a root search on
-`ε(r_c) − ε_free = energy_shift`. For the norm-conserving family the overlap
-is the identity (`q = 0`): ONCVPSP solves with its own local potential and
-projectors. The radii agree across families to a few
-hundredths of a Bohr (O 2p at 0.1 eV: 5.340 PAW-LCAO, 5.345 ONCVPSP),
-because the recipe is the same and the potentials nearly so.
-
-The Fourier filter stays **off** by default for ONCVPSP. Before
-atom-centered ONCVPSP projector integration, measured on
-water (SZ, 3.5 Å of vacuum), the net force on the free molecule is PAW-LCAO's
-0.43 / 0.079 / 0.0083 eV/Å at h = 0.25 / 0.20 / 0.16 Å without the filter and
-0.043 / 0.0003 / 0.0001 with it; ONCVPSP's is 115 / 15.9 / 4.5 without it and
-124 / 16.4 / 4.5 with it. The filter cures PAW-LCAO's egg-box and does nothing
-for ONCVPSP's: the grid-sampled projectors and local potential of a harder
-dataset dominated. ONCVPSP now integrates its projectors on atom-centered
-spheres. The local potential, kinetic energy and Coulomb terms remain on the
-grid. On a right-angle water check at h = 0.25 Å the net force is still
-7.72 eV/Å without the filter and 7.00 eV/Å with it, while the energy changes
-by 3.38 Ha. ONCVPSP calculations therefore still need grid-convergence
-checks. In a matched four-iteration water calculation the raw net force at
-h = 0.16 Å happened to fall to 0.0083 eV/Å, but rose to 1.17 eV/Å at
-h = 0.12 Å while the energy moved by 4.51 eV; the low force was a grid-phase
-cancellation. On a frozen 0.16 Å grid, rigidly shifting the same molecule by
-0.08 Å in two directions changed its energy by 0.067 eV. A frozen-density
-term check at h = 0.25 Å found large, opposing local-potential and
-two-electron changes under a rigid shift, so refining the local integration
-alone cannot ensure reliable forces. Even at h = 0.08 Å the water net force
-is 0.162 eV/Å and its energy is 1.50 eV above the h = 0.10 Å result.
+`ε(r_c) − ε_free = energy_shift`. The overlap
+is the identity for UPAW-LCAO (`q = 0`).
 
 The extra zetas and the polarization shell are then split from the confined
 orbital, so the whole basis of an atom shares its range.
@@ -1441,7 +1206,7 @@ second zeta is considerably **longer-ranged** than one made with
 defaults are kept for the higher ones) or the whole sequence.
 `"zeta_split": "last_zeta"` selects the other scheme (a `split_norm` written
 alone selects it too), and each parameter is refused with the other scheme. The choice applies to
-every family with a size hierarchy (`"ONCVPSP"`, `"PAW-LCAO"`, `"UPAW-LCAO"`
+every family with a size hierarchy (`"PAW-LCAO"`, `"UPAW-LCAO"`
 and the all-electron `"NAO"`), and the log's `[BASIS]` block names the scheme
 in its `zeta_split:` line.
 
@@ -1535,10 +1300,6 @@ Mandacaru(method="adapt-vqe",
           h=0.20)
 
 Mandacaru(method="adapt-vqe",
-          basis={"name": "ONCVPSP", "filter": True},       # opt in, ONCVPSP default off
-          h=0.20)
-
-Mandacaru(method="adapt-vqe",
           basis={"name": "PAW-LCAO", "filter": 800.0},       # explicit cutoff, in eV
           h=0.20)
 ```
@@ -1546,7 +1307,7 @@ Mandacaru(method="adapt-vqe",
 `filter` takes `True` / `"auto"` (cutoff tied to the grid, `k_c = π/h`), a
 positive **kinetic-energy cutoff in eV** (`k_c = sqrt(2E)` in atomic units),
 or `False`. Anything else raises at construction. It is **on by default for
-`PAW-LCAO` and `UPAW-LCAO`, off for `ONCVPSP`** — declared once per family as
+`PAW-LCAO` and `UPAW-LCAO`** — declared once per family as
 `FamilySpec.default_options`, so a new family states its own and the drivers
 need no edit. `filter=False` reproduces the unfiltered basis byte for byte.
 
@@ -1628,11 +1389,10 @@ energy 0.037 eV.
 **Filtering changes the basis, so it changes the numbers.** It is a modeling
 choice, not a numerical detail: the filtered first zeta is no longer exactly
 the pseudo-orbital the projectors were built from, so the atomic reference is
-no longer reproduced exactly. That is why ONCVPSP leaves
-it off — its orbitals are not built band-limited — while PAW-LCAO and UPAW-LCAO turn
-it on, since `optimize_pseudo_waves` already minimizes the kinetic energy
-beyond `q_cut` and the filter has little left to take. Set `filter=False` to
-compare against an older result.
+no longer reproduced exactly. It is on by default for PAW-LCAO and UPAW-LCAO
+because `optimize_pseudo_waves` already minimizes the kinetic energy beyond
+`q_cut` and the filter has little left to take. Set `filter=False` to
+compare against an unfiltered result.
 ```
 
 ## Limits
@@ -1691,10 +1451,8 @@ tests is printed at the end of the session (the complete table is written to
 `test/.resource_report.txt`). The budget — set for the pseudopotential tests,
 the heaviest in the suite — is one test < 3 min, the whole run < 10 min, peak
 RSS < 3 GB; shrink a test's grid or cell rather than the limits.
-`pseudopotentials/test_oncv.py`
-validates the ONCVPSP family atomically (H, Li, O) and on the same two
-molecules (50 tests, ~11 s, peak RSS 0.6 GB); `pseudopotentials/test_paw.py` does the same for
-the PAW-LCAO family, adding the overlap, on-site-projection, compensation and
-grid-stability checks (70 tests, 11.5 s, peak RSS 0.77 GB);
+`pseudopotentials/test_paw.py` validates the PAW-LCAO family atomically (H,
+Li, O) and on H₂ and LiH, adding the overlap, on-site-projection, compensation
+and grid-stability checks (70 tests, 11.5 s, peak RSS 0.77 GB);
 `pseudopotentials/test_families.py` covers the basis-name selector and its
 aliases.

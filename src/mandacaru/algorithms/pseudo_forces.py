@@ -8,7 +8,7 @@
 
 r"""Hellmann-Feynman and Pulay forces for every atom-centered basis.
 
-Pseudopotential families (PAW-LCAO, ONCVPSP) and all-electron bases share one
+Pseudopotential families (PAW-LCAO, UPAW-LCAO) and all-electron bases share one
 derivative: the difference is only which terms exist.  An all-electron
 Hamiltonian has no projectors, no augmented overlap and no compensation
 charges, and its per-atom local potential is the bare (softened) ``-Z/r``;
@@ -83,8 +83,7 @@ How the pieces are evaluated
   derivative is the same quadrature of :math:`\partial\phi_\mu/\partial\mathbf R`,
   :math:`G_{\mu p}`: the Pulay part (basis function moving) is :math:`+G` and
   the Hellmann-Feynman part (projector moving) is :math:`-G`, so the total is
-  exactly translation invariant.  ONCVPSP uses the same atom-centered
-  projection rule and its derivative.
+  exactly translation invariant.
 * PAW-LCAO's **local potential** is range-separated
   (:meth:`~mandacaru.pseudopotentials.paw.PAWIntegrals.short_range_local`): the
   grid samples only the long-range Gaussian-ion half, and the short-range half
@@ -105,6 +104,8 @@ How the pieces are evaluated
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -260,8 +261,9 @@ def _ionic_shift(integrals, centers, atom, k, step):
     return {c: (plus[c] - minus[c]) / (2.0 * float(step)) for c in plus}
 
 
-def _sampled_multipole(dataset, center, grid, L, M):
-    """``v_L(|r - center|) Y_LM`` of a compensation multipole, on the grid."""
+def _sampled_multipole(dataset, center, grid, L, M, potential=None):
+    """``v_L(|r - center|) Y_LM`` of a compensation multipole, on the grid
+    (``potential(radius, r_g, L)`` in place of the Coulomb one)."""
     from ..basis._angular import spherical_harmonic
     from ..pseudopotentials.multipoles import shape_potential
 
@@ -269,7 +271,8 @@ def _sampled_multipole(dataset, center, grid, L, M):
     dy = grid.Y.ravel() - center[1]
     dz = grid.Z.ravel() - center[2]
     radius = np.sqrt(dx * dx + dy * dy + dz * dz)
-    value = shape_potential(radius, float(dataset.compensation_radius), int(L))
+    value = (shape_potential if potential is None else potential)(
+        radius, float(dataset.compensation_radius), int(L))
     if int(L) == 0:
         return value * spherical_harmonic(0, 0, 0.0, 0.0)
     safe = np.maximum(radius, 1e-300)
@@ -278,12 +281,13 @@ def _sampled_multipole(dataset, center, grid, L, M):
     return value * spherical_harmonic(int(L), int(M), theta, phi)
 
 
-def _moved_multipole(dataset, center, grid, L, M, k, delta):
+def _moved_multipole(dataset, center, grid, L, M, k, delta, potential=None):
     """Derivative of :func:`_sampled_multipole` as its center moves along ``k``."""
     step = np.zeros(3)
     step[k] = float(delta)
-    return ((_sampled_multipole(dataset, center + step, grid, L, M)
-             - _sampled_multipole(dataset, center - step, grid, L, M))
+    return ((_sampled_multipole(dataset, center + step, grid, L, M, potential)
+             - _sampled_multipole(dataset, center - step, grid, L, M,
+                                  potential))
             / (2.0 * float(delta)))
 
 
@@ -328,6 +332,35 @@ def _outer(X, Y):
 
 def _hermitian(X):
     return 0.5 * (X + X.conj().T)
+
+
+@dataclass
+class ScreenedExchange:
+    r"""A screened hybrid's exact exchange, for :func:`pseudo_nuclear_gradient`.
+
+    The energy is :math:`\sum_\sigma w_\sigma \sum P^\sigma_{pq}
+    P^\sigma_{sr}\,g^{\rm SR}_{qrsp}` over the AO density matrices
+    ``densities = [(w, P), ...]`` (a closed shell: one entry, :math:`w =
+    -a/4`, both spins in :math:`P`; unrestricted: one per spin, :math:`w =
+    -a/2`) plus, on PAW-LCAO, the one-center terms :math:`E^1(C^\dagger P
+    C)` whose ``(P, P)`` operators :math:`\partial E^1/\partial(C^\dagger
+    P^\sigma C)^T` are ``operators`` (one per entry, or ``None``).
+
+    Only what moves with the *integrals* is differentiated here -- the
+    short-range tensor :math:`g^{\rm SR}` (the grid pairs under the
+    screened kernel,
+    :class:`~mandacaru.integrals.poisson.PoissonFFTSolver` with ``omega``, through
+    the moving basis functions, and on PAW-LCAO the augmentation minus its
+    long-range part, through the moving compensation charges) and the
+    projections ``C`` of the
+    one-center terms.  The dependence on the overlap through
+    :math:`P = S^{-1/2} D S^{-1/2}` is the caller's, folded into the
+    energy's fixed one-body matrix as for the semilocal potential.
+    """
+
+    omega: float
+    densities: list
+    operators: list | None = None
 
 
 class SpinorAlgebraicEnergy(AlgebraicEnergy):
@@ -389,7 +422,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                             orbital_delta=None, include_pulay: bool = True,
                             algebraic_step: float = DEFAULT_ALGEBRAIC_STEP,
                             orbital_gradient: bool = True, energy=None,
-                            field=None):
+                            field=None, exchange=None):
     r"""Hellmann-Feynman + Pulay gradient of a pseudopotential calculation.
 
     Parameters
@@ -426,6 +459,10 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         ``dpsi``, added to ``dh``; ``field.hellmann_feynman(atom, k)`` returns
         a gradient component (Hartree/Bohr) for whatever else moves with
         ``atom``.
+    exchange : ScreenedExchange, optional
+        A screened hybrid's exact exchange, which is not a function of
+        ``(S, h, g)`` alone: the derivative of its short-range tensor and of
+        its PAW-LCAO one-center terms through the projections.
 
     Returns
     -------
@@ -532,6 +569,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         Q_mom = integrals.compensation_moments()
         W_mom = integrals.compensation_potentials()
         U = integrals.compensation_coulomb()
+        U_default = U
         V_ion = integrals.compensation_ionic()
         channels = integrals.multipole_channels()
         channel_index = {c: i for i, c in enumerate(channels)}
@@ -588,10 +626,12 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                             + Ca @ block @ dCa.conj().T)
         return out
 
-    def augmentation_derivative(dQ, dW, dU):
+    def augmentation_derivative(dQ, dW, dU, W=None, U=None):
+        W = W_mom if W is None else W
+        U = U_default if U is None else U
         out = np.zeros((M, M, M, M), dtype=complex)
         for a, ca in enumerate(channels):
-            Qa, Wa, dQa = Q_mom[ca], W_mom[ca], dQ[ca]
+            Qa, Wa, dQa = Q_mom[ca], W[ca], dQ[ca]
             out += _outer(dQa, Wa) + _outer(Wa, dQa)
             if ca in dW:
                 out += _outer(Qa, dW[ca]) + _outer(dW[ca], Qa)
@@ -617,6 +657,81 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
 
     phi = (_pair_potentials(psi, grid).reshape(M * M, ngrid)
            if include_pulay else None)
+
+    # -- a screened hybrid's exact exchange --
+    if exchange is not None:
+        from ..integrals.poisson import PoissonFFTSolver
+
+        short_range = PoissonFFTSolver(grid.shape, step=grid.step,
+                                       omega=float(exchange.omega))
+        phi_sr = None
+        if include_pulay:
+            pairs = (np.conj(psi)[:, None, :] * psi[None, :, :]).reshape(
+                M * M, ngrid)
+            phi_sr = short_range.solve_stack(pairs).reshape(M * M, ngrid)
+            del pairs
+        if paw:
+            from ..pseudopotentials.paw import long_range_multipole_potential
+
+            lr_potential = long_range_multipole_potential(exchange.omega)
+            W_lr, U_lr = integrals.long_range_compensation(exchange.omega)
+            v_comp_lr = {c: _sampled_multipole(datasets[c[0]], centers[c[0]],
+                                               grid, c[1], c[2], lr_potential)
+                         for c in channels}
+
+    def exchange_term(dg_sr, dC):
+        """``dE_x`` from a change of the short-range tensor and of the
+        projections (the one-center terms), at fixed AO density."""
+        value = 0.0
+        for index, (weight, Pw) in enumerate(exchange.densities):
+            if dg_sr is not None:
+                value += weight * np.einsum("pq,sr,qrsp->", Pw, Pw, dg_sr,
+                                            optimize=True)
+            if exchange.operators is not None and dC is not None and P:
+                O = exchange.operators[index]
+                value += np.trace(O @ (dC.conj().T @ Pw @ C
+                                       + C.conj().T @ Pw @ dC))
+        return float(np.real(value))
+
+    def long_range_augmentation_derivative(atom, k, dQ):
+        """The long-range augmentation's change when ``atom``'s operators
+        (projections, compensation shapes) move along ``k``."""
+        from ..pseudopotentials.multipoles import multipole_coulomb_matrix
+
+        dW_lr = {}
+        for channel in channels:
+            if channel[0] != atom:
+                continue
+            w_comp = _moved_multipole(datasets[atom], centers[atom], grid,
+                                      channel[1], channel[2], k, delta,
+                                      lr_potential)
+            dW_lr[channel] = ((psi.conj() * w_comp) @ psi.T) * dV
+        dU_lr = np.zeros_like(U_lr)
+        step = COMPENSATION_DISTANCE_STEP
+        levels_a = [c[1:] for c in channels if c[0] == atom]
+        for B in comp_atoms:
+            if B == atom or not levels_a:
+                continue
+            levels_b = [c[1:] for c in channels if c[0] == B]
+            shift = np.zeros(3)
+            shift[k] = step
+            base = centers[B] - centers[atom]
+            ra = datasets[atom].compensation_radius
+            rb = datasets[B].compensation_radius
+            slope = (multipole_coulomb_matrix(ra, levels_a, rb, levels_b,
+                                              base - shift,
+                                              potential=lr_potential)
+                     - multipole_coulomb_matrix(ra, levels_a, rb, levels_b,
+                                                base + shift,
+                                                potential=lr_potential)
+                     ) / (2.0 * step)
+            for i, la in enumerate(levels_a):
+                for j, lb in enumerate(levels_b):
+                    u = channel_index[(atom,) + la]
+                    v = channel_index[(B,) + lb]
+                    dU_lr[u, v] = slope[i, j]
+                    dU_lr[v, u] = slope[i, j]
+        return augmentation_derivative(dQ, dW_lr, dU_lr, W_lr, U_lr)
 
     hf = np.zeros((n_atoms, 3))
     pulay = np.zeros((n_atoms, 3))
@@ -654,6 +769,10 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                         ).reshape(M * M, ngrid)
                 R = (drho @ phi.T + phi @ drho.T) * dV
                 dg = R.reshape(M, M, M, M).transpose(0, 2, 1, 3)
+                dg_sr = None
+                if exchange is not None:
+                    R = (drho @ phi_sr.T + phi_sr @ drho.T) * dV
+                    dg_sr = R.reshape(M, M, M, M).transpose(0, 2, 1, 3)
                 if paw:
                     dW = {}
                     for channel in channels:
@@ -667,7 +786,17 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                         dW[channel] = (((dpsi.conj() * v) @ psi.T)
                                        + ((psi.conj() * v) @ dpsi.T)) * dV
                     dQ = moment_derivatives(dC)
-                    dg = dg + augmentation_derivative(dQ, dW, None)
+                    dg_aug = augmentation_derivative(dQ, dW, None)
+                    dg = dg + dg_aug
+                    if exchange is not None:
+                        dW_lr = {}
+                        for channel in channels:
+                            v = v_comp_lr[channel]
+                            dW_lr[channel] = (((dpsi.conj() * v) @ psi.T)
+                                              + ((psi.conj() * v) @ dpsi.T)
+                                              ) * dV
+                        dg_sr = dg_sr + dg_aug - augmentation_derivative(
+                            dQ, dW_lr, None, W_lr, U_lr)
                     # The compensation shapes do not move with the basis, so
                     # only the moments change here.
                     dh = dh + ionic_derivative(dQ, None)
@@ -683,6 +812,9 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     # spin-averaged energy does not see.
                     pulay[atom, k] += field.spin_term(
                         S0, _hermitian(dS), dpsi, algebraic_step)
+                if exchange is not None:
+                    pulay[atom, k] += exchange_term(dg_sr,
+                                                    dC if P else None)
 
             # ---------------- Hellmann-Feynman: the operators of `atom` move --
             w_loc = _moved_radial(atom_potentials[atom], centers[atom],
@@ -692,6 +824,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 dh = dh + short_range_hellmann_feynman(atom, k)
             dS = None
             dg = None
+            dg_sr = None
             if P:
                 if exact_projections:
                     dC = np.zeros((M, P), dtype=complex)
@@ -751,6 +884,9 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dQ = moment_derivatives(dC)
                     dg = augmentation_derivative(dQ, dW, dU)
                     dh = dh + ionic_derivative(dQ, dV_ion)
+                    if exchange is not None:
+                        dg_sr = dg - long_range_augmentation_derivative(
+                            atom, k, dQ)
             dh_so = None
             if spinor:
                 dchi_so = np.zeros_like(chi_so)
@@ -767,6 +903,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                                                algebraic_step)
             if field is not None:
                 hf[atom, k] += field.hellmann_feynman(atom, k)
+            if exchange is not None:
+                hf[atom, k] += exchange_term(dg_sr, dC if P else None)
 
     hf = hf + _nuclear_repulsion_gradient(centers, charges)
 

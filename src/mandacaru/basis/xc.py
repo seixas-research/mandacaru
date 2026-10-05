@@ -474,7 +474,7 @@ def derivative_nodes(r) -> np.ndarray | None:
     :data:`GGA_DERIVATIVE_STEP` -- logarithmic where the grid is finer than
     the physics needs, every point near the nucleus where it is not -- and
     splined back.  :math:`\Delta` is set by the most demanding consumer, a
-    PAW or ONCVPSP local potential matched through its *fourth* derivative at
+    PAW-LCAO local potential matched through its *fourth* derivative at
     :math:`r_{cl}`.  For PBE antimony at :math:`r_{cl}` = 2.74 Bohr,
     :math:`V^{(4)}` read over windows of 0.01-0.2 Bohr scattered from +11 to
     -80 at :math:`\Delta` = 0.002 and 0.005, and agreed from 0.01 up (-2.1 to

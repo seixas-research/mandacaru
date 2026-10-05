@@ -6,7 +6,8 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-r"""Spin-polarized exchange-correlation: LDA, PBE and r\ :sup:`2`\ SCAN.
+r"""Spin-polarized exchange-correlation: LDA, PBE, r\ :sup:`2`\ SCAN and
+the full-range semilocal part of HSE06.
 
 The energy per unit volume as a function of the two spin densities, their
 gradients' contractions :math:`\sigma_{\uparrow\uparrow} =
@@ -28,7 +29,9 @@ the relativistic factor of :mod:`mandacaru.basis.xc` evaluated at
 **Correlation** depends on the total density and the polarization
 :math:`\zeta = (\rho_\uparrow - \rho_\downarrow)/\rho`:
 
-- LDA: Perdew-Zunger (1981), its paramagnetic and ferromagnetic fits joined
+- LDA: Perdew-Zunger (1981), continuous at :math:`r_s = 1`
+  (:data:`~mandacaru.basis.atomic_solver.PZ_PARA`), its paramagnetic and
+  ferromagnetic fits joined
   by the von Barth-Hedin interpolation
   :math:`f(\zeta) = [(1+\zeta)^{4/3} + (1-\zeta)^{4/3} - 2]/(2^{4/3} - 2)`;
 - PBE: Perdew-Wang (1992) -- the paramagnetic and ferromagnetic fits and the
@@ -38,7 +41,11 @@ the relativistic factor of :mod:`mandacaru.basis.xc` evaluated at
   with :math:`\phi(\zeta) = [(1+\zeta)^{2/3} + (1-\zeta)^{2/3}]/2`;
 - r\ :sup:`2`\ SCAN: the same uniform-gas limit, :math:`G_c(\zeta)` on the
   single-orbital limit, and :math:`d_s(\zeta) = [(1+\zeta)^{5/3} +
-  (1-\zeta)^{5/3}]/2` in the iso-orbital indicator.
+  (1-\zeta)^{5/3}]/2` in the iso-orbital indicator;
+- ``"hse06"``: PBE correlation and the hole-model full-range exchange of
+  :mod:`mandacaru.basis.hse` -- the part of HSE06 that is not screened.  The
+  short-range part (semilocal and exact) is added by the caller
+  (:mod:`mandacaru.integrals.exchange_correlation`).
 
 At :math:`\zeta = 0` every function reduces to the unpolarized one of
 :mod:`mandacaru.basis.xc` / :mod:`mandacaru.basis.r2scan` with the same
@@ -56,6 +63,8 @@ from functools import lru_cache
 
 import numpy as np
 
+from . import hse
+from .atomic_solver import PZ_FERRO, PZ_PARA
 from . import r2scan as r2
 from .xc import (DENSITY_FLOOR, PBE_BETA, PBE_GAMMA, PBE_KAPPA, PBE_MU,
                  PW92_A, PW92_ALPHA1, PW92_BETA, RELATIVISTIC_SERIES_BETA)
@@ -64,10 +73,6 @@ from .relativity import SPEED_OF_LIGHT
 #: How far inside :math:`\pm1` the polarization is held.
 ZETA_MARGIN = 1e-12
 
-# Perdew-Zunger (1981): (gamma, beta1, beta2, A, B, C, D), para then ferro.
-PZ_PARA = (-0.1423, 1.0529, 0.3334, 0.0311, -0.048, 0.0020, -0.0116)
-PZ_FERRO = (-0.0843, 1.3981, 0.2611, 0.01555, -0.0269, 0.0007, -0.0048)
-
 # Perdew-Wang (1992): (A, alpha1, beta1..beta4) of the paramagnetic and
 # ferromagnetic fits and of minus the spin stiffness.
 PW_PARA = (PW92_A, PW92_ALPHA1) + tuple(PW92_BETA)
@@ -75,7 +80,7 @@ PW_FERRO = (0.015545, 0.20548, 14.1189, 6.1977, 3.3662, 0.62517)
 PW_STIFFNESS = (0.016887, 0.11125, 10.357, 3.6231, 0.88026, 0.49671)
 F_SECOND = 1.709921
 
-FUNCTIONALS = ("lda", "pbe", "r2scan")
+FUNCTIONALS = ("lda", "pbe", "r2scan", "hse06")
 
 
 def _jax():
@@ -184,8 +189,12 @@ def _exchange_r2scan(jnp, rho, sigma, tau, relativistic):
     return ex_lda * (h1x + fx * (r2.H0X - h1x)) * gx
 
 
+def _exchange_hse06(jnp, rho, sigma, tau, relativistic):
+    return hse.exchange_energy_density(jnp, rho, sigma, 0.0)
+
+
 _EXCHANGE = {"lda": _exchange_lda, "pbe": _exchange_pbe,
-             "r2scan": _exchange_r2scan}
+             "r2scan": _exchange_r2scan, "hse06": _exchange_hse06}
 
 
 # --------------------------------------------------------------------------- #
@@ -253,7 +262,7 @@ def _correlation_r2scan(jnp, rho, z, sigma, tau):
 
 
 _CORRELATION = {"lda": _correlation_lda, "pbe": _correlation_pbe,
-                "r2scan": _correlation_r2scan}
+                "r2scan": _correlation_r2scan, "hse06": _correlation_pbe}
 
 
 # --------------------------------------------------------------------------- #
@@ -330,10 +339,10 @@ def spin_partials(functional, rho_up, rho_dn, sigma_uu=None, sigma_ud=None,
             array(sigma_dd, zero), array(tau_up, zero), array(tau_dn, zero))
     if key == "lda":
         args = args[:2] + (zero, zero, zero, zero, zero)
-    elif key == "pbe":
+    elif key in ("pbe", "hse06"):
         args = args[:5] + (zero, zero)
     pointwise, gradient = _compiled(key, bool(relativistic and
-                                              key != "r2scan"))
+                                              key in ("lda", "pbe")))
     f = np.asarray(pointwise(*args))
     partials = [np.asarray(g) for g in gradient(*args)]
     return (f, *partials)

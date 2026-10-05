@@ -15,7 +15,7 @@ from mandacaru import Mandacaru
 atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="dft",
-                       xc="pbe",                  # "lda" (default) | "pbe" | "r2scan"
+                       xc="pbe",                  # "lda" (default) | "pbe" | "r2scan" | "hse06"
                        dispersion="d4",           # None (default) | "d4"
                        basis={"name": "PAW-LCAO", "size": "DZP"},
                        h=0.2)
@@ -45,6 +45,7 @@ the handoff below).
 | `"lda"` (default) | Local density approximation, the Ceperley-Alder correlation as parameterized by Perdew and Zunger | Perdew and Zunger 1981 |
 | `"pbe"` | Generalized-gradient approximation | Perdew, Burke and Ernzerhof 1996 |
 | `"r2scan"` | Meta-GGA, depending on the kinetic-energy density | Furness *et al.* 2020 |
+| `"hse06"` | Screened hybrid: a quarter of the short-range exchange is exact (molecules and crystals; crystal forces and stress) | Heyd, Scuseria and Ernzerhof 2003; Krukau *et al.* 2006 |
 
 PBE and r2SCAN use the Perdew-Wang 1992 parameterization of the uniform-gas
 correlation energy. The exchange-correlation energy and its potential are
@@ -65,6 +66,64 @@ operator.
   PBE, the same shift an independent all-electron Gaussian-basis calculation
   gives.
 
+- **HSE06** replaces a quarter of the short-range exchange by exact
+  exchange (below). It builds a second two-electron tensor, so it costs
+  about twice the integrals of the others.
+
+### The hybrid HSE06
+
+`xc="hse06"` splits the Coulomb operator as
+$1/r = \operatorname{erfc}(\omega r)/r + \operatorname{erf}(\omega r)/r$
+with $\omega = 0.11\ a_0^{-1}$ and uses
+
+$$E_{xc} = E_x^{\omega\rm PBE}(0) - \tfrac14 E_x^{\omega\rm PBE,SR}(\omega)
+  + \tfrac14 E_x^{\rm HF,SR}(\omega) + E_c^{\rm PBE},$$
+
+the semilocal exchange being the screened exchange hole of Heyd, Scuseria
+and Ernzerhof. The exact exchange is contracted from the short-range
+two-electron tensor -- the full tensor minus the same pair densities under
+$\operatorname{erf}(\omega r)/r$ -- and enters the Kohn-Sham operator as the
+nonlocal $-\tfrac18 K^{\rm SR}[D]$: a generalized Kohn-Sham problem, like
+r2SCAN's. The result carries the exact part of the exchange-correlation
+energy as `scf.exact_exchange_energy`, and the run log reports it.
+
+- **Crystals too** -- see *HSE06 in a crystal* below.
+- **Forces** (`get_forces()`) are analytic, restricted and unrestricted:
+  the short-range tensor's nuclear derivative is the full tensor's minus
+  the long-range one's, through the same moving basis functions (and, on
+  PAW-LCAO, the moving compensation charges and projections). A crystal's
+  forces and stress are analytic too (below).
+- **The hole model's reduced gradient bends continuously.** Above $s = 1$
+  the hole model bends $s$ towards a maximum; the reference implementation
+  starts that bend $5.2\times10^{-4}$ below $s = 1$ (and caps it at
+  $s = 15$), which leaves steps in the energy that a finite-difference force
+  sees (2e-3 eV/Angstrom on H$_2$O, 1e-2 on OH). Here the bend starts at
+  $s = 1$ and needs no cap: identical below $s = 1$, within $2\times10^{-4}$
+  of the reference above it, and the forces are the energy's derivative.
+- **PAW-LCAO** takes the exact exchange over the augmented pair densities,
+  as the Hartree term does, and each augmentation sphere adds its
+  one-center correction. The datasets freeze their one-center semilocal
+  energies at the reference atom; the share of them the exact exchange
+  replaces is frozen the same way and removed.
+- **The Coulomb kernels are spectral.** A molecule's Hartree and exact
+  exchange kernels apply their singular part in reciprocal space on the
+  zero-padded grid, so neither carries a grid-sampling error of the $1/r$
+  singularity. A molecule in a 12 Angstrom periodic box and the same
+  molecule isolated then agree on the HSE06 - PBE energy to 0.1 mHa.
+- **Shifts against references** (DZP, h = 0.2 Angstrom, 3 Angstrom of
+  vacuum; HSE06 - PBE): H$_2$O HOMO -1.74 eV (PAW-LCAO) against -1.45 eV for an
+  independent norm-conserving pseudopotential calculation and -1.42 eV
+  all-electron (aug-cc-pVTZ; -1.51 eV in def2-TZVP); CH$_4$ -1.18 eV
+  against -1.14 eV. The excess follows second-row lone-pair HOMOs
+  (NH$_3$ too, CO$_2$ not), which points at the confined basis rather than
+  at the dataset (open). Converge h as well: a molecule's HOMO shift still
+  moves by ~0.03 eV per 0.05 Angstrom here, and its PBE HOMO by ~0.07 eV.
+- **A partial core keeps its semilocal exchange.** The exact exchange
+  replaces the short-range semilocal exchange of the valence density only;
+  the core has no orbitals to take exact exchange from.
+- The relativistic exchange factor of a relativistic dataset is not applied,
+  as for r2SCAN.
+
 The density gradients PBE and r2SCAN need are spectral derivatives built
 from the reciprocal vectors of the cell, so a skewed cell -- hexagonal,
 monoclinic, triclinic -- is handled as exactly as an orthogonal one.
@@ -79,14 +138,14 @@ from the external `dftd4` package, an optional dependency:
 pip install 'mandacaru[dispersion]'
 ```
 
-D4 has parameters for PBE and r2SCAN and none for LDA, so `dispersion="d4"`
+D4 has parameters for PBE, r2SCAN and HSE06 and none for LDA, so `dispersion="d4"`
 with `xc="lda"` is refused. Without `dftd4` installed the calculation stops
 with an error naming the extra.
 
 ## Pseudopotential bases and their functional
 
 The all-electron bases (`"HAO"`, `"NAO"`, the Gaussian families) and the
-pseudopotential families (`"ONCVPSP"`, `"PAW-LCAO"`) all work, with every size
+pseudopotential families (`"PAW-LCAO"`, `"UPAW-LCAO"`) all work, with every size
 from `SZ` to `QZP` and `energy_shift` as in the other methods.
 
 The PAW-LCAO datasets linearize the one-center Hartree and exchange-correlation
@@ -338,15 +397,63 @@ result.fermi_level, result.free_energy, result.scf.band_gap
   supercell at Gamma exactly (diamond Si, 2x2x2 mesh against the 16-atom
   supercell: equal to 1e-8 Ha per cell).
 
-Not yet available for crystals: D4, cube files and dipoles, and the forces
-and stress of a spin-polarized crystal.
+Not yet available for crystals: D4, cube files and dipoles.
+
+### HSE06 in a crystal
+
+`xc="hse06"` on a periodic geometry adds the short-range exact exchange of
+the whole k-mesh to every k-point's Kohn-Sham matrix,
+
+$$K^{\mathbf k}_{\mu\nu} = \sum_{\mathbf q} w_{\mathbf q}\sum_m f_{m\mathbf q}
+\langle\chi_{\mu\mathbf k}\,\phi_{m\mathbf q}|\,v_{\rm SR}\,|
+\phi_{m\mathbf q}\,\chi_{\nu\mathbf k}\rangle,$$
+
+the sum running over every point of the mesh, not only the irreducible ones
+(the others are symmetry images and time-reversed copies of the wedge's
+states). Each pair density is one FFT with the short-range kernel at
+$|\mathbf G + \mathbf k - \mathbf q|$; that kernel is finite where
+$\mathbf G + \mathbf k - \mathbf q = 0$, so the screened hybrid needs no
+treatment of the Coulomb singularity.
+
+- **The exchange needs a denser mesh than the density.** The q-mesh is the
+  k-mesh. For silicon (PAW-LCAO DZP, h = 0.3 Angstrom) the HSE06 - PBE gap
+  shift is +0.66 and +0.58 eV on 3x3x3 and 4x4x4 meshes (a 2x2x2 mesh
+  overshoots by about a factor of two), against about +0.55-0.6 eV in the
+  literature (HSE06 1.17 eV against PBE 0.59-0.62 eV): converge the shift,
+  not just the energy.
+- **Cost.** One FFT per occupied state, basis function and pair of k-points
+  per SCF iteration: on the 4x4x4 silicon mesh the hybrid SCF took about
+  nine times the PBE one (88 against 10 s).
+- **Forces and stress.** The band structure, DOS and PDOS include the
+  exchange, and so do the forces and the stress. The exchange is symmetric
+  between its two k-points, so moving the basis functions is the Pulay term
+  of $-\tfrac a2 K$ built over the basis and its derivatives with the
+  occupied states held fixed; the pairs' compensation charges move with
+  their projectors (the same doubling) and their shapes (once); the
+  spheres' one-center operator moves like the nonlocal projector term; the
+  stress carries the converged state to strained cells as for the other
+  functionals. Both agree with finite differences of the free energy
+  (LiH at Gamma, Si on a k-mesh, the irreducible k-points against the full
+  mesh). A partial core moves under the semilocal potential without the
+  short-range part the exact exchange replaces, which is the valence's.
+- **PAW-LCAO, as for molecules.** The pair densities are augmented by
+  their compensation charges -- their moments from the pairs' projections,
+  the shapes' transforms at $\mathbf G + \mathbf k - \mathbf q$, and the
+  compensation charges between themselves on the same dense reciprocal set
+  as the Hartree term's -- and each augmentation sphere adds its one-center
+  correction, from the projected density matrix of the whole mesh. The
+  states at the mesh points outside the irreducible wedge are images of the
+  wedge's; their projections come from the Bloch sums solved once at each
+  image point.
+- **Spin polarization.** A spin-polarized crystal takes each channel's
+  exchange ($-aK_\sigma$) and the spheres' terms per channel.
 
 ## Spin polarization
 
 A molecule with `n_alpha != n_beta` -- an odd electron count, or initial
 magnetic moments on the atoms (`atoms.set_initial_magnetic_moments`) -- is
 solved **spin-unrestricted**: one determinant per spin, with the
-spin-polarized LDA, PBE or r2SCAN. A crystal whose atoms carry nonzero
+spin-polarized LDA, PBE, r2SCAN or HSE06. A crystal whose atoms carry nonzero
 initial moments is solved **spin-polarized**: two potentials, one Fermi
 level over both channels, the total density and the magnetization mixed
 together (only the total is Kerker-damped).
@@ -383,6 +490,14 @@ fe.calc.get_total_magnetic_moment()       # N_up - N_down per cell
   `(n_spins, n_kpoints, n_bands)` energies). A molecule's many-body
   Hamiltonian is exported in the natural orbitals of the total density, as
   for UHF, and its forces are analytic (the magnetization term included).
+  A spin-polarized crystal has analytic forces and the stress too, for
+  every functional, HSE06 included: each channel's Pulay term is taken at
+  its own potential (and, for the hybrid, its own exchange), the partial
+  core moves under the mean of the two channels' potentials, and the
+  stress carries both channels' states to the strained cells. Both agree
+  with finite differences of the free energy (triplet O2 in a box, at Gamma
+  and on a k-mesh), and a crystal that loses its moment gives the
+  restricted forces.
 - **Symmetry**: atoms are equivalent only with the same element *and*
   initial moment, so an antiferromagnetic arrangement keeps the operations
   that preserve it.
@@ -518,12 +633,11 @@ example](../../../examples/new/04_DFT_H2O_dos.py).
 The following are refused or unavailable:
 
 - **Spin-orbit coupling** in the Kohn-Sham operator.
-- **Crystals with an all-electron or ONCVPSP basis**: the periodic path is
-  PAW-LCAO only.
+- **Crystals with an all-electron basis**: the periodic path is
+  PAW-LCAO or UPAW-LCAO only.
 - **D4 with LDA**, and **D4 for a crystal**, as above.
 
-Not implemented yet: the Fermi surface, the dielectric constant and hybrid
-functionals.
+Not implemented yet: the Fermi surface and the dielectric constant.
 
 ## References
 
@@ -539,5 +653,13 @@ functionals.
 - Furness, J. W., Kaplan, A. D., Ning, J., Perdew, J. P. and Sun, J. (2020).
   Accurate and numerically efficient r$^2$SCAN meta-generalized gradient
   approximation. *J. Phys. Chem. Lett.* 11, 8208.
+- Heyd, J., Scuseria, G. E. and Ernzerhof, M. (2003). Hybrid functionals
+  based on a screened Coulomb potential. *J. Chem. Phys.* 118, 8207.
+- Krukau, A. V., Vydrov, O. A., Izmaylov, A. F. and Scuseria, G. E. (2006).
+  Influence of the exchange screening parameter on the performance of
+  screened hybrid functionals. *J. Chem. Phys.* 125, 224106.
+- Paier, J., Hirschl, R., Marsman, M. and Kresse, G. (2005). The
+  Perdew-Burke-Ernzerhof exchange-correlation functional applied to the
+  G2-1 test set using a plane-wave basis set. *J. Chem. Phys.* 122, 234102.
 - Caldeweyher, E. *et al.* (2019). A generally applicable atomic-charge
   dependent London dispersion correction. *J. Chem. Phys.* 150, 154122.

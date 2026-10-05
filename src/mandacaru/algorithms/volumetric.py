@@ -74,7 +74,7 @@ density and integrates to the full electron count.
 
 The pseudopotential caveat
 --------------------------
-With a PAW-LCAO / UPAW-LCAO / ONCVPSP basis the orbitals are the **smooth pseudo**
+With a PAW-LCAO / UPAW-LCAO basis the orbitals are the **smooth pseudo**
 valence orbitals, so what is written is the *pseudo valence density*: the core
 is absent by construction, and inside the augmentation spheres the smooth
 density is not the physical one.  For PAW-LCAO the overlap itself is augmented,
@@ -368,7 +368,7 @@ class OrbitalExpansion:
         ``augmentation`` is the charge the *smooth* density on the grid does
         not carry: :math:`\sum_i w_i \langle\psi_i|(S - \tilde S)|\psi_i\rangle`
         with :math:`S - \tilde S = C q C^\dagger` the PAW augmentation.  It is
-        exactly zero for every norm-conserving and all-electron basis.
+        exactly zero for an all-electron basis.
         """
         orbitals = self.natural_orbitals(D)
         values = np.zeros(self.samples.shape[1])

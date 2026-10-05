@@ -127,7 +127,7 @@ class KBProjector(_RadialTabulated):
     keys on: :attr:`atom_index`, the :attr:`channel` ``(l, m)`` and, within
     that channel, its radial :attr:`index`.  The nonlocal coupling matrix
     :math:`D` is block-diagonal over ``(atom, l, m)``; a family with several
-    radial projectors per channel (ONCVPSP, PAW-LCAO) numbers them with
+    radial projectors per channel (PAW-LCAO) numbers them with
     ``index`` and supplies the block.
     """
 
@@ -230,10 +230,9 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     *exact* pseudo-orbital is an eigenstate of the pseudo-Hamiltonian at the
     reference energy, so the atomic reference is no longer reproduced exactly.
     That is a variational price, measured in
-    ``docs/source/guide/pseudopotentials.md``, and it is why the norm-conserving
-    family (ONCVPSP) leaves the filter **off** by default while PAW-LCAO and
-    UPAW-LCAO turn it on -- a PAW-LCAO partial wave is already built band-limited, so
-    the filter barely moves it.
+    ``docs/source/guide/pseudopotentials.md``; PAW-LCAO and UPAW-LCAO turn the
+    filter on by default because a PAW-LCAO partial wave is already built
+    band-limited, so the filter barely moves it.
     """
     from ..basis.filtering import filter_radial, filter_table
     from ..basis.multizeta import (DEFAULT_SPLIT_NORM, DEFAULT_TAIL_NORMS,

@@ -323,7 +323,7 @@ class TestBasisSet:
             resolve_pseudo_basis
         with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
             resolve_pseudo_basis("per-element",
-                                 {"O": {"name": "NAO-AE"}, "H": "ONCVPSP"},
+                                 {"O": {"name": "NAO-AE"}, "H": "PAW-LCAO"},
                                  ["O", "H"])
 
 

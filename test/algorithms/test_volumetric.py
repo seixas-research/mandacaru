@@ -618,9 +618,8 @@ class TestDipoleMoment:
     augmentation's monopole and dipole included.
 
     Hartree-Fock water (the active space is the four occupied orbitals):
-    PAW-LCAO-DZP gives 2.29 D and ONCVPSP-DZP, which has no augmentation at
-    all, 2.34 D; all-electron 6-31G(d) gives 2.18 D (the literature value of
-    that model is about 2.2 D).  A minimal SZ basis overshoots to 3.2 D.
+    PAW-LCAO-DZP gives 2.29 D (the literature value of that model is about
+    2.2 D).  A minimal SZ basis overshoots to 3.2 D.
     """
 
     @staticmethod
@@ -653,17 +652,6 @@ class TestDipoleMoment:
         assert result.augmentation_charge > 0.5     # PAW augmentation is in
         assert result.n_electrons == pytest.approx(8.0, abs=1e-8)
         assert 1.9 < result.magnitude_debye < 2.7
-
-    def test_the_augmentation_matches_a_family_without_one(self, water):
-        # ONCVPSP is norm-conserving: its smooth density is the whole
-        # density, so agreeing with it checks the PAW augmentation terms.
-        # At h = 0.3 the two differ by 0.17 D, at h = 0.2 by 0.05 D: the
-        # rest is grid resolution.  Without the augmentation the PAW-LCAO
-        # dipole is off by several debye, so this tolerance still tests it.
-        oncv = self._water(family="ONCVPSP")
-        assert oncv.calc.dipole_result.augmentation_charge == 0.0
-        assert oncv.calc.dipole_result.debye[2] == pytest.approx(
-            water.calc.dipole_result.debye[2], abs=0.25)
 
     def test_a_neutral_molecule_does_not_care_where_it_is(self, water):
         moved = self._water(shift=(0.3, -0.2, 0.25))

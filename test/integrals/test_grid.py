@@ -31,7 +31,7 @@ def _eri_00(grid):
     orb = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0.0, 0.0, 0.0],
                                   units="bohr")
     eng = IntegralEngine([orb], grid)
-    return float(np.real(eng.two_body(method="fft", energy_units="Ha")[0, 0, 0, 0]))
+    return float(np.real(eng.two_body(energy_units="Ha")[0, 0, 0, 0]))
 
 
 class TestNonCubicGrid:

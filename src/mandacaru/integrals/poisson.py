@@ -26,30 +26,40 @@ That is a discrete convolution of :math:`\rho` with the Green's function
 
     \Phi = \mathrm{IFFT}\big(\mathrm{FFT}(\rho)\cdot \mathrm{FFT}(G)\big) .
 
-Two numerical points make this correct rather than merely fast:
+Three numerical points make this correct rather than merely fast:
 
 * **Zero-padding.** The FFT computes a *circular* convolution.  Without padding
   each axis to at least :math:`2N-1`, the long Coulomb tail wraps around the box
-  and contaminates the potential.  We pad to ``scipy.fft.next_fast_len(2N-1)``.
-* **Self term.** The :math:`\mathbf d=0` node is the singular
-  self-interaction.  Instead of an ad-hoc softening we integrate :math:`1/r`
-  over the voxel itself, :math:`G(0)=\frac{1}{dV}\int_\text{cell}d^3r/|r|`
-  (:func:`cell_self_potential`), the physically correct cell self-energy.  For
-  a cube that is :math:`C_\text{cube}/dx` with
-  :math:`C_\text{cube}=\int_{[-1/2,1/2]^3} d^3u/|u| \approx 2.3800774`.
-
+  and contaminates the potential.  We pad to ``scipy.fft.next_fast_len`` of
+  :math:`2N-1`, or of :math:`N` plus the spectral part's reach on a grid
+  smaller than that reach.
+* **Nothing singular is sampled.** :math:`1/r` sampled at the nodes -- even
+  with the voxel's own average at :math:`d = 0` -- integrates a smooth density
+  with an :math:`O(h^2)` error that sits at the singularity (2 % of H2O's
+  exchange at h = 0.25 Angstrom).  The kernel is split at :math:`\mu`
+  (:data:`SPLIT_RESOLUTION` times the Nyquist wave number):
+  :math:`\operatorname{erf}(\mu r)/r` is smooth and resolved, so it is
+  sampled on the padded grid; :math:`\operatorname{erfc}(\mu r)/r` is applied
+  spectrally, :math:`\tfrac{4\pi}{G^2}(1 - e^{-G^2/4\mu^2})`, exact for the
+  densities the grid resolves.  It reaches about fourteen nodes, which the
+  padding keeps clear of its images.
 * **Voxel geometry.** The displacement between two nodes of *any* Bravais
   sampling is ``step @ (di, dj, dk)``: it depends only on the index
   difference, so the convolution structure holds for anisotropic **and**
-  skewed grids alike.  Distances come from the grid's step matrix and the
-  source volume is ``|det(step)|``; only the ``d = 0`` voxel needs its own
-  treatment (:func:`voxel_self_potential`).
+  skewed grids alike.  Distances come from the grid's step matrix, the
+  spectral part's wave vectors from the padded cell, and the source volume is
+  ``|det(step)|``.
+
+The same split gives the screened kernel :math:`\operatorname{erfc}(\omega
+r)/r` of a range-separated hybrid (``omega > 0``).
 
 ``scipy.fft`` (pocketfft) runs the transforms in threaded C; ``workers=-1``
 uses all cores, so this path is parallel without any custom kernel.
 """
 
 from __future__ import annotations
+
+from functools import lru_cache
 
 import numpy as np
 from scipy import fft as sfft
@@ -170,8 +180,30 @@ def cell_self_potential(dx: float, dy: float, dz: float) -> float:
     return float(8.0 * octant)
 
 
+#: The split :math:`\mu` of :class:`PoissonFFTSolver`, as a fraction of the
+#: grid's Nyquist wave number: :math:`e^{-G^2/4\mu^2}` is then 1e-10 at the
+#: Nyquist plane, so :math:`\operatorname{erf}(\mu r)/r` is resolved by the
+#: nodes.
+SPLIT_RESOLUTION = 1.0 / np.sqrt(4.0 * np.log(1e10))
+
+#: :math:`\mu r` beyond which :math:`\operatorname{erfc}(\mu r) < 10^{-10}`:
+#: the reach of the spectral part, which the padding keeps clear of images.
+SPLIT_REACH = 4.572
+
+#: Kernel transforms kept (:func:`_kernel_transform`): a molecule's grid and
+#: a few local-exchange boxes.
+KERNEL_CACHE_SIZE = 8
+
+
 class PoissonFFTSolver:
-    """Solve the grid Coulomb convolution by zero-padded FFT.
+    r"""The isolated grid convolution with :math:`\operatorname{erfc}(\omega
+    r)/r` -- the bare Coulomb kernel at ``omega = 0`` -- by zero-padded FFT.
+
+    The kernel is split at :math:`\mu` (see the module docstring):
+    :math:`[\operatorname{erf}(\mu r) - \operatorname{erf}(\omega r)]/r`
+    sampled at the node distances of the padded grid, and
+    :math:`\operatorname{erfc}(\mu r)/r` spectral on the padded cell.
+    Above :math:`\mu` (strong screening) the whole kernel is spectral.
 
     Parameters
     ----------
@@ -187,16 +219,26 @@ class PoissonFFTSolver:
         The full voxel basis (step vectors as columns, i.e. ``Grid.step``), for
         a **skewed** grid: distances then use the lattice displacement
         ``step @ (di, dj, dk)`` and the volume is ``|det(step)|``.
-    self_const : float, optional
-        Overrides ``G(0)`` with the legacy cubic rule ``self_const / dx``.  By
-        default ``G(0)`` is the exact cell average
-        (:func:`cell_self_potential`) -- the same thing for a cube.
     workers : int, optional
         Threads for the FFTs (``-1`` uses all cores).
+    omega : float, optional
+        Range-separation parameter (1/Bohr), >= 0; ``0`` (default) is the bare
+        Coulomb kernel.
+
+    Attributes
+    ----------
+    split : float
+        The :math:`\mu` used (``omega`` itself above it).
+    L : tuple of int
+        The padded lengths: at least ``2N - 1``, and enough for the spectral
+        part's reach (:data:`SPLIT_REACH`) on a small grid.
     """
 
-    def __init__(self, shape, spacing=None, self_const: float | None = None,
-                 workers: int = -1, step=None):
+    def __init__(self, shape, spacing=None, workers: int = -1, step=None,
+                 omega: float = 0.0):
+        self.omega = float(omega)
+        if self.omega < 0.0:
+            raise ValueError(f"omega must be >= 0, got {omega!r}")
         if np.isscalar(shape):
             self.shape = (int(shape),) * 3
         else:
@@ -222,34 +264,22 @@ class PoissonFFTSolver:
         if self.dV <= 0.0:
             raise ValueError("the voxel has zero volume (degenerate step)")
         self.workers = workers
-        # Pad each axis to >= 2N-1 (FFT-friendly length) to avoid wraparound.
-        self.L = tuple(sfft.next_fast_len(2 * n - 1) for n in self.shape)
-        self._Gk = self._build_kernel_transform(self_const)
-
-    def _build_kernel_transform(self, self_const: float | None) -> np.ndarray:
-        """Precompute FFT of the 1/r Green's function on the padded grid."""
-        offs = []
-        for n, L in zip(self.shape, self.L):
-            # Signed integer offsets: 0..n-1 positive, top of the array negative.
-            idx = np.arange(L)
-            offs.append(np.where(idx < n, idx, idx - L).astype(float))
-        # Node (i, j, k) sits at step @ (i, j, k) from the origin node, so the
-        # displacement depends only on the index difference -- skew included.
-        SX = offs[0][:, None, None]
-        SY = offs[1][None, :, None]
-        SZ = offs[2][None, None, :]
-        dist_sq = np.zeros(self.L, dtype=float)
-        for row in range(3):
-            component = (self.step[row, 0] * SX + self.step[row, 1] * SY
-                         + self.step[row, 2] * SZ)
-            dist_sq += component * component
-        dist = np.sqrt(dist_sq, out=dist_sq)
-        with np.errstate(divide="ignore"):
-            G = np.where(dist > 0, 1.0 / dist, 0.0)
-        # The d = 0 node carries the voxel's own average of 1/r.
-        G[0, 0, 0] = (self_const / self.dx if self_const is not None
-                      else voxel_self_potential(self.step) / self.dV)
-        return sfft.fftn(G, workers=self.workers)
+        # The spacing between lattice planes along each axis (the step's
+        # heights), which sets the Nyquist wave number on a skewed grid.
+        heights = self.dV / np.array([
+            np.linalg.norm(np.cross(self.step[:, (m + 1) % 3],
+                                    self.step[:, (m + 2) % 3]))
+            for m in range(3)])
+        self.split = max(SPLIT_RESOLUTION * np.pi / float(heights.max()),
+                         self.omega)
+        # Pad each axis to >= 2N-1 (no wraparound of the sampled part) and
+        # beyond N by the spectral part's reach (no image of it inside).
+        reach = np.ceil(SPLIT_REACH / (self.split * heights)).astype(int)
+        self.L = tuple(sfft.next_fast_len(max(2 * n - 1, n + int(r)))
+                       for n, r in zip(self.shape, reach))
+        self._Gk = _kernel_transform(self.shape, self.L,
+                                     tuple(self.step.ravel()), self.split,
+                                     self.omega, self.workers)
 
     def solve(self, rho_flat: np.ndarray) -> np.ndarray:
         """Coulomb potential of a single density on the grid (flattened)."""
@@ -281,6 +311,70 @@ class PoissonFFTSolver:
             phi = sfft.ifftn(spec * self._Gk, workers=self.workers)
             out[p] = phi[:nx, :ny, :nz].reshape(-1) * dV
         return out
+
+
+def _quadratic_form(metric, axes) -> np.ndarray:
+    """``sum_ij metric[i, j] a_i a_j`` on the grid spanned by the 1-D
+    ``axes``, built by broadcasting (no stacked meshgrid)."""
+    shapes = [(-1, 1, 1), (1, -1, 1), (1, 1, -1)]
+    a = [np.asarray(axis, dtype=float).reshape(shape)
+         for axis, shape in zip(axes, shapes)]
+    out = np.zeros(tuple(len(axis) for axis in axes))
+    for i in range(3):
+        out += metric[i, i] * (a[i] * a[i])
+        for j in range(i + 1, 3):
+            if metric[i, j] != 0.0:
+                out += (2.0 * metric[i, j]) * (a[i] * a[j])
+    return out
+
+
+@lru_cache(maxsize=KERNEL_CACHE_SIZE)
+def _kernel_transform(shape, L, step, mu, omega, workers) -> np.ndarray:
+    """The kernel's transform on the padded grid: the smooth part sampled at
+    the node distances plus the spectral singular one, over ``dV``
+    (:meth:`PoissonFFTSolver.solve_stack` multiplies by it).  Cached per
+    grid -- a workflow rebuilds solvers for the same grid many times -- and
+    read-only, since every solver on that grid shares it."""
+    from scipy.special import erf
+
+    step = np.asarray(step, dtype=float).reshape(3, 3)
+    dV = abs(float(np.linalg.det(step)))
+    # Signed node offsets (0..n-1 positive, the top of the array negative);
+    # node (i, j, k) sits at step @ (i, j, k), skew included.
+    offsets = [np.where(np.arange(m) < n, np.arange(m), np.arange(m) - m)
+               for n, m in zip(shape, L)]
+    dist = np.sqrt(_quadratic_form(step.T @ step, offsets))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        smooth = erf(mu * dist)
+        if omega > 0.0:
+            smooth -= erf(omega * dist)
+        np.divide(smooth, dist, out=smooth, where=dist > 0.0)
+    smooth[0, 0, 0] = 2.0 * (mu - omega) / np.sqrt(np.pi)
+    transform = sfft.fftn(smooth, workers=workers)
+    # Wave vectors of the padded cell: G = B m, |G|^2 = m^T (B^T B) m.
+    B = 2.0 * np.pi * np.linalg.inv(step @ np.diag(np.asarray(L, float))).T
+    frequencies = [np.fft.fftfreq(m, d=1.0 / m) for m in L]
+    transform += short_range_coulomb_kernel(
+        _quadratic_form(B.T @ B, frequencies), mu) / dV
+    transform.setflags(write=False)
+    return transform
+
+
+def short_range_coulomb_kernel(g_squared, omega: float) -> np.ndarray:
+    r"""The short-range Coulomb kernel in reciprocal space,
+    :math:`\frac{4\pi}{G^2}\big(1 - e^{-G^2/4\omega^2}\big)`.
+
+    The Fourier transform of :math:`\operatorname{erfc}(\omega r)/r`.  Unlike
+    the bare kernel it is finite at :math:`G = 0`, where it tends to
+    :math:`\pi/\omega^2` (the integral of the short-range kernel over space),
+    so no neutralizing background is needed for it.
+    """
+    g_squared = np.asarray(g_squared, dtype=float)
+    omega = float(omega)
+    x = g_squared / (4.0 * omega * omega)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        kernel = -4.0 * np.pi * np.expm1(-x) / g_squared
+    return np.where(g_squared > 0.0, kernel, np.pi / (omega * omega))
 
 
 def fft_g_squared(shape, cell):

@@ -64,29 +64,6 @@ void mandacaru_one_body_general(const double _Complex *psi,
                               double _Complex *out_T,
                               double _Complex *out_V);
 
-/* Two-body electron-repulsion tensor (physicists' notation <ab|cd>):
- *
- *   eri[((a*M + b)*M + c)*M + d] =
- *       \int\int conj(psi_a(1)) psi_c(1) (1/r12) conj(psi_b(2)) psi_d(2) dV1 dV2
- *
- * i.e. electron 1 carries the index pair (a, c) and electron 2 the pair (b, d).
- *
- * Computed as: for each density pair rho_bd(2) build its Coulomb potential
- * Phi_bd(1) on the grid (the O(ngrid^2) hotspot, OpenMP-parallel), then
- * contract against every rho_ac(1).  `softening` regularizes r12 -> 0 between
- * *distinct* nodes; the r12 = 0 node (a node with itself) takes `g_self`, the
- * Coulomb value averaged over the node's own voxel, which is what the FFT
- * path uses -- so both methods integrate the same operator.
- *
- * xg, yg, zg : (ngrid) node coordinates.  dV = voxel volume.
- * g_self     : Green's function at r12 = 0 (int_cell d^3r/|r| / dV).
- * out_eri    : (M^4) complex, caller-allocated.
- */
-void mandacaru_two_body_g0(const double _Complex *psi,
-                         const double *xg, const double *yg, const double *zg,
-                         int M, int ngrid, double dV, double softening,
-                         double g_self, double _Complex *out_eri);
-
 /* Kleinman-Bylander projector overlaps.
  *
  * The nonlocal part of a norm-conserving pseudopotential is a sum of rank-one

@@ -216,7 +216,7 @@ def short_range_potential(dataset, sigma: float, radius) -> np.ndarray:
 def local_cutoff(dataset) -> float:
     """Radius (Bohr) beyond which the dataset's local potential is the ionic tail.
 
-    The generation's ``r_cut_local`` when it is recorded (PAW-LCAO, ONCVPSP), else
+    The generation's ``r_cut_local`` when it is recorded (PAW-LCAO), else
     the largest channel cutoff -- only a panel boundary for the radial rule, so
     a loose value costs accuracy, never correctness.
     """

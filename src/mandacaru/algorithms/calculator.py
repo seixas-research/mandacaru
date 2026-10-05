@@ -367,9 +367,11 @@ class Mandacaru(Calculator):
         Hartree-Fock, the mean field with spin-orbit coupling), ``"dft"``
         (Kohn-Sham, restricted or spin-unrestricted; functional
         ``xc="lda"`` (default),
-        ``"pbe"`` or ``"r2scan"``, and ``dispersion="d4"`` for the D4
-        correction from the optional ``dftd4`` package, PBE and r2SCAN
-        only), ``"vqe"`` (a
+        ``"pbe"``, ``"r2scan"`` or the screened hybrid ``"hse06"``
+        (molecules and crystals, with forces and stress), and
+        ``dispersion="d4"`` for the D4
+        correction from the optional ``dftd4`` package, not for LDA),
+        ``"vqe"`` (a
         fixed ansatz, chosen by
         ``ansatz=``: ``"uccsd"`` or the Hamiltonian variational ansatz
         ``"hva"``), or the subspace-search variants
@@ -388,17 +390,16 @@ class Mandacaru(Calculator):
         Basis family, as for the solvers (default ``"HAO"``); accepts a
         ``{"name": ..., <options>}`` dict, including the periodic plane-wave
         family (energy only -- plane waves carry no forces) and the
-        pseudopotential families ``"ONCVPSP"`` / ``"PAW-LCAO"``
+        pseudopotential families ``"PAW-LCAO"`` / ``"UPAW-LCAO"``
         (``{"name": "PAW-LCAO", "size": "DZP"}``), which replace the all-electron
         problem by a valence-only one.
     directory : str
         The folder of the pseudopotential library the datasets are read
         from, relative to the family's library variable.  ``"lda-sr"`` (the
-        default) is every family's scalar-relativistic LDA set, e.g.
+        default) is the scalar-relativistic LDA set,
         ``$MANDACARU_PAW_PATH/lda-sr/``; ``"lda-dirac"`` reads
         ``$MANDACARU_PAW_PATH/lda-dirac/``, the PAW-LCAO set with the
-        spin-orbit term.  ONCVPSP reads the named folder of its
-        own libraries.  A basis that names its own ``directory`` option
+        spin-orbit term.  A basis that names its own ``directory`` option
         keeps it.  Not ASE's working directory: the
         calculator's ``directory`` attribute is left to ASE.
     h : float
@@ -927,7 +928,7 @@ class Mandacaru(Calculator):
                 "nuclear forces need an atom-centered basis whose orbitals move "
                 "with the nuclei; the plane-wave ('PW') family does not "
                 "qualify. Use 'HAO', 'NAO', 'GTO', '6-31G(d)' or a "
-                "pseudopotential family ('ONCVPSP', 'PAW-LCAO').")
+                "pseudopotential family ('PAW-LCAO', 'UPAW-LCAO').")
 
     # -- ASE hook ---------------------------------------------------------- #
 

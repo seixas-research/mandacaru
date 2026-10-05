@@ -40,7 +40,7 @@ def fixed_state_energy(atoms, basis, grid, h, algebra, **options):
     one_body = integrals.one_body_augmentation()
     if one_body is not None:
         one = one + np.asarray(one_body)
-    two = integrals._engine.two_body(method="fft", energy_units="Ha")
+    two = integrals._engine.two_body(energy_units="Ha")
     augmentation = integrals.two_body_augmentation()
     if augmentation is not None:
         two = two + np.asarray(augmentation)

@@ -155,6 +155,45 @@ _ALGORITHMS = [
   doi     = {10.1021/acs.jpclett.0c02405}
 }""", "the r2SCAN meta-GGA (xc='r2scan')", verified=False,
          topics=("xc", "meta-gga")),
+    _ref("Heyd2003", """
+@article{Heyd2003,
+  author  = {Heyd, Jochen and Scuseria, Gustavo E. and Ernzerhof, Matthias},
+  title   = {Hybrid functionals based on a screened {Coulomb} potential},
+  journal = {J. Chem. Phys.},
+  volume  = {118},
+  pages   = {8207--8215},
+  year    = {2003},
+  note    = {Erratum: J. Chem. Phys. 124, 219906 (2006)},
+  doi     = {10.1063/1.1564060}
+}""", "the screened hybrid and its short-range exchange hole (xc='hse06')",
+         verified=False, topics=("xc", "hybrid")),
+    _ref("Krukau2006", """
+@article{Krukau2006,
+  author  = {Krukau, Aliaksandr V. and Vydrov, Oleg A. and Izmaylov, Artur F.
+             and Scuseria, Gustavo E.},
+  title   = {Influence of the exchange screening parameter on the performance
+             of screened hybrid functionals},
+  journal = {J. Chem. Phys.},
+  volume  = {125},
+  pages   = {224106},
+  year    = {2006},
+  doi     = {10.1063/1.2404663}
+}""", "the HSE06 screening parameter omega = 0.11 (xc='hse06')",
+         verified=False, topics=("xc", "hybrid")),
+    _ref("Paier2005", """
+@article{Paier2005,
+  author  = {Paier, Joachim and Hirschl, Robin and Marsman, Martijn
+             and Kresse, Georg},
+  title   = {The {Perdew-Burke-Ernzerhof} exchange-correlation functional
+             applied to the {G2-1} test set using a plane-wave basis set},
+  journal = {J. Chem. Phys.},
+  volume  = {122},
+  pages   = {234102},
+  year    = {2005},
+  doi     = {10.1063/1.1926272}
+}""", "exact exchange in the projector augmented-wave method: the "
+         "one-center correction of a PAW-LCAO hybrid",
+         verified=False, topics=("xc", "hybrid", "paw")),
     _ref("Caldeweyher2019", """
 @article{Caldeweyher2019,
   author  = {Caldeweyher, Eike and Ehlert, Sebastian and Hansen, Andreas and
@@ -511,17 +550,6 @@ _BASES = [
   primaryClass  = {quant-ph},
   doi           = {10.48550/arXiv.2408.03159}
 }""", "unitary PAW-LCAO (basis='UPAW-LCAO')", verified=False, topics=("upaw-lcao",)),
-    _ref("Kleinman1982", """
-@article{Kleinman1982,
-  author  = {Kleinman, Leonard and Bylander, D. M.},
-  title   = {Efficacious form for model pseudopotentials},
-  journal = {Phys. Rev. Lett.},
-  volume  = {48},
-  pages   = {1425--1428},
-  year    = {1982},
-  doi     = {10.1103/PhysRevLett.48.1425}
-}""", "the Kleinman-Bylander separable nonlocal form", verified=False,
-         topics=("oncvpsp",)),
     _ref("Hamann2013", """
 @article{Hamann2013,
   author  = {Hamann, D. R.},
@@ -531,7 +559,8 @@ _BASES = [
   pages   = {085117},
   year    = {2013},
   doi     = {10.1103/PhysRevB.88.085117}
-}""", "the ONCVPSP pseudopotentials", verified=False, topics=("oncvpsp",)),
+}""", "the optimized smooth partial waves of PAW-LCAO and UPAW-LCAO",
+         verified=False, topics=("paw-lcao", "upaw-lcao")),
     _ref("Sankey1989", """
 @article{Sankey1989,
   author  = {Sankey, Otto F. and Niklewski, David J.},

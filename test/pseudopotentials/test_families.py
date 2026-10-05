@@ -10,9 +10,6 @@
 (:mod:`mandacaru.pseudopotentials.families`)."""
 
 import pytest
-from ase import Atoms
-
-from mandacaru.integrals import Grid
 
 
 class TestBasisArgumentIsHonored:
@@ -23,17 +20,18 @@ class TestBasisArgumentIsHonored:
             resolve_basis, resolve_pseudo_basis)
 
         family, options = resolve_pseudo_basis(
-            *resolve_basis({"name": "ONCVPSP", "size": "DZP"}), ["O"])
-        assert family.label == "ONCVPSP" and options["size"] == "DZP"
+            *resolve_basis({"name": "PAW-LCAO", "size": "DZP"}), ["O"])
+        assert family.label == "PAW-LCAO" and options["size"] == "DZP"
 
-    @pytest.mark.parametrize("name", ["ONCVPSP", "oncvpsp", "ONCV", "oncv"])
+    @pytest.mark.parametrize("name", ["UPAW-LCAO", "upaw-lcao",
+                                      "unitary-paw-lcao", "Unitary-PAW-LCAO"])
     def test_the_family_is_accepted_by_every_alias(self, name):
         from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
         family, options = resolve_pseudo_basis(
             *resolve_basis({"name": name, "size": "DZ"}), ["O"])
-        assert family.name == "oncvpsp" and options == {"size": "DZ"}
+        assert family.name == "upaw-lcao" and options == {"size": "DZ"}
 
     def test_all_electron_names_stay_all_electron(self):
         from mandacaru.algorithms._hamiltonian_from_atoms import (
@@ -50,15 +48,3 @@ class TestBasisArgumentIsHonored:
         with pytest.raises(ValueError, match="no longer a basis name"):
             resolve_basis(basis)
 
-    def test_options_of_other_families_are_refused(self):
-        from mandacaru.algorithms._hamiltonian_from_atoms import (
-            build_basis_hamiltonian)
-
-        atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
-        # `projector_basis` belongs to PAW-LCAO alone (the confinement
-        # options are shared by every pseudopotential family).
-        with pytest.raises(ValueError, match="unknown option.*projector_basis"):
-            build_basis_hamiltonian(atoms, {"name": "ONCVPSP",
-                                            "projector_basis": "raw"},
-                                    grid, 0.30, 0, None)

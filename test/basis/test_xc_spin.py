@@ -60,10 +60,11 @@ def test_an_unpolarized_density_gives_the_unpolarized_functional(
         assert np.allclose(d_sigma, s0, rtol=1e-10, atol=1e-14)
 
 
-#: Against libxc: LDA exactly; PBE and r2SCAN to the parameter digits libxc
+#: Against libxc: LDA exactly (PZ81 continuous at r_s = 1, libxc's
+#: ``LDA_C_PZ_MOD``); PBE and r2SCAN to the parameter digits libxc
 #: carries beyond the published fits (with its constants PBE agrees to 1e-13;
 #: the unpolarized r2SCAN sits at the same 1e-6 level).
-LIBXC = {"lda": ("LDA_X,LDA_C_PZ", 1, 1e-12),
+LIBXC = {"lda": ("LDA_X,LDA_C_PZ_MOD", 1, 1e-12),
          "pbe": ("PBE", 4, 3e-6),
          "r2scan": ("R2SCAN", 6, 3e-5)}
 

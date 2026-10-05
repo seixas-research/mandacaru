@@ -27,8 +27,10 @@ to a set of one-dimensional radial equations for :math:`u_{nl} = r R_{nl}`,
 solved on a uniform radial grid by a tridiagonal eigensolve and iterated to
 self-consistency with Pulay density mixing (:class:`_PulayMixer`).
 
-Exchange-correlation is the local density approximation: Slater exchange plus the
-Perdew-Zunger (1981) parameterization of the Ceperley-Alder correlation energy.
+Exchange-correlation is the local density approximation: Slater exchange plus
+the Perdew-Zunger (1981) parameterization of the Ceperley-Alder correlation
+energy, with its high-density coefficients :math:`C, D` fixed so that the
+energy and its slope are continuous at :math:`r_s = 1` (:data:`PZ_PARA`).
 That is the standard choice for generating pseudopotentials, and it keeps this
 module free of any external data -- consistent with Mandacaru generating every
 basis from scratch.
@@ -200,7 +202,7 @@ def selection_points(atomic_number: int) -> int:
 
     So the floor scales with :math:`Z` like everything else that has to resolve
     a :math:`a_0/Z` cusp on a uniform mesh.  It stays well below
-    :func:`mandacaru.pseudopotentials.oncv.generation_points` (``1500 Z``),
+    :func:`mandacaru.pseudopotentials.partial_waves.generation_points` (``1500 Z``),
     because ranking configurations needs the valence bound and ordered, not the
     total energy converged.
     """
@@ -339,17 +341,49 @@ def lda_exchange(rho: np.ndarray):
     return ex, (4.0 / 3.0) * ex
 
 
+def _continuous_pz(gamma, beta1, beta2, a, b):
+    r"""Perdew-Zunger parameters ``(gamma, beta1, beta2, A, B, C, D)`` whose
+    high-density :math:`C, D` make :math:`\varepsilon_c` and
+    :math:`d\varepsilon_c/dr_s` continuous at :math:`r_s = 1`.
+
+    The published four-digit :math:`C, D` leave the two forms 3.2e-5 Ha
+    apart there (paramagnetic) and the slope 1.3e-5 Ha apart; that jump in
+    the potential is a jump in the energy surface wherever the density
+    crosses :math:`r_s = 1`, which finite-difference forces see (0.02
+    eV/Angstrom in dense regions).  Fixing :math:`C, D` from the
+    low-density Pade form -- the same correction as libxc's
+    ``LDA_C_PZ_MOD`` -- moves them by 0.03-1 % of themselves:
+
+    .. math::
+
+        D = \frac{\gamma}{1 + \beta_1 + \beta_2} - B, \qquad
+        C = -\frac{\gamma(\beta_1/2 + \beta_2)}{(1 + \beta_1 + \beta_2)^2}
+            - A - D.
+    """
+    denominator = 1.0 + beta1 + beta2
+    d = gamma / denominator - b
+    c = -gamma * (beta1 / 2.0 + beta2) / denominator ** 2 - a - d
+    return (gamma, beta1, beta2, a, b, c, d)
+
+
+#: Perdew-Zunger (1981) paramagnetic and ferromagnetic fits, ``(gamma,
+#: beta1, beta2, A, B, C, D)`` in Hartree, continuous at :math:`r_s = 1`.
+PZ_PARA = _continuous_pz(-0.1423, 1.0529, 0.3334, 0.0311, -0.048)
+PZ_FERRO = _continuous_pz(-0.0843, 1.3981, 0.2611, 0.01555, -0.0269)
+
+
 def lda_correlation(rho: np.ndarray):
     r"""Perdew-Zunger (1981) correlation: returns ``(e_c, v_c)``.
 
     The standard parameterization of the Ceperley-Alder uniform-electron-gas
-    correlation energy, in its unpolarized form, split at :math:`r_s = 1`.
+    correlation energy, in its unpolarized form, split at :math:`r_s = 1`
+    and continuous there (:data:`PZ_PARA`).
     """
     rho = np.maximum(rho, 1e-30)
     rs = (3.0 / (4.0 * np.pi * rho)) ** (1.0 / 3.0)
+    gamma, beta1, beta2, a, b, c, d = PZ_PARA
 
     # High-density (rs < 1) logarithmic form.
-    a, b, c, d = 0.0311, -0.048, 0.0020, -0.0116
     log_rs = np.log(rs)
     ec_high = a * log_rs + b + c * rs * log_rs + d * rs
     vc_high = (a * log_rs + (b - a / 3.0)
@@ -357,7 +391,6 @@ def lda_correlation(rho: np.ndarray):
                + (2.0 * d - c) * rs / 3.0)
 
     # Low-density (rs >= 1) Pade form.
-    gamma, beta1, beta2 = -0.1423, 1.0529, 0.3334
     sqrt_rs = np.sqrt(rs)
     denom = 1.0 + beta1 * sqrt_rs + beta2 * rs
     ec_low = gamma / denom
@@ -488,7 +521,7 @@ class AtomicResult:
         ``valence`` is an iterable of ``(n, l)`` subshells treated as valence;
         everything else in the configuration is core.  This is the split a
         nonlinear core correction is built from
-        (:func:`mandacaru.pseudopotentials.oncv.partial_core_density`).
+        (:func:`mandacaru.pseudopotentials.core_correction.partial_core_density`).
         """
         wanted = {(int(n), int(l)) for n, l in valence}
         core = np.zeros_like(self.r)
@@ -733,7 +766,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         # left the PAW-LCAO ionic potential 8e-4 Hartree off -Z_ion/r out to 11
         # Bohr.  Re-converging here with the same solver the generators use
         # makes the atom and the pseudization agree by construction.
-        from ..pseudopotentials.oncv import bound_state
+        from ..pseudopotentials.partial_waves import bound_state
 
         from ._config import valence_subshells
 

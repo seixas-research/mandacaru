@@ -82,7 +82,7 @@ already there), leaving
               + 2M(V - \varepsilon)\Big] W .
 
 That has the shape :math:`W'' = fW` that
-:func:`~mandacaru.pseudopotentials.oncv.numerov_outward` already integrates, so
+:func:`~mandacaru.pseudopotentials.partial_waves.numerov_outward` already integrates, so
 scattering states and logarithmic derivatives come for free
 (:func:`relativistic_f`), and the bound-state problem stays a **symmetric
 tridiagonal eigenproblem** -- :math:`\tilde H = M^{-1/2}AM^{-1/2}` with
@@ -339,7 +339,7 @@ def relativistic_f(r, potential, l: int, kappa: int, energy: float,
 
     which is :math:`2[V + l(l+1)/2r^2 - \varepsilon]` exactly when
     ``treatment="none"`` -- the same array
-    :func:`~mandacaru.pseudopotentials.oncv._radial_f` builds.  The solution is
+    :func:`~mandacaru.pseudopotentials.partial_waves._radial_f` builds.  The solution is
     :math:`W`; multiply by :math:`M^{1/2}` for :math:`P = rg`
     (:func:`large_component`).
     """
@@ -530,11 +530,11 @@ def solve_radial_relativistic(r, potential, l: int, n_nodes: int,
 
     **It is still not the default, and the reason is not caution.**  An
     accurate eigenvalue and a wave the generators can pseudize are different
-    requirements.  The ONCVPSP and PAW-LCAO constructions need a wave that
+    requirements.  The PAW-LCAO construction needs a wave that
     satisfies the radial equation *on the uniform grid* to fourth order --
-    :func:`~mandacaru.pseudopotentials.oncv.reference_bound_state` documents
-    what happens otherwise, a ghost 56 Hartree below the reference -- and they
-    get it by shooting Numerov there, which is also why
+    :func:`~mandacaru.pseudopotentials.partial_waves.reference_bound_state` documents
+    what happens otherwise, a ghost 56 Hartree below the reference -- and it
+    gets it by shooting Numerov there, which is also why
     :func:`~mandacaru.basis.atomic_solver.solve_atom` finishes on Numerov
     (``polish``).  A log-grid wave splined onto ``r`` satisfies neither
     discretization's equation, and switching only the atom breaks the very

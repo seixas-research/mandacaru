@@ -32,6 +32,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from threadpoolctl import threadpool_info, threadpool_limits
 
 from mandacaru.basis import HydrogenicAtomicOrbital
 from mandacaru.cli import main
@@ -349,3 +350,55 @@ class TestBuildCommand:
 
         assert main(["--build-backend"]) == 1
         assert calls == [1]
+
+
+# --------------------------------------------------------------------------- #
+# BLAS beside the OpenMP kernels.
+# --------------------------------------------------------------------------- #
+
+def _blas_threads() -> set:
+    np.linalg.eigh(np.eye(2))            # make sure NumPy's BLAS is loaded
+    return {pool["num_threads"] for pool in threadpool_info()
+            if pool["user_api"] == "blas"}
+
+
+@_backend.single_threaded_blas
+def _inside():
+    return _blas_threads()
+
+
+class TestSingleThreadedBLAS:
+    """BLAS limited to one thread around the crystal workflow."""
+
+    def test_blas_runs_one_thread_inside(self):
+        with threadpool_limits(limits=2, user_api="blas"):
+            assert _inside() == {1}
+
+    def test_the_callers_setting_comes_back(self):
+        with threadpool_limits(limits=2, user_api="blas"):
+            _inside()
+            assert _blas_threads() == {2}
+
+    def test_it_is_restored_when_the_function_raises(self):
+        @_backend.single_threaded_blas
+        def fails():
+            raise ValueError("boom")
+
+        with threadpool_limits(limits=2, user_api="blas"):
+            with pytest.raises(ValueError):
+                fails()
+            assert _blas_threads() == {2}
+
+    def test_nesting_keeps_one_thread_and_restores_the_outer_setting(self):
+        @_backend.single_threaded_blas
+        def outer():
+            inner = _inside()
+            return inner, _blas_threads()
+
+        with threadpool_limits(limits=2, user_api="blas"):
+            assert outer() == ({1}, {1})
+            assert _blas_threads() == {2}
+
+    def test_it_keeps_the_name_and_docstring(self):
+        assert _inside.__name__ == "_inside"
+        assert _inside.__wrapped__ is not None

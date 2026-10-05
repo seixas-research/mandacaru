@@ -107,9 +107,8 @@ _OPTIMIZER_KEYS = {
 
 #: Pseudopotential family -> the papers its datasets are generated from.
 _FAMILY_KEYS = {
-    "oncvpsp": ("Hamann2013", "Kleinman1982"),
-    "paw-lcao": ("Bloechl1994",),
-    "upaw-lcao": ("Bloechl1994", "Ivanov2024"),
+    "paw-lcao": ("Bloechl1994", "Hamann2013"),
+    "upaw-lcao": ("Bloechl1994", "Hamann2013", "Ivanov2024"),
 }
 
 

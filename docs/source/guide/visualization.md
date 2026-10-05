@@ -144,7 +144,7 @@ atoms.calc.write_cube("second.cube", state=levels.states[2])
 
 ## Pseudopotentials: the smooth valence density
 
-With a PAW-LCAO, UPAW-LCAO or ONCVPSP basis the orbitals are the **smooth pseudo**
+With a PAW-LCAO or UPAW-LCAO basis the orbitals are the **smooth pseudo**
 valence orbitals, so what is written is the *pseudo valence density*. The core
 is absent by construction, and inside the augmentation spheres the smooth
 density is not the physical one.

@@ -153,7 +153,7 @@ terms rather than from a declared point group.  See :doc:`guide/tapering`.
 Pseudopotential Forces
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Hellmann-Feynman and Pulay forces for the PAW-LCAO and ONCVPSP families.  See
+Hellmann-Feynman and Pulay forces for the PAW-LCAO family.  See
 :doc:`guide/pseudopotentials`.
 
 .. automodule:: mandacaru.algorithms.pseudo_forces
@@ -287,8 +287,8 @@ See :doc:`guide/pseudopotentials`.
 Pseudopotentials
 ----------------
 
-The valence-only families selected as basis names -- ``"ONCVPSP"`` (Hamann),
-``"PAW-LCAO"`` (Bloechl) and ``"UPAW-LCAO"`` (Ivanov et al.) -- their
+The valence-only families selected as basis names -- ``"PAW-LCAO"`` (Bloechl) and
+``"UPAW-LCAO"`` (Ivanov et al.) -- their
 registry, generation, library and the pseudo-atomic orbitals.  See
 :doc:`guide/pseudopotentials`.
 
@@ -305,10 +305,20 @@ Families and Registry
    :undoc-members:
    :show-inheritance:
 
+Radial Partial-Wave Machinery
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Numerov reference waves, optimized smooth partial waves and ghost checks
+shared by PAW-LCAO and UPAW-LCAO.  See :doc:`guide/pseudopotentials`.
+
+.. automodule:: mandacaru.pseudopotentials.partial_waves
+   :members:
+   :show-inheritance:
+
 Confined Orbitals
 ~~~~~~~~~~~~~~~~~
 
-The ``energy_shift`` of a pseudopotential basis (PAW-LCAO, UPAW-LCAO, ONCVPSP):
+The ``energy_shift`` of a pseudopotential basis (PAW-LCAO, UPAW-LCAO):
 the first zeta solved in a smooth
 confining potential, its cutoff radius fixed by the eigenvalue shift.  See
 :doc:`guide/pseudopotentials`.

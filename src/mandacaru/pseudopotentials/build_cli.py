@@ -3,17 +3,16 @@ r"""``mandacaru-build``: generate pseudopotential datasets from the command line
 ::
 
     mandacaru-build --pp PAW --relativistic --xc LDA --element Fe
-    mandacaru-build --pp ONCV --element Fe Cu Ga --workers 3
-    mandacaru-build --pp ONCV --element Ce --occupations 4f=1 5d=1 6s=2
-    mandacaru-build --pp ONCV --element Bi --freeze-subshell 4f
+    mandacaru-build --pp PAW --dirac --element Fe Cu Ga --workers 3
+    mandacaru-build --pp UPAW --element O
     mandacaru-build --pp PAW --all --workers 7 --output staging/
     mandacaru-build --build-backend
 
 Every dataset is generated natively (the reference atom, the partial waves,
 the projectors), through the same functions a calculation uses:
-:func:`~mandacaru.pseudopotentials.paw.generate_paw` (PAW-LCAO),
-:func:`~mandacaru.pseudopotentials.paw.generate_upaw` (UPAW-LCAO) and
-:func:`~mandacaru.pseudopotentials.oncv.generate_oncv` (ONCVPSP).  The radial kernels of that generation -- the tridiagonal eigenpair of
+:func:`~mandacaru.pseudopotentials.paw.generate_paw` (PAW-LCAO) and
+:func:`~mandacaru.pseudopotentials.paw.generate_upaw` (UPAW-LCAO).  The radial
+kernels of that generation -- the tridiagonal eigenpair of
 the uniform-grid radial equation and the Numerov recursions -- run in C
 (:mod:`mandacaru.basis.radial_backend`, compiled on first use); ``--backend
 python`` selects the reference kernels instead, which give the same numbers
@@ -23,8 +22,7 @@ A dataset is written to ``--output`` (default: the current directory, one
 subdirectory per family) at the library stride.  ``--install`` writes into
 Mandacaru's own library for the family instead -- the set's folder
 (``lda-sr/``, ``lda-dirac/``, ...) of the checkout its environment variable
-names (``MANDACARU_PAW_PATH``, ``MANDACARU_ONCVPSP_PATH``,
-``MANDACARU_UPAW_PATH``) -- and so replaces the dataset
+names (``MANDACARU_PAW_PATH``, ``MANDACARU_UPAW_PATH``) -- and so replaces the dataset
 calculations load; it is never the default.
 
 Each channel is checked after generation: its two lowest levels against the
@@ -36,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 import time
 import warnings
@@ -44,31 +41,27 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 #: ``--pp`` spellings -> family name.
 FAMILIES = {"paw": "paw-lcao", "paw-lcao": "paw-lcao",
-            "upaw": "upaw-lcao", "upaw-lcao": "upaw-lcao",
-            "oncv": "oncvpsp", "oncvpsp": "oncvpsp"}
+            "upaw": "upaw-lcao", "upaw-lcao": "upaw-lcao"}
 
 
 def build_parser() -> argparse.ArgumentParser:
     """The ``mandacaru-build`` argument parser."""
     from .io import PSEUDO_FORMATS
-    from .oncv import GHOST_MODES
+    from .partial_waves import GHOST_MODES
 
     parser = argparse.ArgumentParser(
         prog="mandacaru-build",
-        description="Generate PAW-LCAO, UPAW-LCAO or ONCVPSP datasets "
+        description="Generate PAW-LCAO or UPAW-LCAO datasets "
                     "natively, with the radial kernels in C.",
         epilog="examples:\n"
                "  mandacaru-build --pp PAW --relativistic --xc LDA --element Fe\n"
-               "  mandacaru-build --pp ONCV --element Fe Cu --workers 2\n"
-               "  mandacaru-build --pp ONCV --element Ce "
-               "--occupations 4f=1 5d=1 6s=2\n"
-               "  mandacaru-build --pp ONCV --element Bi "
-               "--freeze-subshell 4f\n"
+               "  mandacaru-build --pp PAW --dirac --element Fe Cu --workers 2\n"
+               "  mandacaru-build --pp UPAW --element O\n"
                "  mandacaru-build --pp PAW --all --workers 7 --output staging/\n"
                "  mandacaru-build --build-backend\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--pp", default="PAW", metavar="FAMILY",
-                        help="PAW (PAW-LCAO, default), UPAW or ONCV")
+                        help="PAW (PAW-LCAO, default) or UPAW")
     which = parser.add_mutually_exclusive_group()
     which.add_argument("--element", "-e", nargs="+", metavar="SYMBOL",
                        help="element(s) to generate")
@@ -106,17 +99,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="store_true",
                         help="also compare every channel's scattering phase "
                              "with the all-electron atom")
-    parser.add_argument("--occupations", nargs="+", metavar="NL=COUNT",
-                        help="ONCV, one element only: override neutral-atom "
-                             "subshell occupations, for example "
-                             "4f=1 5d=1 6s=2 for Ce")
-    parser.add_argument("--freeze-subshell", nargs="+", metavar="NL",
-                        help="ONCV: place occupied subshells in each "
-                             "selected element's pseudopotential core, "
-                             "for example 4f for Bi (W-Rn freeze 4f by default)")
-    parser.add_argument("--extra-l", type=int, default=None, metavar="COUNT",
-                        help="ONCV: add unoccupied projector channels above "
-                             "the highest occupied angular momentum")
     parser.add_argument("--backend", default="auto",
                         choices=["auto", "c", "python"],
                         help="radial kernels: C when available (auto), C or "
@@ -166,59 +148,13 @@ def _generate(family: str, symbol: str, options: dict):
     if family == "paw-lcao":
         from .paw import generate_paw
         return generate_paw(symbol, **options)
-    if family == "upaw-lcao":
-        from .paw import generate_upaw
-        return generate_upaw(symbol, **options)
-    from .oncv import generate_oncv
-    return generate_oncv(symbol, **options)
-
-
-def _reference_occupations(symbol: str,
-                           entries: list[str]) -> dict[tuple[int, int], int]:
-    """Apply explicit subshell occupations to the neutral Aufbau reference.
-
-    The total electron count and orbital capacities are checked by the ONCV
-    generator. This parser only handles the concise command-line notation.
-    """
-    from ase.data import atomic_numbers
-    from ..basis._config import ground_state_config
-
-    result = ground_state_config(atomic_numbers[symbol])
-    labels = {letter: l for l, letter in enumerate("spdf")}
-    for entry in entries:
-        match = re.fullmatch(r"([1-9][0-9]*)([spdf])=([0-9]+)", entry)
-        if match is None:
-            raise ValueError(f"invalid occupation {entry!r}; use 4f=1")
-        n, letter, count = match.groups()
-        key = (int(n), labels[letter])
-        if key[0] <= key[1]:
-            raise ValueError(f"invalid subshell {n}{letter}")
-        result[key] = int(count)
-    return {key: value for key, value in result.items() if value}
-
-
-def _frozen_subshells(entries: list[str]) -> tuple[tuple[int, int], ...]:
-    """Parse occupied core subshell labels from ``--freeze-subshell``."""
-    labels = {letter: l for l, letter in enumerate("spdf")}
-    result: set[tuple[int, int]] = set()
-    for entry in entries:
-        match = re.fullmatch(r"([1-9][0-9]*)([spdf])", entry)
-        if match is None:
-            raise ValueError(f"invalid frozen subshell {entry!r}; use 4f")
-        n, letter = match.groups()
-        key = (int(n), labels[letter])
-        if key[0] <= key[1] or key in result:
-            raise ValueError(f"invalid or repeated frozen subshell {entry!r}")
-        result.add(key)
-    return tuple(sorted(result))
+    from .paw import generate_upaw
+    return generate_upaw(symbol, **options)
 
 
 def _levels_and_phase(family: str):
-    if family in ("paw-lcao", "upaw-lcao"):
-        from .paw import _paw_levels, log_derivative_paw
-        return _paw_levels, log_derivative_paw
-    from .oncv import _oncv_levels, log_derivative_ps
-    return _oncv_levels, log_derivative_ps
+    from .paw import _paw_levels, log_derivative_paw
+    return _paw_levels, log_derivative_paw
 
 
 def build_one(family: str, symbol: str, options: dict, directory: str,
@@ -240,6 +176,29 @@ def build_one(family: str, symbol: str, options: dict, directory: str,
     return ok, report
 
 
+def worker_threads(workers: int) -> int:
+    """BLAS/OpenMP threads per worker: the physical cores shared out.
+
+    Each worker otherwise opens a pool as wide as the machine: seven workers
+    ran 48 threads each on 12 cores (load average 150) and built a library
+    set at a quarter of its speed.
+    """
+    from ..integrals._backend import grid_blas_threads
+
+    return max(1, grid_blas_threads() // max(1, int(workers)))
+
+
+def _limit_threads(threads: int) -> None:
+    """Pool initializer: cap a worker's BLAS and OpenMP pools at ``threads``
+    -- the environment for pools not loaded yet, threadpoolctl for those
+    already loaded."""
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ[name] = str(threads)
+    from threadpoolctl import threadpool_limits
+
+    threadpool_limits(threads)
+
+
 def _build_one(family: str, symbol: str, options: dict, directory: str,
                fmt: str, check: bool) -> tuple[bool, str]:
     from .io import STRIDE, library_file, save_pseudopotential
@@ -259,12 +218,12 @@ def _build_one(family: str, symbol: str, options: dict, directory: str,
     uses_c, _message = radial_backend_status(build=False)
     lines = [f"{symbol:>2}  {pp!r}"]
     if getattr(pp, "defects", None):
-        from .oncv import defect_message
+        from .partial_waves import defect_message
         lines = [f"{symbol:>2}  FLAGGED  "
                  + defect_message(symbol, family, pp.defects), f"    {pp!r}"]
     lines.append(f"    {elapsed:.1f} s, {'C' if uses_c else 'Python'} radial "
                  f"kernels -> {path}")
-    from .oncv import ghost_errors, scattering_errors
+    from .partial_waves import ghost_errors, scattering_errors
     levels, log_derivative = _levels_and_phase(family)
     ghosts = ghost_errors(pp, levels)
     phases = scattering_errors(pp, log_derivative) if check else {}
@@ -296,7 +255,7 @@ def main(argv=None) -> int:
 
     family = FAMILIES.get(args.pp.strip().lower())
     if family is None:
-        parser.error(f"--pp must be one of PAW, UPAW, ONCV, not {args.pp!r}")
+        parser.error(f"--pp must be one of PAW, UPAW, not {args.pp!r}")
     if args.install and args.output is not None:
         parser.error("--install and --output are exclusive")
     relativity = args.relativity or "scalar"
@@ -311,37 +270,8 @@ def main(argv=None) -> int:
             parser.error(f"unknown element(s): {', '.join(unknown)}")
     else:
         parser.error("give --element SYMBOL ... or --all")
-    if args.occupations:
-        if family != "oncvpsp" or args.all or len(symbols) != 1:
-            parser.error("--occupations requires --pp ONCV and one --element")
-        try:
-            from ase.data import atomic_numbers
-            from .oncv import _validate_reference_configuration
-            configuration = _reference_occupations(symbols[0],
-                                                    args.occupations)
-            _validate_reference_configuration(
-                int(atomic_numbers[symbols[0]]), configuration)
-        except (TypeError, ValueError) as error:
-            parser.error(str(error))
-    if args.freeze_subshell:
-        if family != "oncvpsp" or args.all:
-            parser.error("--freeze-subshell requires --pp ONCV and --element")
-        try:
-            frozen_subshells = _frozen_subshells(args.freeze_subshell)
-        except ValueError as error:
-            parser.error(str(error))
-    if args.extra_l is not None:
-        if family != "oncvpsp" or args.extra_l < 0:
-            parser.error("--extra-l requires --pp ONCV and a nonnegative count")
-
     ghosts = args.ghosts or "repair"
     options = {"xc": args.xc, "relativity": relativity, "ghosts": ghosts}
-    if args.occupations:
-        options["reference_configuration"] = configuration
-    if args.freeze_subshell:
-        options["frozen_subshells"] = frozen_subshells
-    if args.extra_l is not None:
-        options["extra_l"] = args.extra_l
     try:
         directory = _directory(family, args.output, args.install, args.xc,
                                args.relativity or "scalar")
@@ -376,7 +306,9 @@ def main(argv=None) -> int:
         # Generation time grows steeply with Z (O 5 s, Fe 30 s, Th 670 s), so
         # the heaviest start first and the light ones fill in around them.
         jobs.sort(key=lambda job: -atomic_numbers[job[1]])
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        with ProcessPoolExecutor(max_workers=args.workers,
+                                 initializer=_limit_threads,
+                                 initargs=(worker_threads(args.workers),)) as pool:
             futures = {pool.submit(build_one, *job): job[1] for job in jobs}
             for future in as_completed(futures):
                 try:
