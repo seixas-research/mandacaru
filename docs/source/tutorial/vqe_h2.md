@@ -54,5 +54,6 @@ E(\boldsymbol{\theta};R)
 
 Use the [LiH scan](pes_scan.md) for the general procedure for varying $R$,
 comparing pools and plotting the energies. The hydrogen examples
-`examples/old/08_energy_levels_H2.py` and `examples/old/09_SubspaceVQE_H2.py` explore
+`examples/excited_states/03_deflation_h2.py`, `examples/excited_states/01_ssvqe_h2.py` and
+`examples/excited_states/02_subspace_adapt_vqe_h2.py` explore
 excited-state calculations in this smaller system.

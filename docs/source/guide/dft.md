@@ -71,10 +71,11 @@ gradients of the orbitals and feeds its derivative back into the Kohn-Sham
 operator.
 
 - **LDA** is the default and the cheapest. It is also the functional the
-  PAW-LCAO datasets were generated with, so it is the one with no mismatch
-  between the molecule and its datasets.
-- **PBE** adds the density gradient. Choose it when a gradient correction
-  matters more than the dataset consistency discussed below.
+  default PAW-LCAO datasets (`lda-sr/`) were generated with, so it is the one
+  with no mismatch between the molecule and its datasets.
+- **PBE** adds the density gradient. With PAW-LCAO, read the PBE datasets
+  with `directory="pbe-sr"` (below), so the molecule and its datasets use
+  the same functional.
 - **r2SCAN** is the most expensive of the three because it needs the orbital
   gradients on the grid. It shifts the orbital energies noticeably from PBE:
   for H$_2$O the HOMO-LUMO gap is about 1.4 eV larger with r2SCAN than with
@@ -229,11 +230,20 @@ energies around their reference atom, so the Kohn-Sham energy on them needs no
 exchange-correlation evaluation inside the augmentation spheres: it is the
 smooth energy, with the compensation charges in the Hartree term and the
 dataset's smooth core density in the functional, the way the dataset was
-unscreened. The shipped datasets are **LDA** datasets. `xc="pbe"` or
-`xc="r2scan"` on them therefore mixes two functionals, the molecule's and the
-dataset's, and the calculation emits a `RuntimeWarning` saying so. The numbers
-are still useful for trends, but they are not the answer of a self-consistent
-PBE or r2SCAN dataset. A PBE dataset is future work.
+unscreened. The default datasets are **LDA** datasets; the library also
+ships a scalar-relativistic **PBE** set, read with `directory="pbe-sr"`:
+
+```python
+atoms.calc = Mandacaru(method="dft", xc="pbe", directory="pbe-sr",
+                       basis={"name": "PAW-LCAO", "size": "DZP"})
+```
+
+A functional other than the datasets' mixes two functionals, the molecule's
+and the dataset's, and the calculation emits a `RuntimeWarning` saying so;
+for `xc="pbe"` on LDA datasets (or `xc="lda"` on PBE ones) the warning names
+the folder with the matching set. r2SCAN has no datasets of its own. The
+mixed numbers are still useful for trends, but they are not the answer of a
+consistent calculation.
 
 ## The grid
 
@@ -303,7 +313,7 @@ neither the dispersion term nor the core-correction offset.
 
 On H$_2$O in a PAW-LCAO DZP basis at $h = 0.2$ Å with 3 Å of vacuum, the three
 functionals of the first example give these totals and gaps (the setup of
-[the functionals example](../../../examples/new/03_DFT_H2O_functionals.py)):
+[the functionals example](../../../examples/dft/01_dft_h2o_functionals.py)):
 
 | Functional | Total energy (Ha) | HOMO-LUMO gap (eV) |
 | :--- | ---: | ---: |
@@ -318,7 +328,7 @@ The Kohn-Sham eigenvalues also give the molecular density of states: the
 levels, each broadened by a Gaussian, of one isolated molecule. This is a
 picture of its orbital energies at the Gamma point, not a band structure; see
 the "Bands and densities of states" section below and
-[the density-of-states example](../../../examples/new/04_DFT_H2O_dos.py).
+[the density-of-states example](../../../examples/dft/02_dft_h2o_dos.py).
 
 ## Populations, cube files and dipoles
 
@@ -483,7 +493,7 @@ result.fermi_level, result.free_energy, result.scf.band_gap
   forgiving choice: its $F$ has no $\sigma^2$ term, so it barely moves with
   the width, while the Fermi-Dirac and Gaussian free energies bend away
   quadratically and only their $\tfrac12(E + F)$ estimate stays put.
-  [The aluminum smearing example](../../../examples/new/09_DFT_Al_smearing.py)
+  [The aluminum smearing example](../../../examples/dft/04_dft_al_smearing.py)
   sweeps the three methods over four widths and plots both quantities.
 - **Electrostatics without finite-grid effects.** The smooth density, the
   compensation charges and the ions are combined into one neutral charge whose
@@ -514,7 +524,7 @@ result.fermi_level, result.free_energy, result.scf.band_gap
   differs from it by far more than that on these grids: 0.80 Ha for water,
   with a dipole 1.6 times larger.
 
-Not yet available for crystals: D4, cube files and dipoles.
+Not yet available for crystals: cube files and dipoles.
 
 ### HSE06 in a crystal
 
@@ -756,9 +766,9 @@ for a spin-polarized run; see *Spin polarization*).
 
 The mesh band gap in `result.scf.band_gap` is an upper bound whenever a band
 edge lies between the mesh points; the gap along a `band_structure` path shows
-how much. See [the silicon bands example](../../../examples/new/08_DFT_Si_bands.py)
+how much. See [the silicon bands example](../../../examples/dft/03_dft_si_bands.py)
 and, for a molecule, [the density-of-states
-example](../../../examples/new/04_DFT_H2O_dos.py).
+example](../../../examples/dft/02_dft_h2o_dos.py).
 
 ## Electric polarization: the Berry phase
 
@@ -1355,7 +1365,8 @@ The following are refused or unavailable:
 - **Spin-orbit coupling** in the Kohn-Sham operator.
 - **Crystals with an all-electron basis**: the periodic path is
   PAW-LCAO or UPAW-LCAO only.
-- **D4 with LDA or with r2SCAN+rVV10**, and **D4 for a crystal**, as above.
+- **D4 with LDA or with r2SCAN+rVV10**, as above.
+- **Cube files, dipoles and natural orbitals of a crystal**.
 
 A molecule's polarizability is in {doc}`polarizability`; a crystal's
 electronic dielectric tensor is above.

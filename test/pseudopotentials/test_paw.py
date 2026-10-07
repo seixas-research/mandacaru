@@ -118,7 +118,7 @@ SYSTEMS = {"H2": (h2, H2_H), "LiH": (lih, LIH_H)}
 #:                            LiH -0.770427 / -0.778141 -> -0.770438 / -0.778153
 #:
 #: Re-measured 2026-09-30 against the libraries rebuilt 2026-09-28/30
-#: (relativistic exchange, the intruding-1s check; TODO 1.16).  All four
+#: (relativistic exchange, the intruding-1s check; HISTORY.md).  All four
 #: tables move together, H2 by ~20 uHa and LiH by ~16 uHa:
 #:   PAW                      H2 -1.094873 / -1.108624 -> -1.094853 / -1.108603
 #:                            LiH -0.769939 / -0.777683 -> -0.769924 / -0.777664

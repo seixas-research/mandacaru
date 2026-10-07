@@ -26,7 +26,7 @@ atoms.center()
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
                        h=0.25,
-                       checkpoint="examples/old/data/h2_wavefunction.json",
+                       checkpoint="examples/qpe/data/h2_wavefunction.json",
                        checkpoint_every=1)
 atoms.get_potential_energy()
 ```
@@ -47,8 +47,8 @@ The record is also kept on the driver as `calc.solver.checkpoint` (or
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
                        h=0.25,
-                       resume="examples/old/data/h2_wavefunction.json",
-                       checkpoint="examples/old/data/h2_wavefunction.json",
+                       resume="examples/qpe/data/h2_wavefunction.json",
+                       checkpoint="examples/qpe/data/h2_wavefunction.json",
                        max_iterations=40)
 ```
 
@@ -128,7 +128,7 @@ file that a previous run wrote.
 ```python
 from mandacaru.core import load_checkpoint
 
-ck = load_checkpoint("examples/old/data/h2_wavefunction.json")
+ck = load_checkpoint("examples/qpe/data/h2_wavefunction.json")
 print(ck.summary())
 psi = ck.state_vector()            # the amplitudes, prepared from the file
 E = ck.expectation()               # <H> in Hartree, from the stored Hamiltonian
@@ -188,7 +188,7 @@ known resolution.
 from mandacaru.algorithms import QuantumPhaseEstimation
 
 qpe = QuantumPhaseEstimation(n_evaluation_qubits=10)
-result = qpe.run("examples/old/data/h2_wavefunction.json")
+result = qpe.run("examples/qpe/data/h2_wavefunction.json")
 print(result.summary())
 result.energy                  # the most probable reading (eV)
 result.resolution              # W / 2^t
@@ -241,7 +241,7 @@ small system against `run()`, not for sizing a real submission. Molecular QPE
 on a processor needs a product-formula (or other) synthesis with an explicit
 approximation budget, which this method does not provide.
 
-See `examples/old/31_QPE_H2_from_checkpoint.py`.
+See `examples/qpe/01_qpe_h2_from_checkpoint.py`.
 
 ### Citing it
 

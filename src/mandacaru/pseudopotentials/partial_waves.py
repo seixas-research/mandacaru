@@ -1483,8 +1483,24 @@ def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
                                 r_in, q_cut, targets)
 
 
+#: Half-width of the fit that reads a gradient-corrected potential's
+#: derivatives at :math:`r_{cl}` (:func:`polynomial_local_potential`), as a
+#: fraction of :math:`r_{cl}`: +-15 of the GGA's derivative nodes
+#: (:data:`~mandacaru.basis.xc.GGA_DERIVATIVE_STEP` apart).  Its potential
+#: is a cubic spline through those nodes, so a fit over the default +-25
+#: grid points spans two or three of them and reads their kinks as a fourth
+#: derivative: PBE aluminum's at r_cl = 3.09 Bohr came out -51 (LDA -0.31)
+#: and its local potential -13.4 Ha deep at the origin (LDA -1.5); at 1.39
+#: Bohr -14800, -152 Ha and a ghost 112 Ha deep.  Read over 0.1-0.2 r_cl the
+#: PBE derivatives agree with one another and the potential with LDA's
+#: (HISTORY.md, 2026-10-07, "The PBE set").  An LDA potential reads the same
+#: over any of these windows and keeps the grid-point fit.
+GGA_LOCAL_FIT_FRACTION = 0.15
+
+
 def polynomial_local_potential(r: np.ndarray, v_ae: np.ndarray,
-                               r_local: float, shift: float = 0.0
+                               r_local: float, shift: float = 0.0,
+                               fit_window: float | None = None
                                ) -> np.ndarray:
     r"""Even polynomial continuation of ``v_ae`` inside ``r_local``.
 
@@ -1495,8 +1511,15 @@ def polynomial_local_potential(r: np.ndarray, v_ae: np.ndarray,
     Hartree above the five-coefficient continuation -- Hamann's ``dvloc0``,
     the knob that sets how strongly the projectors have to act.
     :math:`V'(0) = 0` by parity, so the potential is smooth at the origin.
+
+    The derivatives are read off a polynomial fit over +-25 grid points
+    around :math:`r_{cl}`, or over +-``fit_window`` Bohr when that is wider
+    (a gradient-corrected potential, :data:`GGA_LOCAL_FIT_FRACTION`).
     """
-    target = _local_derivatives(r, v_ae, r_local, order=4)
+    window = 25
+    if fit_window is not None:
+        window = max(window, int(float(fit_window) / float(r[1] - r[0])))
+    target = _local_derivatives(r, v_ae, r_local, order=4, window=window)
     powers = np.arange(0, 12, 2)
 
     def rows(n_powers):

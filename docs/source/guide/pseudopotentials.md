@@ -183,7 +183,7 @@ calculation that later reads it.
 | `extra_l` | `0`, La: `1`; K, Ca, Rb, Sr: up to d | Empty channels above the highest occupied valence $l$; a bound non-core atom level is the first reference when present, otherwise both references scatter |
 | `points`, `r_max` | per element | The radial grid of the reference atom |
 | `frozen_subshells` | Tl–Rn: `4f`; otherwise none | Move selected occupied subshells into the pseudopotential core |
-| `semicore_subshells` | Na, Mg, K, Ca, Rb, Sr: $(n-1)s\,(n-1)p$; otherwise none | Move selected filled core subshells into the valence; `()` turns it off |
+| `semicore_subshells` | Na, Mg, K, Ca, Rb, Sr, Sc, Ti, Y, Zr, Nb, Mo, Tc: $(n-1)s\,(n-1)p$; otherwise none | Move selected filled core subshells into the valence; `()` turns it off |
 
 **Semicore valence.** An alkali or alkaline-earth atom with an $s$ channel
 alone has no projectors for $p$, and its $p$ scattering -- the metallic bond
@@ -203,15 +203,34 @@ Na₂, NaH and NaCl within 1 % of all-electron LDA bond lengths. Cs, Ba, Fr
 and Ra are not semicore yet -- cesium's d channel then binds a ghost and
 barium's and francium's f scatter wrongly -- so they ship $s$-only and
 flagged: their datasets warn on load that the local potential scatters
-wrongly. The price is
+wrongly.
+
+The early d block has the same gap in its empty $p$: with $s$ and $d$
+channels alone, the local potential of Sc, Ti and Y–Tc scattered $p$
+0.2–1.5 rad off for every repair, in LDA and PBE alike. With their
+$(n-1)s\,(n-1)p$ in valence (scandium: $3s^2 3p^6 3d^1 4s^2$, 11 electrons)
+each is clean at its first construction in both functionals: no ghost,
+phases within 0.011 rad (Tc 0.036), the unprojected $f$ within 0.09 rad and
+the intruding-1s miss 0.01–0.05. The price is
 8 more electrons per atom and four more basis functions (the semicore $s$
 and $p$ are always single-zeta; only the valence $s$ is split and
 polarized).
 
 The `xc` argument belongs to the dataset. It is not the functional of a later
-calculation: `Mandacaru(method="dft", xc=...)` chooses its own, and the shipped
+calculation: `Mandacaru(method="dft", xc=...)` chooses its own. The default
 PAW-LCAO datasets are LDA, so a PBE or r2SCAN calculation on them warns about
-the mismatch (see {doc}`dft`).
+the mismatch (see {doc}`dft`); the PBE set, `directory="pbe-sr"` (*The
+pseudopotential libraries*, below), is the one a PBE calculation should read.
+
+A gradient-corrected reference potential is a cubic spline through its
+derivative nodes (`GGA_DERIVATIVE_STEP` apart), so the derivatives the local
+potential is matched to at $r_{cl}$ (through the fourth) are read over a fit
+window of $\pm 0.15\,r_{cl}$ (`GGA_LOCAL_FIT_FRACTION`) rather than the
+$\pm 25$ grid points an LDA potential uses. Over the narrow window the
+spline's kinks read as a fourth derivative: PBE aluminum's came out $-51$
+against LDA's $-0.31$ at 3.09 Bohr, and the local potential sank to
+$-13.4$ Ha at the origin (LDA $-1.5$) and bound ghost states that every PBE
+dataset then had to be repaired around.
 
 ### Relativity
 
@@ -637,9 +656,9 @@ nonsense.
 
 `$MANDACARU_PAW_PATH/lda-sr/{H,Li,C,N,O,F}.parquet` (100–385 kB, decimated to
 0.02 Bohr; 9.6 s to regenerate with `build_paw_library()`; `get_paw(symbol,
-directory)` is the family's loader, `paw_library_path()` its directory
+directory, xc)` is the family's loader, `paw_library_path()` its directory
 (`$MANDACARU_PAW_PATH/lda-sr` by default, `lda-dirac` for
-`relativity="dirac"`). The record is `PAWDataset` (a `PseudoPotential` subclass:
+`relativity="dirac"`, `pbe-sr` for `xc="pbe"`). The record is `PAWDataset` (a `PseudoPotential` subclass:
 `channels[l]` are `PAWChannel`s with `reference_energies`, `ae_waves`,
 `pseudo_waves`, `projectors` (dual), `raw_projectors`, `overlap_correction`
 $q$, `kinetic_difference` $\Delta T$, `potential_difference`,
@@ -990,10 +1009,23 @@ mandacaru --pseudo-status        # each variable, where it points, and how many 
 MANDACARU_..._PATH=DIR` into `~/.zshrc` or `~/.bashrc` (whichever `$SHELL`
 reads), asking `[Y/n]` before replacing a different value; open a new
 terminal, or `source` the file, for the variable to take effect in your
-shell. Inside a checkout the datasets sit one folder per set —
-`<checkout>/lda-sr/<Symbol>.parquet`, the scalar-relativistic LDA set and the
-default — with `<checkout>/lda-dirac/` added by the PAW-LCAO
-library.
+shell. Inside a checkout the datasets sit one folder per set:
+
+| folder | set | elements |
+|---|---|---|
+| `lda-sr/` | scalar-relativistic LDA, **the default** | H–U (92) |
+| `lda-dirac/` | LDA with the spin-orbit term | H–U without Pa (91) |
+| `pbe-sr/` | scalar-relativistic PBE | H–U (92) |
+
+There is no PBE Dirac set. In the PBE set the reference atom, the
+unscreening and the one-center energies are PBE (Perdew-Wang 1992 correlation,
+MacDonald-Vosko relativistic exchange), so it is the set for
+`Mandacaru(method="dft", xc="pbe")` and the hybrid built on PBE; on the
+default LDA set a PBE calculation runs but warns that the functionals differ,
+and the warning names `directory="pbe-sr"`. Both scalar sets flag the same
+kinds of elements (the lanthanides, actinides and several early d-block
+metals whose empty channels no local potential makes scatter like the atom);
+`mandacaru-paw/PBE.md` lists the PBE ones.
 `MANDACARU_UPAW_PATH` is the one optional variable: UPAW-LCAO is generated on
 demand without it (*Datasets* above).
 
@@ -1004,7 +1036,13 @@ one with `directory=`, resolved against the family's own variable:
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
                        directory="lda-dirac")   # $MANDACARU_PAW_PATH/lda-dirac/
+
+atoms.calc = Mandacaru(method="dft", xc="pbe",
+                       basis={"name": "PAW-LCAO", "size": "DZP"},
+                       directory="pbe-sr")      # $MANDACARU_PAW_PATH/pbe-sr/
 ```
+
+On the command line the same folder is `--directory pbe-sr`.
 
 A per-element basis mapping has each of its library
 entries pointed at the same folder name; with the default `directory="lda-sr"`
@@ -1015,13 +1053,13 @@ that reads no library is refused. It is not ASE's working directory, which
 the calculator leaves as it is.
 
 Each family's own module is the loader —
-`get_paw(symbol, directory)`, `get_upaw(symbol, directory)` — both accepting
-`directory=None` to fall back to the library variable and its default
-`lda-sr/` set; `available_elements(directory)` (from
+`get_paw(symbol, directory, xc)`, `get_upaw(symbol, directory, xc)` — both
+accepting `directory=None` to fall back to the library variable and its
+default `lda-sr/` set (`get_paw(symbol, xc="pbe")` reads `pbe-sr/`); `available_elements(directory)` (from
 `mandacaru.pseudopotentials.io`) lists what a directory holds. The PAW-LCAO
 datasets cover **every element with Z ≤ 92** (H through U),
-generated from scratch by Mandacaru's own LDA radial atomic solver; the
-checkout (all 92 elements) is about 190 MB.
+generated from scratch by Mandacaru's own radial atomic solver, in LDA and
+in PBE.
 
 A calculation that needs a variable that is unset, or that names something
 that is not a directory, raises `LibraryPathError`
@@ -1436,8 +1474,8 @@ basis addresses it directly; see [Basis sets](basis_sets.md).
 
 ```{note}
 **Relaxation works, and oxygen needs a finer grid than lithium.**
-LiH relaxes cleanly (`examples/old/28_LiH_relaxation_PAW.py`: five BFGS steps from
-2.0 Å to d = 1.6876 Å, final fmax 0.002 eV/Å), and so do H₂, OH, CH and H₂O.
+LiH relaxes cleanly (five BFGS steps from
+2.0 Å to d = 1.6876 Å, final fmax 0.002 eV/Å; `examples/relaxation/02_lih_relaxation.py` sets up the same relaxation), and so do H₂, OH, CH and H₂O.
 Water from a 90°, 1.0 Å start converges in **three BFGS steps** (h = 0.16 Å,
 PAW-LCAO-SZ, 123 s) to d = 0.992 Å and an angle of 117.3°, against 0.9572 Å and
 104.52° in experiment: the bond length is good, and the 13° on the angle is

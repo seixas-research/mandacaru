@@ -144,6 +144,7 @@ import numpy as np
 from scipy.integrate import simpson
 
 from ..basis.relativity import relativistic_exchange
+from ..basis.xc import _resolve as _resolve_xc
 from ..basis.xc import xc_potential
 from ..basis.atomic_solver import (AtomicResult, hartree_potential,
                                     solve_atom)
@@ -162,7 +163,7 @@ from .partial_waves import (INNER_POINTS, Q_MAX, Q_STEP,
                    numerov_outward, read_defects, warn_defects,
                    optimize_pseudo_waves, polynomial_local_potential,
                    reference_waves, spurious_nodes, unoccupied_level,
-                   EXTRA_ANCHOR_ENERGIES)
+                   EXTRA_ANCHOR_ENERGIES, GGA_LOCAL_FIT_FRACTION)
 
 #: Registry name of the family (no aliases).  The **-LCAO** is not decoration:
 #: this is Bloechl's projector-augmented-wave transformation carried on a
@@ -335,14 +336,22 @@ DEFAULT_HIGHEST_CHANNEL = {"Li": 1,
 #: scattered right.  1.2-1.5 give the same lattice (3.372 / 3.373 in plane
 #: waves; 2.0: 3.346) and 1.5 is the softest on the 0.25 A grid.
 DEFAULT_CORE_RADII = {"Li": 1.5}
-#: Cs, Ba, Fr and Ra are not in these tables yet: semicore cesium's d
-#: channel binds a ghost at -0.18 Ha (its 5d is at -0.016, its 4d in the
-#: core), and barium's and francium's f scatter 0.7-1.5 rad off for every
-#: repair while their s channel binds a ghost (HISTORY.md, 2026-10-06).
+#: The early d block, Sc, Ti and Y-Tc, has the same problem in its empty
+#: p: with s and d channels only, the local potential alone scattered p
+#: 0.2-1.5 rad off in every repair, and Sc, Ti, Y, Zr, Nb, Mo and Tc were
+#: flagged in both functionals.  With the (n-1)s (n-1)p shell in valence each
+#: of them is clean at its first construction at zero deficit, in LDA and
+#: PBE alike: no ghost, phases <= 0.011 rad, the unprojected f 0.02-0.09
+#: rad, intruding-1s misses 0.01-0.05 (HISTORY.md, 2026-10-07, "The PBE
+#: set").  Cs, Ba, Fr and Ra are not in these tables yet: semicore
+#: cesium's d channel binds a ghost at -0.18 Ha (its 5d is at -0.016, its 4d
+#: in the core), and barium's and francium's f scatter 0.7-1.5 rad off for
+#: every repair while their s channel binds a ghost (HISTORY.md,
+#: 2026-10-06).
 DEFAULT_SEMICORE_SUBSHELLS = {
     symbol: ((n - 1, 0), (n - 1, 1))
-    for n, symbols in ((3, ("Na", "Mg")), (4, ("K", "Ca")),
-                       (5, ("Rb", "Sr")))
+    for n, symbols in ((3, ("Na", "Mg")), (4, ("K", "Ca", "Sc", "Ti")),
+                       (5, ("Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc")))
     for symbol in symbols}
 #: Per-dataset repairs of the d-block and 6p libraries (HISTORY.md, 2026-09-28,
 #: "the d-block and 6p repairs"), keyed by ``(element, functional)`` and taking
@@ -359,8 +368,11 @@ DEFAULT_SEMICORE_SUBSHELLS = {
 #:   wave at h = 0.20 Angstrom was off by 0.1-0.9; a larger d sphere with a
 #:   higher second reference energy brings it to 0.02-0.16.
 #:
-#: Hf, Lu, Mo, Nb, Sc, Tc, Th, Ti-LDA, W-PBE and Zr-LDA found no repair in
-#: these scans and keep their old construction.
+#: Hf, Lu, Th, W-PBE (and Mo, Nb, Sc, Tc, Ti-LDA and Zr-LDA, now
+#: semicore) found no repair in these scans.  Y and Zr, repaired here once,
+#: are semicore now (:data:`DEFAULT_SEMICORE_SUBSHELLS`): a table entry
+#: scanned for an s-and-d dataset would set the cutoffs of their semicore
+#: channels.
 _S_CHANNEL_REPAIRS = {
     # (element, xc): (n_bessel, local_shift) -- scalar s-miss fixed by these.
     ("Ac", "lda"): (10, 20.0), ("Ac", "pbe"): (10, 10.0),
@@ -378,8 +390,6 @@ _S_CHANNEL_REPAIRS = {
     ("Ru", "lda"): (9, 50.0), ("Ru", "pbe"): (10, 0.0),
     ("Sb", "lda"): (9, 10.0), ("Sn", "lda"): (9, 10.0),
     ("W", "lda"): (10, 0.0),
-    ("Y", "lda"): (9, 20.0), ("Y", "pbe"): (10, 10.0),
-    ("Zr", "pbe"): (10, 10.0),
     # With a shorter s sphere (DEFAULT_CUTOFFS_BY_DATASET).
     ("Tl", "lda"): (10, 10.0), ("Po", "lda"): (10, 10.0),
     ("Bi", "lda"): (10, 10.0),
@@ -461,9 +471,6 @@ DEFAULT_CUTOFFS_BY_DATASET = {
     ('W', 'lda'): {0: 3.418, 2: 3.418, 3: 3.418},
     ('Xe', 'lda'): {0: 2.093, 1: 2.476, 2: 1.07},
     ('Xe', 'pbe'): {0: 2.104, 1: 2.487, 2: 1.07},
-    ('Y', 'lda'): {0: 4.299, 2: 2.35},
-    ('Y', 'pbe'): {0: 4.368, 2: 2.318},
-    ('Zr', 'pbe'): {0: 4.084, 2: 2.076},
 }
 DEFAULT_LOCAL_SHIFTS_BY_DATASET = {key: shift for key, (_n, shift)
                                    in _S_CHANNEL_REPAIRS.items()}
@@ -1566,7 +1573,12 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     shift = float(DEFAULT_LOCAL_SHIFTS_BY_DATASET.get(
         dataset, DEFAULT_LOCAL_SHIFTS.get(symbol, 0.0))
         if local_shift is None else local_shift)
-    v_loc = polynomial_local_potential(r, v_ae, r_local, shift)
+    # A gradient-corrected potential is a spline through its derivative
+    # nodes: its derivatives at r_cl are read over a window spanning many.
+    fit_window = (GGA_LOCAL_FIT_FRACTION * r_local
+                  if _resolve_xc(xc) != "lda" else None)
+    v_loc = polynomial_local_potential(r, v_ae, r_local, shift,
+                                       fit_window=fit_window)
 
     channels: dict = {}
     for l, states in per_l.items():

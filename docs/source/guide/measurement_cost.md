@@ -309,5 +309,5 @@ rather than silently falling back.
   `device="ibm_*"` (optimize locally, measure once), or raise `run_budget=`
   in `backend_options=` if the run really needs it — see
   [above](#run-budget).
-* **On the Open plan**, the realistic target stays 4–8 qubits. `examples/old/25_ADAPTVQE_H2_IBM.py`
+* **On the Open plan**, the realistic target stays 4–8 qubits. `examples/ibm_quantum/01_vqe_h2_ibm.py`
   is the shape that works: two qubits, five Pauli terms, four CNOTs.

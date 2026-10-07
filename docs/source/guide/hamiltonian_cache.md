@@ -188,6 +188,5 @@ for pool in ("fermionic", "qubit", "qeb", "ceo"):
           f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
 ```
 
-See `examples/old/17_hamiltonian_cache.py` for a runnable version that checks the
-round trip in both formats, and `examples/old/12_ADAPTVQE_LiH_backends.py` for the
-cache driving a multi-backend comparison.
+See `examples/hamiltonian_cache/01_save_and_load_lih.py` for a runnable version that
+saves the LiH Hamiltonian in both formats and runs every pool from the file.

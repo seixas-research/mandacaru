@@ -5,7 +5,7 @@ import numpy as np
 from ase import Atoms
 from mandacaru import Mandacaru
 
-DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
 chain = Atoms("H", positions=[[0.0, 0.0, 0.0]],

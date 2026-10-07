@@ -246,7 +246,7 @@ class TestCEOGrouping:
         assert len(ceo.grown_operators(coupled, lambda o: 1.0)) == 2
 
     def test_ovp_halves_the_gate_count_of_qeb(self):
-        """The reason ``examples/24_ADAPTVQE_LiH_IBM.py`` uses it."""
+        """Why the LiH hardware data in ``examples/ibm_quantum/data/`` used it."""
         atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
                       cell=[15.0] * 3, pbc=True)
         counts = {}

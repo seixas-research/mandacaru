@@ -205,6 +205,11 @@ docs/index.html
 
 # others
 examples/references.bib
-examples/data/
-examples/old/*
-examples/new/outputs/*
+# Each example category writes to its own data/ folder.  Only the paid IBM
+# hardware data and the image the visualization guide embeds are tracked.
+examples/*/data/*
+!examples/ibm_quantum/data/h2_dissociation_ibm*
+!examples/ibm_quantum/data/lih_dissociation_ibm*
+!examples/ibm_quantum/data/h2_relax_ibm*
+!examples/ibm_quantum/data/h2_1.8A_*
+!examples/visualization/data/h2_cube_slice.png

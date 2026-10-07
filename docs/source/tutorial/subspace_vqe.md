@@ -162,5 +162,6 @@ Three limits come with the construction:
   determinants, so these levels are not exported as circuits. A UHF
   reference, which breaks $\hat S^2$, is refused.
 
-A complete, runnable script (both methods, compared to exact diagonalization) is
-`examples/old/09_SubspaceVQE_H2.py`.
+Complete, runnable scripts for the two methods are
+`examples/excited_states/01_ssvqe_h2.py` and
+`examples/excited_states/02_subspace_adapt_vqe_h2.py`.

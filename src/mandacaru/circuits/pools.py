@@ -573,7 +573,7 @@ class OVPCEOPool(CEOPool):
     The paper considers this variant explicitly (Sec. II B 4 and Supplementary
     Sec. I): the trade is variational freedom, since the coupled excitations are
     then constrained to one shared parameter magnitude.  Measured on the LiH
-    curve of ``examples/24_ADAPTVQE_LiH_IBM.py`` (STO-3G, 12 qubits) it costs
+    curve in ``examples/ibm_quantum/data/`` (STO-3G, 12 qubits) it costs
     nothing in energy and halves the gate count -- 104 CNOTs against 208 for
     ``qeb`` and 248 for the adaptive ``ceo`` -- which is why the hardware
     example uses it.

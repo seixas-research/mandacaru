@@ -12,7 +12,7 @@ Files are checked strictly: the root holds exactly ``ROOT_ALLOWED``.
 Directories may additionally be anything ``.gitignore`` excludes, since git
 cannot commit those -- that is what the rule protects against.
 
-Every example, test and script writes its outputs under ``examples/data/``
+Every example writes its outputs under its category's ``examples/<category>/data/``
 (or a pytest ``tmp_path``); the repository root holds only the files listed
 in ``ROOT_ALLOWED``.  This test fails the suite the moment a stray file
 appears there, and it also inspects every example for a file written with a
@@ -68,7 +68,7 @@ def test_repository_root_holds_only_the_known_files():
                    and name not in ROOT_ALLOWED and not name.startswith(".DS"))
     assert not stray, (
         f"generated files leaked into the repository root: {stray}. "
-        "Outputs belong under examples/data/ (or a tmp_path in tests); "
+        "Outputs belong under examples/<category>/data/ (or a tmp_path in tests); "
         "delete them and fix whatever wrote them.")
 
 
@@ -84,7 +84,7 @@ def test_repository_root_holds_only_the_known_directories():
                    and not is_git_ignored(name))
     assert not stray, (
         f"unexpected directories in the repository root: {stray}. "
-        "Generated output belongs under examples/data/ (or a tmp_path); "
+        "Generated output belongs under examples/<category>/data/ (or a tmp_path); "
         "add a deliberate scratch directory to .gitignore.")
 
 

@@ -77,18 +77,16 @@ interferometric protocol. Mixed-state values can be obtained by probability-
 weighted averages of pure-state correlators; the API does not accept a density
 matrix. Averaging a complete orthonormal basis gives the normalized trace.
 
-The complete three-dimensional H2 example reuses the molecular builder and
-ADAPT checkpoint from the dipole example:
+The runnable H₂ example prepares the ADAPT-VQE ground state and evaluates the
+$k=2$ correlator at three times, with $B=Z_0$ and $M=Z_3$ as Pauli sums:
 
 ```console
-conda run -n mandacaru python examples/old/nested_otoc.py
+conda run -n mandacaru python examples/quantum_echoes/01_nested_otoc_h2.py
 ```
 
-It writes the standard `[BASIS]` and ADAPT report, then `[NESTED OTOC]` with
-compact $k=1$ and $k=2$ sample rows. The full signed FFT goes to
-`otoc_spectrum.csv`. `parse_output("output.txt")["nested_otoc"]` reads the
-metadata and sample table. Its occupation-parity insertions probe electronic
-correlations; they are not electric dipole operators.
+It takes no command-line options and prints one correlator value per time.
+The occupation-parity insertions probe electronic correlations; they are not
+electric dipole operators.
 
 ## What an OTOC spectrum reveals about a Hamiltonian
 
@@ -178,43 +176,17 @@ is another source of amplitudes. `ADAPTVQEResult` itself contains optimization
 results, not state amplitudes. Input arrays are never modified or silently
 renormalized.
 
-The complete runnable example is `examples/old/quantum_echoes.py`, using an H₂
-molecule with a 0.74 Å bond oriented along $(1,1,1)$. It evaluates the
-interacting molecular Hamiltonian and all three position matrices on a
-nonperiodic three-dimensional Cartesian grid. Both operators are transformed
-to the same molecular-orbital basis, including the Löwdin orthogonalization
-of the original atomic orbitals. The default electric field points along the
-bond; its direction and strength can be set independently.
-One hydrogen 1s orbital per atom gives four qubits; this minimal basis is a
-demonstration of longitudinal response, not a converged optical spectrum.
-The example follows the same ASE calculator workflow as `02_ADAPTVQE_LiH.py`:
-`atoms.calc = Mandacaru(basis={"name": "HAO"}, ...)` followed by
-`atoms.get_total_energy()`. The standard ADAPT report goes to `output.txt`
-in the working directory, including `[BASIS]`, integration timings, and circuit
-metrics. A `[QUANTUM ECHOES]` block follows in the same report, recording the
-propagation settings, field, units, pulse bounds, and a `samples` table of
-echo results. It also contains the Fourier sampling settings, resolution,
-Nyquist energy, and a `peaks` table in Hartree and eV. Both tables have padded
-columns and a header delimiter. The complete signed spectrum is exported to
-`spectrum.csv` beside `output.txt`, rather than printed in the main report.
-The terminal shows a short summary, the RHF HOMO–LUMO gap, and excitation peaks.
-`parse_output("output.txt")["quantum_echoes"]` reads the metadata and tables;
-its `spectrum_file` field points to the CSV file.
-The dipole calculation reuses the integral engine and orbital rotation
-retained by that calculator. The standard builder also supplies the same
-basis defaults and nuclear-cusp regularization as the other ASE examples.
+The complete runnable example is `examples/quantum_echoes/02_echo_spectrum_h2.py`.
+It prepares the ADAPT-VQE ground state of H₂ (one hydrogen 1s orbital per atom,
+four qubits; a demonstration, not a converged optical spectrum), perturbs it
+with the Pauli operator $Z_0$ instead of a dipole, prints the echo fidelity and
+response at four times, and samples the echo spectrum with
+`echoes.spectrum(...)`, printing its peaks in eV. It takes no command-line
+options and writes no files.
 
 ```console
-conda run -n mandacaru python examples/old/quantum_echoes.py
+conda run -n mandacaru python examples/quantum_echoes/02_echo_spectrum_h2.py
 ```
-
-For an x-polarized field of magnitude 0.01 atomic units:
-
-```console
-conda run -n mandacaru python examples/old/quantum_echoes.py --field-direction 1 0 0 --field-strength 0.01
-```
-
-`--output /path/to/output.txt` also places `spectrum.csv` in that directory.
 
 ## Dipole coupling and pulse size
 
@@ -451,7 +423,8 @@ They require a converged reference with both occupied and virtual orbitals.
 The reported RHF gap is a mean-field orbital-energy difference; correlated
 neutral excitation energies come from the separate Fourier analysis.
 
-An abbreviated report preview for `--field-direction 1 0 0` is shown below
+An abbreviated report preview for a dipole perturbation (an x-polarized field
+of 0.01 atomic units, appended with `append_quantum_echoes`) is shown below
 (selected columns and rounded values; the generated tables retain 12-digit
 scientific notation and the real/imaginary amplitude columns):
 

@@ -162,8 +162,8 @@ ones they were split from. The overlap matrix stays comfortably invertible at DZ
 (condition number ~170 for H₂), but it grows with every zeta — another reason the
 high sizes are specialist tools.
 
-See `examples/old/21_multizeta_basis.py`, which reproduces every table above and
-plots the zeta hierarchy.
+See `examples/basis_nao/01_nao_multizeta_h2.py`, which runs H₂ at Hartree-Fock
+in SZ, DZ, TZ and DZP.
 
 
 ## Named Gaussian families: Pople, Dunning, Karlsruhe

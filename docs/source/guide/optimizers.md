@@ -153,7 +153,8 @@ The same count is on every {class}`~mandacaru.optimizers.OptimizeResult` as
 
 LiH at 1.6 Å, HAO, `pool="qubit"`, Jordan-Wigner (6 qubits), ADAPT-VQE to
 `max_iterations=12`, every optimizer on the shipped defaults `maxiter=1000`
-and `tol=1e-12` (`examples/old/33_optimizer_comparison.py`; FCI = −162.953987 eV):
+and `tol=1e-12` (FCI = −162.953987 eV; `examples/classical_optimizers/01_optimizer_comparison.py`
+runs the same seven optimizers on the smaller H₂ problem):
 
 | optimizer | steps | evaluations | operators | E − E(FCI) (eV) | CNOTs | s | converged |
 |---|---|---|---|---|---|---|---|

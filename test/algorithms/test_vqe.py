@@ -264,7 +264,7 @@ class TestVQEAsASECalculator:
         assert np.isfinite(atoms.get_total_energy())
 
     def test_uccsd_is_the_default_ansatz_and_reaches_fci_on_lih(self):
-        """What ``examples/34_VQE_LiH_UCCSD.py`` claims, in one assertion.
+        """What ``examples/vqe/01_vqe_lih.py`` relies on, in one assertion.
 
         A calculator-mode ``method="vqe"`` needs nothing but a geometry: the
         ansatz is built from the problem's own shape as every single and double

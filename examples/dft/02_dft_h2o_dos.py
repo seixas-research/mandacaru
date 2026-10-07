@@ -6,7 +6,7 @@ from ase import units
 from ase.build import molecule
 from mandacaru import Mandacaru
 
-DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA, exist_ok=True)
 
 atoms = molecule("H2O")

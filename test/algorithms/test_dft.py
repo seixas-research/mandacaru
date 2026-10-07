@@ -230,9 +230,14 @@ class TestPAWLCAO:
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             lda = _run(h2(), xc="lda", h=0.3, basis={"name": "PAW-LCAO"})
-        with pytest.warns(RuntimeWarning, match="different functionals"):
+        # The warning names the folder of the PBE datasets.
+        with pytest.warns(RuntimeWarning, match="different functionals; "
+                          r"Mandacaru\(directory='pbe-sr'\)"):
             pbe = _run(h2(), xc="pbe", h=0.3, basis={"name": "PAW-LCAO"})
         assert np.isfinite(lda) and np.isfinite(pbe)
+        # r2SCAN has no datasets of its own to point to.
+        with pytest.warns(RuntimeWarning, match=r"different functionals$"):
+            _run(h2(), xc="r2scan", h=0.3, basis={"name": "PAW-LCAO"})
 
 
 def lih():

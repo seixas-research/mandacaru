@@ -175,10 +175,10 @@ e_curve = measure_energies(solvers, provider)             # many geometries, one
 
 or, through the calculator, `measurement_provider=`, which also measures the
 reduced density matrices a force request needs (see
-[What a hardware measurement costs](measurement_cost.md)). Examples
-`24_ADAPTVQE_LiH_IBM.py`, `25_ADAPTVQE_H2_IBM.py` and `29_H2_relaxation_IBM.py`
-follow this pattern; `13_braket_aws_compatibility.py` runs the whole
-optimization on a Braket device the way an `ibm_*` one would.
+[What a hardware measurement costs](measurement_cost.md)).
+`examples/ibm_quantum/01_vqe_h2_ibm.py` runs the whole optimization on an IBM
+device (a fake backend by default), and
+`examples/aws_braket/01_vqe_h2_braket_local.py` does the same on a Braket device.
 
 **Keep the circuit small.** Hardware noise, not shot noise, limited the first
 LiH and H₂ runs (14 eV off for 92 CZ gates; a few tenths of an eV for 17). For
@@ -239,7 +239,7 @@ estimated from measurements.
 
 Mandacaru emits only `X`, `H`, `S`, `Si`, `CNot` and `Rz` — all Braket-native and
 available on every Braket QPU (the device's own compiler maps them to its native
-basis). `examples/old/13_braket_aws_compatibility.py` verifies this on every run.
+basis).
 
 ---
 
@@ -295,11 +295,11 @@ after; use a `QiskitProvider` (IBM, fake or local) for forces.
 
 ## Verifying compatibility
 
-`examples/old/13_braket_aws_compatibility.py` runs the full check locally — no AWS
-account, no charges — and prints a report covering the gate set, the
-shots-versus-state-vector constraint, QWC grouping, shot-noise convergence,
-per-evaluation task count, and the registered devices:
+`examples/aws_braket/01_vqe_h2_braket_local.py` runs a VQE of H₂ locally on the
+`braket-local` device — no AWS account, no charges — with `shots` set to 0
+(the exact state vector, which only a simulator offers), 1000 and 10000 (the
+path a QPU takes). Set `DEVICE` in the script to a QPU name to submit it:
 
 ```bash
-python examples/old/13_braket_aws_compatibility.py
+python examples/aws_braket/01_vqe_h2_braket_local.py
 ```

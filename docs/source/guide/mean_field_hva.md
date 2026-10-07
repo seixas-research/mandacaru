@@ -192,8 +192,8 @@ symmetric systems need a second layer before the ansatz can lower the HF
 energy. The Givens circuit path currently requires real UHF orbitals;
 complex unrestricted orbitals are rejected explicitly.
 
-The runnable [H₂ HVA example](../../../examples/old/38_HVA_H2.py) compares exact
-and circuit-compatible layers and writes its checkpoint under `examples/old/data/`.
+The runnable [H₂ HVA example](../../../examples/vqe/03_hva_h2.py) compares exact
+groups and a Trotter circuit on the same mean-field problem.
 
 For excited states, `method="subspace-vqe"` runs the HVA from spin-adapted
 references: `Mandacaru(method="subspace-vqe", ansatz="hva", multiplicity=1,

@@ -242,3 +242,74 @@ class TestRelativisticExchangeRecord:
         loaded = load_pseudopotential(save_pseudopotential(
             silicon, tmp_path / "si.parquet"))
         assert loaded.relativistic_exchange
+
+
+def _pbe_library():
+    """``$MANDACARU_PAW_PATH/pbe-sr``, or a skip when the checkout has no
+    PBE set (an older ``mandacaru-paw``)."""
+    from mandacaru.pseudopotentials.environment import LibraryPathError
+
+    try:
+        folder = paw_library_path(xc="pbe", must_exist=False)
+    except LibraryPathError as error:
+        pytest.skip(str(error))
+    if not os.path.isdir(folder):
+        pytest.skip(f"no PBE PAW-LCAO set at {folder}")
+    return folder
+
+
+class TestPBELibrary:
+    """The shipped scalar-relativistic PBE set, ``pbe-sr/``."""
+
+    def test_every_element_is_present(self):
+        assert set(available_elements(_pbe_library())) == set(
+            library_elements())
+
+    @pytest.mark.parametrize("symbol", ["H", "Li", "O", "Na", "Fe", "Cu",
+                                        "Ag", "Pb"])
+    def test_a_sample_loads_as_pbe_without_ghosts(self, symbol):
+        """Selected by functional, read from ``pbe-sr/``, recorded as a
+        scalar-relativistic PBE dataset with relativistic exchange, and its
+        generalized spectrum holds no level below any channel's reference."""
+        from mandacaru.pseudopotentials.partial_waves import ghost_errors
+        from mandacaru.pseudopotentials.paw import _paw_levels
+
+        folder = _pbe_library()
+        pp = get_paw(symbol, xc="pbe")
+        assert os.path.dirname(pp.source) == os.path.realpath(folder)
+        assert (pp.xc, pp.relativity) == ("pbe", "scalar")
+        assert pp.relativistic_exchange
+        assert not (pp.defects or {}).get("ghosts")
+        assert ghost_errors(pp, _paw_levels) == {}
+
+    def test_the_functional_selects_the_set(self):
+        """``xc`` picks the folder; the default stays the LDA set."""
+        folder = _pbe_library()
+        assert paw_library_path(xc="pbe") == folder
+        assert os.path.basename(paw_library_path()) == "lda-sr"
+        lda, pbe = get_paw("O"), get_paw("O", xc="pbe")
+        assert (lda.xc, pbe.xc) == ("lda", "pbe")
+        assert not np.allclose(lda.v_local[:100], pbe.v_local[:100])
+
+    def test_the_calculator_reads_it_by_folder_name(self):
+        """``Mandacaru(directory="pbe-sr")`` puts the PBE datasets under a
+        PBE Kohn-Sham calculation without the mismatch warning."""
+        import warnings
+
+        from ase import Atoms
+
+        from mandacaru import Mandacaru
+
+        _pbe_library()
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.75]],
+                      cell=[6.0] * 3)
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", xc="pbe", h=0.3,
+                               basis={"name": "PAW-LCAO", "size": "SZ"},
+                               directory="pbe-sr")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            energy = atoms.get_potential_energy()
+        assert np.isfinite(energy)
+        integrals = atoms.calc.solver._gradient_context["integrals"]
+        assert {d.xc for d in integrals.pseudopotentials} == {"pbe"}
