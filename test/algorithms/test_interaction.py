@@ -173,3 +173,148 @@ class TestInteractionEnergy:
                          optimizer=LBFGS)
         result = calc.interaction_energy(atoms, [[0, 1], [2, 3]])
         assert result.method == "vqe" and abs(result.in_units("eV")) < 0.05
+
+
+# --------------------------------------------------------------------------- #
+# Counterpoise: ghost atoms.
+# --------------------------------------------------------------------------- #
+
+def _helium_pair(separation=3.0, vacuum=3.0):
+    atoms = Atoms("He2", positions=[[0, 0, 0], [0, 0, separation]])
+    atoms.center(vacuum=vacuum)
+    return atoms
+
+
+PAW_SZ = {"name": "PAW-LCAO", "size": "SZ"}
+
+
+class TestCounterpoise:
+    def test_a_ghost_lends_functions_and_nothing_else(self):
+        """The ghost's basis functions are there; its nucleus, projectors
+        and electrons are not."""
+        atoms = _helium_pair()
+        grid = Grid(center=list(atoms.get_cell().diagonal() / 2),
+                    box_size=list(atoms.get_cell().diagonal()), h=0.3)
+        full = build_basis_hamiltonian(atoms, PAW_SZ, grid, 0.3, 0, None,
+                                       hamiltonian=False)[4]
+        ghosted = build_basis_hamiltonian(atoms, PAW_SZ, grid, 0.3, 0, None,
+                                          hamiltonian=False, ghosts=[1])[4]
+        assert ghosted["n_electrons"] == full["n_electrons"] // 2 == 2
+        assert ghosted["ghosts"] == (1,)
+        ints, ref = ghosted["integrals"], full["integrals"]
+        assert ints.n_orbitals == ref.n_orbitals
+        assert len(ints._potentials.nuclei) == 1
+        assert len(ints.kb_projectors) == len(ref.kb_projectors) // 2
+        assert ints.nuclear_repulsion == pytest.approx(0.0, abs=1e-12)
+        estimate = estimate_qubits(atoms, basis=PAW_SZ, ghosts=[1])
+        assert estimate.n_electrons == 2
+        assert any("ghost" in note for note in estimate.notes)
+
+    def test_it_removes_the_superposition_error(self):
+        """Each helium inside the pair borrows its partner's functions; in
+        the pair's basis the isolated atom borrows them too, so the
+        counterpoise energy is above the uncorrected one by that error."""
+        atoms = _helium_pair()
+        plain = interaction_energy(atoms, [[0], [1]], method="rhf", h=0.3,
+                                   basis=PAW_SZ)
+        corrected = interaction_energy(atoms, [[0], [1]], method="rhf",
+                                       h=0.3, basis=PAW_SZ, counterpoise=True)
+        assert corrected.counterpoise and not plain.counterpoise
+        # The complex is the same run either way; only the fragments move.
+        assert corrected.complex_energy == pytest.approx(plain.complex_energy,
+                                                         abs=1e-9)
+        assert all(cp < bare for cp, bare in zip(corrected.fragment_energies,
+                                                 plain.fragment_energies))
+        assert corrected.energy > plain.energy
+
+    def test_ghosts_are_validated(self):
+        atoms = _helium_pair()
+        for bad in ([5], [0, 1], ["x"]):
+            with pytest.raises(ValueError, match="ghost"):
+                estimate_qubits(atoms, basis=PAW_SZ, ghosts=bad)
+
+    def test_forces_are_refused_with_ghosts(self):
+        atoms = _helium_pair()
+        atoms.calc = Mandacaru(method="dft", h=0.3, basis=PAW_SZ,
+                               ghosts=[1], trace=False)
+        assert np.isfinite(atoms.get_potential_energy())
+        with pytest.raises(NotImplementedError, match="ghost"):
+            atoms.get_forces()
+
+    def test_a_crystal_takes_ghosts_too(self):
+        """A periodic pair (Gamma only): the counterpoise fragments carry
+        their partner's functions and none of its electrons, and their
+        energies drop by the superposition they borrow; the stress, like
+        the forces, is refused."""
+        atoms = _helium_pair(separation=2.6, vacuum=2.5)
+        atoms.pbc = True
+        options = dict(method="dft", h=0.3, basis=PAW_SZ, trace=False,
+                       kpts={"size": (1, 1, 1), "gamma": True},
+                       smearing={"method": "fermi-dirac", "width": 0.01})
+        plain = interaction_energy(atoms, [[0], [1]], **options)
+        corrected = interaction_energy(atoms, [[0], [1]], counterpoise=True,
+                                       **options)
+        assert corrected.complex_energy == pytest.approx(plain.complex_energy,
+                                                         abs=1e-8)
+        assert all(cp < bare for cp, bare in zip(corrected.fragment_energies,
+                                                 plain.fragment_energies))
+        ghosted = atoms.copy()
+        ghosted.calc = Mandacaru(ghosts=[1], **options)
+        ghosted.get_potential_energy()
+        assert ghosted.calc.solver._gradient_context["n_electrons"] == 2.0
+        with pytest.raises(NotImplementedError, match="ghost"):
+            ghosted.calc.get_stress()
+
+    def test_an_all_electron_ghost_has_no_nucleus(self):
+        atoms = _helium_pair()
+        grid = Grid(center=list(atoms.get_cell().diagonal() / 2),
+                    box_size=list(atoms.get_cell().diagonal()), h=0.3)
+        full = build_basis_hamiltonian(atoms, "HAO", grid, 0.3, 0, None,
+                                       hamiltonian=False)[4]
+        ghosted = build_basis_hamiltonian(atoms, "HAO", grid, 0.3, 0, None,
+                                          hamiltonian=False, ghosts=[1])[4]
+        assert ghosted["n_electrons"] == 2
+        assert ghosted["integrals"].n_orbitals == full["integrals"].n_orbitals
+        assert len(ghosted["integrals"]._potentials.nuclei) == 1
+
+    def test_plane_waves_and_bloch_methods_refuse_ghosts(self):
+        atoms = _helium_pair()
+        with pytest.raises(NotImplementedError, match="plane-wave"):
+            build_basis_hamiltonian(atoms, {"name": "PW", "energy_cutoff": 60},
+                                    None, 0.3, 0, None, ghosts=[1])
+        atoms.pbc = True
+        with pytest.raises(NotImplementedError, match="Bloch"):
+            atoms.calc = Mandacaru(method="bloch-vqe", h=0.3, basis=PAW_SZ,
+                                   kpts={"size": (1, 1, 1), "gamma": True},
+                                   ghosts=[1])
+            atoms.get_potential_energy()
+
+    def test_d4_counts_the_real_atoms_only(self):
+        pytest.importorskip("dftd4")
+        from mandacaru.algorithms.dft import d4_dispersion_energy
+        atoms = _helium_pair()
+        atoms.calc = Mandacaru(method="dft", xc="pbe", dispersion="d4",
+                               h=0.3, basis=PAW_SZ, ghosts=[1], trace=False)
+        atoms.get_potential_energy()
+        assert atoms.calc.solver._scf.dispersion_energy == pytest.approx(
+            d4_dispersion_energy(atoms[[0]], "pbe"), abs=1e-12)
+
+    def test_per_atom_properties_are_refused_and_the_log_names_the_ghosts(
+            self, tmp_path):
+        atoms = _helium_pair()
+        log = tmp_path / "run.log"
+        atoms.calc = Mandacaru(method="dft", h=0.3, basis=PAW_SZ, ghosts=[1],
+                               txt=str(log))
+        atoms.get_potential_energy()
+        with pytest.raises(NotImplementedError, match="ghost"):
+            atoms.calc.get_charges()
+        with pytest.raises(NotImplementedError, match="ghost"):
+            atoms.calc.write_cube(tmp_path / "density.cube")
+        ghost_lines = [line for line in log.read_text().splitlines()
+                       if "ghost" in line]
+        assert len(ghost_lines) == 1 and "atoms 1" in ghost_lines[0]
+
+    def test_interaction_energy_sets_the_ghosts_itself(self):
+        with pytest.raises(ValueError, match="counterpoise=True"):
+            interaction_energy(_helium_pair(), [[0], [1]], method="rhf",
+                               basis=PAW_SZ, ghosts=[1])

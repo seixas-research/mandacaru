@@ -29,6 +29,19 @@ Without it the full variational run is performed:
     $ mandacaru LiH --cell 10 --basis PAW-LCAO --h 0.25
     $ mandacaru LiH --cell 10 --method mcas-vqe --pool qeb --max-steps 150 --seed 1
 
+A **crystal** -- a geometry whose cell is periodic, read from a CIF, a POSCAR
+or an extended XYZ with ``pbc`` -- takes a Monkhorst-Pack mesh and, with
+``--method dft``, an occupation smearing:
+
+.. code-block:: console
+
+    $ mandacaru Si.cif --method dft --basis PAW-LCAO --kpts 4 4 4 --gamma-centered
+    $ mandacaru Al.cif --method dft --basis PAW-LCAO --kpts 8 --smearing methfessel-paxton 0.2
+
+Both are refused for a molecule (a geometry without periodic boundary
+conditions, such as a g2 name boxed by ``--cell``): a molecule has no
+Brillouin zone and no Fermi surface to smear.
+
 The geometry is any file :func:`ase.io.read` understands (``.xyz``, ``.cif``,
 ``POSCAR``, ...) or the name of a molecule in ASE's ``g2`` collection
 (``H2O``, ``LiH``, ``NH3``, ...).  The real-space box **is the geometry's unit
@@ -110,6 +123,39 @@ def _frozen(text: str):
         raise argparse.ArgumentTypeError(
             f"--frozen takes 'auto', an integer, a JSON list of indices or "
             f"'none', not {text!r}")
+
+
+def _smearing(values):
+    """``--smearing`` values as the ``smearing`` option: ``WIDTH`` (eV, the
+    default method), ``METHOD`` (the default width) or ``METHOD WIDTH``."""
+    from .algorithms.periodic_dft import resolve_smearing
+
+    if len(values) > 2:
+        raise ValueError("--smearing takes WIDTH, METHOD or METHOD WIDTH "
+                         f"(width in eV), got {len(values)} values")
+    spec = {}
+    for value in values:
+        try:
+            spec["width"] = float(value)
+        except ValueError:
+            if "method" in spec or "width" in spec:
+                raise ValueError("--smearing takes the method first: "
+                                 "METHOD WIDTH, e.g. 'gaussian 0.05'")
+            spec["method"] = value
+    resolve_smearing(spec)
+    return spec
+
+
+def _kpts(values, gamma_centered: bool):
+    """``--kpts`` values (one size for every axis, or three) as the ``kpts``
+    option."""
+    if len(values) not in (1, 3):
+        raise ValueError(f"--kpts takes one mesh size or three, got "
+                         f"{len(values)}")
+    size = tuple(int(v) for v in values) * (3 if len(values) == 1 else 1)
+    if any(n < 1 for n in size):
+        raise ValueError(f"--kpts sizes must be positive, got {size}")
+    return {"size": size, "gamma": True} if gamma_centered else size
 
 
 def _active_orbitals(text: str):
@@ -237,6 +283,14 @@ def build_parser() -> argparse.ArgumentParser:
     system.add_argument("--magmoms", type=float, nargs="+", default=None,
                         help="initial magnetic moment per atom (their sum is "
                              "the number of unpaired electrons)")
+    system.add_argument("--kpts", type=int, nargs="+", default=None,
+                        metavar="N",
+                        help="Monkhorst-Pack mesh of a periodic geometry: one "
+                             "size for all three axes or three sizes "
+                             "(--kpts 4 4 4); refused for a molecule")
+    system.add_argument("--gamma-centered", action="store_true",
+                        help="shift an even --kpts mesh so that it contains "
+                             "the Gamma point")
     system.add_argument("--cell", type=float, nargs="+", default=None,
                         metavar="L",
                         help="unit cell in Angstrom for a geometry that has "
@@ -261,6 +315,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="basis option, repeatable (size=DZP, "
                             "energy_shift=0.03, n_gaussians=3, "
                             "energy_cutoff=300, ...)")
+    basis.add_argument("--directory", default=None, metavar="FOLDER",
+                       help="PAW-LCAO dataset folder inside the library: "
+                            "lda-sr (default), lda-dirac (spin-orbit) or "
+                            "pbe-sr (PBE datasets)")
     basis.add_argument("--h", type=float, default=DEFAULT_GRID_SPACING,
                        help="real-space grid spacing in Angstrom "
                             f"(default {DEFAULT_GRID_SPACING:.2f})")
@@ -353,6 +411,13 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=DISPERSION_CORRECTIONS,
                         help="dispersion correction of --method dft (pbe and "
                              "r2scan only; needs the dftd4 package)")
+    solver.add_argument("--smearing", nargs="+", default=None,
+                        metavar="SPEC",
+                        help="occupation smearing of --method dft on a "
+                             "periodic geometry: WIDTH in eV (Fermi-Dirac), "
+                             "METHOD (fermi-dirac, gaussian or "
+                             "methfessel-paxton; width 0.1 eV), or METHOD "
+                             "WIDTH; refused for a molecule")
     solver.add_argument("--optimizer", default=None,
                         choices=tuple(NAMED_OPTIMIZERS),
                         help=f"classical optimizer (default {DEFAULT_OPTIMIZER}; "
@@ -549,6 +614,8 @@ def solver_options(args) -> dict:
                    verbose_hamiltonian=args.verbose_hamiltonian,
                    verbose_operators=args.verbose_operators,
                    dry_run=args.dry_run)
+    if args.directory is not None:
+        options["directory"] = args.directory
     # Whatever the user typed is forwarded, for *every* method: an option the
     # selected solver does not take is then refused by `Mandacaru` (and turned
     # into a parser error by `main`) instead of vanishing here -- `--method vqe
@@ -565,6 +632,10 @@ def solver_options(args) -> dict:
         value = getattr(args, name)
         if value is not None:
             options[name] = value
+    if args.kpts is not None:
+        options["kpts"] = _kpts(args.kpts, args.gamma_centered)
+    if args.smearing is not None:
+        options["smearing"] = _smearing(args.smearing)
     # The active_space dict holds the flags that were given, so the option
     # reaches the calculator only when something was asked of it.
     active = {key: getattr(args, flag) for key, flag in (
@@ -824,11 +895,36 @@ def main(argv=None) -> int:
         parser.error("a geometry (file or molecule name) is required unless "
                      "--load-hamiltonian is given")
 
+    if args.gamma_centered and args.kpts is None:
+        parser.error("--gamma-centered shifts a --kpts mesh; give --kpts too")
+    try:
+        if args.kpts is not None:
+            _kpts(args.kpts, args.gamma_centered)
+        if args.smearing is not None:
+            _smearing(args.smearing)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     from .algorithms import Mandacaru
 
     atoms = None
     if args.geometry is not None:
         atoms = load_geometry(args.geometry, args.cell, args.magmoms)
+    crystal_flags = [flag for flag, value in (("--kpts", args.kpts),
+                                              ("--smearing", args.smearing))
+                     if value is not None]
+    if crystal_flags and (atoms is None or not any(atoms.get_pbc())):
+        what = ("a cached Hamiltonian has no geometry" if atoms is None else
+                f"{args.geometry!r} is a molecule (no periodic boundary "
+                "conditions; --cell only boxes it)")
+        parser.error(
+            f"{' and '.join(crystal_flags)} "
+            f"{'need' if len(crystal_flags) > 1 else 'needs'} a periodic "
+            "geometry, and "
+            f"{what}.  A k-point mesh and an occupation smearing describe a "
+            "crystal's Brillouin zone and Fermi surface; read the crystal "
+            "from a file that carries a periodic cell (CIF, POSCAR, extended "
+            "XYZ with pbc)")
     try:
         calc = Mandacaru(**solver_options(args))
     except (TypeError, NotImplementedError) as exc:

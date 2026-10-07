@@ -46,8 +46,11 @@ Three conventions are implemented, and they disagree by design:
     moving by 0.01 e when the atoms were shifted against the grid
     (HISTORY.md, 2026-10-03).  A pseudopotential's valence density need not
     peak at the nuclei (covalent silicon's maxima sit at the bond centers), so
-    for a valence density the ascent runs on valence plus the free atoms'
-    frozen cores, and only the valence density is integrated.  It follows the
+    for a valence density the ascent runs on the all-electron density --
+    the smooth valence, the spherical PAW reconstruction inside each sphere
+    (without it hydrogen has no cusp and water's oxygen came out at -1.68 e
+    instead of -1.24) and the free atoms' frozen cores -- and only the
+    valence density is integrated.  It follows the
     density rather than a reference and gives the largest charges of the
     three.
 
@@ -139,23 +142,35 @@ def free_atom_density(atomic_number: int, subshells=None):
     return _REFERENCE_CACHE[key]
 
 
-def reference_subshells(atomic_number: int, valence: bool):
+def reference_subshells(atomic_number: int, valence: bool, semicore=()):
     """The ``(n, l)`` set a reference atom is summed over.
 
     ``valence=True`` returns the same valence set the pseudopotentials and the
     minimal bases are built from (:func:`mandacaru.basis._config.
     valence_subshells`), so the promolecule holds exactly the electrons a
-    pseudopotential run put on the grid.  It is taken in the configuration
-    :func:`free_atom_density` solves the atom in, which is not always aufbau
-    (lanthanum's reference atom carries 5d, not 4f).
+    pseudopotential run put on the grid -- with ``semicore``, the shells the
+    atom's dataset carries in valence (``semicore_subshells``, sodium's
+    2s2p).  It is taken in the configuration :func:`free_atom_density` solves
+    the atom in, which is not always aufbau (lanthanum's reference atom
+    carries 5d, not 4f).
     """
     if not valence:
         return None
     from ..basis._config import valence_subshells
     from ..basis.atomic_solver import relaxed_configuration
     Z = int(atomic_number)
-    return valence_subshells(
+    subshells = valence_subshells(
         Z, configuration=relaxed_configuration(Z, r_max=REFERENCE_RADIUS))
+    return sorted(set(subshells) | {tuple(int(v) for v in o)
+                                    for o in semicore})
+
+
+def dataset_semicore(datasets) -> list | None:
+    """Per atom, the semicore subshells its dataset carries in valence;
+    ``None`` without datasets."""
+    if not datasets:
+        return None
+    return [tuple(getattr(pp, "semicore_subshells", ())) for pp in datasets]
 
 
 # --------------------------------------------------------------------------- #
@@ -235,7 +250,7 @@ def voronoi_weights(grid, positions, lattice=None) -> np.ndarray:
 
 
 def hirshfeld_weights(grid, positions, numbers, valence=False,
-                      lattice=None) -> np.ndarray:
+                      lattice=None, semicore=None) -> np.ndarray:
     """``(A, nx, ny, nz)`` stockholder weights from a free-atom promolecule.
 
     Where the promolecule underflows -- far outside every atom, below
@@ -244,13 +259,15 @@ def hirshfeld_weights(grid, positions, numbers, valence=False,
     instead, which keeps :math:`\\sum_A w_A = 1` everywhere without inventing
     a share.  In a crystal (``lattice``) each atom's reference is summed over
     every image within :data:`REFERENCE_RADIUS` of the cell: the promolecule
-    is the periodic superposition of free atoms.
+    is the periodic superposition of free atoms.  ``semicore`` (per atom)
+    adds the shells each atom's dataset carries in valence.
     """
     positions = np.asarray(positions, dtype=float)
     numbers = np.asarray(numbers, dtype=int)
     references = np.zeros((len(positions),) + tuple(grid.shape), dtype=float)
     for index, (Z, position) in enumerate(zip(numbers, positions)):
-        r, rho = free_atom_density(Z, reference_subshells(Z, valence))
+        r, rho = free_atom_density(Z, reference_subshells(
+            Z, valence, () if semicore is None else semicore[index]))
         images = (np.zeros((1, 3)) if lattice is None else
                   _images(grid, position, lattice, REFERENCE_RADIUS))
         for R in images:
@@ -270,7 +287,8 @@ def hirshfeld_weights(grid, positions, numbers, valence=False,
 
 
 def atomic_weights(method: str, grid, positions, numbers=None,
-                   valence: bool = False, lattice=None) -> np.ndarray:
+                   valence: bool = False, lattice=None,
+                   semicore=None) -> np.ndarray:
     """``(A, nx, ny, nz)`` weights of one of :data:`WEIGHT_METHODS`;
     periodic with ``lattice`` (columns, Bohr).  Bader's basins are not a
     weight on the grid nodes: :func:`bader_populations`."""
@@ -281,7 +299,7 @@ def atomic_weights(method: str, grid, positions, numbers=None,
         if numbers is None:
             raise ValueError("the Hirshfeld promolecule needs atomic numbers")
         return hirshfeld_weights(grid, positions, numbers, valence=valence,
-                                 lattice=lattice)
+                                 lattice=lattice, semicore=semicore)
     raise ValueError(f"unknown weight partition {method!r}; use one of "
                      f"{WEIGHT_METHODS} (Bader: bader_populations)")
 
@@ -322,20 +340,94 @@ BADER_DENSITY_FLOOR = 1e-7
 BADER_TIE = 1e-6
 
 
-def _frozen_cores(numbers):
+def _frozen_cores(numbers, semicore=None):
     """Per atom ``(r, core, d core/dr)`` of the free atom's core density
-    (all-electron minus valence), or ``None`` without a core."""
+    (all-electron minus valence, the dataset's ``semicore`` shells counted
+    as valence), or ``None`` without a core."""
     out = []
-    for Z in np.asarray(numbers, dtype=int):
+    for index, Z in enumerate(np.asarray(numbers, dtype=int)):
         r, full = free_atom_density(int(Z), reference_subshells(int(Z), False))
         r_valence, valence = free_atom_density(
-            int(Z), reference_subshells(int(Z), True))
+            int(Z), reference_subshells(
+                int(Z), True, () if semicore is None else semicore[index]))
         core = np.clip(full - np.interp(r, r_valence, valence), 0.0, None)
         if not np.any(core > 0.0):
             out.append(None)
             continue
         support = float(r[np.nonzero(core > 1e-12 * core.max())[0][-1]])
         out.append((r, core, np.gradient(core, r), support))
+    return out
+
+
+def _one_center_rdms(projections, P_ao, columns):
+    r"""Per atom the one-center density matrix :math:`\rho_A = C_A^\dagger P
+    C_A` in its projectors' basis, ``P`` an atomic-orbital density matrix
+    and ``columns`` each atom's projector columns."""
+    return {atom: projections[:, idx].conj().T @ P_ao @ projections[:, idx]
+            for atom, idx in columns.items()}
+
+
+def _spherical_reconstruction(projectors, datasets, rdms):
+    r"""Per atom ``(r, \Delta n(r))``: the spherical average of the PAW
+    all-electron correction :math:`n^1_A - 	ilde n^1_A =
+    \sum_{ij}
+ho_{ij}(\phi_i\phi_j^* - 	ilde\phi_i	ilde\phi_j^*)`, or
+    ``None`` for an atom without one.
+
+    Only pairs of the same ``(l, m)`` survive the angular average, each with
+    :math:`1/4\pi`.  ``rdms`` are in the projectors' own basis: with the raw
+    projectors :math:`\chi = 	ilde p B` the partial waves that go with them
+    are :math:`B^{-1}\phi`.  Its integral is the atom's augmentation charge
+    exactly; inside the sphere it restores the all-electron valence peak --
+    for hydrogen the cusp -- that the smooth density on the grid lacks.
+    """
+    out = [None] * len(datasets)
+    for atom, rho in rdms.items():
+        dataset = datasets[atom]
+        labels = [(p.l, p.m, p.index, p.projector_basis) for p in projectors
+                  if p.atom_index == atom]
+        if not labels or not hasattr(dataset, "channels"):
+            continue
+        waves = {}
+        for l in {label[0] for label in labels}:
+            channel = dataset.channels[l]
+            ae = np.asarray(channel.ae_waves, dtype=float)
+            smooth = np.asarray(channel.pseudo_waves, dtype=float)
+            if labels[0][3] == "raw":
+                B_inv = np.linalg.inv(np.asarray(channel.vanderbilt, float))
+                ae, smooth = B_inv @ ae, B_inv @ smooth
+            waves[l] = (ae, smooth)
+        r = np.asarray(dataset.r, dtype=float)
+        delta = np.zeros_like(r)
+        for a, (la, ma, ka, _b) in enumerate(labels):
+            for b, (lb, mb, kb, _c) in enumerate(labels):
+                if (la, ma) != (lb, mb):
+                    continue
+                ae, smooth = waves[la]
+                delta += float(np.real(rho[a, b])) * (
+                    ae[ka] * ae[kb] - smooth[ka] * smooth[kb])
+        out[atom] = (r, delta / (4.0 * np.pi))
+    return out
+
+
+def _climbed_cores(frozen, reconstruction):
+    """Per atom the analytic part of the climbed density -- the frozen core
+    plus the spherical all-electron reconstruction -- as ``(r, values,
+    slope, support)`` tables, or ``None``."""
+    out = []
+    for core, extra in zip(frozen, reconstruction):
+        if extra is None:
+            out.append(core)
+            continue
+        # On whichever radial table reaches farther; both vanish beyond
+        # their own.
+        r = extra[0] if core is None or extra[0][-1] >= core[0][-1] \
+            else core[0]
+        values = np.interp(r, extra[0], extra[1], right=0.0)
+        if core is not None:
+            values = values + np.interp(r, core[0], core[1], right=0.0)
+        large = np.nonzero(np.abs(values) > 1e-12 * np.abs(values).max())[0]
+        out.append((r, values, np.gradient(values, r), float(r[large[-1]])))
     return out
 
 
@@ -789,13 +881,34 @@ def partition_state(integrals, gamma, *, method: str = "hirshfeld",
     beta = np.real(beta_flat).reshape(used.shape)
     density = alpha + beta
 
+    datasets = getattr(integrals, "datasets", None)
+    semicore = dataset_semicore(datasets) if valence else None
     if key == "bader":
+        cores = _frozen_cores(elements, semicore) if valence else None
+        if valence and datasets and getattr(
+                integrals, "nonlocal_overlap", None) is not None:
+            # Basins of the all-electron valence density: the smooth one plus
+            # the spherical reconstruction inside each sphere.
+            orbitals = expansion.natural_orbitals(D_alpha + D_beta)
+            P_ao = (orbitals.coefficients * orbitals.occupations) \
+                @ orbitals.coefficients.conj().T
+            from ..core.hamiltonian import projector_blocks
+            columns: dict = {}
+            for (atom, _l, _m), where in projector_blocks(
+                    integrals.kb_projectors).items():
+                columns.setdefault(int(atom), []).extend(int(p) for p in where)
+            columns = {atom: sorted(c) for atom, c in columns.items()}
+            rdms = _one_center_rdms(integrals.projections(), P_ao, columns)
+            # Labels in the same (sorted) column order as the matrices.
+            ordered = [integrals.kb_projectors[p] for atom in sorted(columns)
+                       for p in columns[atom]]
+            cores = _climbed_cores(cores, _spherical_reconstruction(
+                ordered, datasets, rdms))
         populations, moments = bader_populations(
-            used, [density, alpha - beta], positions,
-            cores=_frozen_cores(elements) if valence else None)
+            used, [density, alpha - beta], positions, cores=cores)
     else:
         weights = atomic_weights(key, used, positions, numbers=elements,
-                                 valence=valence)
+                                 valence=valence, semicore=semicore)
         dV = used.dV
         populations = np.einsum("axyz,xyz->a", weights, density) * dV
         moments = np.einsum("axyz,xyz->a", weights, alpha - beta) * dV
@@ -836,6 +949,30 @@ def partition_state(integrals, gamma, *, method: str = "hirshfeld",
 # From a converged crystal.
 # --------------------------------------------------------------------------- #
 
+def _crystal_reconstruction(crystal, channels):
+    """:func:`_spherical_reconstruction` of a crystal: the one-center density
+    matrices summed over its k-points (and spin channels), each atom's
+    averaged over the atoms the symmetry maps it to -- the wedge's sum is
+    the full mesh's only then, as for the sphere charges."""
+    columns = {atom: sorted(int(c) for c in where)
+               for atom, where in crystal._positions.items()}
+    rdms = {atom: 0.0 for atom in columns}
+    for P_list in channels:
+        for data, P in zip(crystal.kpoint_data, P_list):
+            for atom, index in columns.items():
+                C = data.projections[:, index]
+                rdms[atom] = rdms[atom] + data.weight * (C.conj().T @ P @ C)
+    ordered = [crystal.projectors[p] for atom in sorted(columns)
+               for p in columns[atom]]
+    out = _spherical_reconstruction(ordered, crystal.datasets, rdms)
+    symmetry = getattr(crystal, "symmetry", None)
+    if symmetry is not None and all(o is not None for o in out):
+        out = [(out[atom][0], np.mean([out[int(m[atom])][1]
+                                       for m in symmetry.atom_maps], axis=0))
+               for atom in range(len(out))]
+    return out
+
+
 @single_threaded_blas
 def partition_crystal(crystal, matrices, *, method: str = "hirshfeld",
                       numbers=None) -> AtomicPartition:
@@ -846,7 +983,8 @@ def partition_crystal(crystal, matrices, *, method: str = "hirshfeld",
     ``matrices`` its converged k-point density matrices :math:`P_{\mathbf k}` (occupations included).  The smooth
     density is the crystal's own, symmetrized like the SCF's; the weights are
     periodic (nearest image, periodic promolecule, a periodic continuous
-    ascent on valence plus frozen core, :func:`bader_populations`); and the
+    ascent on the reconstructed all-electron density,
+    :func:`bader_populations`); and the
     charge inside each atom's augmentation sphere,
     :math:`\sum_k w_k\,\mathrm{tr}\,P_k C_A q_A C_A^\dagger`, is added to that
     atom exactly, as for a molecule.  ``matrices`` may be a pair
@@ -878,10 +1016,14 @@ def partition_crystal(crystal, matrices, *, method: str = "hirshfeld",
     if key == "bader":
         populations, grid_moments = bader_populations(
             grid, [density, magnetization], positions,
-            lattice=crystal.lattice, cores=_frozen_cores(elements))
+            lattice=crystal.lattice,
+            cores=_climbed_cores(
+                _frozen_cores(elements, dataset_semicore(crystal.datasets)),
+                _crystal_reconstruction(crystal, channels)))
     else:
         weights = atomic_weights(key, grid, positions, numbers=elements,
-                                 valence=True, lattice=crystal.lattice)
+                                 valence=True, lattice=crystal.lattice,
+                                 semicore=dataset_semicore(crystal.datasets))
         populations = np.einsum("axyz,xyz->a", weights, density) * grid.dV
         grid_moments = np.einsum("axyz,xyz->a", weights,
                                  magnetization) * grid.dV
@@ -919,8 +1061,9 @@ def partition_crystal(crystal, matrices, *, method: str = "hirshfeld",
              "reference is the valence free atom",
              "periodic: nearest-image distances and a periodic promolecule"]
     if key == "bader":
-        notes.append("Bader basins by continuous ascent on valence + "
-                     "frozen-core density; only the valence is integrated")
+        notes.append("Bader basins by continuous ascent on the all-electron "
+                     "density (valence reconstructed in the PAW spheres, "
+                     "frozen core); only the valence is integrated")
     if np.any(augmentation):
         notes.append(f"PAW augmentation {np.sum(augmentation):+.6f} e added "
                      f"per atom from inside the spheres")

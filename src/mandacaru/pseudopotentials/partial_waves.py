@@ -113,6 +113,15 @@ GHOST_REMEDY_SHIFTS = (0.0, 10.0, 20.0, 40.0, 80.0)
 OWN_CUTOFF_SHIFTS = (5.0, 10.0, 20.0, 40.0)
 
 
+#: Fractions of the local radius tried, at no raise, before any raise.  A
+#: raise acts on every angular momentum the projectors do not cover, and on
+#: whatever of a neighbor's orbital they do not span: aluminum's first
+#: repair (5 Ha over 3.08 Bohr) scattered d 0.52 rad off and put fcc Al at
+#: 4.48 Angstrom; a 0.6x radius at no raise passes every check and gives
+#: 4.11 (HISTORY.md, 2026-10-06, "K21 diagnosed").
+SHORTER_LOCAL_FACTORS = (0.75, 0.6, 0.45)
+
+
 #: What a generator does about a ghost state: build around it, refuse,
 #: return the dataset as it came out (for studying one), or repair and,
 #: where no remedy works, return the least-defective attempt
@@ -136,6 +145,14 @@ PHASE_WINDOW, PHASE_STEP = 0.5, 0.05
 #: purpose -- a d channel balanced out to 3.3 Bohr drifts to 0.07 rad at the
 #: far edge without anything being wrong with it.
 RESONANCE_WINDOW, RESONANCE_TOLERANCE = 1.0, 0.3
+#: A channel without projectors scatters off the local potential alone and
+#: is held to this many radians over the highest valence reference
+#: :math:`\pm` :data:`PHASE_WINDOW` (:func:`unprojected_scattering_errors`).
+#: Measured against crystals (HISTORY.md, 2026-10-06, "K21 diagnosed"):
+#: B-F and H 0.02-0.07 and aluminum without a raise 0.12-0.15 give their
+#: lattices and bonds; sodium at 0.30-0.38 is 10 % off either way, the
+#: shipped aluminum (0.52) 12 % and the shipped sodium (1.22) 40 %.
+UNPROJECTED_TOLERANCE = 0.2
 #: Upper wave vector and spacing of the Fourier grid of the residual energy.
 Q_MAX, Q_STEP = 60.0, 0.1
 
@@ -619,6 +636,9 @@ def defects_record(defects) -> dict:
                                for l, e in defects["residuals"].items()}
     if defects.get("s_miss") is not None:
         record["s_miss"] = float(defects["s_miss"])
+    if defects.get("unprojected"):
+        record["unprojected"] = {str(l): float(e)
+                                 for l, e in defects["unprojected"].items()}
     return record
 
 
@@ -631,13 +651,18 @@ def read_defects(record) -> dict:
     residuals = {int(l): float(e) for l, e in
                  (record.get("residuals") or {}).items()}
     s_miss = record.get("s_miss")
-    if not ghosts and not phases and not residuals and s_miss is None:
+    unprojected = {int(l): float(e) for l, e in
+                   (record.get("unprojected") or {}).items()}
+    if (not ghosts and not phases and not residuals and s_miss is None
+            and not unprojected):
         return {}
     result = {"ghosts": ghosts, "phases": phases}
     if residuals:
         result["residuals"] = residuals
     if s_miss is not None:
         result["s_miss"] = float(s_miss)
+    if unprojected:
+        result["unprojected"] = unprojected
     return result
 
 
@@ -662,6 +687,8 @@ def defect_message(symbol: str, family: str, defects: dict) -> str:
     if defects.get("s_miss") is not None:
         parts.append(f"s projectors miss an intruding hydrogen 1s by "
                      f"{float(defects['s_miss']):.2f} of its norm")
+    parts += [f"l={l} (no projectors) phase error {float(e):.2f} rad"
+              for l, e in sorted(defects.get("unprojected", {}).items())]
     if defects.get("ghosts"):
         what = "ghost states"
         consequence = (f"A variational calculation containing {symbol} can "
@@ -672,6 +699,11 @@ def defect_message(symbol: str, family: str, defects: dict) -> str:
         consequence = (f"A neighbor's orbital entering the {symbol} sphere is "
                        f"not represented, so bonds to {symbol} can be too "
                        f"long or collapse.")
+    elif defects.get("unprojected") and not defects.get("phases"):
+        what = "a local potential that scatters wrongly"
+        consequence = (f"Angular momenta without projectors see the local "
+                       f"potential alone, so bonds and lattice constants of "
+                       f"{symbol} compounds can be several percent off.")
     elif defects.get("residuals"):
         what = "divergent projector residuals"
         consequence = (f"Its projectors are numerically unreliable, so "
@@ -712,6 +744,8 @@ def local_potential_ghosts(pp) -> dict:
     core = dict(core)
     for orbital in getattr(pp, "frozen_subshells", ()):
         core[orbital] = pp.atom.occupations[orbital]
+    for orbital in getattr(pp, "semicore_subshells", ()):
+        core.pop(orbital, None)
     off = np.full(r.size - 1, -0.5 / h ** 2)
 
     def bound(v, l):
@@ -735,8 +769,8 @@ def local_potential_ghosts(pp) -> dict:
 def ghost_errors(pp, levels) -> dict:
     """``{l: eps_0 - eps_ref}`` for every channel holding a ghost state.
 
-    ``levels(pp, l)`` returns the two lowest eigenvalues of the channel's
-    pseudo Hamiltonian.  A ghost is an *extra* state: the lowest level lies
+    ``levels(pp, l)`` returns the lowest eigenvalues of the channel's
+    pseudo Hamiltonian (two, or three for a semicore channel).  A ghost is an *extra* state: the lowest level lies
     more than :data:`GHOST_TOLERANCE` below the reference and the second one
     is closer to the reference than the first. For frozen-core scattering-only
     channels, any bound pseudo level is an extra state and therefore a ghost.
@@ -750,10 +784,19 @@ def ghost_errors(pp, levels) -> dict:
                 if first < -GHOST_TOLERANCE:
                     out[int(l)] = first
             continue
-        first, second = (float(e) for e in levels(pp, l)[:2])
+        spectrum = [float(e) for e in levels(pp, l)]
+        first, second = spectrum[:2]
         if (first - reference < -GHOST_TOLERANCE
                 and abs(second - reference) < abs(first - reference)):
             out[int(l)] = first - reference
+        # A semicore channel's second bound reference (sodium's 3s) must be
+        # its second level: an extra state between the two is a ghost too.
+        occupied = _occupied_references(channel)
+        if len(occupied) > 1 and len(spectrum) > 2:
+            upper, third = spectrum[1], spectrum[2]
+            if (upper - occupied[1] < -GHOST_TOLERANCE
+                    and abs(third - occupied[1]) < abs(upper - occupied[1])):
+                out[int(l)] = min(out.get(int(l), 0.0), upper - occupied[1])
     # Channels without projectors (PAW-LCAO): the local potential alone.
     unconstructed = getattr(pp, "unconstructed_ghosts", None)
     if unconstructed is not None:
@@ -795,9 +838,13 @@ def scattering_errors(pp, log_derivative,
             continue
         r_match = float(radius(l)) if radius is not None else channel.r_cut
         near = far = 0.0
-        for offset in np.arange(-RESONANCE_WINDOW,
-                                RESONANCE_WINDOW + 0.5 * PHASE_STEP, PHASE_STEP):
-            energy = reference + offset
+        # Around every occupied reference: a semicore channel's valence
+        # state (sodium's 3s) sits 2 Ha above its first reference.
+        centers = [reference] + _occupied_references(channel)[1:]
+        for center, offset in ((c, o) for c in centers for o in np.arange(
+                -RESONANCE_WINDOW, RESONANCE_WINDOW + 0.5 * PHASE_STEP,
+                PHASE_STEP)):
+            energy = center + offset
             if reference >= 0.0 and energy <= 0.0:
                 continue
             key = (id(pp.atom), l, float(energy), r_match, treatment)
@@ -819,6 +866,69 @@ def scattering_errors(pp, log_derivative,
     return out
 
 
+def _occupied_references(channel) -> list[float]:
+    """The reference energies of a channel's occupied partial waves, first
+    one always included (a library channel without per-wave occupations
+    has one bound reference)."""
+    energies = [float(e) for e in channel.reference_energies]
+    occupations = getattr(channel, "occupations", None) or [1.0]
+    return [energies[0]] + [e for e, o in zip(energies[1:], occupations[1:])
+                            if o > 0.0]
+
+
+def unprojected_scattering_errors(pp, log_derivative,
+                                  ae_cache: dict[tuple, float] | None = None
+                                  ) -> dict:
+    r"""``{l: error}``: the largest phase error of every channel *without*
+    projectors (``l`` up to one above the highest constructed channel),
+    which scatters off the screened local potential alone, within
+    :data:`PHASE_WINDOW` of the highest valence reference energy.
+
+    The phases are compared past the local potential's radius and every
+    channel's cutoff, where both waves obey the same equation again.  Needs
+    the all-electron atom on ``pp`` (a dataset read from a library has none,
+    and gives ``{}``).  This is the test the constructed channels' own
+    (:func:`scattering_errors`) never made: aluminum repaired with a 5 Ha
+    local shift scattered d 0.84 rad off, and that alone put fcc Al at
+    4.48 Angstrom (HISTORY.md, 2026-10-06, "K21 diagnosed").
+    """
+    from ..basis.relativity import _resolve as _resolve_relativity
+
+    if getattr(pp, "atom", None) is None:
+        return {}
+    treatment = _resolve_relativity(getattr(pp, "relativity", "none"))
+    if treatment == "dirac":
+        treatment = "scalar"
+    bound = [e for channel in pp.channels.values()
+             for e in _occupied_references(channel) if e < 0.0]
+    if not bound:
+        return {}
+    reference = max(bound)
+    r_match = max([float(getattr(pp, "r_cut_local", 0.0))]
+                  + [float(channel.r_cut) for channel in pp.channels.values()])
+    out = {}
+    for l in range(max(pp.channels) + 2):
+        if l in pp.channels:
+            continue
+        worst = 0.0
+        for offset in np.arange(-PHASE_WINDOW, PHASE_WINDOW + 0.5 * PHASE_STEP,
+                                PHASE_STEP):
+            energy = reference + offset
+            key = (id(pp.atom), l, float(energy), r_match, treatment)
+            if ae_cache is not None and key in ae_cache:
+                l_ae = ae_cache[key]
+            else:
+                l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, l, energy,
+                                         r_match, float(pp.atomic_number),
+                                         treatment)
+                if ae_cache is not None:
+                    ae_cache[key] = l_ae
+            d = np.arctan(log_derivative(pp, l, energy, r_match)) - np.arctan(l_ae)
+            worst = max(worst, abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi))
+        out[int(l)] = float(worst)
+    return out
+
+
 def _defect_badness(candidate: tuple) -> tuple[int, float, int]:
     """Rank one failed construction, preferring one without a ghost.
 
@@ -826,20 +936,39 @@ def _defect_badness(candidate: tuple) -> tuple[int, float, int]:
     with fewer affected channels.  Without a ghost, what counts is how far the
     worst defect exceeds its own tolerance: a phase error against
     :data:`PHASE_TOLERANCE` near the reference (:data:`RESONANCE_TOLERANCE`
-    farther out), an acceptance defect (the PAW-LCAO intruding-1s miss)
-    against 1.  A miss of 24 would collapse a molecule where a 0.09 rad phase
-    error is a flag, so neither kind outranks the other outright (Gd-LDA was
-    once kept at a miss of 23.8 over one of 1.4 with a 0.09 rad phase).  The
-    same ranking is used while searching and when returning a flagged
-    dataset.
+    farther out), an unprojected channel's against
+    :data:`UNPROJECTED_TOLERANCE`, an acceptance defect (the PAW-LCAO
+    intruding-1s miss) against 1.  A construction whose acceptance failed
+    ranks below every one that only scatters wrongly; among those that
+    failed it, the size still counts (Gd-LDA was once kept at a miss of 23.8
+    over one of 1.4 with a 0.09 rad phase).  The same ranking is used while
+    searching and when returning a flagged dataset.
     """
     _pp, ghosts, wrong = candidate[:3]
     extra = candidate[3] if len(candidate) > 3 else {}
     if ghosts:
-        return (1, -min(ghosts.values()), len(ghosts))
+        return (2, -min(ghosts.values()), len(ghosts))
     phase = max((max(near / PHASE_TOLERANCE, far / RESONANCE_TOLERANCE)
                  for near, far in wrong.values()), default=0.0)
-    return (0, max(phase, float(extra.get("s_miss", 0.0))), 0)
+    unprojected = max(extra.get("unprojected", {}).values(), default=0.0)
+    # A failed intruding-1s miss is its own tier, above every scattering
+    # defect: it can collapse a bond (PbO, CoH, SnH), where a wrongly
+    # scattering channel costs percent-level accuracy.  Ranked together,
+    # the first lda-sr rebuild with the unprojected check traded shipped,
+    # clean U, Ta, Re and Hf for misses of 1.05-2.14 (HISTORY.md,
+    # 2026-10-07).
+    tier = 1 if "s_miss" in extra else 0
+    return (tier, max(phase, float(extra.get("s_miss", 0.0)),
+                      unprojected / UNPROJECTED_TOLERANCE), 0)
+
+
+def _describe_defects(extra: dict) -> str:
+    """The family and unprojected-channel defects, for messages."""
+    parts = [f"l={l} unprojected phase error {e:.2f} rad"
+             for l, e in sorted(extra.get("unprojected", {}).items())]
+    if extra.get("s_miss") is not None:
+        parts.append(f"intruding-1s miss {extra['s_miss']:.2f}")
+    return ", ".join(parts)
 
 
 def _least_defective(candidates: list[tuple]):
@@ -877,13 +1006,16 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     **What is done about it.**  ``overrides`` go into every attempt, and when
     there are any they are first tried alone with the construction otherwise
     unchanged -- PAW-LCAO passes ``norm_deficit=0``, which is all iron needs.
-    Next the local potential is raised by each of :data:`OWN_CUTOFF_SHIFTS`
-    with the cutoffs untouched.  Finally every channel is given the largest
+    Next the local radius is shortened by each of
+    :data:`SHORTER_LOCAL_FACTORS` with no raise, then the local potential is
+    raised by each of :data:`OWN_CUTOFF_SHIFTS` with the cutoffs untouched.  Finally every channel is given the largest
     cutoff and the local potential is raised by each of
     :data:`GHOST_REMEDY_SHIFTS` in turn (Hamann's ``dvloc0``).  A construction is
     accepted when it has no ghost **and** every bound channel scatters like the
     atom -- to :data:`PHASE_TOLERANCE` near its reference and
-    :data:`RESONANCE_TOLERANCE` farther out (:func:`scattering_errors`); a
+    :data:`RESONANCE_TOLERANCE` farther out (:func:`scattering_errors`), and
+    every angular momentum *without* projectors scatters like it to
+    :data:`UNPROJECTED_TOLERANCE` (:func:`unprojected_scattering_errors`); a
     raise that trades the ghost for a misplaced resonance is not a repair.  The
     self-consistent atom is solved once and shared by every attempt, and a
     dataset that was clean to begin with is returned exactly as before.
@@ -906,6 +1038,18 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     if mode == "keep":
         return first
     phase_cache: dict[tuple, float] = {}
+
+    def defects(pp) -> dict:
+        """The family's acceptance defects and the unprojected channels
+        that scatter wrongly."""
+        found = {} if acceptance is None else dict(acceptance(pp))
+        loose = {l: e for l, e in unprojected_scattering_errors(
+            pp, log_derivative, phase_cache).items()
+            if e > UNPROJECTED_TOLERANCE}
+        if loose:
+            found["unprojected"] = loose
+        return found
+
     errors = ghost_errors(first, levels)
     if not errors:
         # No ghost is not enough: the first construction has to scatter like
@@ -913,7 +1057,7 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         # channel was once returned 0.95 rad off, untested.)
         wrong = _wrong_phases(scattering_errors(first, log_derivative,
                                                 phase_cache))
-        extra = {} if acceptance is None else acceptance(first)
+        extra = defects(first)
         if not wrong and not extra:
             return first
     else:
@@ -925,8 +1069,7 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
             f"l={l} {near:.3f}/{far:.3f} rad"
             for l, (near, far) in sorted(wrong.items())) + ")"
     else:
-        problem = ("an incomplete s channel (intruding-1s miss "
-                   f"{extra['s_miss']:.2f})")
+        problem = f"an incomplete construction ({_describe_defects(extra)})"
     pinned = [name for name in ("r_cut", "r_cut_local", "local_shift")
               if options.get(name) is not None]
     if pinned and not errors and not wrong and mode != "refuse":
@@ -948,6 +1091,10 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     overrides = dict(overrides or {})
     attempts = ([(", ".join(f"{k}={v:g}" for k, v in overrides.items()),
                   overrides)] if overrides else [])
+    attempts += [(f"local radius x {factor:g}, no shift",
+                  dict(overrides, local_shift=0.0,
+                       local_factor=float(options["local_factor"]) * factor))
+                 for factor in SHORTER_LOCAL_FACTORS]
     attempts += [(f"own cutoffs, shift {shift:g}",
                   dict(overrides, local_shift=float(shift)))
                  for shift in OWN_CUTOFF_SHIFTS]
@@ -998,8 +1145,7 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         wrong = _wrong_phases(scattering_errors(pp, log_derivative,
                                                 phase_cache))
         if wrong:
-            candidate = (pp, {}, wrong,
-                         {} if acceptance is None else acceptance(pp))
+            candidate = (pp, {}, wrong, defects(pp))
             if best is not None and _defect_badness(candidate) < \
                     _defect_badness(best):
                 best = candidate
@@ -1007,13 +1153,13 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
                 f"l={l} {near:.3f}/{far:.3f} rad"
                 for l, (near, far) in sorted(wrong.items())))
             continue
-        found = {} if acceptance is None else acceptance(pp)
+        found = defects(pp)
         if found:
             candidate = (pp, {}, {}, found)
             if best is not None and _defect_badness(candidate) < \
                     _defect_badness(best):
                 best = candidate
-            tried.append(f"{label}: s-miss {found['s_miss']:.2f}")
+            tried.append(f"{label}: {_describe_defects(found)}")
             continue
         return pp
     if mode == "flag":
@@ -1559,6 +1705,23 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
     return per_l, cutoffs, references
 
 
+def unoccupied_level(atom, l: int, n_core: int) -> float | None:
+    """The all-electron atom's lowest level of the empty angular momentum
+    ``l`` above its ``n_core`` core shells of that ``l`` (lithium's 2p at
+    -0.042 Ha), or ``None`` when ``l`` binds nothing."""
+    from ..basis.atomic_solver import solve_radial
+    _u, level = solve_radial(atom.r, atom.v_effective, int(l), int(n_core))
+    return float(level) if level < 0.0 else None
+
+
+#: First references an empty channel falls back to, above its anchor, when
+#: the anchor's smooth waves gain a node (:func:`spurious_nodes`): the
+#: channel's own bound level, then these scattering energies (Hartree).
+#: Potassium's d at its 4s (-0.089) gains one, at 0.0 it does not;
+#: aluminum's d (``extra_l=1``) needs 0.1 (HISTORY.md, 2026-10-07).
+EXTRA_ANCHOR_ENERGIES = (0.0, 0.1, 0.25)
+
+
 def _add_extra_channels(per_l, cutoffs, references, extra_l, energy_offset,
                         atom, z_eff, treatment, extra_energy: float | None = None,
                         kappa=None):
@@ -1566,8 +1729,10 @@ def _add_extra_channels(per_l, cutoffs, references, extra_l, energy_offset,
     :math:`l`, both references scattering states at the widest cutoff."""
     r, v_ae = atom.r, atom.v_effective
     highest = max(per_l)
-    anchor = (max(energies[0] for energies in
-                  (e for _w, e in references.values()))
+    # The highest occupied level: a semicore channel's first reference is
+    # its semicore state (potassium's 3p at -0.69 Ha, under a 4s at -0.07).
+    anchor = (max(energy for states in per_l.values()
+                  for _n, energy, _w, _o in states)
               if extra_energy is None else float(extra_energy))
     widest = max(cutoffs.values())
     for l in range(highest + 1, highest + extra_l + 1):
@@ -1585,12 +1750,45 @@ def _add_extra_channels(per_l, cutoffs, references, extra_l, energy_offset,
         per_l[l] = [(l + 1, energies[0], waves[0], 0.0)]
 
 
+def _sign_changes(values: np.ndarray) -> int:
+    """Nodes of a radial function: sign changes past its round-off floor."""
+    values = np.asarray(values, dtype=float)
+    values = values[np.abs(values) > 1e-6 * np.max(np.abs(values))]
+    return int(np.count_nonzero(np.diff(np.sign(values))))
+
+
+def spurious_nodes(r: np.ndarray, pw: PseudoWaves) -> list[int]:
+    """Indices of the smooth partial waves of ``pw`` with more nodes inside
+    ``r_c`` than their all-electron waves.
+
+    Pseudization removes nodes; it never has to add one.  A smooth wave
+    that gains one belongs to the wrong branch of the norm-conserving fit:
+    lithium's p channel anchored at the 2s energy (-0.106 Ha) came out
+    with a node inside 2.6 Bohr that its all-electron wave does not have,
+    couplings of -1.8 to -2.7 Ha, an intruding-function miss of 0.79, and
+    bcc Li 3 % too short in plane waves (HISTORY.md, 2026-10-07).
+    """
+    radius = np.linspace(0.02, 1.0, 400) * float(pw.r_cut)
+    out = []
+    for i, (wave, qs, c) in enumerate(zip(pw.waves, pw.wavevectors,
+                                          pw.coefficients)):
+        smooth = c @ _bessel_table(pw.l, qs, radius)
+        all_electron = np.interp(radius, r, np.asarray(wave))
+        if _sign_changes(smooth) > _sign_changes(all_electron):
+            out.append(i)
+    return out
+
+
 def _spectrum_extent(pp, l: int, floor: float = 1e-5,
                      bounds=(12.0, 24.0)) -> float:
-    """Box radius for :func:`radial_spectrum`: where the bound pseudo wave has
-    decayed to ``floor`` of its maximum (a diffuse Li 2s reaches 18 Bohr)."""
+    """Box radius for :func:`radial_spectrum`: where the outermost occupied
+    pseudo wave has decayed to ``floor`` of its maximum (a diffuse Li 2s
+    reaches 18 Bohr; a semicore channel's valence wave, not its compact
+    semicore one)."""
     r = pp.r
-    u = np.abs(pp.channels[int(l)].pseudo_radial * r)
+    channel = pp.channels[int(l)]
+    occupied = len(_occupied_references(channel))
+    u = np.abs(channel.pseudo_waves[occupied - 1] * r)
     peak = int(np.argmax(u))
     tail = np.nonzero(u[peak:] > floor * u[peak])[0]
     extent = float(r[peak + tail[-1]]) if tail.size else bounds[1]

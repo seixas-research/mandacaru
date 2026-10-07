@@ -8,6 +8,8 @@ theorem makes single-excitation gradients vanish -- so ADAPT selects the physica
 double excitation first and every pool reaches the FCI ground state.
 """
 
+import contextlib
+
 import numpy as np
 import pytest
 from ase import Atoms
@@ -588,21 +590,57 @@ def _lih(distance):
 
 
 def _lih_calculator(**options):
+    # 1 sigma occupied, 1 sigma and the pi pair virtual: "symmetry" keeps the
+    # degenerate pair whole whatever the count, so the selection is a
+    # physical one, never a choice the last bits make.
     return Mandacaru(method="adapt-vqe",
                      basis={"name": "PAW-LCAO", "size": "DZP"}, h=0.3,
-                     active_space={"orbitals": 4, "method": "mp2"},
+                     active_space={"orbitals": 4, "method": "mp2",
+                                   "symmetry": True},
                      pool="qeb", max_iterations=20,
                      optimizer={"method": "BFGS", "maxiter": 500,
                                 "tol": 1e-10},
                      trace=False, **options)
 
 
+@contextlib.contextmanager
+def _short_range_rule(points):
+    """The molecular short-range quadrature ``points`` = (radial, polar,
+    azimuthal); ``None`` keeps the default."""
+    if points is None:
+        yield
+        return
+    from mandacaru.pseudopotentials import local_split
+
+    radial, polar, azimuthal = points
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(local_split, "RADIAL_POINTS", radial)
+        patch.setattr(local_split, "POLAR_POINTS", polar)
+        patch.setattr(local_split, "AZIMUTHAL_POINTS", azimuthal)
+        defaults = dict(local_split.short_range_matrices.__kwdefaults__)
+        defaults.update(radial=radial, polar=polar, azimuthal=azimuthal)
+        patch.setattr(local_split.short_range_matrices, "__kwdefaults__",
+                      defaults)
+        yield
+
+
 class TestTransfer:
     """``transfer=True``: each geometry starts from the previous one's
-    ansatz, re-optimized here, and grows only if the gradient asks for it."""
+    ansatz, re-optimized here, and grows only if the gradient asks for it.
 
-    @pytest.fixture(scope="class")
-    def runs(self):
+    The pi pair of the active space is degenerate, so its orbitals are a
+    gauge choice.  The second rule changes the integrals by ~1e-7 Ha, which
+    rotated the pair by 40 degrees between the geometries and refused the
+    transfer before the gauge of ``orbital_tracking.degenerate_gauge``."""
+
+    @pytest.fixture(scope="class", params=[
+        None, pytest.param((48, 24, 48), marks=pytest.mark.slow)],
+        ids=["default-rule", "48x24x48-rule"])
+    def runs(self, request):
+        with _short_range_rule(request.param):
+            return self._runs()
+
+    def _runs(self):
         carried = _lih_calculator(transfer=True)
         atoms = _lih(1.595)
         atoms.calc = carried

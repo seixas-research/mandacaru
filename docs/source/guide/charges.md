@@ -115,11 +115,21 @@ charge. Three things follow automatically:
 * the Hirshfeld reference becomes the **valence** free atom, so the
   stockholder fractions are not weighted by core density that is not on the
   grid to share;
-* Bader's ascent climbs the valence density **plus the free atoms' frozen
-  cores**, added analytically: a valence density need not peak at the
-  nuclei (covalent silicon's maxima sit at its bond centers, and a
-  valence-only ascent gave those basins to one atom), while valence plus
-  core does. Only the valence density is integrated;
+* Bader's ascent climbs the **all-electron density**: the smooth valence
+  density, plus inside each PAW sphere the spherical part of the
+  reconstruction $n^1_A - \tilde n^1_A$ (the all-electron partial waves in
+  place of the smooth ones), plus the free atoms' frozen cores, both added
+  analytically. Both matter. A valence density need not peak at the nuclei:
+  covalent silicon's maxima sit at its bond centers, and a valence-only
+  ascent gave those basins to one atom. And the smooth density has no cusp
+  inside a sphere, so on it hydrogen's zero-flux surface moves toward the
+  proton. Water's oxygen came out at −1.68 e (PBE, DZP) on the smooth density
+  and is −1.24 e on the reconstructed one, against about −1.2 in the
+  literature; HF's fluorine is −0.74. The reconstruction only moves the
+  basin boundaries: the electrons counted are still the smooth density in
+  each basin plus each sphere's own augmentation charge (next item), and the
+  reconstruction integrates to exactly that charge. Its non-spherical part,
+  left out, moved water's charges by 0.003 e;
 * for PAW-LCAO the grid holds the *smooth* density, and the charge inside each
   augmentation sphere is added back to its own atom from
   $C_A q_A C_A^\dagger$ — that term is block-diagonal per atom, so the

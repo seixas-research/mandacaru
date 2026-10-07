@@ -40,6 +40,14 @@ class TestCommandLineOptions:
         options = self._options("--method", "adapt-vqe", *argv)
         assert options.get("convergence") == expected
 
+    def test_the_library_folder_reaches_the_calculator(self):
+        """``--directory pbe-sr`` selects the PBE PAW-LCAO datasets, as
+        ``Mandacaru(directory="pbe-sr")`` does; without it nothing is
+        forwarded and the calculator keeps its ``lda-sr`` default."""
+        assert "directory" not in self._options("--basis", "PAW-LCAO")
+        options = self._options("--basis", "PAW-LCAO", "--directory", "pbe-sr")
+        assert options["directory"] == "pbe-sr"
+
     def test_an_adaptive_method_gets_the_default_pool(self):
         assert self._options("--method", "adapt-vqe")["pool"] == "fermionic"
         assert "pool" not in self._options("--method", "vqe")
@@ -163,6 +171,91 @@ class TestMarkovChainOptions:
     def test_a_short_chain_runs_end_to_end(self, capsys):
         assert main(["H2", "--cell", "5", "--h", "0.4", "--method", "mcas-vqe",
                      "--max-steps", "4", "--seed", "3", "--quiet"]) == 0
+
+
+class TestCrystalOptions:
+    """``--kpts``, ``--gamma-centered`` and ``--smearing``: forwarded as the
+    ``kpts`` and ``smearing`` options for a periodic geometry, refused for a
+    molecule."""
+
+    @pytest.fixture
+    def crystal(self, tmp_path):
+        from ase.build import bulk
+        from ase.io import write
+        path = tmp_path / "Al.cif"
+        write(path, bulk("Al", "fcc", a=4.05))
+        return str(path)
+
+    def _options(self, geometry, *argv):
+        return solver_options(build_parser().parse_args(
+            [geometry, "--method", "dft", *argv]))
+
+    @pytest.mark.parametrize("argv, expected", [
+        (["--kpts", "4"], (4, 4, 4)),
+        (["--kpts", "2", "3", "4"], (2, 3, 4)),
+        (["--kpts", "4", "--gamma-centered"],
+         {"size": (4, 4, 4), "gamma": True}),
+    ])
+    def test_the_mesh_reaches_kpts(self, crystal, argv, expected):
+        assert self._options(crystal, *argv)["kpts"] == expected
+
+    @pytest.mark.parametrize("argv, expected", [
+        (["0.2"], {"width": 0.2}),
+        (["gaussian"], {"method": "gaussian"}),
+        (["methfessel-paxton", "0.3"],
+         {"method": "methfessel-paxton", "width": 0.3}),
+    ])
+    def test_the_smearing_reaches_its_option(self, crystal, argv, expected):
+        assert self._options(crystal, "--smearing", *argv)["smearing"] == \
+            expected
+
+    def test_nothing_given_forwards_nothing(self, crystal):
+        options = self._options(crystal)
+        assert "kpts" not in options and "smearing" not in options
+
+    @pytest.mark.parametrize("flag", [["--kpts", "2"], ["--smearing", "0.1"]])
+    def test_a_molecule_refuses_them(self, flag, capsys):
+        with pytest.raises(SystemExit) as raised:
+            main(["H2", "--cell", "6", "--method", "dft", "--dry-run", *flag])
+        assert raised.value.code == 2
+        message = capsys.readouterr().err
+        assert f"{flag[0]} needs a periodic geometry" in message
+        assert "'H2' is a molecule" in message
+
+    def test_a_cached_hamiltonian_refuses_them(self, tmp_path, capsys):
+        with pytest.raises(SystemExit) as raised:
+            main(["--load-hamiltonian", str(tmp_path / "h.parquet"),
+                  "--kpts", "2", "--dry-run"])
+        assert raised.value.code == 2
+        assert "has no geometry" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("argv, message", [
+        (["--kpts", "2", "2"], "one mesh size or three"),
+        (["--kpts", "0"], "must be positive"),
+        (["--gamma-centered"], "give --kpts too"),
+        (["--smearing", "0.1", "gaussian"], "the method first"),
+        (["--smearing", "gaussian", "0.1", "1"], "got 3 values"),
+        (["--smearing", "cold"], "unknown smearing method"),
+        (["--smearing", "-0.1"], "must be positive"),
+    ])
+    def test_a_malformed_value_is_a_usage_error(self, crystal, argv, message,
+                                                capsys):
+        with pytest.raises(SystemExit) as raised:
+            main([crystal, "--method", "dft", "--dry-run", *argv])
+        assert raised.value.code == 2
+        assert message in capsys.readouterr().err
+
+    def test_a_method_without_smearing_refuses_it(self, crystal, capsys):
+        with pytest.raises(SystemExit) as raised:
+            main([crystal, "--method", "adapt-vqe", "--dry-run",
+                  "--smearing", "0.1"])
+        assert raised.value.code == 2
+        assert "does not take 'smearing'" in capsys.readouterr().err
+
+    def test_a_crystal_dry_run_accepts_them(self, crystal, capsys):
+        assert main([crystal, "--method", "dft", "--basis", "PAW-LCAO",
+                     "--dry-run", "--kpts", "2", "--gamma-centered",
+                     "--smearing", "methfessel-paxton", "0.2"]) == 0
 
 
 class TestLibraryVariables:

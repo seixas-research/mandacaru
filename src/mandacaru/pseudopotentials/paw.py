@@ -161,7 +161,8 @@ from .partial_waves import (INNER_POINTS, Q_MAX, Q_STEP,
                    defect_message, defects_record, ghost_free,
                    numerov_outward, read_defects, warn_defects,
                    optimize_pseudo_waves, polynomial_local_potential,
-                   reference_waves)
+                   reference_waves, spurious_nodes, unoccupied_level,
+                   EXTRA_ANCHOR_ENERGIES)
 
 #: Registry name of the family (no aliases).  The **-LCAO** is not decoration:
 #: this is Bloechl's projector-augmented-wave transformation carried on a
@@ -216,8 +217,10 @@ DEFAULT_ENERGY_OFFSET = 1.0
 #: gets; the derivative matching alone fixes most of the inner norm, so a
 #: deficit above ~0.2 (0.1 for Li) is not reachable by the Bessel expansion.
 DEFAULT_NORM_DEFICIT = 0.1
-#: Per-element norm deficits (H, Li kept small: a larger deficit grows a
-#: ghost state in their s channel).  Copper is built unitary: at the default
+#: Per-element norm deficits (H kept small: a larger deficit grows a ghost
+#: state in its s channel).  Lithium is unitary: with its p channel, at 0.02
+#: its s projectors missed an intruding hydrogen 1s by 0.55x its norm, at 0
+#: by 0.09 (HISTORY.md, 2026-10-07).  Copper is built unitary: at the default
 #: 0.1 its PBE dataset passed every atomic check and still collapsed CuH (RHF
 #: SZ, h = 0.20 Angstrom: -1555 eV at 1.30 Angstrom, falling 155 eV to 1.75
 #: with no minimum), while at 0 it binds like the LDA one (minimum at 1.6,
@@ -228,7 +231,7 @@ DEFAULT_NORM_DEFICIT = 0.1
 #: its norm but its hydride did not bind in range, and the PBE cobalt needed
 #: the repair's 10 Ha local shift (miss 1.46); at 0, with cobalt's s cutoff
 #: shortened (DEFAULT_CUTOFFS), the misses are 0.41 and 0.59 with no shift.
-DEFAULT_NORM_DEFICITS = {"H": 0.05, "Li": 0.02, "C": 0.10, "N": 0.15,
+DEFAULT_NORM_DEFICITS = {"H": 0.05, "Li": 0.0, "C": 0.10, "N": 0.15,
                          "O": 0.15, "F": 0.15, "Fe": 0.0, "Co": 0.0,
                          "Ni": 0.0, "Cu": 0.0, "Zn": 0.0}
 #: Per-element second reference energy above the bound state (Hartree);
@@ -296,6 +299,51 @@ DEFAULT_LOCAL_SHIFTS = {"C": 12.0, "N": 10.0, "O": 6.0, "F": 8.0,
 #: scattering at :data:`FROZEN_SCATTERING_ENERGY` represents the f response.
 DEFAULT_FROZEN_SUBSHELLS = {symbol: ((4, 3),) for symbol in
                             ("Tl", "Pb", "Bi", "Po", "At", "Rn")}
+#: Filled core subshells moved into the valence by default: the
+#: ``(n-1)s (n-1)p`` shell of the alkali and alkaline-earth atoms.  With an
+#: ``s`` channel alone their ``p`` scattering is the local potential's, and
+#: no local potential is both ghost-free and right for it: every sodium
+#: built that way put bcc Na 10-40 % off, either way (HISTORY.md,
+#: 2026-10-06, "K21 diagnosed").  The semicore ``p`` gives the channel a
+#: bound reference and its projectors, and the compact shell sets small
+#: spheres.
+#: Cutoff of a channel holding a semicore state, as a fraction of the
+#: valence ``s`` orbital's peak radius.  The default rule (``rc_factor`` x the
+#: channel's first reference) would take it from the compact semicore shell:
+#: sodium's 2s gave 0.79 Bohr and a ghost at -7.8 Ha, while 1.8-2.6 Bohr are
+#: all ghost-free and scatter to 0.001 rad.  0.7 gives Na 2.3, Mg 1.8, K 2.8,
+#: Cs 3.2 Bohr, inside half of each elemental crystal's nearest-neighbor
+#: distance (3.5, 3.0, 4.3, 5.0).
+SEMICORE_CUTOFF_FRACTION = 0.7
+#: The highest channel an element's dataset carries at least, empty ones
+#: added above its valence (``extra_l``).  The heavier alkali and
+#: alkaline-earth atoms have a low-lying empty d: semicore potassium without
+#: d projectors scatters d 0.5-1.1 rad off for every local potential the
+#: repair tries, with them 0.018 rad and no raise (HISTORY.md, 2026-10-06).
+#: Lithium's empty p without projectors scatters off the local potential
+#: alone, too repulsively (+0.03 rad at the 2s, +0.13 half a Hartree above
+#: for r_cl = 1.75 Bohr), and that alone put bcc Li 3 % long in plane waves;
+#: an exact p gives the same lattice at every local radius (HISTORY.md,
+#: 2026-10-07).
+DEFAULT_HIGHEST_CHANNEL = {"Li": 1,
+                           **{symbol: 2 for symbol in ("K", "Ca", "Rb", "Sr")}}
+#: Radius (Bohr) at which an element's frozen core is pseudized into the smooth
+#: core of its unscreening and of every grid xc term, when not the
+#: compensation radius r_g.  Lithium's 1s overlaps the 2s out to ~1.5 Bohr;
+#: pseudized at r_g = 2.6 its smooth core holds 0.02 electrons, the nonlinear
+#: core correction is absent, and bcc Li came out 0.05 A short once its p
+#: scattered right.  1.2-1.5 give the same lattice (3.372 / 3.373 in plane
+#: waves; 2.0: 3.346) and 1.5 is the softest on the 0.25 A grid.
+DEFAULT_CORE_RADII = {"Li": 1.5}
+#: Cs, Ba, Fr and Ra are not in these tables yet: semicore cesium's d
+#: channel binds a ghost at -0.18 Ha (its 5d is at -0.016, its 4d in the
+#: core), and barium's and francium's f scatter 0.7-1.5 rad off for every
+#: repair while their s channel binds a ghost (HISTORY.md, 2026-10-06).
+DEFAULT_SEMICORE_SUBSHELLS = {
+    symbol: ((n - 1, 0), (n - 1, 1))
+    for n, symbols in ((3, ("Na", "Mg")), (4, ("K", "Ca")),
+                       (5, ("Rb", "Sr")))
+    for symbol in symbols}
 #: Per-dataset repairs of the d-block and 6p libraries (HISTORY.md, 2026-09-28,
 #: "the d-block and 6p repairs"), keyed by ``(element, functional)`` and taking
 #: precedence over the per-element tables above.  Every entry is the exact
@@ -572,9 +620,14 @@ class PAWChannel(Channel):
     ``pseudo_radial``/``eigenvalue``/``coefficients`` describe the first
     (bound) smooth partial wave, which is also the first-zeta basis function.
     All matrices are ``(n, n)`` over the radial partial waves of the channel.
+    ``occupations`` gives each partial wave's electrons in the reference
+    atom: a scattering reference holds none, and a semicore channel has two
+    bound, occupied references (sodium's 2s and 3s); ``occupation`` is
+    their sum.
     """
 
     reference_energies: list = field(default_factory=list)   # Hartree
+    occupations: list = field(default_factory=list)          # per wave: electrons
     wavevectors: list = field(default_factory=list)          # per wave: q_n
     wave_coefficients: list = field(default_factory=list)    # per wave: c_n
     ae_waves: list = field(default_factory=list)             # per wave: phi(r)
@@ -605,7 +658,7 @@ class PAWChannel(Channel):
 
 
 def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
-                         v_loc: np.ndarray, n: int, occupation: float = 0.0,
+                         v_loc: np.ndarray, n: int, occupations=(),
                          strict: bool = True,
                          r_local: float = 0.0) -> PAWChannel:
     r"""Projectors and one-center matrices of a channel for a given
@@ -628,7 +681,8 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
     :math:`\tilde p_i = \sum_k (B^{-1})_{ki}\chi_k` (dual to the smooth
     waves), :math:`q_{ij}`, :math:`\Delta T_{ij}`, :math:`\Delta V^{scr}_{ij}`
     and :math:`D^{scr}_{ij} = B_{ij} + \varepsilon_j q_{ij}` symmetrized.
-    With ``strict`` a duality error above :data:`DUALITY_TOLERANCE` or an
+    ``occupations`` are the reference atom's electrons in each partial wave's
+    bound state (missing entries are empty).  With ``strict`` a duality error above :data:`DUALITY_TOLERANCE` or an
     asymmetry above :data:`COUPLING_ASYMMETRY_TOLERANCE` raises.
     """
     l, r_cut = pw.l, pw.r_cut
@@ -781,10 +835,13 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
     for i in range(n_waves):
         projectors.append(sum(B_inv[k, i] * chi_full[k] for k in range(n_waves)))
 
+    occupations = [float(o) for o in occupations]
+    occupations += [0.0] * (n_waves - len(occupations))
     return PAWChannel(
         l=l, n=n, eigenvalue=float(energies[0]), r_cut=float(r_cut),
         coefficients=pw.coefficients[0], pseudo_radial=pseudo_waves[0],
-        v_screened=v_loc, v_ionic=None, occupation=float(occupation),
+        v_screened=v_loc, v_ionic=None, occupation=float(sum(occupations)),
+        occupations=occupations,
         norm_error=float(abs(q[0, 0])),
         reference_energies=[float(e) for e in energies],
         wavevectors=list(pw.wavevectors), wave_coefficients=list(pw.coefficients),
@@ -955,6 +1012,9 @@ class PAWDataset(PseudoPotential):
     #: Occupied valence subshells generated into the frozen core instead
     #: (``(n, l)`` pairs); their channel scatters at positive energy.
     frozen_subshells: tuple = ()
+    #: Filled core subshells generated into the valence instead (``(n, l)``
+    #: pairs): their states are occupied references of their channels.
+    semicore_subshells: tuple = ()
     #: ``l -> D_SO``, the one-center spin-orbit difference of the channel.
     #: Empty unless the dataset was generated with ``relativity="dirac"``.
     #: These multiply the dataset's **own** projectors -- there is one set
@@ -1172,8 +1232,8 @@ def j_resolved_spin_orbit(symbol, atom, valence_config, cutoffs, rc_factor,
                 n_bessel=n_bessel, norm_deficit=0.0, treatment="dirac",
                 kappa=kappa, z_eff=z_eff)
             channel = assemble_paw_channel(
-                r, smooth, v_ae, v_loc, n=per_l[l][0][0], occupation=0.0,
-                strict=False, r_local=r_local)
+                r, smooth, v_ae, v_loc, n=per_l[l][0][0], strict=False,
+                r_local=r_local)
             q = np.asarray(channel.overlap_correction, dtype=float)
             screened = np.asarray(channel.coupling_screened, dtype=float)
             p_u = [CubicSpline(r, np.asarray(p))(grid) * grid
@@ -1250,6 +1310,43 @@ def _validate_frozen_subshells(
     return tuple(sorted(result))
 
 
+def _validate_semicore_subshells(
+        core: dict[tuple[int, int], float],
+        valence: dict[tuple[int, int], float],
+        semicore_subshells: Sequence[tuple[int, int]] | None
+) -> tuple[tuple[int, int], ...]:
+    """Validate occupied core subshells selected for the valence.
+
+    Each must be a filled core subshell whose ``l`` either has no valence
+    subshell yet or sits directly below the valence one of the same ``l``
+    (``n`` one lower): a channel holds at most two bound references.
+    """
+    from numbers import Integral
+
+    if not semicore_subshells:
+        return ()
+    if not isinstance(semicore_subshells, (tuple, list)):
+        raise TypeError("semicore_subshells must be a list of (n, l) pairs")
+    result: set[tuple[int, int]] = set()
+    for orbital in semicore_subshells:
+        if (not isinstance(orbital, tuple) or len(orbital) != 2
+                or any(isinstance(x, bool) or not isinstance(x, Integral)
+                       for x in orbital)):
+            raise ValueError("semicore_subshells must contain (n, l) "
+                             "integer pairs")
+        key = (int(orbital[0]), int(orbital[1]))
+        if key not in core:
+            raise ValueError(f"{key} is not an occupied core subshell")
+        if key in result:
+            raise ValueError(f"duplicate semicore subshell {key}")
+        same_l = [n for n, l in valence if l == key[1]]
+        if same_l and same_l != [key[0] + 1]:
+            raise ValueError(f"semicore {key} is not directly below the "
+                             f"valence subshell of the same l")
+        result.add(key)
+    return tuple(sorted(result))
+
+
 def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTOR,
                  r_cut_local: float | None = None,
                  local_factor: float = DEFAULT_LOCAL_FACTOR,
@@ -1265,6 +1362,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                  nlcc: bool | float = DEFAULT_NLCC,
                  extra_l: int = DEFAULT_EXTRA_L,
                  frozen_subshells=None,
+                 semicore_subshells=None,
                  ghosts: str = "repair") -> PAWDataset:
     r"""Generate a PAW-LCAO dataset for ``symbol`` (see the module docstring).
 
@@ -1301,6 +1399,12 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         defaults to :data:`DEFAULT_FROZEN_SUBSHELLS` (the 4f of Tl-Rn).  A
         frozen shell above the remaining valence keeps an empty channel,
         scattering at :data:`FROZEN_SCATTERING_ENERGY`.
+    semicore_subshells : sequence of tuple, optional
+        Filled core subshells, as ``(n, l)`` pairs, to generate into the
+        valence instead; defaults to :data:`DEFAULT_SEMICORE_SUBSHELLS` (the
+        ``(n-1)sp`` shell of the alkali and alkaline-earth atoms), ``()``
+        for none.  A semicore ``s`` below the valence ``s`` makes that
+        channel's two references both bound states.
     n_bessel : int, optional
         Spherical Bessel functions per smooth partial wave; defaults to
         :data:`DEFAULT_N_BESSEL_BY_DATASET` for the element and functional,
@@ -1371,6 +1475,12 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         if frozen_subshells is None else frozen_subshells)
     for orbital in frozen:
         core_config[orbital] = valence_config.pop(orbital)
+    semicore = _validate_semicore_subshells(
+        core_config, valence_config,
+        DEFAULT_SEMICORE_SUBSHELLS.get(symbol, ())
+        if semicore_subshells is None else semicore_subshells)
+    for orbital in semicore:
+        valence_config[orbital] = core_config.pop(orbital)
     if not valence_config:
         raise ValueError(f"{symbol} has no valence subshells to pseudize")
     valence_charge = float(sum(valence_config.values()))
@@ -1378,7 +1488,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     # its own, empty and scattering at a positive energy.
     highest_l = max(l for _n, l in valence_config)
     extra_l = max(int(extra_l),
-                  max((l for _n, l in frozen), default=highest_l) - highest_l)
+                  max((l for _n, l in frozen), default=highest_l) - highest_l,
+                  DEFAULT_HIGHEST_CHANNEL.get(symbol, highest_l) - highest_l)
     extra_energy = (FROZEN_SCATTERING_ENERGY if frozen and extra_l else None)
     r, v_ae = atom.r, atom.v_effective
     z_eff = float(atomic_number)
@@ -1398,16 +1509,13 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     cutoff_table = {**DEFAULT_CUTOFFS, symbol: {
         **DEFAULT_CUTOFFS.get(symbol, {}),
         **DEFAULT_CUTOFFS_BY_DATASET.get(dataset, {})}}
-
-    per_l, cutoffs, references = reference_waves(
-        symbol, atom, valence_config, z_eff, r_cut, rc_factor, energy_offset,
-        defaults=cutoff_table, treatment=partial_wave_treatment,
-        extra_l=extra_l, extra_energy=extra_energy)
-    # The local potential follows the *largest* cutoff: a compact channel's
-    # projector reaches out to r_cl instead (assemble_paw_channel).
-    r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
-                    else float(local_factor * max(cutoffs.values())))
-    r_g = float(min(cutoffs.values()))
+    if semicore:
+        # The channels holding a semicore state take a radius from the
+        # valence s orbital, not from their compact first reference.
+        n_valence = max(n for n, l in valence_config if l == 0)
+        peak = float(r[int(np.argmax(np.abs(atom.orbitals[(n_valence, 0)])))])
+        for l in {l for _n, l in semicore}:
+            cutoff_table[symbol].setdefault(l, SEMICORE_CUTOFF_FRACTION * peak)
 
     # An `extra_l` channel has no bound state: both its references are
     # scattering waves, normalized inside r_c by convention rather than by
@@ -1418,14 +1526,42 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     # which makes its overlap correction q identically zero: the channel
     # holds no charge, so it has nothing to correct.
     bound_ls = {l for _n, l in valence_config}
-    waves = {
-        l: smooth_partial_waves(r, v_ae, l, ae, energies, cutoffs[l],
-                                treatment=partial_wave_treatment,
-                                z_eff=z_eff,
-                                q_cut=q_cut, n_bessel=n_bessel,
-                                norm_deficit=(norm_deficit if l in bound_ls
-                                              else 0.0))
-        for l, (ae, energies) in references.items()}
+    # The empty channels' first reference: the highest occupied level, or --
+    # when that pseudizes into a smooth wave with a node its all-electron
+    # wave does not have (spurious_nodes) -- the channel's own bound level,
+    # then EXTRA_ANCHOR_ENERGIES.  A frozen shell's scattering energy is
+    # kept as given.
+    anchors = [extra_energy]
+    if extra_l and extra_energy is None:
+        highest = max(l for _n, l in valence_config)
+        level = unoccupied_level(
+            atom, highest + 1,
+            sum(1 for _n, l in core_config if l == highest + 1))
+        anchors += ([level] if level is not None else []) \
+            + list(EXTRA_ANCHOR_ENERGIES)
+    for anchor in anchors:
+        per_l, cutoffs, references = reference_waves(
+            symbol, atom, valence_config, z_eff, r_cut, rc_factor,
+            energy_offset, defaults=cutoff_table,
+            treatment=partial_wave_treatment, extra_l=extra_l,
+            extra_energy=anchor)
+        waves = {
+            l: smooth_partial_waves(r, v_ae, l, ae, energies, cutoffs[l],
+                                    treatment=partial_wave_treatment,
+                                    z_eff=z_eff,
+                                    q_cut=q_cut, n_bessel=n_bessel,
+                                    norm_deficit=(norm_deficit
+                                                  if l in bound_ls else 0.0))
+            for l, (ae, energies) in references.items()}
+        if not any(spurious_nodes(r, waves[l])
+                   for l in waves if l not in bound_ls):
+            break
+    # The local potential follows the *largest* cutoff: a compact channel's
+    # projector reaches out to r_cl instead (assemble_paw_channel).
+    r_local = _snap(r, float(r_cut_local) if r_cut_local is not None
+                    else float(local_factor * max(cutoffs.values())))
+    r_g = float(min(cutoffs.values()))
+    r_core = float(DEFAULT_CORE_RADII.get(symbol, r_g))
 
     shift = float(DEFAULT_LOCAL_SHIFTS_BY_DATASET.get(
         dataset, DEFAULT_LOCAL_SHIFTS.get(symbol, 0.0))
@@ -1436,26 +1572,27 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     for l, states in per_l.items():
         channels[l] = assemble_paw_channel(
             r, waves[l], v_ae, v_loc, n=states[0][0],
-            occupation=float(sum(o for _n, _e, _w, o in states)),
-            r_local=r_local)
+            occupations=[o for _n, _e, _w, o in states], r_local=r_local)
 
     # Densities of the reference atom: frozen core, all-electron valence
     # (Numerov bound states), smooth valence and its compensation charge.
     core_density = np.zeros_like(r)
     for (n, l), occupancy in core_config.items():
         core_density += occupancy * atom.orbitals[(n, l)] ** 2 / shell
-    smooth_core = (pseudize_density(r, core_density, r_g)
+    smooth_core = (pseudize_density(r, core_density, r_core)
                    if core_config else np.zeros_like(r))
     ae_valence = np.zeros_like(r)
     smooth_valence = np.zeros_like(r)
     compensation_charge = 0.0
     band = 0.0
     for l, channel in channels.items():
-        ae_valence += channel.occupation * channel.ae_waves[0] ** 2 / (4.0 * np.pi)
-        smooth_valence += channel.occupation * channel.pseudo_radial ** 2 \
-            / (4.0 * np.pi)
-        compensation_charge += channel.occupation * channel.overlap_correction[0, 0]
-        band += channel.occupation * channel.eigenvalue
+        # Every occupied reference: one per channel, two in a semicore one.
+        for i, occupation in enumerate(channel.occupations):
+            ae_valence += occupation * channel.ae_waves[i] ** 2 / (4.0 * np.pi)
+            smooth_valence += occupation * channel.pseudo_waves[i] ** 2 \
+                / (4.0 * np.pi)
+            compensation_charge += occupation * channel.overlap_correction[i, i]
+            band += occupation * channel.reference_energies[i]
     g = compensation_shape(r, r_g)
     augmented = smooth_valence + compensation_charge * g
 
@@ -1478,7 +1615,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                 r, core_density, smooth_valence, r_nlcc=float(nlcc))
         else:
             nlcc_details = {
-                "applied": True, "r_nlcc": float(r_g), "source": "smooth_core",
+                "applied": True, "r_nlcc": float(_snap(r, r_core)),
+                "source": "smooth_core",
                 "core_electrons": float(np.trapezoid(core_density * shell, r)),
                 "partial_core_electrons": float(
                     np.trapezoid(smooth_core * shell, r))}
@@ -1494,7 +1632,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     spin_orbit = (j_resolved_spin_orbit(
         symbol, atom, valence_config, cutoffs, rc_factor, energy_offset,
         v_loc, r_local, q_cut, n_bessel, hartree_screening,
-        extra_l=extra_l, extra_energy=extra_energy)
+        extra_l=extra_l, extra_energy=anchor)
         if relativity == "dirac" else {})
     for channel in channels.values():
         channel.v_ionic = v_local_ionic
@@ -1552,7 +1690,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         xc=str(xc), relativity=relativity, relativistic_exchange=rel_x,
         nlcc=dict(nlcc_details),
         extra_l=int(extra_l), frozen_subshells=tuple(frozen),
-        spin_orbit=spin_orbit)
+        semicore_subshells=tuple(semicore), spin_orbit=spin_orbit)
 
 
 # --------------------------------------------------------------------------- #
@@ -1618,9 +1756,11 @@ def paw_spectrum(pp: PAWDataset, l: int, n_states: int = 3,
 
 
 def _paw_levels(pp, l: int) -> np.ndarray:
-    """The two lowest eigenvalues of one PAW-LCAO channel
-    (:func:`~.partial_waves.ghost_free`)."""
-    return paw_spectrum(pp, l, n_states=2)
+    """The lowest eigenvalues of one PAW-LCAO channel
+    (:func:`~.partial_waves.ghost_free`): two, three when the channel has
+    two occupied references (semicore)."""
+    occupied = sum(1 for o in pp.channels[int(l)].occupations if o > 0.0)
+    return paw_spectrum(pp, l, n_states=3 if occupied > 1 else 2)
 
 
 def paw_eigenstate(pp: PAWDataset, l: int, r_max: float | None = None,
@@ -1674,8 +1814,12 @@ def log_derivative_paw(pp: PAWDataset, l: int, energy: float,
     of the generalized problem at ``energy``: the outward Numerov integration
     of the smooth radial equation with the projectors :math:`\tilde p_i` and
     the energy-dependent coupling :math:`D^{scr} - E\,q`.  Equals the all-electron one at the reference
-    energies (and, for a good dataset, in between)."""
+    energies (and, for a good dataset, in between).  A channel without
+    projectors sees the screened local potential alone, and then ``r_cut``
+    is required."""
     l = int(l)
+    if l not in pp.projectors and r_cut is None:
+        raise ValueError(f"channel l={l} has no projectors: pass r_cut")
     # Past the projectors, where the smooth wave obeys the all-electron
     # equation again -- beyond r_cut when they reach out to r_cl.
     r_cut = pp.projector_radius(l) if r_cut is None else float(r_cut)
@@ -1683,11 +1827,13 @@ def log_derivative_paw(pp: PAWDataset, l: int, energy: float,
     r0 = _with_origin(r)
     v0 = np.concatenate([[pp.v_local_screened[0]], pp.v_local_screened])
     f = _radial_f(r0, v0, l, energy)
+    seed = (r0[1] ** (l + 1), r0[2] ** (l + 1))
+    u0 = numerov_outward(r0, f, np.zeros_like(r0), seed, start=1)
+    if l not in pp.projectors:
+        return _log_derivative_of_u(r0, u0, r_cut)
     p_u = [np.concatenate([[0.0], np.asarray(p) * r]) for p in pp.projectors[l]]
     D = (np.asarray(pp.coupling_screened[l], dtype=float)
          - float(energy) * np.asarray(pp.norm_correction[l], dtype=float))
-    seed = (r0[1] ** (l + 1), r0[2] ** (l + 1))
-    u0 = numerov_outward(r0, f, np.zeros_like(r0), seed, start=1)
     uj = [numerov_outward(r0, f, 2.0 * p, (0.0, 0.0), start=1) for p in p_u]
     dr = r0[1] - r0[0]
     m0 = np.array([np.trapezoid(p * u0, dx=dr) for p in p_u])
@@ -2783,6 +2929,7 @@ def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
             "n": int(channel.n),
             "r_cut": float(channel.r_cut),
             "occupation": float(channel.occupation),
+            "occupations": [float(o) for o in channel.occupations],
             "reference_energies": [float(e) for e in channel.reference_energies],
             "wavevectors": [np.asarray(q).tolist() for q in channel.wavevectors],
             "wave_coefficients": [np.asarray(c).tolist()
@@ -2821,6 +2968,7 @@ def to_payload(pp: PAWDataset, stride: int = 1) -> dict:
             "relativistic_exchange": bool(pp.relativistic_exchange),
             "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
             "frozen_subshells": [list(o) for o in pp.frozen_subshells],
+            "semicore_subshells": [list(o) for o in pp.semicore_subshells],
             "defects": defects_record(pp.defects),
             "spin_orbit": {str(l): _spin_orbit_payload(entry, stride)
                            for l, entry in (pp.spin_orbit or {}).items()},
@@ -2941,6 +3089,10 @@ def from_payload(payload: dict) -> PAWDataset:
             coefficients=np.asarray(entry["wave_coefficients"][0], float),
             pseudo_radial=ps[0], v_screened=v_screened, v_ionic=v_local,
             occupation=float(entry["occupation"]),
+            # One bound reference per channel until semicore channels.
+            occupations=[float(o) for o in entry.get(
+                "occupations", [entry["occupation"]]
+                + [0.0] * (len(entry["reference_energies"]) - 1))],
             norm_error=float(abs(q[0, 0])),
             reference_energies=[float(e) for e in entry["reference_energies"]],
             wavevectors=[np.asarray(v, float) for v in entry["wavevectors"]],
@@ -2997,6 +3149,8 @@ def from_payload(payload: dict) -> PAWDataset:
         extra_l=int(payload.get("extra_l", 0)),
         frozen_subshells=tuple(tuple(int(x) for x in o)
                                for o in payload.get("frozen_subshells", [])),
+        semicore_subshells=tuple(tuple(int(x) for x in o)
+                                 for o in payload.get("semicore_subshells", [])),
         nlcc=dict(payload.get("nlcc") or {"applied": False, "r_nlcc": None,
                                           "reason": "written before the "
                                                     "core correction"}),

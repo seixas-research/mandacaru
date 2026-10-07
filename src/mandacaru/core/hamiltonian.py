@@ -71,6 +71,11 @@ def _radial_norm(fn) -> float:
 RESOLUTION_TOLERANCE = 0.25
 
 
+#: Grid points per block when the dipole matrices are accumulated: bounds the
+#: working set to M x block complex numbers.
+DIPOLE_GRID_BLOCK = 65536
+
+
 class MeanFieldMixin:
     """Hartree-Fock on the ``one_body()`` / ``two_body()`` of an integral class
     whose basis is orthonormal (Löwdin-orthogonalized orbitals, plane waves)."""
@@ -313,6 +318,9 @@ class MolecularIntegrals(MeanFieldMixin):
         #: object assembles, next to the nuclear repulsion -- e.g. the frozen
         #: one-center energies of a PAW-LCAO dataset.  Zero for a plain basis.
         self.constant_energy: float = 0.0
+        #: Uniform external electric field (Hartree per e Bohr), or ``None``:
+        #: set by :meth:`apply_electric_field`.
+        self.electric_field: np.ndarray | None = None
         self._S: np.ndarray | None = None
         self._S_bare: np.ndarray | None = None
         self._C: np.ndarray | None = None
@@ -677,6 +685,10 @@ class MolecularIntegrals(MeanFieldMixin):
         augmentation = self.one_body_augmentation()
         if augmentation is not None:
             one = one + np.asarray(augmentation)
+        if self.electric_field is not None:
+            # The electrons' potential in the field, +F.r (charge -1).
+            one = one + np.einsum("a,apq->pq", self.electric_field,
+                                  self.dipole_matrices())
         h = 0.5 * (one + one.conj().T)           # symmetrize away grid noise
         if self.orthogonalize:
             X = self._lowdin_x()
@@ -827,6 +839,76 @@ class MolecularIntegrals(MeanFieldMixin):
             bad = np.isfinite(ratios) & (np.abs(ratios - 1.0) > tolerance)
             return [int(i) for i in np.nonzero(bad)[0]]
         return outside(self.resolution_ratios), outside(self.kb_resolution_ratios)
+
+    # -- a uniform electric field ----------------------------------------- #
+
+    def dipole_matrices(self) -> np.ndarray:
+        r"""``(3, M, M)`` atomic-orbital matrices of the electrons' position
+        (Bohr): :math:`\int\chi_\mu^*\,\mathbf r\,\chi_\nu` on the grid,
+        plus, for a PAW-LCAO basis, the augmentation's monopole (at its atom)
+        and dipole from the compensation moments
+        (:meth:`compensation_moments`).
+
+        :func:`~mandacaru.algorithms.volumetric.dipole_moment`'s electronic
+        part is :math:`\mathrm{Re\,Tr}(r_i D_{AO})` of these; the field
+        couples through the same matrices, so a dipole and the energy's field
+        derivative are one quantity.
+        """
+        psi = self._engine._psi
+        grid = self.grid
+        coords = [np.asarray(c, dtype=float).reshape(-1)
+                  for c in (grid.X, grid.Y, grid.Z)]
+        M = psi.shape[0]
+        out = np.zeros((3, M, M), dtype=complex)
+        block = DIPOLE_GRID_BLOCK
+        for start in range(0, psi.shape[1], block):
+            chunk = psi[:, start:start + block]
+            for axis in range(3):
+                out[axis] += (np.conj(chunk) * coords[axis][start:start + block]
+                              ) @ chunk.T
+        out *= grid.dV
+        moments = getattr(self, "compensation_moments", None)
+        channels = moments() if moments is not None else {}
+        positions = [np.asarray(c, dtype=float)
+                     for _z, c in self._potentials.nuclei]
+        root4 = np.sqrt(4.0 * np.pi)
+        root8 = np.sqrt(8.0 * np.pi / 3.0)
+        for (atom, L, m), Q in channels.items():
+            Q = np.asarray(Q)
+            if L == 0:
+                out += root4 * positions[atom][:, None, None] * Q
+            elif L == 1 and m == 0:
+                out[2] += np.sqrt(4.0 * np.pi / 3.0) * Q
+            elif L == 1:
+                # d_x = root8 (q_{1,-1} - q_{11}) / 2, d_y = root8 (q_{1,-1}
+                # + q_{11}) / 2i.
+                out[0] += (-1.0 if m == 1 else 1.0) * root8 / 2.0 * Q
+                out[1] += root8 / 2.0j * Q
+        # Hermitian: the real trace against any density matrix is unchanged.
+        return 0.5 * (out + np.conj(np.swapaxes(out, 1, 2)))
+
+    def apply_electric_field(self, field) -> None:
+        r"""Put the system in a uniform electric ``field`` (three components,
+        Hartree per e Bohr; 1 a.u. = 51.42 V/Angstrom).
+
+        The potential is :math:`V = -\mathbf F\cdot\boldsymbol\mu`: the
+        electrons get :math:`+\mathbf F\cdot\mathbf r` in the one-body
+        matrix (augmentation included, :meth:`dipole_matrices`) and the
+        nuclei (valence ions for a pseudopotential basis) the constant
+        :math:`-\mathbf F\cdot\sum_A Z_A\mathbf R_A`.  Applied once,
+        before anything is built from the one-body matrix.
+        """
+        field = np.asarray(field, dtype=float)
+        if field.shape != (3,) or not np.all(np.isfinite(field)):
+            raise ValueError("electric_field must be three finite numbers "
+                             f"(Hartree per e Bohr); got {field!r}")
+        if self.electric_field is not None or self._h1 is not None:
+            raise RuntimeError("the field must be applied once, before the "
+                               "one-body matrix is built")
+        self.electric_field = field
+        ionic = sum(float(z) * np.asarray(c, dtype=float)
+                    for z, c in self._potentials.nuclei)
+        self.constant_energy -= float(field @ ionic)
 
     # -- spatial integrals (Hartree) -------------------------------------- #
 
@@ -1070,7 +1152,8 @@ class MolecularIntegrals(MeanFieldMixin):
                 orbital_symmetry=(self._orbital_symmetry_provider()
                                   if spec is not None and spec.symmetry
                                   else None),
-                orbital_integrals=provider)
+                orbital_integrals=provider,
+                orbital_gauge=self._orbital_gauge_provider(spec))
             self.active_space = space
             if space.rotation is not None:
                 self.mo_coefficients = self.mo_coefficients @ space.rotation
@@ -1228,9 +1311,21 @@ class MolecularIntegrals(MeanFieldMixin):
             reference_occupations=occupations, open_shell=open_shell,
             orbital_symmetry=(self._orbital_symmetry_provider()
                               if spec is not None and spec.symmetry
-                              else None))
+                              else None),
+            orbital_gauge=self._orbital_gauge_provider(spec))
         self.active_space = space
         return space
+
+    def _orbital_gauge_provider(self, spec):
+        """The gauge operator of the current molecular orbitals
+        (:func:`~mandacaru.algorithms.orbital_tracking.orbital_gauge`),
+        which fixes the orbitals inside a degenerate set of a selector's
+        natural occupations, or ``None`` when no selector rotates them."""
+        from ..algorithms.orbital_tracking import orbital_gauge
+
+        if spec is None or not spec.truncates or spec.method == "energy":
+            return None
+        return orbital_gauge(self, self.mo_coefficients)
 
     def hartree_fock_hamiltonian(self, n_electrons: int,
                                  include_nuclear_repulsion: bool = True) -> Fermion:

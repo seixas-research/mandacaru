@@ -92,6 +92,7 @@ For the virtuals there are four rankings:
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -678,7 +679,8 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
                          reference_occupations=None,
                          open_shell: bool = False,
                          orbital_symmetry=None,
-                         orbital_integrals=None) -> ActiveSpace:
+                         orbital_integrals=None,
+                         orbital_gauge=None) -> ActiveSpace:
     """Partition the spatial MOs into frozen / active / deleted.
 
     Parameters
@@ -723,6 +725,16 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
         ``rotation -> OrbitalSymmetry`` of the orbitals that ``rotation``
         (``None``: the incoming ones) defines, for ``spec.symmetry``.  The
         integrals supply it; without one the symmetry constraint is refused.
+    orbital_gauge : callable, optional
+        The gauge operator of the incoming orbitals
+        (:func:`~mandacaru.algorithms.orbital_tracking.orbital_gauge`).  With
+        it, the orbitals of every degenerate set of a selector's natural
+        occupations are fixed inside the set
+        (:func:`~mandacaru.algorithms.orbital_tracking.degenerate_gauge`)
+        instead of left in whichever rotation round-off gave the
+        eigensolver, so they follow the geometry smoothly (what
+        ``transfer=True`` needs).  The span, the occupations and the
+        reference are unchanged.
 
     With ``correlating_pairs`` or ``symmetry`` the virtual orbitals are no
     longer simply the best-ranked ones: they are filled in units (a degenerate
@@ -928,6 +940,15 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
         rotation, occupations = _rotate_active_occupied(
             rotation, occupations, occupied_density,
             [p for p in range(n_doubly) if p not in set(frozen)], M)
+    if orbital_gauge is not None and occupations is not None:
+        # Before the selection, so a count that cuts a degenerate set (warned
+        # below) at least cuts it the same way every time.
+        from .orbital_tracking import degenerate_gauge
+
+        rotation = degenerate_gauge(
+            rotation, occupations,
+            [[p for p in range(n_doubly) if p not in set(frozen)],
+             range(first_virtual, M)], orbital_gauge)
     active_virtual = list(range(first_virtual, first_virtual + n_virt_active))
     plain = list(active_virtual)
     partners, notes, labels = (), [], {}
@@ -1017,6 +1038,22 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
                     f"whole set fits")
             notes += _change_notes("symmetry", before, chosen, detail)
         active_virtual = chosen
+    if not spec.symmetry and occupations is not None:
+        split = _split_degenerate(occupations, active_virtual, first_virtual,
+                                  M)
+        if split:
+            warnings.warn(
+                f"the active space takes {len(split[0])} of the "
+                f"{len(split[0]) + len(split[1])} degenerate virtual "
+                f"orbitals {sorted(split[0] + split[1])} (equal "
+                f"occupations): which ones is an arbitrary choice, and so "
+                f"is every result in the space.  Pass "
+                f"active_space={{..., 'symmetry': True}} to keep "
+                f"degenerate sets whole, or change the count",
+                RuntimeWarning, stacklevel=2)
+            notes.append(("degenerate_split",
+                          f"splits the degenerate set "
+                          f"{sorted(split[0] + split[1])}"))
     deleted = tuple(p for p in range(first_virtual, M)
                     if p not in set(active_virtual))
     return ActiveSpace(
@@ -1027,6 +1064,27 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
         partners=partners, notes=tuple(notes),
         point_group=None if not labels else sym.group.name,
         irreps=tuple(labels.get(p, "?") for p in range(M)) if labels else ())
+
+
+def _split_degenerate(occupations, chosen, first_virtual: int, M: int):
+    """``(taken, left)`` of the first degenerate set of virtual natural
+    occupations (a cluster of
+    :func:`~mandacaru.algorithms.orbital_tracking.degenerate_clusters`) the
+    selection ``chosen`` cuts through, or ``()``.
+
+    LiH in PAW-LCAO DZP with ``orbitals=4``: the fourth slot took one of the
+    two pi orbitals of occupation 0.002352, a choice the last bits of the
+    integrals made (ADAPT-VQE energies 52 meV apart).  The gauge of
+    :func:`~mandacaru.algorithms.orbital_tracking.degenerate_gauge` makes the
+    choice reproducible, not meaningful."""
+    from .orbital_tracking import degenerate_clusters
+
+    chosen = set(chosen)
+    for same in degenerate_clusters(occupations, range(first_virtual, M)):
+        taken = [q for q in same if q in chosen]
+        if 0 < len(taken) < len(same):
+            return taken, [q for q in same if q not in chosen]
+    return ()
 
 
 def _need(orbital_integrals, constraint: str):

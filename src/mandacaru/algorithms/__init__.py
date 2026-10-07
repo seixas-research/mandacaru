@@ -59,6 +59,10 @@ from .calculator import (DEFAULT_METHOD, STABLE_METHODS, Mandacaru,
                          register_method, resolve_method)
 from .forces import ForceResult, hellmann_feynman_gradient, nuclear_gradient
 from .interaction import InteractionEnergy, interaction_energy
+from .polarizability import Polarizability, polarizability
+from .berry_phase import (BornCharges, DielectricTensor, PiezoelectricTensor,
+                          Polarization, born_effective_charges,
+                          dielectric_tensor, piezoelectric_tensor)
 from .rdm import electronic_energy, one_rdm, particle_number, two_rdm
 from .volumetric import (NaturalOrbitals, QUANTITIES, VolumetricField,
                          state_natural_orbitals, volumetric_field)
@@ -144,6 +148,15 @@ __all__ = [
     "format_pauli_sum",
     "nuclear_gradient",
     "interaction_energy",
+    "Polarizability",
+    "polarizability",
+    "Polarization",
+    "BornCharges",
+    "born_effective_charges",
+    "PiezoelectricTensor",
+    "piezoelectric_tensor",
+    "DielectricTensor",
+    "dielectric_tensor",
     "InteractionEnergy",
     "hellmann_feynman_gradient",
     "ForceResult",

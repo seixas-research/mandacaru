@@ -94,7 +94,8 @@ def _strained(atoms, epsilon, shape):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan", "hse06"])
+@pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan", "hse06",
+                                        "r2scan-rvv10"])
 def test_the_force_is_the_derivative_of_the_free_energy(functional):
     """Hellmann-Feynman + Pulay against a central difference of F (one
     component of each atom), on a fixed grid: 1e-5 eV/Angstrom.  Si on a
@@ -145,7 +146,7 @@ def test_a_k_mesh_force_is_the_derivative_of_the_free_energy(functional,
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("functional", ["lda", "hse06"])
+@pytest.mark.parametrize("functional", ["lda", "hse06", "r2scan-rvv10"])
 def test_the_stress_is_the_strain_derivative_of_the_free_energy(functional):
     """The fixed-state strain derivative against self-consistent strained
     crystals (same node counts, pinned filter): a diagonal and a shear
@@ -296,7 +297,8 @@ def _doublet_gradient(atoms, h, solver, atom, d, functional, kpts=None,
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan", "hse06"])
+@pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan", "hse06",
+                                        "r2scan-rvv10"])
 def test_a_spin_crystal_force_is_the_derivative_of_the_free_energy(
         functional):
     """The LiH+ doublet at Gamma: each channel's Pulay term at its own
@@ -369,8 +371,8 @@ def test_a_spin_crystal_stress_is_the_strain_derivative(functional):
         assert stress[a, b] == pytest.approx(numeric, rel=1e-5, abs=1e-9)
 
 
-@pytest.mark.parametrize("functional", [
-    pytest.param("lda", marks=pytest.mark.slow), "hse06"])
+@pytest.mark.slow
+@pytest.mark.parametrize("functional", ["lda", "hse06"])
 def test_a_spin_crystal_that_loses_its_moment_has_the_restricted_derivatives(
         functional):
     """LiH from small moments converges to no moment: two channels of one

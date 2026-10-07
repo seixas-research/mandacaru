@@ -298,7 +298,8 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                               overlap=None, spin_orbit=None,
                               spin_orbit_projectors=None,
                               integrals_class=None,
-                              potentials_keyword: str = "pseudos"):
+                              potentials_keyword: str = "pseudos",
+                              ghosts=(), electric_field=None):
     """The driver 5-tuple of a pseudopotential family -- the part every family
     shares.
 
@@ -314,6 +315,10 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     its datasets argument).  The basis (with its ``size`` hierarchy and its
     optional ``filter``), the grid, the electron count, the spin state and the
     returned ``context`` are built here once.
+
+    ``ghosts`` are atom indices that keep their basis functions but carry no
+    dataset, nucleus, projectors or electrons -- the counterpoise correction
+    (:func:`~mandacaru.algorithms.interaction.interaction_energy`).
     """
     from ..algorithms._hamiltonian_from_atoms import (
         DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
@@ -332,8 +337,14 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     symbols = atoms.get_chemical_symbols()
     positions = coherent_positions(atoms)
     potentials = {symbol: load(symbol, directory) for symbol in set(symbols)}
+    # A ghost lends its basis functions and nothing else: every physical term
+    # below is built over the real atoms only.
+    ghosts = frozenset(int(i) for i in ghosts)
+    real = [i for i in range(len(symbols)) if i not in ghosts]
+    real_symbols = [symbols[i] for i in real]
+    real_positions = positions[real]
 
-    n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
+    n_el = int(round(valence_electrons(real_symbols, potentials))) - int(charge)
     # The grid comes first now: ``filter="auto"`` ties its cutoff to the
     # *realized* spacing (the coarsest axis -- an anisotropic grid can only
     # represent what its worst direction can), which is known only once the
@@ -349,22 +360,23 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
         symbols, positions, potentials, filter_cutoff=k_c,
         **pseudo_basis_arguments(family, options, confinement=confinement,
                                  polarization=polarization))
-    kb = projectors(symbols, positions, potentials, options)
-    coupling_blocks = coupling(kb, symbols, potentials)
+    kb = projectors(real_symbols, real_positions, potentials, options)
+    coupling_blocks = coupling(kb, real_symbols, potentials)
     overlap_blocks = (None if overlap is None
-                      else overlap(kb, symbols, potentials))
+                      else overlap(kb, real_symbols, potentials))
     # Spin-orbit blocks, keyed by (atom, l) rather than (atom, l, m): the
     # term couples different m, so it is not part of the block-diagonal D.
     so_projectors = (None if spin_orbit_projectors is None
-                     else spin_orbit_projectors(symbols, positions, potentials))
+                     else spin_orbit_projectors(real_symbols, real_positions,
+                                                potentials))
     spin_orbit_blocks = (None if spin_orbit is None
                          else spin_orbit(kb if so_projectors is None
                                          else so_projectors,
-                                         symbols, potentials))
+                                         real_symbols, potentials))
     nuclei = [(potentials[symbol].valence_charge, position)
-              for symbol, position in zip(symbols, positions)]
+              for symbol, position in zip(real_symbols, real_positions)]
 
-    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
+    n_unpaired = resolve_num_unpaired(atoms[real], spin, n_el)
     num_particles = _num_particles(n_el, n_unpaired, family.upper())
     integrals = (integrals_class or MolecularIntegrals)(
         nuclei, basis_fns, g, softening=0.0,
@@ -373,7 +385,9 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
         spin_orbit_coupling=spin_orbit_blocks,
         spin_orbit_projectors=so_projectors or None,
         kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"],
-        **{potentials_keyword: [potentials[s] for s in symbols]})
+        **{potentials_keyword: [potentials[s] for s in real_symbols]})
+    if electric_field is not None:
+        integrals.apply_electric_field(electric_field)
     # Without `hamiltonian` the caller needs only the integrals (Kohn-Sham
     # DFT): no RHF orbitals, no MO transform, no second-quantized operator.
     hamiltonian = (integrals.molecular_hamiltonian(
@@ -398,6 +412,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                                        family.upper())
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
                "frozen": frozen, "n_electrons": n_el,
+               "ghosts": tuple(sorted(ghosts)),
                "pseudopotentials": potentials, "kb_projectors": kb,
                "nonlocal_coupling": coupling_blocks, "family": family,
                "filter_cutoff": k_c, "options": dict(options),

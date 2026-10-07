@@ -20,8 +20,12 @@ energy and an ADAPT-VQE energy differ only in how the electrons are treated:
     F = h + J[D] + V_{xc}.
 
 ``h`` is the core Hamiltonian of the integrals (kinetic, local and nonlocal
-pseudopotential), ``J`` the Hartree matrix contracted from the same two-body
-tensor the quantum Hamiltonian uses, and :math:`\rho(\mathbf r) =
+pseudopotential), ``J`` the Hartree matrix of the same Coulomb operator the
+quantum Hamiltonian's two-body tensor holds -- by default one Poisson solve of
+the density per iteration (``hartree="poisson"``, :class:`PoissonHartree`),
+so a semilocal energy needs no :math:`M^4` tensor (the forces, a hybrid's
+exchange and the export to a quantum method still build theirs, when asked);
+``hartree="tensor"`` contracts the tensor instead, equal to round-off -- and :math:`\rho(\mathbf r) =
 \sum_{pq} D_{pq}\,\phi_p(\mathbf r)\phi_q^*(\mathbf r)` the density of the
 Loewdin-orthonormal orbitals on the grid.  The exchange-correlation energy and
 potential come from :mod:`mandacaru.integrals.exchange_correlation`, with a
@@ -63,16 +67,21 @@ exchange-correlation energies around their reference atom: a fixed coupling
 :math:`D^{ion}` in the nonlocal term and a per-species constant in the
 integrals.  The augmentation spheres therefore need no exchange-correlation
 evaluation of their own; the Kohn-Sham energy is the smooth one, with the
-compensation charges in the Hartree term (they are in the two-body tensor)
-and the dataset's smooth core in the functional, exactly how the dataset was
+compensation charges in the Hartree term (their low-rank multipole terms,
+the same ones the two-body tensor carries) and the dataset's smooth core in the functional, exactly how the dataset was
 unscreened.  The datasets are LDA: another functional on them is a mismatch
 between molecule and dataset, and is warned about.
 
 Restricted for a closed shell, unrestricted when ``n_alpha != n_beta``
-(:class:`UnrestrictedKohnSham`).  A **periodic** geometry (any ``atoms.pbc``)
+(:class:`UnrestrictedKohnSham`).  Levels fill by aufbau, except a degenerate
+shell that straddles the Fermi level -- spin-restricted O2's pi*, the OH
+radical's beta pi -- whose electrons are shared equally by its members
+(:func:`shell_occupations`): the zero-temperature ensemble, which the energy,
+the density and the forces then describe.  A **periodic** geometry (any ``atoms.pbc``)
 takes the crystal path instead -- Bloch states on a Monkhorst-Pack mesh with
 smearing, spin-polarized when the atoms carry initial moments, PAW-LCAO only
-(:mod:`~mandacaru.algorithms.periodic_dft`); it has no dispersion yet.
+(:mod:`~mandacaru.algorithms.periodic_dft`); D4 there is the lattice sum,
+in the energy, the forces and the stress.
 
 The converged Kohn-Sham orbitals are exported like the Hartree-Fock ones: the
 result carries the many-body Hamiltonian written in them, so
@@ -117,6 +126,109 @@ LEVEL_SHIFT_TRIGGER = 1e-6
 #: converge before the first restart matters.
 DIIS_RESTART = 10
 
+#: How a molecular Kohn-Sham run builds its Hartree matrix (``hartree=``):
+#: ``"poisson"`` solves the Poisson equation of the density once per
+#: iteration, the compensation multipoles of a PAW-LCAO basis added as their
+#: low-rank matrices (:class:`PoissonHartree`); ``"tensor"`` contracts the
+#: two-body tensor.  Both integrate the same operator -- the spectral
+#: isolated kernel -- and agree to round-off.
+HARTREE_METHODS = ("poisson", "tensor")
+
+#: The default of ``hartree=`` (HISTORY, "K4").
+DEFAULT_HARTREE = "poisson"
+
+
+def _stalled(history) -> bool:
+    """Whether the SCF made no progress over the last :data:`DIIS_RESTART`
+    iterations -- the density change not even halved -- the only time a DIIS
+    restart is taken.  An unconditional one, every ten iterations, threw
+    triplet O2 (UKS, PAW-LCAO SZ) from 1e-4 to 0.18 Ha off its energy at
+    iteration 40 and then kept the density change at 1e-7..1e-5, above the
+    tolerance, while the energy had settled to 1e-13 Ha."""
+    if len(history) < DIIS_RESTART:
+        return False
+    return (history[-1]["residual"]
+            > 0.5 * history[-DIIS_RESTART]["residual"])
+
+
+#: Smallest eigenvalue of the normalized overlap of the DIIS errors below
+#: which they count as linearly dependent (:class:`_IndependentDIIS`).
+#: Water (PAW-LCAO DZP) never goes below 1e-7; OH in single zeta reaches
+#: 1e-16 by the seventh vector.
+DIIS_DEPENDENCE = 1e-12
+
+
+class _IndependentDIIS(DIIS):
+    """:class:`~.hartree_fock.DIIS` that drops its oldest vectors while the
+    errors, the new one included, are linearly dependent.
+
+    A small basis has a small error space: OH in PAW-LCAO single zeta has
+    five orbitals, and an alpha channel of four occupied and one empty
+    orbital has commutator errors in four real dimensions.  Eight vectors
+    there make the DIIS system singular, its solve returns coefficients of
+    1e5 and more, and the extrapolated operator throws the density back to
+    the core guess's: OH did not converge in 200 iterations from three of
+    nine nearby geometries, triplet O2 took 70 to 186.  Pruned, they take
+    24 to 45 and 12.  Errors that stay independent leave the arithmetic --
+    and so every well-conditioned run -- exactly as before.
+    """
+
+    def extrapolate(self, F, D):
+        error = self.error(F, D)
+        while self._errors:
+            errors = (self._errors + [error])[-self.depth:]
+            if len(errors) < 2:
+                break
+            overlap = np.array([[np.vdot(a, b) for b in errors]
+                                for a in errors])
+            norms = np.sqrt(np.real(np.diag(overlap)))
+            if norms.min() == 0.0 or np.min(np.linalg.eigvalsh(
+                    overlap / np.outer(norms, norms))) > DIIS_DEPENDENCE:
+                break
+            self._errors.pop(0)
+            self._focks.pop(0)
+        return super().extrapolate(F, D)
+
+
+#: Kohn-Sham levels closer than this (Hartree) form one degenerate shell when
+#: it straddles the Fermi level, and share its electrons equally
+#: (:func:`shell_occupations`).  Wide enough for a pair a slightly bent
+#: geometry or the grid splits (OH with its hydrogen 0.08 Angstrom off the
+#: axis: 2.2e-4 Ha between the beta pi levels), narrow enough that a small
+#: real gap stays integer (H2 at 4 Angstrom: 5.5e-3 Ha between sigma_g and
+#: sigma_u).
+DEGENERACY_WINDOW = 1e-3
+
+
+def shell_occupations(levels, n: int, window: float = DEGENERACY_WINDOW):
+    r"""Occupations (0 to 1) of ``levels`` (ascending) holding ``n``
+    electrons of one spin, or ``None`` for the aufbau determinant.
+
+    Aufbau fills the lowest ``n`` levels.  When the ``n``-th and the next
+    one are closer than ``window``, the degenerate shell they belong to
+    (consecutive levels closer than ``window``) is partly filled, and its
+    electrons are spread equally over it: the zero-temperature ensemble
+    (Mermin's functional at :math:`T \to 0`) of a symmetric shell.  Filling
+    one member instead breaks the symmetry, and the occupied member is then
+    pushed above the empty one (OH's beta pi: no integer aufbau solution
+    exists) or the SCF wanders between members (closed-shell O2's pi*).
+    ``None`` -- the common case -- keeps the determinant's own arithmetic.
+    """
+    levels = np.real(np.asarray(levels))
+    size = len(levels)
+    if n <= 0 or n >= size or levels[n] - levels[n - 1] >= window:
+        return None
+    low = n - 1
+    while low > 0 and levels[low] - levels[low - 1] < window:
+        low -= 1
+    high = n
+    while high + 1 < size and levels[high + 1] - levels[high] < window:
+        high += 1
+    occupations = np.zeros(size)
+    occupations[:low] = 1.0
+    occupations[low:high + 1] = (n - low) / (high + 1 - low)
+    return occupations
+
 #: Dispersion corrections ``dispersion=`` accepts.
 DISPERSION_CORRECTIONS = ("d4",)
 
@@ -124,8 +236,67 @@ DISPERSION_CORRECTIONS = ("d4",)
 D4_METHODS = {"pbe": "pbe", "r2scan": "r2scan", "hse06": "hse06"}
 
 
+class MOTensor:
+    """The two-body tensor in a set of orbitals, transformed when first read.
+
+    A Kohn-Sham run on the Poisson route never builds the two-body tensor:
+    its Hartree term is a Poisson solve.  Only the handoff to a quantum
+    method reads the tensor in the Kohn-Sham orbitals, so the result carries
+    this recipe in its ``eri_mo`` and builds it then
+    (:class:`_DeferredTensor`), from the integrals' own (cached) tensor.
+    ``orbitals`` are columns over the integrals' Loewdin basis, the basis of
+    :meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.two_body`.
+    """
+
+    def __init__(self, integrals, orbitals):
+        self.integrals = integrals
+        self.orbitals = np.asarray(orbitals)
+
+    def build(self) -> np.ndarray:
+        C = self.orbitals
+        g = self.integrals.two_body()
+        return np.real_if_close(np.einsum(
+            "ap,bq,cr,ds,abcd->pqrs", C.conj(), C.conj(), C, C, g,
+            optimize=True))
+
+
+class _DeferredTensor:
+    """Builds an ``eri_mo`` held as a :class:`MOTensor` the first time it is
+    read, and keeps the array."""
+
+    def __getattribute__(self, name):
+        value = object.__getattribute__(self, name)
+        if name == "eri_mo" and isinstance(value, MOTensor):
+            value = value.build()
+            object.__setattr__(self, name, value)
+        return value
+
+
+def determinant_energy(h_mo, g_occ, n_alpha: int, n_beta: int) -> float:
+    r"""Hartree-Fock energy of the determinant that fills the lowest
+    ``n_alpha`` and ``n_beta`` orbitals of one spatial set (Hartree, no
+    constant): :math:`\sum_i n_i h_{ii} + \tfrac12\sum_{ij} n_i n_j
+    \langle ij|ij\rangle - \tfrac12\sum_\sigma\sum_{ij\in\sigma}
+    \langle ij|ji\rangle`.
+
+    ``g_occ`` holds :math:`\langle ij|kl\rangle` over (at least) the first
+    ``max(n_alpha, n_beta)`` orbitals -- all the determinant needs, which the
+    Poisson route computes without the whole tensor."""
+    n = max(int(n_alpha), int(n_beta))
+    counts = ((np.arange(n) < n_alpha).astype(float)
+              + (np.arange(n) < n_beta).astype(float))
+    h = np.real(np.diagonal(np.asarray(h_mo))[:n])
+    g = np.real(np.asarray(g_occ)[:n, :n, :n, :n])
+    coulomb = np.einsum("ijij->ij", g)
+    exchange = np.einsum("ijji->ij", g)
+    value = counts @ h + 0.5 * counts @ coulomb @ counts
+    for m in (int(n_alpha), int(n_beta)):
+        value -= 0.5 * np.sum(exchange[:m, :m])
+    return float(value)
+
+
 @dataclass
-class KohnShamResult(RHFResult):
+class KohnShamResult(_DeferredTensor, RHFResult):
     """A converged closed-shell Kohn-Sham determinant.
 
     The fields of :class:`~mandacaru.algorithms.hartree_fock.RHFResult` (MO
@@ -133,6 +304,15 @@ class KohnShamResult(RHFResult):
     integrals in the Kohn-Sham orbitals) plus the energy decomposition, all in
     Hartree.  ``electronic_energy`` excludes every constant; the dispersion
     and core-correction constants are kept apart so each can be reported.
+    On the Poisson route (``hartree="poisson"``) ``eri_mo`` is transformed
+    the first time it is read (:class:`MOTensor`).
+
+    ``occupations`` is ``None`` for the aufbau determinant (the lowest
+    ``n_occupied`` orbitals doubly occupied).  When a degenerate shell at the
+    Fermi level is partly filled (:func:`shell_occupations`), the Kohn-Sham
+    state is an ensemble: ``occupations`` then holds each canonical orbital's
+    occupation, both spins (0 to 2), and the energy, the density and the
+    forces are the ensemble's.
     """
 
     functional: str = DEFAULT_XC
@@ -145,6 +325,10 @@ class KohnShamResult(RHFResult):
     #: One record per iteration (:func:`~.periodic_dft.scf_record`), for the
     #: run log's ``[SCF ITERATIONS]`` table.
     history: list = field(default_factory=list)
+    #: Fractional occupations of the canonical orbitals, or ``None``.
+    occupations: np.ndarray | None = None
+    #: :attr:`determinant_energy`, computed by the SCF.
+    reference_energy: float = 0.0
 
     @property
     def determinant_energy(self) -> float:
@@ -152,16 +336,13 @@ class KohnShamResult(RHFResult):
 
         :math:`\sum_i 2h_{ii} + \sum_{ij}(2\langle ij|ij\rangle -
         \langle ij|ji\rangle)` over the occupied Kohn-Sham orbitals (Hartree,
-        no constant): the Hartree-Fock functional of these orbitals, which is
-        what the exported problem's reference state has -- not the Kohn-Sham
-        energy.
+        no constant; :func:`determinant_energy`): the Hartree-Fock functional
+        of these orbitals, which is what the exported problem's reference
+        state has -- not the Kohn-Sham energy.  With fractional
+        ``occupations`` it is the determinant of the lowest ``n_occupied``
+        orbitals, one member of the ensemble.
         """
-        occ = slice(0, self.n_occupied)
-        h = np.real(np.diagonal(self.h_mo)[occ])
-        g = np.real(self.eri_mo[occ, occ, occ, occ])
-        coulomb = np.einsum("ijij->ij", g)
-        exchange = np.einsum("ijji->ij", g)
-        return float(2.0 * h.sum() + np.sum(2.0 * coulomb - exchange))
+        return float(self.reference_energy)
 
     def __repr__(self) -> str:
         return (f"KohnShamResult({self.functional}, "
@@ -176,19 +357,47 @@ class LazyHamiltonian:
     50 orbitals -- for an operator only the handoff to a quantum method
     (:meth:`~mandacaru.algorithms.mean_field.MeanFieldResult.as_quantum_problem`)
     reads.  :class:`~mandacaru.algorithms.mean_field.MeanFieldResult` builds it
-    the first time the attribute is read.
+    the first time the attribute is read, from the Kohn-Sham result ``scf``
+    (whose ``eri_mo`` may itself be deferred).
     """
 
-    def __init__(self, h_mo, eri_mo, constant):
-        self.h_mo = h_mo
-        self.eri_mo = eri_mo
+    def __init__(self, scf, constant):
+        self.scf = scf
         self.constant = complex(constant)
 
     def build(self) -> Fermion:
-        h_so, g_so = spin_block_integrals(self.h_mo, self.eri_mo)
+        h_so, g_so = spin_block_integrals(self.scf.h_mo, self.scf.eri_mo)
         n_modes = h_so.shape[0]
         return (Fermion.from_integrals(h_so, g_so)
                 + Fermion({(): self.constant}, n_modes=n_modes))
+
+
+class PoissonHartree:
+    r"""The Hartree terms of the Loewdin basis without the two-body tensor.
+
+    :math:`J[D]` is the potential of one density:
+    :math:`J = X^\dagger J_{AO}[X D X^\dagger]\,X`, with :math:`J_{AO}`
+    from :meth:`~mandacaru.integrals.direct.DirectCoulomb.coulomb` -- one
+    solve with the spectral isolated kernel the tensor is built with, and
+    the PAW-LCAO compensation multipoles (every :math:`L` the dataset
+    carries) as their low-rank matrices, so it equals the tensor's
+    contraction to round-off.  :meth:`orbital_integrals` gives
+    :math:`\langle ij|kl\rangle` over a few orbitals (the occupied ones of
+    a determinant energy) with :math:`n^2/2` solves.
+    """
+
+    def __init__(self, integrals):
+        self.integrals = integrals
+        self.direct = integrals.direct_coulomb()
+        self.X = integrals._lowdin_x()
+
+    def coulomb(self, D) -> np.ndarray:
+        X = self.X
+        return X.conj().T @ self.direct.coulomb(X @ D @ X.conj().T) @ X
+
+    def orbital_integrals(self, C) -> np.ndarray:
+        """``<ij|kl>`` over the Loewdin-basis orbital columns ``C``."""
+        return self.direct.orbital_integrals(self.X @ np.asarray(C))
 
 
 class KohnSham:
@@ -198,8 +407,10 @@ class KohnSham:
     ----------
     h : (M, M) array
         Core Hamiltonian in the orthonormal basis (Hartree).
-    eri : (M, M, M, M) array
-        ``<pq|rs>`` in physicists' notation, same basis.
+    eri : (M, M, M, M) array or PoissonHartree
+        ``<pq|rs>`` in physicists' notation, same basis -- or the
+        :class:`PoissonHartree` of the integrals, which builds the Hartree
+        matrix by a Poisson solve and never forms the tensor.
     orbitals : (M, ngrid) array
         The orthonormal basis functions sampled on ``grid``.
     grid : Grid
@@ -246,7 +457,10 @@ class KohnSham:
                  relativistic: bool = False, core_tau=None,
                  short_range_eri=None, screening=None, one_center=None):
         self.h = np.asarray(h, dtype=complex)
-        self.eri = np.asarray(eri, dtype=complex)
+        #: The Poisson route's Hartree builder, or ``None`` with a tensor.
+        self.poisson = eri if isinstance(eri, PoissonHartree) else None
+        self.eri = (None if self.poisson is not None
+                    else np.asarray(eri, dtype=complex))
         self.orbitals = np.asarray(orbitals)
         self.grid = grid
         self.M = self.h.shape[0]
@@ -291,8 +505,11 @@ class KohnSham:
 
     # -- the density and its matrices ------------------------------------- #
 
-    def _density_matrix(self, C) -> np.ndarray:
-        """``D_pq = 2 sum_i^occ C_pi C*_qi``."""
+    def _density_matrix(self, C, occupations=None) -> np.ndarray:
+        """``D_pq = 2 sum_i^occ C_pi C*_qi``, or ``2 sum_i f_i C_pi C*_qi``
+        with the per-spin ``occupations`` ``f`` of a partly filled shell."""
+        if occupations is not None:
+            return 2.0 * ((C * occupations) @ C.conj().T)
         occupied = C[:, :self.n_occ]
         return 2.0 * (occupied @ occupied.conj().T)
 
@@ -309,9 +526,27 @@ class KohnSham:
         return 0.5 * tau
 
     def _hartree(self, D) -> np.ndarray:
-        # The same contraction as the Hartree-Fock Coulomb matrix, density
-        # entering as D_sr (see RHF._fock).
+        r""":math:`J_{pq} = \sum_{rs} D_{sr}\langle pr|qs\rangle`: one
+        Poisson solve on the Poisson route, else the same contraction as the
+        Hartree-Fock Coulomb matrix (density entering as ``D_sr``, see
+        ``RHF._fock``)."""
+        if self.poisson is not None:
+            return self.poisson.coulomb(D)
         return np.einsum("sr,prqs->pq", D, self.eri, optimize=True)
+
+    def _mo_integrals(self, C, n_occupied: int):
+        """``(h_mo, eri_mo, g_occ)`` in the orbitals ``C``: ``eri_mo`` the
+        whole tensor, or on the Poisson route its deferred
+        :class:`MOTensor`; ``g_occ`` the block over the first
+        ``n_occupied`` orbitals (all a determinant energy needs)."""
+        if self.poisson is None:
+            h_mo, eri_mo = transform_integrals(self.h, self.eri, C)
+            occ = slice(0, n_occupied)
+            return h_mo, eri_mo, eri_mo[occ, occ, occ, occ]
+        h_mo = C.conj().T @ self.h @ C
+        eri_mo = MOTensor(self.poisson.integrals, C)
+        return h_mo, eri_mo, self.poisson.orbital_integrals(
+            C[:, :n_occupied])
 
     def _exchange_matrix(self, R) -> np.ndarray:
         r""":math:`K_{pq} = \sum_{rs} R_{sr}\langle pr|sq\rangle^{\rm SR}`,
@@ -386,19 +621,29 @@ class KohnSham:
         below it.  Converged
         when both the energy change and the largest density-matrix change are
         below ``tol``.
+
+        Each iteration fills the levels by aufbau, except a degenerate shell
+        straddling the Fermi level, which :func:`shell_occupations` fills
+        equally (the result's ``occupations``).  Closed-shell O2 is the case:
+        its pi* pair holds two of the four electrons it can take, and
+        filling one member let the SCF land, by the path, either on that
+        symmetry-broken determinant (-895.42 eV, PAW-LCAO SZ, LDA) or on a
+        self-consistent state 24 eV higher; the ensemble is -895.95 eV.
         """
         _eps, C = np.linalg.eigh(self.h)
-        D = self._density_matrix(C)
+        occupations = shell_occupations(_eps, self.n_occ)
+        D = self._density_matrix(C, occupations)
         energy = np.inf
         converged = False
-        mixer = DIIS() if diis else None
+        mixer = _IndependentDIIS() if diis else None
         shift = 0.0
         it = 0
         history, start = [], time.perf_counter()
         for it in range(1, max_iter + 1):
             F, current, _e_h, _e_xc = self._fock(D)
-            if mixer is not None and it % DIIS_RESTART == 0:
-                mixer = DIIS()
+            if mixer is not None and it % DIIS_RESTART == 0 \
+                    and _stalled(history):
+                mixer = _IndependentDIIS()
             if current > energy + LEVEL_SHIFT_TRIGGER and shift == 0.0:
                 shift = LEVEL_SHIFT
             elif shift and abs(current - energy) < LEVEL_SHIFT_TRIGGER:
@@ -409,7 +654,8 @@ class KohnSham:
             if shift:
                 F_iter = _level_shifted(F_iter, 0.5 * D, shift)
             _eps, C = np.linalg.eigh(F_iter)
-            D_new = self._density_matrix(C)
+            occupations = shell_occupations(_eps, self.n_occ)
+            D_new = self._density_matrix(C, occupations)
             change = float(np.max(np.abs(D_new - D)))
             history.append(scf_record(it, start, current, energy, change))
             if abs(current - energy) < tol and change < tol:
@@ -420,25 +666,39 @@ class KohnSham:
 
         F, energy, e_hartree, e_xc = self._fock(D)
         eps, C = np.linalg.eigh(F)                  # canonical KS orbitals
-        h_mo, eri_mo = transform_integrals(self.h, self.eri, C)
+        h_mo, eri_mo, g_occ = self._mo_integrals(C, self.n_occ)
+        # The last iteration's occupations: at convergence its levels are
+        # these to within ``tol``, and inside a shell they are equal anyway.
         return KohnShamResult(
             electronic_energy=energy, mo_energies=np.real(eps),
             mo_coefficients=C, n_occupied=self.n_occ, converged=converged,
-            h_mo=np.real_if_close(h_mo), eri_mo=np.real_if_close(eri_mo),
+            h_mo=np.real_if_close(h_mo),
+            eri_mo=(eri_mo if isinstance(eri_mo, MOTensor)
+                    else np.real_if_close(eri_mo)),
+            reference_energy=determinant_energy(h_mo, g_occ, self.n_occ,
+                                                self.n_occ),
             n_iterations=it, functional=self.functional,
             hartree_energy=e_hartree, xc_energy=e_xc, history=history,
-            exact_exchange_energy=self.exact_exchange_energy)
+            exact_exchange_energy=self.exact_exchange_energy,
+            occupations=(None if occupations is None
+                         else 2.0 * occupations))
 
 
 @dataclass
-class KohnShamUResult(UHFResult):
+class KohnShamUResult(_DeferredTensor, UHFResult):
     """A converged spin-unrestricted Kohn-Sham determinant.
 
     The fields of :class:`~mandacaru.algorithms.hartree_fock.UHFResult`
     (MO energies are the Kohn-Sham eigenvalues of each spin; the many-body
     integrals are in the natural orbitals of the total density, and
     ``reference_energy`` is the Hartree-Fock energy of their determinant) plus
-    the Kohn-Sham energy decomposition, all in Hartree.
+    the Kohn-Sham energy decomposition, all in Hartree.  On the Poisson route
+    ``eri_mo`` is transformed the first time it is read (:class:`MOTensor`).
+
+    ``occupations_alpha`` / ``occupations_beta`` are ``None`` for a channel
+    filled by aufbau, else the occupations (0 to 1) of its canonical orbitals
+    when a degenerate shell at its Fermi level is partly filled
+    (:func:`shell_occupations`) -- the OH radical's beta pi, for one.
     """
 
     functional: str = DEFAULT_XC
@@ -450,6 +710,9 @@ class KohnShamUResult(UHFResult):
     dispersion_energy: float = 0.0
     #: One record per iteration (:func:`~.periodic_dft.scf_record`).
     history: list = field(default_factory=list)
+    #: Fractional occupations of each channel's canonical orbitals, or None.
+    occupations_alpha: np.ndarray | None = None
+    occupations_beta: np.ndarray | None = None
 
     @property
     def determinant_energy(self) -> float:
@@ -482,7 +745,11 @@ class UnrestrictedKohnSham(KohnSham):
                              "orbitals")
 
     @staticmethod
-    def _spin_density(C, n: int) -> np.ndarray:
+    def _spin_density(C, n: int, occupations=None) -> np.ndarray:
+        """One channel's density matrix: its lowest ``n`` orbitals, or the
+        fractional ``occupations`` of a partly filled shell."""
+        if occupations is not None:
+            return (C * occupations) @ C.conj().T
         occupied = C[:, :n]
         return occupied @ occupied.conj().T
 
@@ -550,35 +817,26 @@ class UnrestrictedKohnSham(KohnSham):
         return (0.5 * (Fa + Fa.conj().T), 0.5 * (Fb + Fb.conj().T),
                 e_one + e_hartree + e_xc, e_hartree, e_xc)
 
-    def _determinant_energy(self, Ra, Rb) -> float:
-        """Hartree-Fock energy of the determinant with densities ``Ra``,
-        ``Rb`` -- what the exported many-body Hamiltonian assigns it."""
-        D = Ra + Rb
-        J = self._hartree(D)
-
-        def exchange(R):
-            return np.einsum("sr,prsq->pq", R, self.eri, optimize=True)
-        value = (np.sum(D * self.h.T) + 0.5 * np.sum(D * J.T)
-                 - 0.5 * np.sum(Ra * exchange(Ra).T)
-                 - 0.5 * np.sum(Rb * exchange(Rb).T))
-        return float(np.real(value))
-
     def run(self, max_iter: int = 200, tol: float = 1e-8,
             diis: bool = True) -> KohnShamUResult:
-        """Iterate to self-consistency from the core guess (both spins)."""
+        """Iterate to self-consistency from the core guess (both spins),
+        each channel filled as :meth:`KohnSham.run` fills its levels."""
         na, nb = self.n_alpha, self.n_beta
         _eps, C = np.linalg.eigh(self.h)
-        Da, Db = self._spin_density(C, na), self._spin_density(C, nb)
+        fa, fb = shell_occupations(_eps, na), shell_occupations(_eps, nb)
+        Da, Db = self._spin_density(C, na, fa), self._spin_density(C, nb, fb)
         energy = np.inf
         converged = False
-        mixers = (DIIS(), DIIS()) if diis else None
+        mixers = (_IndependentDIIS(), _IndependentDIIS()) if diis else None
         shift = 0.0
         it = 0
+
         history, start = [], time.perf_counter()
         for it in range(1, max_iter + 1):
             Fa, Fb, current, _e_h, _e_xc = self._fock_pair(Da, Db)
-            if mixers is not None and it % DIIS_RESTART == 0:
-                mixers = (DIIS(), DIIS())
+            if mixers is not None and it % DIIS_RESTART == 0 \
+                    and _stalled(history):
+                mixers = (_IndependentDIIS(), _IndependentDIIS())
             if current > energy + LEVEL_SHIFT_TRIGGER and shift == 0.0:
                 shift = LEVEL_SHIFT
             elif shift and abs(current - energy) < LEVEL_SHIFT_TRIGGER:
@@ -591,8 +849,9 @@ class UnrestrictedKohnSham(KohnSham):
                           _level_shifted(Fb, Db, shift))
             _ea, Ca = np.linalg.eigh(Fa)
             _eb, Cb = np.linalg.eigh(Fb)
-            Da_new, Db_new = self._spin_density(Ca, na), self._spin_density(
-                Cb, nb)
+            fa, fb = shell_occupations(_ea, na), shell_occupations(_eb, nb)
+            Da_new, Db_new = (self._spin_density(Ca, na, fa),
+                              self._spin_density(Cb, nb, fb))
             change = max(np.max(np.abs(Da_new - Da)),
                          np.max(np.abs(Db_new - Db)))
             history.append(scf_record(it, start, current, energy, change))
@@ -606,19 +865,24 @@ class UnrestrictedKohnSham(KohnSham):
         epsa, Ca = np.linalg.eigh(Fa)               # canonical KS orbitals
         epsb, Cb = np.linalg.eigh(Fb)
         occupations, C_no = natural_orbitals(Da + Db)
-        h_mo, eri_mo = transform_integrals(self.h, self.eri, C_no)
-        reference = self._determinant_energy(self._spin_density(C_no, na),
-                                             self._spin_density(C_no, nb))
+        # The exported reference fills the lowest natural orbitals: the
+        # Hartree-Fock energy of that determinant is what the many-body
+        # Hamiltonian assigns it.
+        h_mo, eri_mo, g_occ = self._mo_integrals(C_no, max(na, nb))
+        reference = determinant_energy(h_mo, g_occ, na, nb)
         return KohnShamUResult(
             electronic_energy=energy, n_alpha=na, n_beta=nb,
             mo_energies_alpha=np.real(epsa), mo_energies_beta=np.real(epsb),
             mo_coefficients_alpha=Ca, mo_coefficients_beta=Cb,
             natural_occupations=occupations, natural_orbitals=C_no,
-            h_mo=np.real_if_close(h_mo), eri_mo=np.real_if_close(eri_mo),
+            h_mo=np.real_if_close(h_mo),
+            eri_mo=(eri_mo if isinstance(eri_mo, MOTensor)
+                    else np.real_if_close(eri_mo)),
             converged=converged, n_iterations=it, reference_energy=reference,
             functional=self.functional, hartree_energy=e_hartree,
             xc_energy=e_xc, history=history,
-            exact_exchange_energy=self.exact_exchange_energy)
+            exact_exchange_energy=self.exact_exchange_energy,
+            occupations_alpha=fa, occupations_beta=fb)
 
 
 def _datasets_relativistic(datasets) -> bool:
@@ -632,14 +896,30 @@ def _datasets_relativistic(datasets) -> bool:
 
 
 def _warn_functional_mismatch(datasets, functional: str) -> None:
-    """Warn when the datasets were generated with another functional."""
+    """Warn when the datasets were generated with another functional, and
+    name the library folder of datasets generated with ``functional`` when
+    the PAW-LCAO library ships one (``directory="pbe-sr"`` for PBE)."""
     generated = sorted({str(getattr(d, "xc", "lda") or "lda").lower()
                         for d in datasets or ()})
     if generated and generated != [functional]:
+        from ..pseudopotentials.environment import LIBRARY_FOLDERS
+
+        families = {str(getattr(d, "family", "")).lower()
+                    for d in datasets or ()}
+        relativity = {str(getattr(d, "relativity", "scalar")).lower()
+                      for d in datasets or ()}
+        folder = (LIBRARY_FOLDERS.get(("paw-lcao", functional,
+                                       relativity.pop()))
+                  if families == {"paw-lcao"} and len(relativity) == 1
+                  else None)
+        hint = (f"; Mandacaru(directory={folder!r}) reads the PAW-LCAO "
+                f"datasets generated with {functional.upper()}"
+                if folder is not None else "")
         warnings.warn(
             f"xc={functional!r} on datasets generated with "
             f"{'/'.join(g.upper() for g in generated)}: the molecule and its "
-            "datasets use different functionals", RuntimeWarning, stacklevel=3)
+            f"datasets use different functionals{hint}", RuntimeWarning,
+            stacklevel=3)
 
 
 def _hybrid_setup(functional: str) -> dict:
@@ -652,9 +932,19 @@ def _hybrid_setup(functional: str) -> dict:
         f"omega = {omega:g} 1/Bohr (generalized Kohn-Sham)")}
 
 
+def resolve_hartree(hartree) -> str:
+    """Validate a ``hartree=`` option (:data:`HARTREE_METHODS`)."""
+    key = DEFAULT_HARTREE if hartree is None else str(hartree).strip().lower()
+    if key not in HARTREE_METHODS:
+        raise ValueError(f"unknown hartree={hartree!r}; available: "
+                         f"{', '.join(HARTREE_METHODS)}")
+    return key
+
+
 def kohn_sham_solver(integrals, n_electrons: int,
                      functional: str = DEFAULT_XC, spins=None,
-                     screening=None) -> KohnSham:
+                     screening=None, hartree: str = DEFAULT_HARTREE
+                     ) -> KohnSham:
     """The :class:`KohnSham` problem of ``integrals``, not yet solved --
     :class:`UnrestrictedKohnSham` when ``spins = (n_alpha, n_beta)`` differ.
 
@@ -664,8 +954,12 @@ def kohn_sham_solver(integrals, n_electrons: int,
     hybrid builds its short-range exchange tensor here
     (:meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.short_range_two_body`);
     ``screening = (omega, fraction)``
-    overrides the functional's own parameters.
+    overrides the functional's own parameters.  ``hartree`` picks how the
+    Hartree matrix is built (:data:`HARTREE_METHODS`): ``"poisson"`` never
+    forms the two-body tensor (:class:`PoissonHartree`), ``"tensor"``
+    contracts it.
     """
+    hartree = resolve_hartree(hartree)
     if not getattr(integrals, "orthogonalize", False):
         raise ValueError("Kohn-Sham needs the Loewdin-orthonormalized basis")
     if getattr(integrals, "periodic", False):
@@ -703,12 +997,13 @@ def kohn_sham_solver(integrals, n_electrons: int,
             X = integrals._lowdin_x()
             options.update(one_center=(X.conj().T @ integrals.projections(),
                                        spheres))
+    coulomb = (PoissonHartree(integrals) if hartree == "poisson"
+               else integrals.two_body())
     if spins is not None and int(spins[0]) != int(spins[1]):
-        return UnrestrictedKohnSham(integrals.one_body(),
-                                    integrals.two_body(), orbitals,
+        return UnrestrictedKohnSham(integrals.one_body(), coulomb, orbitals,
                                     integrals.grid, int(spins[0]),
                                     int(spins[1]), **options)
-    return KohnSham(integrals.one_body(), integrals.two_body(), orbitals,
+    return KohnSham(integrals.one_body(), coulomb, orbitals,
                     integrals.grid, n_electrons, **options)
 
 
@@ -718,13 +1013,14 @@ def _centers(integrals):
 
 
 def kohn_sham(integrals, n_electrons: int, functional: str = DEFAULT_XC,
-              spins=None, screening=None, **run_options):
+              spins=None, screening=None, hartree: str = DEFAULT_HARTREE,
+              **run_options):
     """Solve the Kohn-Sham problem on ``integrals``: restricted, or
     unrestricted when ``spins = (n_alpha, n_beta)`` differ (``screening``
-    as for :func:`kohn_sham_solver`)."""
+    and ``hartree`` as for :func:`kohn_sham_solver`)."""
     result = kohn_sham_solver(integrals, n_electrons, functional,
-                              spins=spins, screening=screening
-                              ).run(**run_options)
+                              spins=spins, screening=screening,
+                              hartree=hartree).run(**run_options)
     result.core_correction_energy = float(
         sum(xc_grid.core_correction_offset(d)
             for d in integrals.pseudopotentials or []))
@@ -751,7 +1047,9 @@ class KohnShamEnergy(AlgebraicEnergy):
     the constant :math:`c = E_{xc} - \operatorname{tr}(P_0 V_{xc})`: exact in
     value at the reference and in every first derivative, which is all a
     gradient needs.  Holding ``D`` fixed is exact because the Kohn-Sham
-    energy is stationary with respect to orbital rotations at convergence.
+    energy is stationary with respect to orbital rotations at convergence,
+    at the occupations the SCF converged with (an ensemble's fractional ones
+    included: ``D`` is rebuilt with them).
     """
 
     def __init__(self, D, V_xc, constant: float):
@@ -941,7 +1239,10 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
     n_electrons = 2 * scf.n_occupied
     solver = kohn_sham_solver(integrals, n_electrons, scf.functional)
     C = scf.mo_coefficients
-    D = solver._density_matrix(C)
+    # The state the SCF converged to: an ensemble's fractional occupations
+    # (each spin's half of the stored ones) or the aufbau determinant.
+    D = solver._density_matrix(
+        C, None if scf.occupations is None else 0.5 * scf.occupations)
     valence = rho = solver.density(D)
     if solver.core_density is not None:
         rho = rho + solver.core_density
@@ -1037,8 +1338,10 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
 
     solver = kohn_sham_solver(integrals, scf.n_alpha + scf.n_beta,
                               scf.functional, spins=(scf.n_alpha, scf.n_beta))
-    Da = solver._spin_density(scf.mo_coefficients_alpha, scf.n_alpha)
-    Db = solver._spin_density(scf.mo_coefficients_beta, scf.n_beta)
+    Da = solver._spin_density(scf.mo_coefficients_alpha, scf.n_alpha,
+                              scf.occupations_alpha)
+    Db = solver._spin_density(scf.mo_coefficients_beta, scf.n_beta,
+                              scf.occupations_beta)
     half_core = (0.0 if solver.core_density is None
                  else 0.5 * solver.core_density)
     tau = [None, None]
@@ -1108,32 +1411,47 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         exchange=exchange)
 
 
-def d4_dispersion_gradient(atoms, functional: str) -> np.ndarray:
-    """D4 dispersion gradient ``dE/dR`` (Hartree/Bohr), ``(n_atoms, 3)``."""
-    from dftd4.interface import DampingParam, DispersionModel
+def d4_dispersion(atoms, functional: str, grad: bool = False) -> dict:
+    """D4 of ``atoms`` for ``functional`` from ``dftd4``: ``energy``
+    (Hartree) and, with ``grad``, ``gradient`` ``dE/dR`` (Hartree/Bohr,
+    ``(n_atoms, 3)``) and ``virial`` (Hartree, ``(3, 3)``).
 
-    model = DispersionModel(np.asarray(atoms.get_atomic_numbers()),
-                            to_bohr(np.asarray(atoms.get_positions()),
-                                    "angstrom"))
-    result = model.get_dispersion(DampingParam(method=D4_METHODS[functional]),
-                                  grad=True)
-    return np.asarray(result["gradient"], dtype=float)
-
-
-def d4_dispersion_energy(atoms, functional: str) -> float:
-    """D4 dispersion energy (Hartree) of ``atoms`` for ``functional``."""
+    Periodic along the directions ``atoms.pbc`` marks: the lattice sum of a
+    crystal (its pair dispersion and the coordination numbers that set the
+    C6 coefficients both run over the images), whose virial over the cell
+    volume is the dispersion's contribution to the stress in ASE's sign."""
     try:
         from dftd4.interface import DampingParam, DispersionModel
     except ImportError as error:
         raise ImportError(
             "dispersion='d4' needs the dftd4 package: "
             "pip install 'mandacaru[dispersion]'") from error
+    periodic = np.asarray(atoms.pbc, dtype=bool)
+    lattice = (to_bohr(np.asarray(atoms.get_cell()), "angstrom")
+               if periodic.any() else None)
     model = DispersionModel(np.asarray(atoms.get_atomic_numbers()),
                             to_bohr(np.asarray(atoms.get_positions()),
-                                    "angstrom"))
+                                    "angstrom"),
+                            lattice=lattice,
+                            periodic=periodic if periodic.any() else None)
     result = model.get_dispersion(DampingParam(method=D4_METHODS[functional]),
-                                  grad=False)
-    return float(result["energy"])
+                                  grad=grad)
+    out = {"energy": float(result["energy"])}
+    if grad:
+        out["gradient"] = np.asarray(result["gradient"], dtype=float)
+        out["virial"] = np.asarray(result["virial"], dtype=float)
+    return out
+
+
+def d4_dispersion_gradient(atoms, functional: str) -> np.ndarray:
+    """D4 dispersion gradient ``dE/dR`` (Hartree/Bohr), ``(n_atoms, 3)``."""
+    return d4_dispersion(atoms, functional, grad=True)["gradient"]
+
+
+def d4_dispersion_energy(atoms, functional: str) -> float:
+    """D4 dispersion energy (Hartree) of ``atoms`` for ``functional``,
+    periodic along ``atoms.pbc``."""
+    return d4_dispersion(atoms, functional)["energy"]
 
 
 @dataclass(frozen=True)
@@ -1186,12 +1504,16 @@ class DFTDriver(_MeanFieldDriver):
     analytic_gradient = True
 
     def __init__(self, xc: str = DEFAULT_XC, dispersion: str | None = None,
-                 smearing=None, **driver_kwargs: object) -> None:
+                 smearing=None, hartree: str = DEFAULT_HARTREE,
+                 **driver_kwargs: object) -> None:
         from .periodic_dft import resolve_smearing
         self.xc = xc_grid.resolve_functional(xc)
         self.dispersion = self._check_dispersion(dispersion, self.xc)
         self.smearing = smearing
         resolve_smearing(smearing)               # validated now, used later
+        #: How a molecule's Hartree matrix is built (:data:`HARTREE_METHODS`);
+        #: a crystal's is always a periodic Poisson solve.
+        self.hartree = resolve_hartree(hartree)
         self._periodic = False
         driver_kwargs.pop("device", None)
         super().__init__(**driver_kwargs)
@@ -1208,6 +1530,20 @@ class DFTDriver(_MeanFieldDriver):
         self._periodic = self._is_periodic(atoms)
         if not self._periodic:
             return self._build_molecular_integrals(atoms)
+        if self.hartree != "poisson":
+            raise ValueError(
+                f"hartree={self.hartree!r} is molecular: a crystal's Hartree "
+                "potential is always the periodic Poisson solve; drop it for "
+                "a periodic geometry")
+        if self.kinetic == "fd":
+            # It used to be ignored: the crystal's kinetic energy is always
+            # spectral, and a crystal compared with a molecule run on the
+            # stencil differed by Hartrees (HISTORY, "K20").
+            raise ValueError(
+                "a crystal's kinetic energy is spectral, exact on its Bloch "
+                "sums; kinetic='fd' is the molecular finite-difference "
+                "stencil -- drop it for a periodic geometry (a molecule "
+                "compared with a crystal should use kinetic='spectral')")
         from ..pseudopotentials.periodic_paw import build_crystal
         from ._hamiltonian_from_atoms import pseudopotential_family, resolve_basis
 
@@ -1221,7 +1557,8 @@ class DFTDriver(_MeanFieldDriver):
         crystal, context = build_crystal(
             atoms, self.h, options,
             kpts={"size": tuple(self.kpts), "gamma": self.kpts_gamma},
-            family=family.name)
+            family=family.name, grid=self.grid, ghosts=self.ghosts,
+            full_mesh=self.electric_field is not None)
         context["integrals"] = crystal
         context["n_electrons"] = float(context["n_electrons"]) - float(
             self.charge)
@@ -1246,7 +1583,8 @@ class DFTDriver(_MeanFieldDriver):
             atoms, self.basis, self.grid, self.h, self.charge,
             self.n_electrons, spin=self.spin, kinetic=self.kinetic,
             commensurate=self._grid_commensurate(),
-            active_space=self.active_space, hamiltonian=False)
+            active_space=self.active_space, hamiltonian=False,
+            ghosts=self.ghosts, electric_field=self.electric_field)
         self._integration_profile = profile
         self._gradient_context = context
         self._basis_symbols = list(atoms.get_chemical_symbols())
@@ -1264,6 +1602,10 @@ class DFTDriver(_MeanFieldDriver):
         if key not in DISPERSION_CORRECTIONS:
             raise ValueError(f"unknown dispersion correction {dispersion!r}; "
                              f"available: {', '.join(DISPERSION_CORRECTIONS)}")
+        if xc_grid.has_nonlocal_correlation(functional):
+            raise ValueError(
+                f"xc={functional!r} already carries its dispersion (rVV10 "
+                f"nonlocal correlation); adding D4 would count it twice")
         if functional not in D4_METHODS:
             raise ValueError(
                 f"D4 has no parameters for xc={functional!r}; use one of "
@@ -1277,7 +1619,10 @@ class DFTDriver(_MeanFieldDriver):
                       "pbe": ("PBE1996", "PerdewWang1992"),
                       "r2scan": ("Furness2020", "PerdewWang1992"),
                       "hse06": ("Heyd2003", "Krukau2006", "PBE1996",
-                                "PerdewWang1992")}[self.xc]
+                                "PerdewWang1992"),
+                      "r2scan-rvv10": ("Furness2020", "PerdewWang1992",
+                                       "Vydrov2010", "Sabatini2013",
+                                       "RomanPerez2009", "Ning2022")}[self.xc]
         dispersion = ("Caldeweyher2019",) if self.dispersion else ()
         paw_exchange = ()
         if xc_grid.is_hybrid(self.xc):
@@ -1326,19 +1671,20 @@ class DFTDriver(_MeanFieldDriver):
         # n_alpha != n_beta (initial magnetic moments, odd electron counts)
         # selects the unrestricted solver.
         self._scf = kohn_sham(integrals, sum(full_particles), self.xc,
-                              spins=full_particles)
+                              spins=full_particles, hartree=self.hartree)
         # The exported Hamiltonian and every one-particle picture (density,
         # populations, cube files) are in the model orbitals: the Kohn-Sham
         # orbitals, or the natural orbitals of an unrestricted run.
         integrals.mo_coefficients = self._model_orbitals()
         if self.dispersion:
-            self._scf.dispersion_energy = d4_dispersion_energy(self.atoms,
-                                                               self.xc)
+            # Over the real atoms: a ghost has no electrons to disperse.
+            real = [i for i in range(len(self.atoms)) if i not in self.ghosts]
+            self._scf.dispersion_energy = d4_dispersion_energy(
+                self.atoms[real], self.xc)
         constant = complex(integrals.constant_energy
                            + integrals.nuclear_repulsion)
         M = integrals.n_orbitals
-        self.fermion_hamiltonian = LazyHamiltonian(self._scf.h_mo,
-                                                   self._scf.eri_mo, constant)
+        self.fermion_hamiltonian = LazyHamiltonian(self._scf, constant)
         self.hamiltonian = self.fermion_hamiltonian
         self.num_particles = full_particles
         self.n_spatial_orbitals = int(M)
@@ -1349,10 +1695,6 @@ class DFTDriver(_MeanFieldDriver):
         """Solve the crystal's Kohn-Sham problem."""
         from .periodic_dft import PeriodicKohnSham
 
-        if self.dispersion:
-            raise NotImplementedError(
-                "dispersion='d4' is molecular for now; the periodic D4 "
-                "lattice sum is not wired")
         crystal = context["integrals"]
         datasets = crystal.datasets
         _warn_functional_mismatch(datasets, self.xc)
@@ -1364,8 +1706,21 @@ class DFTDriver(_MeanFieldDriver):
             relativistic=(xc_grid.takes_relativistic_exchange(self.xc)
                           and _datasets_relativistic(datasets)),
             constant=constant,
-            magnetic_moments=self.atoms.get_initial_magnetic_moments())
+            magnetic_moments=np.delete(
+                self.atoms.get_initial_magnetic_moments(), list(self.ghosts)),
+            field=self.electric_field,
+            field_size=(tuple(self.kpts) if self.electric_field is not None
+                        else None))
         self._scf = solver.run()
+        # The D4 lattice sum: a constant of the electronic problem, added to
+        # the reported energies (`_result`) and its derivatives to the
+        # forces and the stress.
+        # Over the real atoms, in the same cell: a counterpoise fragment's
+        # lattice sum, a ghost having no electrons to disperse.
+        real = [i for i in range(len(self.atoms)) if i not in self.ghosts]
+        self._dispersion_energy = (
+            d4_dispersion_energy(self.atoms[real], self.xc)
+            if self.dispersion else 0.0)
         # Kept for the non-self-consistent spectra: it holds the converged
         # potential (`PeriodicKohnSham.bands`).
         self._periodic_solver = solver
@@ -1438,7 +1793,8 @@ class DFTDriver(_MeanFieldDriver):
         return [(int(a), int(f.l)) for a, f in zip(owners, basis)]
 
     def mean_field_rdm(self) -> np.ndarray:
-        """The Kohn-Sham determinant's one-RDM (molecules).
+        """The Kohn-Sham determinant's one-RDM (molecules), or the
+        ensemble's when a degenerate shell is partly filled.
 
         A crystal's density is k-resolved and augmented on the cell grid: its
         populations go through :meth:`crystal_partition` instead, and its
@@ -1450,7 +1806,24 @@ class DFTDriver(_MeanFieldDriver):
                 "Kohn-Sham run are not wired yet; population analysis is "
                 "(population=, get_charges), and calc.pdos() gives the "
                 "per-atom projections of the states")
-        return super().mean_field_rdm()
+        gamma = super().mean_field_rdm()
+        # A partly filled degenerate shell: the ensemble's density, not that
+        # of the determinant filling one member.
+        scf = self._scf
+        if self._unrestricted():
+            channels = [(scf.mo_coefficients_alpha, scf.occupations_alpha),
+                        (scf.mo_coefficients_beta, scf.occupations_beta)]
+        else:
+            half = (None if scf.occupations is None
+                    else 0.5 * scf.occupations)
+            channels = [(scf.mo_coefficients, half)] * 2
+        V = np.asarray(self.result.model_orbitals)
+        M = V.shape[1]
+        for block, (C, f) in zip((slice(0, M), slice(M, 2 * M)), channels):
+            if f is not None:
+                A = V.conj().T @ np.asarray(C)
+                gamma[block, block] = (A * f) @ A.conj().T
+        return gamma
 
     def crystal_partition(self, method: str = "hirshfeld", numbers=None):
         """Hirshfeld, Voronoi or Bader populations of the converged crystal.
@@ -1699,6 +2072,320 @@ class DFTDriver(_MeanFieldDriver):
                        for (atom, l) in grouped}
         return axis, dict(sorted(grouped.items()))
 
+    def fermi_surface(self, size) -> np.ndarray:
+        """Band energies (eV) on the full Gamma-centered ``size`` mesh.
+
+        ``size = (n1, n2, n3)``; the mesh is ``k = (i1/n1, i2/n2, i3/n3)``,
+        the grid a ``.bxsf`` file spans.  Only the irreducible points are
+        diagonalized (non-self-consistently, the potential frozen) and the
+        rest are filled in by symmetry -- a band energy is invariant under
+        the crystal's rotations and under time reversal.  Returns
+        ``(n_bands, n1, n2, n3)``, or ``(2, n_bands, n1, n2, n3)`` for a
+        spin-polarized crystal, on the eigenvalues' reference
+        (:meth:`get_fermi_level` is on the same one).
+        """
+        from ..core.symmetry import irreducible_kpoints
+        from ..units import HARTREE_TO_EV
+
+        crystal = self._require_crystal("a Fermi surface")
+        size = tuple(int(n) for n in size)
+        if len(size) != 3 or min(size) < 1:
+            raise ValueError("size must be three positive integers "
+                             f"(n1, n2, n3); got {size!r}")
+        index = np.indices(size).reshape(3, -1).T
+        mesh = index / np.asarray(size, dtype=float)
+        operations = (crystal.symmetry.keeping_mesh(mesh)
+                      if crystal.symmetry is not None else None)
+        if operations is not None:
+            zone = irreducible_kpoints(mesh, operations.info,
+                                       time_reversal=True)
+            points, mapping = zone.points, zone.mapping
+        else:
+            # Time reversal alone: -k is the mesh point (-i mod n).
+            flat = np.ravel_multi_index(index.T, size)
+            partner = np.ravel_multi_index((-index % size).T, size)
+            keep = np.flatnonzero(flat <= partner)
+            slot = np.empty(len(mesh), dtype=int)
+            slot[keep] = np.arange(len(keep))
+            slot[partner[keep]] = slot[keep]
+            points, mapping = mesh[keep], slot
+        eigenvalues, _ = self._periodic_solver.bands(
+            crystal.cartesian_kpoints(points))
+        eigenvalues = np.asarray(eigenvalues) * HARTREE_TO_EV
+        full = eigenvalues[..., mapping, :]             # (..., nk, M)
+        return np.moveaxis(full, -1, -2).reshape(
+            full.shape[:-2] + (full.shape[-1],) + size)
+
+    def get_polarization(self, kpts=None) -> np.ndarray:
+        """The Berry-phase polarization of an insulating crystal (C/m^2).
+
+        Strings of k-points are cut from the ``kpts`` mesh size (default:
+        the SCF's) and diagonalized at the converged potential
+        (:func:`~mandacaru.algorithms.berry_phase.berry_polarization`).
+        Returns the vector on the branch nearest zero; the whole
+        :class:`~mandacaru.algorithms.berry_phase.Polarization` -- quanta,
+        Berry phases, ionic and electronic parts -- is left on
+        :attr:`polarization_result`.  A polarization is defined modulo its
+        quanta: compare *changes* along a path (``raw``).
+        """
+        from .berry_phase import berry_polarization
+
+        self._require_crystal("a Berry-phase polarization")
+        if kpts is None:
+            size = tuple(self.kpts)
+        elif isinstance(kpts, dict):
+            size = tuple(kpts.get("size", ()))
+        else:
+            size = tuple(kpts)
+        self._cite("KingSmith1993", "Resta1994")
+        solver = self._periodic_solver
+        if solver.field is not None:
+            self._cite("Souza2002", "Umari2002")
+            # In a field the states are the SCF's own (a rediagonalization
+            # at the frozen potential would drop the field term): the
+            # polarization comes from their strings, on the SCF's mesh.
+            from .berry_phase import occupied_bands, polarization_from_phases
+            if kpts is not None and size != tuple(solver.field_size):
+                raise ValueError("in a finite field the polarization is that "
+                                 "of the SCF's own mesh; leave kpts unset")
+            occupied_bands(self._scf)
+            self.polarization_result = polarization_from_phases(
+                solver.crystal, solver.field_state[1], 2.0,
+                solver.field_size)
+        else:
+            self.polarization_result = berry_polarization(solver, self._scf,
+                                                          size)
+        return self.polarization_result.vector
+
+    def _mesh_size(self, kpts) -> tuple:
+        """The full mesh a ``kpts`` option names (default the SCF's)."""
+        if kpts is None:
+            return tuple(self.kpts)
+        if isinstance(kpts, dict):
+            return tuple(kpts.get("size", ()))
+        return tuple(kpts)
+
+    def projectabilities(self, guess, *, kpts=None, bands=None):
+        """Each Bloch state's projectability onto target atomic orbitals
+        (:class:`~mandacaru.algorithms.band_selection.Projectabilities`).
+
+        ``guess`` names the targets as for :meth:`wannier` -- orbitals on
+        atoms, ``{"Cu": "d"}`` or ``[("Si", "sp3")]`` -- and they are the
+        atoms' own first-zeta basis orbitals, so the projectability is
+        exact (PAW overlap included), lies in [0, 1] and sums over every
+        band to the number of targets.  ``kpts`` is a full mesh (default the
+        SCF's size) or fractional k-points as rows; ``bands`` default every
+        band.  ``wannier(..., windows="auto")`` freezes the widest energy
+        window whose states all have ``p >= 0.95`` and leaves out the
+        states below 0.02.
+        """
+        from .band_selection import (Projectabilities,
+                                     mesh_projectabilities,
+                                     point_projectabilities)
+        from .wannier import resolve_guess
+
+        crystal = self._require_crystal("projectabilities")
+        solver = self._periodic_solver
+        trials = resolve_guess(guess, self.atoms, crystal)
+        bands = tuple(range(crystal.M)) if bands is None else tuple(
+            int(b) for b in bands)
+        explicit = kpts is not None and np.ndim(kpts) == 2
+        size = None if explicit else self._mesh_size(kpts)
+        energies, values = [], []
+        for spin in range(int(solver.n_spins)):
+            if explicit:
+                fractional = np.asarray(kpts, dtype=float)
+                e, p = point_projectabilities(
+                    solver, crystal.cartesian_kpoints(fractional), bands,
+                    trials, spin)
+            else:
+                fractional, e, p = mesh_projectabilities(solver, size, bands,
+                                                         trials, spin)
+            energies.append(e)
+            values.append(p)
+        self._cite("Loewdin1950", "Sayfutyarova2017", "Qiao2023")
+        squeeze = (lambda x: x[0]) if solver.n_spins == 1 else np.stack
+        return Projectabilities(
+            kpoints=fractional, energies=squeeze(energies),
+            values=squeeze(values), bands=bands,
+            labels=tuple(t.label for t in trials),
+            fermi_level=self.get_fermi_level(), size=size)
+
+    def natural_orbitals(self, method: str = "rpa", *, kpts=None,
+                         bands=None, cutoff=None, threshold=None):
+        """The Bloch natural orbitals of the crystal's correlated density
+        matrix (:class:`~mandacaru.algorithms.rpa_density.
+        CrystalNaturalOrbitals`), ranked by how far their occupations are
+        from 2 or 0.
+
+        ``method="rpa"``: the direct-RPA (ring coupled-cluster doubles)
+        amplitudes on the full ``kpts`` mesh (default the SCF's size),
+        from every band of the basis (or ``bands``), the Coulomb
+        integrals on q + G within ``cutoff`` (Bohr^-1); ``threshold`` is
+        the deviation from 2 or 0 that selects an orbital.  The result's
+        ``n_functions`` and projectabilities drive ``wannier(...,
+        windows=result)``.  Spin-restricted crystals.
+        """
+        from .rpa_density import DEFAULT_DEVIATION_THRESHOLD, crystal_rpa
+
+        if method != "rpa":
+            raise ValueError(f"unknown natural-orbital method {method!r}; "
+                             "use 'rpa'")
+        self._require_crystal("natural orbitals")
+        size = self._mesh_size(kpts)
+        self._cite("Scuseria2008", "Furche2008")
+        self.natural_orbitals_result = crystal_rpa(
+            self._periodic_solver, size, float(self._scf.fermi_level),
+            bands=bands, cutoff=cutoff,
+            threshold=(DEFAULT_DEVIATION_THRESHOLD if threshold is None
+                       else float(threshold)))
+        return self.natural_orbitals_result
+
+    def wannier(self, n_functions=None, *, guess="bonds", windows=None,
+                bands=None, kpts=None, trial_radial="gaussian", **options):
+        """Maximally localized Wannier functions of a crystal's bands
+        (:func:`~mandacaru.algorithms.wannier.wannier_functions`).
+
+        Without ``windows`` the ``bands`` (indices; default the occupied
+        bands of an insulator) are an isolated group, one function per
+        band.  With ``windows`` -- ``{"outer": (lo, hi), "frozen": (lo,
+        hi)}`` in eV, on the scale of :meth:`get_fermi_level` --
+        ``n_functions`` are disentangled from the ``bands`` (default every
+        band) inside the outer window, the frozen window's states kept
+        exactly.  ``windows`` can instead choose the states by what they
+        are (:mod:`~mandacaru.algorithms.band_selection`): ``"auto"`` by
+        their projectability onto the guess' atomic orbitals (the frozen
+        window the widest energy window whose states all reach 0.95, states
+        below 0.02 left out; ``{"projectability": (outer, frozen)}`` sets
+        the two), ``"scdm"`` by the erfc-weighted projections of the
+        selected-columns scheme with no windows (``{"scdm": (mu, sigma)}``
+        in eV), ``"rpa"`` by the projectability onto the most correlated
+        RPA natural orbitals (:meth:`natural_orbitals`, or its result in
+        place of the string), which also sets ``n_functions``.  ``guess`` gives the starting trial orbitals, one per
+        function: ``"bonds"`` (s Gaussians on the nearest-neighbor bond
+        midpoints, a covalent crystal's valence), ``"sp3"`` (hybrids on
+        every atom toward its four neighbors), orbitals on atoms, or
+        centers (Angstrom) for s Gaussians.  Orbitals on atoms
+        (:func:`~mandacaru.algorithms.wannier.orbital_trials`) are a dict
+        ``{site: orbitals}`` or a list of ``(site, orbitals)`` or ``(site,
+        orbitals, frame)``: ``site`` a chemical symbol (every atom of it),
+        an atom index or, in a list, a position (Angstrom); ``orbitals`` a
+        name or a list of names -- a shell ``"s"``, ``"p"``, ``"d"``,
+        ``"f"`` (every m, from -l to l), one real harmonic (``"px"``,
+        ``"py"``, ``"pz"``, ``"dxy"``, ``"dyz"``, ``"dz2"``, ``"dxz"``,
+        ``"dx2-y2"``), ``"t2g"`` or ``"eg"``, or hybrids ``"sp"``,
+        ``"sp2"``, ``"sp3"``; ``frame`` the local x, y, z axes as rows
+        (default Cartesian), in which the harmonics, the t2g/eg split and
+        the hybrids' directions are defined.  For example ``{"V":
+        "t2g"}``, ``[("Cu", ["s", "p", "d"])]``, ``[("V", "t2g", frame)]``.
+        An explicit guess (orbitals or centers) sets ``n_functions`` by
+        default.  ``trial_radial`` is ``"gaussian"`` or ``"basis"``, the
+        radial functions of the atoms' own basis orbitals.  ``kpts`` is the full mesh (default: the SCF's
+        size), diagonalized at the converged potential.  A spin-polarized
+        crystal returns a
+        :class:`~mandacaru.algorithms.wannier.SpinWannierResult`: each
+        channel's functions from its own Bloch states, the trial orbitals
+        shared, and ``bands``, ``n_functions`` and ``windows`` each either
+        shared or a pair ``(up, down)``.
+        """
+        from .band_selection import resolve_selection, selection_citations
+        from .berry_phase import occupied_bands
+        from .wannier import per_spin, resolve_guess, wannier_functions
+
+        self._require_crystal("Wannier functions")
+        n_spins = int(self._periodic_solver.n_spins)
+        if bands is None:
+            if windows is None:
+                try:
+                    counts = occupied_bands(self._scf)
+                except NotImplementedError as error:
+                    raise ValueError(
+                        "the occupied bands are not a separated group (a "
+                        "metal): give the bands of the group (bands=[...]) "
+                        "or energy windows to disentangle the functions "
+                        "from") from error
+                if min(counts) == 0:
+                    raise ValueError(
+                        f"a spin channel has no occupied bands ({counts}): "
+                        "give the bands of the group explicitly")
+                bands = ([list(range(c)) for c in counts] if n_spins == 2
+                         else list(range(counts[0])))
+            else:
+                bands = list(range(self._periodic_solver.crystal.M))
+        trials = resolve_guess(guess, self.atoms,
+                               self._periodic_solver.crystal, trial_radial)
+        explicit = not isinstance(guess, str)
+        size = self._mesh_size(kpts)
+        selection = resolve_selection(windows)
+        if selection is not None:
+            if selection.kind == "natural" and selection.natural is None:
+                selection.natural = self.natural_orbitals(method="rpa",
+                                                          kpts=size)
+            if selection.kind == "natural" and n_functions is None:
+                n_functions = selection.natural.n_functions
+            windows = selection
+        counts = []
+        for group, count, window in zip(per_spin(bands, n_spins, "bands"),
+                                        per_spin(n_functions, n_spins, "int"),
+                                        per_spin(windows, n_spins,
+                                                 "windows")):
+            group = list(group)
+            if count is None:
+                count = (len(trials) if explicit or window is not None
+                         else len(group))
+            if len(trials) != count:
+                raise ValueError(
+                    f"the guess gives {len(trials)} trial orbitals for "
+                    f"{count} functions: give one per function")
+            if window is None and count != len(group):
+                raise ValueError(
+                    f"{count} functions from {len(group)} bands: without "
+                    "windows the bands are an isolated group, one function "
+                    f"per band; give {count} bands (bands=[...]) or energy "
+                    "windows to disentangle them: windows={'outer': (lo, "
+                    "hi), 'frozen': (lo, hi)} (eV)")
+            counts.append(int(count))
+        self._cite("Marzari1997", "Marzari2012")
+        if windows is not None:
+            self._cite(*selection_citations(selection))
+        n_functions = counts[0] if n_spins == 1 else tuple(counts)
+        self.wannier_result = wannier_functions(
+            self._periodic_solver, size, bands, trials,
+            n_functions=n_functions, windows=windows,
+            fermi_level=float(self._scf.fermi_level), cite=self._cite,
+            **options)
+        return self.wannier_result
+
+    def write_fermi_surface(self, path, size, *, spin=None,
+                            bands=None) -> str:
+        """Write :meth:`fermi_surface` as an XCrySDen ``.bxsf`` file.
+
+        ``bands`` selects band indices (default: every band); a
+        spin-polarized crystal needs ``spin`` (0 or 1), one channel per
+        file.  The Fermi energy in the header is :meth:`get_fermi_level`.
+        Returns the path written (:func:`~mandacaru.utils.bxsf.write_bxsf`).
+        """
+        from ..units import ANGSTROM_TO_BOHR
+        from ..utils.bxsf import write_bxsf
+
+        energies = self.fermi_surface(size)
+        if self.get_number_of_spins() == 2:
+            if spin not in (0, 1):
+                raise ValueError("a spin-polarized crystal has one Fermi "
+                                 "surface per channel: pass spin=0 or 1")
+            energies = energies[spin]
+        elif spin not in (None, 0):
+            raise ValueError("spin selects a channel of a spin-polarized "
+                             "crystal; this one is not")
+        if bands is not None:
+            energies = energies[np.asarray(bands, dtype=int)]
+        crystal = self._gradient_context["integrals"]
+        # Rows b_i in Bohr^-1 -> Angstrom^-1 (with the 2 pi).
+        reciprocal = crystal.cartesian_kpoints(np.eye(3)) * ANGSTROM_TO_BOHR
+        return write_bxsf(path, energies, reciprocal, self.get_fermi_level(),
+                          comment=f"{self.atoms.get_chemical_formula()} "
+                                  f"{self.xc} band energies (eV)")
+
     # -- crystal forces and stress ------------------------------------------ #
 
     def _kpts_spec(self) -> dict:
@@ -1709,17 +2396,27 @@ class DFTDriver(_MeanFieldDriver):
         the converged crystal: :math:`dF/d\mathbf R`, F the free energy."""
         from .crystal_forces import DEFAULT_DELTA, crystal_gradient
 
+        from .forces import HA_BOHR_TO_EV_ANGSTROM
+
         result = crystal_gradient(
             self._periodic_solver,
             delta=DEFAULT_DELTA if orbital_delta is None else float(
                 orbital_delta),
             include_pulay=include_pulay)
+        if self.dispersion:
+            dispersion = (d4_dispersion_gradient(self.atoms, self.xc)
+                          * HA_BOHR_TO_EV_ANGSTROM)
+            result.hellmann_feynman = result.hellmann_feynman + dispersion
+            result.gradient = result.gradient + dispersion
+            result.forces = -result.gradient
+            result.details["dispersion_gradient"] = dispersion
         # The calculator checks the energy the gradient belongs to against
         # the reported one; a crystal's gradient is of F at the reported
         # state, so both are carried.
         result.details["energy_hartree"] = float(
-            self._scf.extrapolated_energy)
-        result.details["free_energy_hartree"] = float(self._scf.free_energy)
+            self._scf.extrapolated_energy + self._dispersion_energy)
+        result.details["free_energy_hartree"] = float(
+            self._scf.free_energy + self._dispersion_energy)
         return result
 
     def crystal_stress(self, strain=None) -> np.ndarray:
@@ -1732,10 +2429,17 @@ class DFTDriver(_MeanFieldDriver):
         name, spec = resolve_basis(self.basis)
         family = pseudopotential_family(name)
         options = {k: v for k, v in dict(spec or {}).items() if k != "name"}
-        return crystal_stress(
+        stress = crystal_stress(
             self._periodic_solver, self.atoms, options, family.name,
             self._kpts_spec(),
             strain=DEFAULT_STRAIN if strain is None else float(strain))
+        if self.dispersion:
+            # dftd4's virial over the volume is the stress in ASE's sign.
+            volume = abs(np.linalg.det(to_bohr(np.asarray(self.atoms.get_cell()),
+                                               "angstrom")))
+            stress = stress + d4_dispersion(self.atoms, self.xc,
+                                            grad=True)["virial"] / volume
+        return stress
 
     def _model_orbitals(self) -> np.ndarray:
         """The orbitals the many-body problem is exported in."""
@@ -1753,10 +2457,12 @@ class DFTDriver(_MeanFieldDriver):
         """
         if self._periodic:
             scf = self._scf
+            dispersion = self._dispersion_energy
             result = PeriodicDFTResult(
                 method=self._kind,
-                optimal_energy=self._to_energy_units(scf.extrapolated_energy),
-                free_energy=self._to_energy_units(scf.free_energy),
+                optimal_energy=self._to_energy_units(
+                    scf.extrapolated_energy + dispersion),
+                free_energy=self._to_energy_units(scf.free_energy + dispersion),
                 fermi_level=self._to_energy_units(scf.fermi_level),
                 scf=scf, energy_unit=self._energy_unit_label())
             self._finalize_timings(timings, run_t0)
@@ -1782,6 +2488,14 @@ class DFTDriver(_MeanFieldDriver):
 
     def _log_title(self) -> str:
         return f"DFT ({self.xc.upper()})"
+
+    def _electron_fields(self) -> dict:
+        """The molecular ``[ELECTRONS]`` block, with a crystal's kinetic
+        operator: always spectral (the line said "finite difference")."""
+        fields = super()._electron_fields()
+        if self._periodic:
+            fields["kinetic operator"] = "spectral"
+        return fields
 
     def _scf_setup_fields(self) -> dict:
         """``[SCF SETUP]``: the functional and what the SCF stops on."""
@@ -1826,6 +2540,9 @@ class DFTDriver(_MeanFieldDriver):
             "xc_functional": self.xc.upper(),
             **hybrid,
             "dispersion": (self.dispersion or "none").upper(),
+            "hartree": ("Poisson solve of the density per iteration (no "
+                        "two-body tensor)" if self.hartree == "poisson"
+                        else "contracted from the two-body tensor"),
             "max_iterations": defaults["max_iter"].default,
             "convergence_Hartree": (f"{defaults['tol'].default:g} (energy "
                                     f"change and largest density change)"),
@@ -1851,6 +2568,9 @@ class DFTDriver(_MeanFieldDriver):
             if getattr(scf, "n_spins", 1) == 2:
                 fields["magnetic_moment_bohr_magneton"] = \
                     f"{scf.magnetic_moment:.6f}"
+            if self.dispersion:
+                fields[f"dispersion_energy_{unit}"] = \
+                    f"{self._to_energy_units(self._dispersion_energy):.10f}"
             return fields
         fields = super()._scf_summary_fields(result)
         unit = result.energy_unit

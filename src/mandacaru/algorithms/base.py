@@ -142,6 +142,21 @@ MAPPING_LABELS = {"jordan_wigner": "Jordan-Wigner", "parity": "parity",
                   "bravyi_kitaev": "Bravyi-Kitaev"}
 
 
+
+def _checked_field(field):
+    """A uniform electric field as a float tuple, or ``None``."""
+    if field is None:
+        return None
+    try:
+        values = np.asarray(field, dtype=float)
+    except (TypeError, ValueError):
+        values = None
+    if values is None or values.shape != (3,) or not np.all(
+            np.isfinite(values)):
+        raise ValueError("electric_field must be three finite numbers "
+                         f"(Hartree per e Bohr); got {field!r}")
+    return tuple(float(x) for x in values)
+
 class VariationalDriver(Calculator):
     """Base ASE calculator for the variational state-vector eigensolvers.
 
@@ -235,7 +250,9 @@ class VariationalDriver(Calculator):
         (``"spectral"``), which never underestimates a compact function's
         kinetic energy.  ``None`` (default) means ``"fd"``, the operator the
         force code differentiates; use ``"spectral"`` for single-point
-        energies on coarse grids.
+        energies on coarse grids.  A crystal (``method="dft"`` on a periodic
+        geometry) is always spectral and refuses ``"fd"``, so a molecule
+        compared with it in a box needs ``"spectral"``.
     atomic_units : bool
         Output-unit convention (default ``False``): every energy the driver
         *returns or prints* -- the result object, the energy levels, the verbose
@@ -297,7 +314,8 @@ class VariationalDriver(Calculator):
                  execute_circuits: bool | None = None,
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
-                 kinetic: str | None = None,
+                 kinetic: str | None = None, ghosts=None,
+                 electric_field=None,
                  atomic_units: bool = False,
                  checkpoint: str | None = None, checkpoint_every: int = 1,
                  resume: str | None = None, references="auto",
@@ -391,6 +409,13 @@ class VariationalDriver(Calculator):
         # denser mesh is stored on ``kpoints`` but rejected at run time.
         self.kpts, self.kpts_gamma, self.kpoints = monkhorst_pack_kpts(kpts)
         self.charge = int(charge)
+        # Atoms that keep their basis functions but carry no nucleus,
+        # pseudopotential or electrons (the counterpoise correction);
+        # checked against the geometry when the Hamiltonian is built.
+        self.ghosts = (tuple(sorted({int(i) for i in ghosts}))
+                       if ghosts is not None else ())
+        # A uniform field on a molecule (Hartree per e Bohr), or None.
+        self.electric_field = _checked_field(electric_field)
         self.n_electrons = n_electrons
         self.hamiltonian_builder = hamiltonian_builder
         self.run_options = dict(run_options or {})
@@ -401,6 +426,15 @@ class VariationalDriver(Calculator):
         # qubit Hamiltonian (Pauli strings) once it has been built.
         self.load_hamiltonian = (None if load_hamiltonian is None
                                  else str(load_hamiltonian))
+        if self.electric_field is not None and (
+                self.load_hamiltonian is not None
+                or hamiltonian_builder is not None):
+            # Neither source goes through the integrals the field is put on,
+            # and a cached file does not record one.
+            raise ValueError(
+                "electric_field acts on the integrals built from the "
+                "geometry; a loaded or user-built Hamiltonian would ignore "
+                "it")
         self.save_hamiltonian = save_hamiltonian
         # The format applies to *saving*; loading detects it from the file.
         self.hamiltonian_format = resolve_format(hamiltonian_format)
@@ -1660,7 +1694,7 @@ class VariationalDriver(Calculator):
             atoms, basis=self.basis, charge=self.charge,
             n_electrons=self.n_electrons, spin=self.spin,
             active_space=self.active_space, taper=self.taper,
-            **common)
+            ghosts=self.ghosts, **common)
 
     def _dry_run_estimate(self, atoms=None):
         """Perform the dry run: store, optionally print, and return the estimate."""
@@ -1673,6 +1707,19 @@ class VariationalDriver(Calculator):
         return estimate
 
     # -- geometry -> Hamiltonian (calculator mode) ------------------------ #
+
+    def _system_extras(self) -> dict | None:
+        """The ``[SYSTEM]`` lines beyond the geometry: ghosts and a field."""
+        extra = {}
+        if self.ghosts:
+            extra["ghosts"] = ("atoms " + " ".join(str(i) for i in self.ghosts)
+                               + " (basis functions only: no nucleus, no "
+                               "electrons)")
+        if self.electric_field is not None:
+            extra["electric_field"] = (
+                " ".join(f"{x:+.6g}" for x in self.electric_field)
+                + " Hartree/(e Bohr)")
+        return extra or None
 
     def _build_hamiltonian(self, atoms):
         """Build ``(hamiltonian, num_particles, n_spatial_orbitals)`` from ``atoms``.
@@ -1695,7 +1742,8 @@ class VariationalDriver(Calculator):
             spin=self.spin, kinetic=self.kinetic,
             periodic=self.periodic_hamiltonian,
             commensurate=self._grid_commensurate(),
-            active_space=self._active_space_request())
+            active_space=self._active_space_request(), ghosts=self.ghosts,
+            electric_field=self.electric_field)
         self._integration_profile = profile
         # Kept for the nuclear gradient: the integral engine that produced this
         # Hamiltonian, and which atom each basis function belongs to.
@@ -1883,7 +1931,8 @@ class VariationalDriver(Calculator):
             symbols=symbols, positions=positions, cell=cell,
             pbc=resolved.pbc, magmoms=resolved.magmoms,
             units=self._length_unit_label(),
-            title=self._log_title())
+            title=self._log_title(),
+            extra=self._system_extras())
         return logger
 
     def _open_run_log(self, atoms) -> None:

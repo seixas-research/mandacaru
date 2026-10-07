@@ -4,10 +4,15 @@
 <img src="https://raw.githubusercontent.com/seixas-research/mandacaru/refs/heads/main/logo/logo_dark.png#gh-dark-mode-only" alt="Mandacaru logo" height="200">
 </h1>
 
+<div align="center">
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](LICENSE)
-[![Python 3.14](https://img.shields.io/badge/Python-3.14+-fcbc2c.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Python 3.14](https://img.shields.io/badge/Python-3.14+-fcbc2c.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![PyPI version](https://img.shields.io/pypi/v/mandacaru.svg?style=for-the-badge&logo=pypi&logoColor=white)](https://pypi.org/project/mandacaru/)
-[![Documentation Status](https://readthedocs.org/projects/mandacaru/badge/?version=latest&style=for-the-badge&logo=readthedocs&logoColor=white)](https://mandacaru.readthedocs.io/en/latest/?badge=latest)
+[![Documentation Status](https://img.shields.io/readthedocs/mandacaru?style=for-the-badge&logo=readthedocs&logoColor=white&label=Docs)](https://mandacaru.readthedocs.io/en/latest/)
+[![GitHub](https://img.shields.io/badge/GitHub-mandacaru-181717?style=for-the-badge&logo=github)](https://github.com/seixas-research/mandacaru)
+
+</div>
 
 # Mandacaru
 

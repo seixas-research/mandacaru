@@ -133,6 +133,22 @@ POLAR_POINTS = 32
 #: periodic angle).
 AZIMUTHAL_POINTS = 64
 
+#: The crystal's short-range spheres (:meth:`~.periodic_paw.PeriodicPAW.
+#: short_range_atom`): a sweep of the *self-consistent* results (HISTORY,
+#: "Phase L: sphere quadrature sweep") showed the rule above 8x larger than
+#: they need -- 32x16x32 moves displaced Si, displaced rocksalt LiH and water
+#: by <= 6e-4 meV per atom, the forces by <= 2e-3 meV/Angstrom and the
+#: eigenvalues by <= 3e-3 meV, below the 3e-7 Ha the larger rule carries
+#: against the reference -- while a crystal's build and forces, which those
+#: spheres dominate, run 2.2x faster (262k -> 33k points per atom).
+#: Molecules keep the rule above: they never paid for it, and a change at
+#: the 1e-7 Ha level re-rolls which of two degenerate orbitals (LiH's pi
+#: pair) a solver returns, which the orbital tracking of
+#: ``transfer=True`` does not follow (orbital_tracking, "Not done").
+CRYSTAL_RADIAL_POINTS = 32
+CRYSTAL_POLAR_POINTS = 16
+CRYSTAL_AZIMUTHAL_POINTS = 32
+
 #: Radial shells evaluated at once.  The basis is sampled on
 #: ``block x n_angular`` points at a time, which bounds the working set at a
 #: few MB however large the sphere or the basis is.

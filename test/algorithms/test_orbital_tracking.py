@@ -20,8 +20,11 @@ import mandacaru.core.hamiltonian as hamiltonian_module
 from mandacaru import Mandacaru
 from mandacaru.algorithms.orbital_tracking import (OrbitalMatch,
                                                    OrbitalSnapshot,
+                                                   degenerate_clusters,
+                                                   degenerate_gauge,
                                                    match_orbitals,
                                                    occupation_blocks,
+                                                   orbital_overlap,
                                                    transfer_ansatz)
 from mandacaru.units import HARTREE_TO_EV
 
@@ -184,3 +187,99 @@ class TestTransferFollowsTheOrbitals:
             atoms.calc = calc
             atoms.get_potential_energy()
         assert "another system or pool" in calc.result.start
+
+
+def _synthetic_gauge(n, seed=3):
+    """A gauge operator given by fixed matrices over the incoming basis."""
+    rng = np.random.default_rng(seed)
+    Q = rng.normal(size=(n, n))
+    Q = Q + Q.T
+    w = rng.normal(size=n)
+    return lambda columns: (columns.T @ Q @ columns, columns.T @ w)
+
+
+class TestDegenerateGauge:
+    """Inside a degenerate set the eigensolver's rotation is round-off; the
+    gauge replaces it by the eigenvectors of one fixed operator."""
+
+    def test_clusters_are_runs_of_equal_values(self):
+        values = [2.0, 1.9, 0.5, 0.01, 0.003, 0.003 * (1 + 1e-9), 0.003,
+                  0.002, 1e-17, 2e-17]
+        assert degenerate_clusters(values, range(10)) == [[4, 5, 6]]
+        assert degenerate_clusters(values, range(5)) == []
+        # Round-off around zero is no ranking and joins nothing.
+        assert degenerate_clusters(values, [8, 9]) == []
+
+    def test_any_rotation_inside_a_set_gives_the_same_orbitals(self):
+        n, cluster = 6, [3, 4]
+        values = np.array([2.0, 0.02, 0.01, 0.004, 0.004, 0.001])
+        gauge = _synthetic_gauge(n)
+        out = []
+        for angle in (0.0, 0.7, 2.3):
+            c, s = np.cos(angle), np.sin(angle)
+            R = np.eye(n)
+            R[np.ix_(cluster, cluster)] = [[c, -s], [s, c]]
+            out.append(degenerate_gauge(R, values, [[0], range(1, n)],
+                                        gauge))
+        for R in out[1:]:
+            np.testing.assert_allclose(R, out[0], atol=1e-12)
+        # The rest is untouched, and the result is still a rotation.
+        np.testing.assert_array_equal(out[0][:, :3], np.eye(n)[:, :3])
+        np.testing.assert_allclose(out[0].T @ out[0], np.eye(n), atol=1e-12)
+
+    def test_nothing_to_fix_returns_the_rotation_itself(self):
+        values = np.array([2.0, 0.02, 0.01])
+        assert degenerate_gauge(None, values, [range(3)],
+                                _synthetic_gauge(3)) is None
+
+
+def _lih(distance):
+    atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, distance]])
+    atoms.center(vacuum=3.5)
+    return atoms
+
+
+@pytest.fixture
+def other_short_range_rule(monkeypatch):
+    """A slightly different molecular short-range quadrature (48x24x48 for
+    64x32x64): integrals that differ in their last bits (~1e-7 Ha)."""
+    from mandacaru.pseudopotentials import local_split
+
+    for name, value in (("RADIAL_POINTS", 48), ("POLAR_POINTS", 24),
+                        ("AZIMUTHAL_POINTS", 48)):
+        monkeypatch.setattr(local_split, name, value)
+    defaults = dict(local_split.short_range_matrices.__kwdefaults__)
+    defaults.update(radial=48, polar=24, azimuthal=48)
+    monkeypatch.setattr(local_split.short_range_matrices, "__kwdefaults__",
+                        defaults)
+
+
+class TestDegenerateSetsAreFollowed:
+    def test_the_pi_pair_of_lih_is_matched_one_to_one(
+            self, other_short_range_rule):
+        """LiH's pi pair of MP2 natural orbitals came out rotated by 40
+        degrees between 1.595 and 1.580 A with this rule (matched overlaps
+        0.76, the transfer refused) and by 5 degrees with the default one.
+        In the gauge both are matched one to one, the pair unrotated and
+        unflipped.  The gauge fixes signs inside degenerate sets only: a
+        lone orbital's sign is the eigensolver's (LiH's sigma flips between
+        these two geometries), and the match carries it to the transfer."""
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
+            build_basis_hamiltonian
+
+        snapshots = []
+        for distance in (1.595, 1.580):
+            _h, _n, n_active, _p, context = build_basis_hamiltonian(
+                _lih(distance), {"name": "PAW-LCAO", "size": "DZP"}, None,
+                0.3, 0, None,
+                active_space={"orbitals": 4, "method": "mp2",
+                              "symmetry": True})
+            integrals = context["integrals"]
+            assert integrals.active_space.irreps[2:4] == ("1pi", "1pi")
+            snapshots.append(OrbitalSnapshot.from_integrals(integrals,
+                                                            n_active))
+        overlap = orbital_overlap(*snapshots, integrals.grid)
+        match = match_orbitals(overlap, occupation_blocks(4, (1, 1)))
+        assert list(match.permutation) == [0, 1, 2, 3]
+        assert list(match.signs[2:4]) == [1, 1]
+        assert match.confidence > 0.99

@@ -440,7 +440,8 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                     load_hamiltonian=None,
                     hamiltonian=None, num_particles=None,
                     n_spatial_orbitals=None, method: str = "adapt-vqe",
-                    device: str = "AER_simulator") -> QubitEstimate:
+                    device: str = "AER_simulator",
+                    ghosts=()) -> QubitEstimate:
     """Estimate the qubit count of a calculation without running it.
 
     Three problem sources are understood, in this order of precedence:
@@ -550,10 +551,17 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
     from ._hamiltonian_from_atoms import (_num_particles, resolve_basis,
                                           resolve_frozen,
                                           resolve_num_unpaired,
-                                          resolve_pseudo_basis)
+                                          resolve_pseudo_basis,
+                                          validate_ghosts)
 
     symbols = list(atoms.get_chemical_symbols())
     numbers = atoms.get_atomic_numbers()
+    # Ghost atoms (counterpoise) add basis functions but no electrons.
+    ghost_set = validate_ghosts(ghosts, len(symbols))
+    real = [i for i in range(len(symbols)) if i not in ghost_set]
+    if ghost_set:
+        notes.append(f"{len(ghost_set)} ghost atom(s): basis functions only, "
+                     "no nucleus and no electrons (counterpoise)")
     name, options = resolve_basis(basis)
     family, options = resolve_pseudo_basis(name, options, symbols)
 
@@ -567,7 +575,8 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
 
         per_atom, label, potentials = _pseudo_basis_count(atoms, family, options)
         n_basis = int(sum(n for _s, n in per_atom))
-        n_el = int(round(valence_electrons(symbols, potentials))) - int(charge)
+        n_el = int(round(valence_electrons([symbols[i] for i in real],
+                                           potentials))) - int(charge)
         frozen: list[int] = []
         notes.append(f"pseudopotentials ({family.label} family): the core is "
                      "absent from the valence problem (counts are valence "
@@ -576,7 +585,7 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
         per_atom, label = count_basis_functions(atoms, basis)
         n_basis = int(sum(n for _s, n in per_atom))
         n_el = (int(n_electrons) if n_electrons is not None
-                else int(sum(int(z) for z in numbers)) - int(charge))
+                else int(sum(int(numbers[i]) for i in real)) - int(charge))
         if per_atom and per_atom[0][0] == "PW":
             if spec is not None and spec.frozen is not None:
                 raise NotImplementedError(
@@ -588,9 +597,9 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
             per_atom = []          # not atom-centered
         else:
             frozen = resolve_frozen(spec.frozen if spec is not None else None,
-                                    numbers, n_el, n_basis)
+                                    numbers[real], n_el, n_basis)
 
-    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
+    n_unpaired = resolve_num_unpaired(atoms[real], spin, n_el)
     n_deleted = 0
     if taper:
         notes.append(

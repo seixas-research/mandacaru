@@ -83,7 +83,8 @@ class TestEnergies:
         assert (xc_grid.evaluate(grid, rho, "pbe").energy
                 < xc_grid.evaluate(grid, rho, "lda").energy)
 
-    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan"])
+    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan",
+                                            "r2scan-rvv10"])
     def test_the_potential_is_the_functional_derivative(self, functional):
         r"""``dE/de = int v delta`` along a smooth perturbation of the density."""
         grid = _grid()
@@ -171,7 +172,9 @@ class TestOptions:
     @pytest.mark.parametrize("spelling, canonical",
                              [("LDA", "lda"), ("pz81", "lda"), ("PBE", "pbe"),
                               ("gga-pbe", "pbe"), ("r2SCAN", "r2scan"),
-                              ("r²SCAN", "r2scan")])
+                              ("r²SCAN", "r2scan"),
+                              ("r2SCAN+rVV10", "r2scan-rvv10"),
+                              ("r2scan_rvv10", "r2scan-rvv10")])
     def test_spellings_resolve(self, spelling, canonical):
         assert xc_grid.resolve_functional(spelling) == canonical
 
@@ -183,7 +186,8 @@ class TestOptions:
 class TestSpinPolarized:
     """`evaluate_spin`: the potentials of each channel on the grid."""
 
-    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan"])
+    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan",
+                                            "r2scan-rvv10"])
     def test_equal_channels_give_the_unpolarized_terms(self, functional):
         grid = _grid()
         rho, r2 = _gaussian(grid)
@@ -199,7 +203,8 @@ class TestSpinPolarized:
             assert np.allclose(potential[live], plain.potential[live],
                                rtol=1e-9, atol=1e-12)
 
-    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan"])
+    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan",
+                                            "r2scan-rvv10"])
     @pytest.mark.parametrize("channel", ["up", "dn"])
     def test_each_potential_is_its_functional_derivative(self, functional,
                                                          channel):
@@ -318,3 +323,135 @@ class TestHybrid:
         assert xc_grid.resolve_functional("hse") == "hse06"
         assert xc_grid.is_hybrid("hse06") and not xc_grid.is_hybrid("pbe")
         assert not xc_grid.takes_relativistic_exchange("hse06")
+
+
+class TestCrystalSymmetry:
+    """On a crystal's grid the spectral derivatives commute with every
+    operation that maps the grid onto itself -- hexagonal ones included,
+    which do not map the FFT box onto itself -- so a gradient-dependent
+    functional is exactly as symmetric as LDA (HISTORY 2026-10-07, K13)."""
+
+    #: Wurtzite AlN (Angstrom) on an even grid, so the c-glide is kept too.
+    NODES = (12, 12, 20)
+
+    @pytest.fixture(scope="class")
+    def wurtzite(self):
+        from ase.build import bulk
+
+        from mandacaru.integrals import reciprocal as rc
+        from mandacaru.pseudopotentials.periodic_paw import grid_symmetry
+
+        atoms = bulk("AlN", "wurtzite", a=3.11, c=4.98, u=0.382)
+        cell = atoms.cell.array
+        grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
+                    h=np.linalg.norm(cell, axis=1) / np.asarray(self.NODES),
+                    units="angstrom", cell=cell, periodic=True)
+        symmetry = grid_symmetry(atoms, grid)
+        assert symmetry.n_operations == 12
+        x = np.stack([grid.X.ravel(), grid.Y.ravel(), grid.Z.ravel()], axis=1)
+        rho = np.zeros(len(x))
+        bohr = 1.0 / 0.529177210903
+        lattice = rc.lattice_vectors(grid)
+        for position, alpha in zip(atoms.positions * bohr, (0.6, 0.6, 0.9, 0.9)):
+            for R in rc.lattice_translations(lattice, 9.0):
+                d = x - position - R
+                rho += np.exp(-alpha * np.sum(d * d, axis=1))
+        rho = 0.05 * rho / rho.max() + 1e-4
+        # A density without the crystal's symmetry: its images differ.
+        lumpy = rho * (1.0 + 0.3 * np.cos(0.7 * x[:, 0] + 0.2 * x[:, 2]))
+        grad = xc_grid.gradient(grid, lumpy)
+        tau = np.sum(grad * grad, axis=0) / (8.0 * lumpy) + 0.3 * lumpy
+        return grid, symmetry, lumpy, tau
+
+    @pytest.mark.parametrize("functional", ["pbe", "r2scan", "hse06",
+                                            "r2scan-rvv10"])
+    def test_an_image_has_the_same_energy_and_the_image_potential(
+            self, wurtzite, functional):
+        grid, symmetry, rho, tau = wurtzite
+        screening = xc_grid.HYBRIDS.get(functional)
+
+        def terms(perm):
+            return xc_grid.evaluate(grid, rho[perm], functional, tau=tau[perm],
+                                    screening=screening)
+
+        identity = np.arange(rho.size)
+        plain = terms(identity)
+        scale = np.max(np.abs(plain.potential))
+        for perm in symmetry.permutations:
+            image = terms(perm)
+            assert image.energy == pytest.approx(plain.energy, rel=1e-13)
+            assert np.max(np.abs(image.potential - plain.potential[perm])) \
+                < 1e-10 * scale
+
+    def test_the_spin_channels_are_as_symmetric(self, wurtzite):
+        grid, symmetry, rho, tau = wurtzite
+        dn = 0.4 * rho[symmetry.permutations[3]]
+
+        def energy(perm):
+            return xc_grid.evaluate_spin(grid, rho[perm], dn[perm], "pbe"
+                                         ).energy
+
+        plain = energy(np.arange(rho.size))
+        for perm in symmetry.permutations:
+            assert energy(perm) == pytest.approx(plain, rel=1e-13)
+
+    @pytest.mark.parametrize("functional", ["pbe", "r2scan"])
+    def test_the_potential_is_the_functional_derivative(self, wurtzite,
+                                                        functional):
+        """The gradient and the divergence of the potential share the
+        averaged wave-vectors, so ``v`` stays the exact derivative of the
+        grid energy on a skewed, even grid."""
+        grid, _symmetry, rho, tau = wurtzite
+        delta = 0.2 * rho * np.cos(0.5 * grid.Y.reshape(-1))
+        # r2SCAN's difference quotient carries 4e-7 of eps^2 at eps = 1e-4.
+        eps = 1e-5
+
+        def energy(density):
+            return xc_grid.evaluate(grid, density, functional, tau=tau).energy
+
+        potential = xc_grid.evaluate(grid, rho, functional, tau=tau).potential
+        directional = np.sum(potential * delta) * grid.dV
+        assert (energy(rho + eps * delta) - energy(rho - eps * delta)) \
+            / (2.0 * eps) == pytest.approx(directional, rel=5e-8)
+
+    def test_the_energy_is_smooth_in_a_shear(self, wurtzite):
+        """A shear that keeps the lattice's operations moves the averaged
+        wave-vectors linearly, so E_xc of fixed nodal values is as smooth
+        in the strain as with the box: central differences at 1e-4 and
+        1e-3 agree.  The shortest alias (Wigner-Seitz cell), as symmetric,
+        switched aliases where the shear lifts a tie: the two slopes had
+        opposite signs here."""
+        from mandacaru.integrals import reciprocal as rc
+
+        grid, _symmetry, rho, _tau = wurtzite
+        cell = rc.lattice_vectors(grid).T * 0.529177210903
+        shear = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0],
+                          [0.0, 0.0, 0.0]])
+
+        def energy(eps):
+            moved = cell @ (np.eye(3) + 0.5 * eps * shear).T
+            strained = Grid(center=0.5 * moved.sum(axis=0), box_size=0.0,
+                            h=np.linalg.norm(moved, axis=1)
+                            / np.asarray(self.NODES),
+                            units="angstrom", cell=moved, periodic=True)
+            assert tuple(strained.shape) == self.NODES
+            return xc_grid.evaluate(strained, rho, "pbe").energy
+
+        slopes = [(energy(t) - energy(-t)) / (2.0 * t) for t in (1e-4, 1e-3)]
+        assert abs(slopes[0]) > 1e-4
+        assert slopes[1] == pytest.approx(slopes[0], rel=1e-5)
+
+    def test_a_real_field_on_a_box_is_differentiated_as_before(self):
+        """On an orthorhombic grid the averaged wave-vectors are the box's but
+        for an even axis' Nyquist plane, whose derivative along that axis a
+        real field never kept: a molecule's gradients are unchanged."""
+        from mandacaru.integrals import reciprocal as rc
+
+        grid = _grid(h=12.0 / 31.0)                         # 32 nodes
+        assert all(n % 2 == 0 for n in grid.shape)
+        rng = np.random.default_rng(3)
+        field = rng.standard_normal(grid.size)
+        transform = np.fft.fftn(field.reshape(grid.shape))
+        box = np.stack([np.real(np.fft.ifftn(1j * k * transform)).ravel()
+                        for k in rc.wavevectors(grid)])
+        assert np.max(np.abs(xc_grid.gradient(grid, field) - box)) < 1e-12

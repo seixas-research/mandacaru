@@ -264,8 +264,8 @@ def _radial_spline(function):
 _SHAPE_TABLES: dict = {}
 
 #: Quadrature points per call when a sphere's Bloch sums are streamed: the
-#: values at every point and k-point at once ran to gigabytes (262k points,
-#: 50 k-points of a band path).
+#: values at every point and k-point at once ran to gigabytes (a sphere's
+#: tens of thousands of points times the 50 k-points of a band path).
 SPHERE_CHUNK = 16384
 
 
@@ -280,6 +280,32 @@ def _sphere_chunks(points, *arrays):
     for start in range(0, x.size, SPHERE_CHUNK):
         part = slice(start, start + SPHERE_CHUNK)
         yield ((x[part], y[part], z[part]), *[a[part] for a in arrays])
+
+
+def reaching(functions, lattice, region_center, region_radius) -> np.ndarray:
+    """Indices of the ``functions`` with a lattice image whose support
+    reaches the ball of ``region_radius`` about ``region_center``.
+
+    The others are exactly zero on every point of the ball, so a sphere
+    quadrature needs only these rows: in a large cell a short-range or a
+    projector sphere is reached by the functions of a few neighbors, not
+    by all ``M``.
+    """
+    region_center = np.asarray(region_center, dtype=float)
+    keep = np.zeros(len(functions), dtype=bool)
+    verdicts: dict = {}
+    for mu, function in enumerate(functions):
+        center = np.asarray(function.center, dtype=float)
+        support = _support(function)
+        key = (tuple(np.round(center, 12)), round(float(support), 12))
+        if key not in verdicts:
+            reach = support + float(region_radius)
+            offset = float(np.linalg.norm(center - region_center))
+            verdicts[key] = any(
+                np.linalg.norm(center + R - region_center) <= reach
+                for R in rc.lattice_translations(lattice, reach + offset))
+        keep[mu] = verdicts[key]
+    return np.flatnonzero(keep)
 
 
 def bloch_values(functions, lattice, kpoints, points, region_center,
@@ -662,7 +688,9 @@ class PeriodicPAW:
         (:func:`~.paw.paw_coupling_blocks`, :func:`~.paw.paw_overlap_blocks`,
         :func:`~.paw.paw_multipole_blocks`).
     filter_cutoff : float, optional
-        Fourier-filter cutoff (Bohr^-1) of the partial core density.
+        The basis' Fourier-filter cutoff (Bohr^-1), recorded so a strained
+        cell rebuilds the same basis.  The partial core is *not* filtered
+        with it (:meth:`core_density`).
     """
 
     def __init__(self, basis, atom_of_orbital, projectors, datasets, centers,
@@ -820,14 +848,22 @@ class PeriodicPAW:
             spheres.setdefault(key, []).append(p)
         for members in spheres.values():
             first = self.projectors[members[0]]
+            rows = reaching(self.basis, self.lattice, first.center,
+                            float(first.r_cut))
+            if rows.size == 0:
+                continue
+            near = [self.basis[mu] for mu in rows]
             points, weights = _projector_sphere(first)
             values = np.stack([self.projectors[p].evaluate(*points).ravel()
                                * weights.ravel() for p in members])
+            block = np.zeros((len(kpoints), rows.size, len(members)),
+                             dtype=complex)
             for part, *columns in _sphere_chunks(points, *values):
-                chi = bloch_values(self.basis, self.lattice, kpoints, part,
+                chi = bloch_values(near, self.lattice, kpoints, part,
                                    first.center, float(first.r_cut))
-                C[:, :, members] += np.einsum("kmx,px->kmp", chi.conj(),
-                                              np.stack(columns))
+                block += np.einsum("kmx,px->kmp", chi.conj(),
+                                   np.stack(columns))
+            C[:, rows[:, None], np.asarray(members)[None, :]] += block
         return C
 
     def _short_range_local(self, kpoints) -> np.ndarray:
@@ -839,24 +875,32 @@ class PeriodicPAW:
         """``(nk, M, M)``: atom ``atom``'s short-range local potential between
         the Bloch sums, its sphere centered at ``center`` (default: the atom).
         The force differentiates it by moving the sphere alone."""
-        from .local_split import (AZIMUTHAL_POINTS, POLAR_POINTS,
-                                  RADIAL_POINTS, local_cutoff,
+        from .local_split import (CRYSTAL_AZIMUTHAL_POINTS,
+                                  CRYSTAL_POLAR_POINTS,
+                                  CRYSTAL_RADIAL_POINTS, local_cutoff,
                                   short_range_potential, short_range_radius)
         dataset = self.datasets[atom]
         center = self.centers[atom] if center is None else np.asarray(center,
                                                                       float)
         radius = short_range_radius(dataset, self.sigma)
         points, weights, r, _dirs = _sphere_rule(
-            center, radius, RADIAL_POINTS, POLAR_POINTS, AZIMUTHAL_POINTS,
-            panel=local_cutoff(dataset))
+            center, radius, CRYSTAL_RADIAL_POINTS, CRYSTAL_POLAR_POINTS,
+            CRYSTAL_AZIMUTHAL_POINTS, panel=local_cutoff(dataset))
         potential = np.repeat(short_range_potential(dataset, self.sigma, r),
                               weights.size // r.size)
         out = np.zeros((len(kpoints), self.M, self.M), dtype=complex)
+        # Only the functions that reach the sphere: the rest are zero on it.
+        rows = reaching(self.basis, self.lattice, center, radius)
+        if rows.size == 0:
+            return out
+        near = [self.basis[mu] for mu in rows]
+        block = np.zeros((len(kpoints), rows.size, rows.size), dtype=complex)
         for part, weighted in _sphere_chunks(points, weights * potential):
-            chi = bloch_values(self.basis, self.lattice, kpoints, part,
-                               center, radius)
+            chi = bloch_values(near, self.lattice, kpoints, part, center,
+                               radius)
             for i in range(len(kpoints)):
-                out[i] += (chi[i].conj() * weighted) @ chi[i].T
+                block[i] += (chi[i].conj() * weighted) @ chi[i].T
+        out[:, rows[:, None], rows[None, :]] = block
         return out
 
     # -- charges ------------------------------------------------------------ #
@@ -1196,8 +1240,16 @@ class PeriodicPAW:
         return out
 
     def core_density(self) -> np.ndarray | None:
-        r"""The datasets' smooth cores on the grid, with their images,
-        Fourier-filtered at :attr:`filter_cutoff`."""
+        r"""The datasets' smooth cores on the grid, with their images.
+
+        Sampled from the radial table as it is, as the molecular path does
+        (:func:`~mandacaru.integrals.exchange_correlation.
+        core_density_on_grid`) and as the dataset was unscreened with.  It
+        used to be Fourier-filtered at the basis cutoff, which put the crystal
+        in another functional than the molecule and the dataset: Ne in a box
+        sat 2.9 mHa below the same atom solved as a molecule with a 300 eV
+        basis filter, at every grid spacing and box size (HISTORY, "K20").
+        """
         from ..integrals.exchange_correlation import xc_core_density
         return self._place_cores(xc_core_density)
 
@@ -1205,10 +1257,9 @@ class PeriodicPAW:
         r"""The cores' kinetic-energy densities on the grid, with images.
 
         Each atom's :math:`\tilde\rho_c'^2/8\tilde\rho_c` evaluated radially
-        on the *unfiltered* core (:func:`~mandacaru.integrals.
-        exchange_correlation.core_tau_function`), then filtered like the core
-        density.  The ratio taken after filtering would divide by the
-        filter's ringing tail.
+        (:func:`~mandacaru.integrals.exchange_correlation.core_tau_function`)
+        and placed like the core density.  The ratio taken on the grid would
+        divide by the core's vanishing tail.
         """
         from ..integrals.exchange_correlation import core_tau_function
 
@@ -1220,7 +1271,7 @@ class PeriodicPAW:
 
     def _place_cores(self, table) -> np.ndarray | None:
         """Sum of ``table(dataset)`` (a radial array or ``None``) over atoms
-        and images, Fourier-filtered at :attr:`filter_cutoff`."""
+        and images."""
         total = None
         for atom in range(len(self.datasets)):
             values = self.place_core(atom, table)
@@ -1231,7 +1282,6 @@ class PeriodicPAW:
     def place_core(self, atom, table, center=None) -> np.ndarray | None:
         """Atom ``atom``'s share of :meth:`_place_cores`, centered at
         ``center`` (default: the atom) -- what a force moves."""
-        from ..basis.filtering import filter_radial
         from scipy.interpolate import CubicSpline
 
         g = self.grid
@@ -1243,9 +1293,7 @@ class PeriodicPAW:
         if values_r is None:
             return None
         r = np.asarray(dataset.r, dtype=float)
-        if self.filter_cutoff is not None:
-            values_r, _info = filter_radial(r, values_r, 0,
-                                            self.filter_cutoff, warn=False)
+        values_r = np.asarray(values_r, dtype=float)
         peak = float(np.max(np.abs(values_r)))
         significant = np.nonzero(np.abs(values_r) > 1e-14 * peak)[0]
         support = float(r[significant[-1]]) if significant.size else 0.0
@@ -1352,8 +1400,8 @@ def reduce_mesh(mesh, operations=None):
 
 @single_threaded_blas
 def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
-                  family: str = "paw-lcao", grid=None,
-                  symmetry: bool = True):
+                  family: str = "paw-lcao", grid=None, ghosts=(),
+                  symmetry: bool = True, full_mesh: bool = False):
     r"""``(crystal, context)`` for a periodic ``atoms`` with a PAW-LCAO basis.
 
     The basis, projectors and dataset blocks are the molecular builder's
@@ -1365,6 +1413,14 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
     :meth:`GridSymmetry.keeping_mesh`), or by time reversal alone with
     ``symmetry=False`` or when no such operation survives.  No two-body tensor is built: the Kohn-Sham problem needs only
     the density's potential.
+
+    ``ghosts`` are atom indices that keep their basis functions but carry no
+    dataset, projectors, core or electrons (the counterpoise correction of a
+    layered or molecular crystal); with any, the k-mesh is reduced by time
+    reversal alone -- the space group of the real atoms is not the cell's.
+    ``full_mesh`` keeps every k-point, unreduced and without symmetry: a
+    finite electric field couples neighboring k-points along strings of the
+    whole mesh and breaks the symmetry the reduction relies on.
     """
     from ..algorithms._hamiltonian_from_atoms import monkhorst_pack_kpts
     from ..basis.filtering import filter_cutoff
@@ -1390,35 +1446,60 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
     positions = np.asarray(atoms.get_positions(), dtype=float)
     cell = np.asarray(atoms.get_cell(), dtype=float)
     potentials = {s: load(s, options.get("directory")) for s in set(symbols)}
-    g = grid if grid is not None else Grid(
-        center=0.5 * cell.sum(axis=0), box_size=0.0, h=h, units="angstrom",
-        cell=cell, periodic=True)
+    if grid is None:
+        g = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, h=h,
+                 units="angstrom", cell=cell, periodic=True)
+    else:
+        g = grid
+        # A grid of another cell would be used without complaint and give
+        # another crystal's answer: it must be periodic and span this cell.
+        from ..units import ANGSTROM_TO_BOHR
+        spanned = (np.asarray(g.step) @ np.diag(g.shape)).T
+        if not (getattr(g, "periodic", False) and np.allclose(
+                spanned, cell * ANGSTROM_TO_BOHR, atol=1e-6)):
+            raise ValueError(
+                "an explicit grid for a crystal must be periodic and span "
+                "its cell (Grid(..., cell=atoms.cell, periodic=True))")
     k_c = filter_cutoff(options.get("filter"), max(g.dx, g.dy, g.dz))
     confinement: dict = {}
     polarization: dict = {}
+    # Ghosts lend their basis functions; everything physical is the real
+    # atoms'.
+    from ..algorithms._hamiltonian_from_atoms import validate_ghosts
+    ghosts = validate_ghosts(ghosts, len(symbols))
+    real = [i for i in range(len(symbols)) if i not in ghosts]
+    real_symbols = [symbols[i] for i in real]
     basis, atom_of_orbital = pseudo_basis(
         symbols, positions, potentials, filter_cutoff=k_c,
         **pseudo_basis_arguments(family, options, confinement=confinement,
                                  polarization=polarization))
     projectors = paw_projectors(
-        symbols, positions, potentials,
+        real_symbols, positions[real], potentials,
         projector_basis=options.get("projector_basis",
                                     DEFAULT_PROJECTOR_BASIS))
-    datasets = [potentials[s] for s in symbols]
+    datasets = [potentials[s] for s in real_symbols]
     size, gamma, mesh = monkhorst_pack_kpts(kpts)
-    operations = grid_symmetry(atoms, g) if symmetry else None
-    reduced, weights, operations = reduce_mesh(mesh, operations)
+    if full_mesh:
+        reduced = np.asarray(mesh, dtype=float)
+        weights = np.full(len(reduced), 1.0 / len(reduced))
+        operations = None
+    else:
+        operations = grid_symmetry(atoms, g) if symmetry and not ghosts \
+            else None
+        reduced, weights, operations = reduce_mesh(mesh, operations)
     B = rc.reciprocal_vectors(rc.lattice_vectors(g))
     kpoints = reduced @ B.T
     crystal = PeriodicPAW(
         basis, atom_of_orbital, projectors, datasets,
-        [to_bohr(p, "angstrom") for p in positions], g, kpoints, weights,
-        paw_coupling_blocks(projectors, symbols, potentials),
-        paw_overlap_blocks(projectors, symbols, potentials),
+        [to_bohr(p, "angstrom") for p in positions[real]], g, kpoints, weights,
+        paw_coupling_blocks(projectors, real_symbols, potentials),
+        paw_overlap_blocks(projectors, real_symbols, potentials),
         paw_multipole_blocks(projectors, datasets), filter_cutoff=k_c,
         symmetry=operations)
     context = {"crystal": crystal, "atom_of_orbital": atom_of_orbital,
-               "n_electrons": float(valence_electrons(symbols, potentials)),
+               "n_electrons": float(valence_electrons(real_symbols,
+                                                      potentials)),
+               "ghosts": tuple(sorted(ghosts)),
                "pseudopotentials": potentials, "family": family,
                "filter_cutoff": k_c, "options": dict(options),
                "confinement": confinement, "polarization": polarization,

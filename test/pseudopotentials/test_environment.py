@@ -53,25 +53,36 @@ def test_the_functional_picks_the_subdirectory(monkeypatch, checkout):
     assert library_directory("paw-lcao") == os.path.join(str(checkout),
                                                          "lda-sr")
     with pytest.raises(LibraryPathError,
-                       match=r"has no pbe/ folder \(it has: lda-sr\)"):
+                       match=r"has no pbe-sr/ folder \(it has: lda-sr\)"):
         library_directory("paw-lcao", "pbe")
-    # For writing, a missing functional folder is simply where to create it.
+    # For writing, a missing set folder is simply where to create it.
     assert library_directory("paw-lcao", "PBE", must_exist=False) == \
+        os.path.join(str(checkout), "pbe-sr")
+    # A set without a folder of its own (a PBE Dirac set is not shipped)
+    # sits in the folder named for the functional.
+    assert library_directory("paw-lcao", "pbe", must_exist=False,
+                             relativity="dirac") == \
         os.path.join(str(checkout), "pbe")
     with pytest.raises(ValueError, match="xc must be one of"):
         library_directory("paw-lcao", "b3lyp")
 
 
-def test_paw_ships_a_scalar_and_a_dirac_lda_set(monkeypatch, paw_checkout):
+def test_paw_ships_scalar_and_dirac_lda_and_scalar_pbe(monkeypatch,
+                                                      paw_checkout):
     """PAW-LCAO's folders are named for the set, not the functional: the
-    scalar-relativistic ``lda-sr/`` is the default and ``lda-dirac/`` carries
-    the spin-orbit term.  There is no ``lda/`` alias."""
+    scalar-relativistic ``lda-sr/`` is the default, ``lda-dirac/`` carries
+    the spin-orbit term and ``pbe-sr/`` is the scalar-relativistic PBE set.
+    There is no ``lda/`` or ``pbe/`` alias."""
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
     assert library_directory("paw-lcao") == str(paw_checkout / "lda-sr")
     assert library_directory("paw-lcao", relativity="dirac") == \
         str(paw_checkout / "lda-dirac")
+    (paw_checkout / "pbe-sr").mkdir()
+    assert library_directory("paw-lcao", "pbe") == str(paw_checkout / "pbe-sr")
     (paw_checkout / "lda").mkdir()
+    (paw_checkout / "pbe").mkdir()
     assert library_directory("paw-lcao") == str(paw_checkout / "lda-sr")
+    assert library_directory("paw-lcao", "pbe") == str(paw_checkout / "pbe-sr")
 
 
 def test_the_variable_is_read_when_it_is_needed(monkeypatch, checkout,

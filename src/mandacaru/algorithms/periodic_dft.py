@@ -425,7 +425,7 @@ class PeriodicKohnSham:
     def __init__(self, crystal, n_electrons: float, functional: str = "lda",
                  smearing=None, relativistic: bool = False,
                  constant: float = 0.0, magnetic_moments=None,
-                 screening=None):
+                 screening=None, field=None, field_size=None):
         self.crystal = crystal
         moments = (None if magnetic_moments is None
                    else np.asarray(magnetic_moments, dtype=float))
@@ -460,6 +460,24 @@ class PeriodicKohnSham:
         # density matrices: what the forces hold fixed and `bands` takes the
         # exchange over (the mixed inputs equal them to HYBRID_TOL).
         self._hybrid_output = None
+        #: A finite electric field (Hartree per e Bohr) coupled through the
+        #: Berry phase of the occupied states, on the full ``field_size``
+        #: mesh (:func:`~mandacaru.algorithms.berry_phase.field_terms`), or
+        #: ``None``.  ``field_state`` keeps the converged occupied states and
+        #: the electrons' Berry phases, from which the polarization at the
+        #: field is read (a non-self-consistent rediagonalization would drop
+        #: the field term).
+        self.field = None if field is None else np.asarray(field, dtype=float)
+        self.field_size = None if field_size is None else tuple(
+            int(n) for n in field_size)
+        self.field_state = None
+        if self.field is not None:
+            if self.n_spins == 2 or xc_grid.is_hybrid(self.functional):
+                raise NotImplementedError(
+                    "a finite electric field is implemented for a "
+                    "spin-restricted, semilocal crystal")
+            if self.field_size is None:
+                raise ValueError("a finite field needs the mesh size")
         self.method, self.width = resolve_smearing(smearing)
         self.relativistic = bool(relativistic)
         self.constant = float(constant)
@@ -689,12 +707,15 @@ class PeriodicKohnSham:
         # density (none on the first diagonalization); `hybrid` holds the
         # output states' terms.
         hybrid, operators_in, change = None, None, 0.0
+        field_in, n_occ = None, int(round(self.n_electrons / 2.0))
         for it in range(1, max_iter + 1):
             V, v_tau, w, _terms = self._potentials(rho, q, tau)
             H = device.hamiltonians(V, v_tau, w, None if operators_in is None
                                     else operators_in[1])
             if operators_in is not None:
                 H = H - self._exchange_scale() * operators_in[0]
+            if field_in is not None:
+                H = H + field_in
             eps, vectors = device.eigensolve(H)
             eigenvalues = list(eps)
             mu = fermi_level(eigenvalues, c.weights, self.n_electrons,
@@ -712,6 +733,13 @@ class PeriodicKohnSham:
                 hybrid = (states, operators)
                 operators_out = [K[0], operators[0]]
                 change = self._operator_change(operators_in, operators_out)
+            if self.field is not None:
+                from .berry_phase import field_terms
+                field_out, terms["electric_field"], phases = field_terms(
+                    c, vectors, n_occ, self.field_size, self.field)
+                change = self._operator_change(
+                    None if field_in is None else [field_in], [field_out])
+                self.field_state = (list(vectors), phases)
             energy = sum(terms.values())
             entropy_term = -self.width * sum(
                 d.weight * 2.0 * float(np.sum(entropy((e - mu) / self.width,
@@ -725,7 +753,13 @@ class PeriodicKohnSham:
                 converged = True
                 break
             previous = free
-            if self.screening is None:
+            if self.field is not None:
+                rho, q, (field_in,) = mixer.mix(
+                    rho, q, rho_out, q_out,
+                    extra_in=[field_in if field_in is not None
+                              else np.zeros_like(field_out)],
+                    extra_out=[field_out])
+            elif self.screening is None:
                 rho, q = mixer.mix(rho, q, rho_out, q_out)
             else:
                 rho, q, operators_in = mixer.mix(
@@ -883,13 +917,14 @@ class PeriodicKohnSham:
                     np.stack([o[1] for o in out]) if projections else None)
         return self._bands_at(kpoints, V, v_tau, w, projections)
 
-    def _bands_at(self, kpoints, V, v_tau, w, projections, channel=0):
-        """:meth:`bands` at one potential (one spin channel)."""
+    def _diagonalized(self, kpoints, V, v_tau, w, channel=0):
+        """Yield ``(data, eigenvalues, vectors)`` for blocks of ``kpoints``
+        at one frozen potential (one spin channel): the k-point matrices
+        (:class:`KPointMatrices`), the eigenvalues (Hartree, on the SCF's
+        own reference) and the ``S(k)``-orthonormal eigenvectors."""
         c = self.crystal
         kpoints = np.atleast_2d(np.asarray(kpoints, dtype=float))
-        reference = self.eigenvalue_reference()
         block = c.kpoint_block()
-        eigenvalues, weights = [], []
         for start in range(0, len(kpoints), block):
             data = c.kpoint_matrices(kpoints[start:start + block])
             gradients = ([c.bloch_gradients(d.psi, d.k) for d in data]
@@ -904,12 +939,31 @@ class PeriodicKohnSham:
                 H = (device.hamiltonians(V, v_tau, w, operators[channel])
                      - self._exchange_scale() * K)
             eps, vectors = device.eigensolve(H)
+            yield data, eps, vectors
+
+    def _bands_at(self, kpoints, V, v_tau, w, projections, channel=0):
+        """:meth:`bands` at one potential (one spin channel)."""
+        reference = self.eigenvalue_reference()
+        eigenvalues, weights = [], []
+        for data, eps, vectors in self._diagonalized(kpoints, V, v_tau, w,
+                                                     channel):
             eigenvalues.extend(eps + reference)
             if projections:
                 weights.extend(loewdin_weights(d.overlap, C)
                                for d, C in zip(data, vectors))
         return (np.array(eigenvalues),
                 np.array(weights) if projections else None)
+
+    def channel_potentials(self):
+        """Per spin channel ``(V, v_tau, w, channel)`` of the converged
+        potential, the arguments of :meth:`_diagonalized`."""
+        if self.potentials is None:
+            raise RuntimeError("the crystal has no converged potential: "
+                               "run() first")
+        V, v_tau, w = self.potentials
+        if self.n_spins == 2:
+            return [(V[s], v_tau[s], w, s) for s in range(2)]
+        return [(V, v_tau, w, 0)]
 
     def eigenvalue_reference(self) -> float:
         r"""Constant (Hartree) that moves the eigenvalues to the plane-wave zero.

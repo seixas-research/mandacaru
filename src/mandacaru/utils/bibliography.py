@@ -155,6 +155,284 @@ _ALGORITHMS = [
   doi     = {10.1021/acs.jpclett.0c02405}
 }""", "the r2SCAN meta-GGA (xc='r2scan')", verified=False,
          topics=("xc", "meta-gga")),
+    _ref("Vydrov2010", """
+@article{Vydrov2010,
+  author  = {Vydrov, Oleg A. and Van Voorhis, Troy},
+  title   = {Nonlocal van der {W}aals density functional: The simpler the
+             better},
+  journal = {J. Chem. Phys.},
+  volume  = {133},
+  pages   = {244103},
+  year    = {2010},
+  doi     = {10.1063/1.3521275}
+}""", "VV10 nonlocal correlation (xc='r2scan-rvv10')", verified=False,
+         topics=("xc", "dispersion")),
+    _ref("Sabatini2013", """
+@article{Sabatini2013,
+  author  = {Sabatini, Riccardo and Gorni, Tommaso and de Gironcoli,
+             Stefano},
+  title   = {Nonlocal van der {W}aals density functional made simple and
+             efficient},
+  journal = {Phys. Rev. B},
+  volume  = {87},
+  pages   = {041108},
+  year    = {2013},
+  doi     = {10.1103/PhysRevB.87.041108}
+}""", "the rVV10 kernel (xc='r2scan-rvv10')", verified=False,
+         topics=("xc", "dispersion")),
+    _ref("RomanPerez2009", """
+@article{RomanPerez2009,
+  author  = {Rom{\'a}n-P{\'e}rez, Guillermo and Soler, Jos{\'e} M.},
+  title   = {Efficient Implementation of a van der {W}aals Density Functional:
+             Application to Double-Wall Carbon Nanotubes},
+  journal = {Phys. Rev. Lett.},
+  volume  = {103},
+  pages   = {096102},
+  year    = {2009},
+  doi     = {10.1103/PhysRevLett.103.096102}
+}""", "the q interpolation of the nonlocal kernel (xc='r2scan-rvv10')",
+         verified=False, topics=("xc", "dispersion")),
+    _ref("KingSmith1993", """
+@article{KingSmith1993,
+  author  = {King-Smith, R. D. and Vanderbilt, David},
+  title   = {Theory of polarization of crystalline solids},
+  journal = {Phys. Rev. B},
+  volume  = {47},
+  pages   = {1651--1654},
+  year    = {1993},
+  doi     = {10.1103/PhysRevB.47.1651}
+}""", "the Berry-phase polarization (get_polarization)",
+         verified=False, topics=("polarization", "berry phase")),
+    _ref("Resta1994", """
+@article{Resta1994,
+  author  = {Resta, Raffaele},
+  title   = {Macroscopic polarization in crystalline dielectrics: the
+             geometric phase approach},
+  journal = {Rev. Mod. Phys.},
+  volume  = {66},
+  pages   = {899--915},
+  year    = {1994},
+  doi     = {10.1103/RevModPhys.66.899}
+}""", "the polarization as a geometric phase (get_polarization)",
+         verified=False, topics=("polarization", "berry phase")),
+    _ref("Vanderbilt2000", """
+@article{Vanderbilt2000,
+  author  = {Vanderbilt, David},
+  title   = {Berry-phase theory of proper piezoelectric response},
+  journal = {J. Phys. Chem. Solids},
+  volume  = {61},
+  pages   = {147--151},
+  year    = {2000},
+  doi     = {10.1016/S0022-3697(99)00273-5}
+}""", "the proper piezoelectric tensor (piezoelectric_tensor)",
+         verified=False, topics=("polarization", "piezoelectric")),
+    _ref("Souza2002", """
+@article{Souza2002,
+  author  = {Souza, Ivo and {\\'I}{\\~n}iguez, Jorge and Vanderbilt, David},
+  title   = {First-Principles Approach to Insulators in Finite Electric
+             Fields},
+  journal = {Phys. Rev. Lett.},
+  volume  = {89},
+  pages   = {117602},
+  year    = {2002},
+  doi     = {10.1103/PhysRevLett.89.117602}
+}""", "the Berry-phase finite electric field (electric_field on a crystal)",
+         verified=False, topics=("polarization", "electric field")),
+    _ref("Umari2002", """
+@article{Umari2002,
+  author  = {Umari, Paolo and Pasquarello, Alfredo},
+  title   = {Ab initio Molecular Dynamics in a Finite Homogeneous Electric
+             Field},
+  journal = {Phys. Rev. Lett.},
+  volume  = {89},
+  pages   = {157602},
+  year    = {2002},
+  doi     = {10.1103/PhysRevLett.89.157602}
+}""", "the Berry-phase finite electric field (electric_field on a crystal)",
+         verified=False, topics=("polarization", "electric field")),
+    _ref("Marzari1997", """
+@article{Marzari1997,
+  author  = {Marzari, Nicola and Vanderbilt, David},
+  title   = {Maximally localized generalized {W}annier functions for composite
+             energy bands},
+  journal = {Phys. Rev. B},
+  volume  = {56},
+  pages   = {12847--12865},
+  year    = {1997},
+  doi     = {10.1103/PhysRevB.56.12847}
+}""", "maximally localized Wannier functions (wannier)",
+         verified=False, topics=("wannier",)),
+    _ref("Marzari2012", """
+@article{Marzari2012,
+  author  = {Marzari, Nicola and Mostofi, Arash A. and Yates, Jonathan R. and
+             Souza, Ivo and Vanderbilt, David},
+  title   = {Maximally localized {W}annier functions: {T}heory and
+             applications},
+  journal = {Rev. Mod. Phys.},
+  volume  = {84},
+  pages   = {1419--1475},
+  year    = {2012},
+  doi     = {10.1103/RevModPhys.84.1419}
+}""", "the review of maximally localized Wannier functions (wannier)",
+         verified=False, topics=("wannier",)),
+    _ref("Souza2001", """
+@article{Souza2001,
+  author  = {Souza, Ivo and Marzari, Nicola and Vanderbilt, David},
+  title   = {Maximally localized {W}annier functions for entangled energy
+             bands},
+  journal = {Phys. Rev. B},
+  volume  = {65},
+  pages   = {035109},
+  year    = {2001},
+  doi     = {10.1103/PhysRevB.65.035109}
+}""", "the disentanglement of entangled bands (wannier with windows)",
+         verified=False, topics=("wannier",)),
+    _ref("Aryasetiawan2004", """
+@article{Aryasetiawan2004,
+  author  = {Aryasetiawan, F. and Imada, M. and Georges, A. and Kotliar, G.
+             and Biermann, S. and Lichtenstein, A. I.},
+  title   = {Frequency-dependent local interactions and low-energy effective
+             models from electronic structure calculations},
+  journal = {Phys. Rev. B},
+  volume  = {70},
+  pages   = {195104},
+  year    = {2004},
+  doi     = {10.1103/PhysRevB.70.195104}
+}""", "the constrained random-phase approximation (downfold screening)",
+         verified=False, topics=("wannier", "screening")),
+    _ref("Sasioglu2011", """
+@article{Sasioglu2011,
+  author  = {{\\c{S}}a{\\c{s}}{\\i}o{\\u{g}}lu, E. and Friedrich, C. and
+             Bl{\\"u}gel, S.},
+  title   = {Effective {C}oulomb interaction in transition metals from
+             constrained random-phase approximation},
+  journal = {Phys. Rev. B},
+  volume  = {83},
+  pages   = {121101},
+  year    = {2011},
+  doi     = {10.1103/PhysRevB.83.121101}
+}""", "the projector-weighted constrained RPA for entangled bands "
+         "(downfold screening)",
+         verified=False, topics=("wannier", "screening")),
+    _ref("Spencer2008", """
+@article{Spencer2008,
+  author  = {Spencer, James and Alavi, Ali},
+  title   = {Efficient calculation of the exact exchange energy in periodic
+             systems using a truncated {C}oulomb potential},
+  journal = {Phys. Rev. B},
+  volume  = {77},
+  pages   = {193110},
+  year    = {2008},
+  doi     = {10.1103/PhysRevB.77.193110}
+}""", "the truncated Coulomb interaction of the downfolded fragment",
+         verified=False, topics=("wannier",)),
+    _ref("Sayfutyarova2017", """
+@article{Sayfutyarova2017,
+  author  = {Sayfutyarova, Elvira R. and Sun, Qiming and Chan, Garnet
+             Kin-Lic and Knizia, Gerald},
+  title   = {Automated Construction of Molecular Active Spaces from Atomic
+             Valence Orbitals},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {13},
+  pages   = {4063--4078},
+  year    = {2017},
+  doi     = {10.1021/acs.jctc.7b00128}
+}""", "the projection onto target atomic orbitals (projectability "
+         "windows, wannier windows='auto')",
+         verified=False, topics=("wannier", "selection")),
+    _ref("Qiao2023", """
+@article{Qiao2023,
+  author  = {Qiao, Junfeng and Pizzi, Giovanni and Marzari, Nicola},
+  title   = {Projectability disentanglement for accurate and automated
+             electronic-structure {H}amiltonians},
+  journal = {npj Comput. Mater.},
+  volume  = {9},
+  pages   = {208},
+  year    = {2023},
+  doi     = {10.1038/s41524-023-01146-w}
+}""", "states chosen by projectability for the disentanglement "
+         "(wannier windows='auto' or 'rpa')",
+         verified=False, topics=("wannier", "selection")),
+    _ref("Damle2017", """
+@article{Damle2017,
+  author  = {Damle, Anil and Lin, Lin and Ying, Lexing},
+  title   = {{SCDM-k}: Localized orbitals for solids via selected columns of
+             the density matrix},
+  journal = {J. Comput. Phys.},
+  volume  = {334},
+  pages   = {1--15},
+  year    = {2017},
+  doi     = {10.1016/j.jcp.2016.12.053}
+}""", "selected columns of the density matrix for crystals "
+         "(wannier windows='scdm')",
+         verified=False, topics=("wannier", "selection")),
+    _ref("Damle2018", """
+@article{Damle2018,
+  author  = {Damle, Anil and Lin, Lin},
+  title   = {Disentanglement via Entanglement: A Unified Method for {W}annier
+             Localization},
+  journal = {Multiscale Model. Simul.},
+  volume  = {16},
+  pages   = {1392--1410},
+  year    = {2018},
+  doi     = {10.1137/18M1167164}
+}""", "the erfc-weighted quasi-density matrix for entangled bands "
+         "(wannier windows='scdm')",
+         verified=False, topics=("wannier", "selection")),
+    _ref("Vitale2020", """
+@article{Vitale2020,
+  author  = {Vitale, Valerio and Pizzi, Giovanni and Marrazzo, Antimo and
+             Yates, Jonathan R. and Marzari, Nicola and Mostofi, Arash A.},
+  title   = {Automated high-throughput {W}annierisation},
+  journal = {npj Comput. Mater.},
+  volume  = {6},
+  pages   = {66},
+  year    = {2020},
+  doi     = {10.1038/s41524-020-0312-y}
+}""", "the SCDM erfc parameters fitted to the projectability "
+         "(wannier windows='scdm' without mu and sigma)",
+         verified=False, topics=("wannier", "selection")),
+    _ref("Scuseria2008", """
+@article{Scuseria2008,
+  author  = {Scuseria, Gustavo E. and Henderson, Thomas M. and Sorensen,
+             Danny C.},
+  title   = {The ground state correlation energy of the random phase
+             approximation from a ring coupled cluster doubles approach},
+  journal = {J. Chem. Phys.},
+  volume  = {129},
+  pages   = {231101},
+  year    = {2008},
+  doi     = {10.1063/1.3043729}
+}""", "direct RPA as ring coupled-cluster doubles (the amplitudes of "
+         "natural_orbitals(method='rpa'))",
+         verified=False, topics=("rpa", "selection")),
+    _ref("Furche2008", """
+@article{Furche2008,
+  author  = {Furche, Filipp},
+  title   = {Developing the random phase approximation into a practical
+             post-{K}ohn-{S}ham correlation model},
+  journal = {J. Chem. Phys.},
+  volume  = {129},
+  pages   = {114105},
+  year    = {2008},
+  doi     = {10.1063/1.2977789}
+}""", "the RPA correlation energy from the excitation energies and the "
+         "imaginary-frequency polarizability (natural_orbitals checks)",
+         verified=False, topics=("rpa",)),
+    _ref("Ning2022", """
+@article{Ning2022,
+  author  = {Ning, Jinliang and Kothakonda, Manish and Furness, James W. and
+             Kaplan, Aaron D. and Ehlert, Sebastian and Brandenburg, Jan Gerit
+             and Perdew, John P. and Sun, Jianwei},
+  title   = {Workhorse minimally empirical dispersion-corrected density
+             functional with tests for weakly bound systems: {r$^2$SCAN+rVV10}},
+  journal = {Phys. Rev. B},
+  volume  = {106},
+  pages   = {075422},
+  year    = {2022},
+  doi     = {10.1103/PhysRevB.106.075422}
+}""", "r2SCAN+rVV10, b = 11.95 (xc='r2scan-rvv10')", verified=False,
+         topics=("xc", "dispersion")),
     _ref("Heyd2003", """
 @article{Heyd2003,
   author  = {Heyd, Jochen and Scuseria, Gustavo E. and Ernzerhof, Matthias},

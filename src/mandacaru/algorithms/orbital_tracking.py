@@ -56,9 +56,21 @@ a non-trivial permutation it is a good start rather than the same state.  A
 Pauli-string or coupled-exchange operator is carried only when the matching
 is the identity (signs included, for the coupled ones).
 
-Not done: a rotation inside a nearly degenerate block, where the matched
-overlaps of the individual orbitals can be small although the block itself is
-well preserved.  It shows as a low confidence, and the chain then rebuilds.
+A degenerate set has no orbitals of its own, only a span: any rotation inside
+it is as good an eigenbasis, and the eigensolver picks one by round-off.
+LiH's pi pair of MP2 natural orbitals came out rotated by 40 degrees between
+1.595 and 1.580 A (matched overlaps 0.76, the transfer refused) and by 5
+degrees with other last bits.  Matching cannot follow that, so the rotation
+is removed where the orbitals are made: :func:`degenerate_gauge` fixes the
+orbitals inside every degenerate cluster of the active-space selector's
+natural orbitals as the eigenvectors of one fixed real-space operator
+(:func:`orbital_gauge`), signs included.  Those vary smoothly with the
+geometry, and the gauge changes no physics: the cluster's span, every
+occupation and the reference determinant are the same.
+
+Not done: the canonical orbitals of an untruncated or energy-ranked space
+keep the eigensolver's gauge, so a degenerate set there still shows as a low
+confidence (the chain then rebuilds).
 """
 
 from __future__ import annotations
@@ -141,6 +153,134 @@ class OrbitalSnapshot:
         norms = np.sqrt(np.maximum(
             np.real(np.einsum("mp,mn,np->p", A.conj(), S, A)), 1e-300))
         return cls(basis=list(integrals.basis), coefficients=A, norms=norms)
+
+
+#: Relative spread of the ranking values (natural occupations) inside which
+#: orbitals form one degenerate cluster for :func:`degenerate_gauge`.  The
+#: grid keeps a symmetry-degenerate pair degenerate to round-off (LiH's pi
+#: pair: 12 digits along a grid axis), and breaks it far above this when it
+#: does break it (6e-4 for LiH tilted off the axes at h 0.3).
+DEGENERATE_SPREAD = 1e-6
+#: Magnitude below which a value is round-off around zero (an empty natural
+#: orbital of a single determinant), not a ranking.
+ZERO_VALUE = 1e-10
+
+#: The fixed operator :func:`orbital_gauge` diagonalizes inside a cluster:
+#: :math:`q(\mathbf u) = \mathbf u^T Q\,\mathbf u + \mathbf b\cdot\mathbf u`
+#: with :math:`\mathbf u = \mathbf r - \bar{\mathbf R}` (Bohr; the
+#: centroid of the nuclei).  Generic on purpose: three distinct principal
+#: values along axes that are no symmetry axis a molecule is likely to have,
+#: so its restriction to a degenerate set has distinct eigenvalues.
+GAUGE_QUADRATIC = np.array([[1.000, 0.137, 0.271],
+                            [0.137, 0.618, 0.089],
+                            [0.271, 0.089, 0.382]])
+GAUGE_LINEAR = np.array([0.0731, 0.0457, 0.0293])
+#: The sign rule's weight :math:`g(\mathbf u) = 1 + \mathbf c\cdot\mathbf u
+#: + q(\mathbf u) + (\mathbf d\cdot\mathbf u)^3`: an orbital of angular
+#: momentum up to 3 overlaps it, and the sign makes that overlap positive.
+SIGN_LINEAR = np.array([0.0613, 0.0389, 0.0521])
+SIGN_CUBIC = np.array([0.0577, 0.0493, 0.0651])
+
+
+def degenerate_clusters(values, indices,
+                        spread: float = DEGENERATE_SPREAD) -> list[list[int]]:
+    """The clusters (two or more members) of ``indices`` whose ``values``
+    agree to ``spread``, relative; each a chain of neighbors in value.  A
+    value below :data:`ZERO_VALUE` carries no ranking and joins none."""
+    values = np.asarray(values, dtype=float)
+    order = sorted((int(p) for p in indices
+                    if abs(values[int(p)]) >= ZERO_VALUE),
+                   key=lambda p: values[p])
+    clusters, run = [], order[:1]
+    for p in order[1:]:
+        a, b = values[run[-1]], values[p]
+        if abs(b - a) <= spread * max(abs(a), abs(b)):
+            run.append(p)
+        else:
+            if len(run) > 1:
+                clusters.append(sorted(run))
+            run = [p]
+    if len(run) > 1:
+        clusters.append(sorted(run))
+    return clusters
+
+
+def orbital_gauge(integrals, orbitals):
+    r"""``columns -> (q, w)`` for the orbitals ``orbitals @ columns``.
+
+    ``orbitals`` are the molecular orbitals over the orthonormal basis the
+    Hamiltonian is built in (``integrals.mo_coefficients``) and ``columns``
+    a ``(M, k)`` block of a rotation of them.  ``q`` is the ``(k, k)`` matrix
+    of the gauge operator (:data:`GAUGE_QUADRATIC`), ``w`` the ``k`` overlaps
+    with the sign weight (:data:`SIGN_CUBIC`), both on the grid with the
+    pseudo-orbitals (the augmentation left out: the gauge needs a fixed
+    operator, not a physical moment).  ``None`` when the integrals have no
+    real-space orbitals to sample.
+    """
+    psi = getattr(getattr(integrals, "_engine", None), "_psi", None)
+    if (orbitals is None or psi is None
+            or getattr(integrals, "periodic", False)
+            or getattr(integrals, "spinor_basis", False)):
+        return None
+    grid = integrals.grid
+    cache = {}
+
+    def prepare():
+        # On the first cluster only: most selections have none.
+        X = (integrals._lowdin_x() if getattr(integrals, "orthogonalize", True)
+             else np.eye(psi.shape[0]))
+        # The Bohr frame of the grid (integrals.nuclei may be Angstrom).
+        nuclei = integrals._potentials.nuclei
+        center = np.mean([np.asarray(c, dtype=float) for _z, c in nuclei],
+                         axis=0)
+        u = np.stack([np.asarray(c, dtype=float).reshape(-1) - x0
+                      for c, x0 in zip((grid.X, grid.Y, grid.Z), center)])
+        q = (np.einsum("ig,ij,jg->g", u, GAUGE_QUADRATIC, u)
+             + GAUGE_LINEAR @ u)
+        cache.update(A=X @ np.asarray(orbitals), q=q,
+                     w=1.0 + SIGN_LINEAR @ u + q + (SIGN_CUBIC @ u) ** 3)
+
+    def evaluate(columns):
+        if not cache:
+            prepare()
+        phi = (cache["A"] @ np.asarray(columns)).T @ psi      # (k, G)
+        block = np.real((np.conj(phi) * cache["q"]) @ phi.T) * grid.dV
+        return (0.5 * (block + block.T),
+                np.real(phi @ cache["w"]) * grid.dV)
+
+    return evaluate
+
+
+def degenerate_gauge(rotation, values, blocks, gauge,
+                     spread: float = DEGENERATE_SPREAD):
+    """``rotation`` with every degenerate cluster's orbitals fixed.
+
+    ``rotation`` (``None``: the identity) defines orbitals whose ``values``
+    (natural occupations) rank them; inside each of ``blocks`` (index
+    lists that must not mix: active occupied, virtual), orbitals whose values
+    agree to ``spread`` are rotated among themselves into the eigenvectors of
+    the gauge operator (``gauge``, from :func:`orbital_gauge`), each with the
+    sign that makes its sign weight positive.  A rotation inside a degenerate
+    cluster leaves its span, its values and the reference determinant as they
+    were, so only the arbitrary choice of basis inside the span changes.
+    Returns ``rotation`` itself when there is nothing to fix.
+    """
+    if gauge is None or values is None:
+        return rotation
+    clusters = [c for block in blocks
+                for c in degenerate_clusters(values, block, spread)]
+    if not clusters:
+        return rotation
+    n = len(values)
+    R = (np.eye(n) if rotation is None
+         else np.array(rotation, dtype=float, copy=True))
+    for cluster in clusters:
+        q, _w = gauge(R[:, cluster])
+        _, U = np.linalg.eigh(q)
+        R[:, cluster] = R[:, cluster] @ U
+        _q, w = gauge(R[:, cluster])
+        R[:, cluster] *= np.where(w < 0.0, -1.0, 1.0)
+    return R
 
 
 def orbital_overlap(previous: OrbitalSnapshot, current: OrbitalSnapshot,

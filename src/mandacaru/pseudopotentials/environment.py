@@ -21,9 +21,10 @@ family                variable                    set it with
 
 Inside a checkout the datasets sit one directory per set, named for its
 functional and relativistic treatment (:data:`LIBRARY_FOLDERS`): PAW-LCAO
-ships ``lda-sr/`` (scalar-relativistic LDA, the default) and ``lda-dirac/``
-(with the spin-orbit term).  A set without an entry sits in the folder named
-for the functional (``pbe/``).
+ships ``lda-sr/`` (scalar-relativistic LDA, the default), ``lda-dirac/``
+(with the spin-orbit term) and ``pbe-sr/`` (scalar-relativistic PBE).  A
+set without an entry sits in the folder named for the functional
+(``pbe/`` for a PBE Dirac set, which is not shipped).
 UPAW-LCAO is the one optional library: without ``MANDACARU_UPAW_PATH`` its
 datasets are generated on demand (a few seconds per element), so an unset
 variable is not an error for it (:data:`OPTIONAL_FAMILIES`).
@@ -57,7 +58,8 @@ DEFAULT_XC = "lda"
 #: The folder of a set inside a family's checkout, where it is not simply
 #: named for its functional.
 LIBRARY_FOLDERS = {("paw-lcao", "lda", "scalar"): "lda-sr",
-                   ("paw-lcao", "lda", "dirac"): "lda-dirac"}
+                   ("paw-lcao", "lda", "dirac"): "lda-dirac",
+                   ("paw-lcao", "pbe", "scalar"): "pbe-sr"}
 #: The folder ``Mandacaru(directory=...)`` reads by default, the
 #: scalar-relativistic LDA set.
 DEFAULT_LIBRARY_FOLDER = "lda-sr"
@@ -193,7 +195,8 @@ def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
             or (os.altsep and os.altsep in name) or os.path.isabs(name)):
         raise ValueError(
             f"directory must be the name of one folder inside the "
-            f"pseudopotential library, such as 'lda-sr' or 'lda-dirac', not "
+            f"pseudopotential library, such as 'lda-sr', 'lda-dirac' or 'pbe-sr', "
+            f"not "
             f"{folder!r}; to load datasets from a folder elsewhere, pass it "
             f"as the basis option, basis={{'name': ..., 'directory': path}}")
     key = _family(family)

@@ -94,3 +94,117 @@ class TestTransforms:
         n1, n2, n3 = np.meshgrid(n, n, n, indexing="ij")
         brute = np.stack([n1.ravel(), n2.ravel(), n3.ravel()], axis=1) @ A.T
         assert np.sum(np.linalg.norm(brute, axis=1) <= 20.0) == len(R)
+
+
+#: Cells whose grids alias differently (Angstrom), with the order of their
+#: lattice's point group on these grids.
+ALIASING_CELLS = {
+    "orthorhombic": (np.diag([3.0, 3.4, 4.1]), 8),
+    "hexagonal": (np.array([[3.11, 0.0, 0.0],
+                            [-1.555, 1.555 * np.sqrt(3.0), 0.0],
+                            [0.0, 0.0, 4.98]]), 24),
+    "fcc": (2.715 * np.array([[0.0, 1.0, 1.0], [1.0, 0.0, 1.0],
+                              [1.0, 1.0, 0.0]]), 48),
+    "triclinic": (np.array([[3.0, 0.0, 0.0], [0.9, 3.2, 0.0],
+                            [0.0, 0.4, 3.5]]), 2),
+}
+
+
+def _periodic_grid(cell, nodes):
+    cell = np.asarray(cell, dtype=float)
+    return Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
+                h=np.linalg.norm(cell, axis=1) / np.asarray(nodes),
+                units="angstrom", cell=cell, periodic=True)
+
+
+def _frequencies(grid):
+    return np.stack(np.meshgrid(*[np.fft.fftfreq(n, 1.0 / n)
+                                  for n in grid.shape],
+                                indexing="ij")).reshape(3, -1).astype(int)
+
+
+class TestSymmetricAliases:
+    @pytest.mark.parametrize("name", sorted(ALIASING_CELLS))
+    def test_the_lattice_operations_are_the_point_group(self, name):
+        cell, order = ALIASING_CELLS[name]
+        operations = rc.lattice_operations(_periodic_grid(cell, (6, 6, 6)))
+        assert len(operations) == order
+        keys = {tuple(V.ravel()) for V in operations}
+        assert all(tuple((P @ Q).ravel()) in keys
+                   for P in operations for Q in operations)
+
+    def test_a_box_cube_has_the_full_cubic_group(self):
+        grid = Grid(center=np.zeros(3), box_size=6.0, h=0.4, units="bohr")
+        assert len(rc.lattice_operations(grid)) == 48
+
+    @pytest.mark.parametrize("name", sorted(ALIASING_CELLS))
+    def test_each_frequency_gets_a_mean_of_its_aliases(self, name):
+        """The averaged frequency differs from the box's by a mean of
+        alias periods, and not at all where every operation keeps the
+        frequency inside the box."""
+        cell, _order = ALIASING_CELLS[name]
+        grid = _periodic_grid(cell, (6, 6, 8))
+        B = rc.reciprocal_vectors(rc.lattice_vectors(grid))
+        m = _frequencies(grid)
+        shift = np.linalg.solve(B, rc.symmetric_wavevectors(grid).reshape(
+            3, -1)) - m
+        count = len(rc.lattice_operations(grid))
+        periods = shift * count / np.asarray(grid.shape)[:, None]
+        assert np.allclose(periods, np.round(periods), atol=1e-9)
+        inside = np.all(2 * np.abs(m) < 0.5 * np.asarray(grid.shape)[:, None],
+                        axis=0)
+        assert np.allclose(shift[:, inside], 0.0)
+
+    @pytest.mark.parametrize("nodes", [(12, 12, 20), (11, 11, 19)])
+    def test_a_hexagonal_rotation_maps_them_onto_themselves(self, nodes):
+        """The 60-degree rotation permutes the frequencies of a hexagonal
+        grid; the averaged wave-vectors rotate with it, and are odd, while
+        the box's do neither."""
+        grid = _periodic_grid(ALIASING_CELLS["hexagonal"][0], nodes)
+        angle = np.pi / 3.0
+        R = np.array([[np.cos(angle), -np.sin(angle), 0.0],
+                      [np.sin(angle), np.cos(angle), 0.0], [0.0, 0.0, 1.0]])
+        B = rc.reciprocal_vectors(rc.lattice_vectors(grid))
+        W = np.rint(np.linalg.solve(B, R @ B)).astype(int)
+        shape = np.asarray(grid.shape)[:, None]
+        m = _frequencies(grid)
+        rotated = np.ravel_multi_index((W @ m) % shape, grid.shape)
+        negated = np.ravel_multi_index((-m) % shape, grid.shape)
+        vectors, norms = rc.symmetric_aliases(grid)
+        vectors, norms = vectors.reshape(3, -1), norms.ravel()
+        assert np.max(np.abs(vectors[:, rotated] - R @ vectors)) < 1e-12
+        assert np.max(np.abs(vectors[:, negated] + vectors)) < 1e-12
+        assert np.max(np.abs(norms[rotated] - norms)) < 1e-12
+        box = rc.wavevectors(grid).reshape(3, -1)
+        assert np.max(np.abs(box[:, rotated] - R @ box)) > 1.0
+
+    def test_a_strain_moves_them_linearly(self):
+        """The average is over integers, so a shear that keeps the
+        operations changes only the reciprocal vectors it is multiplied
+        by: the finite-strain stress sees the box's linear dependence."""
+        cell = ALIASING_CELLS["hexagonal"][0]
+        plain = _periodic_grid(cell, (12, 12, 20))
+        reference = np.linalg.solve(
+            rc.reciprocal_vectors(rc.lattice_vectors(plain)),
+            rc.symmetric_wavevectors(plain).reshape(3, -1))
+        for shear in (1e-3, -1e-3):
+            strained = _periodic_grid(cell @ (np.eye(3) + shear * np.array(
+                [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])),
+                (12, 12, 20))
+            assert len(rc.lattice_operations(strained)) == 24
+            indices = np.linalg.solve(
+                rc.reciprocal_vectors(rc.lattice_vectors(strained)),
+                rc.symmetric_wavevectors(strained).reshape(3, -1))
+            assert np.allclose(indices, reference, atol=1e-12)
+
+    def test_on_an_orthorhombic_grid_only_the_nyquist_plane_differs(self):
+        grid = _periodic_grid(ALIASING_CELLS["orthorhombic"][0], (6, 7, 8))
+        vectors, norms = rc.symmetric_aliases(grid)
+        G = rc.wavevectors(grid)
+        assert np.allclose(norms, np.sqrt(np.sum(G * G, axis=0)))
+        nyquist = np.zeros(grid.shape, dtype=bool)
+        nyquist[3, :, :] = True
+        nyquist[:, :, 4] = True
+        assert np.allclose(vectors[:, ~nyquist], G[:, ~nyquist])
+        assert np.allclose(vectors[0, 3], 0.0) and np.allclose(
+            vectors[2, :, :, 4], 0.0)

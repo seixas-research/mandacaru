@@ -264,8 +264,8 @@ def _grid(r_c: float, doubling: int) -> np.ndarray:
     return (r_c / n) * np.arange(1, n)
 
 
-def _lowest_eigenvalue(r, v, p_u, D, q) -> float:
-    r"""Lowest eigenvalue of the pencil of
+def _eigenvalue(r, v, p_u, D, q, state: int = 0) -> float:
+    r"""The ``state``-th eigenvalue (0 the lowest) of the pencil of
     :func:`~.paw._generalized_matrices`, without forming it.
 
     ``H = T + U D U^T`` and ``S = I + U q U^T``, with ``T`` tridiagonal and
@@ -286,8 +286,9 @@ def _lowest_eigenvalue(r, v, p_u, D, q) -> float:
     diagonal = 1.0 / h ** 2 + np.asarray(v, dtype=float)
     off = np.full(n - 1, -0.5 / h ** 2)
     levels = eigvalsh_tridiagonal(diagonal, off)
+    state = int(state)
     if not p_u:
-        return float(levels[0])
+        return float(levels[state])
     U = np.sqrt(h) * np.array(p_u).T
     D = np.asarray(D, dtype=float)
     q = np.asarray(q, dtype=float)
@@ -312,16 +313,16 @@ def _lowest_eigenvalue(r, v, p_u, D, q) -> float:
 
     scale = max(1.0, abs(float(levels[0])))
     lo = float(levels[0]) - scale
-    while below(lo) > 0:
+    while below(lo) > state:
         lo -= 2.0 * (abs(lo) + 1.0)
-    hi = float(levels[0])
-    while below(hi) < 1:
+    hi = float(levels[min(state, levels.size - 1)])
+    while below(hi) < state + 1:
         hi += 2.0 * (abs(hi) + 1.0)
     for _ in range(200):
         mid = 0.5 * (lo + hi)
         if mid in (lo, hi):
             break
-        if below(mid) >= 1:
+        if below(mid) >= state + 1:
             hi = mid
         else:
             lo = mid
@@ -329,8 +330,9 @@ def _lowest_eigenvalue(r, v, p_u, D, q) -> float:
 
 
 def _solve(pp, l: int, r_c: float, amplitude: float, inner_fraction: float,
-           vectors: bool):
-    """Lowest generalized eigenpair on the fine and the coarse grid."""
+           vectors: bool, state: int = 0):
+    """The ``state``-th generalized eigenpair on the fine and the coarse
+    grid."""
     from scipy.linalg import eigh
 
     from .paw import _generalized_matrices
@@ -341,39 +343,42 @@ def _solve(pp, l: int, r_c: float, amplitude: float, inner_fraction: float,
         r, v, p_u, D, q = pp.channel_operator_on(l, r)
         v = v + confinement_potential(r, r_c, amplitude, inner_fraction)
         if not vectors:
-            out.append((r, None, None, _lowest_eigenvalue(r, v, p_u, D, q)))
+            out.append((r, None, None, _eigenvalue(r, v, p_u, D, q, state)))
             continue
         H, S = _generalized_matrices(r, v, p_u, D, q)
-        values, states = eigh(H, S, subset_by_index=[0, 0])
+        values, states = eigh(H, S, subset_by_index=[state, state])
         out.append((r, states[:, 0], S, float(values[0])))
     return out
 
 
 def confined_energy(pp, l: int, r_c: float, *,
                     amplitude: float = CONFINEMENT_AMPLITUDE,
-                    inner_fraction: float = CONFINEMENT_INNER_FRACTION
-                    ) -> float:
-    """Lowest eigenvalue (Hartree) of channel ``l`` confined at ``r_c``,
+                    inner_fraction: float = CONFINEMENT_INNER_FRACTION,
+                    state: int = 0) -> float:
+    """The ``state``-th eigenvalue (Hartree; 0 the lowest, 1 a semicore
+    channel's valence state) of channel ``l`` confined at ``r_c``,
     Richardson-extrapolated from the two grids."""
     (_r, _u, _S, fine), (_r2, _u2, _S2, coarse) = _solve(
-        pp, int(l), float(r_c), amplitude, inner_fraction, vectors=False)
+        pp, int(l), float(r_c), amplitude, inner_fraction, vectors=False,
+        state=state)
     return (4.0 * fine - coarse) / 3.0
 
 
 def confined_eigenstate(pp, l: int, r_c: float, *,
                         amplitude: float = CONFINEMENT_AMPLITUDE,
-                        inner_fraction: float = CONFINEMENT_INNER_FRACTION):
-    """``(r, u, energy)`` of the confined channel: ``u = r R`` on the coarse
-    grid (wall excluded), Richardson-extrapolated pointwise, normalized in the
-    dataset's own metric (``int u S u = 1``, the normalization of the stored
-    bound wave) and signed like it."""
+                        inner_fraction: float = CONFINEMENT_INNER_FRACTION,
+                        state: int = 0):
+    """``(r, u, energy)`` of the confined channel's ``state``-th eigenstate:
+    ``u = r R`` on the coarse grid (wall excluded), Richardson-extrapolated
+    pointwise, normalized in the dataset's own metric (``int u S u = 1``, the
+    normalization of the stored bound wave) and signed like it."""
     from scipy.interpolate import CubicSpline
 
     l = int(l)
-    bound = CubicSpline(pp.r, pp.channels[l].pseudo_radial)
+    bound = CubicSpline(pp.r, pp.channels[l].pseudo_waves[int(state)])
     solved = []
     for r, u, S, energy in _solve(pp, l, float(r_c), amplitude,
-                                  inner_fraction, vectors=True):
+                                  inner_fraction, vectors=True, state=state):
         h = r[1] - r[0]
         u = u / np.sqrt(h * u @ S @ u)
         if np.trapezoid(u * bound(r) * r, dx=h) < 0:
@@ -383,11 +388,11 @@ def confined_eigenstate(pp, l: int, r_c: float, *,
     return r_c_grid, (4.0 * u_f[1::2] - u_c) / 3.0, (4.0 * e_f - e_c) / 3.0
 
 
-#: ``(id(dataset), l) -> (dataset, free level)``, as for :data:`_CACHE`.
+#: ``(id(dataset), l, state) -> (dataset, free level)``, as for :data:`_CACHE`.
 _FREE_CACHE: dict = {}
 
 
-def free_energy(pp, l: int) -> float:
+def free_energy(pp, l: int, state: int = 0) -> float:
     """Eigenvalue (Hartree) of channel ``l``'s free bound state **in the
     dataset's own operator**, solved exactly as a confined one is but with the
     wall at the end of the radial table.
@@ -399,19 +404,20 @@ def free_energy(pp, l: int) -> float:
     found.  Solving both levels with one discretization also cancels its
     error from the shift.
     """
-    l = int(l)
-    entry = _FREE_CACHE.get((id(pp), l))
+    l, state = int(l), int(state)
+    entry = _FREE_CACHE.get((id(pp), l, state))
     if entry is not None and entry[0] is pp:
         return entry[1]
-    energy = confined_energy(pp, l, TABLE_FRACTION * float(pp.r[-1]))
-    _FREE_CACHE[(id(pp), l)] = (pp, energy)
+    energy = confined_energy(pp, l, TABLE_FRACTION * float(pp.r[-1]),
+                             state=state)
+    _FREE_CACHE[(id(pp), l, state)] = (pp, energy)
     return energy
 
 
 def confinement_radius(pp, l: int, energy_shift: float, *,
                        amplitude: float = CONFINEMENT_AMPLITUDE,
                        inner_fraction: float = CONFINEMENT_INNER_FRACTION,
-                       tightest: bool = False) -> float:
+                       tightest: bool = False, state: int = 0) -> float:
     """Cutoff radius ``r_c`` (Bohr) at which channel ``l``'s eigenvalue lies
     ``energy_shift`` (**eV**) above the free atom's.
 
@@ -424,6 +430,8 @@ def confinement_radius(pp, l: int, energy_shift: float, *,
     is the case of a deep semicore channel (the 4f of Lu-Hg, 1-3.5 Ha deep in
     a 2.9-3.9 Bohr sphere): its orbital lies inside the sphere, so no wall
     outside it can move its energy by 0.1 eV, and it needs no confining.
+    ``state`` picks the channel's eigenstate (1: a semicore channel's
+    valence state).
     """
     from scipy.optimize import brentq
 
@@ -431,11 +439,12 @@ def confinement_radius(pp, l: int, energy_shift: float, *,
     shift = _validate_value(energy_shift)
     if shift is None:
         raise ValueError("confinement_radius needs a positive energy_shift")
-    target = free_energy(pp, l) + shift * EV_TO_HARTREE
+    target = free_energy(pp, l, state) + shift * EV_TO_HARTREE
 
     def excess(r_c):
         return confined_energy(pp, l, r_c, amplitude=amplitude,
-                               inner_fraction=inner_fraction) - target
+                               inner_fraction=inner_fraction,
+                               state=state) - target
 
     r_lo = float(pp.channels[l].r_cut) / float(inner_fraction)
     r_end = TABLE_FRACTION * float(pp.r[-1])
@@ -480,6 +489,7 @@ class ConfinedOrbital:
     energy: float                # Hartree, confined eigenvalue
     free_energy: float           # Hartree, free-atom eigenvalue
     radial: np.ndarray           # R(r) on pp.r, zero from r_c on
+    state: int = 0               # the channel's eigenstate (1: semicore's valence)
 
     @property
     def achieved_shift(self) -> float:
@@ -488,18 +498,20 @@ class ConfinedOrbital:
         return (self.energy - self.free_energy) * HARTREE_TO_EV
 
 
-#: ``(id(dataset), l, shift) -> (dataset, ConfinedOrbital)``.  The dataset is
+#: ``(id(dataset), l, shift, amplitude, inner, state) -> (dataset,
+#: ConfinedOrbital)``.  The dataset is
 #: kept in the entry so an ``id`` recycled after a garbage collection cannot
 #: serve another dataset's orbital.
 _CACHE: dict = {}
 
 
 def confined_orbital(pp, l: int, energy_shift: float,
-                     confinement=None) -> ConfinedOrbital:
+                     confinement=None, state: int = 0) -> ConfinedOrbital:
     """The confined orbital of channel ``l`` for ``energy_shift`` (eV), cached
     per dataset -- the root search costs a second or two per channel and a
     relaxation would otherwise repeat it at every geometry.  ``confinement`` is
-    the ``(amplitude, r_i / r_c)`` pair (``None`` = the default)."""
+    the ``(amplitude, r_i / r_c)`` pair (``None`` = the default); ``state``
+    the channel's eigenstate (1: a semicore channel's valence state)."""
     from scipy.interpolate import CubicSpline
 
     l = int(l)
@@ -507,7 +519,8 @@ def confined_orbital(pp, l: int, energy_shift: float,
     if shift is None:
         raise ValueError("confined_orbital needs a positive energy_shift")
     amplitude, inner = validate_confinement(confinement)
-    key = (id(pp), l, round(shift, 12), amplitude, inner)
+    state = int(state)
+    key = (id(pp), l, round(shift, 12), amplitude, inner, state)
     entry = _CACHE.get(key)
     if entry is not None and entry[0] is pp:
         return entry[1]
@@ -516,9 +529,9 @@ def confined_orbital(pp, l: int, energy_shift: float,
     # shell) takes the tightest wall; `achieved_shift` then reports the
     # smaller shift it actually got.
     r_c = confinement_radius(pp, l, shift, amplitude=amplitude,
-                             inner_fraction=inner, tightest=True)
+                             inner_fraction=inner, tightest=True, state=state)
     r, u, energy = confined_eigenstate(pp, l, r_c, amplitude=amplitude,
-                                       inner_fraction=inner)
+                                       inner_fraction=inner, state=state)
     # u(0) = u(r_c) = 0 close the table; R = u / r is then regular at the
     # origin (u ~ r^(l+1)) and the dataset's first node is never exactly 0.
     spline = CubicSpline(np.concatenate([[0.0], r, [r_c]]),
@@ -527,7 +540,8 @@ def confined_orbital(pp, l: int, energy_shift: float,
     radial = np.where(table < r_c, spline(np.minimum(table, r_c)) / table, 0.0)
     orbital = ConfinedOrbital(symbol=str(pp.symbol), l=l, energy_shift=shift,
                               r_c=float(r_c), energy=float(energy),
-                              free_energy=free_energy(pp, l), radial=radial)
+                              free_energy=free_energy(pp, l, state),
+                              radial=radial, state=state)
     _CACHE[key] = (pp, orbital)
     return orbital
 
@@ -537,21 +551,21 @@ def first_zeta_factory(energy_shift, record: dict | None = None,
     """The ``first_zeta`` hook of :func:`~.orbitals.pseudo_basis` for an
     ``energy_shift`` option, or ``None`` when the option is off.
 
-    ``record`` (optional) is filled with ``{symbol: {l: ConfinedOrbital}}`` so
-    a builder can report the radii it used.
+    ``record`` (optional) is filled with ``{symbol: {(l, state):
+    ConfinedOrbital}}`` so a builder can report the radii it used.
     """
     spec = validate_energy_shift(energy_shift)
     if spec is None:
         return None
     confinement = validate_confinement(confinement)
 
-    def first_zeta(symbol, pp, l):
+    def first_zeta(symbol, pp, l, state=0):
         shift = energy_shift_of(spec, symbol)
         if shift is None:
             return None
-        orbital = confined_orbital(pp, l, shift, confinement)
+        orbital = confined_orbital(pp, l, shift, confinement, state)
         if record is not None:
-            record.setdefault(symbol, {})[int(l)] = orbital
+            record.setdefault(symbol, {})[(int(l), int(state))] = orbital
         return orbital.radial
 
     return first_zeta
@@ -578,7 +592,9 @@ def quasi_gaussian(r, alpha: float, r_cut: float) -> np.ndarray:
 def polarization_channel(channels) -> int:
     """Angular momentum of the polarization shell: the first
     ``l`` **missing** among the valence channels, else ``l_max + 1`` (so a
-    4s/3d transition metal is polarized with a p shell, not an f shell)."""
+    4s/3d transition metal is polarized with a p shell, not an f shell).
+    ``channels`` are the ``l`` of the *valence* states: a semicore ``p``
+    (sodium's 2p) does not stop sodium's 3s from being polarized with p."""
     present = {int(l) for l in channels}
     for l in range(max(present) + 1):
         if l not in present:
@@ -610,14 +626,20 @@ def gaussian_polarization(pp, energy_shift: float, confinement=None
     cutoff always taken at 0.3 eV in the default potential; and
     :math:`R(r) = r^l\,[e^{-r^2/r_{char}^2} - (a - b r^2)]`, normalized.
     """
-    l_pol = polarization_channel(pp.channels)
+    from .orbitals import basis_states
+
+    valence = {state.l: state.index for state in basis_states(pp)
+               if not state.semicore}
+    l_pol = polarization_channel(valence)
     base = l_pol - 1
-    if base not in pp.channels:
+    if base not in valence:
         raise ValueError(
             f"a Gaussian polarization shell with l = {l_pol} for "
             f"{pp.symbol} needs an l = {base} valence channel to size it from")
-    r_cut = confined_orbital(pp, base, energy_shift, confinement).r_c
-    reference = confined_orbital(pp, base, POLARIZATION_REFERENCE_SHIFT).r_c
+    index = valence[base]
+    r_cut = confined_orbital(pp, base, energy_shift, confinement, index).r_c
+    reference = confined_orbital(pp, base, POLARIZATION_REFERENCE_SHIFT,
+                                 state=index).r_c
     r_char = POLARIZATION_CHARACTER_FRACTION * reference
     table = np.asarray(pp.r, dtype=float)
     radial = table ** l_pol * quasi_gaussian(table, 1.0 / r_char ** 2, r_cut)

@@ -32,6 +32,16 @@ method and options are used throughout.  ``method="rhf"`` gives the
 mean-field (Hartree-Fock) interaction energy without any circuit, a cheap way
 to check the setup before the variational runs.
 
+**The basis-set superposition error.**  In an atom-centered basis each
+fragment inside the complex can borrow its partners' functions, which an
+isolated fragment cannot, so the complex is artificially stabilized; a
+confined (compact) basis makes this large -- the argon dimer binds by
+-18 meV with PBE in the default confined PAW-LCAO basis and by -4 meV
+unconfined.  ``counterpoise=True`` evaluates every fragment in the
+**complex's** basis instead: the other fragments' atoms stay as *ghosts*
+(their basis functions, no nucleus, pseudopotential or electrons;
+``Mandacaru(ghosts=...)``), the correction of Boys and Bernardi.
+
 .. code-block:: python
 
     from mandacaru.algorithms import interaction_energy
@@ -71,6 +81,7 @@ class InteractionEnergy:
     results: list = field(default_factory=list)   # per-run result objects
     complex_result: object = None
     energy_unit: str = "eV"             # unit of every energy above
+    counterpoise: bool = False          # fragments in the complex's basis
 
     def in_units(self, units: str = "eV") -> float:
         """The interaction energy converted to ``units`` (``"eV"`` or ``"Ha"``)."""
@@ -110,20 +121,28 @@ def _check_fragments(atoms, fragments, charges, charge):
     return frags, charges
 
 
-def _shared_grid(atoms, h, grid):
+def _shared_grid(atoms, h, grid, method_key):
     if grid is not None:
         return grid
+    import numpy as np
+    if method_key == "dft" and bool(np.any(atoms.get_pbc())):
+        # Kohn-Sham on periodic atoms is a crystal: the grid is the cell
+        # itself (the one build_crystal would make), not a bounding box.
+        from ..integrals import Grid
+        cell = np.asarray(atoms.get_cell(), dtype=float)
+        return Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, h=h,
+                    units="angstrom", cell=cell, periodic=True)
     from ._hamiltonian_from_atoms import grid_from_cell
     return grid_from_cell(atoms, h)
 
 
 def _rhf_energy(atoms, charge, grid, h, basis, active_space, spin,
-                kinetic=None):
+                kinetic=None, ghosts=()):
     """Hartree-Fock total energy of ``atoms`` on ``grid`` (Hartree)."""
     from ._hamiltonian_from_atoms import build_basis_hamiltonian
     _H, particles, _n, _profile, context = build_basis_hamiltonian(
         atoms, basis, grid, h, charge, None, spin=spin,
-        active_space=active_space, kinetic=kinetic)
+        active_space=active_space, kinetic=kinetic, ghosts=ghosts)
     if context is None:
         raise NotImplementedError(
             "interaction energies need an atom-centered basis")
@@ -142,6 +161,7 @@ def _rhf_energy(atoms, charge, grid, h, basis, active_space, spin,
 def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
                        method: str = "adapt-vqe", basis="HAO",
                        h: float = DEFAULT_GRID_SPACING, grid=None,
+                       counterpoise: bool = False,
                        **solver_kwargs) -> InteractionEnergy:
     """``E(complex) - sum_i E(fragment_i)`` with every energy on one grid.
 
@@ -167,14 +187,23 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
         Forwarded to every run (``basis`` may be a pseudopotential family --
         ``"PAW-LCAO"`` / ``"UPAW-LCAO"`` -- like anywhere else).  ``grid``
         overrides the shared grid built from the complex.
+    counterpoise : bool
+        Evaluate each fragment in the complex's basis, the other fragments'
+        atoms as ghosts (default ``False``): the basis-set superposition error
+        cancels.  Molecules and crystals (the layers of a layered crystal, a
+        molecule on a surface).
 
     Returns
     -------
     InteractionEnergy
     """
     frags, frag_charges = _check_fragments(atoms, fragments, charges, charge)
-    shared = _shared_grid(atoms, h, grid)
+    if "ghosts" in solver_kwargs:
+        raise ValueError(
+            "interaction_energy sets the ghosts itself: pass "
+            "counterpoise=True instead of ghosts=")
     method_key = str(method).strip().lower()
+    shared = _shared_grid(atoms, h, grid, method_key)
     # Output units follow the solver's convention (eV unless atomic_units).
     unit = energy_unit_label("Ha" if solver_kwargs.get("atomic_units") else "eV")
 
@@ -182,15 +211,21 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
     energies: list[float] = []
     results: list = []
     for indices, q in pieces:
-        sub = atoms[indices]
-        sub.set_cell(atoms.get_cell())
-        sub.set_pbc(atoms.get_pbc())
+        if counterpoise:
+            # The whole complex, the other fragments as ghosts.
+            sub = atoms.copy()
+            ghosts = [i for i in range(len(atoms)) if i not in indices]
+        else:
+            sub = atoms[indices]
+            sub.set_cell(atoms.get_cell())
+            sub.set_pbc(atoms.get_pbc())
+            ghosts = []
         if method_key in ("rhf", "hf", "hartree-fock"):
             energy = _rhf_energy(
                 sub, q, shared, h, basis,
                 solver_kwargs.get("active_space"),
                 solver_kwargs.get("spin", False),
-                solver_kwargs.get("kinetic"))
+                solver_kwargs.get("kinetic"), ghosts=ghosts)
             energy = float(from_hartree(energy, unit))   # RHF works in Hartree
             results.append(None)
         else:
@@ -200,6 +235,7 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
                              h=h,
                              grid=shared,
                              charge=q,
+                             **({"ghosts": ghosts} if ghosts else {}),
                              **solver_kwargs)
             sub.calc = calc
             sub.get_potential_energy()
@@ -212,4 +248,5 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
         energy=float(e_complex - sum(e_frags)), complex_energy=e_complex,
         fragment_energies=e_frags, fragments=frags, charges=frag_charges,
         method=method_key, grid=shared, results=results[1:],
-        complex_result=results[0], energy_unit=unit)
+        complex_result=results[0], energy_unit=unit,
+        counterpoise=bool(counterpoise))

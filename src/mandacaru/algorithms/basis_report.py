@@ -68,6 +68,7 @@ def _pseudo_report(name, context, symbols, fields, tables):
                                                 validate_confinement)
     from ..pseudopotentials.families import (pseudo_basis_arguments,
                                              resolve_family)
+    from ..pseudopotentials.orbitals import basis_states
 
     family = resolve_family(context["family"])
     options = dict(context.get("options") or {})
@@ -160,17 +161,29 @@ def _pseudo_report(name, context, symbols, fields, tables):
     tables["datasets"] = datasets
 
     confined = context.get("confinement") or {}
-    orbitals = [("symbol", "l", "zetas", "polarization", "r_c_Bohr",
+    orbitals = [("symbol", "n", "l", "zetas", "polarization", "r_c_Bohr",
                  "r_c_Angstrom", "eps_free_eV", "eps_basis_eV", "shift_eV")]
     for symbol in sorted(set(symbols), key=symbols.index):
         pp = potentials[symbol]
         n_zeta, n_polarization = resolve_zeta(
             _per_element(options.get("size"), symbol, "SZ"))
-        l_max = max(pp.channels)
-        for l in sorted(pp.channels):
-            orbital = confined.get(symbol, {}).get(int(l))
-            free = free_energy(pp, l) * HARTREE_TO_EV
-            polarization = n_polarization if l == l_max else 0
+        # One row per basis state (a semicore channel has two, an empty
+        # channel's bound level one), and one for each channel without.
+        states = basis_states(pp)
+        held = {state.l for state in states}
+        rows = [(state.n, state.l, state.index, state.semicore)
+                for state in states] + [
+            (int(channel.n), int(l), 0, False)
+            for l, channel in sorted(pp.channels.items()) if l not in held]
+        valence = [state for state in states if not state.semicore]
+        outer = (max(valence, key=lambda state: state.l)
+                 if valence else None)
+        for n, l, index, semicore in rows:
+            orbital = confined.get(symbol, {}).get((int(l), int(index)))
+            free = free_energy(pp, l, index) * HARTREE_TO_EV
+            polarization = (n_polarization if outer is not None
+                            and (l, index) == (outer.l, outer.index) else 0)
+            zetas = 1 if semicore else n_zeta
             if orbital is None:
                 row = ("unconfined", "unconfined", f"{free:.6f}",
                        f"{free:.6f}", "0.000000")
@@ -179,7 +192,7 @@ def _pseudo_report(name, context, symbols, fields, tables):
                        f"{orbital.r_c * BOHR_TO_ANGSTROM:.4f}",
                        f"{free:.6f}", f"{orbital.energy * HARTREE_TO_EV:.6f}",
                        f"{orbital.achieved_shift:.6f}")
-            orbitals.append((symbol, l, n_zeta, polarization) + row)
+            orbitals.append((symbol, n, l, zetas, polarization) + row)
     tables["orbitals"] = orbitals
 
     shells = context.get("polarization") or {}

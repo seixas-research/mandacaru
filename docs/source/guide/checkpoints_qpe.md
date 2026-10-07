@@ -83,7 +83,8 @@ file, and follows the molecular orbitals between the geometries:
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
-                       active_space={"orbitals": 4, "method": "mp2"},
+                       active_space={"orbitals": 4, "method": "mp2",
+                                     "symmetry": True},
                        transfer=True)
 BFGS(atoms).run(fmax=0.05)
 ```
@@ -98,6 +99,15 @@ if it lies below the reference energy. It is refused, with the reason in the
 log's `start` line, when the previous geometry was another system or pool,
 when an orbital's best match falls below `transfer_threshold` (0.9), or when
 an operator cannot be followed through the matching.
+
+A degenerate set (LiH's π pair) has no orbitals of its own, only a span, and
+the eigensolver would pick a different basis of it at each geometry -- by
+round-off, 40 degrees apart between 1.595 and 1.580 Angstrom. The orbitals of
+every degenerate set of the selector's natural orbitals are therefore fixed
+as the eigenvectors of one fixed operator (a generic quadratic in the
+position), which follow the geometry smoothly and change no physics. Keep the
+set whole with `"symmetry": True`: a count that keeps one member of a pair is
+an arbitrary choice, and the run warns.
 
 On a LiH relaxation (PAW-LCAO-DZP, four MP2 natural orbitals, `qeb`), the
 carried steps took 48 and 36 energy evaluations, against 150 from the empty

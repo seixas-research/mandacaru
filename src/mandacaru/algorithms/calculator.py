@@ -370,7 +370,9 @@ class Mandacaru(Calculator):
         ``"pbe"``, ``"r2scan"`` or the screened hybrid ``"hse06"``
         (molecules and crystals, with forces and stress), and
         ``dispersion="d4"`` for the D4
-        correction from the optional ``dftd4`` package, not for LDA),
+        correction from the optional ``dftd4`` package, not for LDA;
+        ``hartree="tensor"`` contracts a molecule's Hartree term from the
+        two-body tensor instead of the default Poisson solve),
         ``"vqe"`` (a
         fixed ansatz, chosen by
         ``ansatz=``: ``"uccsd"`` or the Hamiltonian variational ansatz
@@ -410,6 +412,13 @@ class Mandacaru(Calculator):
         extended-XYZ ``Lattice``), or a ``ValueError`` is raised.
     grid : Grid, optional
         An explicit grid, used verbatim (and frozen) for every evaluation.
+    ghosts : sequence of int, optional
+        Indices of **ghost atoms**: they keep their basis functions but carry
+        no nucleus, pseudopotential or electrons -- a fragment evaluated in a
+        larger basis, the counterpoise correction of
+        :func:`~mandacaru.algorithms.interaction.interaction_energy`
+        (``counterpoise=True``).  Molecules and crystals; forces and stress
+        are refused.
     txt : str, optional
         Path of the structured run log -- ``[SYSTEM]``, ``[BASIS]``,
         ``[ELECTRONS]``, ``[OPTIMIZATION SETUP]``, ``[ITERATIONS]``, the
@@ -879,6 +888,84 @@ class Mandacaru(Calculator):
                                   h=self.h, grid=self._grid,
                                   **options)
 
+    def polarizability(self, atoms=None, **overrides):
+        """The static polarizability of ``atoms`` (default: the attached
+        geometry) by finite fields, with this calculator's method, basis and
+        solver options.
+
+        See :func:`~mandacaru.algorithms.polarizability.polarizability`.
+        """
+        from .polarizability import polarizability
+
+        geometry = atoms if atoms is not None else self.atoms
+        if geometry is None:
+            raise ValueError("polarizability needs a geometry: pass atoms or "
+                             "attach the calculator to an Atoms object")
+        options = dict(self.solver_kwargs)
+        options.update(overrides)
+        return polarizability(geometry, method=self.method, basis=self.basis,
+                              h=self.h, grid=self._grid, **options)
+
+    def born_effective_charges(self, atoms=None, **overrides):
+        """Born effective charges of the crystal ``atoms`` (default: the
+        attached one) with this calculator's method, basis and options.
+
+        See :func:`~mandacaru.algorithms.berry_phase.born_effective_charges`.
+        """
+        from .berry_phase import born_effective_charges
+
+        geometry = atoms if atoms is not None else self.atoms
+        if geometry is None:
+            raise ValueError("born_effective_charges needs a geometry: pass "
+                             "atoms or attach the calculator to an Atoms "
+                             "object")
+        options = dict(self.solver_kwargs)
+        options.update(method=self.method, basis=self.basis, h=self.h)
+        if self._grid is not None:
+            options["grid"] = self._grid
+        options.update(overrides)
+        return born_effective_charges(geometry, **options)
+
+    def piezoelectric_tensor(self, atoms=None, **overrides):
+        """The proper piezoelectric tensor of the crystal ``atoms`` (default:
+        the attached one) with this calculator's method, basis and options.
+
+        See :func:`~mandacaru.algorithms.berry_phase.piezoelectric_tensor`.
+        """
+        from .berry_phase import piezoelectric_tensor
+
+        geometry = atoms if atoms is not None else self.atoms
+        if geometry is None:
+            raise ValueError("piezoelectric_tensor needs a geometry: pass "
+                             "atoms or attach the calculator to an Atoms "
+                             "object")
+        options = dict(self.solver_kwargs)
+        options.update(method=self.method, basis=self.basis, h=self.h)
+        if self._grid is not None:
+            options["grid"] = self._grid
+        options.update(overrides)
+        return piezoelectric_tensor(geometry, **options)
+
+    def dielectric_tensor(self, atoms=None, **overrides):
+        """The clamped-ion dielectric tensor of the crystal ``atoms``
+        (default: the attached one) with this calculator's method, basis and
+        options.
+
+        See :func:`~mandacaru.algorithms.berry_phase.dielectric_tensor`.
+        """
+        from .berry_phase import dielectric_tensor
+
+        geometry = atoms if atoms is not None else self.atoms
+        if geometry is None:
+            raise ValueError("dielectric_tensor needs a geometry: pass atoms "
+                             "or attach the calculator to an Atoms object")
+        options = dict(self.solver_kwargs)
+        options.update(method=self.method, basis=self.basis, h=self.h)
+        if self._grid is not None:
+            options["grid"] = self._grid
+        options.update(overrides)
+        return dielectric_tensor(geometry, **options)
+
     def energy_levels(self, num_states: int = 2, **solver_kwargs):
         """Excited states by variational deflation (see :mod:`mandacaru.algorithms.deflation`).
 
@@ -976,7 +1063,11 @@ class Mandacaru(Calculator):
         # built commensurate with it, so it is already the same at every
         # geometry as long as the cell does not change -- and the molecular
         # bounding-box grid would not even span the cell.
+        # Kohn-Sham decides by the geometry: periodic atoms are a crystal.
         periodic = getattr(self._solver_class, "periodic_hamiltonian", False)
+        decides = getattr(self._solver_class, "_is_periodic", None)
+        if not periodic and decides is not None:
+            periodic = bool(decides(atoms))
         grid = (self._frozen_grid(atoms)
                 if want_forces and not periodic else self._grid)
         solver = self._make_solver(grid=grid)
@@ -1629,6 +1720,13 @@ class Mandacaru(Calculator):
         """
         from .forces import nuclear_gradient
 
+        if getattr(solver, "ghosts", ()):
+            self._refuse_ghosts("forces")
+        if getattr(solver, "electric_field", None) is not None:
+            raise NotImplementedError(
+                "forces in an electric field are not implemented: the field "
+                "pulls on the nuclei and moves the basis's dipole matrices "
+                "with them, terms the gradient here does not contain")
         context = getattr(solver, "_gradient_context", None)
         if context is None:
             raise NotImplementedError(
@@ -2364,12 +2462,14 @@ class Mandacaru(Calculator):
         integrated charge, the natural-orbital occupation and -- for PAW-LCAO -- the
         augmentation charge the smooth density on the grid does not carry.
         """
+        self._refuse_ghosts("volumetric files")
         volumetric = self.volumetric_field(quantity, index, state=state,
                                            component=component, grid=grid)
         volumetric.write(path, format=format, comment=comment)
         return volumetric
 
-    def natural_orbitals(self, *, state=0, grid=None):
+    def natural_orbitals(self, *, state=0, grid=None, method=None,
+                         **options):
         """Natural orbitals and occupations of the converged state.
 
         The eigen-decomposition of the spin-summed one-particle density matrix:
@@ -2377,7 +2477,21 @@ class Mandacaru(Calculator):
         orbitals in both the atomic- and molecular-orbital bases.  Occupations
         that are not 2 or 0 are the correlation the variational state carries
         beyond a single determinant.
+
+        With ``method`` (a crystal's ``method="dft"`` run): the Bloch natural
+        orbitals of a correlated density matrix built on the Kohn-Sham states,
+        ``method="rpa"`` (:meth:`~mandacaru.algorithms.dft.DFTDriver.
+        natural_orbitals`, which takes the ``options``).
         """
+        if method is not None:
+            if not hasattr(self.solver, "projectabilities"):
+                raise ValueError("natural_orbitals(method=...) builds a "
+                                 "crystal's correlated density matrix: it "
+                                 "needs Mandacaru(method='dft') on a crystal")
+            return self.solver.natural_orbitals(method=method, **options)
+        if options:
+            raise TypeError(f"unexpected options {sorted(options)}: they "
+                            "belong to natural_orbitals(method='rpa')")
         from .volumetric import state_natural_orbitals
 
         solver, integrals, frozen, active = self._volumetric_context()
@@ -2435,6 +2549,7 @@ class Mandacaru(Calculator):
         from .pseudo_forces import spatial_rdms
 
         solver = self.solver
+        self._refuse_ghosts("stresses")
         geometry = atoms if atoms is not None else self.atoms
         if getattr(solver, "crystal_stress", None) is not None and \
                 geometry is not None and bool(np.any(geometry.pbc)):
@@ -2682,6 +2797,15 @@ class Mandacaru(Calculator):
             eri_periodic, eri_truncated, D, Gamma, volume=volume,
             n_cells=n_cells, energy_per_cell=energy_per_cell)
 
+    def _refuse_ghosts(self, what: str) -> None:
+        """Raise when the solver has ghost atoms: per-atom properties of a
+        counterpoise fragment are not defined (a ghost has no nucleus)."""
+        if getattr(self.solver, "ghosts", ()):
+            raise NotImplementedError(
+                f"{what} are not defined with ghost atoms: they carry basis "
+                "functions but no nucleus or electrons (ghosts are for "
+                "counterpoise energies)")
+
     def atomic_partition(self, method: str = "hirshfeld", *, state=0,
                          grid=None):
         """Split the converged density between the atoms.
@@ -2707,6 +2831,7 @@ class Mandacaru(Calculator):
             basin boundary is resolved to one grid spacing, so it is the
             partition that most repays a finer one.
         """
+        self._refuse_ghosts("atomic populations")
         from .charges import partition_state
 
         # The converged state's partition is computed once per method:

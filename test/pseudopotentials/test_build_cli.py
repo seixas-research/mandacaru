@@ -104,6 +104,20 @@ def test_install_writes_into_the_functional_folder(tmp_path, monkeypatch,
     assert (tmp_path / "lda-sr" / "H.parquet").is_file()
 
 
+def test_a_pbe_install_writes_into_the_pbe_set(tmp_path, monkeypatch,
+                                               capsys):
+    """``--xc pbe --install`` fills ``pbe-sr/``, the folder the PBE
+    datasets are read from, and the file says it is PBE."""
+    from mandacaru.pseudopotentials.io import load_pseudopotential
+
+    monkeypatch.setenv("MANDACARU_PAW_PATH", str(tmp_path))
+    assert main(["--pp", "PAW", "--element", "H", "--xc", "pbe",
+                 "--install"]) == 0
+    path = tmp_path / "pbe-sr" / "H.parquet"
+    assert path.is_file() and not (tmp_path / "lda-sr").exists()
+    assert load_pseudopotential(str(path)).xc == "pbe"
+
+
 def _blas_threads():
     import numpy
     from threadpoolctl import threadpool_info

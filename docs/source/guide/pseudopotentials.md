@@ -149,15 +149,22 @@ them projector augmented waves.
    Moré–Sorensen branch (`constrained_minimum`). No SLSQP; the norm matrix is
    satisfied to 1e-14 (`optimize_pseudo_waves`).
 3. **Local potential.** An even polynomial continuation of the screened AE
-   potential inside $r_{cl} = 0.9\,\min_l r_c$ (value and four derivatives
+   potential inside $r_{cl} = 0.9\,\max_l r_c$ (value and four derivatives
    matched, `polynomial_local_potential`; Hamann's `dvloc0` shift of the
    origin value is available as `local_shift`, default 0), unscreened with
    the Hartree and LDA xc potentials of the pseudo valence density.
 4. **Ghost and scattering checks.** The generator checks that the local
    potential and the projectors bind no spurious state below the valence
    level and that the logarithmic derivative of the smooth system matches the
-   all-electron one (`ghost_free`, `log_derivative_ae`). A failing candidate is
-   repaired by local shifts and cutoff adjustments; what cannot be repaired is
+   all-electron one (`ghost_free`, `log_derivative_ae`) -- for every channel
+   with projectors, and, within 0.2 rad, for every angular momentum without
+   them up to one above the highest channel, which scatters off the local
+   potential alone (`unprojected_scattering_errors`). A failing candidate is
+   repaired first by a shorter local radius with no shift, then by local
+   shifts and cutoff adjustments. The order matters: a shift acts on every
+   angular momentum the projectors do not cover, and aluminum's former 5 Ha
+   shift scattered d 0.52 rad off and put fcc Al 12 % too large. What cannot
+   be repaired is
    refused, kept or flagged on the dataset as the `ghosts` mode says
    (`"repair"`, `"refuse"`, `"keep"`, `"flag"`), and a flagged dataset warns
    with `GhostStateWarning` when it is loaded.
@@ -173,9 +180,33 @@ calculation that later reads it.
 | `relativity` | `"scalar"` | `"none"`, `"scalar"` (Koelling–Harmon) or `"dirac"` (each $j$ separately) |
 | `xc` | `"lda"` | `"lda"` or `"pbe"`; screens the atom and unscreens the potential with the same functional |
 | `nlcc` | `True` | Partial core density; `True` matches where $\rho_c = \rho_v$, a float sets the radius |
-| `extra_l` | `0`, La: `1` | Empty channels above the highest occupied valence $l$; a bound non-core atom level is the first reference when present, otherwise both references scatter |
+| `extra_l` | `0`, La: `1`; K, Ca, Rb, Sr: up to d | Empty channels above the highest occupied valence $l$; a bound non-core atom level is the first reference when present, otherwise both references scatter |
 | `points`, `r_max` | per element | The radial grid of the reference atom |
 | `frozen_subshells` | Tl–Rn: `4f`; otherwise none | Move selected occupied subshells into the pseudopotential core |
+| `semicore_subshells` | Na, Mg, K, Ca, Rb, Sr: $(n-1)s\,(n-1)p$; otherwise none | Move selected filled core subshells into the valence; `()` turns it off |
+
+**Semicore valence.** An alkali or alkaline-earth atom with an $s$ channel
+alone has no projectors for $p$, and its $p$ scattering -- the metallic bond
+-- is the local potential's. No local potential is both ghost-free and right
+for it: every sodium built that way put bcc Na 10–40 % off its lattice
+constant, either way. The shipped datasets of Na, Mg, K, Ca, Rb and Sr
+therefore carry the $(n-1)s\,(n-1)p$ shell in valence (sodium:
+$2s^2 2p^6 3s^1$, 9 electrons). The $p$ channel gets the semicore $p$ as its
+bound reference; the $s$ channel has two bound references, the semicore and
+the valence $s$; the cutoff is 0.7 of the valence $s$ orbital's peak radius
+(Na 2.3 Bohr, against 4.2 for the old $s$-only dataset), inside half of each
+elemental crystal's nearest-neighbor distance. K, Ca, Rb and Sr also get an
+empty d channel, and calcium's binds a 3d that joins the basis. Semicore
+sodium puts bcc Na at 4.09 Å (all-electron LDA 4.05), fcc Ca 5.32 (5.33),
+and
+Na₂, NaH and NaCl within 1 % of all-electron LDA bond lengths. Cs, Ba, Fr
+and Ra are not semicore yet -- cesium's d channel then binds a ghost and
+barium's and francium's f scatter wrongly -- so they ship $s$-only and
+flagged: their datasets warn on load that the local potential scatters
+wrongly. The price is
+8 more electrons per atom and four more basis functions (the semicore $s$
+and $p$ are always single-zeta; only the valence $s$ is split and
+polarized).
 
 The `xc` argument belongs to the dataset. It is not the functional of a later
 calculation: `Mandacaru(method="dft", xc=...)` chooses its own, and the shipped
@@ -752,7 +783,8 @@ nothing to correct.
   one-center xc corrections were linearized at the LDA level.
 * **Two partial waves per channel**, at $\varepsilon_1$ and
   $\varepsilon_1 + \Delta$ (a per-dataset $\Delta$ only where a repair
-  needed one), no projectors above the valence $l$ unless `extra_l` asks for
+  needed one; a semicore $s$ channel's are both bound states), no
+  projectors above the valence $l$ unless `extra_l` asks for
   them (or a frozen 4f leaves an empty f channel, Tl–Rn), and a scaled-norm
   construction of the smooth waves rather than Blöchl's free polynomial
   pseudization (the price of a guaranteed positive definite overlap with this

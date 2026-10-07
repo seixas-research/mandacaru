@@ -70,22 +70,28 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..basis import hse
+from . import vv10
 from ..basis.xc import DENSITY_FLOOR, xc_partials, xc_potential
 
 #: Functionals the grid evaluator accepts, as ``Mandacaru(method="dft", xc=...)``.
-GRID_FUNCTIONALS = ("lda", "pbe", "r2scan", "hse06")
+GRID_FUNCTIONALS = ("lda", "pbe", "r2scan", "hse06", "r2scan-rvv10")
 
 #: Spellings accepted for each functional.
 _ALIASES = {"lda": "lda", "pz": "lda", "pz81": "lda", "ldapz": "lda",
             "pbe": "pbe", "gga": "pbe", "ggapbe": "pbe",
             "r2scan": "r2scan", "r²scan": "r2scan", "mggar2scan": "r2scan",
-            "hse06": "hse06", "hse": "hse06"}
+            "hse06": "hse06", "hse": "hse06",
+            "r2scanrvv10": "r2scan-rvv10", "r2scan+rvv10": "r2scan-rvv10"}
 
 #: Screened hybrids: ``(omega, fraction)`` -- the range separation (1/Bohr)
 #: and the fraction of short-range exchange that is exact.  The grid
 #: evaluates their semilocal part only; the Kohn-Sham solver adds
 #: ``fraction`` of the short-range exact exchange.
 HYBRIDS = {"hse06": (hse.OMEGA, hse.EXACT_FRACTION)}
+
+#: Functionals with rVV10 nonlocal correlation (:mod:`.vv10`): the semilocal
+#: functional they add it to, and rVV10's ``b`` for that pairing.
+NONLOCAL = {"r2scan-rvv10": ("r2scan", vv10.B_R2SCAN)}
 
 #: Below this density the gradient terms are dropped on the grid.  The reduced
 #: gradient diverges in the exponential tail, where the density carries no
@@ -94,8 +100,8 @@ GRADIENT_DENSITY_FLOOR = 1e-10
 
 
 def resolve_functional(name: str) -> str:
-    """Canonical name (``"lda"``, ``"pbe"``, ``"r2scan"`` or ``"hse06"``)
-    of a spec."""
+    """Canonical name (``"lda"``, ``"pbe"``, ``"r2scan"``, ``"hse06"`` or
+    ``"r2scan-rvv10"``) of a spec."""
     key = str(name).strip().lower().replace("-", "").replace("_", "")
     if key not in _ALIASES:
         raise ValueError(
@@ -104,9 +110,21 @@ def resolve_functional(name: str) -> str:
     return _ALIASES[key]
 
 
+def semilocal_part(name: str) -> str:
+    """The semilocal functional of ``name``: itself, or the one rVV10 is
+    added to (:data:`NONLOCAL`)."""
+    key = resolve_functional(name)
+    return NONLOCAL[key][0] if key in NONLOCAL else key
+
+
+def has_nonlocal_correlation(name: str) -> bool:
+    """Whether the functional adds rVV10 nonlocal correlation."""
+    return resolve_functional(name) in NONLOCAL
+
+
 def is_meta_gga(name: str) -> bool:
     """Whether the functional depends on the kinetic-energy density."""
-    return resolve_functional(name) == "r2scan"
+    return semilocal_part(name) == "r2scan"
 
 
 def is_hybrid(name: str) -> bool:
@@ -120,7 +138,16 @@ def takes_relativistic_exchange(name: str) -> bool:
     r\\ :sup:`2`\\ SCAN has no relativistic form, and a hybrid's exact
     exchange has none either, so neither takes the factor.
     """
-    return resolve_functional(name) in ("lda", "pbe")
+    return semilocal_part(name) in ("lda", "pbe")
+
+
+def _nonlocal(grid, key, density, sigma, weighted):
+    """rVV10's energy and GGA-type partials, or zeros without it."""
+    if key not in NONLOCAL:
+        return 0.0, 0.0, 0.0
+    terms = vv10.nonlocal_correlation(grid, density, sigma, b=NONLOCAL[key][1])
+    return (terms.energy, terms.d_density,
+            np.where(weighted, terms.d_sigma, 0.0))
 
 
 def _screening(key: str, screening):
@@ -155,15 +182,21 @@ class XCTerms:
 
 
 def _wavevectors(grid):
-    """Cartesian ``(Gx, Gy, Gz)`` of the grid's FFT, each ``(n1, n2, n3)``.
+    """Cartesian ``(Gx, Gy, Gz)`` the derivatives multiply by, each
+    ``(n1, n2, n3)``.
 
-    From the reciprocal vectors of the cell the grid spans
-    (:func:`~mandacaru.integrals.reciprocal.wavevectors`), so a skewed cell --
-    hexagonal, monoclinic, triclinic -- is differentiated as exactly as an
-    orthogonal one.
+    From the reciprocal vectors of the cell the grid spans, so a skewed cell
+    -- hexagonal, monoclinic, triclinic -- is differentiated as exactly as an
+    orthogonal one, and averaged over the grid's lattice operations
+    (:func:`~mandacaru.integrals.reciprocal.symmetric_aliases`) rather than
+    the FFT box's alone: every operation that maps the grid onto itself
+    then commutes with the gradient and the divergence, so a
+    gradient-dependent functional is exactly as symmetric as the density it
+    is given.  On an orthorhombic grid this is the box, and a real field's
+    derivatives are the box's.
     """
-    from .reciprocal import wavevectors
-    return tuple(wavevectors(grid))
+    from .reciprocal import symmetric_wavevectors
+    return tuple(symmetric_wavevectors(grid))
 
 
 def gradient(grid, field: np.ndarray) -> np.ndarray:
@@ -232,8 +265,9 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         Electron density on the flat grid (electrons per Bohr^3), any partial
         core already added.
     functional : str
-        ``"lda"``, ``"pbe"``, ``"r2scan"`` or ``"hse06"``
-        (:func:`resolve_functional`).
+        ``"lda"``, ``"pbe"``, ``"r2scan"``, ``"hse06"`` or
+        ``"r2scan-rvv10"`` (:func:`resolve_functional`); the last adds rVV10
+        nonlocal correlation of ``density`` (:mod:`.vv10`).
     relativistic : bool
         The relativistic exchange factor of a relativistic reference atom
         (LDA and PBE; see :func:`~mandacaru.basis.xc.relativistic_exchange_factors`).
@@ -254,7 +288,8 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         take exact exchange from.  The potential is the derivative with
         respect to the valence density, which both parts depend on alike.
     """
-    key = resolve_functional(functional)
+    full = resolve_functional(functional)
+    key = semilocal_part(full)
     screening = _screening(key, screening)
     rho = np.maximum(np.asarray(density, dtype=float), 0.0)
     dV = grid.dV
@@ -289,9 +324,11 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         from ..basis import r2scan
         f, df_drho, df_dsigma, df_dtau = r2scan.partials(
             np.where(weighted, rho, 0.0), sigma, np.asarray(tau, dtype=float))
+    e_nl, v_nl, s_nl = _nonlocal(grid, full, rho, sigma, weighted)
+    df_drho, df_dsigma = df_drho + v_nl, df_dsigma + s_nl
     potential = _clipped(density, df_drho
                          - divergence(grid, 2.0 * df_dsigma * grad))
-    energy = float(np.sum(f) * dV)
+    energy = float(np.sum(f) * dV) + e_nl
     if screening is not None and screening[1] != 0.0:
         omega, fraction = screening
         exchange = rho if exchange_density is None else exchange_density
@@ -331,7 +368,8 @@ def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
     """
     from ..basis.xc_spin import spin_partials
 
-    key = resolve_functional(functional)
+    full = resolve_functional(functional)
+    key = semilocal_part(full)
     screening = _screening(key, screening)
     up = np.maximum(np.asarray(density_up, dtype=float), 0.0)
     dn = np.maximum(np.asarray(density_dn, dtype=float), 0.0)
@@ -350,6 +388,9 @@ def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
     s_uu = np.where(weighted, np.sum(grad_up * grad_up, axis=0), 0.0)
     s_ud = np.where(weighted, np.sum(grad_up * grad_dn, axis=0), 0.0)
     s_dd = np.where(weighted, np.sum(grad_dn * grad_dn, axis=0), 0.0)
+    # rVV10 sees the total density as `evaluate` does -- before the
+    # meta-GGA's floor below.
+    total = up + dn
     if key == "r2scan":
         if tau_up is None or tau_dn is None:
             raise ValueError("a meta-GGA needs the kinetic-energy densities")
@@ -363,11 +404,17 @@ def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
         relativistic=relativistic)
     d_uu, d_ud, d_dd = (np.where(weighted, d, 0.0)
                         for d in (d_uu, d_ud, d_dd))
+    # rVV10 sees the total density: one dE/dn for both channels, and
+    # sigma = s_uu + 2 s_ud + s_dd spreads dE/dsigma as (1, 2, 1).
+    e_nl, v_nl, s_nl = _nonlocal(grid, full, total,
+                                 s_uu + 2.0 * s_ud + s_dd, weighted)
+    v_up, v_dn = v_up + v_nl, v_dn + v_nl
+    d_uu, d_ud, d_dd = d_uu + s_nl, d_ud + 2.0 * s_nl, d_dd + s_nl
     potential_up = _clipped(density_up, v_up - divergence(
         grid, 2.0 * d_uu * grad_up + d_ud * grad_dn))
     potential_dn = _clipped(density_dn, v_dn - divergence(
         grid, 2.0 * d_dd * grad_dn + d_ud * grad_up))
-    energy = float(np.sum(f) * dV)
+    energy = float(np.sum(f) * dV) + e_nl
     if screening is not None and screening[1] != 0.0:
         omega, fraction = screening
         pair = ((up, dn) if exchange_densities is None

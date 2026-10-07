@@ -26,6 +26,8 @@ integral engine unchanged.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.interpolate import CubicSpline
 
@@ -94,17 +96,26 @@ class PseudoAtomicOrbital(_RadialTabulated):
         version of exactly this function; everything else -- the quantum
         numbers, the reference eigenvalue, the class -- is unchanged, so the
         filter is a change of *basis function*, never of pseudopotential.
+    index : int
+        The channel's partial wave the orbital is: 0, or 1 for a semicore
+        channel's valence state (sodium's 3s next to its 2s).
+    eigenvalue : float, optional
+        The orbital's level when it is not the channel's reference energy:
+        an empty channel's bound state (calcium's 3d).
     """
 
     def __init__(self, pseudopotential, l: int, m: int, center=None,
-                 units: str = "angstrom", radial=None):
+                 units: str = "angstrom", radial=None, index: int = 0,
+                 eigenvalue: float | None = None):
         channel = pseudopotential.channels[int(l)]
+        index = int(index)
         super().__init__(pseudopotential.r,
-                         channel.pseudo_radial if radial is None else radial,
-                         l, m, center, units)
+                         channel.pseudo_waves[index] if radial is None
+                         else radial, l, m, center, units)
         self.symbol = pseudopotential.symbol
-        self.n = int(channel.n)
-        self.eigenvalue = float(channel.eigenvalue)
+        self.n = int(channel.n) + index
+        self.eigenvalue = float(channel.reference_energies[index]
+                                if eigenvalue is None else eigenvalue)
 
     @property
     def state(self) -> tuple[int, int, int]:
@@ -265,13 +276,18 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
 
     confined: dict = {}
 
-    def first_radial(symbol, pp, l):
-        """The first zeta's ``R(r)``: the family's confined orbital when it
-        supplies one, else the pseudopotential's stored orbital."""
-        key = (symbol, int(l))
+    def first_radial(symbol, pp, l, index=0, empty=False):
+        """The first zeta's ``R(r)`` of the channel's ``index``-th occupied
+        state: the family's confined orbital when it supplies one, else the
+        pseudopotential's stored partial wave -- or, for an empty channel's
+        bound level, its eigenstate (the stored waves there scatter)."""
+        key = (symbol, int(l), int(index))
         if key not in confined:
-            radial = None if first_zeta is None else first_zeta(symbol, pp, l)
-            confined[key] = (np.asarray(pp.channels[l].pseudo_radial,
+            radial = (None if first_zeta is None
+                      else first_zeta(symbol, pp, l, index))
+            if radial is None and empty:
+                radial = bound_radial(pp, l)
+            confined[key] = (np.asarray(pp.channels[l].pseudo_waves[index],
                                         dtype=float)
                              if radial is None
                              else np.asarray(radial, dtype=float))
@@ -306,33 +322,42 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         # Empty scattering or bound-reference channels improve the nonlocal
         # operator without adding electrons. They supply projectors, not
         # minimal valence basis functions (or a new polarization parent).
-        occupied_channels = [l for l, channel in sorted(pp.channels.items())
-                             if channel.occupation > 0.0]
+        # Every occupied state gets a function -- a semicore channel two --
+        # and so does an empty channel's bound level (calcium's 3d); only the
+        # valence ones are split into zetas and polarized.
+        states = basis_states(pp)
         n_zeta, n_polarization = resolve_zeta(size_of(symbol))
         if n_zeta == 1 and n_polarization == 0:
             # Minimal valence set: the original path, unchanged.
-            for l in occupied_channels:
-                radial = first_radial(symbol, pp, l)
-                if k_c is None and first_zeta is None:
+            for state in states:
+                l = state.l
+                radial = first_radial(symbol, pp, l, state.index, state.empty)
+                if k_c is None and first_zeta is None and not state.empty:
                     radial = None          # the stored table, byte for byte
                 else:
-                    radial = filtered(symbol, ("sz", l), pp.r, radial, l)
+                    radial = filtered(symbol, ("sz", l, state.index), pp.r,
+                                      radial, l)
                 for m in range(-l, l + 1):
                     functions.append(PseudoAtomicOrbital(
-                        pp, l, m, center=position, units=units, radial=radial))
+                        pp, l, m, center=position, units=units, radial=radial,
+                        index=state.index, eigenvalue=state.level))
                     owners.append(index)
             continue
 
         tables = []
-        l_max = max(occupied_channels)
-        for l in occupied_channels:
-            channel = pp.channels[l]
-            for table in zeta_tables(pp.r, first_radial(symbol, pp, l),
-                                     int(channel.n), l, n_zeta,
+        valence = [state for state in states if not state.semicore]
+        outer = max(valence, key=lambda state: state.l)
+        l_max = outer.l
+        for state in states:
+            for table in zeta_tables(pp.r,
+                                     first_radial(symbol, pp, state.l,
+                                                  state.index, state.empty),
+                                     state.n, state.l,
+                                     1 if state.semicore else n_zeta,
                                      split_norm_of(symbol),
                                      tail_norms=tail_norms):
-                tables.append(filtered_table(symbol, ("z", l, table.zeta),
-                                             table))
+                tables.append(filtered_table(
+                    symbol, ("z", state.l, state.index, table.zeta), table))
         # Polarization: raise the outermost channel to l+1.  Solving a new
         # confined orbital is not an option here -- there is no pseudopotential
         # channel for an unoccupied l -- so the shape is r^k R_outer(r),
@@ -340,7 +365,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         # nucleus.  (Reusing R_outer itself gave R_p(0) != 0, a function
         # discontinuous at its own center whose derivative blew up whenever a
         # nucleus sat on a grid node.)
-        outermost = first_radial(symbol, pp, l_max)
+        outermost = first_radial(symbol, pp, l_max, outer.index, outer.empty)
         r_table = np.asarray(pp.r, dtype=float)
         custom = (polarization_shape(symbol, pp)
                   if polarization_shape is not None and n_polarization > 0
@@ -379,6 +404,94 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         functions.extend(atom_functions)
         owners.extend([index] * len(atom_functions))
     return functions, owners
+
+
+@dataclass(frozen=True)
+class OccupiedState:
+    """One state a dataset's basis is built on: channel ``l``, its partial
+    wave ``index``, principal number ``n``, whether it is semicore, and --
+    for an empty channel's bound level (calcium's 3d, :func:`basis_states`)
+    -- ``empty`` and that ``level`` (Hartree)."""
+
+    l: int
+    index: int
+    n: int
+    semicore: bool
+    empty: bool = False
+    level: float | None = None
+
+
+#: An empty channel's lowest level is a bound state below this (Hartree);
+#: above it the level belongs to the box (potassium's d: +0.004).
+BOUND_LEVEL = -1e-3
+
+#: ``(id(dataset), l) -> (dataset, lowest level)``.
+_LEVEL_CACHE: dict = {}
+
+
+def _lowest_level(pp, l: int) -> float:
+    from .paw import paw_spectrum
+    entry = _LEVEL_CACHE.get((id(pp), int(l)))
+    if entry is None or entry[0] is not pp:
+        entry = (pp, float(paw_spectrum(pp, int(l), n_states=1)[0]))
+        _LEVEL_CACHE[(id(pp), int(l))] = entry
+    return entry[1]
+
+
+def bound_radial(pp, l: int) -> np.ndarray:
+    """``R(r)`` on ``pp.r`` of channel ``l``'s lowest eigenstate in the
+    dataset's own operator, zero past the box it was solved in."""
+    from .paw import paw_eigenstate
+    r, u, _energy = paw_eigenstate(pp, int(l))
+    table = np.asarray(pp.r, dtype=float)
+    spline = CubicSpline(np.concatenate([[0.0], r]), np.concatenate([[0.0], u]))
+    return np.where(table < r[-1], spline(np.minimum(table, r[-1])) / table,
+                    0.0)
+
+
+#: Empty channels that carry projectors for their scattering only: their
+#: bound level stays out of the basis.  Lithium's p channel binds a 2p at
+#: -0.042 Ha; as a basis state it would make the minimal LiH basis five
+#: orbitals instead of two, and at DZP it moved bcc Li, Li2, LiH and LiF by
+#: -0.5, +1.4, -1.6 and +1.3 % against the polarization shell it replaces
+#: (HISTORY.md, 2026-10-07).
+SCATTERING_ONLY_CHANNELS = {"Li": (1,)}
+
+
+def basis_states(pp) -> list[OccupiedState]:
+    """:func:`occupied_states` plus the bound level of every empty channel
+    that has one (but :data:`SCATTERING_ONLY_CHANNELS`).  Calcium's d
+    channel binds a 3d at -0.078 Ha that the crystal fills; without it in
+    the basis fcc Ca came out 7-9 % too large with every zeta and
+    polarization count (HISTORY.md, 2026-10-06)."""
+    states = occupied_states(pp)
+    held = {state.l for state in states}
+    held |= set(SCATTERING_ONLY_CHANNELS.get(str(pp.symbol), ()))
+    for l, channel in sorted(pp.channels.items()):
+        if int(l) in held:
+            continue
+        level = _lowest_level(pp, l)
+        if level < BOUND_LEVEL:
+            states.append(OccupiedState(int(l), 0, int(channel.n), False,
+                                        empty=True, level=level))
+    return states
+
+
+def occupied_states(pp) -> list[OccupiedState]:
+    """Every occupied reference state of a dataset, channel by channel: one
+    per occupied channel, two in a semicore one (sodium's 2s and 3s; the
+    second is one shell up)."""
+    semicore = {tuple(o) for o in getattr(pp, "semicore_subshells", ())}
+    out = []
+    for l, channel in sorted(pp.channels.items()):
+        occupations = (getattr(channel, "occupations", None)
+                       or [channel.occupation])
+        for i, occupation in enumerate(occupations):
+            if occupation > 0.0:
+                n = int(channel.n) + i
+                out.append(OccupiedState(int(l), i, n,
+                                         (n, int(l)) in semicore))
+    return out
 
 
 def valence_electrons(symbols, potentials) -> float:

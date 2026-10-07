@@ -128,22 +128,35 @@ SYSTEMS = {"H2": (h2, H2_H), "LiH": (lih, LIH_H)}
 #:                            LiH -0.770399 / -0.778117 -> -0.770383 / -0.778098
 #:   PAW_BEFORE_BASIS_FILTER  H2 -1.094880 / -1.108644 -> -1.094860 / -1.108624
 #:                            LiH -0.770438 / -0.778153 -> -0.770423 / -0.778134
-PAW = {"H2": {"rhf": -1.094853, "adapt": -1.108603},
-       "LiH": {"rhf": -0.769924, "adapt": -0.777664}}
+#:
+#: Re-measured 2026-10-05: the isolated Coulomb kernel became spectral at the
+#: singularity (the grid's own O(h^2) error of 1/r gone; H2 +1.85 mHa, LiH
+#: +2.6 mHa) and the libraries were regenerated with the continuous PZ81
+#: (HISTORY 2026-10-04/05).  Old -> new, rhf / adapt:
+#:   PAW                      H2 -1.094853 / -1.108603 -> -1.093006 / -1.107128
+#:                            LiH -0.769924 / -0.777664 -> -0.767303 / -0.775581
+#:   PAW_FILTER_ONLY          H2 -1.094899 / -1.108650 -> -1.093052 / -1.107175
+#:                            LiH -0.769906 / -0.777647 -> -0.767286 / -0.775564
+#:   PAW_EXACT_LOCAL_ONLY     H2 -1.094867 / -1.108632 -> -1.093020 / -1.107156
+#:                            LiH -0.770383 / -0.778098 -> -0.767757 / -0.776009
+#:   PAW_BEFORE_BASIS_FILTER  H2 -1.094860 / -1.108624 -> -1.093013 / -1.107148
+#:                            LiH -0.770423 / -0.778134 -> -0.767796 / -0.776045
+PAW = {"H2": {"rhf": -1.093006, "adapt": -1.107128},
+       "LiH": {"rhf": -0.767303, "adapt": -0.775581}}
 #: The filter alone (``exact_local_potential = False``).
 PAW_FILTER_ONLY = {
-    "H2": {"rhf": -1.094899, "adapt": -1.108650},
-    "LiH": {"rhf": -0.769906, "adapt": -0.777647}}
+    "H2": {"rhf": -1.093052, "adapt": -1.107175},
+    "LiH": {"rhf": -0.767286, "adapt": -0.775564}}
 #: The exact local potential alone (``filter=False``).
 PAW_EXACT_LOCAL_ONLY = {
-    "H2": {"rhf": -1.094867, "adapt": -1.108632},
-    "LiH": {"rhf": -0.770383, "adapt": -0.778098}}
+    "H2": {"rhf": -1.093020, "adapt": -1.107156},
+    "LiH": {"rhf": -0.767757, "adapt": -0.776009}}
 #: Neither: ``filter=False`` and ``exact_local_potential = False`` -- the
 #: pre-2026-09-20 model.  Not wrong, just grid-sampled throughout; pinned so
 #: both flips are auditable.
 PAW_BEFORE_BASIS_FILTER = {
-    "H2": {"rhf": -1.094860, "adapt": -1.108624},
-    "LiH": {"rhf": -0.770423, "adapt": -0.778134}}
+    "H2": {"rhf": -1.093013, "adapt": -1.107148},
+    "LiH": {"rhf": -0.767796, "adapt": -0.776045}}
 #: The family's **default basis** since 2026-09-20: the four tables above with
 #: the first zeta *confined* (``energy_shift = 0.1`` eV; H 1s at
 #: 6.68 Bohr, Li 2s at 11.20).  A mild confinement lowers a minimal basis's
@@ -157,10 +170,12 @@ PAW_BEFORE_BASIS_FILTER = {
 #: level:  H2 adapt -1.128000 -> -1.127986   LiH adapt -0.779032 -> -0.779033
 #: and 2026-09-30 (libraries rebuilt 2026-09-28/30, as above):
 #:   H2  adapt -1.127986 -> -1.127967   LiH adapt -0.779033 -> -0.779013
+#: and 2026-10-05 (spectral Coulomb kernel, regenerated libraries, as above):
+#:   H2  adapt -1.127967 -> -1.126352   LiH adapt -0.779013 -> -0.776997
 #: The ``rhf`` entries are only an upper bound (``PIN_TOL``) and were not
 #: re-measured.
-PAW_DEFAULT = {"H2": {"rhf": -1.118043, "adapt": -1.127967},
-               "LiH": {"rhf": -0.773118, "adapt": -0.779013}}
+PAW_DEFAULT = {"H2": {"rhf": -1.118043, "adapt": -1.126352},
+               "LiH": {"rhf": -0.773118, "adapt": -0.776997}}
 #: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
 PAW_BEFORE_COMPENSATION_ATTRACTION = {
     "H2": {"rhf": -1.053292, "adapt": -1.067402},
@@ -230,7 +245,7 @@ def _total(integrals, n_electrons) -> float:
 # (a) Atomic validation on the radial grid.
 # --------------------------------------------------------------------------- #
 
-CHANNELS = [("H", 0), ("Li", 0), ("O", 0), ("O", 1)]
+CHANNELS = [("H", 0), ("C", 0), ("O", 0), ("O", 1)]
 
 
 @pytest.mark.slow
@@ -382,7 +397,7 @@ class TestAtomic:
             ae = np.interp(r, pp.r, channel.ae_waves[0]) * r
             assert np.abs(rec - ae).max() < 1e-6
 
-    @pytest.mark.parametrize("symbol", ["H", "Li", "O"])
+    @pytest.mark.parametrize("symbol", ["H", "C", "O"])
     def test_unscreening_and_compensation(self, symbol):
         pp = generated(symbol)
         r = pp.r
@@ -473,11 +488,14 @@ class TestAtomic:
             generate_paw("Li", norm_deficit=None, atom=generated("Li").atom)
 
     def test_projectors_reach_the_local_radius(self):
-        """Aluminum (s 2.68, p 3.43 Bohr): r_cl follows the larger cutoff, the
-        s projectors extend past their own r_cut to it, and the channel is
-        still dual, symmetric and ghost-free."""
+        """Aluminum at its own cutoffs (s 2.68, p 3.43 Bohr) and the default
+        local radius: r_cl follows the larger cutoff, the s projectors extend
+        past their own r_cut to it, and the channel is still dual, symmetric
+        and ghost-free (at the old repair's 5 Ha; the repair now shortens
+        aluminum's local radius below its s cutoff instead)."""
         from mandacaru.pseudopotentials import partial_waves, paw
-        pp = generated("Al")
+        pp = generate_paw("Al", ghosts="keep", norm_deficit=0.0,
+                          local_shift=5.0, atom=generated("Al").atom)
         s, p = pp.channels[0], pp.channels[1]
         assert pp.r_cut_local > s.r_cut
         assert pp.projector_radius(0) == pytest.approx(pp.r_cut_local)
@@ -488,12 +506,32 @@ class TestAtomic:
         assert s.duality_error < 1e-10 and s.asymmetry < 1e-6
         assert partial_waves.ghost_errors(pp, paw._paw_levels) == {}
 
+    def test_the_local_potential_alone_scatters_like_the_atom(self):
+        """K21: aluminum's d channel has no projectors.  Repaired with a 5 Ha
+        raise over 0.9 x its p cutoff (the old search's choice) it scattered
+        d 0.52 rad off and put fcc Al at 4.48 Angstrom; the search now
+        shortens the local radius at no raise instead (HISTORY.md,
+        2026-10-06, "K21 diagnosed")."""
+        from mandacaru.pseudopotentials import partial_waves
+        repaired = generated("Al")
+        assert repaired.local_shift == 0.0
+        assert repaired.r_cut_local < 0.9 * repaired.channels[1].r_cut
+        errors = partial_waves.unprojected_scattering_errors(
+            repaired, paw.log_derivative_paw)
+        assert set(errors) == {2}
+        assert errors[2] < partial_waves.UNPROJECTED_TOLERANCE
+        raised = generate_paw("Al", ghosts="keep", norm_deficit=0.0,
+                              local_shift=5.0, atom=repaired.atom)
+        assert partial_waves.unprojected_scattering_errors(
+            raised, paw.log_derivative_paw)[2] > 0.4
+
     def test_the_local_potential_alone_binds_no_ghost(self):
         """Iron's p channel has no projectors.  With r_cl at 0.9 x the compact
         3d cutoff, the bare all-electron well bound a p level at -4.6 Ha
         (4p: -0.05); with r_cl at the 4s cutoff it binds nothing extra."""
         from mandacaru.pseudopotentials import partial_waves, paw
-        atom = generated("Fe").atom
+        # The atom alone: a full repair of iron runs several constructions.
+        atom = generate_paw("Fe", ghosts="keep").atom
         # The historical construction: the compact local radius and no raise
         # of the local potential (iron's default is now 10 Ha).
         old = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
@@ -502,6 +540,148 @@ class TestAtomic:
         assert 1 in partial_waves.ghost_errors(old, paw._paw_levels)
         new = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom)
         assert new.unconstructed_ghosts() == {}
+
+    def test_semicore_sodium_carries_its_2s2p_in_valence(self, tmp_path):
+        """K21: with an s channel alone no local potential was right for
+        sodium's p scattering.  The 2s2p in valence give the p channel a
+        bound reference and its projectors, and the s channel two bound
+        references (2s, 3s), with no raise of the local potential."""
+        from mandacaru.pseudopotentials import partial_waves
+        from mandacaru.pseudopotentials.io import library_file
+
+        pp = generated("Na")
+        assert pp.valence_charge == 9.0
+        assert pp.semicore_subshells == ((2, 0), (2, 1))
+        assert pp.channels[0].occupations == [2.0, 1.0]
+        assert pp.channels[1].occupations == [6.0, 0.0]
+        assert pp.local_shift == 0.0
+        assert partial_waves.ghost_errors(pp, paw._paw_levels) == {}
+        # The 2s, 3s and 2p levels of the generalized problem are the
+        # atom's, in order: nothing extra below or between them.
+        s_levels = paw_spectrum(pp, 0, n_states=3)
+        assert s_levels[:2] == pytest.approx(
+            pp.channels[0].reference_energies, abs=1e-3)
+        assert paw_spectrum(pp, 1)[0] == pytest.approx(
+            pp.channels[1].reference_energies[0], abs=1e-3)
+        errors = partial_waves.unprojected_scattering_errors(
+            pp, log_derivative_paw)
+        assert max(errors.values()) < 0.1
+        # The cutoff comes from the 3s, not from the compact 2s.
+        assert 2.0 < pp.channels[0].r_cut < 2.6
+        path = save_pseudopotential(
+            pp, library_file("Na", str(tmp_path), "json"), format="json")
+        loaded = load_pseudopotential(path)
+        assert loaded.semicore_subshells == pp.semicore_subshells
+        assert [c.occupations for c in loaded.channels.values()] == \
+            [c.occupations for c in pp.channels.values()]
+
+    def test_the_semicore_basis_has_every_occupied_state(self):
+        """2s, 3s and 2p each get a function; only the 3s is split and
+        polarized (DZP: 2s, 3s x 2, 2p, a p shell from the 3s)."""
+        from mandacaru.pseudopotentials.orbitals import (occupied_states,
+                                                         pseudo_basis)
+        pp = generated("Na")
+        states = [(s.n, s.l, s.index, s.semicore) for s in occupied_states(pp)]
+        assert states == [(2, 0, 0, True), (3, 0, 1, False), (2, 1, 0, True)]
+        minimal, _ = pseudo_basis(["Na"], [[0, 0, 0]], {"Na": pp}, size="SZ")
+        assert [(f.n, f.l) for f in minimal] == [(2, 0), (3, 0)] + [(2, 1)] * 3
+        assert minimal[1].eigenvalue == pytest.approx(
+            pp.channels[0].reference_energies[1])
+        dzp, _ = pseudo_basis(["Na"], [[0, 0, 0]], {"Na": pp}, size="DZP")
+        assert [f.l for f in dzp] == [0, 0, 0] + [1] * 6
+
+    def test_a_semicore_channel_confines_its_valence_state(self):
+        """The second eigenstate of sodium's s channel is the 3s: confined at
+        0.1 eV it sits 0.1 eV above the free 3s, far outside the 2s's wall."""
+        from mandacaru.pseudopotentials.confinement import (confined_orbital,
+                                                            free_energy)
+        pp = generated("Na")
+        valence = confined_orbital(pp, 0, 0.1, state=1)
+        assert valence.achieved_shift == pytest.approx(0.1, abs=1e-3)
+        assert free_energy(pp, 0, 1) == pytest.approx(
+            pp.channels[0].reference_energies[1], abs=2e-3)
+        assert valence.r_c > 2.0 * confined_orbital(pp, 0, 0.1).r_c
+
+    def test_semicore_subshells_are_validated(self):
+        from mandacaru.pseudopotentials.paw import _validate_semicore_subshells
+        core = {(1, 0): 2.0, (2, 0): 2.0, (2, 1): 6.0}
+        valence = {(3, 0): 1.0}
+        assert _validate_semicore_subshells(core, valence, [(2, 1), (2, 0)]) \
+            == ((2, 0), (2, 1))
+        assert _validate_semicore_subshells(core, valence, ()) == ()
+        with pytest.raises(ValueError, match="not an occupied core"):
+            _validate_semicore_subshells(core, valence, [(3, 1)])
+        with pytest.raises(ValueError, match="not directly below"):
+            _validate_semicore_subshells(core, valence, [(1, 0)])
+
+    @staticmethod
+    def _nodes(values):
+        values = np.asarray(values)
+        values = values[np.abs(values) > 1e-6 * np.abs(values).max()]
+        return int(np.count_nonzero(np.diff(np.sign(values))))
+
+    def test_lithium_p_channel_is_anchored_at_its_2p(self):
+        """Lithium carries an empty p channel (DEFAULT_HIGHEST_CHANNEL).
+        Anchored at the 2s energy its smooth waves gained a node and
+        couplings of -2 Ha; the generator falls back to the atom's own 2p
+        level (-0.042 Ha)."""
+        pp = generated("Li")
+        channel = pp.channels[1]
+        assert channel.reference_energies[0] == pytest.approx(-0.0416,
+                                                              abs=2e-3)
+        assert np.abs(np.asarray(channel.coupling)).max() < 0.5
+        r = np.asarray(pp.r)
+        inside = (r > 0.0) & (r <= channel.r_cut)
+        for wave in channel.pseudo_waves:
+            assert self._nodes(np.asarray(wave)[inside]) == 0
+
+    def test_the_2s_anchor_pseudizes_into_a_noded_p_wave(self):
+        """What the anchor fallback guards against (spurious_nodes)."""
+        from mandacaru.pseudopotentials import partial_waves
+        pp = generated("Li")
+        r, v = pp.atom.r, pp.atom.v_effective
+        energies = [-0.1055, 0.3945]
+        inside = r <= pp.channels[1].r_cut
+        waves = []
+        for energy in energies:
+            u = partial_waves.scattering_wave(r, v, 1, energy, 3.0, "scalar",
+                                              None)
+            u = u / np.sqrt(np.trapezoid(u[inside] ** 2, r[inside]))
+            waves.append(u / r)
+        pw = paw.smooth_partial_waves(r, v, 1, waves, energies,
+                                      pp.channels[1].r_cut, treatment="scalar",
+                                      z_eff=3.0, norm_deficit=0.0)
+        assert partial_waves.spurious_nodes(r, pw) == [0, 1]
+
+    def test_lithium_p_scatters_like_the_atom(self):
+        pp = generated("Li")
+        r_match = max(pp.r_cut_local,
+                      max(c.r_cut for c in pp.channels.values())) + 0.3
+        worst = 0.0
+        for energy in np.arange(-0.4, 0.45, 0.1):
+            d = (np.arctan(log_derivative_paw(pp, 1, energy, r_match))
+                 - np.arctan(log_derivative_ae(pp.r, pp.atom.v_effective, 1,
+                                               energy, r_match, 3.0,
+                                               "scalar")))
+            worst = max(worst, abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi))
+        assert worst < 0.01
+
+    def test_lithium_smooth_core_carries_the_core_valence_overlap(self):
+        """Pseudized at r_g = 2.6 Bohr the smooth core held 0.02 electrons;
+        at DEFAULT_CORE_RADII["Li"] = 1.5 it holds 0.37."""
+        pp = generated("Li")
+        assert pp.nlcc["r_nlcc"] == pytest.approx(1.5, abs=0.01)
+        r = np.asarray(pp.r)
+        electrons = np.trapezoid(pp.smooth_core_density * 4 * np.pi * r * r, r)
+        assert 0.3 < electrons < 0.45
+        assert np.all(pp.smooth_core_density >= 0.0)
+
+    def test_calcium_keeps_its_d_anchor(self):
+        """Calcium's d channel pseudizes without a node at its 4s energy:
+        the fallback leaves it alone."""
+        pp = generated("Ca")
+        assert pp.channels[2].reference_energies[0] == pytest.approx(
+            pp.channels[0].reference_energies[1], abs=1e-6)
 
     def test_report_runs_generated_and_loaded(self):
         text = report_paw(generated("H"))

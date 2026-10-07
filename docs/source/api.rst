@@ -76,6 +76,58 @@ Interaction Energies
    :undoc-members:
    :show-inheritance:
 
+Polarizability
+~~~~~~~~~~~~~~
+
+A molecule in a uniform electric field (``Mandacaru(electric_field=...)``)
+and its static polarizability by finite fields.  See
+:doc:`guide/polarizability`.
+
+.. automodule:: mandacaru.algorithms.polarizability
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :no-index:
+
+Berry-Phase Polarization
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The electric polarization of an insulating crystal and its Born effective
+charges.  See :doc:`guide/dft`.
+
+.. automodule:: mandacaru.algorithms.berry_phase
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Wannier Functions
+~~~~~~~~~~~~~~~~~
+
+Maximally localized Wannier functions of a crystal's bands.  See
+:doc:`guide/dft`.
+
+.. automodule:: mandacaru.algorithms.wannier
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Choosing the Target Space
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Bloch states a Wannierization is built from, chosen by their
+projectability onto atomic orbitals or by the RPA natural orbitals.  See
+:doc:`guide/target_space`.
+
+.. automodule:: mandacaru.algorithms.band_selection
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: mandacaru.algorithms.rpa_density
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Dry Run
 ~~~~~~~
 
@@ -179,6 +231,11 @@ grid.  See :doc:`guide/visualization`.
    :show-inheritance:
 
 .. automodule:: mandacaru.utils.cube
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: mandacaru.utils.bxsf
    :members:
    :undoc-members:
    :show-inheritance:

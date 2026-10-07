@@ -657,3 +657,27 @@ class TestDipoleMoment:
         moved = self._water(shift=(0.3, -0.2, 0.25))
         assert np.allclose(moved.calc.get_dipole_moment(),
                            water.calc.get_dipole_moment(), atol=1e-6)
+
+    def test_an_all_electron_basis_points_the_same_way(self):
+        """LiH (Li at the origin, H on +z) is Li+ H-, so its dipole points
+        along -z.  The all-electron STO-3G path (its Li core is resolved at
+        0.2 Angstrom; no resolution warning) and PAW-LCAO agree: -5.2 and
+        -5.5 D (experiment 5.9 D).  An all-electron basis whose core the grid
+        cannot resolve -- 6-31G(d) oxygen at 0.3 Angstrom, which warns --
+        has no meaningful density, and its dipole can come out reversed."""
+        from ase import Atoms
+
+        from mandacaru import Mandacaru
+
+        dipoles = {}
+        for basis in ("STO-3G", {"name": "PAW-LCAO", "size": "DZP"}):
+            atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.595]])
+            atoms.center(vacuum=3.5)
+            atoms.calc = Mandacaru(method="rhf", basis=basis, h=0.2,
+                                   trace=False)
+            atoms.get_potential_energy()
+            atoms.calc.get_dipole_moment()
+            dipoles[str(basis)] = atoms.calc.dipole_result.debye
+        for debye in dipoles.values():
+            assert abs(debye[0]) < 1e-8 and abs(debye[1]) < 1e-8
+            assert -6.0 < debye[2] < -4.5

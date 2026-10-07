@@ -92,6 +92,28 @@ def silicon():
 
 
 class TestTheCalculator:
+    def test_an_explicit_grid_is_used_verbatim(self):
+        """A crystal's ``grid=`` is the grid it runs on (it was silently
+        replaced by one built from ``h``), and one of another cell is
+        refused rather than used."""
+        from mandacaru.integrals import Grid
+        atoms = bulk("Si", "diamond", a=5.43)
+        cell = np.asarray(atoms.cell)
+        grid = Grid(center=list(0.5 * cell.sum(0)), box_size=0.0, h=0.4,
+                    units="angstrom", cell=cell, periodic=True)
+        options = dict(method="dft", h=0.25, kpts={"size": (1, 1, 1),
+                                                   "gamma": True},
+                       smearing={"method": "fermi-dirac", "width": 0.01},
+                       basis={"name": "PAW-LCAO", "size": "SZ"}, trace=False)
+        atoms.calc = Mandacaru(grid=grid, **options)
+        atoms.get_potential_energy()
+        assert atoms.calc.solver._gradient_context["integrals"].grid.shape \
+            == grid.shape
+        wrong = Grid(center=list(0.55 * cell.sum(0)), box_size=0.0, h=0.4,
+                     units="angstrom", cell=1.1 * cell, periodic=True)
+        with pytest.raises(ValueError, match="span its cell"):
+            Mandacaru(grid=wrong, **options).get_potential_energy(atoms.copy())
+
     def test_a_crystal_converges_with_a_gap(self, silicon):
         atoms, energy = silicon
         result = atoms.calc.result
@@ -119,6 +141,15 @@ class TestTheCalculator:
         with pytest.raises(NotImplementedError, match="PAW-LCAO"):
             atoms.get_potential_energy()
 
+    def test_the_stencil_is_refused_for_a_crystal(self):
+        """A crystal's kinetic energy is spectral: ``kinetic="fd"`` used to
+        be ignored, while the run log said "finite difference" (K20)."""
+        atoms = bulk("Si", "diamond", a=5.43)
+        atoms.calc = Mandacaru(method="dft", kinetic="fd", trace=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        with pytest.raises(ValueError, match="spectral"):
+            atoms.get_potential_energy()
+
     def test_an_invalid_smearing_is_refused_by_the_constructor(self):
         with pytest.raises(ValueError, match="smearing"):
             Mandacaru(method="dft", smearing={"method": "cold"})
@@ -130,6 +161,28 @@ SILICON = bulk("Si", "diamond", a=5.43)
 SILICON_BASIS = {"size": "SZ", "filter": 200}
 
 
+def test_crystal_forces_keep_the_cell_grid(monkeypatch):
+    """Forces freeze a grid for the trajectory, but a crystal's is its cell,
+    built by build_crystal: the molecular bounding box (which build_crystal
+    refuses) must not be handed to a periodic Kohn-Sham run.  The forces
+    themselves are checked in test_crystal_forces.py (slow)."""
+    atoms = bulk("Si", "diamond", a=5.43)
+    atoms.calc = Mandacaru(method="dft", h=0.4,
+                           kpts={"size": (1, 1, 1), "gamma": True},
+                           basis={"name": "PAW-LCAO", "size": "SZ"},
+                           trace=False)
+    handed = []
+
+    def capture(self, *args, grid=None, **kwargs):
+        handed.append(grid)
+        raise RuntimeError("stop before the SCF")
+
+    monkeypatch.setattr(Mandacaru, "_make_solver", capture)
+    with pytest.raises(RuntimeError, match="stop before"):
+        atoms.get_forces()
+    assert handed == [None]
+
+
 def _crystal(h=None, kpts=None):
     from mandacaru.pseudopotentials.periodic_paw import build_crystal
     h = float(np.linalg.norm(SILICON.cell[0])) / 8 if h is None else h
@@ -138,7 +191,8 @@ def _crystal(h=None, kpts=None):
 
 
 class TestTheKohnShamMatrix:
-    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan"])
+    @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan",
+                                            "r2scan-rvv10"])
     def test_it_is_the_derivative_of_the_energy(self, functional):
         r"""``dE = sum_k w_k tr(dP_k H_k)`` for every term of the functional.
 
@@ -207,6 +261,76 @@ class TestTheEigenvalueReference:
                            result.fermi_level))
         assert levels[0][0] == pytest.approx(levels[1][0], abs=2e-4)
         assert levels[0][1] == pytest.approx(levels[1][1], abs=2e-4)
+
+
+class TestTheMoleculeInABox:
+    """One Hamiltonian: a molecule in a box, solved as a molecule and as a
+    crystal at Gamma on the same nodes, basis and kinetic operator.
+
+    K20 (HISTORY): against the molecular default -- the finite-difference
+    stencil, where the crystal is always spectral -- Ne differed by 2.65 Ha
+    and water's dipole by 0.61x; and the crystal's partial core was
+    Fourier-filtered at the basis cutoff, which moved Ne by 5.1 mHa here.
+    The box is a whole number of steps, or the two grids differ.
+    """
+
+    @staticmethod
+    def _solve(atoms, h, basis):
+        """``(molecule, crystal)`` of ``atoms`` (its cell is the box)."""
+        out = []
+        for pbc in (False, True):
+            system = atoms.copy()
+            system.pbc = pbc
+            extra = ({"kpts": {"size": (1, 1, 1), "gamma": True},
+                      "smearing": {"method": "fermi-dirac", "width": 0.001}}
+                     if pbc else {"kinetic": "spectral"})
+            system.calc = Mandacaru(method="dft", xc="lda", h=h, trace=False,
+                                    basis=basis, **extra)
+            system.get_potential_energy()
+            out.append(system)
+        return out
+
+    def test_an_atom_has_the_molecular_energy_and_levels(self):
+        """Ne, SZ at 150 eV: the grid (h 0.25 Angstrom) carries the pair
+        densities without aliasing, so energy and levels agree to ~1 uHa
+        (an isolated neutral atom has no image interaction)."""
+        from ase import Atoms
+        atoms = Atoms("Ne", positions=[[3.5, 3.5, 3.5]], cell=[7.0] * 3)
+        molecule, crystal = self._solve(
+            atoms, 0.25, {"name": "PAW-LCAO", "size": "SZ", "filter": 150})
+        assert crystal.get_potential_energy() == pytest.approx(
+            molecule.get_potential_energy(), abs=1e-4)
+        # Levels from a common origin: the crystal's sit on the cell
+        # average of the potential, the molecule's on the vacuum.
+        spacings = [atoms.calc.get_eigenvalues()[:4]
+                    - atoms.calc.get_eigenvalues()[0]
+                    for atoms in (molecule, crystal)]
+        assert np.allclose(spacings[0], spacings[1], atol=1e-4)
+
+    def test_a_polar_molecule_has_the_molecular_density(self):
+        """Water, SZ, h 0.3 Angstrom: levels to 0.5 mHa and the energy to
+        0.6 mHa (the dipole lattice and grid noise), Hirshfeld charges to
+        2e-3 e, the Berry-phase dipole 1.6 % above the molecular one."""
+        from ase.build import molecule as build
+        from ase.units import _e
+        atoms = build("H2O")
+        atoms.set_cell([8.4] * 3)
+        atoms.positions += 4.2 - atoms.positions.mean(axis=0)
+        molecule, crystal = self._solve(atoms, 0.3,
+                                        {"name": "PAW-LCAO", "size": "SZ"})
+        assert crystal.get_potential_energy() == pytest.approx(
+            molecule.get_potential_energy(), abs=0.04)
+        spacings = [atoms.calc.get_eigenvalues()[:6]
+                    - atoms.calc.get_eigenvalues()[0]
+                    for atoms in (molecule, crystal)]
+        assert np.allclose(spacings[0], spacings[1], atol=0.03)
+        assert np.allclose(crystal.get_charges(), molecule.get_charges(),
+                           atol=4e-3)
+        # P (C/m^2) times the cell volume is the dipole of the cell.
+        polarization = crystal.calc.get_polarization(kpts=(2, 2, 2))
+        dipole = polarization * crystal.get_volume() * 1e-20 / _e
+        assert dipole == pytest.approx(molecule.get_dipole_moment(),
+                                       rel=0.03, abs=1e-6)
 
 
 class TestTheSpectrum:
@@ -325,6 +449,38 @@ class TestTheSpectrum:
         assert np.allclose(sum(weights.values()), 1.0, atol=1e-10)
         assert next(iter(weights.values())).shape == bs.energies.shape[1:]
 
+    @pytest.mark.slow
+    def test_the_fermi_surface_mesh_is_unfolded_from_the_wedge(self, silicon,
+                                                              tmp_path):
+        """Only the irreducible points of a 3x3x2 mesh are diagonalized; the
+        unfolded grid is what diagonalizing every point gives (to the
+        quadratures' symmetry, as above), and the .bxsf file carries it with
+        the Fermi level and the reciprocal cell (2 pi included)."""
+        from mandacaru.units import HARTREE_TO_EV
+        from mandacaru.utils.bxsf import read_bxsf
+        atoms, _energy = silicon
+        solver = atoms.calc.solver
+        crystal = solver._gradient_context["integrals"]
+        energies = atoms.calc.fermi_surface((3, 3, 2))
+        mesh = np.indices((3, 3, 2)).reshape(3, -1).T / np.array([3, 3, 2])
+        direct, _ = solver._periodic_solver.bands(
+            crystal.cartesian_kpoints(mesh))
+        direct = (np.asarray(direct) * HARTREE_TO_EV).T.reshape(
+            energies.shape)
+        assert np.abs(energies - direct).max() < 1e-5
+        path = atoms.calc.write_fermi_surface(tmp_path / "si.bxsf", (3, 3, 2),
+                                              bands=[2, 3, 4, 5])
+        grid = read_bxsf(path)
+        assert np.allclose(grid.energies, energies[2:6], atol=5e-7)
+        assert grid.fermi_level == pytest.approx(atoms.calc.get_fermi_level(),
+                                                 abs=1e-7)
+        assert np.allclose(grid.reciprocal_cell,
+                           2 * np.pi * np.asarray(atoms.cell.reciprocal()),
+                           atol=1e-8)
+        with pytest.raises(ValueError, match="not"):
+            atoms.calc.write_fermi_surface(tmp_path / "x.bxsf", (2, 2, 2),
+                                           spin=1)
+
     def test_the_ase_getters(self, silicon):
         atoms, _energy = silicon
         calc = atoms.calc
@@ -367,6 +523,7 @@ def test_the_log_holds_every_crystal_iteration(name, tmp_path):
     reset_log(path)
     parsed = parse_output(path)
     rows = parsed["scf_iterations"]
+    assert parsed["electrons"]["kinetic operator"] == "spectral"
     assert len(rows) == atoms.calc.result.scf.n_iterations
     assert rows[-1]["energy_eV"] == pytest.approx(
         float(parsed["summary"]["free_energy_eV"]), abs=1e-9)
@@ -439,6 +596,17 @@ class TestSpinPolarized:
             return down[5] - up[5]
         assert splitting(crystal) == pytest.approx(splitting(molecule),
                                                    abs=0.02)
+
+    @pytest.mark.slow
+    def test_a_fermi_surface_per_channel(self, oxygen, tmp_path):
+        """Both channels on the mesh; a file holds one, so ``spin`` is
+        required."""
+        calc = oxygen[True].calc
+        energies = calc.fermi_surface((1, 1, 2))
+        assert energies.shape[0] == 2 and energies.shape[2:] == (1, 1, 2)
+        with pytest.raises(ValueError, match="spin=0 or 1"):
+            calc.write_fermi_surface(tmp_path / "o2.bxsf", (1, 1, 2))
+        calc.write_fermi_surface(tmp_path / "o2.bxsf", (1, 1, 2), spin=1)
 
     def test_spectra_carry_both_channels(self, oxygen):
         calc = oxygen[True].calc
@@ -526,6 +694,7 @@ class TestScreenedHybrid:
         assert np.allclose(eigenvalues, np.array(result.eigenvalues),
                            atol=pd.HYBRID_TOL)
 
+    @pytest.mark.slow
     def test_a_long_range_omega_switches_the_exact_exchange_off(self, pair):
         """omega -> infinity: both short-range exchanges -- the exact one
         (grid and spheres) and the semilocal one it replaces -- vanish,

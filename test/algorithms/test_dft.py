@@ -13,7 +13,7 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.units import from_hartree, to_hartree
+from mandacaru.units import ANGSTROM_TO_BOHR, from_hartree, to_hartree
 
 NAO_DZ = {"name": "NAO", "size": "DZ"}
 #: The unconfined single-zeta PAW-LCAO basis: the first function is the
@@ -31,7 +31,8 @@ def _run(atoms, **options):
     return atoms.get_potential_energy()
 
 
-@pytest.fixture(scope="module", params=["lda", "pbe", "r2scan", "hse06"])
+@pytest.fixture(scope="module",
+                params=["lda", "pbe", "r2scan", "hse06", "r2scan-rvv10"])
 def converged(request):
     """An H2 Kohn-Sham run in a basis with more than one function per atom."""
     atoms = h2()
@@ -113,7 +114,10 @@ class TestTheRun:
         assert {"HohenbergKohn1964", "KohnSham1965"} <= set(keys)
         expected = {"lda": {"PerdewZunger1981"}, "pbe": {"PBE1996"},
                     "r2scan": {"Furness2020"},
-                    "hse06": {"Heyd2003", "Krukau2006", "PBE1996"}}[xc]
+                    "hse06": {"Heyd2003", "Krukau2006", "PBE1996"},
+                    "r2scan-rvv10": {"Furness2020", "Vydrov2010",
+                                     "Sabatini2013", "RomanPerez2009",
+                                     "Ning2022"}}[xc]
         assert expected <= set(keys)
         assert "Paier2005" not in keys          # no augmentation spheres
 
@@ -180,6 +184,21 @@ class TestConvergence:
         assert atoms.calc.result.success
 
 
+def test_a_degenerate_shell_at_the_fermi_level_is_filled_equally():
+    """Aufbau unless the last filled and the first empty level are closer
+    than the window; then their degenerate shell shares its electrons."""
+    from mandacaru.algorithms.dft import shell_occupations
+    assert shell_occupations([-2.0, -1.0, 0.0], 2) is None
+    assert shell_occupations([-1.0, -0.5, -0.5, -0.5, 1.0], 2) == \
+        pytest.approx([1, 1 / 3, 1 / 3, 1 / 3, 0])
+    # A full degenerate shell is aufbau's; a slightly split one is shared.
+    assert shell_occupations([-1.0, -0.5, -0.5 + 2e-4, 0.3], 3) is None
+    assert shell_occupations([-1.0, -0.5, -0.5 + 2e-4, 0.3], 2) == \
+        pytest.approx([1, 0.5, 0.5, 0])
+    # A small real gap (stretched H2's 5.5 mHa) stays integer.
+    assert shell_occupations([-0.2, -0.2 + 5.5e-3], 1) is None
+
+
 class TestFunctionals:
     def test_the_gradient_corrections_lower_the_energy_of_h2(self):
         energies = {xc: _run(h2(), xc=xc, h=0.35)
@@ -237,6 +256,50 @@ def lih_forces(request):
                            trace=False)
     forces = atoms.get_forces()
     return atoms, forces, atoms.calc.force_result
+
+
+@pytest.mark.slow
+def test_the_rvv10_force_is_the_derivative_of_its_energy():
+    """rVV10's own part of the force: (F[r2SCAN+rVV10] - F[r2SCAN]) against
+    the central difference of the energy difference.  The difference
+    isolates it from r2SCAN's molecular force error (2.3e-4 eV/Angstrom on
+    this LiH, identical with and without rVV10); rVV10's part
+    agreed to 2e-6 (one component: two SCFs and eight energies are most of
+    the time budget)."""
+    def run(xc):
+        atoms = lih()
+        atoms.calc = Mandacaru(method="dft", xc=xc, h=0.25, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "DZP"})
+        atoms.get_forces()
+        # Kept now: moving the atoms below resets the calculator's result.
+        return atoms, atoms.calc.force_result.unprojected.copy()
+
+    runs = {xc: run(xc) for xc in ("r2scan", "r2scan-rvv10")}
+    pair = {xc: atoms for xc, (atoms, _gradient) in runs.items()}
+
+    def energy(xc, atom, k, step):
+        moved = pair[xc].copy()
+        moved.positions[atom, k] += step
+        moved.calc = pair[xc].calc
+        return moved.get_potential_energy()
+
+    for atom, k in ((1, 2),):          # along the bond, where it is largest
+        def part(step):
+            return -((energy("r2scan-rvv10", atom, k, step)
+                      - energy("r2scan-rvv10", atom, k, -step))
+                     - (energy("r2scan", atom, k, step)
+                        - energy("r2scan", atom, k, -step))) / (2 * step)
+        coarse, fine = part(0.004), part(0.002)
+        numerical = fine + (fine - coarse) / 3.0
+        analytic = runs["r2scan-rvv10"][1][atom, k] - runs["r2scan"][1][atom, k]
+        assert analytic == pytest.approx(numerical, abs=1e-5)
+
+
+def test_rvv10_refuses_d4():
+    """r2SCAN+rVV10 carries its dispersion; D4 on top would count it twice."""
+    with pytest.raises(ValueError, match="count it twice"):
+        Mandacaru(method="dft", xc="r2scan-rvv10", dispersion="d4",
+                  basis={"name": "PAW-LCAO", "size": "SZ"})
 
 
 class TestForces:
@@ -298,6 +361,148 @@ class TestDispersion:
         assert dressed.calc.result.scf.dispersion_energy == pytest.approx(d4)
         assert e_d4 - e_bare == pytest.approx(from_hartree(d4, "eV"), abs=1e-8)
         assert "Caldeweyher2019" in dressed.calc.citation_keys()
+
+    def test_periodic_d4_tends_to_the_molecular_one(self):
+        """The lattice sum of a molecule in a growing periodic box goes to
+        its molecular D4 (-75 / -2.4 / 0.002 uHa at 12 / 20 / 45 A)."""
+        pytest.importorskip("dftd4")
+        from ase.build import molecule
+
+        from mandacaru.algorithms.dft import d4_dispersion_energy
+        isolated = molecule("C6H6")
+        alone = d4_dispersion_energy(isolated, "pbe")
+        boxed = isolated.copy()
+        boxed.set_cell([45.0] * 3)
+        boxed.center()
+        boxed.pbc = True
+        assert d4_dispersion_energy(boxed, "pbe") == pytest.approx(alone,
+                                                                   abs=1e-8)
+        boxed.set_cell([12.0] * 3)
+        boxed.center()
+        assert d4_dispersion_energy(boxed, "pbe") < alone - 1e-5
+
+    def test_periodic_d4_gradient_and_virial_are_its_derivatives(self):
+        """Distorted graphite: dftd4's gradient and virial against central
+        differences of its lattice sum, in atoms and in a symmetric strain
+        (the virial over the volume is the stress, ASE's sign)."""
+        pytest.importorskip("dftd4")
+        from mandacaru.algorithms.dft import d4_dispersion
+        from mandacaru.units import ANGSTROM_TO_BOHR
+
+        a, c = 2.46, 6.7
+        graphite = Atoms(
+            "C4", scaled_positions=[[0, 0, 0.25], [0, 0, 0.75],
+                                    [1 / 3, 2 / 3, 0.25], [2 / 3, 1 / 3, 0.75]],
+            cell=[[a, 0, 0], [-a / 2, a * np.sqrt(3) / 2, 0], [0, 0, c]],
+            pbc=True)
+        graphite.positions[1, 2] += 0.07
+        graphite.positions[2, 0] += 0.05
+        result = d4_dispersion(graphite, "pbe", grad=True)
+        step = 1e-4
+        for atom, axis in ((1, 2), (2, 0)):
+            energies = []
+            for sign in (1, -1):
+                moved = graphite.copy()
+                moved.positions[atom, axis] += sign * step
+                energies.append(d4_dispersion(moved, "pbe")["energy"])
+            slope = (energies[0] - energies[1]) / (2 * step * ANGSTROM_TO_BOHR)
+            assert result["gradient"][atom, axis] == pytest.approx(
+                slope, rel=1e-5, abs=1e-11)
+        volume = abs(np.linalg.det(graphite.get_cell())) * ANGSTROM_TO_BOHR ** 3
+        for a_, b_ in ((0, 0), (2, 2), (0, 1)):
+            energies = []
+            for sign in (1, -1):
+                strain = np.zeros((3, 3))
+                strain[a_, b_] += 0.5 * sign * 1e-5
+                strain[b_, a_] += 0.5 * sign * 1e-5
+                strained = graphite.copy()
+                strained.set_cell(graphite.get_cell() @ (np.eye(3) + strain),
+                                  scale_atoms=True)
+                energies.append(d4_dispersion(strained, "pbe")["energy"])
+            stress = (energies[0] - energies[1]) / 2e-5 / volume
+            assert result["virial"][a_, b_] / volume == pytest.approx(
+                stress, rel=1e-5, abs=1e-12)
+
+    @staticmethod
+    def _distorted_silicon(**options):
+        from ase.build import bulk
+
+        atoms = bulk("Si", "diamond", a=5.43)
+        atoms.positions[1] += [0.03, -0.02, 0.01]
+        atoms.calc = Mandacaru(method="dft", xc="pbe", h=0.35, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"},
+                               kpts={"size": (2, 2, 2), "gamma": True},
+                               **options)
+        return atoms
+
+    def test_a_crystal_carries_d4_in_its_energy(self):
+        """Distorted Si: PBE+D4 minus PBE is the D4 lattice sum, and the
+        run log reports it."""
+        pytest.importorskip("dftd4")
+        from mandacaru.algorithms.dft import d4_dispersion
+
+        bare = self._distorted_silicon()
+        dressed = self._distorted_silicon(dispersion="d4")
+        difference = (dressed.get_potential_energy()
+                      - bare.get_potential_energy())
+        d4 = d4_dispersion(dressed, "pbe")["energy"]
+        assert d4 < 0.0
+        assert difference == pytest.approx(from_hartree(d4, "eV"), abs=1e-8)
+        fields = dressed.calc.solver._scf_summary_fields(dressed.calc.result)
+        assert any(key.startswith("dispersion_energy") for key in fields)
+        assert "Caldeweyher2019" in dressed.calc.citation_keys()
+
+    @pytest.mark.slow
+    def test_a_crystal_carries_d4_in_its_forces(self):
+        """The same Si: the force difference is minus dftd4's gradient
+        (1.7e-12 eV/A when measured)."""
+        pytest.importorskip("dftd4")
+        from mandacaru.algorithms.dft import d4_dispersion
+
+        bare = self._distorted_silicon()
+        dressed = self._distorted_silicon(dispersion="d4")
+        difference = dressed.get_forces() - bare.get_forces()
+        gradient = d4_dispersion(dressed, "pbe", grad=True)["gradient"]
+        expected = -from_hartree(1.0, "eV") * ANGSTROM_TO_BOHR * gradient
+        assert np.allclose(difference, expected, atol=1e-8)
+
+    @pytest.mark.slow
+    def test_a_crystal_carries_d4_in_its_stress(self):
+        """The same Si: the stress difference is dftd4's virial over the
+        volume (1e-18 eV/A^3 when measured)."""
+        pytest.importorskip("dftd4")
+        from ase.build import bulk
+
+        from mandacaru.algorithms.dft import d4_dispersion
+
+        stresses = []
+        for options in ({}, {"dispersion": "d4"}):
+            atoms = bulk("Si", "diamond", a=5.43)
+            atoms.calc = Mandacaru(method="dft", xc="pbe", h=0.35, trace=False,
+                                   basis={"name": "PAW-LCAO", "size": "SZ"},
+                                   kpts={"size": (2, 2, 2), "gamma": True},
+                                   **options)
+            atoms.get_potential_energy()
+            stresses.append(atoms.get_stress(voigt=False))
+        volume = atoms.get_volume() * ANGSTROM_TO_BOHR ** 3
+        expected = (d4_dispersion(atoms, "pbe", grad=True)["virial"] / volume
+                    * from_hartree(1.0, "eV") * ANGSTROM_TO_BOHR ** 3)
+        assert np.allclose(stresses[1] - stresses[0], expected, atol=1e-10)
+
+    @pytest.mark.slow
+    def test_a_crystal_with_ghosts_disperses_its_real_atoms(self):
+        """A counterpoise fragment of a crystal: D4 is the lattice sum of
+        the real atoms in the same cell, the ghost contributing nothing."""
+        pytest.importorskip("dftd4")
+        from mandacaru.algorithms.dft import d4_dispersion_energy
+
+        bare = self._distorted_silicon(ghosts=[1])
+        dressed = self._distorted_silicon(ghosts=[1], dispersion="d4")
+        difference = (dressed.get_potential_energy()
+                      - bare.get_potential_energy())
+        real = d4_dispersion_energy(dressed[[0]], "pbe")
+        assert difference == pytest.approx(from_hartree(real, "eV"), abs=1e-8)
+        assert real != pytest.approx(d4_dispersion_energy(dressed, "pbe"))
 
     def test_d4_without_parameters_for_the_functional_is_refused(self):
         with pytest.raises(ValueError, match="no parameters"):
@@ -398,16 +603,29 @@ def oxygen_triplet():
 class TestUnrestricted:
     """Spin-unrestricted Kohn-Sham, selected by n_alpha != n_beta."""
 
-    def test_triplet_oxygen_is_below_the_closed_shell_singlet(
+    def test_triplet_oxygen_is_below_the_spin_restricted_ensemble(
             self, oxygen_triplet):
-        """The closed-shell singlet puts two electrons in one of the two
-        degenerate pi* orbitals; Hund's triplet is ~1.3 eV lower (SZ, LDA)."""
+        """Spin-restricted O2 puts one electron in each of the two
+        degenerate pi* orbitals (an ensemble).  Filling one of them
+        breaks the symmetry, and the SCF then landed, depending on its
+        path, 0.53 eV or 24 eV above the ensemble.  Hund's triplet lies
+        0.78 eV below it (SZ, LDA), and the crystal path finds the same
+        0.778 eV between its unpolarized and triplet O2 (Gamma, 1 mHa
+        smearing)."""
         singlet = _oxygen([0.0, 0.0])
         e_singlet = _run(singlet, xc="lda", h=0.3,
                          basis={"name": "PAW-LCAO", "size": "SZ"})
         e_triplet = oxygen_triplet.get_potential_energy()
-        assert -1.6 < e_triplet - e_singlet < -0.9
+        assert -0.85 < e_triplet - e_singlet < -0.7
         assert singlet.calc.get_number_of_spins() == 1
+        scf = singlet.calc.result.scf
+        assert np.allclose(scf.occupations, [2, 2, 2, 2, 2, 1, 1, 0])
+        assert scf.mo_energies[6] - scf.mo_energies[5] < 1e-6
+        # The density is the ensemble's: the pi* pair holds half an
+        # electron of each spin in each member, whatever its gauge.
+        gamma = singlet.calc.solver.mean_field_rdm()
+        alpha = np.linalg.eigvalsh(gamma[:8, :8])
+        assert np.allclose(alpha, [0, 0.5, 0.5, 1, 1, 1, 1, 1], atol=1e-8)
 
     def test_the_moment_and_the_spin_channels(self, oxygen_triplet):
         calc = oxygen_triplet.calc
@@ -438,7 +656,12 @@ class TestUnrestricted:
     def test_unrestricted_forces_are_the_derivative_of_the_energy(self, xc):
         """The OH radical (seven valence electrons, so unrestricted): the
         spin-averaged gradient plus the magnetization term, against
-        Richardson-extrapolated central differences on the frozen grid."""
+        Richardson-extrapolated central differences on the frozen grid.
+
+        Its one beta pi electron has no integer aufbau solution (whichever
+        member holds it rises above the empty one): the SCF converges to
+        the ensemble with half an electron in each, and the forces are
+        that ensemble's."""
         atoms = Atoms("OH", positions=[[0, 0, 0], [0.08, 0, 1.02]],
                       cell=[6, 6, 7])
         atoms.center()
@@ -447,6 +670,9 @@ class TestUnrestricted:
         atoms.get_forces()
         result = atoms.calc.force_result
         assert atoms.calc.result.num_particles == (4, 3)
+        scf = atoms.calc.result.scf
+        assert scf.occupations_alpha is None
+        assert np.allclose(scf.occupations_beta, [1, 1, 0.5, 0.5, 0])
 
         def energy(atom, k, step):
             moved = atoms.copy()
@@ -643,3 +869,81 @@ class TestHybrid:
                         for s in (0.004, 0.002))
         numerical = fine + (fine - coarse) / 3.0
         assert result.unprojected[1, 2] == pytest.approx(numerical, abs=1e-4)
+
+
+class TestTheHartreeTerm:
+    """``hartree="poisson"`` (the default) against ``hartree="tensor"``.
+
+    Both integrate the spectral isolated kernel, the Poisson route with the
+    PAW-LCAO compensation multipoles as low-rank matrices, so they agree to
+    round-off: the Fock matrix, the energies and the reference energy of the
+    exported Hamiltonian, on a basis whose compensation charges reach L = 2.
+    """
+
+    @staticmethod
+    def _solvers(atoms, spins):
+        from mandacaru.algorithms import dft
+        integrals = atoms.calc.solver._gradient_context["integrals"]
+        scf = atoms.calc.result.scf
+        return [dft.kohn_sham_solver(integrals, sum(spins), scf.functional,
+                                     spins=spins, hartree=route)
+                for route in ("poisson", "tensor")], integrals, scf
+
+    def test_the_closed_shell_fock_matrices_agree(self, water_szp):
+        (poisson, tensor), integrals, scf = self._solvers(water_szp, (4, 4))
+        assert max(L for _A, L, _M in integrals.multipole_channels()) == 2
+        D = tensor._density_matrix(scf.mo_coefficients)
+        F_p, e_p, h_p, _x = poisson._fock(D)
+        F_t, e_t, h_t, _x = tensor._fock(D)
+        assert np.abs(F_p - F_t).max() < 1e-10
+        assert e_p == pytest.approx(e_t, abs=1e-10)
+        assert h_p == pytest.approx(h_t, abs=1e-10)
+
+    def test_the_reference_energy_is_the_tensor_one(self, water_szp):
+        """The run (Poisson route) took the occupied block of the tensor
+        from n^2/2 pair solves; the tensor gives the same determinant
+        energy."""
+        from mandacaru.algorithms import dft
+        (_poisson, tensor), _integrals, scf = self._solvers(water_szp, (4, 4))
+        h_mo, eri_mo = tensor._mo_integrals(scf.mo_coefficients, 4)[:2]
+        assert dft.determinant_energy(h_mo, eri_mo, 4, 4) == pytest.approx(
+            scf.determinant_energy, abs=1e-10)
+        assert np.abs(scf.eri_mo - eri_mo).max() < 1e-10   # built on demand
+
+    def test_the_unrestricted_routes_agree(self, oxygen_triplet):
+        (poisson, tensor), _integrals, scf = self._solvers(oxygen_triplet,
+                                                           (7, 5))
+        Da = tensor._spin_density(scf.mo_coefficients_alpha, 7,
+                                  scf.occupations_alpha)
+        Db = tensor._spin_density(scf.mo_coefficients_beta, 5,
+                                  scf.occupations_beta)
+        one, other = poisson._fock_pair(Da, Db), tensor._fock_pair(Da, Db)
+        for a, b in zip(one[:2], other[:2]):
+            assert np.abs(a - b).max() < 1e-10
+        assert one[2] == pytest.approx(other[2], abs=1e-10)
+
+    def test_a_run_on_either_route_gives_the_same_energies(self):
+        """And the Poisson route builds no two-body tensor at all."""
+        energies, references = [], []
+        for route in ("poisson", "tensor"):
+            atoms = h2()
+            energies.append(_run(atoms, h=0.3, basis=NAO_DZ, hartree=route))
+            references.append(atoms.calc.result.reference_energy)
+            integrals = atoms.calc.solver._gradient_context["integrals"]
+            built = (integrals._eri is not None, integrals._eri_ao is not None)
+            assert built == ((False, False) if route == "poisson"
+                             else (True, True))
+        assert energies[0] == pytest.approx(energies[1], abs=1e-9)
+        assert references[0] == pytest.approx(references[1], abs=1e-9)
+
+    def test_an_unknown_route_is_refused(self):
+        with pytest.raises(ValueError, match="unknown hartree"):
+            Mandacaru(method="dft", hartree="multigrid")
+
+    def test_a_crystal_refuses_the_tensor_route(self):
+        from ase.build import bulk
+        atoms = bulk("Al", "fcc", a=4.05)
+        atoms.calc = Mandacaru(method="dft", hartree="tensor", trace=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        with pytest.raises(ValueError, match="molecular"):
+            atoms.get_potential_energy()

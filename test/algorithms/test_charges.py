@@ -455,3 +455,67 @@ def test_the_crystal_partition_runs_single_threaded_blas():
     (:func:`~mandacaru.integrals._backend.single_threaded_blas`)."""
     for function in (partition_crystal,):
         assert getattr(function, "__wrapped__", None) is not None
+
+
+# --------------------------------------------------------------------------- #
+# Bader on the all-electron density of a PAW-LCAO run.
+# --------------------------------------------------------------------------- #
+
+class TestBaderOnTheAllElectronDensity:
+    """The basins are traced on the smooth density plus the spherical PAW
+    reconstruction inside each sphere (and the frozen core).  On the smooth
+    density alone hydrogen has no cusp, its zero-flux surface moves toward
+    it, and water's oxygen came out at -1.68 e (PBE, DZP) instead of the
+    -1.2 of the literature."""
+
+    @pytest.fixture(scope="class")
+    def water(self):
+        from ase.build import molecule
+        atoms = molecule("H2O")
+        atoms.center(vacuum=3.5)
+        atoms.calc = Mandacaru(method="dft", xc="pbe", h=0.22,
+                               basis={"name": "PAW-LCAO", "size": "DZP"},
+                               trace=False)
+        atoms.get_potential_energy()
+        return atoms
+
+    def test_water_has_the_literature_charges(self, water):
+        charges = water.calc.atomic_partition("bader").charges
+        assert -1.32 < charges[0] < -1.15
+        assert charges[1] == pytest.approx(charges[2], abs=2e-3)
+        assert 0.57 < charges[1] < 0.66
+        assert abs(sum(charges)) < 1e-10
+
+    def test_the_reconstruction_holds_each_sphere_charge(self, water):
+        """Its integral is the augmentation charge the partition adds back
+        per atom: the reconstruction moves the basins, not the electrons."""
+        from mandacaru.algorithms.charges import (_augmentation_by_atom,
+                                                  _one_center_rdms,
+                                                  _spherical_reconstruction)
+        from mandacaru.algorithms.volumetric import (OrbitalExpansion,
+                                                     _spinors,
+                                                     spin_resolved_rdm)
+        from mandacaru.core.hamiltonian import projector_blocks
+        calc = water.calc
+        solver, integrals, frozen, active = calc._volumetric_context()
+        gamma, _ = calc._state_rdms(solver, psi=calc._volumetric_state(
+            solver, 0), two_body=False)
+        Da, Db = spin_resolved_rdm(gamma, len(integrals.basis), frozen,
+                                   active, spinors=_spinors(integrals))
+        orbitals = OrbitalExpansion(integrals).natural_orbitals(Da + Db)
+        P_ao = (orbitals.coefficients * orbitals.occupations) \
+            @ orbitals.coefficients.conj().T
+        columns: dict = {}
+        for (atom, _l, _m), where in projector_blocks(
+                integrals.kb_projectors).items():
+            columns.setdefault(int(atom), []).extend(int(p) for p in where)
+        columns = {atom: sorted(c) for atom, c in columns.items()}
+        ordered = [integrals.kb_projectors[p] for atom in sorted(columns)
+                   for p in columns[atom]]
+        tables = _spherical_reconstruction(
+            ordered, integrals.datasets,
+            _one_center_rdms(integrals.projections(), P_ao, columns))
+        held = [np.trapezoid(4 * np.pi * r ** 2 * values, r)
+                for r, values in tables]
+        expected = _augmentation_by_atom(integrals, orbitals, 3)
+        assert np.allclose(held, expected, atol=2e-4)

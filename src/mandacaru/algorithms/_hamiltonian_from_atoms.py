@@ -529,7 +529,8 @@ def _warn_unresolved(integrals, basis_fns, h):
 
 def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
                                  options, kinetic=None, active_space=None,
-                                 hamiltonian: bool = True):
+                                 hamiltonian: bool = True, ghosts=(),
+                                 electric_field=None):
     """Valence-only Hamiltonian from a pseudopotential **family**.
 
     A thin dispatcher: ``family`` is the
@@ -548,22 +549,48 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
     register and a qubit count the user did not ask for -- and ``**kwargs``
     forwarded to
     :func:`~mandacaru.pseudopotentials.families.build_valence_hamiltonian` is all
-    it takes to satisfy it.
+    it takes to satisfy it.  ``ghosts`` (counterpoise atoms) is forwarded
+    only when there are any, so a family built without them is unaffected.
     """
     unknown = sorted(set(options) - set(family.options))
     if unknown:
         raise ValueError(
             f"unknown option(s) {unknown} for the {family.label} basis; it "
             f"accepts {list(family.options)}")
+    extra = {"ghosts": tuple(ghosts)} if ghosts else {}
+    if electric_field is not None:
+        extra["electric_field"] = electric_field
     return family.build(atoms, grid, h, charge, spin, dict(options), kinetic,
-                        active_space=active_space, hamiltonian=hamiltonian)
+                        active_space=active_space, hamiltonian=hamiltonian,
+                        **extra)
+
+
+def validate_ghosts(ghosts, n_atoms: int) -> frozenset:
+    """The ghost-atom indices as a set, checked against ``n_atoms``.
+
+    A ghost keeps its basis functions and carries nothing else (the
+    counterpoise correction); at least one atom must stay real.
+    """
+    if ghosts is None:
+        return frozenset()
+    try:
+        indices = frozenset(int(i) for i in ghosts)
+    except (TypeError, ValueError):
+        raise ValueError(f"ghosts must be atom indices, got {ghosts!r}") from None
+    outside = sorted(i for i in indices if not 0 <= i < n_atoms)
+    if outside:
+        raise ValueError(f"ghost indices {outside} are outside 0..{n_atoms - 1}")
+    if len(indices) >= n_atoms:
+        raise ValueError("every atom is a ghost: at least one must be real")
+    return indices
 
 
 def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                             n_electrons, spin: bool = False,
                             kinetic=None, periodic: bool = False,
                             commensurate=None, active_space=None,
-                            hamiltonian: bool = True):
+                            hamiltonian: bool = True, ghosts=(),
+                            electric_field=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``hamiltonian=False`` stops after the integrals: the first element of the
@@ -614,12 +641,18 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     the integrals, basis functions and projectors the grid does not resolve
     (see :meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.unresolved`) raise a
     :class:`RuntimeWarning` naming them.
+
+    ``ghosts`` are atom indices that keep their basis functions but carry no
+    nucleus (or pseudopotential) and no electrons: a fragment computed in the
+    complex's basis, for the counterpoise correction
+    (:func:`~mandacaru.algorithms.interaction.interaction_energy`).
     """
     from .active_space import resolve_active_space_spec
 
     spec = resolve_active_space_spec(active_space)
     name, options = resolve_basis(basis)
     symbols = atoms.get_chemical_symbols()
+    ghosts = validate_ghosts(ghosts, len(symbols))
     family, options = resolve_pseudo_basis(name, options, symbols)
     if family is not None:
         if periodic:
@@ -649,13 +682,23 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                 "themselves.  Use `charge` to add or remove electrons.")
         return _pseudopotential_hamiltonian(
             atoms, grid, h, charge, spin, family, options, kinetic=kinetic,
-            active_space=spec, hamiltonian=hamiltonian)
+            active_space=spec, hamiltonian=hamiltonian, ghosts=ghosts,
+            electric_field=electric_field)
 
+    real = [i for i in range(len(symbols)) if i not in ghosts]
     numbers = atoms.get_atomic_numbers()
     n_el = (int(n_electrons) if n_electrons is not None
-            else int(sum(int(z) for z in numbers)) - int(charge))
+            else int(sum(int(numbers[i]) for i in real)) - int(charge))
 
     if _is_plane_wave(name):
+        if ghosts:
+            raise NotImplementedError(
+                "ghost atoms need an atom-centered basis; the plane-wave (PW) "
+                "basis has no functions of their own to lend")
+        if electric_field is not None:
+            raise NotImplementedError(
+                "a uniform electric field needs a molecule in an "
+                "atom-centered basis; the plane-wave (PW) basis is periodic")
         if not hamiltonian:
             raise NotImplementedError(
                 "the plane-wave (PW) basis has no integrals-only build")
@@ -675,7 +718,8 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         functions = bset.atom(sym, center=pos, units="angstrom")
         basis_fns += functions
         atom_of_orbital += [atom_index] * len(functions)
-        nuclei.append((float(Z), pos))
+        if atom_index not in ghosts:          # a ghost lends its functions only
+            nuclei.append((float(Z), pos))
 
     from ..integrals import Grid
 
@@ -693,10 +737,11 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         g = (grid if grid is not None
              else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
 
-    n_unpaired = resolve_num_unpaired(atoms, spin, n_el)
+    n_unpaired = resolve_num_unpaired(atoms[real], spin, n_el)
     n_alpha, n_beta = _num_particles(n_el, n_unpaired, name)
     frozen = resolve_frozen(spec.frozen if spec is not None else None,
-                            numbers, n_el, len(basis_fns), n_doubly=n_beta)
+                            numbers[real], n_el, len(basis_fns),
+                            n_doubly=n_beta)
 
     # Soften the -Z/r cusp to half a grid step (Bohr): a nucleus that lands on a
     # grid node would otherwise sample -Z/r at r->0 and produce a ~1e12 garbage
@@ -709,6 +754,10 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         # A crystal, not a molecule in a box: the Coulomb kernel, the external
         # potential and the ion-ion energy are all lattice sums, and the basis
         # functions are their own periodic images.
+        if electric_field is not None:
+            raise NotImplementedError(
+                "a uniform electric field breaks the periodicity of a "
+                "crystal; the position operator is not defined there")
         integrals = PeriodicIntegrals(
             nuclei, basis_fns, g, cell, n_electrons=n_el, softening=softening,
             kinetic=kinetic or "spectral")
@@ -716,6 +765,8 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         integrals = MolecularIntegrals(
             nuclei, basis_fns, g, softening=softening,
             kinetic=kinetic or DEFAULT_KINETIC["all-electron"])
+        if electric_field is not None:
+            integrals.apply_electric_field(electric_field)
     # The core arrives at the integrals as explicit indices: "auto" needed the
     # atoms, which only this layer has.
     hamiltonian = (integrals.molecular_hamiltonian(

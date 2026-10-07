@@ -171,8 +171,10 @@ class TestTheIrreducibleWedge:
         (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter": 200}, "lda"),
         (bulk("Mg", "hcp", a=3.21, c=5.21), 10, (3, 3, 2),
          {"size": "SZP", "filter": 200}, "lda"),
+        (bulk("Mg", "hcp", a=3.21, c=5.21), 10, (3, 3, 2),
+         {"size": "SZP", "filter": 200}, "pbe"),
         (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter": 200}, "r2scan"),
-    ], ids=["diamond-Si", "hcp-Mg", "diamond-Si-r2scan"])
+    ], ids=["diamond-Si", "hcp-Mg", "hcp-Mg-pbe", "diamond-Si-r2scan"])
     def test_it_reproduces_the_time_reversed_mesh(self, atoms, nodes, kpts,
                                                   options, functional):
         """The wedge, symmetrized, is the full mesh: to 1e-8 Ha per cell.
@@ -183,7 +185,9 @@ class TestTheIrreducibleWedge:
         wave-vector, where an even FFT is not symmetric, and the discretized
         problem itself is no longer (9 uHa off).  r2SCAN checks that the
         kinetic-energy density is symmetrized like the density: summed over
-        the wedge alone it was 2.9e-4 Ha off.
+        the wedge alone it was 2.9e-4 Ha off.  PBE on hcp Mg: the density
+        gradients commute with the hexagonal operations (wave-vectors
+        averaged over the lattice's operations, K13), so it meets LDA's tolerance.
         """
         h = float(np.linalg.norm(np.asarray(atoms.cell)[0])) / nodes
         energies = []
@@ -199,11 +203,11 @@ class TestTheIrreducibleWedge:
                              len(crystal.kpoints)))
         (wedge, n_wedge), (full, n_full) = energies
         assert n_wedge < n_full
-        # A gradient-dependent functional also carries the grid's own
-        # rotation residual -- spectral gradients see an FFT box the
-        # operations do not map onto itself -- which falls steeply with h
-        # (1.6e-8 Ha here; HISTORY 2026-10-03).
-        tolerance = 1e-8 if functional == "lda" else 5e-8
+        # The meta-GGA's kinetic-energy density is built from Bloch
+        # gradients on the FFT box, which the operations do not map onto
+        # itself: a residual that falls steeply with h (1.6e-8 Ha here;
+        # HISTORY 2026-10-03 and 2026-10-07, K13).
+        tolerance = 5e-8 if functional == "r2scan" else 1e-8
         assert wedge == pytest.approx(full, abs=tolerance)
 
 

@@ -128,12 +128,16 @@ class TestGhostSearch:
 
     @pytest.fixture(autouse=True)
     def _scattering(self, monkeypatch):
-        """Phase errors by dataset, default clean."""
+        """Phase errors by dataset, default clean -- of the constructed
+        channels and of the ones without projectors."""
         from mandacaru.pseudopotentials import partial_waves as pw
-        self.phases = {}
+        self.phases, self.unprojected = {}, {}
         monkeypatch.setattr(pw, "scattering_errors",
                             lambda pp, _ld, _cache=None:
                             self.phases.get(id(pp), {}))
+        monkeypatch.setattr(pw, "unprojected_scattering_errors",
+                            lambda pp, _ld, _cache=None:
+                            self.unprojected.get(id(pp), {}))
 
     def _options(self, **overrides):
         options = {"r_cut": None, "r_cut_local": None, "local_shift": None,
@@ -172,11 +176,14 @@ class TestGhostSearch:
     def test_a_failed_acceptance_is_repaired_with_more_bessel_functions(self):
         """Mg-LDA: clean spectrum and phases, but its s channel missed an
         intruding hydrogen 1s by 1.5; ten Bessel functions bring it to 0.07.
-        The Bessel attempts come after the own-cutoff shifts."""
-        from mandacaru.pseudopotentials.partial_waves import OWN_CUTOFF_SHIFTS
+        The Bessel attempts come after the shorter local radii and the
+        own-cutoff shifts."""
+        from mandacaru.pseudopotentials.partial_waves import (
+            OWN_CUTOFF_SHIFTS, SHORTER_LOCAL_FACTORS)
 
         first = self._missing(1.5)
-        shifts = [self._missing(1.6) for _ in OWN_CUTOFF_SHIFTS]
+        shifts = [self._missing(1.6) for _ in range(
+            len(SHORTER_LOCAL_FACTORS) + len(OWN_CUTOFF_SHIFTS))]
         fixed = self._missing(0.07)
         generate, calls = self._generator([first] + shifts + [fixed])
         assert self._run(generate, acceptance=self._s_miss,
@@ -195,10 +202,11 @@ class TestGhostSearch:
                          n_bessel=None) is complete
 
     def test_flag_mode_keeps_the_smallest_miss(self):
-        from mandacaru.pseudopotentials.partial_waves import OWN_CUTOFF_SHIFTS
+        from mandacaru.pseudopotentials.partial_waves import (
+            OWN_CUTOFF_SHIFTS, SHORTER_LOCAL_FACTORS)
 
-        attempts = (len(OWN_CUTOFF_SHIFTS) + 2 * (len(OWN_CUTOFF_SHIFTS) + 1)
-                    + 3 * 3 + 5)
+        attempts = (len(SHORTER_LOCAL_FACTORS) + len(OWN_CUTOFF_SHIFTS)
+                    + 2 * (len(OWN_CUTOFF_SHIFTS) + 1) + 3 * 3 + 5)
         outcomes = [self._missing(3.0)] + [self._missing(2.0 + 0.01 * i)
                                            for i in range(attempts)]
         generate, _calls = self._generator(outcomes)
@@ -258,9 +266,14 @@ class TestGhostSearch:
     def test_flag_keeps_the_least_defective_attempt_and_records_it(self):
         """No remedy works: ``flag`` returns the attempt with the shallowest
         ghost (a scattering-only defect would beat any ghost) and records it."""
+        from mandacaru.pseudopotentials.partial_waves import (
+            GHOST_REMEDY_SHIFTS, OWN_CUTOFF_SHIFTS, SHORTER_LOCAL_FACTORS)
+
         deep = self._Dataset({0: (-5.0, -0.2), 2: (-0.2, 0.3)})
         shallow = self._Dataset({0: (-0.5, -0.2), 2: (-0.2, 0.3)})
-        rest = [self._Dataset(self.GHOST) for _ in range(9)]
+        rest = [self._Dataset(self.GHOST) for _ in range(
+            len(SHORTER_LOCAL_FACTORS) + len(OWN_CUTOFF_SHIFTS)
+            + len(GHOST_REMEDY_SHIFTS))]
         generate, _calls = self._generator([deep, shallow] + rest)
         kept = self._run(generate, mode="flag",
                          overrides={"norm_deficit": 0.0})
@@ -277,35 +290,42 @@ class TestGhostSearch:
             0: pytest.approx(-1.6)}
 
     def test_overrides_are_tried_alone_first_then_kept_in_every_attempt(self):
-        from mandacaru.pseudopotentials.partial_waves import OWN_CUTOFF_SHIFTS
-        n_own = len(OWN_CUTOFF_SHIFTS)
-        stills = [self._Dataset(self.GHOST) for _ in range(1 + n_own)]
+        from mandacaru.pseudopotentials.partial_waves import (
+            OWN_CUTOFF_SHIFTS, SHORTER_LOCAL_FACTORS)
+        n_own, n_short = len(OWN_CUTOFF_SHIFTS), len(SHORTER_LOCAL_FACTORS)
+        stills = [self._Dataset(self.GHOST) for _ in range(1 + n_short + n_own)]
         clean = self._Dataset(self.CLEAN)
         generate, calls = self._generator([self._Dataset(self.GHOST)]
                                           + stills + [clean])
         assert self._run(generate, overrides={"norm_deficit": 0.0}) is clean
-        alone, raised, balanced = calls[1], calls[2], calls[2 + n_own]
+        alone, shorter = calls[1], calls[2]
+        raised, balanced = calls[2 + n_short], calls[2 + n_short + n_own]
         assert alone["norm_deficit"] == 0.0
         assert alone["r_cut"] is None           # the cutoffs are untouched
         assert alone["atom"] == "atom"          # the SCF atom is reused
+        assert shorter["norm_deficit"] == 0.0   # a shorter radius, no raise
+        assert shorter["local_shift"] == 0.0
         assert raised["r_cut"] is None          # raised at the own cutoffs
         assert raised["local_shift"] == OWN_CUTOFF_SHIFTS[0]
         assert balanced["norm_deficit"] == 0.0  # and kept with balanced ones
         assert balanced["r_cut"] == {0: 3.0, 2: 3.0}
 
     def test_a_ghost_is_repaired_with_balanced_cutoffs_and_a_raised_shift(self):
-        from mandacaru.pseudopotentials.partial_waves import (GHOST_REMEDY_SHIFTS,
-                                                     OWN_CUTOFF_SHIFTS)
-        n_own = len(OWN_CUTOFF_SHIFTS)
-        own = [self._Dataset(self.GHOST) for _ in range(n_own)]
+        from mandacaru.pseudopotentials.partial_waves import (
+            GHOST_REMEDY_SHIFTS, OWN_CUTOFF_SHIFTS, SHORTER_LOCAL_FACTORS)
+        n_own, n_short = len(OWN_CUTOFF_SHIFTS), len(SHORTER_LOCAL_FACTORS)
+        own = [self._Dataset(self.GHOST) for _ in range(n_short + n_own)]
         still = self._Dataset({0: (-0.5, -0.2), 2: (-0.2, 0.3)})
         clean = self._Dataset(self.CLEAN)
         generate, calls = self._generator([self._Dataset(self.GHOST)] + own
                                           + [still, clean])
         assert self._run(generate) is clean
-        assert [c["local_shift"] for c in calls[1:1 + n_own]] == list(
-            OWN_CUTOFF_SHIFTS)
-        first, second = calls[1 + n_own], calls[2 + n_own]
+        assert [c["local_factor"] for c in calls[1:1 + n_short]] == \
+            pytest.approx([0.9 * f for f in SHORTER_LOCAL_FACTORS])
+        assert [c["local_shift"] for c in calls[1 + n_short:1 + n_short + n_own]] \
+            == list(OWN_CUTOFF_SHIFTS)
+        first, second = (calls[1 + n_short + n_own],
+                         calls[2 + n_short + n_own])
         assert first["r_cut"] == {0: 3.0, 2: 3.0}
         assert first["r_cut_local"] == pytest.approx(2.7)
         assert first["local_shift"] == GHOST_REMEDY_SHIFTS[0]
@@ -350,15 +370,70 @@ class TestGhostSearch:
         assert self._run(generate, mode="keep") is ghosted
 
     def test_no_remedy_is_an_error_naming_every_attempt(self):
-        from mandacaru.pseudopotentials.partial_waves import (GHOST_REMEDY_SHIFTS,
-                                                     OWN_CUTOFF_SHIFTS,
-                                                     GhostStateError)
-        n = 1 + len(OWN_CUTOFF_SHIFTS) + len(GHOST_REMEDY_SHIFTS)
+        from mandacaru.pseudopotentials.partial_waves import (
+            GHOST_REMEDY_SHIFTS, OWN_CUTOFF_SHIFTS, SHORTER_LOCAL_FACTORS,
+            GhostStateError)
+        n = (1 + len(SHORTER_LOCAL_FACTORS) + len(OWN_CUTOFF_SHIFTS)
+             + len(GHOST_REMEDY_SHIFTS))
         generate, calls = self._generator([self._Dataset(self.GHOST)] * n)
         with pytest.raises(GhostStateError, match="no remedy removed it") as error:
             self._run(generate)
         assert len(calls) == n
         assert "own cutoffs, shift 5" in str(error.value)
+        assert "local radius x 0.6, no shift" in str(error.value)
+
+    def test_a_wrongly_scattering_local_channel_is_repaired_without_a_raise(self):
+        """K21: aluminum's first repair (5 Ha) left its d channel, which has
+        no projectors, 0.52 rad off.  The check now sees it, and a shorter
+        local radius at no raise is tried before any raise."""
+        wrong = self._Dataset(self.CLEAN)
+        right = self._Dataset(self.CLEAN)
+        self.unprojected[id(wrong)] = {1: 0.52}
+        self.unprojected[id(right)] = {1: 0.12}
+        generate, calls = self._generator([wrong, right])
+        assert self._run(generate) is right
+        assert calls[1]["local_shift"] == 0.0
+        assert calls[1]["local_factor"] == pytest.approx(0.9 * 0.75)
+
+    def test_a_failed_miss_ranks_below_any_scattering_defect(self):
+        """U, Ta, Re and Hf scatter wrongly in every construction; the
+        search must keep one with a complete s channel over one that misses
+        an intruding 1s, however large the scattering error."""
+        from mandacaru.pseudopotentials.partial_waves import _defect_badness
+
+        scattering = (None, {}, {1: (0.5, 0.5)},
+                      {"unprojected": {2: 1.42}})
+        missing = (None, {}, {}, {"s_miss": 1.05})
+        ghost = (None, {0: -0.5}, {}, {})
+        assert _defect_badness(scattering) < _defect_badness(missing) < \
+            _defect_badness(ghost)
+
+    def test_a_flagged_local_channel_survives_the_file_record(self):
+        from mandacaru.pseudopotentials.partial_waves import (
+            _defect_badness, defect_message, defects_record, read_defects)
+
+        defects = {"ghosts": {}, "phases": {}, "unprojected": {1: 0.37}}
+        assert read_defects(defects_record(defects))["unprojected"] == {1: 0.37}
+        assert "local potential that scatters wrongly" in defect_message(
+            "Na", "paw-lcao", defects)
+        # 0.37 rad is 1.85x its tolerance: worse than a 0.08 rad phase
+        # error of a constructed channel (1.6x), better than any ghost.
+        loose = (None, {}, {}, {"unprojected": {1: 0.37}})
+        phase = (None, {}, {0: (0.08, 0.08)}, {})
+        ghost = (None, {0: -0.5}, {}, {})
+        assert _defect_badness(phase) < _defect_badness(loose) < \
+            _defect_badness(ghost)
+
+    def test_a_level_between_two_bound_references_is_a_ghost(self):
+        """A semicore channel (sodium's 2s and 3s) must have its 3s as its
+        second level: an extra state between the two is a ghost."""
+        from mandacaru.pseudopotentials.partial_waves import ghost_errors
+        pp = self._Dataset({0: (-2.0, -0.5, -0.1), 2: (-0.2, 0.3)})
+        pp.channels[0].reference_energies = [-2.0, -0.1]
+        pp.channels[0].occupations = [2.0, 1.0]
+        assert ghost_errors(pp, self._levels) == {0: pytest.approx(-0.4)}
+        pp.levels[0] = (-2.0, -0.1, 0.4)
+        assert ghost_errors(pp, self._levels) == {}
 
     def test_a_scattering_channel_is_not_judged(self):
         from mandacaru.pseudopotentials.partial_waves import ghost_errors

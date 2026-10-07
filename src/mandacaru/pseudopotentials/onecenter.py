@@ -463,6 +463,13 @@ def one_center_exchange_tensor(dataset, projectors, omega: float,
     return cache[key]
 
 
+def _occupations(dataset, l: int) -> list[float]:
+    """The reference atom's electrons in each partial wave of channel ``l``."""
+    channel = dataset.channels[int(l)]
+    return [float(o) for o in (getattr(channel, "occupations", None)
+                               or [channel.occupation])]
+
+
 def _radial_derivative(r, f):
     return np.gradient(np.asarray(f, dtype=float), np.asarray(r, dtype=float))
 
@@ -495,8 +502,9 @@ def frozen_exchange_terms(dataset, omega: float, basis: str = "raw"):
     for side in (0, 1):                       # all-electron, smooth
         n = np.zeros_like(r)
         for l, pair in waves.items():
-            n += (float(dataset.channels[l].occupation) * pair[side][0] ** 2
-                  / (4.0 * np.pi))
+            # Every occupied partial wave: two in a semicore channel.
+            for i, occupation in enumerate(_occupations(dataset, l)):
+                n += occupation * pair[side][i] ** 2 / (4.0 * np.pi)
         densities.append(n)
     energy, potentials = [], []
     for n in densities:
@@ -517,7 +525,8 @@ def frozen_exchange_terms(dataset, omega: float, basis: str = "raw"):
                                  * _radial_derivative(r, product)) * r * r
                     V[i, j] += sign * float(np.trapezoid(integrand, r))
         V = 0.5 * (V + V.T)
-        linear += float(dataset.channels[l].occupation) * V[0, 0]
+        linear += sum(occupation * V[i, i] for i, occupation
+                      in enumerate(_occupations(dataset, l)))
         transform = _basis_transform(dataset, l, str(basis))
         blocks[l] = V if transform is None else transform @ V @ transform.T
     cache[key] = (energy[0] - energy[1] - linear, blocks)

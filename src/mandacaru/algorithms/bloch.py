@@ -245,6 +245,16 @@ class _BlochMixin:
     periodic_hamiltonian = True
 
     def __init__(self, *, kpts=None, **kwargs):
+        if kwargs.get("electric_field") is not None:
+            raise NotImplementedError(
+                "a uniform electric field breaks the periodicity the Bloch "
+                "methods rest on")
+        if kwargs.get("ghosts"):
+            # Ghost indices name the primitive cell's atoms; the Born-von
+            # Karman supercell would ghost others.
+            raise NotImplementedError(
+                "ghost atoms are not supported by the Bloch (supercell) "
+                "methods; use method='dft' for a counterpoise crystal")
         if kpts is None:
             raise ValueError(
                 "a periodic method needs a Brillouin-zone sampling: pass "

@@ -58,6 +58,40 @@ calc = Mandacaru(method="adapt-vqe",
 calc.interaction_energy(complex_, [[0, 1, 2], [3]], charges=[0, 1], charge=1)
 ```
 
+## The basis-set superposition error: `counterpoise=True`
+
+In an atom-centered basis each fragment inside the complex can lower its
+energy with its partners' functions, which the fragment computed alone does
+not have, so the complex is artificially stabilized. A compact basis makes
+this large: the default PAW-LCAO basis is confined (`energy_shift` 0.1 eV),
+and for the argon dimer at 3.76 Å it turns PBE's weak interaction into
+$-18.2$ meV of binding.
+
+`counterpoise=True` evaluates every fragment in the **complex's** basis
+(Boys and Bernardi): the other fragments' atoms stay in place as *ghosts*,
+with their basis functions but no nucleus, pseudopotential or electrons, so
+the error cancels between the complex and its fragments.
+
+```python
+result = interaction_energy(dimer, fragments=[[0], [1]], method="dft",
+                            xc="pbe", basis={"name": "PAW-LCAO",
+                                             "size": "DZP"},
+                            h=0.2, counterpoise=True)
+```
+
+| Ar$_2$, PBE, DZP, 3.76 Å | plain | counterpoise |
+| :--- | ---: | ---: |
+| confined basis (the default) | $-18.2$ meV | $+1.5$ meV |
+| unconfined (`energy_shift=None`) | $-4.3$ meV | $-4.0$ meV |
+
+The correction removes the borrowing, not the basis's own limits: the
+confined basis is still the poorer one for the interaction itself, so for
+weak binding use an unconfined basis *and* check the counterpoise number.
+It works for crystals too (the layers of a layered crystal, a molecule on a
+surface). A ghost is also available directly, `Mandacaru(ghosts=[...])`;
+forces and the stress are refused with ghosts, which have no nucleus to
+feel them.
+
 What the helper cannot do is make an under-resolved core converge: the
 sodium ion above is still a bare nucleus of charge 11 on a 0.25 Å grid, and
 its interaction energy will not converge with `h`. Pair the helper with a

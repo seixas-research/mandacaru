@@ -77,6 +77,158 @@ def wavevectors(grid) -> np.ndarray:
     return np.einsum("ci,ixyz->cxyz", B, np.stack([m1, m2, m3]))
 
 
+#: Largest departure from an isometry, :math:`\|R^TR - 1\|_F`, of a grid
+#: operation :func:`lattice_operations` keeps.  Above the strains of a
+#: finite-strain stress (1e-4 to 1e-3), so a strained crystal keeps the
+#: unstrained grid's operations and its derivatives stay linear in the
+#: strain.  A lattice within it of a higher symmetry is averaged over the
+#: higher group, which is harmless: its own operations are a subgroup, and
+#: every term is still an alias.  A strain that crosses it changes the set,
+#: and the derivatives by the difference of two averages, which falls with
+#: the grid step like the box's own aliasing.
+ISOMETRY_TOLERANCE = 2e-2
+
+#: :func:`symmetric_aliases` of the last few grids, keyed by shape and step.
+_SYMMETRIC: dict = {}
+_SYMMETRIC_KEEP = 4
+
+
+def lattice_operations(grid) -> list:
+    r"""The point operations of the grid's lattice, as integer matrices
+    ``V`` acting on FFT frequencies (:math:`\mathbf m \to V\mathbf m`).
+
+    Those of :math:`x \to Wx` (fractional) with :math:`W` unimodular, its
+    Cartesian form :math:`R = AWA^{-1}` an isometry to
+    :data:`ISOMETRY_TOLERANCE`, mapping nodes onto nodes (:math:`W_{ij}
+    n_i/n_j` integral) and aliases onto aliases; :math:`V = W^{-T}`.  The
+    lattice's, not a crystal's: a superset of every space group's point
+    part on the grid, and never empty (the identity and the inversion).
+    """
+    import itertools
+
+    shape = np.asarray(grid.shape, dtype=float)
+    A = lattice_vectors(grid)
+    inverse = np.linalg.inv(A)
+
+    def kept(W):
+        """Which of the ``(k, 3, 3)`` matrices ``W`` are kept."""
+        R = np.einsum("ij,kjl,lm->kim", A, W, inverse)
+        defect = np.einsum("kji,kjl->kil", R, R) - np.eye(3)
+        isometry = np.sqrt(np.sum(defect * defect, axis=(1, 2))) \
+            <= ISOMETRY_TOLERANCE
+        nodes = W * shape[None, :, None] / shape[None, None, :]
+        V = np.transpose(np.linalg.inv(W), (0, 2, 1))
+        aliases = V * shape[None, None, :] / shape[None, :, None]
+        integral = (np.all(np.abs(nodes - np.round(nodes)) < 1e-9, axis=(1, 2))
+                    & np.all(np.abs(aliases - np.round(aliases)) < 1e-9,
+                             axis=(1, 2)))
+        return isometry & integral
+
+    candidates = np.array(list(itertools.product((-1, 0, 1), repeat=9)),
+                          dtype=float).reshape(-1, 3, 3)
+    candidates = candidates[np.abs(np.abs(np.linalg.det(candidates)) - 1.0)
+                            < 1e-9]
+    group = list(candidates[kept(candidates)])
+    # Close the set under products: an operation with entries beyond
+    # {-1, 0, 1} in a skewed basis is a product of ones within it.
+    known = {tuple(np.round(W).astype(int).ravel()) for W in group}
+    while True:
+        products = np.einsum("aij,bjk->abik", np.array(group),
+                             np.array(group)).reshape(-1, 3, 3)
+        new = {}
+        for W in products[kept(products)]:
+            key = tuple(np.round(W).astype(int).ravel())
+            if key not in known:
+                new[key] = W
+        if not new:
+            break
+        known.update(new)
+        group.extend(new.values())
+    return [np.round(np.linalg.inv(W).T).astype(int) for W in group]
+
+
+def symmetric_aliases(grid) -> tuple[np.ndarray, np.ndarray]:
+    r"""``(vectors, norms)``: the FFT box's wave-vectors averaged over the
+    grid's lattice operations.
+
+    A grid of ``n_i`` nodes per axis cannot tell :math:`\mathbf G` from its
+    aliases :math:`\mathbf G + \sum_i j_i n_i\mathbf b_i`; :func:`wavevectors`
+    picks the alias in the box :math:`-n_i/2 \le m_i < n_i/2`, and a spectral
+    derivative multiplies by it.  An operation that maps the grid onto
+    itself maps the box onto itself only when it maps every axis onto an
+    axis -- the hexagonal and fcc ones do not -- so the box derivative of a
+    symmetric field is not exactly symmetric.  Its average over the
+    operations :math:`V` of :func:`lattice_operations`,
+
+    .. math::
+
+        \tilde{\mathbf m} = \frac{1}{|\mathcal P|}\sum_{V\in\mathcal P}
+            V^{-1}\,\mathrm{box}(V\mathbf m),
+
+    commutes with every one of them; each term is an alias of
+    :math:`\mathbf m`, so a frequency the operations keep inside the box is
+    differentiated exactly as before, and only those near its faces get a
+    mean of aliases (an even axis' Nyquist plane, through the inversion, the
+    mean of :math:`\pm n_i/2`: zero, so a real field's derivative stays
+    real).  The average is taken on the integers: it does not depend on the
+    metric, so a strain that keeps the operations changes the derivative
+    linearly, exactly as the box's -- what the finite-strain stress needs.
+    A choice by length (the shortest alias, the Wigner-Seitz cell) is
+    equally symmetric but switches aliases where a strain lifts a tie.
+
+    ``vectors`` is :math:`B\tilde{\mathbf m}` (``(3, n1, n2, n3)``),
+    ``norms`` the mean length of the averaged aliases (``(n1, n2, n3)``),
+    for kernels of :math:`|\mathbf G|`.  On an orthorhombic grid only the
+    Nyquist planes differ from :func:`wavevectors`.  Both are cached per
+    grid and read-only.
+    """
+    shape = tuple(int(n) for n in grid.shape)
+    key = (shape, np.asarray(grid.step, dtype=float).tobytes())
+    cached = _SYMMETRIC.get(key)
+    if cached is not None:
+        return cached
+    B = reciprocal_vectors(lattice_vectors(grid))
+    n = np.asarray(shape, dtype=float)[:, None]
+    grids = np.meshgrid(*[np.fft.fftfreq(k, d=1.0 / k) for k in shape],
+                        indexing="ij")
+    m = np.stack([g.ravel() for g in grids])
+    box = np.sqrt(np.sum((B @ m) ** 2, axis=0))
+    operations = lattice_operations(grid)
+    if all(np.all(np.sum(np.abs(V), axis=1) == 1) for V in operations):
+        # Signed permutations (an orthorhombic, tetragonal or cubic grid):
+        # they keep the box but for an even axis' Nyquist plane, which the
+        # inversion averages to zero.
+        m = np.where(2 * np.abs(m) == n, 0.0, m)
+        vectors = (B @ m).reshape(3, *shape)
+        norms = box.reshape(shape)
+    else:
+        shift = np.zeros(m.shape)
+        norms = len(operations) * box
+        for V in operations:
+            image = V @ m
+            # box(V m) - V m: nonzero only where the image left the box.
+            wrap = np.mod(image + n // 2, n) - n // 2 - image
+            moved = np.any(wrap != 0.0, axis=0)
+            back = np.rint(np.linalg.inv(V)) @ wrap[:, moved]
+            shift[:, moved] += back
+            norms[moved] += (np.sqrt(np.sum((B @ (m[:, moved] + back)) ** 2,
+                                            axis=0)) - box[moved])
+        count = len(operations)
+        vectors = (B @ (m + shift / count)).reshape(3, *shape)
+        norms = (norms / count).reshape(shape)
+    vectors.setflags(write=False)
+    norms.setflags(write=False)
+    if len(_SYMMETRIC) >= _SYMMETRIC_KEEP:
+        _SYMMETRIC.pop(next(iter(_SYMMETRIC)))
+    _SYMMETRIC[key] = (vectors, norms)
+    return vectors, norms
+
+
+def symmetric_wavevectors(grid) -> np.ndarray:
+    """``(3, n1, n2, n3)``: the vectors of :func:`symmetric_aliases`."""
+    return symmetric_aliases(grid)[0]
+
+
 def to_reciprocal(grid, values) -> np.ndarray:
     r"""``f(G)`` of flat real-space values, in the module's convention."""
     G = wavevectors(grid)

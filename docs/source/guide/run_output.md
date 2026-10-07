@@ -211,8 +211,9 @@ pairing (`spin_orbit_coupling` is in the GHF setup).
 blocks are read under.
 
 `method="dft"` writes the same two blocks with Kohn-Sham content
-({doc}`dft`). `[SCF SETUP]` adds `xc_functional` and `dispersion` (`NONE` when
-there is none) and states the convergence criteria and the level shift of the
+({doc}`dft`). `[SCF SETUP]` adds `xc_functional`, `dispersion` (`NONE` when
+there is none) and, for a molecule, `hartree` (a Poisson solve per iteration,
+or the two-body tensor with `hartree="tensor"`), and states the convergence criteria and the level shift of the
 Kohn-Sham iteration. `[SCF SUMMARY]` adds the `reference_energy_<unit>` of the
 exported Hamiltonian, `hartree_energy_<unit>` and `xc_energy_<unit>`, then
 `core_correction_energy_<unit>` when the basis has a core correction and
@@ -338,11 +339,11 @@ read off the left margin:
         O       8  6      1      1.4499      O.parquet
         H       1  1      0      1.2998      H.parquet
     orbitals:
-        symbol  l  zetas  polarization  r_c_Bohr  r_c_Angstrom  eps_free_eV  eps_basis_eV  shift_eV
-        -------------------------------------------------------------------------------------------
-        O       0  1      0             4.3652    2.3100        -23.706920   -23.606915    0.100005
-        O       1  1      0             5.3500    2.8311        -9.205641    -9.105680     0.099961
-        H       0  1      0             6.6822    3.5361        -6.358289    -6.258289     0.100000
+        symbol  n  l  zetas  polarization  r_c_Bohr  r_c_Angstrom  eps_free_eV  eps_basis_eV  shift_eV
+        ----------------------------------------------------------------------------------------------
+        O       2  0  1      0             4.3652    2.3100        -23.706920   -23.606915    0.100005
+        O       2  1  1      0             5.3500    2.8311        -9.205641    -9.105680     0.099961
+        H       1  0  1      0             6.6822    3.5361        -6.358289    -6.258289     0.100000
     functions:
         symbol  atoms  functions_per_atom
         -------------------------------------
