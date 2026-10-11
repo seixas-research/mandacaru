@@ -9,6 +9,8 @@
 """A uniform electric field on a molecule, and the finite-field
 polarizability built on it."""
 
+import os
+
 import numpy as np
 import pytest
 from ase.build import molecule
@@ -136,7 +138,12 @@ class TestThePolarizability:
         calc = Mandacaru(method="dft", xc="pbe", basis=PAW_SZP, h=0.3,
                          trace=False)
         calc.polarizability(_water(), field=1e-3)
-        assert seen["method"] == "dft" and seen["basis"] == PAW_SZP
+        # The calculator's basis, which carries the folder of PBE's own
+        # datasets (the dataset follows the functional, W4).
+        assert seen["method"] == "dft" and seen["basis"] == calc.basis
+        named = dict(seen["basis"])
+        assert os.path.basename(named.pop("directory")) == "pbe-sr"
+        assert named == PAW_SZP
         assert seen["h"] == 0.3 and seen["xc"] == "pbe"
         assert seen["field"] == 1e-3
 

@@ -183,3 +183,43 @@ class TestProjectionKernel:
         with pytest.raises(ValueError, match="sampled on"):
             _backend.kb_projections(np.ones((2, 10), dtype=complex),
                                     np.ones((1, 7), dtype=complex), 1.0)
+
+
+class TestSpectralLaplacian:
+    """``IntegralEngine.spectral_laplacian``: the operator ``kinetic="spectral"``
+    integrates, shared with the nuclear gradient's Pulay term."""
+
+    @staticmethod
+    def _engine(h=0.3):
+        from mandacaru.basis import GaussianOrbital
+
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=12.0, h=h, units="bohr")
+        basis = [GaussianOrbital(0, 0, [0.6], [1.0], center=[0.2, -0.1, 0.0],
+                                 units="bohr"),
+                 GaussianOrbital(1, 1, [0.4], [1.0], center=[-0.3, 0.1, 0.2],
+                                 units="bohr")]
+        return IntegralEngine(basis, grid)
+
+    def test_a_resolved_gaussian_has_its_analytic_laplacian(self):
+        engine = self._engine()
+        grid = engine.grid
+        alpha, center = 0.6, np.array([0.2, -0.1, 0.0])
+        r2 = ((grid.X - center[0]) ** 2 + (grid.Y - center[1]) ** 2
+              + (grid.Z - center[2]) ** 2).ravel()
+        psi = engine._psi[0]
+        exact = (4 * alpha ** 2 * r2 - 6 * alpha) * psi
+        lap = engine.spectral_laplacian(psi)
+        assert lap.shape == psi.shape
+        assert np.abs(lap - exact).max() < 1e-8 * np.abs(exact).max()
+
+    def test_it_is_the_kinetic_matrix_and_real_symmetric(self):
+        """``T = -1/2 <psi|lap psi>``, and ``<a|lap b> = <lap a|b>`` on the
+        grid (the Nyquist plane is symmetrized), the identity the Pulay term
+        relies on."""
+        engine = self._engine(h=0.5)
+        zero = lambda x, y, z: np.zeros_like(x)
+        T = engine.one_body(zero, energy_units="Ha", kinetic="spectral")[0]
+        lap = engine.spectral_laplacian(engine._psi)
+        direct = -0.5 * engine.grid.dV * (engine._psi.conj() @ lap.T)
+        assert np.allclose(T, 0.5 * (direct + direct.conj().T), atol=1e-14)
+        assert np.allclose(direct, direct.conj().T, atol=1e-12)

@@ -546,9 +546,9 @@ class WannierResult:
                     positions.append(r)
         return write_volumetric(
             path, fields[part](w), origin, step, numbers,
-            np.reshape(positions, (-1, 3)), charges=charges, cell=box,
+            np.reshape(positions, (-1, 3)), charges=charges, cell=box.T,
             comment=f"Mandacaru Wannier function {index} ({part} part)",
-            format=format)
+            format=format, periodic=True)
 
     # -- the downfolded many-body problem ----------------------------------- #
 

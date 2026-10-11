@@ -70,9 +70,12 @@ or `~/.bashrc` (whichever `$SHELL` reads), asking `[Y/n]` before replacing a
 different value; open a new terminal, or `source` the file, for the variable
 to take effect in your shell. Inside a checkout the datasets sit one folder
 per set (`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic
-LDA set, and the default); PAW-LCAO also has
-`lda-dirac/` (the spin-orbit set). A calculation
-reads `lda-sr/` unless the calculator names another folder:
+LDA set); PAW-LCAO also has
+`lda-dirac/` (the spin-orbit set) and `pbe-sr/` (the scalar-relativistic
+PBE set). A calculation reads the set of its functional — `pbe-sr/` for
+`method="dft"` with PBE, HSE06 or r2SCAN, `lda-sr/` for LDA and every other
+method — unless the calculator names another folder (`--directory` on the
+command line):
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO",

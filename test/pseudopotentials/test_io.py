@@ -280,7 +280,44 @@ class TestPBELibrary:
         assert (pp.xc, pp.relativity) == ("pbe", "scalar")
         assert pp.relativistic_exchange
         assert not (pp.defects or {}).get("ghosts")
-        assert ghost_errors(pp, _paw_levels) == {}
+        assert ghost_errors(pp, _paw_levels, with_atom=False) == {}
+
+    @pytest.mark.parametrize("symbol, n", [("Sc", 4), ("Zr", 5), ("Ta", 6)])
+    def test_the_early_d_block_carries_its_semicore_shell(self, symbol, n):
+        """Without the (n-1)s (n-1)p shell the local potential scattered the
+        empty p of Sc, Ti, Y-Tc and Ta 0.2-1.5 rad off, PBE ScH came out 11 %
+        long and bcc Mo 12 %; with it they build clean and within 0.7 %
+        (HISTORY.md, 2026-10-11)."""
+        _pbe_library()
+        pp = get_paw(symbol, xc="pbe")
+        assert pp.semicore_subshells == ((n - 1, 0), (n - 1, 1))
+        assert 1 in pp.channels and not pp.defects
+
+    @pytest.mark.parametrize("symbol", ["Sc", "Ti", "Ga", "Ge"])
+    def test_a_filtered_3d_function_projects_onto_its_own_wave(self, symbol):
+        """The filtered (h = 0.20 Angstrom) 3d basis function of a single
+        atom projects onto its own first d projector as 1 and onto the
+        second as 0, to 0.1.  The semicore Sc and Ti at their default d
+        spheres were off by 0.21 / 0.35, the PBE Ga and Ge without the d
+        repair by 0.47 / 1.27 (HISTORY.md, 2026-10-11)."""
+        from ase import Atoms
+
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
+            build_basis_hamiltonian)
+
+        folder = _pbe_library()
+        atoms = Atoms(symbol, positions=[[3.5, 3.5, 3.5]], cell=[7.0] * 3)
+        _H, _p, _n, _profile, context = build_basis_hamiltonian(
+            atoms, {"name": "PAW-LCAO", "size": "SZ",
+                    "projector_basis": "dual", "directory": folder},
+            None, 0.20, 0, None, spin=True)
+        integrals = context["integrals"]
+        C = np.asarray(integrals.projections())
+        columns = {(q.m, q.index): k for k, q in
+                   enumerate(integrals.kb_projectors) if q.l == 2}
+        row = int(np.argmax(np.abs(C[:, columns[0, 0]])))
+        assert C[row, columns[0, 0]].real == pytest.approx(1.0, abs=0.1)
+        assert abs(C[row, columns[0, 1]]) < 0.1
 
     def test_the_functional_selects_the_set(self):
         """``xc`` picks the folder; the default stays the LDA set."""
@@ -313,3 +350,49 @@ class TestPBELibrary:
         assert np.isfinite(energy)
         integrals = atoms.calc.solver._gradient_context["integrals"]
         assert {d.xc for d in integrals.pseudopotentials} == {"pbe"}
+
+
+class TestLibraryLoader:
+    """``load_library_dataset`` behind ``get_paw``: the folder's name is a
+    promise about what is in it, and the cache follows the file."""
+
+    def _copy(self, tmp_path, folder, symbol="H"):
+        import shutil
+
+        target = tmp_path / folder
+        target.mkdir()
+        shutil.copy(library_file(symbol, paw_library_path()),
+                    target / f"{symbol}.parquet")
+        return target
+
+    def test_a_scalar_dataset_in_a_dirac_folder_is_refused(self, tmp_path):
+        """A scalar file copied into ``lda-dirac/`` would silently drop the
+        spin-orbit term that folder promises."""
+        folder = self._copy(tmp_path, "lda-dirac")
+        with pytest.raises(ValueError, match="relativity='scalar' in the "
+                                             "lda-dirac/ folder"):
+            get_paw("H", directory=str(folder))
+
+    def test_a_matching_folder_and_a_folder_of_ones_own_load(self, tmp_path):
+        assert get_paw("H", directory=str(self._copy(
+            tmp_path, "lda-sr"))).relativity == "scalar"
+        assert get_paw("H", directory=str(self._copy(
+            tmp_path, "mine"))).relativity == "scalar"
+
+    def test_a_replaced_file_is_read_again(self, tmp_path):
+        """The cache is keyed by the file's identity: a dataset rebuilt under
+        a running session is not served from memory."""
+        from dataclasses import replace
+
+        folder = self._copy(tmp_path, "lda-sr")
+        first = get_paw("H", directory=str(folder))
+        assert get_paw("H", directory=str(folder)) is first
+        path = save_pseudopotential(
+            replace(first, one_center_energy=first.one_center_energy + 1.0),
+            folder / "H.parquet")
+        stamp = os.stat(path).st_mtime_ns + 10 ** 9
+        os.utime(path, ns=(stamp, stamp))
+        second = get_paw("H", directory=str(folder))
+        assert second is not first
+        assert second.one_center_energy == pytest.approx(
+            first.one_center_energy + 1.0)

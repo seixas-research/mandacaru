@@ -208,3 +208,130 @@ class TestSymmetricAliases:
         assert np.allclose(vectors[:, ~nyquist], G[:, ~nyquist])
         assert np.allclose(vectors[0, 3], 0.0) and np.allclose(
             vectors[2, :, :, 4], 0.0)
+
+
+def _rotation_on_frequencies(grid, angle):
+    """``(R, W)``: the Cartesian rotation by ``angle`` about z and its
+    action on the FFT frequencies, :math:`R B = B W`."""
+    R = np.array([[np.cos(angle), -np.sin(angle), 0.0],
+                  [np.sin(angle), np.cos(angle), 0.0], [0.0, 0.0, 1.0]])
+    B = rc.reciprocal_vectors(rc.lattice_vectors(grid))
+    return R, np.rint(np.linalg.solve(B, R @ B)).astype(int)
+
+
+class TestBlochAliases:
+    """``bloch_aliases``: the wave-vectors G + k of a Bloch function's
+    periodic part, each the mean over the aliases the lattice operations
+    pick (K13b)."""
+
+    #: A generic k with one component on the zone boundary.
+    KAPPA = np.array([0.13, 0.27, 0.5])
+
+    @pytest.mark.parametrize("nodes", [(12, 12, 20), (11, 11, 19)])
+    def test_a_hexagonal_rotation_carries_k_and_the_frequencies(self, nodes):
+        """The kinetic multiplier at R k of the frequency W m is the one at
+        k of m, and the vectors rotate; the box's do neither."""
+        grid = _periodic_grid(ALIASING_CELLS["hexagonal"][0], nodes)
+        R, W = _rotation_on_frequencies(grid, np.pi / 3.0)
+        B = rc.reciprocal_vectors(rc.lattice_vectors(grid))
+        k = B @ self.KAPPA
+        m = _frequencies(grid)
+        rotated = np.ravel_multi_index((W @ m) % np.asarray(grid.shape)[:, None],
+                                       grid.shape)
+        vectors, squares = rc.bloch_aliases(grid, k)
+        images, image_squares = rc.bloch_aliases(grid, R @ k)
+        vectors, squares = vectors.reshape(3, -1), squares.ravel()
+        images, image_squares = images.reshape(3, -1), image_squares.ravel()
+        assert np.max(np.abs(images[:, rotated] - R @ vectors)) < 1e-12
+        assert np.max(np.abs(image_squares[rotated] - squares)) \
+            < 1e-12 * squares.max()
+        box = rc.wavevectors(grid).reshape(3, -1) + k[:, None]
+        box_image = rc.wavevectors(grid).reshape(3, -1) + (R @ k)[:, None]
+        assert np.max(np.abs(np.sum(box_image[:, rotated] ** 2, axis=0)
+                             - np.sum(box ** 2, axis=0))) > 1.0
+
+    def test_time_reversal_and_the_representative_of_k(self):
+        """-k at -m is the negative; k + b_1 at m - (1, 0, 0) is the same
+        wave-vector, so the same multiplier."""
+        grid = _periodic_grid(ALIASING_CELLS["fcc"][0], (8, 8, 8))
+        B = rc.reciprocal_vectors(rc.lattice_vectors(grid))
+        k = B @ self.KAPPA
+        shape = np.asarray(grid.shape)[:, None]
+        m = _frequencies(grid)
+        vectors, squares = rc.bloch_aliases(grid, k)
+        vectors, squares = vectors.reshape(3, -1), squares.ravel()
+        negated = np.ravel_multi_index((-m) % shape, grid.shape)
+        back, back_squares = rc.bloch_aliases(grid, -k)
+        assert np.max(np.abs(back.reshape(3, -1)[:, negated] + vectors)) \
+            < 1e-12
+        assert np.allclose(back_squares.ravel()[negated], squares, rtol=1e-12)
+        shifted = np.ravel_multi_index(
+            (m - np.array([[1], [0], [0]])) % shape, grid.shape)
+        moved, moved_squares = rc.bloch_aliases(grid, k + B[:, 0])
+        assert np.max(np.abs(moved.reshape(3, -1)[:, shifted] - vectors)) \
+            < 1e-12
+        assert np.allclose(moved_squares.ravel()[shifted], squares,
+                           rtol=1e-12)
+
+    @pytest.mark.parametrize("name", sorted(ALIASING_CELLS))
+    def test_at_gamma_the_vectors_are_the_density_ones(self, name):
+        grid = _periodic_grid(ALIASING_CELLS[name][0], (6, 6, 8))
+        vectors, squares = rc.bloch_aliases(grid, np.zeros(3))
+        assert np.allclose(vectors, rc.symmetric_wavevectors(grid),
+                           atol=1e-12)
+        # The kinetic multiplier is the mean square: at least the square
+        # of the mean (Jensen).
+        assert np.all(squares >= np.sum(vectors * vectors, axis=0) - 1e-12)
+
+    def test_inside_the_box_it_is_plain_g_plus_k(self):
+        grid = _periodic_grid(ALIASING_CELLS["hexagonal"][0], (12, 12, 20))
+        B = rc.reciprocal_vectors(rc.lattice_vectors(grid))
+        k = B @ self.KAPPA
+        vectors, squares = rc.bloch_aliases(grid, k)
+        plain = rc.wavevectors(grid) + k[:, None, None, None]
+        m = _frequencies(grid).reshape(3, *grid.shape)
+        inside = np.all(4 * np.abs(m) < np.asarray(grid.shape)[:, None, None,
+                                                               None], axis=0)
+        assert np.allclose(vectors[:, inside], plain[:, inside])
+        assert np.allclose(squares[inside],
+                           np.sum(plain * plain, axis=0)[inside])
+
+
+class TestAliasMean:
+    """``alias_mean``: a function of the wave-vector (the Coulomb kernel,
+    an atom-centered charge) averaged over each frequency's aliases (K13b)."""
+
+    def test_an_off_node_charge_rotates_with_the_grid(self):
+        """A Gaussian at an atom off the nodes, and its image under the
+        60-degree rotation: the averaged transforms are images of each
+        other, as the box's are not."""
+        grid = _periodic_grid(ALIASING_CELLS["hexagonal"][0], (10, 10, 16))
+        R, W = _rotation_on_frequencies(grid, np.pi / 3.0)
+        center = np.array([0.37, 0.81, 1.3])
+
+        def charge(at):
+            return lambda G: np.exp(-0.1 * np.sum(G * G, axis=0)) \
+                * rc.structure_factor(G, at)
+
+        m = _frequencies(grid)
+        rotated = np.ravel_multi_index(
+            (W @ m) % np.asarray(grid.shape)[:, None], grid.shape)
+        here = rc.alias_mean(grid, charge(center)).ravel()
+        there = rc.alias_mean(grid, charge(R @ center)).ravel()
+        assert np.max(np.abs(there[rotated] - here)) < 1e-14
+        G = rc.wavevectors(grid)
+        box_here = charge(center)(G).ravel()
+        box_there = charge(R @ center)(G).ravel()
+        assert np.max(np.abs(box_there[rotated] - box_here)) > 1e-6
+
+    def test_the_kernel_is_unchanged_inside_and_on_a_rectangular_grid(self):
+        grid = _periodic_grid(ALIASING_CELLS["orthorhombic"][0], (6, 7, 8))
+        G = rc.wavevectors(grid)
+        assert np.allclose(rc.alias_mean(grid, rc.coulomb_kernel),
+                           rc.coulomb_kernel(G))
+        index, _vectors, weights = rc.alias_table(grid)
+        # Only the even axes' Nyquist planes: half weight on the other side
+        # of one, a quarter on each of three where two meet.
+        assert np.all(np.isclose(weights, 0.5) | np.isclose(weights, 0.25))
+        m = _frequencies(grid)[:, index]
+        assert np.all((m[0] == -3) | (m[2] == -4))

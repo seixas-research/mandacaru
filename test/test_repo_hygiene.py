@@ -29,11 +29,16 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: The only files that may live in the repository root.
-ROOT_ALLOWED = {".gitignore", ".readthedocs.yaml", "CLAUDE.md", "DFT_PLAN.md",
+ROOT_ALLOWED = {".gitignore", ".readthedocs.yaml", "CLAUDE.md",
                 "HISTORY.md",
-                "LICENSE", "PAW_SAGA.md", "README.md", "TODO.md",
-                "VALQA_PLAN.md", "VERSION_DESCRIPTION.md",
+                "LICENSE", "README.md", "TODO.md",
+                "VERSION_DESCRIPTION.md",
                 "pyproject.toml"}
+
+#: The development plans (DFT, PAW-LCAO datasets, VALQA, diffuse functions):
+#: one folder, git-ignored like the plans were, and held to the same rules as
+#: the tracked files (:func:`test_no_file_names_another_code`).
+DEV_PLAN_DIR = "dev_plan"
 def gitignore_patterns():
     """Directory patterns ``.gitignore`` excludes (negations not supported)."""
     path = os.path.join(REPO, ".gitignore")
@@ -53,6 +58,7 @@ def is_git_ignored(name: str) -> bool:
 
 #: Directories that may live in the repository root.
 ROOT_DIRS_ALLOWED = {".git", ".claude", ".github", "docs", "examples", "plan",
+                     DEV_PLAN_DIR,
                      "latex", "logo",
                      "src", "test", "dist", "build", ".pytest_cache",
                      ".ruff_cache", ".mypy_cache", "mandacaru.egg-info"}
@@ -60,6 +66,21 @@ ROOT_DIRS_ALLOWED = {".git", ".claude", ".github", "docs", "examples", "plan",
 # A write target given as a bare quoted file name (no directory join).
 _BARE_WRITE = re.compile(
     r"""(?:savefig|open|to_csv|savetxt|np\.save|json\.dump)\(\s*["']([^"'/\\]+\.[A-Za-z0-9]+)["']""")
+
+
+def test_the_development_plans_live_in_their_folder():
+    """``DFT_PLAN.md``, ``PAW_SAGA.md``, ``VALQA_PLAN.md`` and the other
+    plans are in ``dev_plan/``, not in the root, and the folder holds only
+    Markdown."""
+    folder = os.path.join(REPO, DEV_PLAN_DIR)
+    if not os.path.isdir(folder):
+        pytest.skip("no dev_plan/ folder in this checkout")
+    others = sorted(name for _dirpath, _dirs, names in os.walk(folder)
+                    for name in names if not name.endswith(".md"))
+    assert not others, f"dev_plan/ holds non-Markdown files: {others}"
+    assert not any(name.endswith("_PLAN.md") or name == "PAW_SAGA.md"
+                   for name in os.listdir(REPO)), \
+        "a development plan is in the repository root; move it to dev_plan/"
 
 
 def test_repository_root_holds_only_the_known_files():
@@ -118,7 +139,14 @@ def _repository_files():
     listed = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
         cwd=REPO, capture_output=True, check=True).stdout
-    return sorted({name for name in listed.decode().split("\0") if name})
+    files = {name for name in listed.decode().split("\0") if name}
+    # The development plans are git-ignored but written by hand like the
+    # rest, so they are checked too.
+    plans = os.path.join(REPO, DEV_PLAN_DIR)
+    for dirpath, _dirs, names in os.walk(plans):
+        files.update(os.path.relpath(os.path.join(dirpath, name), REPO)
+                     for name in names)
+    return sorted(files)
 
 
 def test_no_file_names_another_code():

@@ -97,6 +97,37 @@ class TestConstruction:
         assert np.trapezoid(u * u, atom.r) == pytest.approx(1.0, abs=1e-9)
         assert np.sum(np.diff(np.sign(u[(atom.r > 0.02) & (atom.r < 10)])) != 0) == 1
 
+    def test_a_gga_local_potential_is_matched_over_many_nodes(self):
+        """A PBE potential is a cubic spline through its derivative nodes,
+        0.01 r apart.  Its fourth derivative read over the default +-25 grid
+        points (two or three nodes) put oxygen's local potential at -13.6 Ha
+        at the origin against LDA's -5.8; read over +-0.15 r_cl
+        (GGA_LOCAL_FIT_FRACTION) it is LDA's to 0.1 Ha, and generate_paw
+        uses that window for a gradient-corrected dataset (HISTORY.md,
+        2026-10-07, "The PBE set")."""
+        from mandacaru.pseudopotentials.paw import generate_paw
+
+        r_cl = 1.305                           # oxygen's local radius
+        depth = {}
+        for xc in ("lda", "pbe"):
+            atom = solve_atom(8, points=pw.generation_points(8), r_max=30.0,
+                              tolerance=1e-7, mixing=0.25, xc=xc,
+                              relativity="scalar")
+            window = pw.GGA_LOCAL_FIT_FRACTION * r_cl
+            depth[xc] = (
+                pw.polynomial_local_potential(atom.r, atom.v_effective,
+                                              r_cl)[0],
+                pw.polynomial_local_potential(atom.r, atom.v_effective, r_cl,
+                                              fit_window=window)[0])
+        lda, lda_wide = depth["lda"]
+        assert lda_wide == pytest.approx(lda, abs=0.05)
+        assert depth["pbe"][0] < lda - 5.0               # the noise
+        assert depth["pbe"][1] == pytest.approx(lda, abs=0.1)
+        pp = generate_paw("O", xc="pbe", atom=atom, ghosts="keep")
+        assert pp.r_cut_local == pytest.approx(r_cl, abs=0.01)
+        assert pp.v_local_screened[0] - pp.local_shift == pytest.approx(
+            depth["pbe"][1], abs=0.05)
+
     def test_generation_grid_scales_with_z(self):
         assert pw.generation_points(1) == 6000
         assert pw.generation_points(8) == 12000
@@ -435,6 +466,20 @@ class TestGhostSearch:
         pp.levels[0] = (-2.0, -0.1, 0.4)
         assert ghost_errors(pp, self._levels) == {}
 
+    def test_an_extra_bound_level_above_the_reference_is_a_ghost(self):
+        """Tungsten's 4f channel: reference -1.236 Ha, its second reference
+        -0.236 Ha still bound, and a level at -0.148 Ha that the atom does
+        not have (one f state below -0.1 Ha, the 4f).  Outside every
+        scattering window and above the reference, it was invisible."""
+        from mandacaru.pseudopotentials.partial_waves import ghost_errors
+        pp = self._Dataset({0: (-0.2, 0.3), 2: (-1.236, -0.148)})
+        pp.channels[2].reference_energies = [-1.236, -0.236]
+        pp.all_electron_count = lambda l, energy: {0: 1, 2: 1}[l]
+        assert ghost_errors(pp, self._levels) == {2: pytest.approx(-0.148)}
+        assert ghost_errors(pp, self._levels, with_atom=False) == {}
+        pp.all_electron_count = lambda l, energy: {0: 1, 2: 2}[l]
+        assert ghost_errors(pp, self._levels) == {}
+
     def test_a_scattering_channel_is_not_judged(self):
         from mandacaru.pseudopotentials.partial_waves import ghost_errors
         pp = self._Dataset({0: (-0.2, 0.3), 2: (-5.0, 0.3)})
@@ -444,3 +489,132 @@ class TestGhostSearch:
     def test_an_unknown_mode_is_rejected(self):
         with pytest.raises(ValueError, match="ghosts must be one of"):
             self._run(None, mode="ignore")
+
+    # A check that cannot be evaluated (a NaN level) fails a construction
+    # like a defect, but it is never returned, not even flagged.
+    NAN = {0: (float("nan"), float("nan")), 2: (-0.2, 0.3)}
+
+    def test_an_unevaluated_first_construction_is_repaired(self):
+        right = self._Dataset(self.CLEAN)
+        generate, calls = self._generator([self._Dataset(self.NAN), right])
+        assert self._run(generate, overrides={"norm_deficit": 0.0}) is right
+        assert len(calls) == 2
+
+    def test_an_unevaluated_construction_is_never_flagged(self):
+        from mandacaru.pseudopotentials.partial_waves import GhostStateError
+        outcomes = [self._Dataset(self.NAN) for _ in range(40)]
+        generate, _calls = self._generator(outcomes)
+        with pytest.raises(GhostStateError, match="could not be evaluated"):
+            self._run(generate, mode="flag")
+
+    def test_refuse_names_the_unevaluated_check(self):
+        from mandacaru.pseudopotentials.partial_waves import GhostStateError
+        generate, _calls = self._generator([self._Dataset(self.NAN)])
+        with pytest.raises(GhostStateError, match="l=0 level is nan"):
+            self._run(generate, mode="refuse")
+
+
+class TestUnevaluatedChecks:
+    """A check that cannot be evaluated is a failure, never a pass: NaN
+    levels and phases used to leave ``max(0.0, nan) == 0.0`` and every
+    comparison false, and a dataset without its all-electron atom returned
+    ``{}`` -- both read as "clean" (audit of 2026-10-09; HISTORY.md,
+    2026-10-11)."""
+
+    class _Channel:
+        r_cut = 1.0
+        occupations = [1.0, 0.0]
+        reference_energies = [-0.5, 0.5]
+
+    class _Hydrogen:
+        """A one-channel dataset with a bare Coulomb atom attached."""
+        symbol, atomic_number, relativity = "H", 1, "none"
+        r_cut_local = 1.0
+        frozen_subshells = semicore_subshells = ()
+
+        def __init__(self):
+            self.r = np.arange(1, 3001) * 0.01
+            self.channels = {0: TestUnevaluatedChecks._Channel()}
+            self.v_local_screened = -1.0 / np.maximum(self.r, 0.5)
+            self.atom = type("Atom", (), {"r": self.r,
+                                          "v_effective": -1.0 / self.r,
+                                          "occupations": {(1, 0): 1.0}})()
+
+        def projector_radius(self, l):
+            return 1.0
+
+    @staticmethod
+    def _nan(*_args):
+        return float("nan")
+
+    def test_a_nan_level_fails_the_ghost_check(self):
+        pp = self._Hydrogen()
+        with pytest.raises(pw.DiagnosticError, match=r"H: an l=0 level is nan"):
+            pw.ghost_errors(pp, lambda _pp, _l: [float("nan")] * 2,
+                            with_atom=False)
+
+    def test_a_nan_phase_fails_the_scattering_checks(self):
+        pp = self._Hydrogen()
+        with pytest.raises(pw.DiagnosticError,
+                           match=r"H: the l=0 phase error at -1\.500 Ha is nan"):
+            pw.scattering_errors(pp, self._nan)
+        with pytest.raises(pw.DiagnosticError,
+                           match=r"H: the l=1 \(no projectors\) phase error "
+                                 r"at -1\.000 Ha is nan"):
+            pw.unprojected_scattering_errors(pp, self._nan)
+
+    def test_a_channel_anchored_at_a_scattering_energy_is_checked(self):
+        """Potassium's empty d is anchored at 0 Ha; without a frozen
+        subshell such a channel used to be skipped.  Its phase is compared
+        at the positive energies of the window."""
+        pp = self._Hydrogen()
+        channel = self._Channel()
+        channel.reference_energies = [0.0, 1.0]
+        channel.occupations = [0.0, 0.0]
+        pp.channels[2] = channel
+        with pytest.raises(pw.DiagnosticError,
+                           match=r"l=2 phase error at \+0\.0\d0 Ha"):
+            pw.scattering_errors(pp, lambda p, l, e, r: (
+                float("nan") if l == 2 else pw.log_derivative_ae(
+                    p.r, p.atom.v_effective, l, e, r, 1.0)))
+
+    def test_a_nan_potential_fails_the_local_ghost_check(self):
+        pp = self._Hydrogen()
+        pp.v_local_screened = pp.v_local_screened.copy()
+        pp.v_local_screened[10] = np.nan
+        with pytest.raises(pw.DiagnosticError,
+                           match="the screened local potential is nan"):
+            pw.local_potential_ghosts(pp)
+
+    def test_without_the_atom_a_check_is_not_evaluated(self):
+        """A dataset read from a file has no atom: the checks against it
+        raise rather than return ``{}``; the spectral check of the projected
+        channels alone is asked for explicitly."""
+        pp = self._Hydrogen()
+        pp.atom = None
+        for check in (lambda: pw.local_potential_ghosts(pp),
+                      lambda: pw.unprojected_scattering_errors(pp, self._nan),
+                      lambda: pw.scattering_errors(pp, self._nan)):
+            with pytest.raises(pw.DiagnosticError, match="not evaluated"):
+                check()
+        pp.unconstructed_ghosts = lambda: pw.local_potential_ghosts(pp)
+        levels = lambda _pp, _l: [-0.5, 0.3]                      # noqa: E731
+        with pytest.raises(pw.DiagnosticError, match="not evaluated"):
+            pw.ghost_errors(pp, levels)
+        assert pw.ghost_errors(pp, levels, with_atom=False) == {}
+
+    def test_the_atom_may_be_on_a_finer_grid(self):
+        """A loaded dataset keeps every fourth point of the generation grid;
+        the all-electron side of a check runs on the atom's own grid, at the
+        dataset's node."""
+        pp = self._Hydrogen()
+        exact = pw.unprojected_scattering_errors(
+            pp, lambda p, l, e, r: pw.log_derivative_ae(
+                p.r, p.atom.v_effective, l, e, r, 1.0))
+        fine = np.arange(1, 12001) * 0.0025
+        pp.atom = type("Atom", (), {"r": fine, "v_effective": -1.0 / fine})()
+        coarse = pw.unprojected_scattering_errors(
+            pp, lambda p, l, e, r: pw.log_derivative_ae(
+                p.r, -1.0 / p.r, l, e, r, 1.0))
+        assert exact[1] < 1e-12 and coarse[1] < 1e-3
+

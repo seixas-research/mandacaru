@@ -93,10 +93,10 @@ Water (PAW-LCAO, h = 0.2 Å, 5 Å of vacuum), isotropic $\alpha$ in a.u.
 
 | basis | PBE | Hartree–Fock |
 | :--- | ---: | ---: |
-| DZP, confined (the default) | 5.59 (3.76, 7.43, 5.59) | |
-| TZP, confined | 5.78 (3.96, 7.59, 5.79) | |
-| DZP, unconfined | 8.41 (7.63, 9.51, 8.09) | |
-| TZP, unconfined | 8.73 (8.16, 9.65, 8.39) | 6.62 (5.76, 7.74, 6.35) |
+| DZP, confined (the default) | 5.62 (3.78, 7.45, 5.64) | |
+| TZP, confined | 5.83 (3.99, 7.65, 5.87) | |
+| DZP, unconfined | 8.56 (7.83, 9.59, 8.25) | |
+| TZP, unconfined | 8.88 (8.34, 9.74, 8.55) | 6.62 (5.76, 7.74, 6.35) |
 
 The confinement costs a third of the polarizability, and the
 out-of-plane component $\alpha_{xx}$ half of it. Even unconfined, an

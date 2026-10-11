@@ -146,9 +146,10 @@ class TestForceCapabilityGate:
                     basis=context.pop("basis", []))})
         return calc._check_force_support(solver)
 
-    def test_spectral_kinetic_is_refused(self):
-        with pytest.raises(NotImplementedError, match="finite-difference"):
-            self.gate(kinetic="spectral")
+    @pytest.mark.parametrize("force_method", ["rdm", "scf-response"])
+    def test_spectral_kinetic_is_accepted(self, force_method):
+        """Both gradients differentiate the FFT Laplacian (Phase N)."""
+        assert self.gate(kinetic="spectral", force_method=force_method) is None
 
     def test_measured_energy_without_measured_rdms_is_refused(self):
         with pytest.raises(NotImplementedError, match="shots"):
@@ -179,7 +180,9 @@ class TestForceCapabilityGate:
             assert self.gate(force_method="scf-response",
                              basis=[SimpleNamespace(l=0)]) is None
 
-    def test_spectral_kinetic_is_refused_end_to_end(self):
+    def test_spectral_kinetic_forces_end_to_end(self):
+        """The gradient rebuilds the reported energy with the FFT Laplacian
+        (the calculator's 1e-6 Ha consistency check) and returns forces."""
         from ase import Atoms
 
         from mandacaru import Mandacaru
@@ -189,8 +192,9 @@ class TestForceCapabilityGate:
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.5,
                                kinetic="spectral", profile=False,
                                max_iterations=1)
-        with pytest.raises(NotImplementedError, match="finite-difference"):
-            atoms.get_forces()
+        forces = atoms.get_forces()
+        assert np.all(np.isfinite(forces))
+        assert forces[0, 2] == pytest.approx(-forces[1, 2], rel=1e-3)
 
 
 class TestStaleResultsAreCleared:

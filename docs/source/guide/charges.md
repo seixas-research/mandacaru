@@ -124,8 +124,8 @@ charge. Three things follow automatically:
   ascent gave those basins to one atom. And the smooth density has no cusp
   inside a sphere, so on it hydrogen's zero-flux surface moves toward the
   proton. Water's oxygen came out at −1.68 e (PBE, DZP) on the smooth density
-  and is −1.24 e on the reconstructed one, against about −1.2 in the
-  literature; HF's fluorine is −0.74. The reconstruction only moves the
+  and is −1.20 e on the reconstructed one, against about −1.2 in the
+  literature; HF's fluorine is −0.73. The reconstruction only moves the
   basin boundaries: the electrons counted are still the smooth density in
   each basin plus each sphere's own augmentation charge (next item), and the
   reconstruction integrates to exactly that charge. Its non-spherical part,

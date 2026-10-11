@@ -40,9 +40,11 @@ mandacaru --pseudo-status             # each variable, where it points, and how 
 ```
 
 Datasets sit one folder per set inside the checkout
-(`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic LDA set, and
-the default); PAW-LCAO also has `lda-dirac/`. A calculation reads `lda-sr/` by default and
-another folder with `Mandacaru(..., directory="lda-dirac")`; a dataset whose
+(`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic LDA set);
+PAW-LCAO also has `lda-dirac/` (spin-orbit) and `pbe-sr/` (PBE). A
+calculation reads the set of its functional — `pbe-sr/` for PBE, HSE06 and
+r2SCAN, `lda-sr/` for LDA and every other method — and another folder with
+`Mandacaru(..., directory="lda-dirac")`; a dataset whose
 own functional disagrees with the folder it is loaded from is refused. The
 all-electron bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need none
 of this. See the
@@ -69,8 +71,8 @@ atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf"
                        optimizer={"method": "SLSQP",         # "SLSQP" | "BFGS" | "L-BFGS" | "CG" | "COBYLA" | "Nelder-Mead" | "SPSA"
                                   "maxiter": 2000,
                                   "tol": 1e-12},
-                       max_iterations=300,                   # at most 300 operators
-                       convergence={"gradient": 1e-3},              # stop when every pool gradient is smaller
+                       max_iterations=200,                   # at most 200 operators
+                       convergence={"gradient": 1e-3},       # stop when every pool gradient is smaller
                        device="AER_simulator",               # or an IBM Quantum / Amazon Braket device
                        txt="output.txt")                     # the run log; without it the same blocks are printed
 
@@ -105,8 +107,8 @@ for d in distances:
                            optimizer={"method": "SLSQP",
                                       "maxiter": 2000,
                                       "tol": 1e-12},
-                           max_iterations=300,
-                           convergence={"gradient": 1e-4},
+                           max_iterations=200,
+                           convergence={"gradient": 1e-3},
                            txt=f"output_{d:.2f}.txt")
     energies.append(atoms.get_potential_energy())
 
@@ -125,7 +127,8 @@ atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="dft",
                        xc="pbe",                              # "lda" (default) | "pbe" | "r2scan" | "hse06"
                        dispersion="d4",                       # None | "d4" (PBE and r2SCAN; pip install 'mandacaru[dispersion]')
-                       basis={"name": "PAW-LCAO", "size": "DZP"},
+                       basis={"name": "PAW-LCAO",
+                              "size": "DZP"},
                        h=0.2)
 energy = atoms.get_potential_energy()                         # Energy (eV)
 gap = atoms.calc.result.scf.homo_lumo_gap                     # Kohn-Sham HOMO-LUMO gap (Hartree)
@@ -159,5 +162,3 @@ Mandacaru is released under the [MIT License](LICENSE).
 Developer: **Leandro Seixas Rocha** (<leandro.rocha@ilum.cnpem.br>).
 
 Documentation: [mandacaru.readthedocs.io](https://mandacaru.readthedocs.io/).
-
-We thank financial support from [INCT Materials Informatics](https://inct-mi.com.br/) (Grant No. 406447/2022-5).

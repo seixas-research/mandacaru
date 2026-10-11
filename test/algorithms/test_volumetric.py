@@ -183,6 +183,34 @@ class TestCubeFormat:
         assert np.allclose(back.get_positions(),
                            positions * BOHR_TO_ANGSTROM, atol=1e-8)
 
+    def test_a_periodic_xsf_closes_its_grid_on_the_lattice(self, tmp_path):
+        """A crystal's field: the lattice (rows) as PRIMVEC, the datagrid
+        closed by the periodic copy of its first planes and spanning the
+        lattice vectors.  The step matrix is not symmetric, so a transposed
+        cell would show."""
+        from ase.io.xsf import read_xsf
+
+        data, origin, _step, numbers, positions = self._field()
+        step = np.array([[0.4, 0.1, 0.0],
+                         [0.0, 0.5, 0.08],
+                         [0.0, 0.0, 0.6]])
+        cell = (step @ np.diag(data.shape)).T
+        path = write_xsf(tmp_path / "c.xsf", data, origin, step, numbers,
+                         positions, cell=cell, periodic=True)
+        with open(path) as handle:
+            back, back_origin, spans, atoms = read_xsf(handle, read_data=True)
+        assert back.shape == tuple(n + 1 for n in data.shape)
+        assert np.abs(back[:-1, :-1, :-1] - data).max() < 1e-6
+        assert np.allclose(back, np.pad(data, ((0, 1),) * 3, mode="wrap"),
+                           atol=1e-6)
+        assert np.allclose(spans, cell * BOHR_TO_ANGSTROM, atol=1e-5)
+        assert np.allclose(atoms.cell.array, cell * BOHR_TO_ANGSTROM)
+        assert atoms.pbc.all()
+        assert np.allclose(back_origin, origin * BOHR_TO_ANGSTROM, atol=1e-5)
+        with pytest.raises(ValueError, match="span its cell"):
+            write_xsf(tmp_path / "x.xsf", data, origin, step, numbers,
+                      positions, cell=cell.T, periodic=True)
+
 
 # --------------------------------------------------------------------------- #
 # The physics: what the numbers on the grid must add up to.

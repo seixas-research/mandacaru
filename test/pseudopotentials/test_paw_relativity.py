@@ -149,9 +149,14 @@ class TestTheOptions:
         scalar-relativistic default the two part company at O(c^-2), and
         asserting the deficit on the charge instead measures that difference.
         """
+        # The construction itself: anchored at the 2p energy, oxygen's empty
+        # d channel binds a spurious level at -0.33 Ha that the atom does not
+        # have, which the acceptance now refuses (HISTORY.md, 2026-10-11,
+        # "The PAW audit report checked").
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            pp = generate_paw("O", points=4000, r_max=20.0, extra_l=1)
+            pp = generate_paw("O", points=4000, r_max=20.0, extra_l=1,
+                              ghosts="keep")
         assert sorted(pp.channels) == [0, 1, 2]
         assert np.abs(pp.norm_correction[2]).max() < 1e-10
         # ... while the occupied channels keep theirs.
@@ -168,8 +173,9 @@ class TestTheOptions:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             free = generate_paw("O", points=4000, r_max=20.0, extra_l=1,
-                                relativity="none")
-            scalar = generate_paw("O", points=4000, r_max=20.0, extra_l=1)
+                                relativity="none", ghosts="keep")
+            scalar = generate_paw("O", points=4000, r_max=20.0, extra_l=1,
+                                  ghosts="keep")
         assert np.abs(free.overlap_correction[2]).max() < 1e-10
         assert np.abs(free.norm_correction[2]).max() < 1e-10
         assert np.abs(scalar.norm_correction[2]).max() < 1e-10

@@ -174,7 +174,7 @@ class TestTransform:
         1 would make the filter change a function even as k_c -> infinity.
 
         ``rel=1e-6``: since the 2026-09-25 library the stored grid starts at
-        ``4h`` (PAW_SAGA.md section 6.4), and the radial quadrature over its
+        ``4h`` (dev_plan/PAW_SAGA.md section 6.4), and the radial quadrature over its
         first interval leaves the O 2s second zeta at 3.0e-7 (1e-7 before).
         """
         for table in paw_tables("O"):

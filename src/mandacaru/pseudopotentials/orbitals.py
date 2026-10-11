@@ -454,8 +454,9 @@ def bound_radial(pp, l: int) -> np.ndarray:
 #: -0.042 Ha; as a basis state it would make the minimal LiH basis five
 #: orbitals instead of two, and at DZP it moved bcc Li, Li2, LiH and LiF by
 #: -0.5, +1.4, -1.6 and +1.3 % against the polarization shell it replaces
-#: (HISTORY.md, 2026-10-07).
-SCATTERING_ONLY_CHANNELS = {"Li": (1,)}
+#: (HISTORY.md, 2026-10-07).  Beryllium's p channel (2p bound at about
+#: -0.08 Ha) likewise, so a minimal Be basis stays one orbital.
+SCATTERING_ONLY_CHANNELS = {"Li": (1,), "Be": (1,)}
 
 
 def basis_states(pp) -> list[OccupiedState]:

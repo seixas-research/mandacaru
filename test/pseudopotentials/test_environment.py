@@ -223,6 +223,54 @@ def test_the_default_folder_leaves_the_basis_alone(monkeypatch, paw_checkout):
         assert calc.basis == "PAW-LCAO"
 
 
+@pytest.mark.parametrize("xc, folder", [
+    ("lda", "lda-sr"), (None, "lda-sr"), ("pbe", "pbe-sr"),
+    ("hse06", "pbe-sr"), ("r2scan", "pbe-sr"), ("r2SCAN+rVV10", "pbe-sr")])
+def test_the_functional_picks_its_own_set(monkeypatch, paw_checkout, xc,
+                                          folder):
+    """Without ``directory=``, Kohn-Sham reads the set of its functional:
+    ``pbe-sr`` for PBE and the functionals with no datasets of their own,
+    ``lda-sr`` for LDA."""
+    from mandacaru import Mandacaru
+
+    (paw_checkout / "pbe-sr").mkdir()
+    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
+    kwargs = {} if xc is None else {"xc": xc}
+    calc = Mandacaru(method="dft", basis="PAW-LCAO", **kwargs)
+    assert calc.library_folder == folder
+    expected = ("PAW-LCAO" if folder == "lda-sr" else
+                {"name": "PAW-LCAO", "directory": str(paw_checkout / folder)})
+    assert calc.basis == expected
+
+
+def test_a_named_folder_wins_over_the_functional(monkeypatch, paw_checkout):
+    from mandacaru import Mandacaru
+
+    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
+    calc = Mandacaru(method="dft", xc="pbe", basis="PAW-LCAO",
+                     directory="lda-sr")
+    assert (calc.library_folder, calc.basis) == ("lda-sr", "PAW-LCAO")
+
+
+def test_methods_without_a_functional_read_the_lda_set(monkeypatch,
+                                                       paw_checkout):
+    from mandacaru import Mandacaru
+
+    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
+    assert Mandacaru(method="rhf", basis="PAW-LCAO").library_folder == "lda-sr"
+
+
+def test_the_functional_s_set_leaves_a_basis_without_a_library_alone():
+    """``xc="pbe"`` on an all-electron basis chose the ``pbe-sr`` folder for
+    nothing: unlike a named ``directory=``, it is not an error."""
+    from mandacaru import Mandacaru
+
+    calc = Mandacaru(method="dft", xc="pbe", basis="HAO")
+    assert calc.basis == "HAO"
+    with pytest.raises(ValueError, match="reads none"):
+        Mandacaru(method="dft", xc="pbe", basis="HAO", directory="pbe-sr")
+
+
 def test_an_explicit_basis_directory_wins(monkeypatch, paw_checkout, tmp_path):
     from mandacaru import Mandacaru
 

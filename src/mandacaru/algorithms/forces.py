@@ -506,22 +506,51 @@ def hellmann_feynman_gradient(density_ao, psi_grid, grid, nuclei_bohr, charges,
 # Pulay terms.
 # --------------------------------------------------------------------------- #
 
-def _one_body_pulay(engine, psi_grid, dpsi, vext, grid, de_dh, de_ds):
-    r"""Basis-motion part of ``<dE/dh, dh/dR> + <dE/dS, dS/dR>``.
+def one_body_cross(psi_grid, dpsi, vext, grid, kinetic="fd", laplacian=None):
+    r"""``<dphi_a| T + V |phi_b>``: the cross block of the one-body matrix.
 
-    ``dh/dR`` and ``dS/dR`` are evaluated by running the *same* one-body kernel
-    on the stacked basis ``[phi; dphi]`` and reading the cross blocks, so the
-    finite-difference Laplacian is identical to the one the energy used.
+    The Pulay derivative of a one-body matrix is this block plus its
+    Hermitian conjugate, and it has to use the *same* Laplacian as the
+    energy:
+
+    * ``kinetic="fd"`` runs the energy's own finite-difference kernel on the
+      stacked basis ``[phi; dphi]`` and reads the cross block;
+    * ``kinetic="spectral"`` contracts ``dphi`` against ``laplacian``, the
+      FFT Laplacian of the unmoved functions
+      (:meth:`~mandacaru.integrals.engine.IntegralEngine.spectral_laplacian`),
+      computed once per gradient.  The FFT Laplacian is real symmetric on
+      the grid, so :math:`\langle\partial\phi_a|\nabla^2\phi_b\rangle` and
+      :math:`\langle\phi_a|\nabla^2\partial\phi_b\rangle^*` are the same
+      numbers and the moved functions are never transformed.
     """
     from ..integrals import _backend
 
     M = psi_grid.shape[0]
-    stacked = np.ascontiguousarray(np.vstack([psi_grid, dpsi]))
-    T_full, V_full = _backend.one_body_matrices(stacked, vext, grid)
-    h_full = T_full + V_full
+    if kinetic == "fd":
+        stacked = np.ascontiguousarray(np.vstack([psi_grid, dpsi]))
+        T_full, V_full = _backend.one_body_matrices(stacked, vext, grid)
+        return (T_full + V_full)[M:, :M]
+    if kinetic != "spectral":
+        raise ValueError(f"unknown kinetic operator {kinetic!r}; use 'fd' or "
+                         "'spectral'")
+    if laplacian is None:
+        raise ValueError("the spectral cross block needs the Laplacian of the "
+                         "unmoved functions (`laplacian=`)")
+    bra = dpsi.conj()
+    return ((-0.5 * (bra @ laplacian.T) + (bra * vext) @ psi_grid.T)
+            * grid.dV)
 
+
+def _one_body_pulay(engine, psi_grid, dpsi, vext, grid, de_dh, de_ds,
+                    kinetic="fd", laplacian=None):
+    r"""Basis-motion part of ``<dE/dh, dh/dR> + <dE/dS, dS/dR>``.
+
+    ``dh/dR`` and ``dS/dR`` are evaluated from the cross blocks
+    :func:`one_body_cross` returns, so the Laplacian is identical to the one
+    the energy used.
+    """
     # <dphi_mu|h|phi_nu> and its transpose partner.
-    cross_h = h_full[M:, :M]
+    cross_h = one_body_cross(psi_grid, dpsi, vext, grid, kinetic, laplacian)
     dh = np.real(cross_h + cross_h.conj().T)
     # Overlap derivative from the same stacked sampling.
     cross_s = (dpsi.conj() @ psi_grid.T) * grid.dV
@@ -629,7 +658,9 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
     # term included: `de_dh` and friends are derivatives of *this* h_ao, so any
     # term missing here makes them derivatives of an energy nobody evaluated.
     S = np.real(integrals.overlap())
-    T, V = integrals._engine.one_body(external, energy_units="Ha")
+    kinetic = getattr(integrals, "kinetic", "fd")
+    T, V = integrals._engine.one_body(external, energy_units="Ha",
+                                      kinetic=kinetic)
     one_body = T + V + integrals.kb_nonlocal()
     h_ao = np.real(0.5 * (one_body + one_body.conj().T))
     eri_ao = np.real(integrals._engine.two_body(energy_units="Ha"))
@@ -664,6 +695,8 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
     pulay = np.zeros_like(hf)
     if include_pulay:
         phi_pairs = _pair_potentials(psi_grid, grid)
+        laplacian = (integrals._engine.spectral_laplacian(psi_grid)
+                     if kinetic == "spectral" else None)
         for atom in range(len(charges)):
             dstack = orbital_derivatives(basis, grid, atom_of_orbital, atom,
                                          orbital_delta)
@@ -672,7 +705,8 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
             for k in range(3):
                 dpsi = dstack[k]
                 one_h, one_s = _one_body_pulay(integrals._engine, psi_grid,
-                                               dpsi, vext, grid, de_dh, de_ds)
+                                               dpsi, vext, grid, de_dh, de_ds,
+                                               kinetic, laplacian)
                 two = _two_body_pulay(psi_grid, dpsi, phi_pairs, grid, de_dg)
                 pulay[atom, k] = one_h + one_s + two
 

@@ -456,15 +456,24 @@ def _electrostatic(solver, state):
     n_atoms = len(c.centers)
     out = np.zeros((n_atoms, 3))
     rho_G = rc.to_reciprocal(c.grid, rho)
+    # The grid charges are means over each frequency's aliases
+    # (`reciprocal.alias_mean`), so their derivative is the mean of each
+    # alias' -i G_alias times its transform: the box values and the aliases'.
+    _index, aliases, _weights = rc.alias_table(c.grid)
+    shapes = (c.compensation_transforms(c.G), c.compensation_transforms(aliases))
     for atom in range(n_atoms):
-        source = _ion_transform_atom(c, atom, c.G)
-        for channel in c.channels:
-            if channel[0] == atom:
-                source = source + q[channel] * solver.g_hat[channel]
+        sources = []
+        for G, transforms in zip((c.G, aliases), shapes):
+            source = _ion_transform_atom(c, atom, G)
+            for a, channel in enumerate(c.channels):
+                if channel[0] == atom:
+                    source = source + q[channel] * transforms[a]
+            sources.append(source)
         for d in range(3):
+            moved = rc.alias_combine(c.grid, -1j * c.G[d] * sources[0],
+                                     -1j * aliases[d] * sources[1])
             out[atom, d] += float(np.real(np.sum(
-                c.kernel * np.conj(rho_G) * (-1j * c.G[d]) * source))) \
-                / c.volume
+                c.kernel * np.conj(rho_G) * moved))) / c.volume
 
     B = rc.reciprocal_vectors(c.lattice)
     Gs = rc.lattice_translations(B, COMPENSATION_CUTOFF).T

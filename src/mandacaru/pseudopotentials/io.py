@@ -361,6 +361,12 @@ def library_file(symbol: str, directory,
                         f"{symbol}{FILE_EXTENSIONS[resolve_format(format)]}")
 
 
+#: The relativistic treatment of the datasets a library folder holds, by the
+#: suffix of its name (``lda-sr/``, ``lda-dirac/``;
+#: :data:`.environment.LIBRARY_FOLDERS`).
+FOLDER_RELATIVITY = {"sr": "scalar", "dirac": "dirac"}
+
+
 def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
                          *, label: str, noun: str, builder: str):
     """Load ``symbol`` from the library ``folder`` (cached), or explain.
@@ -368,15 +374,24 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
     ``folder`` comes from :func:`.environment.library_directory`, which has
     already refused an unset or wrong variable.  An **empty** folder gets the
     recipe to fill it; one that lacks the element names what it does hold.  A
-    file of another family is refused, and so is one whose functional is not
-    the one its folder names (``lda-sr/``, ``pbe/``, ...).
+    file of another family is refused, and so is one whose functional or
+    relativistic treatment is not the one its folder names (``lda-sr/``,
+    ``lda-dirac/``, ``pbe/``, ...).
+
+    The cache is keyed by the file and its identity (modification time and
+    size), so a dataset replaced on disk -- a library rebuilt under a running
+    session -- is read again rather than served from memory.
     """
-    key = f"{symbol}@{folder}"
-    cached = cache.get(key)
-    if cached is not None:
-        return cached
     path = library_file(symbol, folder)
-    if not os.path.exists(path):
+    if os.path.exists(path):
+        # Taken before reading: a file replaced while it is read is then
+        # read again on the next call rather than cached as the new one.
+        status = os.stat(path)
+        stamp = (status.st_mtime_ns, status.st_size)
+        cached = cache.get(os.path.realpath(path))
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+    else:
         available = available_elements(folder)
         if not available:
             raise FileNotFoundError(
@@ -398,17 +413,28 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
     # `directory="pbe"` must not silently run an LDA file copied into it.
     # Folders with any other name are the caller's own.
     from .environment import FUNCTIONALS
-    folder_xc = os.path.basename(os.path.normpath(folder)).lower()
-    folder_xc = folder_xc.split("-")[0]
+    name = os.path.basename(os.path.normpath(folder)).lower()
+    folder_xc, _, suffix = name.partition("-")
     dataset_xc = str(getattr(pp, "xc", "") or "").lower()
     if folder_xc in FUNCTIONALS and dataset_xc and dataset_xc != folder_xc:
         raise ValueError(f"{path!r} is a {dataset_xc.upper()} dataset in the "
                          f"{folder_xc}/ folder; regenerate it with --xc "
                          f"{folder_xc} or move it to {dataset_xc}/")
+    # The same for the treatment its suffix names: a scalar file copied into
+    # `lda-dirac/` would silently drop the spin-orbit term a calculation
+    # selecting that folder asked for, and a Dirac file in `lda-sr/` would
+    # add one nobody asked for.
+    wanted = FOLDER_RELATIVITY.get(suffix) if folder_xc in FUNCTIONALS else None
+    relativity = str(getattr(pp, "relativity", "") or "").lower()
+    if wanted is not None and relativity != wanted:
+        raise ValueError(f"{path!r} is a dataset with relativity="
+                         f"{relativity!r} in the {name}/ folder, which holds "
+                         f"relativity={wanted!r} datasets; regenerate it "
+                         f"for that folder or move it")
     # Where the dataset came from: the run log's [BASIS] block names it, since
     # a library is a checkout an environment variable points at, anywhere.
     pp.source = os.path.realpath(path)
-    cache[key] = pp
+    cache[pp.source] = (stamp, pp)
     return pp
 
 

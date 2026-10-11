@@ -69,8 +69,11 @@ integrals.  The augmentation spheres therefore need no exchange-correlation
 evaluation of their own; the Kohn-Sham energy is the smooth one, with the
 compensation charges in the Hartree term (their low-rank multipole terms,
 the same ones the two-body tensor carries) and the dataset's smooth core in the functional, exactly how the dataset was
-unscreened.  The datasets are LDA: another functional on them is a mismatch
-between molecule and dataset, and is warned about.
+unscreened.  Each functional reads the datasets of its own set
+(:data:`~mandacaru.pseudopotentials.environment.DATASET_FUNCTIONALS`: LDA
+the LDA set; PBE, HSE06, r2SCAN and r2SCAN+rVV10 the PBE set); datasets of
+another set are a mismatch between molecule and dataset, and are warned
+about.
 
 Restricted for a closed shell, unrestricted when ``n_alpha != n_beta``
 (:class:`UnrestrictedKohnSham`).  Levels fill by aufbau, except a degenerate
@@ -896,29 +899,33 @@ def _datasets_relativistic(datasets) -> bool:
 
 
 def _warn_functional_mismatch(datasets, functional: str) -> None:
-    """Warn when the datasets were generated with another functional, and
-    name the library folder of datasets generated with ``functional`` when
-    the PAW-LCAO library ships one (``directory="pbe-sr"`` for PBE)."""
+    """Warn when the datasets were not generated with the functional
+    ``functional`` reads (:data:`.environment.DATASET_FUNCTIONALS`), and
+    name the library folder of those datasets when the PAW-LCAO library
+    ships one (``directory="pbe-sr"`` for PBE, HSE06 and r2SCAN)."""
+    from ..pseudopotentials.environment import (DATASET_FUNCTIONALS,
+                                                LIBRARY_FOLDERS)
+
+    expected = DATASET_FUNCTIONALS.get(functional, functional)
     generated = sorted({str(getattr(d, "xc", "lda") or "lda").lower()
                         for d in datasets or ()})
-    if generated and generated != [functional]:
-        from ..pseudopotentials.environment import LIBRARY_FOLDERS
-
+    if generated and generated != [expected]:
         families = {str(getattr(d, "family", "")).lower()
                     for d in datasets or ()}
         relativity = {str(getattr(d, "relativity", "scalar")).lower()
                       for d in datasets or ()}
-        folder = (LIBRARY_FOLDERS.get(("paw-lcao", functional,
+        folder = (LIBRARY_FOLDERS.get(("paw-lcao", expected,
                                        relativity.pop()))
                   if families == {"paw-lcao"} and len(relativity) == 1
                   else None)
         hint = (f"; Mandacaru(directory={folder!r}) reads the PAW-LCAO "
-                f"datasets generated with {functional.upper()}"
+                f"datasets generated with {expected.upper()}"
                 if folder is not None else "")
         warnings.warn(
             f"xc={functional!r} on datasets generated with "
-            f"{'/'.join(g.upper() for g in generated)}: the molecule and its "
-            f"datasets use different functionals{hint}", RuntimeWarning,
+            f"{'/'.join(g.upper() for g in generated)}, where it reads "
+            f"datasets generated with {expected.upper()}: the molecule and "
+            f"its datasets use different functionals{hint}", RuntimeWarning,
             stacklevel=3)
 
 
@@ -1796,16 +1803,20 @@ class DFTDriver(_MeanFieldDriver):
         """The Kohn-Sham determinant's one-RDM (molecules), or the
         ensemble's when a degenerate shell is partly filled.
 
-        A crystal's density is k-resolved and augmented on the cell grid: its
-        populations go through :meth:`crystal_partition` instead, and its
-        cube files and dipoles are not wired.
+        A crystal's density matrix is k-resolved and augmented on the cell
+        grid, with no single orbital basis: its populations go through
+        :meth:`crystal_partition`, its volumetric files through
+        :meth:`crystal_field` and its natural orbitals through
+        :meth:`natural_orbitals`.
         """
         if self._periodic:
             raise NotImplementedError(
-                "cube files, dipoles and natural orbitals of a periodic "
-                "Kohn-Sham run are not wired yet; population analysis is "
-                "(population=, get_charges), and calc.pdos() gives the "
-                "per-atom projections of the states")
+                "a crystal's density matrix is one per k-point, not a one-RDM "
+                "in one orbital basis: its populations (population=, "
+                "get_charges), volumetric files (write_cube) and natural "
+                "orbitals (natural_orbitals()) are computed per k-point, and "
+                "its dipole is the Berry-phase polarization "
+                "(get_polarization)")
         gamma = super().mean_field_rdm()
         # A partly filled degenerate shell: the ensemble's density, not that
         # of the determinant filling one member.
@@ -1846,6 +1857,20 @@ class DFTDriver(_MeanFieldDriver):
         # up to quadrature.
         return replace(partition, total_magnetic_moment=float(
             getattr(self._scf, "magnetic_moment", 0.0)))
+
+    def crystal_field(self, quantity: str = "density", index: int = 0, *,
+                      kpoint=None, spin=None, component: str = "auto",
+                      repeat=None, numbers=None):
+        """A density or Bloch orbital of the converged crystal on its cell
+        grid (:func:`~mandacaru.algorithms.periodic_volumetric.
+        crystal_field`); the calculator's ``write_cube`` and
+        ``volumetric_field`` reach it."""
+        from .periodic_volumetric import crystal_field
+
+        self._require_crystal("a crystal's volumetric field")
+        return crystal_field(self._periodic_solver, quantity, index,
+                             kpoint=kpoint, spin=spin, component=component,
+                             repeat=repeat, numbers=numbers)
 
     def _unrestricted(self) -> bool:
         return isinstance(getattr(self, "_scf", None), KohnShamUResult)
@@ -2211,14 +2236,21 @@ class DFTDriver(_MeanFieldDriver):
             labels=tuple(t.label for t in trials),
             fermi_level=self.get_fermi_level(), size=size)
 
-    def natural_orbitals(self, method: str = "rpa", *, kpts=None,
+    def natural_orbitals(self, method: str | None = None, *, kpts=None,
                          bands=None, cutoff=None, threshold=None):
-        """The Bloch natural orbitals of the crystal's correlated density
-        matrix (:class:`~mandacaru.algorithms.rpa_density.
-        CrystalNaturalOrbitals`), ranked by how far their occupations are
-        from 2 or 0.
+        """The Bloch natural orbitals of the crystal.
 
-        ``method="rpa"``: the direct-RPA (ring coupled-cluster doubles)
+        ``method=None``: those of the Kohn-Sham density matrix itself,
+        spin-summed, at each SCF k-point
+        (:class:`~mandacaru.algorithms.periodic_volumetric.
+        BlochNaturalOrbitals`) -- the Kohn-Sham orbitals of a
+        spin-restricted crystal, the natural orbitals proper of a
+        spin-polarized one; spin-polarized crystals included, no options.
+
+        ``method="rpa"``: those of a correlated density matrix
+        (:class:`~mandacaru.algorithms.rpa_density.CrystalNaturalOrbitals`),
+        ranked by how far their occupations are from 2 or 0: the direct-RPA
+        (ring coupled-cluster doubles)
         amplitudes on the full ``kpts`` mesh (default the SCF's size),
         from every band of the basis (or ``bands``), the Coulomb
         integrals on q + G within ``cutoff`` (Bohr^-1); ``threshold`` is
@@ -2228,10 +2260,21 @@ class DFTDriver(_MeanFieldDriver):
         """
         from .rpa_density import DEFAULT_DEVIATION_THRESHOLD, crystal_rpa
 
-        if method != "rpa":
+        if method not in (None, "rpa"):
             raise ValueError(f"unknown natural-orbital method {method!r}; "
-                             "use 'rpa'")
+                             "use None (the Kohn-Sham density matrix) or "
+                             "'rpa'")
         self._require_crystal("natural orbitals")
+        if method is None:
+            from .periodic_volumetric import bloch_natural_orbitals
+
+            given = {name: value for name, value in (
+                ("kpts", kpts), ("bands", bands), ("cutoff", cutoff),
+                ("threshold", threshold)) if value is not None}
+            if given:
+                raise TypeError(f"unexpected options {sorted(given)}: they "
+                                "belong to natural_orbitals(method='rpa')")
+            return bloch_natural_orbitals(self._periodic_solver)
         size = self._mesh_size(kpts)
         self._cite("Scuseria2008", "Furche2008")
         self.natural_orbitals_result = crystal_rpa(

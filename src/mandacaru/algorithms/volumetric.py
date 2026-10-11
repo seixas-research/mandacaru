@@ -89,11 +89,17 @@ integrate to the valence electron count:
 
 Both numbers are reported (:attr:`VolumetricField.integral` and
 :attr:`VolumetricField.augmentation_charge`) and the file's comment line says
-which one it holds.  Reconstructing the all-electron density inside the spheres
-would need the one-center expansion summed on a radial grid per atom; the
-radial machinery exists (:func:`mandacaru.pseudopotentials.paw.reconstruct_ae`)
-but the three-dimensional assembly does not, so it is deliberately left out
-rather than approximated.
+which one it holds.  A molecule's file holds the smooth density only; a
+crystal's ``reconstructed_density``
+(:mod:`~mandacaru.algorithms.periodic_volumetric`) adds the spherical part of
+the one-center correction inside each sphere, the density the Bader partition
+climbs.
+
+Crystals
+--------
+A periodic Kohn-Sham run draws its densities and Bloch orbitals through the
+same calculator methods, on its cell grid
+(:mod:`~mandacaru.algorithms.periodic_volumetric`).
 """
 
 from __future__ import annotations
@@ -424,6 +430,15 @@ class VolumetricField:
     #: written).  Named ``output_path`` rather than ``path`` so the
     #: documentation's cross-references stay unambiguous.
     output_path: str | None = None
+    #: A crystal's field (:mod:`~mandacaru.algorithms.periodic_volumetric`)
+    #: is periodic over this box, the lattice vectors as rows (Bohr), of
+    #: ``repeat`` cells; ``None`` for a molecule's integration box.
+    #: ``integral`` and ``norm`` are then those of one cell.
+    cell: np.ndarray | None = None
+    repeat: tuple = (1, 1, 1)
+    #: The fractional k-point and the spin channel of a crystal's orbital.
+    kpoint: np.ndarray | None = None
+    spin: int | None = None
 
     @property
     def origin(self) -> np.ndarray:
@@ -479,17 +494,21 @@ class VolumetricField:
         """Write the field to ``path`` and return the path.
 
         The format follows the extension (``.cube``, ``.xsf``) unless
-        ``format=`` names one.  The XSF file is written as a *molecule*
-        (an ``ATOMS`` block): the grid is a real-space integration box
-        centered on the molecule, not a periodic lattice, so declaring it a
-        crystal would be a claim the calculation does not make.
+        ``format=`` names one.  A molecule's XSF file is written as a
+        *molecule* (an ``ATOMS`` block): the grid is a real-space
+        integration box centered on the molecule, not a periodic lattice,
+        so declaring it a crystal would be a claim the calculation does not
+        make.  A crystal's (:attr:`cell` set) is a ``CRYSTAL`` with its
+        lattice, the datagrid closed by the periodic copy of its first
+        planes; its cube file holds the cell's nodes once.
         """
         from ..utils.cube import write_volumetric
 
         self.output_path = write_volumetric(
             path, self.data, self.origin, self.grid.step, self.numbers,
             self.positions, comment=self.comment() if comment is None
-            else str(comment), charges=self.charges, format=format)
+            else str(comment), charges=self.charges, format=format,
+            cell=self.cell, periodic=self.cell is not None)
         return self.output_path
 
 

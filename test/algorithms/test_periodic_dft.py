@@ -307,10 +307,11 @@ class TestTheMoleculeInABox:
                     for atoms in (molecule, crystal)]
         assert np.allclose(spacings[0], spacings[1], atol=1e-4)
 
-    def test_a_polar_molecule_has_the_molecular_density(self):
+    def test_a_polar_molecule_has_the_molecular_density(self, tmp_path):
         """Water, SZ, h 0.3 Angstrom: levels to 0.5 mHa and the energy to
         0.6 mHa (the dipole lattice and grid noise), Hirshfeld charges to
-        2e-3 e, the Berry-phase dipole 1.6 % above the molecular one."""
+        2e-3 e, the Berry-phase dipole 1.6 % above the molecular one, and
+        the density cube files node for node to 6e-4 of the peak."""
         from ase.build import molecule as build
         from ase.units import _e
         atoms = build("H2O")
@@ -331,6 +332,40 @@ class TestTheMoleculeInABox:
         dipole = polarization * crystal.get_volume() * 1e-20 / _e
         assert dipole == pytest.approx(molecule.get_dipole_moment(),
                                        rel=0.03, abs=1e-6)
+        # The cube files: the molecule's box has the crystal's nodes plus
+        # the closing plane at L (the periodic copy of the first).
+        from ase.io.cube import read_cube_data
+        fields = [system.calc.write_cube(tmp_path / f"{name}.cube")
+                  for name, system in (("molecule", molecule),
+                                       ("crystal", crystal))]
+        assert np.allclose(fields[0].origin, fields[1].origin)
+        assert np.allclose(fields[0].grid.step, fields[1].grid.step)
+        for field in fields:
+            assert field.integral + field.augmentation_charge == \
+                pytest.approx(8.0, abs=1e-8)
+        inside, cell = (read_cube_data(str(tmp_path / f"{name}.cube"))[0]
+                        for name in ("molecule", "crystal"))
+        assert inside.shape == tuple(n + 1 for n in cell.shape)
+        assert np.abs(inside[:-1, :-1, :-1] - cell).max() \
+            < 2e-3 * cell.max()
+
+    def test_a_polar_molecule_has_the_crystal_forces(self):
+        """The spectral molecular gradient (Phase N) against the crystal's
+        at Gamma: water, SZ, h 0.3 Angstrom, one H moved off C2v.  Forces
+        of ~5 eV/Angstrom agree to 0.05 (the two grids' egg-boxes differ by
+        about that much); the stencil's differ from the crystal's by 6.5."""
+        from ase.build import molecule as build
+        atoms = build("H2O")
+        atoms.positions[1] += [0.0, 0.03, -0.02]
+        atoms.set_cell([8.4] * 3)
+        atoms.positions += 4.2 - atoms.positions.mean(axis=0)
+        molecule, crystal = self._solve(atoms, 0.3,
+                                        {"name": "PAW-LCAO", "size": "SZ"})
+        expected = crystal.get_forces()
+        molecule.get_forces()
+        forces = molecule.calc.force_result.unprojected
+        assert np.abs(expected).max() > 4.0
+        assert np.allclose(forces, expected, atol=0.1)
 
 
 class TestTheSpectrum:
@@ -549,8 +584,8 @@ def test_crystal_populations_go_through_the_calculator(silicon):
     assert np.allclose(calc.get_charges(),
                        calc.atomic_partition("hirshfeld").charges)
     assert calc.get_total_magnetic_moment() == 0.0
-    with pytest.raises(NotImplementedError, match="cube files"):
-        calc.write_cube("unused.cube")
+    with pytest.raises(NotImplementedError, match="get_polarization"):
+        calc.get_dipole_moment()
     with pytest.raises(NotImplementedError, match="grid="):
         calc.atomic_partition("voronoi", grid=object())
 

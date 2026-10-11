@@ -263,7 +263,12 @@ class TestDegenerateSetsAreFollowed:
         In the gauge both are matched one to one, the pair unrotated and
         unflipped.  The gauge fixes signs inside degenerate sets only: a
         lone orbital's sign is the eigensolver's (LiH's sigma flips between
-        these two geometries), and the match carries it to the transfer."""
+        these two geometries), and the match carries it to the transfer.
+
+        Five orbitals since the K21 lithium (2026-10-11): its 3sigma+
+        natural occupation (0.00334) now lies just above the pi pair's
+        (0.00322), so four orbitals hold 1-3sigma+ and 4sigma+, the pair
+        kept whole outside; the fifth brings the pair in."""
         from mandacaru.algorithms._hamiltonian_from_atoms import \
             build_basis_hamiltonian
 
@@ -272,14 +277,14 @@ class TestDegenerateSetsAreFollowed:
             _h, _n, n_active, _p, context = build_basis_hamiltonian(
                 _lih(distance), {"name": "PAW-LCAO", "size": "DZP"}, None,
                 0.3, 0, None,
-                active_space={"orbitals": 4, "method": "mp2",
+                active_space={"orbitals": 5, "method": "mp2",
                               "symmetry": True})
             integrals = context["integrals"]
-            assert integrals.active_space.irreps[2:4] == ("1pi", "1pi")
+            assert integrals.active_space.irreps[3:5] == ("1pi", "1pi")
             snapshots.append(OrbitalSnapshot.from_integrals(integrals,
                                                             n_active))
         overlap = orbital_overlap(*snapshots, integrals.grid)
-        match = match_orbitals(overlap, occupation_blocks(4, (1, 1)))
-        assert list(match.permutation) == [0, 1, 2, 3]
-        assert list(match.signs[2:4]) == [1, 1]
+        match = match_orbitals(overlap, occupation_blocks(5, (1, 1)))
+        assert list(match.permutation) == [0, 1, 2, 3, 4]
+        assert list(match.signs[3:5]) == [1, 1]
         assert match.confidence > 0.99

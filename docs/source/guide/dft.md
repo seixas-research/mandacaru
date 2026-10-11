@@ -70,12 +70,11 @@ $\tau = \tfrac12\sum_{pq}D_{pq}\nabla\phi_p\cdot\nabla\phi_q^*$ from the
 gradients of the orbitals and feeds its derivative back into the Kohn-Sham
 operator.
 
-- **LDA** is the default and the cheapest. It is also the functional the
-  default PAW-LCAO datasets (`lda-sr/`) were generated with, so it is the one
-  with no mismatch between the molecule and its datasets.
-- **PBE** adds the density gradient. With PAW-LCAO, read the PBE datasets
-  with `directory="pbe-sr"` (below), so the molecule and its datasets use
-  the same functional.
+- **LDA** is the default and the cheapest. With PAW-LCAO it reads the LDA
+  datasets (`lda-sr/`), so the molecule and its datasets use the same
+  functional.
+- **PBE** adds the density gradient. With PAW-LCAO it reads the PBE datasets
+  (`pbe-sr/`, below), again the same functional as the molecule.
 - **r2SCAN** is the most expensive of the three because it needs the orbital
   gradients on the grid. It shifts the orbital energies noticeably from PBE:
   for H$_2$O the HOMO-LUMO gap is about 1.4 eV larger with r2SCAN than with
@@ -127,7 +126,7 @@ energy as `scf.exact_exchange_energy`, and the run log reports it.
   singularity. A molecule in a 12 Angstrom periodic box and the same
   molecule isolated then agree on the HSE06 - PBE energy to 0.1 mHa.
 - **Shifts against references** (DZP, h = 0.2 Angstrom, 3 Angstrom of
-  vacuum; HSE06 - PBE): H$_2$O HOMO -1.74 eV (PAW-LCAO) against -1.45 eV for an
+  vacuum; HSE06 - PBE): H$_2$O HOMO -1.73 eV (PAW-LCAO) against -1.45 eV for an
   independent norm-conserving pseudopotential calculation and -1.42 eV
   all-electron (aug-cc-pVTZ; -1.51 eV in def2-TZVP); CH$_4$ -1.18 eV
   against -1.14 eV. The excess follows second-row lone-pair HOMOs
@@ -152,7 +151,14 @@ frequencies, so a strain moves the derivatives linearly, as the box's do,
 and the finite-strain stress is unaffected. Only frequencies near the faces
 of the box change; on an orthorhombic box, which is every molecule's grid,
 that is the Nyquist plane of an even axis, whose derivative along that axis
-a real field never had, and nothing changes.
+a real field never had, and nothing changes. The kinetic energy of the Bloch
+sums, the Coulomb kernel and the compensation and ion charges on the grid
+are averaged over the same aliases (the kinetic multiplier as the mean of
+|G + k|^2, alias by alias), so every operator commutes with the operations
+and with time reversal: the irreducible wedge reproduces the full k-mesh to
+1e-13 Ha on hcp Mg and wurtzite AlN, and to 2e-10 Ha on diamond Si (the
+short-range spheres' quadrature is not invariant under the cube's
+three-fold axes).
 
 ### r2SCAN+rVV10: dispersion from the density
 
@@ -185,13 +191,13 @@ uniform gas.
   reach the asymptotic $C_6$ of the model (76.3 a.u. for this argon density;
   the reference is 64.3, an overestimate of the VV10 model itself).
 - **Argon dimer** (TZP, unconfined basis, h = 0.2 Angstrom; reference
-  CCSD(T) $-12.3$ meV at 3.76 Angstrom): $-11.6$ meV at 3.76, $-10.5$ at
-  4.0, $-5.5$ at 4.5, $-3.3$ at 5.0 and $-0.6$ meV at 6.0 Angstrom;
-  r2SCAN alone gives $-5.8$ meV at the minimum.
+  CCSD(T) $-12.3$ meV at 3.76 Angstrom): $-12.2$ meV at 3.76, $-11.1$ at
+  4.0, $-5.9$ at 4.5, $-3.5$ at 5.0 and $-0.7$ meV at 6.0 Angstrom;
+  r2SCAN alone gives $-6.3$ meV at the minimum.
 - **Use an unconfined basis for weak binding.** The default confinement
   (`energy_shift` 0.1 eV) makes the isolated fragments' orbitals too compact,
   and each fragment then borrows its neighbor's functions: argon dimer
-  binding with PBE at 3.76 Angstrom is $-18.2$ meV confined and $-4.3$ meV
+  binding with PBE at 3.76 Angstrom is $-18.2$ meV confined and $-4.2$ meV
   unconfined, at any basis size. Pass `basis={"name": "PAW-LCAO",
   "energy_shift": None}` (or a much smaller shift) for interaction energies
   of this size, with any functional, and check them with the counterpoise
@@ -230,20 +236,29 @@ energies around their reference atom, so the Kohn-Sham energy on them needs no
 exchange-correlation evaluation inside the augmentation spheres: it is the
 smooth energy, with the compensation charges in the Hartree term and the
 dataset's smooth core density in the functional, the way the dataset was
-unscreened. The default datasets are **LDA** datasets; the library also
-ships a scalar-relativistic **PBE** set, read with `directory="pbe-sr"`:
+unscreened. The library ships a scalar-relativistic **LDA** set and a
+scalar-relativistic **PBE** set, and each functional reads its own set
+unless `directory=` names another:
+
+| `xc` | datasets read by default |
+|---|---|
+| `"lda"` | `lda-sr/` |
+| `"pbe"` | `pbe-sr/` |
+| `"hse06"` | `pbe-sr/` (the hybrid built on PBE) |
+| `"r2scan"`, `"r2scan-rvv10"` | `pbe-sr/` (no r2SCAN datasets are generated) |
 
 ```python
-atoms.calc = Mandacaru(method="dft", xc="pbe", directory="pbe-sr",
+atoms.calc = Mandacaru(method="dft", xc="pbe",       # reads pbe-sr/
                        basis={"name": "PAW-LCAO", "size": "DZP"})
 ```
 
-A functional other than the datasets' mixes two functionals, the molecule's
-and the dataset's, and the calculation emits a `RuntimeWarning` saying so;
-for `xc="pbe"` on LDA datasets (or `xc="lda"` on PBE ones) the warning names
-the folder with the matching set. r2SCAN has no datasets of its own. The
-mixed numbers are still useful for trends, but they are not the answer of a
-consistent calculation.
+HSE06 and r2SCAN on the PBE datasets still use a functional in the molecule
+that is not the one in the datasets' cores and one-center terms; PBE is the
+nearest set, not an exact match. A folder of another set
+(`directory="lda-sr"` with PBE, `directory="pbe-sr"` with LDA) mixes the two
+further, and the calculation emits a `RuntimeWarning` naming the folder of
+the functional's own set. The mixed numbers are still useful for trends, but
+they are not the answer of a consistent calculation.
 
 ## The grid
 
@@ -259,7 +274,12 @@ molecules. Three points to keep in mind:
   `kinetic="spectral"` evaluates it in reciprocal space instead and reduces the
   error for a hard smooth wave: for the He atom the missing energy at
   `h = 0.20` Å falls from about 108 mHa to about 9 mHa. It is shared by every
-  method, not only DFT.
+  method, not only DFT, and the analytic forces differentiate either operator
+  (see *Forces and relaxations*). The spectral operator is the one a crystal
+  uses, and it converges much faster with `h`: for H$_2$O (PAW-LCAO DZP, LDA)
+  the energy moves by 1.5 eV from `h = 0.30` to `0.15` Å against 14 eV with
+  the stencil, and the oxygen force stays within 0.14 eV/Å while the
+  stencil's changes sign. The molecular default is planned to move to it.
 - The noble-gas atoms Ne and Ar in a PAW-LCAO basis need a spacing of about
   0.06 Å or smaller, well below the range above.
 
@@ -317,12 +337,12 @@ functionals of the first example give these totals and gaps (the setup of
 
 | Functional | Total energy (Ha) | HOMO-LUMO gap (eV) |
 | :--- | ---: | ---: |
-| LDA | -17.560555 | 7.82 |
-| PBE + D4 | -17.647979 | 7.80 |
-| r2SCAN + D4 | -17.638390 | 9.18 |
+| LDA | -17.501159 | 7.70 |
+| PBE + D4 | -17.538301 | 7.67 |
+| r2SCAN + D4 | -17.528924 | 9.04 |
 
-The D4 term is $-1.97\times10^{-4}$ Ha for PBE. The PBE and r2SCAN rows carry
-the dataset warning described above.
+The D4 term is $-1.97\times10^{-4}$ Ha for PBE and $-4.7\times10^{-5}$ Ha for
+r2SCAN. The PBE and r2SCAN rows read the PBE datasets, so neither warns.
 
 The Kohn-Sham eigenvalues also give the molecular density of states: the
 levels, each broadened by a Gaussian, of one isolated molecule. This is a
@@ -359,22 +379,67 @@ print(si.calc.atomic_partition("bader").summary())
 ```
 
 As for a molecule, the split is a convention: rocksalt LiH (SZ, 2x2x2 mesh) gives
-Li +0.24 (Hirshfeld), +0.66 (Voronoi) and +0.84 (Bader). Two notes:
+Li +0.24 (Hirshfeld), +0.66 (Voronoi) and +0.89 (Bader). Two notes:
 
 - **Bader converges quickly with the grid**: the basins are traced by a
   continuous ascent on an interpolation of the density (see
-  [Charges](charges.md)), so rocksalt LiH's Li is +0.843 / +0.847 / +0.847
-  at 10 / 12 / 16 nodes per lattice vector and moves by ~1e-3 e when the
-  atoms are shifted against the grid; NaCl's Na is +0.86 and MgO's Mg +1.59
+  [Charges](charges.md)), so rocksalt LiH's Li is +0.852 at 10, 12 and 16 nodes
+  per lattice vector (4x4x4) and moves by ~1e-3 e when the
+  atoms are shifted against the grid; NaCl's Na is +0.85 and MgO's Mg +1.64
   (SZ, LDA).
 - **Use a real k-mesh.** A Gamma-only crystal's density is not converged:
-  LiH's Bader charge is +0.63 at Gamma, +0.79 at 3x3x3 and 6x6x6.
+  LiH's Bader charge is +0.71 at Gamma, +0.85 at 3x3x3 and 6x6x6.
 
 Equivalent atoms come
 out equal only on a grid that keeps the operations relating them: on a grid
 whose nodes miss diamond's quarter translations, the two silicon atoms of the
-discretized crystal are not equivalent, and a Voronoi split shows it. Cube
-files, dipoles and natural orbitals of a crystal are not available yet.
+discretized crystal are not equivalent, and a Voronoi split shows it.
+
+### Cube files and natural orbitals of a crystal
+
+A crystal writes its densities and orbitals through the same calls as a
+molecule, on the cell grid the SCF ran on. The `.xsf` file is a `CRYSTAL`
+with the lattice, its datagrid closed by the periodic copy of the first
+planes; the cube file holds the cell's nodes once. `repeat=(n1, n2, n3)`
+tiles the cell.
+
+```python
+si.calc.write_cube("density.xsf", repeat=(2, 2, 2))
+si.calc.write_cube("ae.cube", quantity="reconstructed_density")
+si.calc.write_cube("vbm.cube", quantity="bloch_orbital", index=3,
+                   kpoint=(0, 0, 0))                # fractional; or an index
+si.calc.write_cube("k.cube", quantity="bloch_orbital", index=0,
+                   kpoint=(0.1, 0.2, 0.3), component="modulus")
+orbitals = si.calc.natural_orbitals()               # per SCF k-point
+```
+
+| `quantity` | What the file holds |
+| --- | --- |
+| `density` | the smooth valence density; the augmentation charge it lacks is reported, and `integral + augmentation_charge` is the valence count |
+| `alpha_density`, `beta_density`, `spin_density` | a spin-polarized crystal's channels and the magnetization, which integrates (with its augmentation) to the moment |
+| `reconstructed_density` | the all-electron valence density: the smooth density plus the spherical part of each sphere's one-center correction, the density the Bader partition climbs (no core). It is written as its average over each voxel, so the file integrates to the valence count: silicon 8.00004, triplet O2 12.0005 |
+| `bloch_orbital` | Kohn-Sham band `index` at `kpoint` (any k-point; `spin=0` or `1` for a spin-polarized crystal), its smooth part |
+| `natural_orbital` | natural orbital `index` (descending occupation) of the spin-summed density matrix at an SCF k-point |
+
+These are one-particle quantities. A Bloch orbital is complex: at a
+time-reversal invariant k-point (Gamma, or 2k a reciprocal-lattice vector)
+each degenerate set is rotated to be real up to a phase, and the default
+`component="auto"` writes it real (silicon at Gamma: 1e-15, at X: 2e-10);
+elsewhere ask for `component="real"`, `"imag"` or `"modulus"`. Repeated
+cells carry the Bloch phase, psi(r + R) = exp(ik.R) psi(r).
+
+`natural_orbitals()` returns the eigenvectors of the spin-summed density
+matrix at each SCF k-point, in the overlap of the Bloch sums
+(`kpoints`, `weights`, `occupations`, `coefficients`, `n_electrons`): the
+Kohn-Sham orbitals and their smeared occupations for a spin-restricted
+crystal, the natural orbitals proper for a spin-polarized one (triplet O2
+in a box: two orbitals at exactly 1). `natural_orbitals(method="rpa")` is
+the direct-RPA density matrix's ({doc}`target_space`).
+
+A crystal has no dipole moment: the first moment of a periodic density
+depends on where the cell is cut. `get_dipole_moment()` refuses and points
+to `get_polarization()`, the Berry-phase polarization (below, "Electric
+polarization: the Berry phase").
 
 ## Reading the run log
 
@@ -444,6 +509,20 @@ for the other methods. With forces requested the grid is frozen along the
 trajectory, so a finite difference of the reported energy on it reproduces the
 forces: to 1e-6 eV/Angstrom for LiH with LDA and with PBE+D4 (PAW-LCAO DZP,
 h = 0.25 Angstrom).
+
+The forces differentiate the kinetic operator the energy used, the stencil
+or `kinetic="spectral"`: the Pulay term contracts the moving basis functions
+against the reciprocal-space Laplacian of the fixed ones. With the spectral
+operator the same checks hold to the same precision (LiH, PAW-LCAO DZP: 1e-6
+eV/Angstrom with LDA and PBE+D4; HSE06, UPAW-LCAO, the unrestricted OH
+radical and the correlated `force_method="rdm"` states alike), and a
+molecule in a box has the forces of the same box solved as a crystal at
+Gamma, to the grid's egg-box (water, SZ, h = 0.3 Angstrom: 0.05
+eV/Angstrom on forces of 5; the stencil's differ by 6.5). The egg-box itself
+is about the same with either operator: a rigid translation at h = 0.2
+Angstrom ripples water's energy by 3.5 meV and CO's by 1.0 meV with both,
+while LiH's net force is about 1.5 times larger with the spectral operator
+(0.021 against 0.014 eV/Angstrom at h = 0.25).
 
 r2SCAN forces are analytic too, but its energy surface on a finite real-space
 grid is rough at the micro-Hartree level -- the kinetic-energy density enters
@@ -522,9 +601,8 @@ result.fermi_level, result.free_energy, result.scf.band_gap
   level spacings to 0.4 mHa, on the energy to 0.7 mHa and on the Hirshfeld
   charges to 0.001 e. The molecular default, the finite-difference stencil,
   differs from it by far more than that on these grids: 0.80 Ha for water,
-  with a dipole 1.6 times larger.
-
-Not yet available for crystals: cube files and dipoles.
+  with a dipole 1.6 times larger. Water's density cube files agree node
+  for node to 6e-4 of the peak.
 
 ### HSE06 in a crystal
 
@@ -544,7 +622,7 @@ treatment of the Coulomb singularity.
 
 - **The exchange needs a denser mesh than the density.** The q-mesh is the
   k-mesh. For silicon (PAW-LCAO DZP, h = 0.3 Angstrom) the HSE06 - PBE gap
-  shift is +0.66 and +0.58 eV on 3x3x3 and 4x4x4 meshes (a 2x2x2 mesh
+  shift is +0.66 and +0.57 eV on 3x3x3 and 4x4x4 meshes (a 2x2x2 mesh
   overshoots by about a factor of two), against about +0.55-0.6 eV in the
   literature (HSE06 1.17 eV against PBE 0.59-0.62 eV): converge the shift,
   not just the energy.
@@ -628,8 +706,9 @@ fe.calc.get_total_magnetic_moment()       # N_up - N_down per cell
 - **Symmetry**: atoms are equivalent only with the same element *and*
   initial moment, so an antiferromagnetic arrangement keeps the operations
   that preserve it.
-- **Checked**: O2's triplet is 1.25 eV (LDA) / 1.34 eV (PBE) below the
-  closed-shell singlet (SZ); O2 in a periodic box reproduces the molecular
+- **Checked**: O2's triplet is 0.78 eV (LDA) / 0.92 eV (PBE) below the
+  spin-restricted state, which holds the two π* electrons as an ensemble
+  (SZ, h = 0.3 Å); O2 in a periodic box reproduces the molecular
   unrestricted run (moment 2.000, 1.000 per atom, pi* exchange splitting
   1.555 vs 1.558 eV).
 
@@ -835,7 +914,7 @@ Two variants:
   at every strain with the crystal forces, to `fmax` (0.01 eV/Å). The
   centroid of the atoms is held fixed and the mean force removed. A
   crystal's exact forces sum to zero, but the real-space grid gives them a
-  net part (0.12 eV/Å for AlN at $h$ = 0.25 Å). Left in, that net force
+  net part (0.11 eV/Å for AlN at $h$ = 0.25 Å). Left in, that net force
   drags the whole crystal along the grid and corrupts the internal
   coordinates.
 
@@ -885,10 +964,10 @@ Checks (LDA, PAW-LCAO SZP, h = 0.25 Å, a 4³ or 4×4×3 mesh):
 
 | | Mandacaru | literature |
 | :--- | ---: | ---: |
-| $Z^*$, rocksalt LiH | Li +1.055, H −1.055 | about 1.0–1.1 |
-| $Z^*$, rocksalt NaCl | Na +1.165, Cl −1.165 | about 1.1 |
-| $Z^*_{zz}$, wurtzite AlN | Al +2.662, N −2.672 | 2.65–2.70 |
-| spontaneous $P$ of AlN (relative to zinc blende) | −0.076 C/m² | −0.08 to −0.09 |
+| $Z^*$, rocksalt LiH | Li +1.097, H −1.097 | about 1.0–1.1 |
+| $Z^*$, rocksalt NaCl | Na +1.100, Cl −1.100 | about 1.1 |
+| $Z^*_{zz}$, wurtzite AlN | Al +2.682, N −2.689 | 2.65–2.70 |
+| spontaneous $P$ of AlN (relative to zinc blende) | −0.089 C/m² | −0.08 to −0.09 |
 
 The acoustic sum rule holds to 0.01 e, and the off-diagonal elements of
 the cubic crystals are zero ($10^{-8}$). The spontaneous polarization is the
@@ -898,23 +977,18 @@ quantum along $c$, $e/A$. A centrosymmetric crystal comes out on 0 or half a
 quantum, and a rigid shift of all atoms changes $\mathbf P$ only by whole
 quanta.
 
-For AlN's clamped-ion tensor this basis gives $e_{33} = -0.56$ and
-$e_{31} = +0.27$ C/m², against about $-0.47$ for $e_{33}$ in the
-literature; the components symmetry forbids come out at $10^{-8}$. The
-relaxed-ion tensor is **not yet validated**, and the reason is the lattice,
-not the method. On the experimental lattice this basis gives
-$e_{33} = +2.63$ and $e_{31} = -1.29$ C/m², against the literature's
-1.46 and −0.60. The internal strain there, $du/d\varepsilon_3 = -0.31$,
-is the true minimum of this model's energy. The relaxation lands on it, and
-$e_{33} - e_{33}^{(0)}$ equals $4eZ^*/(\sqrt3 a^2)\,du/d\varepsilon_3$
-with the computed $Z^*$. But in this model the experimental lattice is
-about 100 GPa from equilibrium: the energy minimum lies 11 % higher in $a$
-and $c$, because bonds to aluminum come out far too long (fcc Al at
-4.68 Å, against about 4.0 Å in LDA). That compression stiffens the
-internal mode and inflates the coupling. On the model's own lattice,
-$du/d\varepsilon_3 = -0.20$ (literature −0.18), but the 40 % larger
-volume dilutes $e_{33}$ to 0.99. Compare relaxed-ion tensors only for
-crystals whose lattice this basis and dataset reproduce.
+For AlN's clamped-ion tensor this basis gives $e_{33} = -0.44$ and
+$e_{31} = +0.25$ C/m², against about $-0.47$ for $e_{33}$ in the
+literature; the components symmetry forbids come out at $10^{-13}$. On the
+experimental lattice the relaxed-ion tensor is $e_{33} = +1.78$ and
+$e_{31} = -0.84$ C/m², against the literature's 1.46 and −0.60: still
+about 20 % (e33) and 40 % (e31) large, so it is **not yet validated**. The
+lattice is a suspect again, now a much smaller one: the experimental cell
+is about 10 GPa from this model's equilibrium (stress −10.4 / −9.8 GPa in
+the plane and along $c$), and fcc Al comes out at 4.12 Å against about
+4.0 Å in LDA. A compressed cell stiffens the internal mode and inflates
+the coupling. Compare relaxed-ion tensors only for crystals whose lattice
+this basis and dataset reproduce.
 
 ## Wannier functions
 
@@ -1294,7 +1368,8 @@ U, U_, J = g[0, 0, 0, 0], g[0, 1, 0, 1], g[0, 1, 1, 0]   # Hubbard-Kanamori
 
 - **Why windows.** The single-zeta basis puts a V p band inside the t2g
   energy range: at R it lies 0.96 eV above the Fermi level, below the t2g
-  states at 1.71 eV. On a mesh containing R, bands 12–14 are not the t2g
+  states at 1.71 eV. On a mesh containing R, bands 16–18 (above the Sr
+  4s and 4p semicore and O's twelve) are not the t2g
   set and their projection on the t2g trials is singular there. The
   disentanglement keeps the states below $E_F$ + 0.5 eV and takes the
   smoothest t2g-like subspace from the rest of the window, as cRPA studies
@@ -1310,33 +1385,35 @@ SrVO3 (LDA, PAW-LCAO SZP, h 0.2 Å, the shipped library):
 
 | mesh | spread (Å²) | U bare | U′ bare | J bare | U cRPA | U′ cRPA | J cRPA |
 |---|---|---|---|---|---|---|---|
-| 3³ | 1.60 | 15.70 | 14.65 | 0.493 | 5.25 | 4.30 | 0.447 |
-| 4³ | 1.90 | 15.50 | 14.46 | 0.484 | 5.23 | 4.29 | 0.440 |
-| 5³ | 2.67 | 14.69 | 13.71 | 0.453 | | | |
+| 3³ | 1.63 | 15.32 | 14.31 | 0.465 | 5.04 | 4.13 | 0.433 |
+| 4³ | 1.84 | 15.25 | 14.25 | 0.462 | 4.63 | 3.72 | 0.430 |
+| 5³ | 1.96 | 15.23 | 14.23 | 0.461 | | | |
 
-(eV.) The three orbitals agree to 1e-4 eV in $U$ and $U'$, and to 0.4 %
+(eV.) The three orbitals agree to 1e-4 eV in $U$ and $U'$, and to 0.5 %
 in $J$, which the cell grid's discretization sets. $(U - U')/2$ is
-0.53 eV bare and 0.48 eV screened, 7 % above $J$: the relation
+0.50 eV bare and 0.45 eV screened, 5 % above $J$: the relation
 $U' = U - 2J$ is exact only for a spherical atom. The interpolated bands
-inside the frozen window are within 184, 19, 12 and 24 meV of the true
-ones on 3³ to 6³ meshes (root mean square 77, 8.7, 4.6 and 3.6 meV).
+inside the frozen window are within 144, 48 and 25 meV of the true
+ones on 3³ to 5³ meshes (root mean square 68, 13 and 9.4 meV).
 
 Vaugier, Jiang and Biermann's cRPA for the same three-band model gives
 $U$ = 3.2 eV, $J$ = 0.44 eV and $U' = U - 2J$ = 2.3 eV, with a bare
 $V$ = 16.1 eV and $J_{bare}$ = 0.55 eV. The bare values here are close,
-and so is $J$. The screened $U$ is about 2 eV too large: here cRPA keeps a
-third of the bare $U$, against a fifth in their calculation. The cause is
-the screening, not the mesh, since 3³ and 4³ differ by 0.03 eV. Other
-settings move it too little to close the gap:
+and so is $J$. The screened $U$ is about 1.4 eV too large on 4³: here
+cRPA keeps 30 % of the bare $U$, against a fifth in their calculation.
+The mesh is not converged either: $U$ falls by 0.41 eV from 3³ to 4³.
+Two other settings, measured with the earlier valence-only Sr dataset,
+moved it too little to close the gap:
 
 - **The empty states.** Keeping 28 of the 40 bands raises $U$ by
   0.03 eV; a double-zeta basis (59 bands) lowers it by 0.13 eV.
 - **The cutoff.** The default 3 Bohr⁻¹ is converged: 4 Bohr⁻¹ lowers $U$
   by 6 meV, while 2 Bohr⁻¹ raises it by 0.29 eV.
 
-The shipped Sr dataset has no semicore 4s and 4p, whose screening is
-missing. These numbers will move when the rebuilt datasets, with Sr
-semicore, are installed.
+The Sr dataset carries the 4s and 4p semicore in valence (since
+2026-10-11). Its screening lowers $U$ by only 0.2 eV on 3³ (from 5.25 eV
+with the valence-only dataset), so it is not what separates this model
+from the literature.
 
 bcc Fe is the spin-polarized check (DZP, h 0.2 Å, moment 2.01 μB on a
 6³ mesh). The projected s, p and d functions of each channel
@@ -1366,7 +1443,8 @@ The following are refused or unavailable:
 - **Crystals with an all-electron basis**: the periodic path is
   PAW-LCAO or UPAW-LCAO only.
 - **D4 with LDA or with r2SCAN+rVV10**, as above.
-- **Cube files, dipoles and natural orbitals of a crystal**.
+- **The dipole of a crystal**: cell-dependent; its counterpart is the
+  Berry-phase polarization, `get_polarization()`.
 
 A molecule's polarizability is in {doc}`polarizability`; a crystal's
 electronic dielectric tensor is above.

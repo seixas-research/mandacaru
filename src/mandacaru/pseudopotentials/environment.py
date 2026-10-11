@@ -21,10 +21,13 @@ family                variable                    set it with
 
 Inside a checkout the datasets sit one directory per set, named for its
 functional and relativistic treatment (:data:`LIBRARY_FOLDERS`): PAW-LCAO
-ships ``lda-sr/`` (scalar-relativistic LDA, the default), ``lda-dirac/``
-(with the spin-orbit term) and ``pbe-sr/`` (scalar-relativistic PBE).  A
-set without an entry sits in the folder named for the functional
-(``pbe/`` for a PBE Dirac set, which is not shipped).
+ships ``lda-sr/`` (scalar-relativistic LDA), ``lda-dirac/`` (with the
+spin-orbit term) and ``pbe-sr/`` (scalar-relativistic PBE).  A calculation
+reads the set of its functional (:func:`default_library_folder`): ``pbe-sr/``
+for PBE, HSE06, r2SCAN and r2SCAN+rVV10, ``lda-sr/`` for LDA and every
+method without a functional.  A set without an entry sits in the folder
+named for the functional (``pbe/`` for a PBE Dirac set, which is not
+shipped).
 UPAW-LCAO is the one optional library: without ``MANDACARU_UPAW_PATH`` its
 datasets are generated on demand (a few seconds per element), so an unset
 variable is not an error for it (:data:`OPTIONAL_FAMILIES`).
@@ -60,9 +63,15 @@ DEFAULT_XC = "lda"
 LIBRARY_FOLDERS = {("paw-lcao", "lda", "scalar"): "lda-sr",
                    ("paw-lcao", "lda", "dirac"): "lda-dirac",
                    ("paw-lcao", "pbe", "scalar"): "pbe-sr"}
-#: The folder ``Mandacaru(directory=...)`` reads by default, the
-#: scalar-relativistic LDA set.
+#: The folder a calculation without a functional (Hartree-Fock, the
+#: quantum solvers) or with LDA reads, the scalar-relativistic LDA set.
 DEFAULT_LIBRARY_FOLDER = "lda-sr"
+#: The functional whose datasets each Kohn-Sham functional reads, by the
+#: canonical names of :data:`~mandacaru.integrals.exchange_correlation.GRID_FUNCTIONALS`.
+#: PBE has its own set; the screened hybrid built on it and the meta-GGAs,
+#: for which no datasets are generated, read the PBE set too.
+DATASET_FUNCTIONALS = {"lda": "lda", "pbe": "pbe", "hse06": "pbe",
+                       "r2scan": "pbe", "r2scan-rvv10": "pbe"}
 
 _DATA_EXTENSIONS = (".parquet", ".pq", ".json")
 
@@ -96,6 +105,17 @@ def library_folder_name(family: str, xc: str = DEFAULT_XC,
     (:data:`LIBRARY_FOLDERS`, else the functional itself)."""
     key, xc = _family(family), _functional(xc)
     return LIBRARY_FOLDERS.get((key, xc, str(relativity).lower()), xc)
+
+
+def default_library_folder(functional: str | None = None) -> str:
+    """The PAW-LCAO folder a calculation with the Kohn-Sham ``functional``
+    (a canonical name) reads unless ``Mandacaru(directory=...)`` names
+    another: the scalar-relativistic set of :data:`DATASET_FUNCTIONALS`.
+    ``None``, a method without a functional, reads
+    :data:`DEFAULT_LIBRARY_FOLDER`."""
+    if functional is None:
+        return DEFAULT_LIBRARY_FOLDER
+    return library_folder_name("paw-lcao", DATASET_FUNCTIONALS[functional])
 
 
 def _folders(root: str) -> list[str]:

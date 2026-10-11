@@ -23,7 +23,8 @@ two-center lattice sum :math:`H_{\mu\nu}(\mathbf R)` is ever formed:
 * the overlap and every grid potential (Hartree, the long-range ion
   potential, exchange-correlation) are cell integrals of Bloch sums sampled on
   the cell grid, and the kinetic energy is spectral, :math:`\tfrac12|\mathbf
-  G + \mathbf k|^2` acting on the periodic part of each sum;
+  G + \mathbf k|^2` acting on the periodic part of each sum (averaged over
+  the aliases the grid lattice's operations pick, so it commutes with them);
 * the short-range terms -- the projections :math:`C_{\mu p}(\mathbf k) =
   \langle\chi_{\mu\mathbf k}|\tilde p_p\rangle` and the short-range local
   potential -- are quadratures over spheres around the atoms of the home cell,
@@ -728,7 +729,11 @@ class PeriodicPAW:
         self.multipole_blocks = dict(multipole_blocks)
         self.channels = sorted(self.multipole_blocks)
         self.G = rc.wavevectors(grid)
-        self.kernel = rc.coulomb_kernel(self.G)
+        #: The Coulomb kernel and the grid charges (:meth:`compensation_grid`,
+        #: :meth:`ion_charge`) are means over the aliases the grid lattice's
+        #: operations pick (:func:`~mandacaru.integrals.reciprocal.alias_mean`),
+        #: so they commute with the operations as the kinetic matrix does.
+        self.kernel = rc.alias_mean(grid, rc.coulomb_kernel)
         self._compensation_grid = None
         self._compensation_coulomb = None
         self.kpoint_data = self._kpoints()
@@ -811,23 +816,35 @@ class PeriodicPAW:
         return np.fft.fftn(u, axes=(1, 2, 3)) * g.dV
 
     def _kinetic(self, psi, k) -> np.ndarray:
-        r""":math:`\tfrac12\int|\nabla\chi|^2`, spectral on the periodic part."""
+        r""":math:`\tfrac12\int|\nabla\chi|^2`, spectral on the periodic part.
+
+        The multiplier of each frequency is the mean of
+        :math:`|\mathbf G + \mathbf k|^2` over its aliases under the grid
+        lattice's operations (:func:`~mandacaru.integrals.reciprocal.bloch_aliases`),
+        not the FFT box's alias: with the box, the k-points of one star had
+        different kinetic spectra wherever an operation mixes the grid's
+        axes (hcp, fcc), and a wedge symmetrized to the full mesh missed it
+        by 1.6e-4 Ha on semicore hcp Mg (HISTORY 2026-10-11, K13b).
+        """
         transform = self._periodic_part(psi, k).reshape(len(psi), -1)
-        Gk = self.G.reshape(3, -1) + np.asarray(k)[:, None]
-        weight = 0.5 * np.sum(Gk * Gk, axis=0) / self.volume
+        _vectors, squares = rc.bloch_aliases(self.grid, k)
+        weight = 0.5 * squares.ravel() / self.volume
         return (transform.conj() * weight) @ transform.T
 
     def bloch_gradients(self, psi, k) -> np.ndarray:
-        r""":math:`\nabla\chi` on the grid, ``(3, M, ngrid)``."""
+        r""":math:`\nabla\chi` on the grid, ``(3, M, ngrid)``: the periodic
+        part multiplied by the alias-averaged :math:`i(\mathbf G + \mathbf
+        k)` of :func:`~mandacaru.integrals.reciprocal.bloch_aliases`, so a
+        kinetic-energy density summed over the wedge and symmetrized is the
+        full mesh's."""
         g = self.grid
         transform = self._periodic_part(psi, k)
+        vectors, _squares = rc.bloch_aliases(g, k)
         phase = np.exp(1j * (k[0] * g.X + k[1] * g.Y + k[2] * g.Z)).ravel()
-        N = int(np.prod(g.shape))
         out = []
         for c in range(3):
-            factor = 1j * (self.G[c] + k[c])
-            u = np.fft.ifftn(transform * factor[None], axes=(1, 2, 3)) \
-                * N / (g.dV * N)
+            u = np.fft.ifftn(transform * (1j * vectors[c])[None],
+                             axes=(1, 2, 3)) / g.dV
             out.append(u.reshape(len(psi), -1) * phase[None, :])
         return np.stack(out)
 
@@ -976,9 +993,11 @@ class PeriodicPAW:
         return tau if self.symmetry is None else self.symmetry.field(tau)
 
     def compensation_grid(self) -> dict:
-        r"""``{channel: g_hat(G)}`` on the grid's reciprocal set (filtered)."""
+        r"""``{channel: g_hat(G)}`` on the grid's reciprocal set (filtered),
+        each frequency the mean over its aliases
+        (:func:`~mandacaru.integrals.reciprocal.alias_mean`)."""
         if self._compensation_grid is None:
-            transforms = self.compensation_transforms(self.G)
+            transforms = rc.alias_mean(self.grid, self.compensation_transforms)
             self._compensation_grid = dict(zip(self.channels, transforms))
         return self._compensation_grid
 
@@ -1086,8 +1105,9 @@ class PeriodicPAW:
         return table
 
     def ion_charge(self) -> np.ndarray:
-        r"""The Gaussian ions on the grid's reciprocal set (electron sign)."""
-        return self._ion_transform(self.G)
+        r"""The Gaussian ions on the grid's reciprocal set (electron sign),
+        each frequency the mean over its aliases."""
+        return rc.alias_mean(self.grid, self._ion_transform)
 
     def dense_coulomb(self):
         r"""``(U, U_ion, E_ion)`` of the compact charges, dense in G.
@@ -1484,8 +1504,12 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
         weights = np.full(len(reduced), 1.0 / len(reduced))
         operations = None
     else:
-        operations = grid_symmetry(atoms, g) if symmetry and not ghosts \
-            else None
+        # The compensation multipoles reach L = 2 l_max: 6 for a dataset
+        # with an f channel (W-Hg, the lanthanides), whose crystal had no
+        # rotation table for L = 5 and stopped in the first SCF step.
+        max_L = max(4, 2 * max(max(d.channels) for d in datasets))
+        operations = grid_symmetry(atoms, g, max_L=max_L) \
+            if symmetry and not ghosts else None
         reduced, weights, operations = reduce_mesh(mesh, operations)
     B = rc.reciprocal_vectors(rc.lattice_vectors(g))
     kpoints = reduced @ B.T

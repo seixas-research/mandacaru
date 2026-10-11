@@ -81,8 +81,8 @@ result = interaction_energy(dimer, fragments=[[0], [1]], method="dft",
 
 | Ar$_2$, PBE, DZP, 3.76 Å | plain | counterpoise |
 | :--- | ---: | ---: |
-| confined basis (the default) | $-18.2$ meV | $+1.5$ meV |
-| unconfined (`energy_shift=None`) | $-4.3$ meV | $-4.0$ meV |
+| confined basis (the default) | $-18.2$ meV | $+1.7$ meV |
+| unconfined (`energy_shift=None`) | $-4.2$ meV | $-4.0$ meV |
 
 The correction removes the borrowing, not the basis's own limits: the
 confined basis is still the poorer one for the interaction itself, so for
@@ -126,8 +126,9 @@ Three further numerical safeguards came out of the same investigation:
 - `kinetic="spectral"` evaluates the Laplacian by FFT instead of the
   3-point stencil, which under-estimates the kinetic energy of compact
   functions (by up to 15% at 0.2–0.3 Å); it is exact for resolved
-  functions and never underestimates an unresolved one. It is opt-in because
-  the force code differentiates the stencil;
+  functions and never underestimates an unresolved one. It is opt-in for
+  molecules (the analytic forces differentiate either operator), and it is
+  the operator a crystal always uses;
 - every Hamiltonian build compares each basis function's grid kinetic energy
   (and each pseudopotential projector's grid norm) with the exact radial
   value and **warns** about functions the grid cannot resolve, naming them.

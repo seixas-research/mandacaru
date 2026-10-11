@@ -186,7 +186,7 @@ def resolve_basis(basis):
         "per-element mapping like {'O': 'HAO', 'H': '6-31G'}")
 
 
-def with_library_folder(basis, folder: str):
+def with_library_folder(basis, folder: str, *, required: bool = True):
     """``basis`` with every library-backed pseudopotential entry pointed at
     ``<checkout>/<folder>`` of its family (``Mandacaru(directory=folder)``).
 
@@ -201,7 +201,9 @@ def with_library_folder(basis, folder: str):
     ------
     ValueError
         When no entry of ``basis`` reads a pseudopotential library, so the
-        folder would select nothing.
+        folder would select nothing -- unless not ``required`` (the folder
+        the functional chose, not one the caller named), which leaves such a
+        basis unchanged.
     """
     from ..pseudopotentials.environment import FOLDER_FAMILIES, library_folder
     from ..pseudopotentials.families import canonical_family_name
@@ -222,7 +224,7 @@ def with_library_folder(basis, folder: str):
                 "directory": library_folder(family, folder)}
 
     result = rewrite(basis)
-    if not found:
+    if not found and required:
         raise ValueError(
             f"directory={folder!r} selects a folder of a pseudopotential "
             f"library, but basis={basis!r} reads none; use a PAW-LCAO "
@@ -486,11 +488,12 @@ def resolve_pseudo_basis(name, options, symbols):
     return family, merged
 
 
-#: Default Laplacian per path.  Both keep the finite-difference stencil: it
-#: is what the nuclear-gradient code differentiates, so energies and forces
-#: stay consistent.  ``kinetic="spectral"`` is the more accurate choice for a
-#: single-point energy on a coarse grid (the stencil under-estimates the
-#: kinetic energy of compact functions by up to ~15% at 0.2-0.3 Angstrom).
+#: Default Laplacian per molecular path.  Both keep the finite-difference
+#: stencil for now; the nuclear gradient differentiates either operator
+#: (``forces.one_body_cross``).  ``kinetic="spectral"`` is the operator a
+#: crystal uses, exact on the Fourier-filtered basis, and the more accurate
+#: one on a coarse grid (the stencil under-estimates the kinetic energy of
+#: compact functions by up to ~15% at 0.2-0.3 Angstrom).
 DEFAULT_KINETIC = {"all-electron": "fd", "pseudopotentials": "fd"}
 
 

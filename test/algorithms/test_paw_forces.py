@@ -132,6 +132,36 @@ def test_the_last_zeta_split_is_still_available():
     assert bond_force(atoms.get_forces()) > 1.0
 
 
+@pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])
+def test_spectral_kinetic_forces_are_the_derivative_of_the_energy(family):
+    """``kinetic="spectral"`` through the RDM gradient (Phase N).
+
+    LiH, SZ, tilted off its axis: ADAPT-VQE reaches the sector ground state,
+    so a Richardson-extrapolated central difference of the reported energy
+    on the frozen grid is the reference (measured 4e-6 eV/Angstrom, as the
+    stencil's)."""
+    atoms = dimer("LiH", 1.6, 8.0)
+    atoms.positions[1, 0] += 0.05
+    atoms.calc = Mandacaru(method="adapt-vqe", h=0.25, pool="fermionic",
+                           basis={"name": family, "size": "SZ"},
+                           kinetic="spectral", optimizer=LBFGS,
+                           convergence={"gradient": 1e-6}, profile=False)
+    atoms.get_forces()
+    raw = atoms.calc.force_result.unprojected.copy()
+
+    def energy(step):
+        moved = atoms.copy()
+        moved.positions[1, 2] += step
+        moved.calc = atoms.calc
+        return moved.get_potential_energy()
+
+    coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
+                    for s in (0.004, 0.002))
+    numerical = fine + (fine - coarse) / 3.0
+    assert abs(numerical) > 0.1
+    assert raw[1, 2] == pytest.approx(numerical, abs=1e-4)
+
+
 def test_h2_force_curve_follows_the_plane_wave_reference():
     """Sign and rough magnitude away from the minimum.
 

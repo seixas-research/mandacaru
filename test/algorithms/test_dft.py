@@ -226,18 +226,30 @@ class TestPAWLCAO:
         assert energy == pytest.approx(
             dataset.energies["reference_valence"], abs=3e-3)
 
-    def test_lda_on_lda_datasets_is_silent_and_pbe_warns(self):
+    def test_each_functional_on_its_own_set_is_silent(self):
+        """By default LDA reads ``lda-sr`` and PBE and r2SCAN read
+        ``pbe-sr`` (r2SCAN has no datasets of its own), with no warning."""
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
-            lda = _run(h2(), xc="lda", h=0.3, basis={"name": "PAW-LCAO"})
+            for xc in ("lda", "pbe", "r2scan"):
+                atoms = h2()
+                energy = _run(atoms, xc=xc, h=0.3, basis={"name": "PAW-LCAO"})
+                assert np.isfinite(energy)
+                datasets = atoms.calc.solver._gradient_context[
+                    "integrals"].pseudopotentials
+                assert {d.xc for d in datasets} == {
+                    "lda" if xc == "lda" else "pbe"}
+
+    def test_another_set_warns_and_names_the_functional_s_own(self):
         # The warning names the folder of the PBE datasets.
         with pytest.warns(RuntimeWarning, match="different functionals; "
                           r"Mandacaru\(directory='pbe-sr'\)"):
-            pbe = _run(h2(), xc="pbe", h=0.3, basis={"name": "PAW-LCAO"})
-        assert np.isfinite(lda) and np.isfinite(pbe)
-        # r2SCAN has no datasets of its own to point to.
-        with pytest.warns(RuntimeWarning, match=r"different functionals$"):
-            _run(h2(), xc="r2scan", h=0.3, basis={"name": "PAW-LCAO"})
+            _run(h2(), xc="r2scan", h=0.3, basis={"name": "PAW-LCAO"},
+                 directory="lda-sr")
+        with pytest.warns(RuntimeWarning, match="different functionals; "
+                          r"Mandacaru\(directory='lda-sr'\)"):
+            _run(h2(), xc="lda", h=0.3, basis={"name": "PAW-LCAO"},
+                 directory="pbe-sr")
 
 
 def lih():
@@ -874,6 +886,89 @@ class TestHybrid:
                         for s in (0.004, 0.002))
         numerical = fine + (fine - coarse) / 3.0
         assert result.unprojected[1, 2] == pytest.approx(numerical, abs=1e-4)
+
+
+def _oh_radical():
+    atoms = Atoms("OH", positions=[[0, 0, 0], [0.08, 0, 1.02]],
+                  cell=[6, 6, 7])
+    atoms.center()
+    return atoms
+
+
+def _tilted_h2():
+    return Atoms("H2", positions=[[0, 0, 0], [0.05, 0, 0.74]], cell=[6] * 3)
+
+
+#: LiH in a single-zeta basis does not converge its SCF (with either
+#: operator); SZP does.
+PAW_SZP = {"name": "PAW-LCAO", "size": "SZP"}
+
+#: Every Kohn-Sham route through the spectral Pulay term: the semilocal
+#: functionals with and without D4, the screened hybrid, an unrestricted
+#: run, the unitary family and an all-electron basis.
+SPECTRAL_FORCE_CASES = {
+    "lda/paw-lcao": (lih, dict(xc="lda", h=0.3, basis=PAW_SZP)),
+    "pbe+d4/paw-lcao": (lih, dict(xc="pbe", dispersion="d4", h=0.3,
+                                  basis=PAW_SZP)),
+    "lda/upaw-lcao": (_tilted_h2, dict(xc="lda", h=0.25,
+                                       basis={"name": "UPAW-LCAO",
+                                              "size": "SZ"})),
+    "hse06/nao": (_tilted_h2, dict(xc="hse06", h=0.3, basis=NAO_DZ)),
+    "uks-lda/paw-lcao": (_oh_radical, dict(xc="lda", h=0.3,
+                                           basis={"name": "PAW-LCAO",
+                                                  "size": "SZ"})),
+}
+
+#: 100 s under load; LDA on the same LiH covers its PAW-LCAO terms.
+_SLOW_SPECTRAL_CASES = {"pbe+d4/paw-lcao"}
+
+
+class TestSpectralKineticForces:
+    """``kinetic="spectral"`` forces (Phase N): the Pulay term contracts the
+    moved basis functions against the FFT Laplacian of the unmoved ones
+    (``forces.one_body_cross``), so the force is the derivative of the
+    energy the spectral operator gives.  Against Richardson-extrapolated
+    central differences on the frozen grid, the standard of the stencil's
+    tests above; HISTORY (2026-10-07, Phase N) has every component."""
+
+    @pytest.mark.parametrize("case", [
+        pytest.param(case, marks=pytest.mark.slow)
+        if case in _SLOW_SPECTRAL_CASES else case
+        for case in sorted(SPECTRAL_FORCE_CASES)])
+    def test_they_are_the_derivative_of_the_energy(self, case):
+        if "d4" in case:
+            pytest.importorskip("dftd4")
+        build, options = SPECTRAL_FORCE_CASES[case]
+        atoms = build()
+        atoms.calc = Mandacaru(method="dft", kinetic="spectral", trace=False,
+                               **options)
+        atoms.get_forces()
+        result = atoms.calc.force_result
+        assert atoms.calc.solver._gradient_context["integrals"].kinetic \
+            == "spectral"
+
+        def energy(step):
+            moved = atoms.copy()
+            moved.positions[1, 2] += step
+            moved.calc = atoms.calc
+            return moved.get_potential_energy()
+
+        coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
+                        for s in (0.004, 0.002))
+        numerical = fine + (fine - coarse) / 3.0
+        assert abs(numerical) > 0.1                  # a real force
+        assert result.unprojected[1, 2] == pytest.approx(numerical, abs=1e-4)
+
+    def test_a_meta_gga_returns_forces_of_its_reported_energy(self):
+        """r2SCAN with the spectral operator: the rebuilt energy matches (the
+        calculator checks it to 1e-6 Ha) and the forces are finite.  Its
+        energy surface is too rough (K1) for the finite-difference check."""
+        atoms = h2()
+        atoms.calc = Mandacaru(method="dft", xc="r2scan", h=0.3,
+                               basis=NAO_DZ, kinetic="spectral", trace=False)
+        forces = atoms.get_forces()
+        assert np.all(np.isfinite(forces))
+        assert forces[1, 2] == pytest.approx(-forces[0, 2])
 
 
 class TestTheHartreeTerm:

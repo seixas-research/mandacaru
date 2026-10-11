@@ -28,6 +28,12 @@ calculations load; it is never the default.
 Each channel is checked after generation: its two lowest levels against the
 reference (a ghost state is refused or repaired, per ``--ghosts``), and with
 ``--check`` the scattering phase against the all-electron atom as well.
+
+What is released is the file, not the object in memory: it is written beside
+its final name, read back, and moved into place only when every channel's
+lowest levels are those of the generated dataset to
+:data:`RELOAD_LEVEL_TOLERANCE` (:func:`reload_errors`).  The report's checks
+are those of the file read back.
 """
 
 from __future__ import annotations
@@ -42,6 +48,33 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #: ``--pp`` spellings -> family name.
 FAMILIES = {"paw": "paw-lcao", "paw-lcao": "paw-lcao",
             "upaw": "upaw-lcao", "upaw-lcao": "upaw-lcao"}
+#: Largest change (Hartree) of any channel's bound levels between a dataset
+#: as generated and as read back from the file written for it, at the
+#: library stride (:data:`.io.STRIDE`; the stored digits do not matter).
+#: Measured: 3e-6 at most (He 1s, Fe 3d), 1e-7 for H, C, O, Na
+#: (HISTORY.md, 2026-10-11, "The PAW audit report checked").
+RELOAD_LEVEL_TOLERANCE = 1e-5
+
+
+def reload_errors(generated, loaded, levels) -> dict:
+    """``{l: shift}``: the channels whose bound levels (those of
+    ``levels(pp, l)`` below zero in the generated dataset) moved by more than
+    :data:`RELOAD_LEVEL_TOLERANCE` Hartree between the dataset as generated
+    and as read back from its file; a level that is not finite counts as
+    moved.  Levels above zero are box states, whose energy follows the box
+    the spectrum picks from the grid, not the dataset."""
+    import numpy as np
+
+    out = {}
+    for l in generated.channels:
+        before = np.asarray(levels(generated, l), dtype=float)
+        after = np.asarray(levels(loaded, l), dtype=float)
+        bound = ~(before >= 0.0)               # a NaN stays in, and fails
+        shift = float(np.max(np.abs(after - before)[bound], initial=0.0))
+        if not np.all(np.isfinite(after[bound])) or not (
+                shift <= RELOAD_LEVEL_TOLERANCE):
+            out[int(l)] = shift
+    return out
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -201,16 +234,54 @@ def _limit_threads(threads: int) -> None:
 
 def _build_one(family: str, symbol: str, options: dict, directory: str,
                fmt: str, check: bool) -> tuple[bool, str]:
-    from .io import STRIDE, library_file, save_pseudopotential
+    from .io import STRIDE, library_file, load_pseudopotential, \
+        save_pseudopotential
+    from .partial_waves import GhostStateWarning, ghost_errors, \
+        scattering_errors
     from ..basis.radial_backend import radial_backend_status
 
     started = time.perf_counter()
+    spectrum, log_derivative = _levels_and_phase(family)
+    solved: dict = {}
+
+    def levels(dataset, l):
+        """``spectrum``, once per dataset and channel."""
+        key = (id(dataset), int(l))
+        if key not in solved:
+            solved[key] = spectrum(dataset, l)
+        return solved[key]
+
+    staged = None
     try:
         pp = _generate(family, symbol, options)
         os.makedirs(directory, exist_ok=True)
-        path = save_pseudopotential(pp, library_file(symbol, directory, fmt),
-                                    format=fmt, stride=STRIDE)
+        path = library_file(symbol, directory, fmt)
+        # Written beside its final name and read back: what is released is
+        # the file (its stride and digits), so that is what is checked, and
+        # it replaces nothing until it passes.
+        staged = save_pseudopotential(pp, f"{path}.new", format=fmt,
+                                      stride=STRIDE)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", GhostStateWarning)
+            loaded = load_pseudopotential(staged, format=fmt)
+        moved = reload_errors(pp, loaded, levels)
+        if moved:
+            raise RuntimeError(
+                "the file read back does not reproduce the dataset: "
+                + ", ".join(f"l={l} levels moved {shift:.1e} Ha"
+                            for l, shift in sorted(moved.items()))
+                + f" (tolerance {RELOAD_LEVEL_TOLERANCE:g} Ha); not written")
+        # The checks of the file, against the generation's atom.
+        loaded.atom = pp.atom
+        ghosts = ghost_errors(loaded, levels)
+        phases = scattering_errors(loaded, log_derivative) if check else {}
+        spectra = {l: [float(e) for e in levels(loaded, l)[:2]]
+                   for l in loaded.channels}
+        os.replace(staged, path)
+        staged = None
     except Exception as error:                          # noqa: BLE001
+        if staged is not None and os.path.exists(staged):
+            os.remove(staged)
         return False, (f"{symbol:>2}  FAILED after "
                        f"{time.perf_counter() - started:.1f} s  "
                        f"{type(error).__name__}: {error}")
@@ -222,13 +293,10 @@ def _build_one(family: str, symbol: str, options: dict, directory: str,
         lines = [f"{symbol:>2}  FLAGGED  "
                  + defect_message(symbol, family, pp.defects), f"    {pp!r}"]
     lines.append(f"    {elapsed:.1f} s, {'C' if uses_c else 'Python'} radial "
-                 f"kernels -> {path}")
-    from .partial_waves import ghost_errors, scattering_errors
-    levels, log_derivative = _levels_and_phase(family)
-    ghosts = ghost_errors(pp, levels)
-    phases = scattering_errors(pp, log_derivative) if check else {}
-    for l, channel in sorted(pp.channels.items()):
-        first, second = (float(e) for e in levels(pp, l)[:2])
+                 f"kernels -> {path} (read back: levels within "
+                 f"{RELOAD_LEVEL_TOLERANCE:g} Ha of the generated dataset)")
+    for l, channel in sorted(loaded.channels.items()):
+        first, _second = spectra[l]
         reference = float(channel.reference_energies[0])
         line = (f"    l={l}  r_c={channel.r_cut:.3f}  eps_ref="
                 f"{reference:+.6f}  lowest-eps_ref={first - reference:+.1e}"
@@ -237,11 +305,11 @@ def _build_one(family: str, symbol: str, options: dict, directory: str,
             near, far = phases[l]
             line += f"  phase {near:.3f}/{far:.3f} rad"
         lines.append(line)
-    for l in sorted(set(ghosts) - set(pp.channels)):
+    for l in sorted(set(ghosts) - set(loaded.channels)):
         lines.append(f"    l={l}  no projectors  local potential binds "
                      f"{ghosts[l]:+.1e} Ha below the atom  GHOST")
-    lines.append(f"    local potential: r_cl={pp.r_cut_local:.3f} Bohr, "
-                 f"shift {pp.local_shift:+.1f} Ha")
+    lines.append(f"    local potential: r_cl={loaded.r_cut_local:.3f} Bohr, "
+                 f"shift {loaded.local_shift:+.1f} Ha")
     return True, "\n".join(lines)
 
 

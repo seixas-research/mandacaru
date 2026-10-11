@@ -73,8 +73,11 @@ How the pieces are evaluated
   centered at :math:`\mathbf R` moved by :math:`\delta` is the same function
   sampled at :math:`\mathbf r - \delta` -- for orbitals, projectors, the local
   potential and the compensation potential alike.  The kinetic cross terms
-  reuse the energy's own finite-difference kernel on the stacked
-  ``[phi; dphi]`` basis, and the two-electron derivative is contracted from
+  use the energy's own Laplacian
+  (:func:`~mandacaru.algorithms.forces.one_body_cross`): the
+  finite-difference kernel on the stacked ``[phi; dphi]`` basis, or the moved
+  functions against the FFT Laplacian of the unmoved ones for
+  ``kinetic="spectral"``.  The two-electron derivative is contracted from
   the pair densities against the Coulomb potentials the energy uses.
 * The PAW-LCAO **projections** :math:`C_{\mu p} = \langle\phi_\mu|p_p\rangle` are
   atom-centered quadratures over each projector's sphere
@@ -474,15 +477,11 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     from ..integrals import _backend
     from .forces import (DEFAULT_ORBITAL_DELTA, HA_BOHR_TO_EV_ANGSTROM,
                          ForceResult, _nuclear_repulsion_gradient,
-                         _pair_potentials, orbital_derivatives)
+                         _pair_potentials, one_body_cross, orbital_derivatives)
 
     if energy is None and integrals.mo_coefficients is None:
         raise RuntimeError("the integrals carry no molecular orbitals; build the "
                            "Hamiltonian with molecular_hamiltonian(mo_basis=True)")
-    if integrals.kinetic != "fd":
-        raise NotImplementedError(
-            "pseudopotential forces differentiate the finite-difference kinetic "
-            f"operator; kinetic={integrals.kinetic!r} is not supported")
 
     delta = DEFAULT_ORBITAL_DELTA if orbital_delta is None else float(orbital_delta)
     grid = integrals.grid
@@ -533,8 +532,14 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     external = integrals.external_potential()
     vext = np.ascontiguousarray(
         np.real(external(grid.X, grid.Y, grid.Z)).reshape(-1), dtype=np.float64)
+    kinetic = integrals.kinetic
     T, V_loc = integrals._engine.one_body(external, energy_units="Ha",
-                                          kinetic=integrals.kinetic)
+                                          kinetic=kinetic)
+    # The spectral Pulay term contracts the moved functions against the FFT
+    # Laplacian of the unmoved ones: one transform per basis function for the
+    # whole gradient (`one_body_cross`).
+    laplacian = (integrals._engine.spectral_laplacian(psi)
+                 if include_pulay and kinetic == "spectral" else None)
     C = integrals.projections() if P else np.zeros((M, 0), dtype=complex)
     D_nl = integrals.nonlocal_coupling_matrix() if P else None
     Q_nl = integrals.nonlocal_overlap_matrix()
@@ -747,9 +752,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 dpsi = orbital_stack[k]
                 cross = (dpsi.conj() @ psi.T) * dV
                 dS = cross + cross.conj().T
-                T_full, V_full = _backend.one_body_matrices(
-                    np.ascontiguousarray(np.vstack([psi, dpsi])), vext, grid)
-                cross_h = (T_full + V_full)[M:, :M]
+                cross_h = one_body_cross(psi, dpsi, vext, grid, kinetic,
+                                         laplacian)
                 dh = cross_h + cross_h.conj().T
                 if split_local:
                     dh = dh + short_range_pulay(atom, k)

@@ -42,7 +42,9 @@ Conventions
   is how the grid samples every field.
 * XSF is in **Angstrom**, and its datagrid is a *general* grid whose first and
   last point lie on the spanning vectors, so the span is ``(n - 1) * step``
-  rather than ``n * step``.
+  rather than ``n * step``.  A crystal's periodic field is closed by a copy
+  of its first plane along each axis (``n + 1`` points) and spans the
+  lattice vectors; its cube file holds each of the ``n`` nodes once.
 """
 
 from __future__ import annotations
@@ -188,12 +190,20 @@ def write_cube(path, data, origin, step, numbers, positions,
     return str(path)
 
 
-def write_xsf(path, data, origin, step, numbers, positions, cell=None) -> str:
+def write_xsf(path, data, origin, step, numbers, positions, cell=None,
+              periodic: bool = False) -> str:
     """Write an XCrySDen ``.xsf`` file (VESTA reads these too) via ASE.
 
     Same arguments as :func:`write_cube`, all in **Bohr**; XSF is an Angstrom
-    format, so everything is converted here.  ``cell`` (Bohr) sets the
-    periodic lattice; ``None`` writes a molecule.
+    format, so everything is converted here.  ``cell`` (Bohr, the lattice
+    vectors as **rows**) sets the periodic lattice; ``None`` writes a
+    molecule.
+
+    ``periodic=True`` declares ``data`` a periodic field over ``cell``
+    (``n`` nodes per lattice vector, node ``n`` being node ``0`` of the next
+    cell): the general datagrid then gets the closing copy of its first
+    plane along each axis, ``n + 1`` points, and spans the lattice vectors
+    themselves -- XCrySDen's convention for a crystal's grid.
 
     ASE formats the data with ``%f`` -- six *decimal* places, not six
     significant digits -- so values below about ``1e-6`` are written as zero.
@@ -209,10 +219,21 @@ def write_xsf(path, data, origin, step, numbers, positions, cell=None) -> str:
     if cell is not None:
         atoms.set_cell(np.asarray(cell, dtype=float) * BOHR_TO_ANGSTROM)
         atoms.set_pbc(True)
-    # XSF's datagrid is a *general* grid: its first and last nodes both lie on
-    # the spanning vectors, so the span is (n - 1) steps, not n.
-    spans = [(data.shape[axis] - 1) * step[:, axis] * BOHR_TO_ANGSTROM
-             for axis in range(3)]
+    if periodic:
+        if cell is None:
+            raise ValueError("a periodic datagrid needs the cell it repeats")
+        box = np.asarray(cell, dtype=float).reshape(3, 3)
+        if not np.allclose(box.T, step @ np.diag(data.shape), atol=1e-8):
+            raise ValueError("a periodic datagrid must span its cell: the "
+                             "step vectors times the node counts are not "
+                             "the cell's vectors")
+        data = np.pad(data, ((0, 1), (0, 1), (0, 1)), mode="wrap")
+        spans = list(box * BOHR_TO_ANGSTROM)
+    else:
+        # XSF's datagrid is a *general* grid: its first and last nodes both
+        # lie on the spanning vectors, so the span is (n - 1) steps, not n.
+        spans = [(data.shape[axis] - 1) * step[:, axis] * BOHR_TO_ANGSTROM
+                 for axis in range(3)]
     with atomic_path(path) as tmp:
         ase_write_xsf(str(tmp), [atoms], data=data,
                       origin=origin * BOHR_TO_ANGSTROM, span_vectors=spans)
@@ -221,10 +242,14 @@ def write_xsf(path, data, origin, step, numbers, positions, cell=None) -> str:
 
 def write_volumetric(path, data, origin, step, numbers, positions,
                      comment: str = "", charges=None, cell=None,
-                     format=None) -> str:
-    """Write ``data`` in the format named by ``format`` or the file extension."""
+                     format=None, periodic: bool = False) -> str:
+    """Write ``data`` in the format named by ``format`` or the file extension.
+
+    ``cell`` and ``periodic`` go to :func:`write_xsf`; a periodic field's
+    cube file holds each node once (the cell is ``n`` steps)."""
     name = detect_format(path, format)
     if name == "cube":
         return write_cube(path, data, origin, step, numbers, positions,
                           comment=comment, charges=charges)
-    return write_xsf(path, data, origin, step, numbers, positions, cell=cell)
+    return write_xsf(path, data, origin, step, numbers, positions, cell=cell,
+                     periodic=periodic)

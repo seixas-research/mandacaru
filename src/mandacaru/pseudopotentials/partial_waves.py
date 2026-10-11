@@ -153,6 +153,14 @@ RESONANCE_WINDOW, RESONANCE_TOLERANCE = 1.0, 0.3
 #: lattices and bonds; sodium at 0.30-0.38 is 10 % off either way, the
 #: shipped aluminum (0.52) 12 % and the shipped sodium (1.22) 40 %.
 UNPROJECTED_TOLERANCE = 0.2
+#: Bound levels deeper than this (Hartree) are counted against the atom by
+#: :func:`ghost_errors` (excited ghosts).  Shallower ones depend on the box (a Rydberg 7s at
+#: -0.002 Ha is in a 30 Bohr box and not in a 20 Bohr one); every excited
+#: ghost found in the libraries lies below -0.14 Ha.
+EXCITED_GHOST_MARGIN = 0.1
+#: Self-consistency tolerance and density mixing of the generator's
+#: all-electron reference atom (:func:`reference_atom`).
+REFERENCE_TOLERANCE, REFERENCE_MIXING = 1e-7, 0.25
 #: Upper wave vector and spacing of the Fourier grid of the residual energy.
 Q_MAX, Q_STEP = 60.0, 0.1
 
@@ -624,6 +632,64 @@ class GhostStateWarning(UserWarning):
     generator could not remove."""
 
 
+class DiagnosticError(RuntimeError):
+    """A check of a dataset could not be evaluated: a level, a logarithmic
+    derivative or a potential is not finite, or there is no all-electron
+    reference atom to compare with.  Never a pass: ``max(0.0, nan)`` is
+    ``0.0`` and every comparison with NaN is false, so an unevaluated check
+    would otherwise read as a perfect one."""
+
+
+def _reference(pp, check: str):
+    """The all-electron reference atom on ``pp``, or :class:`DiagnosticError`
+    naming the ``check`` that cannot run without it."""
+    atom = getattr(pp, "atom", None)
+    if atom is None:
+        raise DiagnosticError(
+            f"{getattr(pp, 'symbol', '?')}: {check} not evaluated: the "
+            "dataset has no all-electron reference atom (one read from a file "
+            "has none).  Attach one, pp.atom = reference_atom(pp), or skip "
+            "the check explicitly (ghost_errors(..., with_atom=False)).")
+    return atom
+
+
+def _finite(value, pp, what: str) -> float:
+    """``value`` as a float, or :class:`DiagnosticError` naming the element
+    and ``what`` was evaluated (channel, energy)."""
+    value = float(value)
+    if not np.isfinite(value):
+        raise DiagnosticError(
+            f"{getattr(pp, 'symbol', '?')}: {what} is {value}; a check that "
+            "cannot be evaluated is a failure, not a pass")
+    return value
+
+
+def _snapped(pp, radius: float) -> float:
+    """``radius`` on the dataset's own grid.  A loaded dataset's grid is the
+    generation grid at the library stride, while the reference atom keeps
+    the full one: both logarithmic derivatives must be taken at the same
+    node."""
+    r = np.asarray(pp.r, dtype=float)
+    return float(r[int(np.argmin(np.abs(r - float(radius))))])
+
+
+def reference_atom(pp, points: int | None = None, r_max: float = 30.0):
+    """The all-electron atom :func:`~.paw.generate_paw` builds ``pp`` on,
+    solved again from the dataset's own record (element, functional,
+    relativity) -- what a dataset read from a file needs before the checks
+    against the atom (:func:`scattering_errors`,
+    :func:`unprojected_scattering_errors`, :func:`local_potential_ghosts`)
+    can run on it."""
+    from ..basis.atomic_solver import solve_atom
+
+    z = int(pp.atomic_number)
+    return solve_atom(z, points=(generation_points(z) if points is None
+                                 else int(points)),
+                      r_max=float(r_max), tolerance=REFERENCE_TOLERANCE,
+                      mixing=REFERENCE_MIXING, xc=pp.xc,
+                      relativity=pp.relativity)
+
+
 def defects_record(defects) -> dict:
     """``defects`` as a file stores it (string keys, lists)."""
     defects = defects or {}
@@ -730,23 +796,30 @@ def local_potential_ghosts(pp) -> dict:
     -0.05 Ha while every constructed channel was clean.  Both spectra are
     counted below zero in the same box, on the reference atom's uniform grid;
     the all-electron count less that ``l``'s core shells is the number of
-    states the local potential may bind.  Needs the all-electron atom (a
-    dataset read from a library has none, and gives ``{}``).
+    states the local potential may bind.  Needs the all-electron atom on
+    ``pp`` (:func:`reference_atom` for a dataset read from a file), and
+    raises :class:`DiagnosticError` without one: an empty result means
+    checked and clean, never "not evaluated".
     """
     from scipy.linalg import eigvalsh_tridiagonal
 
-    if getattr(pp, "atom", None) is None:
-        return {}
-    r = np.asarray(pp.atom.r, dtype=float)
+    atom = _reference(pp, "the local-potential ghost check")
+    r = np.asarray(atom.r, dtype=float)
     h = float(r[1] - r[0])
     _valence, core = _valence_configuration(
-        int(pp.atomic_number), configuration=pp.atom.occupations)
+        int(pp.atomic_number), configuration=atom.occupations)
     core = dict(core)
     for orbital in getattr(pp, "frozen_subshells", ()):
-        core[orbital] = pp.atom.occupations[orbital]
+        core[orbital] = atom.occupations[orbital]
     for orbital in getattr(pp, "semicore_subshells", ()):
         core.pop(orbital, None)
     off = np.full(r.size - 1, -0.5 / h ** 2)
+    smooth_v = np.interp(r, pp.r, pp.v_local_screened)
+    ae_v = np.asarray(atom.v_effective, dtype=float)
+    for v, what in ((smooth_v, "the screened local potential"),
+                    (ae_v, "the all-electron potential")):
+        if not np.all(np.isfinite(v)):
+            _finite(v[~np.isfinite(v)][0], pp, what)
 
     def bound(v, l):
         diag = 1.0 / h ** 2 + v + l * (l + 1) / (2.0 * r * r)
@@ -757,8 +830,8 @@ def local_potential_ghosts(pp) -> dict:
     for l in range(max(pp.channels) + 2):
         if l in pp.channels:
             continue
-        smooth = bound(np.interp(r, pp.r, pp.v_local_screened), l)
-        ae = bound(np.asarray(pp.atom.v_effective, dtype=float), l)
+        smooth = bound(smooth_v, l)
+        ae = bound(ae_v, l)
         allowed = ae[sum(1 for (_n, lc) in core if lc == l):]
         if smooth.size > allowed.size:
             reference = float(allowed[0]) if allowed.size else 0.0
@@ -766,7 +839,33 @@ def local_potential_ghosts(pp) -> dict:
     return out
 
 
-def ghost_errors(pp, levels) -> dict:
+def all_electron_count(pp, l: int, energy: float) -> int:
+    """Bound states of the all-electron atom on ``pp`` below ``energy`` in
+    channel ``l``, its core (and frozen) shells not counted: the nodes of
+    the regular solution at ``energy`` (the oscillation theorem), solved with
+    the treatment the dataset was built from."""
+    from ..basis.relativity import _resolve as _resolve_relativity
+
+    atom = _reference(pp, "the all-electron state count")
+    treatment = _resolve_relativity(getattr(pp, "relativity", "none"))
+    if treatment == "dirac":
+        treatment = "scalar"
+    u = scattering_wave(atom.r, atom.v_effective, int(l), float(energy),
+                        float(pp.atomic_number), treatment)
+    u = u[np.abs(u) > 1e-300]
+    _finite(u.sum(), pp, f"the l={l} all-electron wave at {energy:+.3f} Ha")
+    nodes = int(np.count_nonzero(np.diff(np.sign(u)) != 0))
+    _valence, core = _valence_configuration(
+        int(pp.atomic_number), configuration=atom.occupations)
+    core = dict(core)
+    for orbital in getattr(pp, "frozen_subshells", ()):
+        core[orbital] = atom.occupations[orbital]
+    for orbital in getattr(pp, "semicore_subshells", ()):
+        core.pop(orbital, None)
+    return nodes - sum(1 for (_n, lc) in core if lc == int(l))
+
+
+def ghost_errors(pp, levels, *, with_atom: bool = True) -> dict:
     """``{l: eps_0 - eps_ref}`` for every channel holding a ghost state.
 
     ``levels(pp, l)`` returns the lowest eigenvalues of the channel's
@@ -774,17 +873,32 @@ def ghost_errors(pp, levels) -> dict:
     more than :data:`GHOST_TOLERANCE` below the reference and the second one
     is closer to the reference than the first. For frozen-core scattering-only
     channels, any bound pseudo level is an extra state and therefore a ghost.
+
+    Two checks need the all-electron atom on ``pp``.  *Excited* ghosts:
+    a channel holding more levels below -:data:`EXCITED_GHOST_MARGIN` than
+    the atom has valence states there (:func:`all_electron_count`) holds a
+    spurious one above its reference, reported as ``{l: that level}``.  A
+    channel whose second reference energy is still bound (a compact semicore
+    shell 1 Ha below zero) can put one just above it, outside every
+    scattering window: the 4f channels of W-Hg (W -0.15, Au -2.07 Ha), the
+    4p of Tc (-0.60 Ha) and the LDA 5p of Ta (-0.46 Ha) in the libraries of
+    2026-10-11 (HISTORY.md, "The PAW audit report checked").  And the
+    channels without projectors (:func:`local_potential_ghosts`).
+    ``with_atom=False`` leaves both out on purpose, for a dataset read from
+    a file that has none.  A level that is not finite raises
+    :class:`DiagnosticError`.
     """
+    count = getattr(pp, "all_electron_count", None) if with_atom else None
     out = {}
     for l, channel in pp.channels.items():
         reference = float(channel.reference_energies[0])
         if reference >= 0.0:
             if getattr(pp, "frozen_subshells", ()):
-                first = float(levels(pp, l)[0])
+                first = _finite(levels(pp, l)[0], pp, f"the l={l} lowest level")
                 if first < -GHOST_TOLERANCE:
                     out[int(l)] = first
             continue
-        spectrum = [float(e) for e in levels(pp, l)]
+        spectrum = [_finite(e, pp, f"an l={l} level") for e in levels(pp, l)]
         first, second = spectrum[:2]
         if (first - reference < -GHOST_TOLERANCE
                 and abs(second - reference) < abs(first - reference)):
@@ -797,9 +911,14 @@ def ghost_errors(pp, levels) -> dict:
             if (upper - occupied[1] < -GHOST_TOLERANCE
                     and abs(third - occupied[1]) < abs(upper - occupied[1])):
                 out[int(l)] = min(out.get(int(l), 0.0), upper - occupied[1])
+        if count is not None:
+            deep = sorted(e for e in spectrum if e < -EXCITED_GHOST_MARGIN)
+            allowed = max(int(count(l, -EXCITED_GHOST_MARGIN)), 0)
+            if len(deep) > allowed:
+                out[int(l)] = min(out.get(int(l), 0.0), deep[allowed])
     # Channels without projectors (PAW-LCAO): the local potential alone.
     unconstructed = getattr(pp, "unconstructed_ghosts", None)
-    if unconstructed is not None:
+    if with_atom and unconstructed is not None:
         out.update(unconstructed())
     return out
 
@@ -811,14 +930,18 @@ def scattering_errors(pp, log_derivative,
     :math:`r_c`, within :math:`\varepsilon_{ref} \pm` :data:`PHASE_WINDOW`
     (``near``) and :data:`RESONANCE_WINDOW` (``far``) Hartree, wrapped
     modulo :math:`\pi` so a pole of :math:`L` is not an error.  Needs the
-    all-electron atom on ``pp``. Scattering-only channels representing a
-    frozen subshell are evaluated at positive energies in the same windows.
+    all-electron atom on ``pp`` (:class:`DiagnosticError` without one, and
+    for a phase that is not finite). A channel whose first reference is a
+    scattering energy (the empty f above a frozen 4f, potassium's d
+    anchored at 0 Ha) is evaluated at the positive energies of the same
+    windows; such a channel without a frozen subshell was once skipped.
     ``ae_cache`` reuses all-electron
     logarithmic derivatives at the same channel, energy and matching radius across
     ghost-repair attempts; it is local to one reference atom.
     """
     from ..basis.relativity import _resolve as _resolve_relativity
 
+    atom = _reference(pp, "the scattering check")
     treatment = _resolve_relativity(getattr(pp, "relativity", "none"))
     # A Dirac dataset's ordinary channels are the j average -- PAW-LCAO's
     # partial waves solve the scalar (kappa = -1) equation outright -- and
@@ -834,9 +957,8 @@ def scattering_errors(pp, log_derivative,
     out = {}
     for l, channel in pp.channels.items():
         reference = float(channel.reference_energies[0])
-        if reference >= 0.0 and not getattr(pp, "frozen_subshells", ()):
-            continue
-        r_match = float(radius(l)) if radius is not None else channel.r_cut
+        r_match = _snapped(pp, radius(l) if radius is not None
+                           else channel.r_cut)
         near = far = 0.0
         # Around every occupied reference: a semicore channel's valence
         # state (sodium's 3s) sits 2 Ha above its first reference.
@@ -847,18 +969,19 @@ def scattering_errors(pp, log_derivative,
             energy = center + offset
             if reference >= 0.0 and energy <= 0.0:
                 continue
-            key = (id(pp.atom), l, float(energy), r_match, treatment)
+            key = (id(atom), l, float(energy), r_match, treatment)
             if ae_cache is not None and key in ae_cache:
                 l_ae = ae_cache[key]
             else:
-                l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, l, energy,
+                l_ae = log_derivative_ae(atom.r, atom.v_effective, l, energy,
                                          r_match, float(pp.atomic_number),
                                          treatment)
                 if ae_cache is not None:
                     ae_cache[key] = l_ae
             l_ps = log_derivative(pp, l, energy, r_match)
             d = np.arctan(l_ps) - np.arctan(l_ae)
-            error = abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi)
+            error = _finite(abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi), pp,
+                            f"the l={l} phase error at {energy:+.3f} Ha")
             far = max(far, error)
             if abs(offset) <= window + 1e-9:
                 near = max(near, error)
@@ -886,26 +1009,31 @@ def unprojected_scattering_errors(pp, log_derivative,
 
     The phases are compared past the local potential's radius and every
     channel's cutoff, where both waves obey the same equation again.  Needs
-    the all-electron atom on ``pp`` (a dataset read from a library has none,
-    and gives ``{}``).  This is the test the constructed channels' own
+    the all-electron atom on ``pp`` (:func:`reference_atom` for a dataset
+    read from a file); without one, or for a phase that is not finite, it
+    raises :class:`DiagnosticError`.  This is the test the constructed
+    channels' own
     (:func:`scattering_errors`) never made: aluminum repaired with a 5 Ha
     local shift scattered d 0.84 rad off, and that alone put fcc Al at
     4.48 Angstrom (HISTORY.md, 2026-10-06, "K21 diagnosed").
     """
     from ..basis.relativity import _resolve as _resolve_relativity
 
-    if getattr(pp, "atom", None) is None:
-        return {}
+    atom = _reference(pp, "the unprojected-channel scattering check")
     treatment = _resolve_relativity(getattr(pp, "relativity", "none"))
     if treatment == "dirac":
         treatment = "scalar"
     bound = [e for channel in pp.channels.values()
              for e in _occupied_references(channel) if e < 0.0]
     if not bound:
-        return {}
+        raise DiagnosticError(
+            f"{getattr(pp, 'symbol', '?')}: the unprojected-channel "
+            "scattering check not evaluated: no bound occupied reference to "
+            "center its energy window on")
     reference = max(bound)
-    r_match = max([float(getattr(pp, "r_cut_local", 0.0))]
-                  + [float(channel.r_cut) for channel in pp.channels.values()])
+    r_match = _snapped(pp, max(
+        [float(getattr(pp, "r_cut_local", 0.0))]
+        + [float(channel.r_cut) for channel in pp.channels.values()]))
     out = {}
     for l in range(max(pp.channels) + 2):
         if l in pp.channels:
@@ -914,17 +1042,19 @@ def unprojected_scattering_errors(pp, log_derivative,
         for offset in np.arange(-PHASE_WINDOW, PHASE_WINDOW + 0.5 * PHASE_STEP,
                                 PHASE_STEP):
             energy = reference + offset
-            key = (id(pp.atom), l, float(energy), r_match, treatment)
+            key = (id(atom), l, float(energy), r_match, treatment)
             if ae_cache is not None and key in ae_cache:
                 l_ae = ae_cache[key]
             else:
-                l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, l, energy,
+                l_ae = log_derivative_ae(atom.r, atom.v_effective, l, energy,
                                          r_match, float(pp.atomic_number),
                                          treatment)
                 if ae_cache is not None:
                     ae_cache[key] = l_ae
             d = np.arctan(log_derivative(pp, l, energy, r_match)) - np.arctan(l_ae)
-            worst = max(worst, abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi))
+            worst = max(worst, _finite(
+                abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi), pp,
+                f"the l={l} (no projectors) phase error at {energy:+.3f} Ha"))
         out[int(l)] = float(worst)
     return out
 
@@ -1031,6 +1161,9 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     made the choice this search would make, so a ghost there is refused
     rather than overridden; so is one with ``mode="refuse"``, and one no
     remedy removes.  ``mode="keep"`` returns the first construction as is.
+    A check that cannot be evaluated (:class:`DiagnosticError`: a level or
+    phase that is not finite) fails a construction like a defect, but such a
+    construction is never returned, not even flagged.
     """
     if mode not in GHOST_MODES:
         raise ValueError(f"ghosts must be one of {GHOST_MODES}, not {mode!r}")
@@ -1050,19 +1183,30 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
             found["unprojected"] = loose
         return found
 
-    errors = ghost_errors(first, levels)
-    if not errors:
-        # No ghost is not enough: the first construction has to scatter like
-        # the atom too, or it is repaired like a ghosted one.  (Aluminum's p
-        # channel was once returned 0.95 rad off, untested.)
-        wrong = _wrong_phases(scattering_errors(first, log_derivative,
-                                                phase_cache))
-        extra = defects(first)
-        if not wrong and not extra:
-            return first
-    else:
-        wrong, extra = {}, {}
-    if errors:
+    # A check that cannot be evaluated (a level or a phase that is not
+    # finite) fails the construction like any other defect, but it cannot be
+    # ranked: such a construction is never returned, flagged or not.
+    unevaluated = None
+    try:
+        errors = ghost_errors(first, levels)
+        if not errors:
+            # No ghost is not enough: the first construction has to scatter
+            # like the atom too, or it is repaired like a ghosted one.
+            # (Aluminum's p channel was once returned 0.95 rad off,
+            # untested.)
+            wrong = _wrong_phases(scattering_errors(first, log_derivative,
+                                                    phase_cache))
+            extra = defects(first)
+            if not wrong and not extra:
+                return first
+        else:
+            wrong, extra = {}, {}
+    except DiagnosticError as error:
+        unevaluated = str(error)
+        errors, wrong, extra = {}, {}, {}
+    if unevaluated is not None:
+        problem = f"a check that could not be evaluated ({unevaluated})"
+    elif errors:
         problem = f"ghost state below the reference ({_describe(errors)})"
     elif wrong:
         problem = "wrong scattering (" + ", ".join(
@@ -1072,7 +1216,8 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         problem = f"an incomplete construction ({_describe_defects(extra)})"
     pinned = [name for name in ("r_cut", "r_cut_local", "local_shift")
               if options.get(name) is not None]
-    if pinned and not errors and not wrong and mode != "refuse":
+    if (pinned and unevaluated is None and not errors and not wrong
+            and mode != "refuse"):
         # Only the family's acceptance failed, and the caller chose the
         # parameters a repair would change: keep the construction and
         # record what it misses, as a flagged dataset would.
@@ -1126,7 +1271,14 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
     # many full-grid arrays; retaining every trial until the search ends can
     # exhaust memory when several elements are built in parallel.
     best = ((first, errors, {} if errors else wrong, extra)
-            if mode == "flag" else None)
+            if mode == "flag" and unevaluated is None else None)
+
+    def keep(candidate):
+        nonlocal best
+        if mode == "flag" and (best is None or _defect_badness(candidate)
+                               < _defect_badness(best)):
+            best = candidate
+
     for label, remedy in attempts:
         trial = dict(options, atom=first.atom, **remedy)
         try:
@@ -1134,35 +1286,32 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         except (ValueError, RuntimeError) as error:
             tried.append(f"{label}: {type(error).__name__}")
             continue
-        remaining = ghost_errors(pp, levels)
+        try:
+            remaining = ghost_errors(pp, levels)
+            wrong = found = {}
+            if not remaining:
+                wrong = _wrong_phases(scattering_errors(pp, log_derivative,
+                                                        phase_cache))
+                found = defects(pp)
+        except DiagnosticError as error:
+            tried.append(f"{label}: {error}")
+            continue
         if remaining:
             tried.append(f"{label}: ghost {_describe(remaining)}")
-            candidate = (pp, remaining, {})
-            if best is not None and _defect_badness(candidate) < \
-                    _defect_badness(best):
-                best = candidate
+            keep((pp, remaining, {}))
             continue
-        wrong = _wrong_phases(scattering_errors(pp, log_derivative,
-                                                phase_cache))
         if wrong:
-            candidate = (pp, {}, wrong, defects(pp))
-            if best is not None and _defect_badness(candidate) < \
-                    _defect_badness(best):
-                best = candidate
+            keep((pp, {}, wrong, found))
             tried.append(f"{label}: phase " + ", ".join(
                 f"l={l} {near:.3f}/{far:.3f} rad"
                 for l, (near, far) in sorted(wrong.items())))
             continue
-        found = defects(pp)
         if found:
-            candidate = (pp, {}, {}, found)
-            if best is not None and _defect_badness(candidate) < \
-                    _defect_badness(best):
-                best = candidate
+            keep((pp, {}, {}, found))
             tried.append(f"{label}: {_describe_defects(found)}")
             continue
         return pp
-    if mode == "flag":
+    if mode == "flag" and best is not None:
         return _least_defective([best])
     raise GhostStateError(
         f"{symbol}: {problem} and "
@@ -1841,8 +1990,9 @@ def log_derivative_errors(pp, l, energies, r_cut, pseudo_log_derivative,
     if midpoint:
         probes.append(0.5 * (energies[0] + energies[1]))
     errors = {}
+    r_cut = _snapped(pp, r_cut)
     for energy in probes:
-        l_ae = log_derivative_ae(pp.r, ae.v_effective, l, energy, r_cut,
+        l_ae = log_derivative_ae(ae.r, ae.v_effective, l, energy, r_cut,
                                  float(pp.atomic_number), treatment, kappa)
         l_ps = pseudo_log_derivative(pp, l, energy)
         errors[float(energy)] = (float(abs(l_ps - l_ae)), float(l_ae))

@@ -153,6 +153,20 @@ class TestGridSymmetry:
         q_twice = symmetry.moments(q_once)
         assert all(abs(q_twice[k] - q_once[k]) < 1e-12 for k in q)
 
+    def test_a_crystal_with_an_f_channel_symmetrizes_its_moments(self):
+        """An f channel puts compensation multipoles up to L = 6 on its
+        atom; the rotation tables stopped at L = 4 and fcc Au (or bcc W)
+        stopped in its first SCF step with ``KeyError: 5``."""
+        from mandacaru import Mandacaru
+
+        atoms = bulk("Au", "fcc", a=4.08)
+        atoms.calc = Mandacaru(
+            method="dft", xc="lda", h=0.3, trace=False,
+            basis={"name": "PAW-LCAO", "size": "SZ"},
+            kpts={"size": (2, 2, 2), "gamma": True},
+            smearing={"method": "fermi-dirac", "width": 0.1})
+        assert np.isfinite(atoms.get_potential_energy())
+
     def test_aluminum_has_sixteen_irreducible_points_on_six_cubed(self):
         from ase.build import bulk as ase_bulk
         from mandacaru.algorithms._hamiltonian_from_atoms import \
@@ -187,7 +201,11 @@ class TestTheIrreducibleWedge:
         kinetic-energy density is symmetrized like the density: summed over
         the wedge alone it was 2.9e-4 Ha off.  PBE on hcp Mg: the density
         gradients commute with the hexagonal operations (wave-vectors
-        averaged over the lattice's operations, K13), so it meets LDA's tolerance.
+        averaged over the lattice's operations, K13).  Semicore hcp Mg
+        missed by 1.6e-4 Ha while the kinetic matrix took the FFT box's
+        alias of G + k, and still by 2.7e-8 while the Coulomb kernel, the grid
+        charges and the short-range sphere rule did not commute with the
+        operations either (K13b, :class:`TestTheOperationsCommute`).
         """
         h = float(np.linalg.norm(np.asarray(atoms.cell)[0])) / nodes
         energies = []
@@ -203,12 +221,68 @@ class TestTheIrreducibleWedge:
                              len(crystal.kpoints)))
         (wedge, n_wedge), (full, n_full) = energies
         assert n_wedge < n_full
-        # The meta-GGA's kinetic-energy density is built from Bloch
-        # gradients on the FFT box, which the operations do not map onto
-        # itself: a residual that falls steeply with h (1.6e-8 Ha here;
-        # HISTORY 2026-10-03 and 2026-10-07, K13).
-        tolerance = 5e-8 if functional == "r2scan" else 1e-8
-        assert wedge == pytest.approx(full, abs=tolerance)
+        assert wedge == pytest.approx(full, abs=1e-8)
+
+
+#: Semicore hcp Mg on a grid that does not resolve its 2p functions (10
+#: nodes along a, 16 along c): the case where the FFT box's aliases are
+#: farthest from commuting with the hexagonal operations.
+MAGNESIUM = bulk("Mg", "hcp", a=3.21, c=5.21)
+
+
+class TestTheOperationsCommute:
+    """Every operator of the crystal commutes with the space group the
+    k-mesh is reduced by, so a wedge symmetrized to the full mesh is the full
+    mesh (HISTORY 2026-10-11, K13b)."""
+
+    @pytest.fixture(scope="class")
+    def magnesium(self):
+        h = float(np.linalg.norm(MAGNESIUM.cell[0])) / 10
+        crystal, context = pp.build_crystal(
+            MAGNESIUM, h, {"size": "SZP", "filter": 200},
+            kpts={"size": (3, 3, 2), "gamma": True}, symmetry=False)
+        return crystal, context, pp.grid_symmetry(MAGNESIUM, crystal.grid)
+
+    def test_a_star_of_k_points_has_one_spectrum_per_matrix(self, magnesium):
+        """The six k-points of the star of (0, 1/3, 0) under the operations
+        and time reversal, each its own representative, give one spectrum
+        of the kinetic and short-range local matrices.  With the box's
+        alias of G + k the kinetic spectra split by 3.4e-4 Ha; with 32
+        azimuths the short-range ones by 2.7e-8."""
+        crystal, _context, symmetry = magnesium
+        star = []
+        for W in symmetry.info.rotations:
+            image = np.array([0.0, 1.0 / 3.0, 0.0]) @ np.asarray(W, float)
+            for point in (image, -image):
+                if not any(np.allclose(point, x) for x in star):
+                    star.append(point)
+        assert len(star) == 6
+        data = crystal.kpoint_matrices(crystal.cartesian_kpoints(star))
+        spectra = []
+        for d in data:
+            kinetic = crystal._kinetic(d.psi, d.k)
+            local = crystal._short_range_local(d.k[None])[0]
+            spectra.append([np.linalg.eigvalsh(0.5 * (A + A.conj().T))
+                            for A in (kinetic, local)])
+        for other in spectra[1:]:
+            for a, b in zip(spectra[0], other):
+                assert np.max(np.abs(a - b)) < 1e-12
+
+    def test_a_symmetric_density_has_a_symmetric_potential(self, magnesium):
+        """The Coulomb kernel and the compensation and ion charges on the
+        grid: the electrostatic potential of a symmetric density and
+        symmetric multipoles is symmetric, and so are the moments' energy
+        derivatives.  At the box's aliases the potential was 6.5e-3 of its
+        peak off, the derivatives 9e-4."""
+        crystal, context, symmetry = magnesium
+        solver = PeriodicKohnSham(crystal, context["n_electrons"], "lda")
+        rho, q = crystal.initial_density()
+        rho, q = symmetry.field(rho), symmetry.moments(q)
+        potential, w = solver._electrostatics(rho, q)
+        assert np.max(np.abs(symmetry.field(potential) - potential)) \
+            < 1e-12 * np.max(np.abs(potential))
+        symmetric_w = symmetry.moments(w)
+        assert max(abs(symmetric_w[key] - w[key]) for key in w) < 1e-12
 
 
 def test_bloch_sums_are_the_image_sums():

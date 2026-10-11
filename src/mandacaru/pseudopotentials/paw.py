@@ -190,10 +190,11 @@ DEFAULT_N_BESSEL = 8
 #: nodeless and where the shipped library and its pinned energies were taken
 #: (HISTORY.md, 2026-09-27).
 #:
-#: Fe, Co and Ni take 9 in both functionals, and Sn 10, for a related reason.  At 8
-#: their s pair represents a hydrogen orbital entering the sphere badly -- the
-#: projector expansion of a 1s tail at the sphere edge misses it by 2.4-13
-#: times its own norm (Sn: 150) -- and the hydride collapses: CoH (RHF SZ,
+#: Fe, Co and Ni take 9 in both functionals (Sn 9, through its repair in
+#: _S_CHANNEL_REPAIRS), for a related reason.  At 8 their s pair
+#: represents a hydrogen orbital entering the sphere badly -- the projector
+#: expansion of a 1s tail at the sphere edge misses it by 2.4-13 times its
+#: own norm (Sn: 150) -- and the hydride collapses: CoH (RHF SZ,
 #: h = 0.20) fell 360 eV from 2.8 to 1.3 Angstrom, with 25-31 electrons in
 #: cobalt's one-center density matrix of a 10-electron molecule.  At 9 the
 #: miss is 0.4-0.9 (Sn: 8.5) and CoH stays within 7 eV over the same range.
@@ -201,8 +202,6 @@ DEFAULT_N_BESSEL_BY_DATASET = {
     ("Li", "pbe"): 9,
     **{(symbol, xc): 9 for symbol in ("Fe", "Co", "Ni")
        for xc in ("lda", "pbe")},
-    # With its s cutoff shortened to 2.33 Bohr (DEFAULT_CUTOFFS).
-    ("Sn", "pbe"): 10,
 }
 #: Wave-vector cutoff of the residual kinetic energy (Bohr^-1).
 DEFAULT_Q_CUT = 5.0
@@ -242,7 +241,7 @@ DEFAULT_NORM_DEFICITS = {"H": 0.05, "Li": 0.0, "C": 0.10, "N": 0.15,
 #: hydrogen +0.5 Ha gives a softer second projector (grid norm ratio 0.78
 #: instead of 0.75 at 0.25 Angstrom) and better logarithmic derivatives.
 DEFAULT_ENERGY_OFFSETS = {"H": 0.5, "Li": 0.5, "Co": 2.0, "Ni": 2.0,
-                          "Cu": 2.0, "Zn": 2.0}
+                          "Cu": 2.0, "Zn": 2.0, "Sc": 2.0, "Ti": 2.0}
 #: Default augmentation radius as a multiple of the outermost maximum of rR.
 DEFAULT_RC_FACTOR = 1.3
 #: Local-potential radius as a multiple of the smallest augmentation radius.
@@ -280,6 +279,12 @@ DEFAULT_CUTOFFS = {
     "Fe": {2: 1.10},
     "Cu": {2: 1.12},
     "Zn": {2: 1.06},
+    # Semicore Sc and Ti (DEFAULT_SEMICORE_SUBSHELLS) the same way, at 1.45x
+    # their default d spheres and +2 Ha: at 1.43 / 1.28 Bohr a filtered 3d
+    # projected off by 0.21-0.22 / 0.35 at h = 0.20 Angstrom (both
+    # functionals), now 0.012 / 0.020 (HISTORY.md, 2026-10-11).
+    "Sc": {2: 2.07},
+    "Ti": {2: 1.86},
 }
 #: Per-element raise of the local potential at the origin (Hartree, Hamann's
 #: ``dvloc0``).  The polynomial continuation of the screened all-electron
@@ -325,8 +330,11 @@ SEMICORE_CUTOFF_FRACTION = 0.7
 #: alone, too repulsively (+0.03 rad at the 2s, +0.13 half a Hartree above
 #: for r_cl = 1.75 Bohr), and that alone put bcc Li 3 % long in plane waves;
 #: an exact p gives the same lattice at every local radius (HISTORY.md,
-#: 2026-10-07).
-DEFAULT_HIGHEST_CHANNEL = {"Li": 1,
+#: 2026-10-07).  Beryllium's the same way: its local potential alone
+#: scatters p 0.28-0.42 rad off at every local radius the repair keeps
+#: ghost-free (PBE Be was flagged at 0.28), with a p channel 0.02 rad in both
+#: functionals (HISTORY.md, 2026-10-11).
+DEFAULT_HIGHEST_CHANNEL = {"Li": 1, "Be": 1,
                            **{symbol: 2 for symbol in ("K", "Ca", "Rb", "Sr")}}
 #: Radius (Bohr) at which an element's frozen core is pseudized into the smooth
 #: core of its unscreening and of every grid xc term, when not the
@@ -336,14 +344,24 @@ DEFAULT_HIGHEST_CHANNEL = {"Li": 1,
 #: scattered right.  1.2-1.5 give the same lattice (3.372 / 3.373 in plane
 #: waves; 2.0: 3.346) and 1.5 is the softest on the 0.25 A grid.
 DEFAULT_CORE_RADII = {"Li": 1.5}
-#: The early d block, Sc, Ti and Y-Tc, has the same problem in its empty
-#: p: with s and d channels only, the local potential alone scattered p
-#: 0.2-1.5 rad off in every repair, and Sc, Ti, Y, Zr, Nb, Mo and Tc were
-#: flagged in both functionals.  With the (n-1)s (n-1)p shell in valence each
-#: of them is clean at its first construction at zero deficit, in LDA and
-#: PBE alike: no ghost, phases <= 0.011 rad, the unprojected f 0.02-0.09
-#: rad, intruding-1s misses 0.01-0.05 (HISTORY.md, 2026-10-07, "The PBE
-#: set").  Cs, Ba, Fr and Ra are not in these tables yet: semicore
+#: The early d block, Sc, Ti, Y-Tc and Ta, has the same problem in its
+#: empty p: with s and d (and 4f) channels only, the local potential alone
+#: scattered p 0.2-1.5 rad off in every repair, and all eight were flagged
+#: in at least one functional (PBE ScH 11 % long, bcc Nb 4 % and Mo 12 %).  With the
+#: (n-1)s (n-1)p shell in valence each of them builds clean at zero deficit
+#: in LDA and PBE alike: no ghost, phases <= 0.036 rad, the unprojected
+#: channel <= 0.09 rad, intruding-1s misses 0.01-0.18; PBE ScH within 0.7 %
+#: of the all-electron bond, bcc Nb, Mo and Ta (PBE) within 0.6 %
+#: (HISTORY.md, 2026-10-07 and 2026-10-11, "The PBE set").  Ag,
+#: Cd and Ir (flagged for an unprojected p of 0.21-0.42 rad or a miss of
+#: 1.15-1.26) also build clean with it, but their filtered 4d/5d basis
+#: function then projects 0.20-0.33 off its own wave at h = 0.20 Angstrom
+#: (0.003-0.009 without), and fcc Ag came out the same (4.067 A PBE): they
+#: keep their valence and their flag (HISTORY.md, 2026-10-11).  So do Lu,
+#: Hf, W and Re: semicore they build clean too, but bcc W comes out at
+#: 3.03 A in both functionals (all-electron LDA 3.14, PBE 3.17; the LDA W
+#: without it 3.151), hcp Re (PBE) 2.626 against 2.795 without it (~2.77),
+#: and hcp Hf's energy falls 9.6 eV per atom from a = 3.1 to 3.2 A.  Cs, Ba, Fr and Ra are not in these tables yet: semicore
 #: cesium's d channel binds a ghost at -0.18 Ha (its 5d is at -0.016, its 4d
 #: in the core), and barium's and francium's f scatter 0.7-1.5 rad off for
 #: every repair while their s channel binds a ghost (HISTORY.md,
@@ -351,7 +369,8 @@ DEFAULT_CORE_RADII = {"Li": 1.5}
 DEFAULT_SEMICORE_SUBSHELLS = {
     symbol: ((n - 1, 0), (n - 1, 1))
     for n, symbols in ((3, ("Na", "Mg")), (4, ("K", "Ca", "Sc", "Ti")),
-                       (5, ("Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc")))
+                       (5, ("Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc")),
+                       (6, ("Ta",)))
     for symbol in symbols}
 #: Per-dataset repairs of the d-block and 6p libraries (HISTORY.md, 2026-09-28,
 #: "the d-block and 6p repairs"), keyed by ``(element, functional)`` and taking
@@ -368,10 +387,11 @@ DEFAULT_SEMICORE_SUBSHELLS = {
 #:   wave at h = 0.20 Angstrom was off by 0.1-0.9; a larger d sphere with a
 #:   higher second reference energy brings it to 0.02-0.16.
 #:
-#: Hf, Lu, Th, W-PBE (and Mo, Nb, Sc, Tc, Ti-LDA and Zr-LDA, now
-#: semicore) found no repair in these scans.  Y and Zr, repaired here once,
-#: are semicore now (:data:`DEFAULT_SEMICORE_SUBSHELLS`): a table entry
-#: scanned for an s-and-d dataset would set the cutoffs of their semicore
+#: Hf, Lu, Th and W-PBE (and Mo, Nb, Sc, Tc, Ti-LDA and Zr-LDA, now
+#: semicore) found no repair in these scans; Ga-PBE and Ge-PBE take the LDA
+#: d repair now.  Y, Zr and Ta, repaired here once, are semicore now
+#: (:data:`DEFAULT_SEMICORE_SUBSHELLS`): a table entry scanned for a dataset
+#: without the semicore shell would set the cutoffs of its semicore
 #: channels.
 _S_CHANNEL_REPAIRS = {
     # (element, xc): (n_bessel, local_shift) -- scalar s-miss fixed by these.
@@ -388,20 +408,26 @@ _S_CHANNEL_REPAIRS = {
     ("Pt", "lda"): (10, 0.0), ("Pt", "pbe"): (10, 0.0),
     ("Rh", "lda"): (10, 50.0), ("Rh", "pbe"): (10, 50.0),
     ("Ru", "lda"): (9, 50.0), ("Ru", "pbe"): (10, 0.0),
-    ("Sb", "lda"): (9, 10.0), ("Sn", "lda"): (9, 10.0),
+    # Sn and Bi in PBE take their LDA repairs: with the local potential no
+    # longer matched to noise (GGA_LOCAL_FIT_FRACTION) the generic PBE
+    # construction missed by 0.97 / 0.96, these by 0.23 / 0.24.
+    ("Sb", "lda"): (9, 10.0),
+    ("Sn", "lda"): (9, 10.0), ("Sn", "pbe"): (9, 10.0),
     ("W", "lda"): (10, 0.0),
     # With a shorter s sphere (DEFAULT_CUTOFFS_BY_DATASET).
     ("Tl", "lda"): (10, 10.0), ("Po", "lda"): (10, 10.0),
-    ("Bi", "lda"): (10, 10.0),
+    ("Bi", "lda"): (10, 10.0), ("Bi", "pbe"): (10, 10.0),
     ("Os", "lda"): (10, 10.0), ("Os", "pbe"): (10, 50.0),
     ("Re", "lda"): (10, 10.0), ("Re", "pbe"): (10, 10.0),
-    ("Ta", "lda"): (10, 20.0), ("Ta", "pbe"): (10, 20.0),
     ("V", "lda"): (10, 0.0), ("V", "pbe"): (10, 10.0),
 }
 _D_CHANNEL_REPAIRS = {
     # (element, xc): (d cutoff in Bohr, second reference energy in Hartree).
-    ("Ga", "lda"): (1.001, 2.0),
-    ("Ge", "lda"): (1.696, 3.0),
+    # PBE Ga and Ge found no repair while the PBE local potential was matched
+    # to noise (GGA_LOCAL_FIT_FRACTION); with it the LDA repair works for
+    # both: 0.47 -> 0.088 and 1.27 -> 0.049 (HISTORY.md, 2026-10-11).
+    ("Ga", "lda"): (1.001, 2.0), ("Ga", "pbe"): (1.001, 2.0),
+    ("Ge", "lda"): (1.696, 3.0), ("Ge", "pbe"): (1.696, 3.0),
     ("As", "lda"): (1.606, 3.0), ("As", "pbe"): (1.612, 3.0),
     ("Se", "lda"): (1.056, 2.0), ("Se", "pbe"): (1.531, 3.0),
     ("Br", "lda"): (1.006, 3.0), ("Br", "pbe"): (1.009, 3.0),
@@ -426,6 +452,7 @@ DEFAULT_CUTOFFS_BY_DATASET = {
     ('Au', 'lda'): {0: 2.923, 2: 2.923, 3: 2.923},
     ('Au', 'pbe'): {0: 2.928, 2: 2.928, 3: 2.928},
     ('Bi', 'lda'): {0: 2.294, 1: 3.183, 2: 1.344, 3: 3.183},
+    ('Bi', 'pbe'): {0: 2.294, 1: 3.183, 2: 1.344, 3: 3.183},
     ('Br', 'lda'): {0: 1.829, 1: 2.159, 2: 1.006},
     ('Br', 'pbe'): {0: 1.839, 1: 2.171, 2: 1.009},
     ('Cd', 'lda'): {0: 3.002, 2: 1.276},
@@ -433,7 +460,9 @@ DEFAULT_CUTOFFS_BY_DATASET = {
     ('Cr', 'lda'): {0: 3.376, 2: 1.062},
     ('Cr', 'pbe'): {0: 3.409, 2: 1.068},
     ('Ga', 'lda'): {0: 2.439, 1: 3.279, 2: 1.001},
+    ('Ga', 'pbe'): {0: 2.457, 1: 3.305, 2: 1.001},
     ('Ge', 'lda'): {0: 2.242, 1: 2.86, 2: 1.696},
+    ('Ge', 'pbe'): {0: 2.261, 1: 2.882, 2: 1.696},
     ('Hg', 'lda'): {0: 2.846, 2: 2.846, 3: 2.846},
     ('Hg', 'pbe'): {0: 2.851, 2: 2.851, 3: 2.851},
     ('I', 'lda'): {0: 2.194, 1: 2.628, 2: 1.113},
@@ -463,8 +492,7 @@ DEFAULT_CUTOFFS_BY_DATASET = {
     ('Se', 'lda'): {0: 1.945, 1: 2.34, 2: 1.056},
     ('Se', 'pbe'): {0: 1.958, 1: 2.353, 2: 1.531},
     ('Sn', 'lda'): {0: 2.33, 1: 3.305, 2: 1.153},
-    ('Ta', 'lda'): {0: 3.021, 2: 3.554, 3: 3.554},
-    ('Ta', 'pbe'): {0: 3.223, 2: 3.582, 3: 3.582},
+    ('Sn', 'pbe'): {0: 2.33, 1: 3.305, 2: 1.153},
     ('Tl', 'lda'): {0: 2.678, 1: 3.773, 2: 1.451, 3: 3.773},
     ('V', 'lda'): {0: 3.011, 2: 1.156},
     ('V', 'pbe'): {0: 3.046, 2: 1.161},
@@ -752,7 +780,8 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
                          for f, fs in zip(pseudo_in, shell_ae)]
                         for p, ps in zip(projectors_in, projectors_sh)])
     duality_error = float(np.max(np.abs(duality - np.eye(n_waves))))
-    if strict and duality_error > DUALITY_TOLERANCE:
+    # Written so that a NaN fails: every comparison with it is false.
+    if strict and not duality_error <= DUALITY_TOLERANCE:
         raise RuntimeError(
             f"PAW-LCAO projectors of l={l} are not dual to the smooth partial "
             f"waves (error {duality_error:.2e}); B is ill-conditioned")
@@ -786,7 +815,7 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
                       for b, b_sh in zip(projectors_in, projectors_sh)]
                      for a, a_sh in zip(projectors_in, projectors_sh)])
     overlap_minimum = float(1.0 + np.linalg.eigvals(q @ gram).real.min())
-    if strict and overlap_minimum < OVERLAP_MINIMUM:
+    if strict and not overlap_minimum >= OVERLAP_MINIMUM:
         raise RuntimeError(
             f"the PAW-LCAO overlap operator of l={l} has an eigenvalue "
             f"{overlap_minimum:.3f} (the smooth partial waves carry too little "
@@ -818,7 +847,7 @@ def assemble_paw_channel(r: np.ndarray, pw: PseudoWaves, v_ae: np.ndarray,
     dV = 0.5 * (dV + dV.T) + 0.5 * (shell_V + shell_V.T)
     D_raw = B + q_norm * energies[None, :]
     asymmetry = float(np.max(np.abs(D_raw - D_raw.T)))
-    if strict and asymmetry > COUPLING_ASYMMETRY_TOLERANCE:
+    if strict and not asymmetry <= COUPLING_ASYMMETRY_TOLERANCE:
         raise RuntimeError(
             f"the screened PAW-LCAO coupling of l={l} is asymmetric by "
             f"{asymmetry:.2e} Ha (the partial waves do not satisfy the "
@@ -1039,6 +1068,12 @@ class PAWDataset(PseudoPotential):
         projectors (:func:`~.partial_waves.local_potential_ghosts`)."""
         from .partial_waves import local_potential_ghosts
         return local_potential_ghosts(self)
+
+    def all_electron_count(self, l: int, energy: float) -> int:
+        """Valence states of the all-electron atom below ``energy`` in
+        channel ``l`` (:func:`~.partial_waves.all_electron_count`)."""
+        from .partial_waves import all_electron_count
+        return all_electron_count(self, l, energy)
 
     def projector_radius(self, l: int) -> float:
         """Radius beyond which channel ``l``'s projectors vanish and the
@@ -1468,11 +1503,13 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     # difference in the *Hamiltonian*, built the same way D and q are.
     partial_wave_treatment = "scalar" if relativity == "dirac" else relativity
     if atom is None:
+        from .partial_waves import REFERENCE_MIXING, REFERENCE_TOLERANCE
         atom = solve_atom(atomic_number,
                           points=(generation_points(atomic_number)
                                   if points is None else int(points)),
-                          r_max=r_max, tolerance=1e-7, mixing=0.25,
-                          xc=xc, relativity=relativity)
+                          r_max=r_max, tolerance=REFERENCE_TOLERANCE,
+                          mixing=REFERENCE_MIXING, xc=xc,
+                          relativity=relativity)
     from .partial_waves import check_reference_atom
     check_reference_atom(atom, xc, relativity)
     valence_config, core_config = _valence_configuration(
@@ -2000,8 +2037,12 @@ def intruding_s_miss(pp) -> float | None:
 
 def _intruding_s_acceptance(pp) -> dict:
     """The repair search's PAW-LCAO acceptance (:func:`~.partial_waves.ghost_free`)."""
+    from .partial_waves import _finite
+
     miss = intruding_s_miss(pp)
-    if miss is None or miss < INTRUDING_S_TOLERANCE:
+    if miss is None:
+        return {}
+    if _finite(miss, pp, "the intruding-1s miss") < INTRUDING_S_TOLERANCE:
         return {}
     return {"s_miss": miss}
 
@@ -2071,9 +2112,15 @@ def paw_spin_orbit_blocks(projectors, symbols, datasets) -> dict:
     The L.S part of the j-resolved term, unscreened like the scalar
     :math:`D^{ion}` (the molecule screens both).  Its (2j+1) average is not
     used: the scalar channel stands in for it (DIRAC.md, option (a)), which
-    keeps the overlap, the compensation charges and the forces spin-free, at
-    the price of the gap between the scalar-relativistic level and the Dirac
-    atom's j average (1-7 mHa for 5d and 6p; HISTORY.md, 2026-09-28).
+    keeps the overlap, the compensation charges, the basis and the forces
+    those of the scalar channel.  The price, measured on the atom's radial
+    operator: the 6p of Pb and Bi 0.6-1.6 mHa off at the centroid, up to
+    2.6 mHa for 6p1/2, and the splitting 2.0-2.4 % short (I 5p 0.4 %, d
+    shells <= 0.15 %); with the stored average, under a spin-free metric,
+    both branches are within 0.02 mHa (HISTORY.md, 2026-10-11, "The PAW
+    audit report checked").  Using it needs the averaged channel's own
+    partial waves (compensation multipoles, one-center terms), which the
+    files do not store.
     """
     blocks: dict = {}
     for projector in projectors:

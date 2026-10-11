@@ -77,7 +77,8 @@ from ase.calculators.calculator import Calculator, all_changes
 
 from .ansatz_spec import resolve_ansatz
 from .bloch import BLOCH_METHODS
-from ..pseudopotentials.environment import DEFAULT_LIBRARY_FOLDER
+from ..pseudopotentials.environment import (DEFAULT_LIBRARY_FOLDER,
+                                            default_library_folder)
 from ..units import BOHR_TO_ANGSTROM, DEFAULT_GRID_SPACING
 
 if TYPE_CHECKING:
@@ -395,14 +396,15 @@ class Mandacaru(Calculator):
         pseudopotential families ``"PAW-LCAO"`` / ``"UPAW-LCAO"``
         (``{"name": "PAW-LCAO", "size": "DZP"}``), which replace the all-electron
         problem by a valence-only one.
-    directory : str
+    directory : str, optional
         The folder of the pseudopotential library the datasets are read
-        from, relative to the family's library variable.  ``"lda-sr"`` (the
-        default) is the scalar-relativistic LDA set,
-        ``$MANDACARU_PAW_PATH/lda-sr/``; ``"lda-dirac"`` reads
-        ``$MANDACARU_PAW_PATH/lda-dirac/``, the PAW-LCAO set with the
-        spin-orbit term.  A basis that names its own ``directory`` option
-        keeps it.  Not ASE's working directory: the
+        from, relative to the family's library variable.  By default the
+        set of the functional: ``"pbe-sr"`` (``$MANDACARU_PAW_PATH/pbe-sr/``,
+        scalar-relativistic PBE) for ``method="dft"`` with ``xc="pbe"``,
+        ``"hse06"``, ``"r2scan"`` or ``"r2scan-rvv10"``, and ``"lda-sr"``
+        (scalar-relativistic LDA) for LDA and every other method.
+        ``"lda-dirac"`` reads the PAW-LCAO set with the spin-orbit term.  A
+        basis that names its own ``directory`` option keeps it.  Not ASE's working directory: the
         calculator's ``directory`` attribute is left to ASE.
     h : float
         Grid spacing in Angstrom (default ``0.20``), used both for the
@@ -538,7 +540,7 @@ class Mandacaru(Calculator):
                               "charges", "magmoms", "magmom"]
 
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="HAO",
-                 directory: str = DEFAULT_LIBRARY_FOLDER,
+                 directory: str | None = None,
                  h: float = DEFAULT_GRID_SPACING, grid=None,
                  include_pulay: bool = True, force_method: str = "rdm",
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
@@ -561,11 +563,22 @@ class Mandacaru(Calculator):
                 raise ValueError("HVA circuit measurement requires "
                                  "evolution='trotter'")
         # The library folder, stored under its own name: ASE's `directory`
-        # attribute is the calculator's working directory.
+        # attribute is the calculator's working directory.  Unnamed, it is
+        # the set of the functional that runs (`pbe-sr` for PBE, HSE06 and
+        # r2SCAN), which a basis without a library simply does not use.
+        named = directory is not None
+        if not named:
+            functional = None
+            if self.method == "dft":
+                from ..integrals.exchange_correlation import resolve_functional
+                functional = resolve_functional(
+                    solver_kwargs.get("xc") or "lda")
+            directory = default_library_folder(functional)
         self.library_folder = str(directory)
         if self.library_folder != DEFAULT_LIBRARY_FOLDER:
             from ._hamiltonian_from_atoms import with_library_folder
-            basis = with_library_folder(basis, self.library_folder)
+            basis = with_library_folder(basis, self.library_folder,
+                                        required=named)
         self.basis = basis
         self.h = float(h)
         self.include_pulay = bool(include_pulay)
@@ -1166,20 +1179,9 @@ class Mandacaru(Calculator):
         legacy = self.force_method == "scf-response"
 
         periodic = getattr(solver, "periodic_hamiltonian", False)
-        kinetic = getattr(integrals, "kinetic", "fd")
-        if kinetic != "fd" and not (periodic and not legacy):
-            # The rdm gradient rebuilds T with `integrals.kinetic`, so it
-            # differentiates whatever operator the energy used.  The periodic
-            # path *requires* the spectral operator -- the finite-difference
-            # stencil has a wall at the box edge and is not periodic -- so
-            # refusing it there would refuse periodic forces outright.  The
-            # gate stays for the legacy differentiated-SCF path, which builds
-            # its own stencil, and for molecules, where lifting it has not
-            # been validated against a finite difference.
-            raise NotImplementedError(
-                f"forces differentiate the finite-difference Laplacian, but "
-                f"the integrals use kinetic={kinetic!r}; rebuild the "
-                f"calculator with kinetic='fd' (the default) for a gradient.")
+        # Every gradient differentiates the kinetic operator the energy used
+        # (`integrals.kinetic`): the stencil, or the FFT Laplacian through
+        # `forces.one_body_cross`, so neither is refused here.
 
         if getattr(solver, "shots", 0) and self.measurement_provider is None:
             raise NotImplementedError(
@@ -2389,8 +2391,28 @@ class Mandacaru(Calculator):
                 f"itself (calc.energy_levels(n).states[i]).")
         return np.asarray(states[index], dtype=complex).ravel()
 
+    def _crystal_solver(self, state, grid, what: str):
+        """The solver when it is a converged periodic Kohn-Sham crystal,
+        else ``None`` (the molecular route through the one-RDM)."""
+        solver = self.solver
+        if not getattr(solver, "_periodic", False) or \
+                not hasattr(solver, "crystal_field"):
+            return None
+        if getattr(solver, "result", None) is None:
+            raise RuntimeError(
+                "nothing has been solved yet: attach the calculator to an "
+                "Atoms object and ask for an energy "
+                "(atoms.get_potential_energy()) first")
+        if grid is not None or not (isinstance(state, (int, np.integer))
+                                    and int(state) == 0):
+            raise NotImplementedError(
+                f"a crystal's {what} are drawn on its own cell grid from its "
+                "one converged state: grid= and state= are not supported")
+        return solver
+
     def volumetric_field(self, quantity: str = "density", index: int = 0, *,
-                         state=0, component: str = "auto", grid=None):
+                         state=0, component: str = "auto", grid=None,
+                         kpoint=None, spin=None, repeat=None):
         """One real-space quantity of the converged state, as an array.
 
         See :mod:`mandacaru.algorithms.volumetric` for what each ``quantity``
@@ -2399,9 +2421,33 @@ class Mandacaru(Calculator):
         :class:`~mandacaru.algorithms.volumetric.VolumetricField`, which carries
         the data, the grid, the nuclei, the integrated charge and a
         :meth:`~mandacaru.algorithms.volumetric.VolumetricField.write` method.
+
+        A periodic Kohn-Sham crystal (:mod:`~mandacaru.algorithms.
+        periodic_volumetric`) draws on its cell grid, periodic, with the
+        quantities ``density``, ``alpha_density``, ``beta_density``,
+        ``spin_density``, ``reconstructed_density``, ``natural_orbital`` and
+        ``bloch_orbital``; ``kpoint`` (an SCF k-point index or fractional
+        coordinates) and ``spin`` (0 or 1) select an orbital and ``repeat``
+        (three integers) tiles the cell.  A molecule takes none of them.
         """
         from .volumetric import volumetric_field
 
+        crystal = self._crystal_solver(state, grid, "volumetric fields")
+        if crystal is not None:
+            return crystal.crystal_field(
+                quantity, index, kpoint=kpoint, spin=spin,
+                component=component, repeat=repeat,
+                numbers=(None if self.atoms is None
+                         else self.atoms.get_atomic_numbers()))
+        given = [name for name, value in (("kpoint", kpoint), ("spin", spin),
+                                          ("repeat", repeat))
+                 if value is not None]
+        if given:
+            raise ValueError(
+                f"{', '.join(given)} belong to a crystal's fields (periodic "
+                f"Kohn-Sham, method='dft' on periodic atoms); a molecule's "
+                f"spin channels are quantity='alpha_density' / "
+                f"'beta_density'")
         solver, integrals, frozen, active = self._volumetric_context()
         psi = self._volumetric_state(solver, state)
         gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
@@ -2428,6 +2474,14 @@ class Mandacaru(Calculator):
 
         if atoms is not None:
             self.get_potential_energy(atoms)
+        if getattr(self.solver, "_periodic", False) and \
+                hasattr(self.solver, "get_polarization"):
+            raise NotImplementedError(
+                "a crystal has no dipole moment: the first moment of a "
+                "periodic charge density depends on where the cell is cut.  "
+                "Its physical counterpart is the Berry-phase polarization, "
+                "calc.get_polarization() (C/m^2; times the cell volume, the "
+                "dipole per cell modulo the polarization quantum)")
         solver, integrals, frozen, active = self._volumetric_context()
         psi = self._volumetric_state(solver, state)
         gamma, _ = self._state_rdms(solver, psi=psi, two_body=False)
@@ -2439,7 +2493,7 @@ class Mandacaru(Calculator):
 
     def write_cube(self, path, quantity: str = "density", index: int = 0, *,
                    state=0, component: str = "auto", grid=None, format=None,
-                   comment=None):
+                   comment=None, kpoint=None, spin=None, repeat=None):
         """Write a volumetric file of the converged state and return the field.
 
         ``path``'s extension picks the format: ``.cube`` (Gaussian cube --
@@ -2461,10 +2515,24 @@ class Mandacaru(Calculator):
         :class:`~mandacaru.algorithms.volumetric.VolumetricField` reports the
         integrated charge, the natural-orbital occupation and -- for PAW-LCAO -- the
         augmentation charge the smooth density on the grid does not carry.
+
+        A crystal (periodic ``method="dft"``) writes its cell, periodic: the
+        ``.xsf`` file carries the lattice, the cube file the cell's nodes
+        once.  ``kpoint``, ``spin`` and ``repeat`` are
+        :meth:`volumetric_field`'s:
+
+        .. code-block:: python
+
+            atoms.calc.write_cube("density.xsf", repeat=(2, 2, 2))
+            atoms.calc.write_cube("ae.cube", quantity="reconstructed_density")
+            atoms.calc.write_cube("vbm.cube", quantity="bloch_orbital",
+                                  index=3, kpoint=(0, 0, 0))
         """
         self._refuse_ghosts("volumetric files")
         volumetric = self.volumetric_field(quantity, index, state=state,
-                                           component=component, grid=grid)
+                                           component=component, grid=grid,
+                                           kpoint=kpoint, spin=spin,
+                                           repeat=repeat)
         volumetric.write(path, format=format, comment=comment)
         return volumetric
 
@@ -2478,10 +2546,14 @@ class Mandacaru(Calculator):
         that are not 2 or 0 are the correlation the variational state carries
         beyond a single determinant.
 
-        With ``method`` (a crystal's ``method="dft"`` run): the Bloch natural
-        orbitals of a correlated density matrix built on the Kohn-Sham states,
-        ``method="rpa"`` (:meth:`~mandacaru.algorithms.dft.DFTDriver.
-        natural_orbitals`, which takes the ``options``).
+        A crystal's (periodic ``method="dft"``) are per SCF k-point: the
+        spin-summed Kohn-Sham density matrix's
+        (:class:`~mandacaru.algorithms.periodic_volumetric.
+        BlochNaturalOrbitals`).  With ``method`` (a crystal's ``method="dft"``
+        run): the Bloch natural orbitals of a correlated density matrix built
+        on the Kohn-Sham states, ``method="rpa"``
+        (:meth:`~mandacaru.algorithms.dft.DFTDriver.natural_orbitals`, which
+        takes the ``options``).
         """
         if method is not None:
             if not hasattr(self.solver, "projectabilities"):
@@ -2492,6 +2564,9 @@ class Mandacaru(Calculator):
         if options:
             raise TypeError(f"unexpected options {sorted(options)}: they "
                             "belong to natural_orbitals(method='rpa')")
+        crystal = self._crystal_solver(state, grid, "natural orbitals")
+        if crystal is not None:
+            return crystal.natural_orbitals()
         from .volumetric import state_natural_orbitals
 
         solver, integrals, frozen, active = self._volumetric_context()

@@ -69,6 +69,9 @@ def lih():
 
 
 SYSTEMS = {"H2": (h2, H2_H), "LiH": (lih, LIH_H)}
+#: KB projectors on the grid, two per channel and m: H carries an s channel;
+#: the K21 lithium (2026-10-11) an s and a p channel, 2 + 2 x 3 = 8.
+N_PROJECTORS = {"H2": 4, "LiH": 10}
 
 #: PAW energies with the shipped library (H: rc 1.30, deficit 0.05,
 #: Delta 0.5; Li: rc 2.60, deficit 0.02, Delta 0.5).  Re-measured 2026-09-17,
@@ -106,7 +109,7 @@ SYSTEMS = {"H2": (h2, H2_H), "LiH": (lih, LIH_H)}
 #:
 #: Re-measured 2026-09-27 against the library regenerated on 2026-09-25 (all
 #: four tables below move together, H2 by ~8 uHa and LiH by ~11 uHa; the
-#: old pins described files no current generator reproduces, PAW_SAGA.md
+#: old pins described files no current generator reproduces, dev_plan/PAW_SAGA.md
 #: section 7).  Old -> new, rhf / adapt:
 #:   PAW                      H2 -1.094865 / -1.108616 -> -1.094873 / -1.108624
 #:                            LiH -0.769928 / -0.777671 -> -0.769939 / -0.777683
@@ -141,22 +144,29 @@ SYSTEMS = {"H2": (h2, H2_H), "LiH": (lih, LIH_H)}
 #:                            LiH -0.770383 / -0.778098 -> -0.767757 / -0.776009
 #:   PAW_BEFORE_BASIS_FILTER  H2 -1.094860 / -1.108624 -> -1.093013 / -1.107148
 #:                            LiH -0.770423 / -0.778134 -> -0.767796 / -0.776045
+#:
+#: Re-measured 2026-10-11 (W2), LiH only: the K21 lithium (a p channel and a
+#: partial core; HISTORY "K21 libraries installed").  H2 does not move.
+#:   PAW                      LiH -0.767303 / -0.775581 -> -0.761836 / -0.769347
+#:   PAW_FILTER_ONLY          LiH -0.767286 / -0.775564 -> -0.761814 / -0.769327
+#:   PAW_EXACT_LOCAL_ONLY     LiH -0.767757 / -0.776009 -> -0.762302 / -0.769787
+#:   PAW_BEFORE_BASIS_FILTER  LiH -0.767796 / -0.776045 -> -0.762339 / -0.769822
 PAW = {"H2": {"rhf": -1.093006, "adapt": -1.107128},
-       "LiH": {"rhf": -0.767303, "adapt": -0.775581}}
+       "LiH": {"rhf": -0.761836, "adapt": -0.769347}}
 #: The filter alone (``exact_local_potential = False``).
 PAW_FILTER_ONLY = {
     "H2": {"rhf": -1.093052, "adapt": -1.107175},
-    "LiH": {"rhf": -0.767286, "adapt": -0.775564}}
+    "LiH": {"rhf": -0.761814, "adapt": -0.769327}}
 #: The exact local potential alone (``filter=False``).
 PAW_EXACT_LOCAL_ONLY = {
     "H2": {"rhf": -1.093020, "adapt": -1.107156},
-    "LiH": {"rhf": -0.767757, "adapt": -0.776009}}
+    "LiH": {"rhf": -0.762302, "adapt": -0.769787}}
 #: Neither: ``filter=False`` and ``exact_local_potential = False`` -- the
 #: pre-2026-09-20 model.  Not wrong, just grid-sampled throughout; pinned so
 #: both flips are auditable.
 PAW_BEFORE_BASIS_FILTER = {
     "H2": {"rhf": -1.093013, "adapt": -1.107148},
-    "LiH": {"rhf": -0.767796, "adapt": -0.776045}}
+    "LiH": {"rhf": -0.762339, "adapt": -0.769822}}
 #: The family's **default basis** since 2026-09-20: the four tables above with
 #: the first zeta *confined* (``energy_shift = 0.1`` eV; H 1s at
 #: 6.68 Bohr, Li 2s at 11.20).  A mild confinement lowers a minimal basis's
@@ -172,10 +182,14 @@ PAW_BEFORE_BASIS_FILTER = {
 #:   H2  adapt -1.127986 -> -1.127967   LiH adapt -0.779033 -> -0.779013
 #: and 2026-10-05 (spectral Coulomb kernel, regenerated libraries, as above):
 #:   H2  adapt -1.127967 -> -1.126352   LiH adapt -0.779013 -> -0.776997
-#: The ``rhf`` entries are only an upper bound (``PIN_TOL``) and were not
+#: and 2026-10-11 (W2, the K21 lithium): LiH adapt -0.776997 -> -0.769610,
+#: and its ``rhf`` bound, which the shift left below the ADAPT energy,
+#: re-measured with the confined basis: -0.773118 -> -0.761345.  With this
+#: lithium the confinement lowers LiH by only 0.26 mHa.
+#: The H2 ``rhf`` entry is only an upper bound (``PIN_TOL``) and was not
 #: re-measured.
 PAW_DEFAULT = {"H2": {"rhf": -1.118043, "adapt": -1.126352},
-               "LiH": {"rhf": -0.773118, "adapt": -0.776997}}
+               "LiH": {"rhf": -0.761345, "adapt": -0.769610}}
 #: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
 PAW_BEFORE_COMPENSATION_ATTRACTION = {
     "H2": {"rhf": -1.053292, "adapt": -1.067402},
@@ -666,6 +680,29 @@ class TestAtomic:
             worst = max(worst, abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi))
         assert worst < 0.01
 
+    def test_beryllium_p_scatters_like_the_atom_and_stays_out_of_the_basis(
+            self):
+        """Without p projectors beryllium's local potential scattered p
+        0.28-0.42 rad off at every ghost-free local radius (PBE Be was
+        flagged; PBE BeO 10.7 % long).  Its p channel (DEFAULT_HIGHEST_CHANNEL)
+        brings that to 0.02 rad; the bound 2p stays out of the basis
+        (SCATTERING_ONLY_CHANNELS), so a minimal Be keeps one orbital."""
+        from mandacaru.pseudopotentials.orbitals import basis_states
+
+        pp = generated("Be")
+        assert 1 in pp.channels and not pp.defects
+        r_match = max(pp.r_cut_local,
+                      max(c.r_cut for c in pp.channels.values())) + 0.3
+        worst = 0.0
+        for energy in np.arange(-0.6, 0.35, 0.1):
+            d = (np.arctan(log_derivative_paw(pp, 1, energy, r_match))
+                 - np.arctan(log_derivative_ae(pp.r, pp.atom.v_effective, 1,
+                                               energy, r_match, 4.0,
+                                               "scalar")))
+            worst = max(worst, abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi))
+        assert worst < 0.02
+        assert [state.l for state in basis_states(pp)] == [0]
+
     def test_lithium_smooth_core_carries_the_core_valence_overlap(self):
         """Pseudized at r_g = 2.6 Bohr the smooth core held 0.02 electrons;
         at DEFAULT_CORE_RADII["Li"] = 1.5 it holds 0.37."""
@@ -720,7 +757,12 @@ class TestLibrary:
             assert np.asarray(pp.coupling[l]).shape == (2, 2)
             assert np.asarray(pp.overlap_correction[l]).shape == (2, 2)
             assert channel.duality_error < 1e-8
-            assert channel.overlap_minimum >= 1.0 - 1e-9
+            # Not ">= 1": an augmentation charge q_ii may be negative (the
+            # K21 lithium's second s partial wave carries 1e-4 more norm
+            # than its all-electron wave, q_22 = -0.0001, so its minimum is
+            # 0.99911).  What matters is that the PAW transformation stays
+            # far from singular, the generator's own floor.
+            assert channel.overlap_minimum >= paw.OVERLAP_MINIMUM
 
     @pytest.mark.parametrize("symbol", ["H", "Li", "O"])
     def test_shipped_file_has_no_ghost(self, symbol):
@@ -737,7 +779,9 @@ class TestLibrary:
         partial_waves.ghost_errors`), in one element of every population the 2026-09-24
         census found ghosted.  The whole library is the slow test below."""
         from mandacaru.pseudopotentials import partial_waves
-        assert partial_waves.ghost_errors(get_paw(symbol), paw._paw_levels) == {}
+        # A file has no all-electron atom: its projected channels only.
+        assert partial_waves.ghost_errors(get_paw(symbol), paw._paw_levels,
+                                          with_atom=False) == {}
 
     def test_lithium_smooth_waves_are_nodeless(self):
         """The PBE lithium shipped until 2026-09-27 had both 2s partial waves
@@ -845,7 +889,9 @@ class TestLibrary:
     @pytest.mark.parametrize("symbol", library_elements())
     def test_no_shipped_dataset_holds_a_ghost(self, symbol):
         from mandacaru.pseudopotentials import partial_waves
-        assert partial_waves.ghost_errors(get_paw(symbol), paw._paw_levels) == {}
+        # A file has no all-electron atom: its projected channels only.
+        assert partial_waves.ghost_errors(get_paw(symbol), paw._paw_levels,
+                                          with_atom=False) == {}
 
     def test_shipped_h_matches_a_fresh_generation(self):
         shipped, fresh = get_paw("H"), generated("H")
@@ -1183,7 +1229,7 @@ class TestMolecular:
         H, particles, n_orb, _profile, context = _build(name, "paw-lcao")
         ints = context["integrals"]
         assert n_orb == 2 and particles == (1, 1)
-        assert len(ints.kb_projectors) == 4
+        assert len(ints.kb_projectors) == N_PROJECTORS[name]
         e_rhf = _total(ints, context["n_electrons"])
         e_fci = _fci(H)
         print(f"\n{name}: PAW RHF {e_rhf * HARTREE_TO_EV:.4f} eV, FCI "
@@ -1263,7 +1309,7 @@ class TestMolecular:
               f"{np.round(basis, 3)}, projector norm ratios = "
               f"{np.round(projectors, 3)}")
         assert np.all((basis > 0.75) & (basis < 1.25))
-        assert projectors.shape == (4,)
+        assert projectors.shape == (N_PROJECTORS[name],)
         assert np.all((projectors > 0.75) & (projectors < 1.25))
 
     def test_lih_is_stable_against_the_grid(self):

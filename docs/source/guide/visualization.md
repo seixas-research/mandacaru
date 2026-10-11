@@ -1,4 +1,4 @@
-# Visualizing the wavefunction
+# Visualizing densities and orbitals
 
 A finished run can write its electron density, its natural orbitals and its
 correlation density to a Gaussian `.cube` file, which VESTA, VMD, XCrySDen and
@@ -172,17 +172,37 @@ magnitude larger, it is far more. The third number is exact whatever the
 basis — it is the trace of the density matrix — so it is the one to check
 against.
 
-The all-electron density inside the augmentation spheres is **not**
-reconstructed. Doing it properly means summing the one-center expansion on a
-radial grid per atom and adding it back; the radial machinery exists
-(`mandacaru.pseudopotentials.paw.reconstruct_ae`) but the three-dimensional
-assembly does not, and an approximation there would be invisible in the
-picture and wrong in the numbers. Use an all-electron basis when the core
-matters.
+A molecule's all-electron density inside the augmentation spheres is **not**
+reconstructed: use an all-electron basis when the core matters. A crystal's
+`quantity="reconstructed_density"` adds, inside each sphere, the spherical
+part of the one-center correction (the density the Bader partition climbs),
+averaged over each voxel so that the file integrates to the valence count
+(see below).
 
 The nuclei are written with their **real** atomic numbers, not the valence
 charges the pseudopotential carries, so a viewer draws oxygen as oxygen; the
 valence charge goes in the charge column, where it belongs.
+
+## Crystals
+
+A periodic Kohn-Sham run (`method="dft"` on periodic atoms) writes through
+the same `write_cube` / `volumetric_field` / `natural_orbitals`, on its cell
+grid: the smooth density, the spin channels and magnetization, the
+reconstructed all-electron valence density, Bloch orbitals at any k-point
+(`quantity="bloch_orbital"`, `kpoint=`, `spin=`) and the natural orbitals of
+the spin-summed density matrix at the SCF k-points. `repeat=(n1, n2, n3)`
+tiles the cell, an orbital with its Bloch phase. The `.xsf` file is a
+periodic `CRYSTAL` with its lattice (its datagrid closed by the copy of the
+first planes, XCrySDen's convention); the cube file holds the cell's nodes
+once. `grid=` and `state=` do not apply. Details and the numbers behind them
+are in [Density functional theory](dft.md), "Cube files and natural orbitals
+of a crystal".
+
+```python
+si.calc.write_cube("si_density.xsf", repeat=(2, 2, 2))
+si.calc.write_cube("si_vbm.cube", quantity="bloch_orbital", index=3,
+                   kpoint=(0, 0, 0))
+```
 
 ## Frozen core, tapered registers, sectors
 
@@ -332,7 +352,8 @@ which is what to use for a plot.
 
 ## What is deliberately not here
 
-* **All-electron reconstruction inside PAW spheres** -- see above.
+* **All-electron reconstruction inside a molecule's PAW spheres** -- see
+  above; a crystal's `reconstructed_density` has its spherical part.
 * **A command-line flag.** `mandacaru H2O --cube density.cube` would have to
   duplicate the quantity, index, component and grid options; the three-line
   Python form above is clearer and does not freeze an API into the CLI before

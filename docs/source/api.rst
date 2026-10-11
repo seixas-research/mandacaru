@@ -225,6 +225,14 @@ grid.  See :doc:`guide/visualization`.
    :undoc-members:
    :show-inheritance:
 
+A periodic Kohn-Sham crystal's densities, Bloch orbitals and natural orbitals
+on its cell grid, through the same calculator methods.
+
+.. automodule:: mandacaru.algorithms.periodic_volumetric
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: mandacaru.algorithms.charges
    :members:
    :undoc-members:

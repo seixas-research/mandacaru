@@ -145,9 +145,16 @@ AZIMUTHAL_POINTS = 64
 #: the 1e-7 Ha level re-rolls which of two degenerate orbitals (LiH's pi
 #: pair) a solver returns, which the orbital tracking of
 #: ``transfer=True`` does not follow (orbital_tracking, "Not done").
+#: The azimuthal count is a multiple of 12, so the rule (polar axis z,
+#: azimuths at half steps from x) maps onto itself under the rotations about
+#: z by multiples of 30 and 90 degrees and the mirrors and two-fold axes
+#: between them -- the hexagonal and tetragonal point groups with c along z.
+#: With 32, the short-range matrices of one hcp Mg star split by 2.7e-8 Ha
+#: and a wedge missed the full mesh by 1.2e-8 Ha (HISTORY 2026-10-11, K13b).
+#: The cube's three-fold axes still move it.
 CRYSTAL_RADIAL_POINTS = 32
 CRYSTAL_POLAR_POINTS = 16
-CRYSTAL_AZIMUTHAL_POINTS = 32
+CRYSTAL_AZIMUTHAL_POINTS = 36
 
 #: Radial shells evaluated at once.  The basis is sampled on
 #: ``block x n_angular`` points at a time, which bounds the working set at a

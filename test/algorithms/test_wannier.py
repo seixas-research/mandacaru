@@ -256,13 +256,22 @@ class TestSilicon:
         global phase is fixed, and is written as a cube of the supercell."""
         atoms, w = silicon
         assert max(w.imaginary_ratio(n) for n in range(4)) < 1e-6
-        values, _origin, _step = w.orbital(0)
+        values, _origin, step = w.orbital(0)
         path = w.write(0, tmp_path / "w0.cube")
         data, read = read_cube_data(path)
         assert data.shape == values.shape
         assert np.allclose(data, values.real, atol=1e-4 * np.abs(
             values).max())
         assert len(read) == len(atoms) * int(np.prod(w.size))
+        # The .xsf carries the supercell as its lattice (rows), the datagrid
+        # closed by its first planes.
+        from ase.io.xsf import read_xsf
+        with open(w.write(0, tmp_path / "w0.xsf")) as handle:
+            grid, _origin, spans, cell = read_xsf(handle, read_data=True)
+        box = (step @ np.diag(values.shape)).T / ANGSTROM_TO_BOHR
+        assert np.allclose(cell.cell.array, box, atol=1e-6)
+        assert np.allclose(spans, box, atol=1e-5)
+        assert np.allclose(grid[:-1, :-1, :-1], values.real, atol=2e-6)
 
     def test_the_valence_fragment_holds_the_band_energy(self, silicon):
         """The four valence functions of a cell are fully occupied, so the
@@ -695,16 +704,18 @@ class TestTheT2gModel:
     interaction."""
 
     def test_the_fermi_level_cuts_the_t2g_bands(self, vanadate_crystal):
-        """d1: twelve O bands full, the Fermi level inside the next three,
-        the t2g, which lie within the model's 2 eV window."""
+        """d1: the sixteen bands below full (Sr 4s and 4p, semicore since
+        the K21 datasets of 2026-10-11, and O's twelve), the Fermi level
+        inside the next three, the t2g, which lie within the model's 2 eV
+        window."""
         atoms = vanadate_crystal
         solver = atoms.calc.solver._periodic_solver
         B = rc.reciprocal_vectors(solver.crystal.lattice)
         kpoints = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [1, 1, 1]]) / 3.0
         bands = (np.asarray(solver.bands(kpoints @ B.T)[0]) * HARTREE_TO_EV
                  - atoms.calc.get_fermi_level())
-        assert bands[:, 11].max() < -2.0
-        assert bands[:, 12].min() < 0.0 < bands[:, 14].max() < 2.0
+        assert bands[:, 15].max() < -2.0
+        assert bands[:, 16].min() < 0.0 < bands[:, 18].max() < 2.0
 
     def test_three_equivalent_functions_on_vanadium(self, vanadate):
         atoms, w = vanadate

@@ -178,10 +178,7 @@ latex/
 CLAUDE.md
 HISTORY.md
 VERSION_DESCRIPTION.md
-PAW_SAGA.md
-TODO.md
-VALQA_PLAN.md
-DFT_PLAN.md
+dev_plan/
 
 # CODEX
 codex/

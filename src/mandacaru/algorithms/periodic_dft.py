@@ -917,16 +917,20 @@ class PeriodicKohnSham:
                     np.stack([o[1] for o in out]) if projections else None)
         return self._bands_at(kpoints, V, v_tau, w, projections)
 
-    def _diagonalized(self, kpoints, V, v_tau, w, channel=0):
+    def _diagonalized(self, kpoints, V, v_tau, w, channel=0, data=None):
         """Yield ``(data, eigenvalues, vectors)`` for blocks of ``kpoints``
         at one frozen potential (one spin channel): the k-point matrices
         (:class:`KPointMatrices`), the eigenvalues (Hartree, on the SCF's
-        own reference) and the ``S(k)``-orthonormal eigenvectors."""
+        own reference) and the ``S(k)``-orthonormal eigenvectors.  ``data``
+        passes the k-point matrices of ``kpoints`` when they are already
+        built (the SCF's own), as one block."""
         c = self.crystal
         kpoints = np.atleast_2d(np.asarray(kpoints, dtype=float))
-        block = c.kpoint_block()
+        given = data
+        block = c.kpoint_block() if given is None else len(kpoints)
         for start in range(0, len(kpoints), block):
-            data = c.kpoint_matrices(kpoints[start:start + block])
+            data = (list(given) if given is not None
+                    else c.kpoint_matrices(kpoints[start:start + block]))
             gradients = ([c.bloch_gradients(d.psi, d.k) for d in data]
                          if self.meta else None)
             device = make_device(c, data, gradients)

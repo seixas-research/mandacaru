@@ -117,7 +117,8 @@ class TestJaxEnergyLayer:
     def _raw_integrals(integrals):
         S = np.real(integrals.overlap())
         T, V = integrals._engine.one_body(
-            integrals._potentials.nuclear_potential, energy_units="Ha")
+            integrals._potentials.nuclear_potential, energy_units="Ha",
+            kinetic=integrals.kinetic)
         h = np.real(0.5 * ((T + V) + (T + V).conj().T))
         eri = np.real(integrals._engine.two_body(energy_units="Ha"))
         return S, h, eri
@@ -479,6 +480,27 @@ class TestMandacaru:
 
         assert np.allclose(run("rdm"), run("scf-response"), atol=5e-3)
 
+    def test_the_two_force_methods_agree_with_the_spectral_operator(
+            self, fixed_grid):
+        """The legacy path differentiates ``integrals.kinetic`` too: with
+        the FFT Laplacian both gradients agree as they do on the stencil,
+        and both are the derivative of the spectral energy (measured
+        1.5e-6 eV/Angstrom for the legacy path, HISTORY Phase N)."""
+        def run(method):
+            atoms = h2(0.74)
+            atoms.calc = Mandacaru(method="vqe", basis="HAO", grid=fixed_grid,
+                                   force_method=method, kinetic="spectral",
+                                   trace=False)
+            return atoms.get_forces()
+
+        legacy = run("scf-response")
+        assert np.allclose(run("rdm"), legacy, atol=5e-3)
+        stencil = h2(0.74)
+        stencil.calc = Mandacaru(method="vqe", basis="HAO", grid=fixed_grid,
+                                 force_method="scf-response", kinetic="fd",
+                                 trace=False)
+        assert np.abs(stencil.get_forces() - legacy).max() > 0.1
+
     def test_energy_matches_the_bare_driver(self, fixed_grid):
         atoms = h2(0.74)
         atoms.calc = Mandacaru(method="vqe", basis="HAO",
@@ -577,3 +599,67 @@ class TestProjectedForcesAreQualified:
         assert block["convention"] != \
             "forces = -dE/dR (ASE sign); hellmann_feynman and pulay are +dE/dR"
         assert "translation_removed" in block
+
+
+# --------------------------------------------------------------------------- #
+# The kinetic cross block, for either Laplacian.
+# --------------------------------------------------------------------------- #
+
+class TestTheKineticCrossBlock:
+    """``one_body_cross`` is the Pulay derivative of ``T + V`` with the
+    energy's own Laplacian: against a central difference of the matrix built
+    with the moved function, for the stencil and the FFT Laplacian."""
+
+    STEP = 1e-3                       # Bohr
+
+    @staticmethod
+    def _basis(shift=0.0):
+        from mandacaru.basis import GaussianOrbital
+
+        return [GaussianOrbital(0, 0, [0.9], [1.0], center=[0.2 + shift, 0.1,
+                                                            -0.1],
+                                units="bohr"),
+                GaussianOrbital(1, 0, [0.5], [1.0], center=[-0.4, 0.0, 0.3],
+                                units="bohr")]
+
+    @pytest.mark.parametrize("kinetic", ["fd", "spectral"])
+    def test_it_is_the_derivative_of_the_one_body_matrix(self, kinetic):
+        from mandacaru.algorithms.forces import (one_body_cross,
+                                                 orbital_derivatives)
+        from mandacaru.integrals import IntegralEngine
+
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, h=0.4,
+                    units="bohr")
+        vext = (-1.0 / np.maximum(np.sqrt(grid.X ** 2 + grid.Y ** 2
+                                          + grid.Z ** 2), 0.5)).ravel()
+
+        def potential(x, y, z):
+            return -1.0 / np.maximum(np.sqrt(x ** 2 + y ** 2 + z ** 2), 0.5)
+
+        def matrix(shift):
+            engine = IntegralEngine(self._basis(shift), grid)
+            T, V = engine.one_body(potential, energy_units="Ha",
+                                   kinetic=kinetic)
+            return T + V
+
+        numerical = (matrix(self.STEP) - matrix(-self.STEP)) / (2 * self.STEP)
+        engine = IntegralEngine(self._basis(), grid)
+        psi = engine._psi
+        dpsi = orbital_derivatives(self._basis(), grid, [0, 1], 0)[0]
+        laplacian = (engine.spectral_laplacian(psi) if kinetic == "spectral"
+                     else None)
+        cross = one_body_cross(psi, dpsi, vext, grid, kinetic, laplacian)
+        analytic = cross + cross.conj().T
+        assert np.abs(analytic - numerical).max() < 1e-6 * np.abs(
+            numerical).max()
+
+    def test_an_unknown_operator_or_a_missing_laplacian_is_refused(self):
+        from mandacaru.algorithms.forces import one_body_cross
+
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.0, h=0.5, units="bohr")
+        psi = np.ones((1, grid.size), dtype=complex)
+        vext = np.zeros(grid.size)
+        with pytest.raises(ValueError, match="unknown kinetic"):
+            one_body_cross(psi, psi, vext, grid, "fourier")
+        with pytest.raises(ValueError, match="laplacian"):
+            one_body_cross(psi, psi, vext, grid, "spectral")

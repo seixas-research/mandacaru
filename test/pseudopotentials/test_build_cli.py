@@ -143,3 +143,34 @@ def test_a_worker_shares_the_cores_out():
                              initargs=(1,)) as pool:
         assert pool.submit(_blas_threads).result() == 1
 
+
+
+def test_a_file_that_does_not_reproduce_its_dataset_is_not_written(
+        tmp_path, capsys, monkeypatch):
+    """The file is read back before it is released: when what comes back
+    (here a projector 1 % off) does not reproduce the generated levels, the
+    build fails without leaving a file (or its staged copy) behind."""
+    from mandacaru.pseudopotentials import io
+
+    read = io.load_pseudopotential
+
+    def damaged(path, **options):
+        pp = read(path, **options)
+        pp.projectors[0][0] = 1.01 * pp.projectors[0][0]
+        return pp
+    monkeypatch.setattr(io, "load_pseudopotential", damaged)
+    code = main(["--pp", "PAW", "--element", "H", "--output", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "does not reproduce the dataset" in out
+    assert not list((tmp_path / "paw-lcao").iterdir())
+
+
+def test_the_report_is_of_the_file_read_back(tmp_path, capsys):
+    code = main(["--pp", "PAW", "--element", "H", "--output", str(tmp_path),
+                 "--check"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "read back: levels within" in out and "phase" in out
+    assert [p.name for p in (tmp_path / "paw-lcao").iterdir()] == [
+        "H.parquet"]

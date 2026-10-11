@@ -248,11 +248,11 @@ class VariationalDriver(Calculator):
         Laplacian discretization of the real-space integrals: the 3-point
         finite-difference stencil (``"fd"``) or the FFT Laplacian
         (``"spectral"``), which never underestimates a compact function's
-        kinetic energy.  ``None`` (default) means ``"fd"``, the operator the
-        force code differentiates; use ``"spectral"`` for single-point
-        energies on coarse grids.  A crystal (``method="dft"`` on a periodic
-        geometry) is always spectral and refuses ``"fd"``, so a molecule
-        compared with it in a box needs ``"spectral"``.
+        kinetic energy.  ``None`` (default) means ``"fd"`` for a molecule.
+        The analytic forces differentiate either operator.  A crystal
+        (``method="dft"`` on a periodic geometry) is always spectral and
+        refuses ``"fd"``, so a molecule compared with it in a box needs
+        ``"spectral"``.
     atomic_units : bool
         Output-unit convention (default ``False``): every energy the driver
         *returns or prints* -- the result object, the energy levels, the verbose

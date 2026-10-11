@@ -159,8 +159,13 @@ them projector augmented waves.
    all-electron one (`ghost_free`, `log_derivative_ae`) -- for every channel
    with projectors, and, within 0.2 rad, for every angular momentum without
    them up to one above the highest channel, which scatters off the local
-   potential alone (`unprojected_scattering_errors`). A failing candidate is
-   repaired first by a shorter local radius with no shift, then by local
+   potential alone (`unprojected_scattering_errors`). Above the reference,
+   a channel may not hold more bound levels (below −0.1 Ha) than the atom
+   has valence states of its $l$: a compact semicore channel whose second
+   reference energy is still bound can put a spurious level just above it,
+   outside every scattering window (the 4f of W–Hg, the 4p of Tc; the
+   installed datasets of these elements and the LDA Ta predate the check
+   and carry one, unflagged). A failing candidate is repaired first by a shorter local radius with no shift, then by local
    shifts and cutoff adjustments. The order matters: a shift acts on every
    angular momentum the projectors do not cover, and aluminum's former 5 Ha
    shift scattered d 0.52 rad off and put fcc Al 12 % too large. What cannot
@@ -168,6 +173,30 @@ them projector augmented waves.
    refused, kept or flagged on the dataset as the `ghosts` mode says
    (`"repair"`, `"refuse"`, `"keep"`, `"flag"`), and a flagged dataset warns
    with `GhostStateWarning` when it is loaded.
+5. **Completeness of the $s$ channel.** The $l = 0$ part $f$ of a hydrogen
+   1s centered 0.2 Bohr outside $r_c$ is expanded in the channel's projectors
+   and smooth partial waves, and the *intruding-1s miss*
+   $\lVert f - \sum_i \langle\tilde p_i|f\rangle\tilde\varphi_i\rVert /
+   \lVert f\rVert$ inside the sphere must stay below 1 (`intruding_s_miss`).
+   It is a ratio of norms: 0.05 misses 5 % of the function, 1 misses as
+   much as the function holds, and a miss of 1.76 is 176 % -- the expansion
+   is farther from the function than zero is. One function at one distance:
+   passing it does not certify every neighbor.
+
+A check that cannot be evaluated is a failure, never a pass: a level or a
+phase that is not finite raises `DiagnosticError` naming the element, channel
+and energy, and a construction whose checks cannot be evaluated is not
+written, not even flagged. The checks against the all-electron atom need the
+atom, which a dataset read from a file does not carry: they raise
+`DiagnosticError` ("not evaluated") rather than return an empty result.
+`reference_atom(pp)` (`mandacaru.pseudopotentials.partial_waves`) solves the
+generator's atom again for a loaded dataset (`pp.atom = reference_atom(pp)`),
+and `ghost_errors(pp, levels, with_atom=False)` checks the projected
+channels of one without it. `mandacaru-build` releases the file, not the
+object in memory: the dataset is written beside its final name, read back,
+and moved into place only when every channel's bound levels match the
+generated ones to `RELOAD_LEVEL_TOLERANCE` (1e-5 Ha); its report is of the
+file read back.
 
 ### The reference atom and the channel set
 
@@ -183,7 +212,7 @@ calculation that later reads it.
 | `extra_l` | `0`, La: `1`; K, Ca, Rb, Sr: up to d | Empty channels above the highest occupied valence $l$; a bound non-core atom level is the first reference when present, otherwise both references scatter |
 | `points`, `r_max` | per element | The radial grid of the reference atom |
 | `frozen_subshells` | Tl–Rn: `4f`; otherwise none | Move selected occupied subshells into the pseudopotential core |
-| `semicore_subshells` | Na, Mg, K, Ca, Rb, Sr, Sc, Ti, Y, Zr, Nb, Mo, Tc: $(n-1)s\,(n-1)p$; otherwise none | Move selected filled core subshells into the valence; `()` turns it off |
+| `semicore_subshells` | Na, Mg, K, Ca, Rb, Sr, Sc, Ti, Y–Tc, Ta: $(n-1)s\,(n-1)p$; otherwise none | Move selected filled core subshells into the valence; `()` turns it off |
 
 **Semicore valence.** An alkali or alkaline-earth atom with an $s$ channel
 alone has no projectors for $p$, and its $p$ scattering -- the metallic bond
@@ -206,21 +235,27 @@ flagged: their datasets warn on load that the local potential scatters
 wrongly.
 
 The early d block has the same gap in its empty $p$: with $s$ and $d$
-channels alone, the local potential of Sc, Ti and Y–Tc scattered $p$
-0.2–1.5 rad off for every repair, in LDA and PBE alike. With their
+(and $4f$) channels alone, the local potential of Sc, Ti, Y–Tc and Ta
+scattered $p$ 0.2–1.5 rad off for every repair, in LDA and PBE alike; PBE
+ScH came out 11 % long, bcc Nb 4 %, Mo 12 % and hcp Ti 6 %. With their
 $(n-1)s\,(n-1)p$ in valence (scandium: $3s^2 3p^6 3d^1 4s^2$, 11 electrons)
-each is clean at its first construction in both functionals: no ghost,
-phases within 0.011 rad (Tc 0.036), the unprojected $f$ within 0.09 rad and
-the intruding-1s miss 0.01–0.05. The price is
+each builds clean in both functionals (no ghost, phases within 0.04 rad,
+the unprojected channel within 0.09 rad, the intruding-1s miss 0.01–0.08),
+and PBE ScH, bcc Nb, Mo, Ta and hcp Ti come within 0.7 % of all-electron
+PBE. Sc and Ti take larger $d$ spheres (2.07 and 1.86 Bohr) so that their
+filtered $3d$ still projects onto its own wave. Semicore Lu, Hf, W and Re
+also pass every atomic check but not the solid (bcc W 4 % and hcp Re 5 %
+short, hcp Hf and Lu without a converged SCF), and Ag, Cd and Ir lose their
+$d$ projection; these keep their valence. The price is
 8 more electrons per atom and four more basis functions (the semicore $s$
 and $p$ are always single-zeta; only the valence $s$ is split and
 polarized).
 
 The `xc` argument belongs to the dataset. It is not the functional of a later
-calculation: `Mandacaru(method="dft", xc=...)` chooses its own. The default
-PAW-LCAO datasets are LDA, so a PBE or r2SCAN calculation on them warns about
-the mismatch (see {doc}`dft`); the PBE set, `directory="pbe-sr"` (*The
-pseudopotential libraries*, below), is the one a PBE calculation should read.
+calculation: `Mandacaru(method="dft", xc=...)` chooses its own, and with it
+the set it reads (see {doc}`dft`): the PBE set (*The pseudopotential
+libraries*, below) for PBE, HSE06 and r2SCAN, the LDA set for LDA. Datasets
+of another set, named with `directory=`, are warned about.
 
 A gradient-corrected reference potential is a cubic spline through its
 derivative nodes (`GGA_DERIVATIVE_STEP` apart), so the derivatives the local
@@ -1013,24 +1048,30 @@ shell. Inside a checkout the datasets sit one folder per set:
 
 | folder | set | elements |
 |---|---|---|
-| `lda-sr/` | scalar-relativistic LDA, **the default** | H–U (92) |
+| `lda-sr/` | scalar-relativistic LDA, the default for LDA and every method without a functional | H–U (92) |
 | `lda-dirac/` | LDA with the spin-orbit term | H–U without Pa (91) |
-| `pbe-sr/` | scalar-relativistic PBE | H–U (92) |
+| `pbe-sr/` | scalar-relativistic PBE, the default for PBE, HSE06 and r2SCAN | H–U (92) |
 
 There is no PBE Dirac set. In the PBE set the reference atom, the
 unscreening and the one-center energies are PBE (Perdew-Wang 1992 correlation,
 MacDonald-Vosko relativistic exchange), so it is the set for
-`Mandacaru(method="dft", xc="pbe")` and the hybrid built on PBE; on the
-default LDA set a PBE calculation runs but warns that the functionals differ,
-and the warning names `directory="pbe-sr"`. Both scalar sets flag the same
-kinds of elements (the lanthanides, actinides and several early d-block
-metals whose empty channels no local potential makes scatter like the atom);
-`mandacaru-paw/PBE.md` lists the PBE ones.
+`Mandacaru(method="dft", xc="pbe")` and the hybrid built on PBE, which read
+it by default (r2SCAN too, having no set of its own); on the LDA set, named
+with `directory="lda-sr"`, a PBE calculation runs but warns that the
+functionals differ, and the warning names `directory="pbe-sr"`. The PBE set flags 27
+elements, none for a ghost: La–Yb, Ac, Pa and U (no projectors under their
+$4f$/$5f$), Cs, Ba, Fr and Ra (no $p$ or $f$), and Lu, Hf, W, Ag, Cd and Ir
+(an empty $p$ 0.21–0.67 rad off, Lu also an intruding-1s miss of 2.25);
+`mandacaru-paw/PBE.md` lists them. Light elements are built exactly as in
+LDA. With semicore Na or Mg, converge the grid: PBE MgO and NaCl are 1.2 %
+and 1.4 % long at h = 0.25 Å and within 0.3 % of all-electron PBE at 0.18 Å.
 `MANDACARU_UPAW_PATH` is the one optional variable: UPAW-LCAO is generated on
 demand without it (*Datasets* above).
 
-A calculation reads the `lda-sr/` folder unless the calculator names another
-one with `directory=`, resolved against the family's own variable:
+A calculation reads the set of its functional -- `pbe-sr/` for
+`method="dft"` with PBE, HSE06 or r2SCAN, `lda-sr/` for LDA and every other
+method -- unless the calculator names another folder with `directory=`,
+resolved against the family's own variable:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
@@ -1039,17 +1080,18 @@ atoms.calc = Mandacaru(method="adapt-vqe",
 
 atoms.calc = Mandacaru(method="dft", xc="pbe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
-                       directory="pbe-sr")      # $MANDACARU_PAW_PATH/pbe-sr/
+                       directory="lda-sr")      # LDA datasets under PBE: warns
 ```
 
-On the command line the same folder is `--directory pbe-sr`.
+On the command line the same folder is `--directory lda-sr`.
 
 A per-element basis mapping has each of its library
-entries pointed at the same folder name; with the default `directory="lda-sr"`
-every entry reads the scalar-relativistic set unchanged. `directory=` takes the name
+entries pointed at the same folder name; with the `lda-sr` set every entry
+reads the scalar-relativistic LDA set unchanged. `directory=` takes the name
 of one folder inside the checkout, not a path; a missing folder raises
 `LibraryPathError` listing the ones present, and naming a folder with a basis
-that reads no library is refused. It is not ASE's working directory, which
+that reads no library is refused (the functional's own set is simply unused
+by such a basis). It is not ASE's working directory, which
 the calculator leaves as it is.
 
 Each family's own module is the loader —
@@ -1060,6 +1102,14 @@ default `lda-sr/` set (`get_paw(symbol, xc="pbe")` reads `pbe-sr/`); `available_
 datasets cover **every element with Z ≤ 92** (H through U),
 generated from scratch by Mandacaru's own radial atomic solver, in LDA and
 in PBE.
+
+A folder named for a set is a promise about its files: a dataset whose
+functional or relativistic treatment is not the one the name says (a scalar
+file copied into `lda-dirac/`, which would silently drop the spin-orbit term)
+is refused with the folder named; a folder with any other name is the
+caller's own and is read as it is. A loaded dataset is cached for the
+process by its file and that file's modification time and size, so a file
+replaced on disk -- a set rebuilt under a running session -- is read again.
 
 A calculation that needs a variable that is unset, or that names something
 that is not a directory, raises `LibraryPathError`

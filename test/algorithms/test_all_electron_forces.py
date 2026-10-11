@@ -34,8 +34,8 @@ def fixed_state_energy(atoms, basis, grid, h, algebra, **options):
     integrals = build_basis_hamiltonian(atoms, basis, grid, h, 0, None,
                                         **options)[4]["integrals"]
     external = integrals.external_potential()
-    kinetic, potential = integrals._engine.one_body(external, energy_units="Ha",
-                                                    kinetic="fd")
+    kinetic, potential = integrals._engine.one_body(
+        external, energy_units="Ha", kinetic=integrals.kinetic)
     one = kinetic + potential + integrals.kb_nonlocal()
     one_body = integrals.one_body_augmentation()
     if one_body is not None:
@@ -74,7 +74,8 @@ def analytic_and_numerical(atoms, basis, grid, h, step=0.002, **options):
     algebra = AlgebraicEnergy(integrals.mo_coefficients,
                               *spatial_rdms(gamma, gamma2,
                                             integrals.n_orbitals))
-    build = {k: v for k, v in options.items() if k == "active_space"}
+    build = {k: v for k, v in options.items()
+             if k in ("active_space", "kinetic")}
 
     numerical = np.zeros_like(forces)
     for atom in range(len(atoms)):
@@ -91,12 +92,16 @@ def analytic_and_numerical(atoms, basis, grid, h, step=0.002, **options):
 
 
 class TestAllElectronGradient:
-    def test_h2_minimal_basis(self):
+    @pytest.mark.parametrize("kinetic", ["fd", "spectral"])
+    def test_h2_minimal_basis(self, kinetic):
+        """Either Laplacian: the Pulay term differentiates the one the
+        energy used (``forces.one_body_cross``)."""
         grid = Grid(center=[4.0, 4.0, 4.0], box_size=4.0, h=0.25,
                     units="angstrom")
         atoms = Atoms("H2", positions=[[4.013, 3.979, 3.607],
                                        [4.013, 3.979, 4.407]], cell=[8.0] * 3)
-        forces, numerical = analytic_and_numerical(atoms, "HAO", grid, 0.25)
+        forces, numerical = analytic_and_numerical(atoms, "HAO", grid, 0.25,
+                                                   kinetic=kinetic)
         assert np.abs(forces - numerical).max() < 1e-2
         assert np.abs(numerical).max() > 1.0        # a real force, not noise
 

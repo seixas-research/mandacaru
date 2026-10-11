@@ -229,6 +229,198 @@ def symmetric_wavevectors(grid) -> np.ndarray:
     return symmetric_aliases(grid)[0]
 
 
+#: A frequency closer than this (FFT index units) to a face of the box counts
+#: as on it.  A k-point's fractional coordinates are read back from Cartesian
+#: ones, so a zone-boundary k sits on a face only to rounding, and its images
+#: must all be read the same way.
+FACE_TOLERANCE = 1e-9
+
+#: :func:`_bloch_table` of the last few grids, keyed as :data:`_SYMMETRIC`.
+_BLOCH: dict = {}
+
+
+def _grid_key(grid) -> tuple:
+    return (tuple(int(n) for n in grid.shape),
+            np.asarray(grid.step, dtype=float).tobytes())
+
+
+def _boxed(image, n) -> np.ndarray:
+    """``image`` (FFT index units, ``(3, ...)``) moved by whole periods
+    ``n`` into the box ``[-n/2, n/2)``, a face within
+    :data:`FACE_TOLERANCE` read as its lower side."""
+    return image - n * np.floor((image + 0.5 * n + FACE_TOLERANCE) / n)
+
+
+def _bloch_table(grid):
+    """``(m, operations, inverses, slack)`` of :func:`bloch_aliases`: the box
+    frequencies ``(3, N)``, the lattice operations and their inverses, and how
+    far inside the box faces every image of each frequency stays."""
+    key = _grid_key(grid)
+    cached = _BLOCH.get(key)
+    if cached is not None:
+        return cached
+    shape = key[0]
+    half = 0.5 * np.asarray(shape, dtype=float)[:, None]
+    grids = np.meshgrid(*[np.fft.fftfreq(k, d=1.0 / k) for k in shape],
+                        indexing="ij")
+    m = np.stack([g.ravel() for g in grids])
+    operations = lattice_operations(grid)
+    inverses = [np.rint(np.linalg.inv(V)) for V in operations]
+    slack = np.full(m.shape[1], np.inf)
+    for V in operations:
+        slack = np.minimum(slack, np.min(half - np.abs(V @ m), axis=0))
+    table = (m, [np.asarray(V, dtype=float) for V in operations], inverses,
+             slack)
+    if len(_BLOCH) >= _SYMMETRIC_KEEP:
+        _BLOCH.pop(next(iter(_BLOCH)))
+    _BLOCH[key] = table
+    return table
+
+
+def bloch_aliases(grid, k) -> tuple[np.ndarray, np.ndarray]:
+    r"""``(vectors, squares)``: the wave-vectors :math:`\mathbf G + \mathbf k`
+    of a Bloch function's periodic part, averaged over the grid's lattice
+    operations.
+
+    The periodic part :math:`u_{\mathbf k} = e^{-i\mathbf k\cdot\mathbf r}
+    \chi_{\mathbf k}` sampled on the grid carries the frequencies
+    :math:`\mathbf m` of the FFT box; its derivatives multiply by the
+    wave-vector :math:`B(\mathbf m + \boldsymbol\kappa)`
+    (:math:`\mathbf k = B\boldsymbol\kappa`), which is defined only up to an
+    alias.  As for a density (:func:`symmetric_aliases`), the alias the box
+    picks is not carried onto the alias of the image by an operation that
+    mixes the axes, so a kinetic matrix with it is not equivariant: the
+    star of a k-point splits, and a wedge symmetrized to the full mesh is
+    not the full mesh.  Here the alias is chosen for the whole wave-vector
+    :math:`\mathbf q = \mathbf m + \boldsymbol\kappa`,
+
+    .. math::
+
+        \mathbf q_V = V^{-1}\,\mathrm{box}(V\mathbf q), \qquad
+        \mathrm{box}(\mathbf x)_i \in [-n_i/2,\ n_i/2),
+
+    averaged over the operations :math:`V` of :func:`lattice_operations`:
+    ``vectors`` is :math:`B\,\overline{\mathbf q_V}`, the derivative of the
+    Bloch gradients, and ``squares`` :math:`\overline{|B\mathbf q_V|^2}`,
+    the kinetic multiplier.  The kinetic energy is the mean of the aliases'
+    kinetic energies, not the square of the mean vector, which is shorter
+    near the faces and starves the basis' highest frequencies.  Both commute
+    with every operation and with time reversal (:math:`\mathbf q \to
+    -\mathbf q`), and depend on :math:`\mathbf q` alone, so on neither the
+    representative of ``k`` nor the metric; a frequency every operation
+    keeps inside the box is the plain :math:`\mathbf G + \mathbf k`.
+
+    ``k`` is Cartesian (Bohr^-1); the arrays are ``(3, n1, n2, n3)`` and
+    ``(n1, n2, n3)``.
+    """
+    shape = tuple(int(n) for n in grid.shape)
+    n = np.asarray(shape, dtype=float)[:, None]
+    B = reciprocal_vectors(lattice_vectors(grid))
+    m, operations, inverses, slack = _bloch_table(grid)
+    kappa = np.linalg.solve(B, np.asarray(k, dtype=float))
+    q = m + kappa[:, None]
+    vectors = B @ q
+    squares = np.sum(vectors * vectors, axis=0)
+    # Only a frequency some image may carry across a face is averaged.
+    reach = max(float(np.max(np.abs(V @ kappa))) for V in operations)
+    near = np.nonzero(slack <= reach + FACE_TOLERANCE)[0]
+    if near.size:
+        part = q[:, near]
+        total = np.zeros_like(part)
+        total_squares = np.zeros(near.size)
+        for V, inverse in zip(operations, inverses):
+            image = V @ part
+            alias = part + inverse @ (_boxed(image, n) - image)
+            total += alias
+            G = B @ alias
+            total_squares += np.sum(G * G, axis=0)
+        count = len(operations)
+        vectors[:, near] = B @ (total / count)
+        squares[near] = total_squares / count
+    return vectors.reshape(3, *shape), squares.reshape(shape)
+
+
+#: :func:`alias_table` of the last few grids, keyed as :data:`_SYMMETRIC`.
+_ALIASES: dict = {}
+
+
+def alias_table(grid) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    r"""``(index, vectors, weights)``: the frequencies whose box wave-vector
+    an operation of :func:`lattice_operations` does not carry onto the box
+    wave-vector of the image, with their other aliases.
+
+    Every row is a distinct pair: ``index`` the flat FFT index of a
+    frequency :math:`\mathbf m`, ``vectors`` ``(3, n)`` the Cartesian alias
+    :math:`BV^{-1}\mathrm{box}(V\mathbf m) \neq B\,\mathrm{box}(\mathbf m)`,
+    ``weights`` the fraction of the operations that pick it.  The mean of a
+    function of the wave-vector over the aliases the operations pick is
+    then its box value plus ``weights * (f(alias) - f(box))`` summed over a
+    frequency's rows (:func:`alias_combine`).  Cached per grid.
+    """
+    key = _grid_key(grid)
+    cached = _ALIASES.get(key)
+    if cached is not None:
+        return cached
+    n = np.asarray(key[0], dtype=float)[:, None]
+    B = reciprocal_vectors(lattice_vectors(grid))
+    m, operations, inverses, slack = _bloch_table(grid)
+    near = np.nonzero(slack <= FACE_TOLERANCE)[0]
+    part = m[:, near]
+    rows, aliases = [], []
+    for V, inverse in zip(operations, inverses):
+        image = V @ part
+        wrap = _boxed(image, n) - image
+        moved = np.any(wrap != 0.0, axis=0)
+        rows.append(near[moved])
+        aliases.append(part[:, moved] + inverse @ wrap[:, moved])
+    keys = np.vstack([np.concatenate(rows)[None, :],
+                      np.rint(np.concatenate(aliases, axis=1))]).astype(int)
+    unique, counts = np.unique(keys, axis=1, return_counts=True)
+    table = (unique[0], B @ unique[1:].astype(float),
+             counts / float(len(operations)))
+    for array in table:
+        array.setflags(write=False)
+    if len(_ALIASES) >= _SYMMETRIC_KEEP:
+        _ALIASES.pop(next(iter(_ALIASES)))
+    _ALIASES[key] = table
+    return table
+
+
+def alias_combine(grid, box_values, alias_values) -> np.ndarray:
+    r"""The mean over the lattice operations' aliases of a function of the
+    wave-vector, from its values on the box (``(..., n1, n2, n3)``) and on
+    the :func:`alias_table` vectors (``(..., n)``)."""
+    index, _vectors, weights = alias_table(grid)
+    box_values = np.asarray(box_values)
+    lead = box_values.shape[:-3]
+    flat = box_values.reshape(*lead, -1)
+    alias_values = np.asarray(alias_values)
+    out = flat.astype(np.result_type(flat, alias_values), copy=True)
+    if index.size:
+        change = weights * (alias_values - flat[..., index])
+        np.add.at(out.reshape(-1, flat.shape[-1]).T, index,
+                  change.reshape(-1, index.size).T)
+    return out.reshape(box_values.shape)
+
+
+def alias_mean(grid, function) -> np.ndarray:
+    r"""``function`` of the wave-vectors ``(3, ...)`` on the grid's
+    reciprocal set, each frequency's value the mean over the aliases the
+    lattice operations pick.
+
+    A grid charge or kernel :math:`f(\mathbf G)` taken at the box alias
+    alone does not commute with an operation that mixes the grid's axes,
+    as the derivatives of :func:`symmetric_aliases` did not: the Hartree
+    potential of a symmetric density, and the compensation and ion charges
+    of symmetric atoms, come out asymmetric where the box cuts the alias
+    star (hcp Mg, h 0.32 A: 2.5e-3 and 4.4e-3 of their peaks).  The mean
+    commutes with every operation; a frequency they all keep inside the box
+    is unchanged.
+    """
+    _index, vectors, _weights = alias_table(grid)
+    return alias_combine(grid, function(wavevectors(grid)), function(vectors))
+
+
 def to_reciprocal(grid, values) -> np.ndarray:
     r"""``f(G)`` of flat real-space values, in the module's convention."""
     G = wavevectors(grid)

@@ -266,33 +266,66 @@ class IntegralEngine:
                     "'spectral'")
         return from_hartree(T, energy_units), from_hartree(V, energy_units)
 
+    def _g_squared(self) -> np.ndarray:
+        r""":math:`|G|^2` on the grid's FFT mesh.
+
+        For a *general* voxel basis, from the reciprocal lattice of the grid's
+        own cell -- the same construction the periodic Poisson kernel uses,
+        Nyquist plane included (symmetrized, so :math:`|G|^2` is even in
+        :math:`G` and the operator below is real symmetric).  For a diagonal
+        step it reduces term by term to the separable ``2 pi fftfreq(n,
+        d=dx)`` form (``G_x = 2 pi m1 / (nx dx)``), so an orthogonal grid is
+        unaffected, while a hexagonal, rhombohedral or triclinic cell gets the
+        cross terms ``b_i . b_j`` it needs instead of being refused.
+        """
+        from .poisson import fft_g_squared
+
+        shape = tuple(int(n) for n in self.grid.shape)
+        step = np.asarray(self.grid.step, dtype=float)
+        key = (shape, step.tobytes())
+        cached = getattr(self, "_g_squared_cache", None)
+        if cached is None or cached[0] != key:
+            cell = step @ np.diag(shape)
+            cached = (key, fft_g_squared(shape, cell))
+            self._g_squared_cache = cached
+        return cached[1]
+
+    def spectral_laplacian(self, samples) -> np.ndarray:
+        r""":math:`\nabla^2` of each row of ``samples``, by FFT (``-|G|^2``).
+
+        ``samples`` is ``(n, ngrid)`` (or one ``(ngrid,)`` row) on the
+        flattened grid; the result has the same shape.  This is the operator
+        ``kinetic="spectral"`` integrates: the exact Laplacian of the
+        trigonometric interpolant of the samples.  It is real symmetric on the
+        grid, which is what lets the nuclear gradient contract
+        :math:`\langle\partial\phi_a|\nabla^2|\phi_b\rangle` against the
+        Laplacian of the *unmoved* functions only
+        (:func:`~mandacaru.algorithms.forces.one_body_cross`).
+        """
+        from scipy import fft as sfft
+
+        samples = np.asarray(samples)
+        rows = samples.reshape(-1, self.grid.size)
+        shape = tuple(int(n) for n in self.grid.shape)
+        k2 = self._g_squared()
+        out = np.empty(rows.shape, dtype=np.complex128)
+        for index, row in enumerate(rows):
+            out[index] = sfft.ifftn(-k2 * sfft.fftn(row.reshape(shape),
+                                                    workers=-1),
+                                    workers=-1).reshape(-1)
+        return out.reshape(samples.shape)
+
     def _spectral_kinetic(self) -> np.ndarray:
         r"""``T[a,b] = -1/2 <psi_a | nabla^2 psi_b>`` with the FFT Laplacian.
 
         One function at a time (one grid-sized transform resident), so the
         memory cost is the basis stack already held plus a single grid.
         """
-        from scipy import fft as sfft
-
         grid = self.grid
-        nx, ny, nz = grid.shape
-        # |G|^2 on the FFT mesh for a *general* voxel basis, from the reciprocal
-        # lattice of the grid's own cell -- the same construction the periodic
-        # Poisson kernel uses, Nyquist plane included.  For a diagonal step it
-        # reduces term by term to the separable `2 pi fftfreq(n, d=dx)` form
-        # (G_x = 2 pi m1 / (nx dx)), so an orthogonal grid is unaffected, while
-        # a hexagonal, rhombohedral or triclinic cell gets the cross terms
-        # b_i . b_j it needs instead of being refused.
-        from .poisson import fft_g_squared
-
-        cell = np.asarray(grid.step, dtype=float) @ np.diag([nx, ny, nz])
-        k2 = fft_g_squared((nx, ny, nz), cell)
         M = self._psi.shape[0]
         T = np.zeros((M, M), dtype=np.complex128)
         for b in range(M):
-            psi_b = self._psi[b].reshape(nx, ny, nz)
-            lap = sfft.ifftn(-k2 * sfft.fftn(psi_b, workers=-1),
-                             workers=-1).reshape(-1)
+            lap = self.spectral_laplacian(self._psi[b])
             T[:, b] = -0.5 * grid.dV * (np.conj(self._psi) @ lap)
         return 0.5 * (T + T.conj().T)
 
