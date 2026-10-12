@@ -302,12 +302,14 @@ def h2o():
                            details=dict(atoms.calc.force_result.details))
 
 
-def test_compensation_potentials_are_hermitian_only_for_m_zero():
-    """The invariant the Pulay derivative has to respect.
+def test_compensation_potentials_are_real_symmetric():
+    """The invariant the Pulay derivative relies on.
 
-    ``W_qs = <phi_q| v_L Y_LM |phi_s>`` has a *complex* weight whenever
-    ``M != 0``, so it is not Hermitian there -- and a derivative written as
-    ``cross + cross^H`` would quietly put ``conj(v)`` in the second half.
+    ``W_qs = <phi_q| v_L S_LM |phi_s>``: with a molecule's real harmonics
+    both the functions and the weight are real for every ``M``, so each
+    ``W`` is real symmetric (with complex harmonics only the ``M = 0`` ones
+    were, and a derivative written as ``cross + cross^H`` would have put
+    ``conj(v)`` in the second half).
     """
     from mandacaru.algorithms._hamiltonian_from_atoms import (
         build_basis_hamiltonian, grid_from_cell)
@@ -321,11 +323,8 @@ def test_compensation_potentials_are_hermitian_only_for_m_zero():
     assert any(M != 0 for _atom, _L, M in potentials)   # oxygen has p channels
     for (_atom, _L, M), W in potentials.items():
         W = np.asarray(W)
-        asymmetry = np.abs(W - W.conj().T).max()
-        if M == 0:
-            assert asymmetry < 1e-12
-        else:
-            assert asymmetry > 0.1 * np.abs(W).max()
+        assert W.dtype == np.float64
+        assert np.abs(W - W.T).max() < 1e-12 * max(np.abs(W).max(), 1.0)
 
 
 def test_forces_respect_the_c2v_symmetry(h2o):

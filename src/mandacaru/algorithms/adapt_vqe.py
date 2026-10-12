@@ -393,7 +393,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         Hamiltonian, the pool and the ansatz generators are applied as Pauli
         strings (:mod:`mandacaru.core.matrix_free`), slower per product but
         bounded by the state vectors alone; ``"auto"`` switches to it when the
-        stored matrices might not fit in a quarter of the physical memory (see
+        stored matrices might not fit in a quarter of the memory limit (see
         :doc:`/guide/scalability`).  In sparse and matrix-free mode screening
         always uses the analytic gradient (the ``gradient`` argument's
         estimators need the dense eigendecompositions and are unavailable).

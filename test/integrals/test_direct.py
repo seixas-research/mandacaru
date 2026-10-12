@@ -116,6 +116,7 @@ class TestDirectHamiltonian:
         ({"name": "PAW-LCAO", "size": "DZP"},
          {"orbitals": 8, "correlating_pairs": True, "symmetry": True}),
         ("HAO", {"frozen": 1, "orbitals": 6}),
+        ("HAO", {"orbitals": 6, "method": "mp2"}),
     ])
     def test_it_matches_the_tensor_build(self, basis, spec):
         built = []
@@ -133,12 +134,16 @@ class TestDirectHamiltonian:
         worst = max((abs(c) for c in difference.terms.values()), default=0.0)
         assert worst < 1e-9
 
-    def test_canonical_mp2_is_refused_without_the_tensor(self):
+    def test_open_shell_mp2_is_refused_without_the_tensor(self):
+        # Closed-shell MP2 reads only <ij|ab>, which the direct build forms;
+        # the open-shell expression needs the tensor in two spin-resolved
+        # semicanonical bases.
         integrals, n_electrons = _integrals("HAO")
         n = n_electrons // 2
         with pytest.raises(ValueError, match="never forms"):
             integrals.molecular_hamiltonian(
-                mo_basis=True, n_electrons=n_electrons, num_particles=(n, n),
+                mo_basis=True, n_electrons=n_electrons,
+                num_particles=(n + 1, n - 1),
                 active_space={"orbitals": 6, "method": "mp2"}, direct=True)
 
 

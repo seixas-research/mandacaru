@@ -558,6 +558,10 @@ def _virtual_ranking(method: str, h_mo, eri_mo, n_doubly: int,
         if open_shell:
             result = open_shell_mp2_natural_orbitals(h_mo, eri_mo,
                                                      first_virtual, n_doubly)
+        elif eri_mo is None:
+            # An integral-direct build: the provider forms the <ij|ab> block
+            # MP2 reads, never the whole tensor.
+            result = orbital_integrals.mp2_natural_orbitals(n_doubly)
         else:
             result = mp2_natural_orbitals(h_mo, eri_mo, n_doubly)
         occupations = np.concatenate([result.occupied_occupations,
@@ -860,10 +864,11 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
         _resolve_counts(orbitals, n_doubly, n_singly, n_virtual, len(frozen))
     tensors = (orbital_integrals.tensors()
                if orbital_integrals is not None else None)
-    if method == "mp2" and tensors is None:
+    if method == "mp2" and tensors is None and open_shell:
         raise ValueError(
-            "the 'mp2' active_space method is canonical MP2 over the full "
-            "two-body tensor, which an integral-direct build never forms")
+            "the open-shell 'mp2' active_space method reads the full two-body "
+            "tensor in its spin-resolved semicanonical orbitals, which an "
+            "integral-direct build never forms")
     h_mo, eri_mo = tensors if tensors is not None else (h_mo, eri_mo)
     rotation, occupations, correlation, occupied_density = _virtual_ranking(
         method, h_mo, eri_mo, n_doubly, first_virtual, M,

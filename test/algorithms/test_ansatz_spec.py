@@ -52,7 +52,7 @@ def test_two_hamiltonian_layers_lower_the_hf_energy():
         sector.restrict(atoms.calc.solver.hamiltonian).toarray()).min()
     assert energy == pytest.approx(from_hartree(exact, "eV"), abs=1e-4)
     assert "Wecker2015" in atoms.calc.citation_keys()
-    assert np.linalg.norm(atoms.calc.ansatz.state(result.optimal_parameters)) \
+    assert np.linalg.norm(atoms.calc.solver.ansatz.state(result.optimal_parameters)) \
         == pytest.approx(1.0, abs=1e-10)
 
 

@@ -31,7 +31,7 @@ def test_rhf_is_classical_and_exports_the_same_quantum_reference():
     assert result.reference_energy == pytest.approx(energy_ev)
     assert result.num_particles == (1, 1)
     assert isinstance(result.fermion_hamiltonian, Fermion)
-    assert atoms.calc.ansatz is None
+    assert atoms.calc.solver.ansatz is None
     assert not hasattr(atoms.calc.solver, "_h_matrix")
     assert result.optimal_parameters.size == 0
     assert "Roothaan1951" in atoms.calc.citation_keys()
@@ -58,7 +58,7 @@ def test_uhf_closed_shell_exports_its_own_natural_orbital_model():
     energy_ev = atoms.get_potential_energy()
     result = atoms.calc.result
     assert result.success
-    assert atoms.calc.ansatz is None
+    assert atoms.calc.solver.ansatz is None
     assert result.scf.n_alpha == result.scf.n_beta == 1
     assert "PopleNesbet1954" in atoms.calc.citation_keys()
     post_hf = Mandacaru(method="adapt-vqe", trace=False,

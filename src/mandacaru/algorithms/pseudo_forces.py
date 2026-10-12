@@ -264,9 +264,11 @@ def _ionic_shift(integrals, centers, atom, k, step):
     return {c: (plus[c] - minus[c]) / (2.0 * float(step)) for c in plus}
 
 
-def _sampled_multipole(dataset, center, grid, L, M, potential=None):
+def _sampled_multipole(dataset, center, grid, L, M, potential=None, *,
+                       real: bool):
     """``v_L(|r - center|) Y_LM`` of a compensation multipole, on the grid
-    (``potential(radius, r_g, L)`` in place of the Coulomb one)."""
+    (``potential(radius, r_g, L)`` in place of the Coulomb one), in the
+    harmonics ``real`` states."""
     from ..basis._angular import spherical_harmonic
     from ..pseudopotentials.multipoles import shape_potential
 
@@ -277,20 +279,22 @@ def _sampled_multipole(dataset, center, grid, L, M, potential=None):
     value = (shape_potential if potential is None else potential)(
         radius, float(dataset.compensation_radius), int(L))
     if int(L) == 0:
-        return value * spherical_harmonic(0, 0, 0.0, 0.0)
+        return value * spherical_harmonic(0, 0, 0.0, 0.0, real=real)
     safe = np.maximum(radius, 1e-300)
     theta = np.arccos(np.clip(dz / safe, -1.0, 1.0))
     phi = np.arctan2(dy, dx)
-    return value * spherical_harmonic(int(L), int(M), theta, phi)
+    return value * spherical_harmonic(int(L), int(M), theta, phi, real=real)
 
 
-def _moved_multipole(dataset, center, grid, L, M, k, delta, potential=None):
+def _moved_multipole(dataset, center, grid, L, M, k, delta, potential=None,
+                     *, real: bool):
     """Derivative of :func:`_sampled_multipole` as its center moves along ``k``."""
     step = np.zeros(3)
     step[k] = float(delta)
-    return ((_sampled_multipole(dataset, center + step, grid, L, M, potential)
+    return ((_sampled_multipole(dataset, center + step, grid, L, M, potential,
+                                real=real)
              - _sampled_multipole(dataset, center - step, grid, L, M,
-                                  potential))
+                                  potential, real=real))
             / (2.0 * float(delta)))
 
 
@@ -476,8 +480,9 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     """
     from ..integrals import _backend
     from .forces import (DEFAULT_ORBITAL_DELTA, HA_BOHR_TO_EV_ANGSTROM,
-                         ForceResult, _nuclear_repulsion_gradient,
-                         _pair_potentials, one_body_cross, orbital_derivatives)
+                         ForceResult, _nuclear_repulsion_gradient, atom_rows,
+                         one_body_cross, orbital_derivatives,
+                         pair_derivative_tensors)
 
     if energy is None and integrals.mo_coefficients is None:
         raise RuntimeError("the integrals carry no molecular orbitals; build the "
@@ -582,7 +587,9 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         blocks = integrals._atom_positions()
         moment_blocks = paw_multipole_blocks(projectors, integrals.datasets)
         v_comp = {c: _sampled_multipole(datasets[c[0]], centers[c[0]], grid,
-                                        c[1], c[2]) for c in channels}
+                                        c[1], c[2],
+                                        real=integrals.real_harmonics)
+                  for c in channels}
     exact_projections = bool(getattr(integrals, "exact_projections", False)) and P > 0
     if exact_projections:
         from ..pseudopotentials.paw import atom_centered_projection_gradients
@@ -660,8 +667,14 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 out = out + Q_mom[channel] * dV[channel]
         return out
 
-    phi = (_pair_potentials(psi, grid).reshape(M * M, ngrid)
-           if include_pulay else None)
+    # The pair potentials, streamed once and contracted with every
+    # function's own-center derivative: `T1`/`T2` (`pair_derivative_tensors`)
+    # give each atom's integral derivative below without the M^2 G stack
+    # of all pair potentials.
+    derivatives = (orbital_derivatives(basis, grid, atom_of_orbital, None,
+                                       delta) if include_pulay else None)
+    pair_terms = (pair_derivative_tensors(psi, derivatives, grid)
+                  if include_pulay else None)
 
     # -- a screened hybrid's exact exchange --
     if exchange is not None:
@@ -669,20 +682,17 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
 
         short_range = PoissonFFTSolver(grid.shape, step=grid.step,
                                        omega=float(exchange.omega))
-        phi_sr = None
-        if include_pulay:
-            pairs = (np.conj(psi)[:, None, :] * psi[None, :, :]).reshape(
-                M * M, ngrid)
-            phi_sr = short_range.solve_stack(pairs).reshape(M * M, ngrid)
-            del pairs
+        pair_terms_sr = (pair_derivative_tensors(psi, derivatives, grid,
+                                                 short_range)
+                         if include_pulay else None)
         if paw:
             from ..pseudopotentials.paw import long_range_multipole_potential
 
             lr_potential = long_range_multipole_potential(exchange.omega)
             W_lr, U_lr = integrals.long_range_compensation(exchange.omega)
-            v_comp_lr = {c: _sampled_multipole(datasets[c[0]], centers[c[0]],
-                                               grid, c[1], c[2], lr_potential)
-                         for c in channels}
+            v_comp_lr = {c: _sampled_multipole(
+                datasets[c[0]], centers[c[0]], grid, c[1], c[2], lr_potential,
+                real=integrals.real_harmonics) for c in channels}
 
     def exchange_term(dg_sr, dC):
         """``dE_x`` from a change of the short-range tensor and of the
@@ -709,7 +719,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 continue
             w_comp = _moved_multipole(datasets[atom], centers[atom], grid,
                                       channel[1], channel[2], k, delta,
-                                      lr_potential)
+                                      lr_potential,
+                                      real=integrals.real_harmonics)
             dW_lr[channel] = ((psi.conj() * w_comp) @ psi.T) * dV
         dU_lr = np.zeros_like(U_lr)
         step = COMPENSATION_DISTANCE_STEP
@@ -725,10 +736,12 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
             rb = datasets[B].compensation_radius
             slope = (multipole_coulomb_matrix(ra, levels_a, rb, levels_b,
                                               base - shift,
-                                              potential=lr_potential)
+                                              potential=lr_potential,
+                                              real=integrals.real_harmonics)
                      - multipole_coulomb_matrix(ra, levels_a, rb, levels_b,
                                                 base + shift,
-                                                potential=lr_potential)
+                                                potential=lr_potential,
+                                                real=integrals.real_harmonics)
                      ) / (2.0 * step)
             for i, la in enumerate(levels_a):
                 for j, lb in enumerate(levels_b):
@@ -743,9 +756,19 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     for atom in range(n_atoms):
         own_projectors = [p for p, proj in enumerate(projectors)
                           if proj.atom_index == atom]
-        orbital_stack = (orbital_derivatives(basis, grid, atom_of_orbital, atom,
-                                             delta)
+        orbital_stack = (atom_rows(derivatives, atom_of_orbital, atom)
                          if include_pulay else None)
+        own_rows = (orbital_atoms == atom)[:, None, None]
+        own_columns = (orbital_atoms == atom)[None, :, None]
+
+        def pair_derivative(terms, k):
+            """``int d rho_ab Phi_cd + int Phi_ab d rho_cd``, ``(M^2, M^2)``,
+            when ``atom`` moves along ``k`` (``R`` of the dense form)."""
+            T1, T2 = terms
+            Y = (np.where(own_rows, T1[k], 0.0)
+                 + np.where(own_columns, T2[k], 0.0)).reshape(M * M, M * M)
+            return Y + Y.T
+
         for k in range(3):
             # ---------------- Pulay: the basis functions of `atom` move ----
             if include_pulay and np.any(orbital_stack[k]):
@@ -768,14 +791,11 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dh = dh + dh_nl
                     if dS_aug is not None:
                         dS = dS + dS_aug
-                drho = (dpsi.conj()[:, None, :] * psi[None, :, :]
-                        + psi.conj()[:, None, :] * dpsi[None, :, :]
-                        ).reshape(M * M, ngrid)
-                R = (drho @ phi.T + phi @ drho.T) * dV
+                R = pair_derivative(pair_terms, k)
                 dg = R.reshape(M, M, M, M).transpose(0, 2, 1, 3)
                 dg_sr = None
                 if exchange is not None:
-                    R = (drho @ phi_sr.T + phi_sr @ drho.T) * dV
+                    R = pair_derivative(pair_terms_sr, k)
                     dg_sr = R.reshape(M, M, M, M).transpose(0, 2, 1, 3)
                 if paw:
                     dW = {}
@@ -848,9 +868,10 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     for channel in channels:
                         if channel[0] != atom:
                             continue
-                        w_comp = _moved_multipole(datasets[atom], centers[atom],
-                                                  grid, channel[1], channel[2],
-                                                  k, delta)
+                        w_comp = _moved_multipole(
+                            datasets[atom], centers[atom], grid, channel[1],
+                            channel[2], k, delta,
+                            real=integrals.real_harmonics)
                         dW[channel] = ((psi.conj() * w_comp) @ psi.T) * dV
 
                     # Multipole-multipole Coulomb depends on the *direction*
@@ -869,10 +890,12 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                         shift = np.zeros(3)
                         shift[k] = step
                         base = centers[B] - centers[atom]
-                        plus = multipole_coulomb_matrix(ra, levels_a, rb,
-                                                        levels_b, base - shift)
-                        minus = multipole_coulomb_matrix(ra, levels_a, rb,
-                                                         levels_b, base + shift)
+                        plus = multipole_coulomb_matrix(
+                            ra, levels_a, rb, levels_b, base - shift,
+                            real=integrals.real_harmonics)
+                        minus = multipole_coulomb_matrix(
+                            ra, levels_a, rb, levels_b, base + shift,
+                            real=integrals.real_harmonics)
                         slope = (plus - minus) / (2.0 * step)
                         for i, la in enumerate(levels_a):
                             for j, lb in enumerate(levels_b):

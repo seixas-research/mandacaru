@@ -533,7 +533,7 @@ def _warn_unresolved(integrals, basis_fns, h):
 def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
                                  options, kinetic=None, active_space=None,
                                  hamiltonian: bool = True, ghosts=(),
-                                 electric_field=None):
+                                 electric_field=None, two_body=None):
     """Valence-only Hamiltonian from a pseudopotential **family**.
 
     A thin dispatcher: ``family`` is the
@@ -563,6 +563,8 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
     extra = {"ghosts": tuple(ghosts)} if ghosts else {}
     if electric_field is not None:
         extra["electric_field"] = electric_field
+    if two_body is not None:
+        extra["two_body"] = two_body
     return family.build(atoms, grid, h, charge, spin, dict(options), kinetic,
                         active_space=active_space, hamiltonian=hamiltonian,
                         **extra)
@@ -593,7 +595,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                             kinetic=None, periodic: bool = False,
                             commensurate=None, active_space=None,
                             hamiltonian: bool = True, ghosts=(),
-                            electric_field=None):
+                            electric_field=None, two_body=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``hamiltonian=False`` stops after the integrals: the first element of the
@@ -649,6 +651,11 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     nucleus (or pseudopotential) and no electrons: a fragment computed in the
     complex's basis, for the counterpoise correction
     (:func:`~mandacaru.algorithms.interaction.interaction_energy`).
+
+    ``two_body`` (:func:`~mandacaru.integrals.cholesky.resolve_two_body`)
+    selects the two-body representation of the molecular Hamiltonian: the
+    dense tensor (``None`` / ``"dense"``) or Cholesky factors; see
+    :meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.molecular_hamiltonian`.
     """
     from .active_space import resolve_active_space_spec
 
@@ -686,7 +693,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         return _pseudopotential_hamiltonian(
             atoms, grid, h, charge, spin, family, options, kinetic=kinetic,
             active_space=spec, hamiltonian=hamiltonian, ghosts=ghosts,
-            electric_field=electric_field)
+            electric_field=electric_field, two_body=two_body)
 
     real = [i for i in range(len(symbols)) if i not in ghosts]
     numbers = atoms.get_atomic_numbers()
@@ -694,6 +701,14 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
             else int(sum(int(numbers[i]) for i in real)) - int(charge))
 
     if _is_plane_wave(name):
+        from ..integrals.cholesky import resolve_two_body
+
+        if resolve_two_body(two_body).cholesky:
+            raise NotImplementedError(
+                "the Cholesky two-body integrals factor the pair densities "
+                "of an atom-centered basis on the real-space grid; the "
+                "plane-wave (PW) basis has its own reciprocal-space "
+                "integrals.  Use two_body='dense' (the default)")
         if ghosts:
             raise NotImplementedError(
                 "ghost atoms need an atom-centered basis; the plane-wave (PW) "
@@ -718,7 +733,10 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         bset = BasisSet.build(name, **options)
     basis_fns, nuclei, atom_of_orbital = [], [], []
     for atom_index, (Z, sym, pos) in enumerate(zip(numbers, symbols, positions)):
-        functions = bset.atom(sym, center=pos, units="angstrom")
+        # Real spherical harmonics for a molecule, complex ones for a
+        # crystal (its Bloch sums and periodic consumers index them by m).
+        functions = bset.atom(sym, center=pos, units="angstrom",
+                              real=not periodic)
         basis_fns += functions
         atom_of_orbital += [atom_index] * len(functions)
         if atom_index not in ghosts:          # a ghost lends its functions only
@@ -775,7 +793,8 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     hamiltonian = (integrals.molecular_hamiltonian(
         mo_basis=True, n_electrons=n_el, num_particles=(n_alpha, n_beta),
         active_space=(None if spec is None
-                      else replace(spec, frozen=tuple(frozen) or None)))
+                      else replace(spec, frozen=tuple(frozen) or None)),
+        two_body=two_body)
         if hamiltonian else None)
     _warn_unresolved(integrals, basis_fns, h)
     # The selector may freeze more than `resolve_frozen` did (the dict form of

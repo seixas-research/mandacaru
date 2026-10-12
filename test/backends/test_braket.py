@@ -282,12 +282,12 @@ class TestBraketProvider:
 class TestDriverOnBraket:
     def test_naming_a_braket_device_selects_the_provider(self):
         driver = Mandacaru(method="adapt-vqe", device="braket-local")
-        assert driver.backend_provider == "braket"
-        assert driver.execute_circuits is True
+        assert driver.solver.backend_provider == "braket"
+        assert driver.solver.execute_circuits is True
 
     def test_aws_device_is_passed_to_the_provider_by_arn(self):
         driver = Mandacaru(method="adapt-vqe", device="braket-sv1")
-        options = driver._provider_options()
+        options = driver.solver._provider_options()
         assert options["device"] == device_arn("braket-sv1")
 
     def test_qpu_without_shots_is_refused_up_front(self):
@@ -296,8 +296,8 @@ class TestDriverOnBraket:
         # ... and accepted with shots.
         driver = Mandacaru(method="adapt-vqe", device="braket-ionq-aria",
                            shots=1000)
-        assert driver.shots == 1000
-        assert driver._provider_options()["shots"] == 1000
+        assert driver.solver.shots == 1000
+        assert driver.solver._provider_options()["shots"] == 1000
 
     def test_shots_require_the_braket_provider(self):
         with pytest.raises(NotImplementedError, match="braket"):
@@ -306,7 +306,7 @@ class TestDriverOnBraket:
     def test_shots_imply_circuit_execution(self):
         driver = Mandacaru(method="adapt-vqe", backend_provider="braket",
                            shots=256)
-        assert driver.execute_circuits is True
+        assert driver.solver.execute_circuits is True
 
     def test_vqe_energy_at_uses_the_shot_path(self, h2_problem):
         """The whole driver -- not just the provider -- runs on measurements."""
@@ -320,11 +320,11 @@ class TestDriverOnBraket:
                              ansatz=UCCSD(n // 2, num_particles, trotter=True, provider=build_provider("braket", shots=8000)),
                              trace=False, backend_provider="braket",
                              shots=8000)
-        theta = np.zeros(exact.ansatz.num_parameters)
+        theta = np.zeros(exact.solver.ansatz.num_parameters)
 
         # The measured energy is a statistical estimate: the off-diagonal Pauli
         # terms average to zero on a determinant but still fluctuate shot to
         # shot, so agreement is asserted within the shot-noise bound.
-        assert measured.energy_at(theta) == pytest.approx(
-            exact.energy_at(theta),
+        assert measured.solver.energy_at(theta) == pytest.approx(
+            exact.solver.energy_at(theta),
             abs=5 * shot_noise_estimate(hamiltonian, 8000))

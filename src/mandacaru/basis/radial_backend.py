@@ -17,7 +17,9 @@ compiler, no dependencies), loads it with :mod:`ctypes`, and routes
 
 Every kernel keeps its Python reference implementation, used when the library
 cannot be built and selectable with ``MANDACARU_BACKEND=numpy`` (the switch
-the integral backend already reads).  ``mandacaru-build --build-backend``
+the integral backend reads, parsed by the same
+:func:`~mandacaru.backend_policy.backend_preference`, so an invalid value is
+refused here as it is there).  ``mandacaru-build --build-backend``
 builds the library and reports which one is in use.
 """
 
@@ -32,6 +34,8 @@ from pathlib import Path
 
 import numpy as np
 from numpy.ctypeslib import ndpointer
+
+from ..backend_policy import backend_preference
 
 #: Must match ``MANDACARU_RADIAL_ABI`` in ``csrc/mandacaru_radial.h``.
 ABI_VERSION = 2
@@ -49,11 +53,6 @@ _F64_W = ndpointer(dtype=np.float64, flags="C_CONTIGUOUS,WRITEABLE")
 _LIB = None
 _attempted = False             # one build attempt per process
 _last_message = "not loaded yet"
-
-
-def _preference() -> str:
-    value = os.environ.get("MANDACARU_BACKEND", "auto").strip().lower() or "auto"
-    return value if value in ("auto", "c", "numpy") else "auto"
 
 
 def _bind(lib):
@@ -130,7 +129,7 @@ def build_radial_backend(*, verbose: bool = False) -> Path | None:
 def _library(build: bool = True):
     """The loaded library, building it once per process when it is missing."""
     global _LIB, _attempted, _last_message
-    if _preference() == "numpy":
+    if backend_preference() == "numpy":
         _last_message = "MANDACARU_BACKEND=numpy: Python reference kernels"
         return None
     if _LIB is not None:
@@ -147,7 +146,7 @@ def _library(build: bool = True):
         if built is not None:
             _LIB = _load(built)
     if _LIB is None:
-        if _preference() == "c":
+        if backend_preference() == "c":
             raise RuntimeError(f"MANDACARU_BACKEND=c but the radial C backend "
                                f"is unavailable: {_last_message}")
         if _last_message == "not loaded yet":

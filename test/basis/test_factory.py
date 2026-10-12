@@ -22,6 +22,13 @@ class TestBuild:
         with pytest.raises(ValueError):
             BasisSet.build(method="STO")
 
+    @pytest.mark.parametrize("name", ["PAW-LCAO", "UPAW-LCAO", "PW"])
+    def test_calculator_only_families_point_to_the_calculator(self, name):
+        """The factory builds the all-electron families; the pseudopotential
+        families and plane waves are routed by ``Mandacaru(basis=...)``."""
+        with pytest.raises(ValueError, match=r"Mandacaru\(basis=\.\.\.\)"):
+            BasisSet.build(method=name)
+
 
 class TestNAOFactory:
     def test_hydrogen_valence(self):

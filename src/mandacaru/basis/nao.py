@@ -45,6 +45,7 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 
 from ..units import EV_TO_HARTREE, to_bohr
+from ._angular import sample_dtype as _dtype
 from ._angular import spherical_coords, spherical_harmonic
 from .base import BasisFunction
 
@@ -139,12 +140,15 @@ class NumericalAtomicOrbital(BasisFunction):
     def __init__(self, n: int, l: int, m: int, Z: float = 1.0,
                  r_c: float | None = None,
                  energy_shift: float = DEFAULT_ENERGY_SHIFT,
-                 center=None, units: str = "angstrom", n_grid: int = 2000):
+                 center=None, units: str = "angstrom", n_grid: int = 2000,
+                 *, real: bool = True):
         if not (0 <= l < n):
             raise ValueError(f"require 0 <= l < n, got n={n}, l={l}")
         if abs(m) > l:
             raise ValueError(f"require |m| <= l, got l={l}, m={m}")
         self.n, self.l, self.m = int(n), int(l), int(m)
+        #: Real (molecule) or complex (crystal) spherical harmonics.
+        self.real = bool(real)
         self.Z = float(Z)
         self.r_c = float(r_c) if r_c is not None \
             else energy_shift_to_rc(energy_shift)
@@ -177,8 +181,8 @@ class NumericalAtomicOrbital(BasisFunction):
         """Sample ``psi_{nlm}`` on Cartesian coordinates (Bohr)."""
         r, theta, phi = spherical_coords(x, y, z, self.center)
         R = self.radial(r)
-        Y = spherical_harmonic(self.l, self.m, theta, phi)
-        return np.asarray(R * Y, dtype=np.complex128)
+        Y = spherical_harmonic(self.l, self.m, theta, phi, real=self.real)
+        return np.asarray(R * Y, dtype=_dtype(self.real))
 
     def __repr__(self) -> str:
         return (f"NumericalAtomicOrbital(n={self.n}, l={self.l}, m={self.m}, "

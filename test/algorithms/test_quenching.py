@@ -45,12 +45,12 @@ def lih_cache(tmp_path_factory):
 
 class TestQuenchingArgument:
     def test_defaults_to_true_on_every_driver(self):
-        assert Mandacaru(method="adapt-vqe").quenching is True
-        assert Mandacaru(method="vqe").quenching is True
+        assert Mandacaru(method="adapt-vqe").solver.quenching is True
+        assert Mandacaru(method="vqe").solver.quenching is True
 
     @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
     def test_flag_is_stored(self, method):
-        assert Mandacaru(method=method, quenching=False).quenching is False
+        assert Mandacaru(method=method, quenching=False).solver.quenching is False
 
 
 # --------------------------------------------------------------------------- #
@@ -132,7 +132,7 @@ class TestVQEQuenching:
                         quenching=False)
         result = vqe.run()
         assert result.optimal_energy < result.reference_energy
-        assert result.num_parameters == vqe.ansatz.num_parameters
+        assert result.num_parameters == vqe.solver.ansatz.num_parameters
         assert len(result.history) == result.num_evaluations
 
     def test_joint_optimization_is_at_least_as_good(self, lih_cache):
@@ -153,7 +153,7 @@ class TestVQEQuenching:
             evaluated.append(theta)
             return float(np.sum((theta - 0.5) ** 2))
 
-        result = vqe._optimize_all(cost, np.zeros(4))
+        result = vqe.solver._optimize_all(cost, np.zeros(4))
         assert result.x.size == 4
 
         # Between consecutive evaluations exactly one coordinate ever moves, and
@@ -176,8 +176,8 @@ class TestVQEQuenching:
         def cost(theta):
             return float((np.asarray(theta, dtype=float)[0] - 0.3) ** 2)
 
-        swept = vqe._optimize_all(cost, np.zeros(1))
-        joint = vqe.optimizer.minimize(cost, np.zeros(1))
+        swept = vqe.solver._optimize_all(cost, np.zeros(1))
+        joint = vqe.solver.optimizer.minimize(cost, np.zeros(1))
         assert swept.x[0] == pytest.approx(joint.x[0], abs=1e-9)
         assert swept.nfev == joint.nfev
 

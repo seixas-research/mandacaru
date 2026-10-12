@@ -33,7 +33,7 @@ from mandacaru.utils.citations import (DEFAULT_REFERENCES_FILE, _ANSATZ_KEYS,
                                        _METHOD_KEYS,
                                        _OPTIMIZER_KEYS, _POOL_KEYS,
                                        _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS,
-                                       citation_keys,
+                                       _TWO_BODY_KEYS, citation_keys,
                                        provenance_keys,
                                        resolve_references_path,
                                        write_references)
@@ -132,6 +132,16 @@ class TestEveryRegisteredChoiceIsCitable:
         for name in ANSATZ_NAMES:
             assert _ANSATZ_KEYS.get(name), name
             assert citation_keys(ansatz=name) != citation_keys()
+
+    def test_every_two_body_representation(self):
+        """The dense tensor needs no paper of its own; the Cholesky factors
+        cite theirs."""
+        from mandacaru.integrals.cholesky import TWO_BODY_METHODS
+        for name in TWO_BODY_METHODS:
+            assert name in _TWO_BODY_KEYS, name
+        assert set(_TWO_BODY_KEYS["cholesky"]) <= set(
+            citation_keys(two_body="cholesky"))
+        assert citation_keys(two_body="dense") == citation_keys()
 
     def test_every_stable_method(self):
         from mandacaru.algorithms.calculator import STABLE_METHODS
@@ -361,7 +371,7 @@ class TestARunWritesIt:
                                references=True)
         atoms.get_total_energy()
         assert (tmp_path / DEFAULT_REFERENCES_FILE).is_file()
-        assert atoms.calc.references_written == DEFAULT_REFERENCES_FILE
+        assert atoms.calc.solver.references_written == DEFAULT_REFERENCES_FILE
 
     def test_an_explicit_path_is_honored(self, tmp_path):
         atoms = h2()

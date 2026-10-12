@@ -278,7 +278,7 @@ class TestSamePhysicsEverywhere:
                                profile=False, convergence={"gradient": 1e-7},
                                max_iterations=12)
         energy = atoms.get_potential_energy()
-        matrix = atoms.calc._h_matrix
+        matrix = atoms.calc.solver._h_matrix
         exact = np.linalg.eigvalsh(
             matrix if isinstance(matrix, np.ndarray) else matrix.toarray())[0]
         return energy, exact * HARTREE_TO_EV

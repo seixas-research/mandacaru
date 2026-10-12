@@ -416,6 +416,18 @@ Integral Engine
    :undoc-members:
    :show-inheritance:
 
+FFT Workspace
+~~~~~~~~~~~~~
+
+.. automodule:: mandacaru.integrals.fft
+   :members:
+
+Cholesky-Factored Two-Electron Integrals
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: mandacaru.integrals.cholesky
+   :members:
+
 ----
 
 Fermionic Operators & Mappings

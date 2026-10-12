@@ -223,7 +223,17 @@ class TruncatedCoulombSolver:
         self.L = self.shape
         self.workers = workers
         self.real_kernel = wigner_seitz_kernel(self.shape, self.step, shells)
-        self._kernel = sfft.fftn(self.real_kernel, workers=self.workers)
+        from ..integrals.fft import workspace
+        from ..integrals.poisson import _reflected
+
+        transform = sfft.fftn(self.real_kernel, workers=self.workers)
+        #: True when the kernel is even (a minimum-image kernel is, up to
+        #: ties on the Wigner-Seitz boundary), so its transform is real.
+        self.even = bool(np.array_equal(self.real_kernel,
+                                        _reflected(self.real_kernel)))
+        self._kernel = transform.real.copy() if self.even else transform
+        #: The shared FFT workspace of this grid.
+        self.workspace = workspace(self.shape, None, self.workers)
 
     @property
     def enclosed_volume(self) -> float:
@@ -252,23 +262,19 @@ class TruncatedCoulombSolver:
         """Truncated-Coulomb potential of one density on the grid."""
         return self.solve_stack(rho_flat[None, :])[0]
 
-    def solve_stack(self, rho_stack: np.ndarray) -> np.ndarray:
+    def solve_stack(self, rho_stack: np.ndarray,
+                    out: np.ndarray | None = None) -> np.ndarray:
         """Truncated-Coulomb potentials of a stack of ``P`` densities.
 
         The convolution carries the voxel volume because the kernel is a real
         ``1/r`` sampled on the grid rather than a reciprocal-space
-        :math:`4\\pi/G^2`, which already contains it.
+        :math:`4\\pi/G^2`, which already contains it.  ``out`` is an
+        optional C-contiguous ``(P, G)`` buffer to write into, as for
+        :meth:`~mandacaru.integrals.poisson.PoissonFFTSolver.solve_stack`.
         """
-        nx, ny, nz = self.shape
-        rho_stack = np.ascontiguousarray(rho_stack, dtype=np.complex128)
-        out = np.empty((rho_stack.shape[0], nx * ny * nz), dtype=np.complex128)
-        for index in range(rho_stack.shape[0]):
-            spectrum = sfft.fftn(rho_stack[index].reshape(nx, ny, nz),
-                                 workers=self.workers)
-            potential = sfft.ifftn(spectrum * self._kernel,
-                                   workers=self.workers)
-            out[index] = potential.reshape(-1) * self.dV
-        return out
+        from ..integrals.poisson import convolve_stack
+
+        return convolve_stack(self, rho_stack, out, self.dV)
 
 
 @dataclass

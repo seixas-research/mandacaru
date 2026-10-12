@@ -34,6 +34,7 @@ import numpy as np
 from scipy.special import gamma
 
 from ..units import to_bohr
+from ._angular import sample_dtype as _dtype
 from ._angular import spherical_coords, spherical_harmonic
 from .base import BasisFunction
 
@@ -70,10 +71,12 @@ class GaussianOrbital(BasisFunction):
     """
 
     def __init__(self, l: int, m: int, exponents, coefficients, center=None,
-                 units: str = "angstrom"):
+                 units: str = "angstrom", *, real: bool = True):
         if l < 0 or abs(m) > l:
             raise ValueError(f"require l >= 0 and |m| <= l, got l={l}, m={m}")
         self.l, self.m = int(l), int(m)
+        #: Real (molecule) or complex (crystal) spherical harmonics.
+        self.real = bool(real)
         self.exponents = np.asarray(exponents, dtype=float).ravel()
         self.coefficients = np.asarray(coefficients, dtype=float).ravel()
         if self.exponents.shape != self.coefficients.shape:
@@ -103,8 +106,8 @@ class GaussianOrbital(BasisFunction):
         """Sample ``chi_{lm}`` on Cartesian coordinates (Bohr)."""
         r, theta, phi = spherical_coords(x, y, z, self.center)
         R = self.radial(r)
-        Y = spherical_harmonic(self.l, self.m, theta, phi)
-        return np.asarray(R * Y, dtype=np.complex128)
+        Y = spherical_harmonic(self.l, self.m, theta, phi, real=self.real)
+        return np.asarray(R * Y, dtype=_dtype(self.real))
 
     def __repr__(self) -> str:
         return (f"GaussianOrbital(l={self.l}, m={self.m}, "

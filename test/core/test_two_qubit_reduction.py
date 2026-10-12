@@ -160,7 +160,7 @@ class TestDrivers:
                                profile=False, max_iterations=4)
         atoms.get_total_energy()
         provider = QiskitProvider()
-        assert atoms.calc.measured_energy(provider) == pytest.approx(
+        assert atoms.calc.solver.measured_energy(provider) == pytest.approx(
             exact, abs=1e-8 * HARTREE_TO_EV)
-        qc = provider.build(*atoms.calc.ansatz_problem()[:4])
+        qc = provider.build(*atoms.calc.solver.ansatz_problem()[:4])
         assert qc.num_qubits == 2

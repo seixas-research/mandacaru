@@ -77,11 +77,11 @@ class TestTripletReference:
 
 class TestSpinAndInitialState:
     def test_spin_defaults_false(self):
-        assert Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO").spin is False
+        assert Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO").solver.spin is False
 
     def test_spin_flag_stored(self):
         assert Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                         spin=True).spin is True
+                         spin=True).solver.spin is True
 
     def test_even_electron_spin_polarized_matches_closed_shell(self):
         # For a singlet (even electrons) spin-polarized == closed-shell.
@@ -97,11 +97,11 @@ class TestSpinAndInitialState:
         assert energy(False) == pytest.approx(energy(True), abs=1e-6)
 
     def test_initial_state_default_is_hartree_fock(self):
-        assert Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO").initial_state == "hartree-fock"
+        assert Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO").solver.initial_state == "hartree-fock"
 
     def test_initial_state_none_is_hartree_fock(self):
         assert Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                         initial_state=None).initial_state == "hartree-fock"
+                         initial_state=None).solver.initial_state == "hartree-fock"
 
     def test_unknown_initial_state_rejected(self):
         with pytest.raises(ValueError):

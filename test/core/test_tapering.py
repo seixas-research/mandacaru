@@ -516,7 +516,7 @@ class TestWhatItRefuses:
                       cell=(9., 9., 10.))
         atoms.center()
         estimate = Mandacaru(basis="STO-3G", taper=True, dry_run=True,
-                             trace=False).estimate_qubits(atoms)
+                             trace=False).solver.estimate_qubits(atoms)
         assert any("UPPER BOUND" in note for note in estimate.notes)
 
 

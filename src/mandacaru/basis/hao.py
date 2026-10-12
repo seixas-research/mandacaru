@@ -22,6 +22,7 @@ from scipy import special
 from ..units import to_bohr
 from ._config import (_AUFBAU_ORDER, _L_CAPACITY, _SLATER_GROUP_ORDER,
                       _slater_group)
+from ._angular import sample_dtype as _dtype, spherical_harmonic
 from .base import BasisFunction
 
 # Bohr radius in atomic units.  Kept explicit so the formula reads like a
@@ -56,12 +57,14 @@ class HydrogenicAtomicOrbital(BasisFunction):
     """
 
     def __init__(self, n: int, l: int, m: int, Z: float = 1.0, center=None,
-                 units: str = "angstrom"):
+                 units: str = "angstrom", *, real: bool = True):
         if not (0 <= l < n):
             raise ValueError(f"require 0 <= l < n, got n={n}, l={l}")
         if abs(m) > l:
             raise ValueError(f"require |m| <= l, got l={l}, m={m}")
         self.n, self.l, self.m = int(n), int(l), int(m)
+        #: Real (molecule) or complex (crystal) spherical harmonics.
+        self.real = bool(real)
         self.Z = float(Z)
         self.center = (np.zeros(3) if center is None
                        else to_bohr(center, units))
@@ -171,8 +174,8 @@ class HydrogenicAtomicOrbital(BasisFunction):
         rho = (2 * self.Z * r) / (self.n * _A0)
         R_nl = self._radial_norm * np.exp(-rho / 2) * (rho ** self.l) \
             * self._laguerre(rho)
-        Y_lm = special.sph_harm_y(self.l, self.m, theta, phi)
-        return np.asarray(R_nl * Y_lm, dtype=np.complex128)
+        Y_lm = spherical_harmonic(self.l, self.m, theta, phi, real=self.real)
+        return np.asarray(R_nl * Y_lm, dtype=_dtype(self.real))
 
     def __repr__(self) -> str:
         return (f"HydrogenicAtomicOrbital(n={self.n}, l={self.l}, m={self.m}, "

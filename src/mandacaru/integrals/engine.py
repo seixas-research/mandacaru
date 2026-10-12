@@ -25,6 +25,7 @@ import numpy as np
 from ..basis.base import BasisFunction
 from ..units import from_hartree
 from . import _backend
+from .fft import PARALLEL_MIN_VALUES, parallel_chunks, thread_count
 from .grid import Grid
 from .poisson import PeriodicPoissonSolver, PoissonFFTSolver
 
@@ -76,32 +77,88 @@ def radial_kinetic_energy(radial, l: int, r_max: float = 40.0,
     return float(0.5 * (np.trapezoid(du * du, r) + centrifugal) / norm)
 
 
-def eri_peak_bytes(n_orbitals: int) -> int:
+def eri_peak_bytes(n_orbitals: int, real: bool = False) -> int:
     """Peak memory of the FFT two-body tensor beyond the Poisson blocks.
 
-    The two Gram blocks ``G1``/``G2`` (``U x U`` complex, ``U = M(M+1)/2``
-    pairs), the ``M^4`` complex result, and one ``a``-slice of assembly
-    temporaries (a few ``M^3`` arrays).  The blocked Poisson stage is
-    bounded separately by ``max_memory_mb``.
+    The ``M^4`` result -- real (8 bytes an entry) for a molecule's real
+    functions, complex (16) otherwise -- written in place block by block,
+    and the ``(nv, M, M)`` contraction results of one block of pair
+    potentials (a few ``M^3`` arrays in practice).  The pair densities,
+    potentials and contraction tiles are bounded separately by
+    ``max_memory_mb``.
     """
     M = int(n_orbitals)
-    U = M * (M + 1) // 2
-    return 16 * (2 * U * U + M ** 4 + 6 * M ** 3)
+    return (8 if real else 16) * (M ** 4 + 2 * M ** 3)
 
 
-def refuse_unaffordable_eri(n_orbitals: int) -> None:
+def refuse_unaffordable_eri(n_orbitals: int, real: bool = False) -> None:
     """Raise :class:`MemoryError` when the two-body tensor cannot fit, before
     the Poisson solves it would otherwise run first."""
-    from ..core.matrix_free import format_bytes, physical_memory_bytes
+    from ..core.matrix_free import available_memory_bytes, format_bytes
 
-    needed = eri_peak_bytes(n_orbitals)
-    available = physical_memory_bytes()
+    needed = eri_peak_bytes(n_orbitals, real)
+    available = available_memory_bytes()
     if needed > available:
+        kind = "real" if real else "complex"
         raise MemoryError(
             f"the two-electron tensor of {n_orbitals} orbitals needs "
-            f"{format_bytes(needed)} (the M^4 result and its two Gram "
-            f"blocks) against {format_bytes(available)} of memory; reduce "
+            f"{format_bytes(needed)} (the {kind} M^4 result) against "
+            f"{format_bytes(available)} of available memory; reduce "
             f"the basis (size=, an active_space) before integrating")
+
+
+#: Most pair potentials solved per block: past this a larger block only
+#: holds more memory (the transforms batch by the workspace, the products
+#: by tiles).
+MAX_PAIR_BLOCK = 1024
+
+#: Target bytes of one contraction tile ``conj(psi) * Phi`` (a few MB keeps
+#: it in cache while the matrix product reads it).
+CONTRACTION_TILE_BYTES = 8 * 2 ** 20
+
+
+def contract_pair_potentials(conj_psi, psi, phi, workers: int = -1) -> np.ndarray:
+    r"""``X[v, a, c] = sum_g conj(psi_a) Phi_v psi_c`` for a block of pair
+    potentials ``phi`` ``(nv, G)`` over the functions ``psi`` ``(M, G)``
+    (``conj_psi`` is ``conj(psi)``, passed in so a caller forms it once).
+
+    Tile by tile over the grid: each tile ``conj(psi) * Phi_v`` for a few
+    ``v`` (:data:`CONTRACTION_TILE_BYTES`) is one matrix product with
+    ``psi^T``, so no ``M x G`` product per potential is ever resident.  Not
+    scaled by the volume element.  Real functions and potentials give a real
+    ``X``.  ``workers`` threads form the tiles (``-1``: every core), as the
+    FFT workers of the solver that made ``phi``.
+    """
+    M, ngrid = psi.shape
+    nv = phi.shape[0]
+    dtype = np.result_type(conj_psi, psi, phi)
+    X = np.zeros((nv, M, M), dtype=dtype)
+    rows = max(1, min(nv, 4096 // max(M, 1)))
+    width = int(max(256, min(ngrid, CONTRACTION_TILE_BYTES
+                             // (dtype.itemsize * rows * M))))
+    tile = np.empty(rows * M * width, dtype=dtype)
+    part = np.empty((rows * M, M), dtype=dtype)
+    threads = (1 if rows * M * width < PARALLEL_MIN_VALUES
+               else thread_count(workers))
+    for v0 in range(0, nv, rows):
+        v1 = min(v0 + rows, nv)
+        k = v1 - v0
+        for g0 in range(0, ngrid, width):
+            g1 = min(g0 + width, ngrid)
+            w = g1 - g0
+            t = tile[:k * M * w].reshape(k, M, w)
+
+            def form(lo, hi):
+                # The element-wise product is single-threaded in NumPy;
+                # its rows are split over threads (the product is not).
+                np.multiply(conj_psi[None, :, g0:g1],
+                            phi[v0 + lo:v0 + hi, None, g0:g1], out=t[lo:hi])
+
+            parallel_chunks(k, form, threads)
+            out = part[:k * M]
+            np.matmul(t.reshape(k * M, w), psi[:, g0:g1].T, out=out)
+            X[v0:v1] += out.reshape(k, M, M)
+    return X
 
 
 class IntegralEngine:
@@ -132,11 +189,19 @@ class IntegralEngine:
         self.basis = list(basis)
         self.grid = grid
         # Sample every function once; reuse the (M, ngrid) stack for all
-        # integrals.  This is the data actually shipped to C.
+        # integrals.  This is the data actually shipped to C.  Each function
+        # is written straight into the preallocated stack, so the samples
+        # never exist twice (a list of rows and their stacked copy).
         sample = (self._sample_periodic if self.periodic
                   else (lambda function: function.sample(grid)))
-        self._psi = np.ascontiguousarray(
-            np.stack([sample(b) for b in self.basis]), dtype=np.complex128)
+        #: Whether every function is real (a molecule's real harmonics): the
+        #: samples, and every integral built from them, are then ``float64``.
+        self.real = (not self.periodic and bool(self.basis)
+                     and all(getattr(f, "real", False) for f in self.basis))
+        self._psi = np.empty((len(self.basis), grid.size),
+                             dtype=np.float64 if self.real else np.complex128)
+        for row, function in zip(self._psi, self.basis):
+            row[:] = sample(function)
 
         # Profiling: wall-time per integral stage, plus the backend / core count
         # so the driver summary can report how the integration ran.
@@ -302,31 +367,51 @@ class IntegralEngine:
         Laplacian of the *unmoved* functions only
         (:func:`~mandacaru.algorithms.forces.one_body_cross`).
         """
-        from scipy import fft as sfft
-
         samples = np.asarray(samples)
         rows = samples.reshape(-1, self.grid.size)
         shape = tuple(int(n) for n in self.grid.shape)
-        k2 = self._g_squared()
+        space = self._workspace()
+        minus_k2 = -self._g_squared()
+        if not np.iscomplexobj(rows):
+            # Real samples: real transforms, a real Laplacian (|G|^2 is even).
+            out = np.empty(rows.shape)
+            space.convolve_real(np.ascontiguousarray(rows),
+                                minus_k2[..., :space.half], out)
+            return out.reshape(samples.shape)
         out = np.empty(rows.shape, dtype=np.complex128)
-        for index, row in enumerate(rows):
-            out[index] = sfft.ifftn(-k2 * sfft.fftn(row.reshape(shape),
-                                                    workers=-1),
-                                    workers=-1).reshape(-1)
+        # The transforms run in place on `out` itself, a batch of rows at a
+        # time, through the grid's shared workspace (circular: no padding).
+        step = space.batch(16)
+        for start in range(0, len(rows), step):
+            block = out[start:start + step]
+            block[:] = rows[start:start + step]
+            stack = block.reshape((-1,) + shape)
+            space.forward(stack)
+            space.multiply(stack, minus_k2)
+            space.inverse(stack)
         return out.reshape(samples.shape)
+
+    def _workspace(self):
+        """The grid's shared FFT workspace (no padding)."""
+        from .fft import workspace
+
+        return workspace(self.grid.shape, None, -1)
 
     def _spectral_kinetic(self) -> np.ndarray:
         r"""``T[a,b] = -1/2 <psi_a | nabla^2 psi_b>`` with the FFT Laplacian.
 
-        One function at a time (one grid-sized transform resident), so the
-        memory cost is the basis stack already held plus a single grid.
+        A batch of functions at a time (the workspace's batch of
+        grid-sized transforms resident), so the memory cost is the basis
+        stack already held plus that batch.
         """
         grid = self.grid
         M = self._psi.shape[0]
-        T = np.zeros((M, M), dtype=np.complex128)
-        for b in range(M):
-            lap = self.spectral_laplacian(self._psi[b])
-            T[:, b] = -0.5 * grid.dV * (np.conj(self._psi) @ lap)
+        T = np.zeros((M, M), dtype=self._psi.dtype)
+        step = self._workspace().batch(16)
+        conj_psi = np.conj(self._psi)
+        for b0 in range(0, M, step):
+            lap = self.spectral_laplacian(self._psi[b0:b0 + step])
+            T[:, b0:b0 + step] = -0.5 * grid.dV * (conj_psi @ lap.T)
         return 0.5 * (T + T.conj().T)
 
     def resolution(self, T: np.ndarray | None = None,
@@ -403,30 +488,42 @@ class IntegralEngine:
         """
         with self.timings.time("two-body integrals (fft)"):
             eri = self._two_body_fft(max_memory_mb, solver=solver)
-        return from_hartree(eri, energy_units)
+        # In place: the M^4 tensor is never copied for its units.
+        eri *= from_hartree(1.0, energy_units)
+        return eri
 
     def _two_body_fft(self, max_memory_mb: float | None = None, solver=None):
         r"""FFT-Poisson electron-repulsion tensor ``<ab|cd>`` (physicists').
 
-        For every pair build the density ``rho_ij = conj(psi_i) psi_j``; solve
-        Poisson for ``rho_bd`` to get ``Phi_bd``; then
+        For every pair ``v = (b, d)`` with ``b <= d`` the density
+        ``rho_bd = conj(psi_b) psi_d`` is solved for its potential
+        ``Phi_bd``, and its whole ``(a, c)`` slab follows from one product,
 
-            eri[a,b,c,d] = <ab|cd> = sum_g rho_ac[g] Phi_bd[g] dV .
+            X_v[a, c] = sum_g conj(psi_a) psi_c Phi_bd dV
+                      = ((conj(psi) * Phi_bd) @ psi.T) dV ,
 
-        Two things keep this cheap.  **Hermitian pairs:** ``rho_ji =
-        conj(rho_ij)`` and the Coulomb kernel is real, so ``Phi_ji =
-        conj(Phi_ij)``; only the ``U = M(M+1)/2`` pairs with ``i <= j`` are
-        ever built or solved, and the full tensor is assembled from the two
-        Gram blocks ``G1[u,v] = sum rho_u Phi_v`` and ``G2[u,v] = sum conj(rho_u)
-        Phi_v`` (their conjugates give the flipped cases).  **Blocking:** the
-        potentials are solved in blocks of ``B`` pairs and the densities are
-        re-formed on the fly per block (an element-wise product, cheap), so
-        the resident memory is two ``B x ngrid`` stacks plus the FFT buffers
-        -- bounded by ``max_memory_mb`` (default :data:`ERI_MEMORY_MB`, env
-        ``MANDACARU_ERI_MEMORY_MB``) -- instead of two ``M^2 x ngrid`` stacks.
-        The result is bit-for-bit the same tensor as the dense contraction
-        up to round-off.
+        written straight into ``eri[:, b, :, d] = X_v``; the flipped pair is
+        ``eri[:, d, :, b] = conj(X_v^T)``, because ``Phi_db = conj(Phi_bd)``
+        (the kernel is real).  Only the ``U = M(M+1)/2`` pairs ``b <= d``
+        are formed and solved, once each; no Gram matrix and no assembly
+        step exist, so the peak is the ``M^4`` result plus the blocks below.
+
+        **Blocking.**  The potentials are solved ``B`` pairs at a time into
+        one reused ``B x G`` buffer, bounded by ``max_memory_mb`` (default
+        :data:`ERI_MEMORY_MB`, env ``MANDACARU_ERI_MEMORY_MB``).  The products
+        ``conj(psi) * Phi`` are formed tile by tile over the grid, so they
+        never take more than a few MB.  When all ``U`` pair densities fit in
+        half that budget they are formed once and kept, and the block's
+        whole contraction is two matrix products against them
+        (:meth:`_contract_cached`); otherwise the streamed products above
+        (:func:`contract_pair_potentials`).  Both give the dense contraction to
+        round-off.
+
+        ``two_body_profile`` holds the seconds of each stage of the last
+        call (pair densities, Poisson, contraction) and the route taken.
         """
+        from time import perf_counter
+
         M = len(self.basis)
         ngrid = self.grid.size
         psi = self._psi                                          # (M, ngrid)
@@ -435,81 +532,118 @@ class IntegralEngine:
             solver = (PeriodicPoissonSolver(self.grid.shape, step=self.grid.step)
                       if getattr(self, "periodic", False)
                       else PoissonFFTSolver(self.grid.shape, step=self.grid.step))
-
-        # Unique pairs u = (i, j) with i <= j, and the lookup for any (a, c).
         iu, ju = np.triu_indices(M)
         U = iu.size
-        uidx = np.empty((M, M), dtype=np.int64)
-        uidx[iu, ju] = np.arange(U)
-        uidx[ju, iu] = np.arange(U)
-        flip = np.zeros((M, M), dtype=bool)                      # a > c
-        flip[ju, iu] = True
-        np.fill_diagonal(flip, False)
-
-        refuse_unaffordable_eri(M)
-        B = self._eri_block_size(U, ngrid, solver, max_memory_mb)
-        G1 = np.empty((U, U), dtype=np.complex128)
-        G2 = np.empty((U, U), dtype=np.complex128)
-        rho = np.empty((B, ngrid), dtype=np.complex128)          # reused buffer
+        # The element-wise passes use as many threads as the solver's FFTs.
+        workers = getattr(solver, "workers", -1)
+        # Real functions (a molecule) on an even kernel: real pair densities
+        # through the real transforms, real potentials, a real tensor.
+        real = not np.iscomplexobj(psi) and bool(getattr(solver, "even",
+                                                         False))
+        dtype = np.float64 if real else np.complex128
+        itemsize = np.dtype(dtype).itemsize
+        refuse_unaffordable_eri(M, real)
+        budget = (eri_memory_budget_mb() if max_memory_mb is None
+                  else float(max_memory_mb)) * 2 ** 20
+        cached = itemsize * U * ngrid <= 0.5 * budget
+        B = self._eri_block_size(U, ngrid, solver, max_memory_mb,
+                                 cached=cached, itemsize=itemsize)
+        profile = {"pair densities": 0.0, "poisson": 0.0, "contraction": 0.0,
+                   "route": "cached" if cached else "streamed",
+                   "pair_block": B, "real": real}
+        eri = np.empty((M, M, M, M), dtype=dtype)
+        rho = (None if cached
+               else np.empty((B, ngrid), dtype=psi.dtype))       # reused
+        phi = np.empty((B, ngrid), dtype=dtype)                  # reused
+        densities = None
+        if cached:
+            t0 = perf_counter()
+            densities = np.empty((U, ngrid), dtype=psi.dtype)
+            self._pair_block(psi, iu, ju, densities, workers)
+            profile["pair densities"] += perf_counter() - t0
+        conj_psi = None if cached else (psi if real else np.conj(psi))
         for v0 in range(0, U, B):
             v1 = min(v0 + B, U)
             nv = v1 - v0
-            self._pair_block(psi, iu[v0:v1], ju[v0:v1], rho[:nv])
-            phi = solver.solve_stack(rho[:nv])                   # (nv, ngrid)
-            phi_c = np.conj(phi)
-            # G2 = conj(rho) @ phi^T = conj(rho @ conj(phi)^T): one conjugate
-            # per block instead of one per (u, v) product.  The transposed
-            # operands are BLAS-native (no copies).
-            for u0 in range(0, U, B):
-                u1 = min(u0 + B, U)
-                nu = u1 - u0
-                self._pair_block(psi, iu[u0:u1], ju[u0:u1], rho[:nu])
-                G1[u0:u1, v0:v1] = rho[:nu] @ phi.T
-                np.conjugate(rho[:nu] @ phi_c.T, out=G2[u0:u1, v0:v1])
-            del phi, phi_c
-        del rho
-        G1 *= dV
-        G2 *= dV
-
-        # R[(a,c),(b,d)] = sum_g rho_ac Phi_bd dV, with rho_ac = conj(rho_u) when
-        # a > c and Phi_bd = conj(Phi_v) when b > d.  Assembled one ``a`` at
-        # a time straight into the physicists' (a, b, c, d) tensor: the only
-        # M^4 array is the result itself (the full-size gathers, nested
-        # ``where`` intermediates and final copy used to hold ~6 of them).
-        u = uidx.reshape(-1)                                     # over (b, d)
-        fb = flip.reshape(-1)[None, :]
-        eri = np.empty((M, M, M, M), dtype=np.complex128)
-        for a in range(M):
-            rows = uidx[a]                                        # (a, c) pairs
-            fa = flip[a][:, None]
-            g1 = G1[rows][:, u]                                   # (M, M^2)
-            g2 = G2[rows][:, u]
-            block = np.where(fb, np.where(fa, np.conj(g1), np.conj(g2)),
-                             np.where(fa, g2, g1))
-            # block[c, (b, d)] -> eri[a, b, c, d]
-            eri[a] = block.reshape(M, M, M).transpose(1, 0, 2)
+            t0 = perf_counter()
+            if cached:
+                block = densities[v0:v1]
+            else:
+                block = self._pair_block(psi, iu[v0:v1], ju[v0:v1], rho[:nv],
+                                         workers)
+            t1 = perf_counter()
+            solver.solve_stack(block, out=phi[:nv])
+            t2 = perf_counter()
+            if cached:
+                X = self._contract_cached(densities, phi[:nv], M, iu, ju)
+            else:
+                X = contract_pair_potentials(conj_psi, psi, phi[:nv], workers)
+            X *= dV
+            b, d = iu[v0:v1], ju[v0:v1]
+            # The flipped pair first, so a diagonal pair (b == d) keeps X.
+            flipped = X.transpose(0, 2, 1)
+            eri[:, d, :, b] = flipped if real else np.conj(flipped)
+            eri[:, b, :, d] = X
+            t3 = perf_counter()
+            profile["pair densities"] += t1 - t0
+            profile["poisson"] += t2 - t1
+            profile["contraction"] += t3 - t2
+        self.two_body_profile = profile
         return eri
 
     @staticmethod
-    def _pair_block(psi, rows_i, rows_j, out):
-        """Fill ``out[k] = conj(psi[i_k]) * psi[j_k]`` row by row (no stack temps)."""
-        for k, (i, j) in enumerate(zip(rows_i, rows_j)):
-            np.conjugate(psi[i], out=out[k])
-            out[k] *= psi[j]
+    def _contract_cached(densities, phi, M, iu, ju) -> np.ndarray:
+        r"""The same ``X`` from the kept pair densities ``rho_u`` (``u`` over
+        ``a <= c``): ``sum_g rho_u Phi_v`` is one matrix product, and the
+        entries with ``a > c`` are ``sum_g conj(rho_u) Phi_v``, the conjugate
+        of a second product with ``conj(Phi)`` (conjugated in place).  Real
+        densities and potentials need the first product only."""
+        upper = densities @ phi.T                                 # (U, nv)
+        index = np.empty((M, M), dtype=np.int64)
+        index[iu, ju] = np.arange(iu.size)
+        index[ju, iu] = np.arange(iu.size)
+        if not (np.iscomplexobj(densities) or np.iscomplexobj(phi)):
+            return upper.T[:, index]
+        np.conjugate(phi, out=phi)
+        lower = np.conj(densities @ phi.T)
+        np.conjugate(phi, out=phi)
+        below = (np.arange(M)[:, None] > np.arange(M)[None, :])
+        X = np.where(below[None], lower.T[:, index], upper.T[:, index])
+        return X
+
+    @staticmethod
+    def _pair_block(psi, rows_i, rows_j, out, workers: int = -1):
+        """Fill ``out[k] = conj(psi[i_k]) * psi[j_k]`` row by row (no stack
+        temps), the rows split over ``workers`` threads."""
+        def fill(lo, hi):
+            for k in range(lo, hi):
+                np.conjugate(psi[rows_i[k]], out=out[k])
+                out[k] *= psi[rows_j[k]]
+
+        count = len(rows_i)
+        threads = (1 if count * psi.shape[1] < PARALLEL_MIN_VALUES
+                   else thread_count(workers))
+        parallel_chunks(count, fill, threads)
         return out
 
     @staticmethod
-    def _eri_block_size(n_pairs: int, ngrid: int, solver, max_memory_mb) -> int:
+    def _eri_block_size(n_pairs: int, ngrid: int, solver, max_memory_mb,
+                        cached: bool = False, itemsize: int = 16) -> int:
         """Pairs per Poisson block that keep the two-body step within budget.
 
-        Resident per block: the density buffer, the potentials and their
-        conjugate (``3 B ngrid`` complex values; the solver's own output
-        stack overlaps with the conjugate's lifetime) plus the solver's three
-        padded FFT work volumes, independent of ``B``.
+        Resident per block: the density buffer and the potentials (``2 B
+        ngrid`` complex values; with the densities kept, only the potentials
+        and the kept stack itself), plus the solver's FFT workspace and one
+        contraction tile, independent of ``B``.
         """
         budget = eri_memory_budget_mb() if max_memory_mb is None else float(max_memory_mb)
-        padded = 3 * int(np.prod(solver.L)) * 16
-        per_pair = 3 * ngrid * 16
-        avail = budget * 2 ** 20 - padded
+        space = getattr(solver, "workspace", None)
+        fixed = (space.batch_bytes if space is not None
+                 else 3 * int(np.prod(solver.L)) * 16)
+        fixed += CONTRACTION_TILE_BYTES
+        if cached:
+            fixed += itemsize * n_pairs * ngrid
+        per_pair = (1 if cached else 2) * ngrid * itemsize
+        avail = budget * 2 ** 20 - fixed
         B = int(avail // per_pair) if avail > 0 else 1
-        return max(1, min(B, n_pairs))
+        return max(1, min(B, n_pairs, MAX_PAIR_BLOCK))

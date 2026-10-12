@@ -290,8 +290,7 @@ class PlaneWaveIntegrals(MeanFieldMixin):
         odd count or whenever ``open_shell=True`` (``num_particles`` gives the
         ``(n_alpha, n_beta)`` reference; the default is the lowest spin state).
         """
-        from .hamiltonian import (molecular_orbital_integrals,
-                                  spin_block_integrals)
+        from .hamiltonian import molecular_orbital_integrals
         from .mapping import Fermion
 
         if mo_basis:
@@ -301,10 +300,9 @@ class PlaneWaveIntegrals(MeanFieldMixin):
             # pools stall above the ground state.
             h_mo, eri_mo, self.mo_coefficients = molecular_orbital_integrals(
                 self, n_electrons, num_particles, open_shell)
-            h_so, g_so = spin_block_integrals(h_mo, eri_mo)
         else:
-            h_so, g_so = spin_block_integrals(self.one_body(), self.two_body())
-        H = Fermion.from_integrals(h_so, g_so)
+            h_mo, eri_mo = self.one_body(), self.two_body()
+        H = Fermion.from_spatial_integrals(h_mo, eri_mo)
         if include_nuclear_repulsion:
             H = H + Fermion({(): complex(self.nuclear_repulsion)},
                             n_modes=2 * self.n_orbitals)

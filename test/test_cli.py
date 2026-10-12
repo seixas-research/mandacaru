@@ -48,6 +48,19 @@ class TestCommandLineOptions:
         options = self._options("--basis", "PAW-LCAO", "--directory", "pbe-sr")
         assert options["directory"] == "pbe-sr"
 
+    @pytest.mark.parametrize("argv, expected", [
+        ([], None),
+        (["--two-body", "dense"], {"method": "dense"}),
+        (["--two-body", "cholesky"], {"method": "cholesky"}),
+        (["--cholesky-tolerance", "1e-8"],
+         {"method": "cholesky", "tolerance": 1e-8}),
+    ])
+    def test_the_two_body_flags_build_the_option(self, argv, expected):
+        """``--two-body`` / ``--cholesky-tolerance`` are
+        ``Mandacaru(two_body=...)``; neither leaves the dense default."""
+        assert self._options("--method", "rhf", *argv).get(
+            "two_body") == expected
+
     def test_an_adaptive_method_gets_the_default_pool(self):
         assert self._options("--method", "adapt-vqe")["pool"] == "fermionic"
         assert "pool" not in self._options("--method", "vqe")

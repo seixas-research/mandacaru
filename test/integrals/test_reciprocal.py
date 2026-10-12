@@ -74,8 +74,8 @@ class TestTransforms:
             r = np.linalg.norm(d, axis=1)
             theta = np.arccos(np.clip(d[:, 2] / np.maximum(r, 1e-300), -1, 1))
             phi = np.arctan2(d[:, 1], d[:, 0])
-            values += r * np.exp(-a * r * r) * spherical_harmonic(L, M, theta,
-                                                                  phi)
+            values += r * np.exp(-a * r * r) * spherical_harmonic(
+                L, M, theta, phi, real=False)
         G = rc.wavevectors(grid)
         norm = rc.spherical(G)[0]
         r = np.linspace(0.0, 8.0, 4001)

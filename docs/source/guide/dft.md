@@ -1026,7 +1026,7 @@ w.write(0, "w0.cube")                   # function 0 on the grid (.cube, .xsf)
 
 Silicon's valence bands (LDA, PAW-LCAO SZP) give four equivalent functions
 centered exactly on the bond midpoints. The spread per function converges
-from below with the mesh: 1.69, 1.98 and 2.12 Å² on 4³, 6³ and 8³ meshes;
+from below with the mesh: 1.70, 1.99 and 2.13 Å² on 4³, 6³ and 8³ meshes;
 the literature reports about 1.9–2.0 Å² with LDA. $\Omega_I$ is the same
 to eight digits from a poor starting guess. Minus the sum of the centers
 equals the electrons' Berry-phase polarization, modulo the quantum.
@@ -1062,9 +1062,9 @@ w.labels                                # ("V1:dxy", "V1:dyz", "V1:dxz")
   directions are defined in the local frame, three rows that are the local
   x, y and z axes in Cartesian coordinates. The default frame is the
   Cartesian axes; give an octahedron's own axes when it is rotated.
-- **The harmonics.** They are the real combinations of the complex
-  spherical harmonics of the basis (Condon–Shortley phase), positive along
-  their Cartesian lobes: $S_{1,1}\propto x$, $S_{1,-1}\propto y$,
+- **The harmonics.** They are the real spherical harmonics a molecule's
+  basis uses (the real combinations of the Condon–Shortley ones), positive
+  along their Cartesian lobes: $S_{1,1}\propto x$, $S_{1,-1}\propto y$,
   $S_{2,-2}\propto xy$, $S_{2,2}\propto x^2-y^2$.
 - **The radial shape.** `trial_radial="gaussian"`, the default, uses the
   normalized $r^l e^{-r^2/2w^2}$ with width $w$ = 1 Bohr (the `width`
@@ -1091,11 +1091,13 @@ errors over 60 random points, in meV:
 
 | basis | bands | 6³ | 8³ | 10³ |
 |---|---|---|---|---|
-| single zeta (SZP) | 9 | 35 (11) | 7.5 (3.6) | |
+| single zeta (SZP) | 9 | 60 (10) | 15 (2.8) | 2.4 (0.4) |
 | double zeta (DZP) | 15 | | 53 (23) | 35 (9) |
 
-With the single-zeta basis the nine functions span every band, so the 8³
-mesh is already within 10 meV. With the double-zeta basis the six extra
+With the single-zeta basis the nine functions span every band, so the
+disentanglement does nothing; the error is the functions' tails beyond
+the Born-von Karman supercell, and the 10³ mesh is within 10 meV.
+With the double-zeta basis the six extra
 bands make the disentanglement real, and the interpolation needs a denser
 mesh.
 
@@ -1133,15 +1135,34 @@ w = si.calc.wannier(8, guess="sp3",
   $Z(\mathbf k) = \sum_b w_b M(\mathbf k,\mathbf b) P(\mathbf k+\mathbf b)
   M(\mathbf k,\mathbf b)^\dagger$ over the window's other states, mixed
   between iterations. The gauge is then minimized as for an isolated group.
+- **Symmetry.** The subspace keeps the crystal's space group (Sakuma's
+  symmetry-adapted disentanglement). The trials' projector and every
+  $Z(\mathbf k)$ are averaged over the operations, each acting on the
+  Bloch states through the basis' atoms and harmonics, before their
+  leading eigenvectors are taken. $\Omega_I$ alone need not be lowest on a
+  symmetric subspace: a symmetric subspace can be a saddle point that the
+  plain iteration slowly leaves for a symmetry-broken one, and where it
+  ends then depends on the trial orbitals. An operation is used only if it
+  maps the windows' states onto themselves, so a window that cuts a
+  degenerate set drops the operations it breaks. `w.symmetry_operations`
+  counts the operations kept. `symmetrize=False` restores the plain
+  iteration.
 
 Silicon's valence and four lowest conduction bands give eight sp³
-hybrids, 0.41 Å from each atom along its bonds. $\Omega_I$ is the same to
-1e-9 Å² from random s Gaussians. The total spread is not: the hybrids are a
+hybrids, 0.41 Å from each atom along its bonds, all eight equivalent. The
+lowest conduction state lies 1.05 eV above $E_F$, just outside the frozen
+window. Without the symmetrization the iteration from the sp³ hybrids
+reached the symmetric subspace and then, after a few hundred iterations,
+drifted to a symmetry-broken one with the two atoms inequivalent
+($\Omega_I$ 7.8199 against the symmetric 7.8262 Å²). Random s Gaussians
+reached yet another (7.8173 Å²). Now both reach the symmetric subspace,
+whose $\Omega_I$ agrees to 1e-11 Å², in about 40 iterations. Freezing to
+1.2 eV above $E_F$ gives the same subspace. The total spread is not: the hybrids are a
 local minimum of the gauge-dependent part, and another start can find a
 lower one. Inside the frozen window, the interpolated bands equal the
 non-self-consistent bands exactly on the mesh. Between mesh points they
-are within 317, 126, 19 and 4.1 meV (root mean square 100, 38, 3.9 and
-0.8 meV) on 3³, 4³, 6³ and 8³ meshes.
+are within 318, 134, 22 and 5.7 meV (root mean square 98, 40, 5.0 and
+1.3 meV) on 3³, 4³, 6³ and 8³ meshes.
 
 ### Interpolation
 
@@ -1151,10 +1172,10 @@ either way. `replicas="centers"`, the default, puts it on the replica
 nearest in the distance between the two functions' centers.
 `replicas="cells"` uses the Wigner-Seitz vectors between cell origins.
 Neither is better everywhere. For silicon's sp³ hybrids, nearest centers
-lower the root-mean-square error from 157 to 100 meV on 3³, from 5.8 to
-3.9 meV on 6³ and from 1.4 to 0.8 meV on 8³. Silicon's valence bond
+lower the root-mean-square error from 154 to 98 meV on 3³, from 6.7 to
+5.0 meV on 6³ and from 2.1 to 1.3 meV on 8³. Silicon's valence bond
 functions hop far along the [110] chains, and there cell origins do
-better: 20 against 26 meV root mean square on 6³, 7.6 against 10.0 meV on
+better: 20 against 26 meV root mean square on 6³, 7.7 against 10.2 meV on
 8³. Either way the error falls with the mesh, so interpolation needs a
 dense mesh.
 
@@ -1166,7 +1187,7 @@ to make the function as real as possible. `w.write(n, path, part="real")`
 writes it as `.cube` or `.xsf`, with the supercell's atoms; `part` can
 also be `"imaginary"` or `"modulus"`. These are one-particle orbitals. In
 a centrosymmetric crystal they are real up to a phase:
-`w.imaginary_ratio(n)` is about 3e-9 for silicon's functions.
+`w.imaginary_ratio(n)` is about 1e-14 for silicon's sp³ hybrids.
 
 ### A downfolded many-body problem
 
@@ -1212,8 +1233,8 @@ calc.run()
 Two checks. First, the four valence functions of a silicon cell are fully
 occupied ($\gamma = 2I$), and their one-body part traces to the band
 energy per cell. Second, the two hybrids of one bond form a two-site,
-two-electron model: on a 4³ mesh, hopping −4.73 eV, $U = 12.19$ eV and
-inter-site $V = 8.34$ eV, all bare. ADAPT-VQE reaches the exact ground
+two-electron model: on a 4³ mesh, hopping −4.66 eV, $U = 12.05$ eV and
+inter-site $V = 8.32$ eV, all bare. ADAPT-VQE reaches the exact ground
 state of the model to 1e-10 eV.
 
 ### A screened interaction
@@ -1246,19 +1267,19 @@ bond.dielectric_head                    # eps^-1_00 at q -> 0
   frequency dependence). It comes from the Kohn-Sham states, without
   self-consistency, and is the same for both spins.
 
-Silicon's bond (LDA, PAW-LCAO SZP): the bare $U = 12.27$, $V = 8.37$ and
-$J = 0.35$ eV become 4.45, 2.72 and 0.225 eV on 3³ and 3.97, 2.33 and
-0.224 eV on 6³. $U$ still falls by about 0.13 eV per mesh step: the
+Silicon's bond (LDA, PAW-LCAO SZP): the bare $U = 12.19$, $V = 8.37$ and
+$J = 0.37$ eV become 4.35, 2.70 and 0.234 eV on 3³ and 3.88, 2.29 and
+0.231 eV on 6³. $U$ still falls by about 0.12 eV per mesh step: the
 long-wavelength dielectric constant converges slowly with the mesh (the
-head gives $\epsilon_M$ of 22, 16, 13 and 11.5 on 3³ to 6³). $J$, an
+head gives $\epsilon_M$ of 24, 17, 14 and 12 on 3³ to 6³). $J$, an
 exchange density without charge, is screened least and does not move with
-the mesh. Full RPA lies 0.13–0.15 eV below cRPA. Excluding the whole
-eight-band sp³ set instead of the bond's subspace leaves $U = 8.31$ eV
+the mesh. Full RPA lies 0.10–0.13 eV below cRPA. Excluding the whole
+eight-band sp³ set instead of the bond's subspace leaves $U = 7.99$ eV
 (3³): most of silicon's screening is valence-to-conduction, inside that
 set.
-The SZP basis has 18 bands: keeping 8 or 12 of them gives $U = 4.95$ or
-4.56 eV against 4.45 eV, so the empty states are not converged. The
-cutoff is converged (2, 3 and 4 Bohr⁻¹ agree to 13 meV).
+The SZP basis has 18 bands: keeping 8 or 12 of them gives $U = 4.87$ or
+4.48 eV against 4.35 eV, so the empty states are not converged. The
+cutoff is converged (2, 3 and 4 Bohr⁻¹ agree to 15 meV).
 
 ### Interactions with the fragment's own copies
 
@@ -1279,14 +1300,14 @@ interactions:
 
 | mesh | radius (Å) | one bond | two bonds | four bonds |
 |---|---|---|---|---|
-| 3³ | 5.76 | 7 meV | 31 meV | 31 meV |
-| 4³ | 7.68 | 0.8 meV | 2.0 meV | 1.9 meV |
+| 3³ | 5.76 | 7 meV | 31 meV | 15 meV |
+| 4³ | 7.68 | 0.8 meV | 2.2 meV | 1.9 meV |
 | 5³ | 9.60 | 0.2 meV | 0.4 meV | |
 | 6³ | 11.52 | 0.1 meV | | |
 
 A fragment within the radius stayed under 10 meV; one past it reached
-31 meV. The bare values converge with the mesh: $U$ 12.27, 12.19, 12.21
-and 12.15 eV; $t$ −4.87, −4.73, −4.72 and −4.69 eV on 3³ to 6³. In a
+31 meV. The bare values converge with the mesh: $U$ 12.19, 12.05, 12.12
+and 12.09 eV; $t$ −4.82, −4.66, −4.67 and −4.65 eV on 3³ to 6³. In a
 small box the copies matter far more. Two neighboring sites of a hydrogen
 chain in a 6 Å box lose 1.6 eV of their inter-site $V$ (3.91 against
 5.52 eV) unless the interaction is isolated.
@@ -1388,13 +1409,14 @@ SrVO3 (LDA, PAW-LCAO SZP, h 0.2 Å, the shipped library):
 | 3³ | 1.63 | 15.32 | 14.31 | 0.465 | 5.04 | 4.13 | 0.433 |
 | 4³ | 1.84 | 15.25 | 14.25 | 0.462 | 4.63 | 3.72 | 0.430 |
 | 5³ | 1.96 | 15.23 | 14.23 | 0.461 | | | |
+| 6³ | 2.03 | 15.23 | 14.23 | 0.463 | | | |
 
 (eV.) The three orbitals agree to 1e-4 eV in $U$ and $U'$, and to 0.5 %
 in $J$, which the cell grid's discretization sets. $(U - U')/2$ is
 0.50 eV bare and 0.45 eV screened, 5 % above $J$: the relation
 $U' = U - 2J$ is exact only for a spherical atom. The interpolated bands
-inside the frozen window are within 144, 48 and 25 meV of the true
-ones on 3³ to 5³ meshes (root mean square 68, 13 and 9.4 meV).
+inside the frozen window are within 144, 48, 25 and 11 meV of the true
+ones on 3³ to 6³ meshes (root mean square 68, 13, 9.4 and 5.6 meV).
 
 Vaugier, Jiang and Biermann's cRPA for the same three-band model gives
 $U$ = 3.2 eV, $J$ = 0.44 eV and $U' = U - 2J$ = 2.3 eV, with a bare

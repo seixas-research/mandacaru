@@ -47,10 +47,10 @@ class TestGradientStrategies:
                           pool=pool, num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
                           gradient="finite_difference")
-        psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
+        psi = AdaptAnsatz(adapt.n_qubits, adapt.solver.pool.occupied_orbitals).state(
             np.zeros(0))
-        g_an = adapt._analytic_gradients(psi)
-        g_fd = adapt._finite_difference_gradients(psi)
+        g_an = adapt.solver._analytic_gradients(psi)
+        g_fd = adapt.solver._finite_difference_gradients(psi)
         np.testing.assert_allclose(g_fd, g_an, atol=1e-6)
 
     @pytest.mark.parametrize("pool", ["fermionic", "qubit", "qeb", "ceo"])
@@ -59,10 +59,10 @@ class TestGradientStrategies:
                           pool=pool, num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
                           gradient="parameter_shift")
-        psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
+        psi = AdaptAnsatz(adapt.n_qubits, adapt.solver.pool.occupied_orbitals).state(
             np.zeros(0))
-        g_an = adapt._analytic_gradients(psi)
-        g_ps = adapt._parameter_shift_gradients(psi)
+        g_an = adapt.solver._analytic_gradients(psi)
+        g_ps = adapt.solver._parameter_shift_gradients(psi)
         np.testing.assert_allclose(g_ps, g_an, atol=1e-9)
 
     def test_analytic_is_the_default_and_screens_analytically(
@@ -71,11 +71,11 @@ class TestGradientStrategies:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False)
-        assert adapt.gradient == "analytic"
-        psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
+        assert adapt.solver.gradient == "analytic"
+        psi = AdaptAnsatz(adapt.n_qubits, adapt.solver.pool.occupied_orbitals).state(
             np.zeros(0))
-        np.testing.assert_allclose(adapt._gradients(psi),
-                                   adapt._analytic_gradients(psi), atol=0)
+        np.testing.assert_allclose(adapt.solver._gradients(psi),
+                                   adapt.solver._analytic_gradients(psi), atol=0)
 
     def test_the_eigendecomposition_is_built_only_when_asked_for(
             self, h2_hamiltonian):
@@ -83,12 +83,12 @@ class TestGradientStrategies:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="fermionic", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False)
-        psi = AdaptAnsatz(adapt.n_qubits, adapt.pool.occupied_orbitals).state(
+        psi = AdaptAnsatz(adapt.n_qubits, adapt.solver.pool.occupied_orbitals).state(
             np.zeros(0))
-        adapt._gradients(psi)
-        assert adapt._pool_eig is None
-        adapt._parameter_shift_gradients(psi)
-        assert len(adapt._pool_eig) == len(adapt._pool_matrices)
+        adapt.solver._gradients(psi)
+        assert adapt.solver._pool_eig is None
+        adapt.solver._parameter_shift_gradients(psi)
+        assert len(adapt.solver._pool_eig) == len(adapt.solver._pool_matrices)
 
     def test_every_gradient_reaches_fci(self, h2_hamiltonian):
         m = h2_hamiltonian.map_to_qubits("jordan_wigner").to_matrix()
@@ -145,8 +145,8 @@ class TestGradientNames:
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
                           gradient=spelling)
-        assert adapt.gradient == resolve_gradient_method(spelling)
-        assert adapt.gradient in GRADIENT_METHODS
+        assert adapt.solver.gradient == resolve_gradient_method(spelling)
+        assert adapt.solver.gradient in GRADIENT_METHODS
 
     def test_an_unknown_name_names_the_canonical_ones(self, h2_hamiltonian):
         """The refusal has to be actionable: it lists what is accepted."""

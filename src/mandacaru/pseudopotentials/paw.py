@@ -148,6 +148,7 @@ from ..basis.xc import _resolve as _resolve_xc
 from ..basis.xc import xc_potential
 from ..basis.atomic_solver import (AtomicResult, hartree_potential,
                                     solve_atom)
+from ..core.augmentation import PairAugmentation
 from ..core.hamiltonian import MolecularIntegrals, projector_blocks
 from .confinement import CONFINEMENT_DEFAULT_OPTIONS, CONFINEMENT_OPTIONS
 from .dataset import Channel, PseudoPotential, _valence_configuration
@@ -242,6 +243,27 @@ DEFAULT_NORM_DEFICITS = {"H": 0.05, "Li": 0.0, "C": 0.10, "N": 0.15,
 #: instead of 0.75 at 0.25 Angstrom) and better logarithmic derivatives.
 DEFAULT_ENERGY_OFFSETS = {"H": 0.5, "Li": 0.5, "Co": 2.0, "Ni": 2.0,
                           "Cu": 2.0, "Zn": 2.0, "Sc": 2.0, "Ti": 2.0}
+#: Per-dataset second reference energies (Hartree, absolute) of single
+#: channels, ``{(symbol, xc): {l: energy}}``, in place of the bound state plus
+#: :data:`DEFAULT_ENERGY_OFFSET`.  A compact shell more than 1 Ha deep put
+#: that second reference below zero, and the channel bound a spurious level
+#: just above it that the atom does not have (an excited ghost,
+#: :func:`~.partial_waves.ghost_errors`): the 4f of W-Hg, -0.15 to -2.5 Ha,
+#: the 4p of Tc, -0.60, and the semicore 5p of Ta, -0.46 (LDA).  The ghost
+#: followed the second reference while it was bound (Hg 4f at offsets 1, 2,
+#: 3 Ha: -2.52, -1.48, -0.42 Ha) and no local shift or radius removed it,
+#: while a larger offset for every channel put Hg's d 0.065 rad off.  At
+#: +0.25 Ha, the scattering energy of a frozen shell's empty channel
+#: (:data:`FROZEN_SCATTERING_ENERGY`), each channel binds only its own
+#: state and scatters to 0.001-0.004 rad (HISTORY.md, 2026-10-11,
+#: "Excited-ghost rebuild").  PBE Ta has no entry: its 5p binds nothing
+#: extra at the default reference, and that dataset scatters better (f 0.004
+#: rad against 0.015 with the entry).
+DEFAULT_SECOND_REFERENCES = {
+    **{(symbol, xc): {3: 0.25} for symbol in
+       ("W", "Re", "Os", "Ir", "Pt", "Au", "Hg") for xc in ("lda", "pbe")},
+    **{("Tc", xc): {1: 0.25} for xc in ("lda", "pbe")},
+    ("Ta", "lda"): {1: 0.25}}
 #: Default augmentation radius as a multiple of the outermost maximum of rR.
 DEFAULT_RC_FACTOR = 1.3
 #: Local-potential radius as a multiple of the smallest augmentation radius.
@@ -1213,7 +1235,8 @@ class PAWDataset(PseudoPotential):
 def j_resolved_spin_orbit(symbol, atom, valence_config, cutoffs, rc_factor,
                           energy_offset, v_loc, r_local, q_cut, n_bessel,
                           hartree_screening, extra_l: int = 0,
-                          extra_energy: float | None = None) -> dict:
+                          extra_energy: float | None = None,
+                          second_references: dict | None = None) -> dict:
     r"""``{l: {...}}`` -- the spin-orbit term of each channel, exact per j.
 
     Each :math:`l \geq 1` gets two **unitary** branches (norm deficit 0),
@@ -1267,7 +1290,8 @@ def j_resolved_spin_orbit(symbol, atom, valence_config, cutoffs, rc_factor,
                 energy_offset, defaults=DEFAULT_CUTOFFS, treatment="dirac",
                 kappa={ll: (kappa if ll == l else -(ll + 1))
                        for ll in cutoffs},
-                extra_l=extra_l, extra_energy=extra_energy)
+                extra_l=extra_l, extra_energy=extra_energy,
+                second_references=second_references)
             waves, energies = references[l]
             smooth = smooth_partial_waves(
                 r, v_ae, l, waves, energies, cutoffs[l], q_cut=q_cut,
@@ -1395,6 +1419,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                  local_shift: float | None = None,
                  q_cut: float = DEFAULT_Q_CUT,
                  energy_offset: float | None = None,
+                 second_reference: dict | None = None,
                  n_bessel: int | None = None,
                  norm_deficit="default",
                  points: int | None = None, r_max: float = 30.0,
@@ -1435,6 +1460,12 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         :data:`DEFAULT_ENERGY_OFFSETS_BY_DATASET` for the element and
         functional, else :data:`DEFAULT_ENERGY_OFFSETS` for the element, else
         :data:`DEFAULT_ENERGY_OFFSET`.
+    second_reference : dict, optional
+        ``{l: energy}``: the second reference energy (Hartree, absolute) of
+        the listed channels that have one bound state, in place of
+        ``energy_offset`` above it; defaults to
+        :data:`DEFAULT_SECOND_REFERENCES` for the element and functional,
+        ``{}`` for none.
     frozen_subshells : sequence of tuple, optional
         Occupied valence subshells, as ``(n, l)`` pairs, to generate into the
         frozen core instead;
@@ -1549,6 +1580,9 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         energy_offset = DEFAULT_ENERGY_OFFSETS_BY_DATASET.get(
             dataset, DEFAULT_ENERGY_OFFSETS.get(symbol, DEFAULT_ENERGY_OFFSET))
     energy_offset = float(energy_offset)
+    second_reference = {int(l): float(e) for l, e in (
+        DEFAULT_SECOND_REFERENCES.get(dataset, {}) if second_reference is None
+        else second_reference).items()}
     # The element's cutoffs with this dataset's repairs on top.
     cutoff_table = {**DEFAULT_CUTOFFS, symbol: {
         **DEFAULT_CUTOFFS.get(symbol, {}),
@@ -1588,7 +1622,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
             symbol, atom, valence_config, z_eff, r_cut, rc_factor,
             energy_offset, defaults=cutoff_table,
             treatment=partial_wave_treatment, extra_l=extra_l,
-            extra_energy=anchor)
+            extra_energy=anchor, second_references=second_reference)
         waves = {
             l: smooth_partial_waves(r, v_ae, l, ae, energies, cutoffs[l],
                                     treatment=partial_wave_treatment,
@@ -1681,7 +1715,8 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     spin_orbit = (j_resolved_spin_orbit(
         symbol, atom, valence_config, cutoffs, rc_factor, energy_offset,
         v_loc, r_local, q_cut, n_bessel, hartree_screening,
-        extra_l=extra_l, extra_energy=anchor)
+        extra_l=extra_l, extra_energy=anchor,
+        second_references=second_reference)
         if relativity == "dirac" else {})
     for channel in channels.values():
         channel.v_ionic = v_local_ionic
@@ -2048,11 +2083,14 @@ def _intruding_s_acceptance(pp) -> dict:
 
 
 def paw_projectors(symbols, positions, datasets, units: str = "angstrom",
-                   projector_basis: str = DEFAULT_PROJECTOR_BASIS):
+                   projector_basis: str = DEFAULT_PROJECTOR_BASIS, *,
+                   real: bool = True):
     """The :class:`~.orbitals.KBProjector` set: every radial projector of
     every ``(atom, l, m)``, in the ``projector_basis`` of
     :meth:`PAWDataset.projector_set` (each projector records it as
-    ``projector_basis`` so the block builders transform consistently)."""
+    ``projector_basis`` so the block builders transform consistently), with
+    real spherical harmonics (a molecule) or complex ones (``real=False``, a
+    crystal).  The compensation channels follow the projectors'."""
     from .orbitals import KBProjector
 
     projectors = []
@@ -2065,7 +2103,7 @@ def paw_projectors(symbols, positions, datasets, units: str = "angstrom",
                     projector = KBProjector(
                         pp, l, m, center=position, units=units,
                         atom_index=index, index=i, radial=p,
-                        kb_energy=float(D[i, i]))
+                        kb_energy=float(D[i, i]), real=real)
                     projector.projector_basis = projector_basis
                     projectors.append(projector)
     return projectors
@@ -2081,12 +2119,12 @@ def _blocks(projectors, symbols, datasets, which) -> dict:
                             DEFAULT_PROJECTOR_BASIS)
             _f, D, q = pp.projector_set(projector.l, basis)
             blocks[key] = np.asarray(D if which == "coupling" else q,
-                                     dtype=complex)
+                                     dtype=float)
     return blocks
 
 
 def paw_spin_orbit_projectors(symbols, positions, datasets,
-                              units: str = "angstrom"):
+                              units: str = "angstrom", *, real: bool = True):
     """The projectors the spin-orbit term acts through: for every atom with a
     Dirac dataset, every ``(l, m)`` of each channel that carries the term and
     every function of its union of the two j branches
@@ -2102,7 +2140,8 @@ def paw_spin_orbit_projectors(symbols, positions, datasets,
                 for i, p in enumerate(entry["projectors"]):
                     projectors.append(KBProjector(
                         pp, l, m, center=position, units=units,
-                        atom_index=index, index=i, radial=p, kb_energy=0.0))
+                        atom_index=index, index=i, radial=p, kb_energy=0.0,
+                        real=real))
     return projectors
 
 
@@ -2128,7 +2167,7 @@ def paw_spin_orbit_blocks(projectors, symbols, datasets) -> dict:
         if key not in blocks:
             table = datasets[symbols[projector.atom_index]].spin_orbit
             blocks[key] = np.asarray(table[projector.l]["coupling"],
-                                     dtype=complex)
+                                     dtype=float)
     return blocks
 
 
@@ -2138,19 +2177,21 @@ def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
     return _blocks(projectors, symbols, datasets, "coupling")
 
 
-def _multipole_grid_potential(radius, dx, dy, dz, r_g, L, M, potential=None):
+def _multipole_grid_potential(radius, dx, dy, dz, r_g, L, M, potential=None,
+                              *, real: bool):
     """``v_L(r) Y_LM`` sampled on grid offsets from one center
-    (``potential(radius, r_g, L)`` in place of the Coulomb one)."""
+    (``potential(radius, r_g, L)`` in place of the Coulomb one), in the
+    harmonics ``real`` states."""
     from .multipoles import shape_potential
     from ..basis._angular import spherical_harmonic
 
     v = (shape_potential if potential is None else potential)(radius, r_g, L)
     if int(L) == 0:
-        return v * spherical_harmonic(0, 0, 0.0, 0.0)
+        return v * spherical_harmonic(0, 0, 0.0, 0.0, real=real)
     safe = np.maximum(radius, 1e-300)
     theta = np.arccos(np.clip(dz / safe, -1.0, 1.0))
     phi = np.arctan2(dy, dx)
-    return v * spherical_harmonic(int(L), int(M), theta, phi)
+    return v * spherical_harmonic(int(L), int(M), theta, phi, real=real)
 
 
 def long_range_multipole_potential(omega: float):
@@ -2195,12 +2236,14 @@ def paw_multipole_blocks(projectors, datasets_by_atom) -> dict:
         n = len(entries)
         levels = sorted({L for _p, a in entries for _q, b in entries
                          for L in multipole_range(a.l, b.l)})
+        dtype = float if entries[0][1].real else complex
         for L in levels:
             for M in range(-L, L + 1):
-                matrix = np.zeros((n, n), dtype=complex)
+                matrix = np.zeros((n, n), dtype=dtype)
                 for a, (_pa, pa) in enumerate(entries):
                     for b, (_pb, pb) in enumerate(entries):
-                        angular = gaunt(L, M, pa.l, pa.m, pb.l, pb.m)
+                        angular = gaunt(L, M, pa.l, pa.m, pb.l, pb.m,
+                                        real=pa.real)
                         if angular == 0:
                             continue
                         delta = dataset.multipole_moments(pa.l, pb.l, L, basis)
@@ -2255,7 +2298,9 @@ def atom_centered_projections(basis, projectors, *,
 
     See :meth:`PAWIntegrals.projections`.  Returns an ``(M, P)`` array.
     """
-    C = np.zeros((len(basis), len(projectors)), dtype=complex)
+    real = all(getattr(f, "real", False) for f in (*basis, *projectors))
+    C = np.zeros((len(basis), len(projectors)),
+                 dtype=float if real else complex)
     for p, projector in enumerate(projectors):
         points, weights = _projector_sphere(projector,
                                             split_radial=split_radial)
@@ -2293,7 +2338,9 @@ def atom_centered_projection_gradients(basis, projectors,
     only on the separation, moving the projector instead gives ``-G``.
     Returns an ``(M, P, 3)`` array.
     """
-    G = np.zeros((len(basis), len(projectors), 3), dtype=complex)
+    real = all(getattr(f, "real", False) for f in (*basis, *projectors))
+    G = np.zeros((len(basis), len(projectors), 3),
+                 dtype=float if real else complex)
     for p, projector in enumerate(projectors):
         points, weights = _projector_sphere(projector,
                                             split_radial=split_radial)
@@ -2356,6 +2403,13 @@ class PAWIntegrals(MolecularIntegrals):
     exact_local_potential = True
 
     # -- the range-separated local potential ------------------------------- #
+
+    @property
+    def real_harmonics(self) -> bool:
+        """Whether the projectors -- and with them the compensation channels
+        ``(atom, L, M)`` -- use real spherical harmonics (a molecule) or
+        complex ones."""
+        return bool(self.kb_projectors) and bool(self.kb_projectors[0].real)
 
     @property
     def split_local_potential(self) -> bool:
@@ -2437,7 +2491,8 @@ class PAWIntegrals(MolecularIntegrals):
             return None
         if self._Vsr is None:
             matrices, _ = self.short_range_local_matrices()
-            total = np.zeros((self.n_orbitals, self.n_orbitals), dtype=complex)
+            total = np.zeros((self.n_orbitals, self.n_orbitals),
+                             dtype=self._engine._psi.dtype)
             for matrix in matrices.values():
                 total = total + matrix
             self._Vsr = total
@@ -2543,7 +2598,8 @@ class PAWIntegrals(MolecularIntegrals):
                 radius = np.sqrt(dx * dx + dy * dy + dz * dz)
                 v = _multipole_grid_potential(
                     radius, dx, dy, dz,
-                    self.datasets[atom].compensation_radius, L, M)
+                    self.datasets[atom].compensation_radius, L, M,
+                    real=self.real_harmonics)
                 self._W[(atom, L, M)] = (np.conj(psi) * v) @ psi.T * self.grid.dV
         return self._W
 
@@ -2563,15 +2619,17 @@ class PAWIntegrals(MolecularIntegrals):
             per_atom: dict = {}
             for atom, L, M in channels:
                 per_atom.setdefault(atom, []).append((L, M))
-            U = np.zeros((len(channels), len(channels)), dtype=complex)
+            U = np.zeros((len(channels), len(channels)),
+                         dtype=float if self.real_harmonics else complex)
             for a, levels_a in per_atom.items():
                 for b, levels_b in per_atom.items():
                     ra = self.datasets[a].compensation_radius
                     rb = self.datasets[b].compensation_radius
                     displacement = (np.asarray(self._potentials.nuclei[b][1])
                                     - np.asarray(self._potentials.nuclei[a][1]))
-                    block = multipole_coulomb_matrix(ra, levels_a, rb,
-                                                     levels_b, displacement)
+                    block = multipole_coulomb_matrix(
+                        ra, levels_a, rb, levels_b, displacement,
+                        real=self.real_harmonics)
                     for i, la in enumerate(levels_a):
                         for j, lb in enumerate(levels_b):
                             U[index[(a,) + la], index[(b,) + lb]] = block[i, j]
@@ -2617,16 +2675,18 @@ class PAWIntegrals(MolecularIntegrals):
             points = (np.asarray(centers[atom], dtype=float)[None, None, :]
                       + radius[:, None, None] * direction[None, :, :])
             shape = shape_function(radius, r_g, L)
-            harmonic = spherical_harmonic(int(L), int(M), theta, phi)
-            total = 0.0 + 0.0j
+            harmonic = spherical_harmonic(int(L), int(M), theta, phi,
+                                          real=self.real_harmonics)
+            total = 0.0
             for other, neighbor in enumerate(self.datasets):
                 if other == atom:
                     continue
                 center = np.asarray(centers[other], dtype=float)
                 distance = np.linalg.norm(points - center[None, None, :], axis=2)
                 v = neighbor.local_potential(distance)
-                total += complex(np.sum(weight[:, None] * w_ang[None, :]
-                                        * shape[:, None] * harmonic[None, :] * v))
+                total = total + np.sum(weight[:, None] * w_ang[None, :]
+                                       * shape[:, None] * harmonic[None, :]
+                                       * v)
             out[(atom, L, M)] = total
         return out
 
@@ -2651,27 +2711,30 @@ class PAWIntegrals(MolecularIntegrals):
         if not moments:
             return None
         potentials = self.compensation_ionic()
-        out = np.zeros((self.n_orbitals, self.n_orbitals), dtype=complex)
+        out = np.zeros((self.n_orbitals, self.n_orbitals),
+                       dtype=self._engine._psi.dtype)
         for channel, Q in moments.items():
             out = out + Q * potentials[channel]
         return out
 
     def two_body_augmentation(self):
+        r"""The compensation charges' Coulomb terms, kept structured.
+
+        :math:`\sum_A (Q^A \otimes W^A + W^A \otimes Q^A) + \sum_{AB} U_{AB}\,
+        Q^A \otimes Q^B` over the :meth:`multipole_channels`, with
+        :math:`(X \otimes Y)_{pqrs} = X_{pr} Y_{qs}`: a
+        :class:`~mandacaru.core.augmentation.PairAugmentation` with the
+        factors ``[Q..., W...]`` and the coupling ``[[U, 1], [1, 0]]``.  The
+        ``M^4`` tensor is never written out here; the Hamiltonian adds it in
+        place or transforms the factors.
+        """
         Qs = self.compensation_moments()
         if not Qs:
             return None
         Ws = self.compensation_potentials()
         U = self.compensation_coulomb()
         channels = self.multipole_channels()
-        M = self.n_orbitals
-        aug = np.zeros((M, M, M, M), dtype=complex)
-        for i, ca in enumerate(channels):
-            Qa, Wa = Qs[ca], Ws[ca]
-            aug += np.einsum("pr,qs->pqrs", Qa, Wa)
-            aug += np.einsum("pr,qs->pqrs", Wa, Qa)
-            for j, cb in enumerate(channels):
-                aug += U[i, j] * np.einsum("pr,qs->pqrs", Qa, Qs[cb])
-        return aug
+        return _channel_augmentation(channels, Qs, Ws, U)
 
     # -- a screened hybrid's exchange ---------------------------------------- #
 
@@ -2703,13 +2766,14 @@ class PAWIntegrals(MolecularIntegrals):
             radius = np.sqrt(dx * dx + dy * dy + dz * dz)
             v = _multipole_grid_potential(
                 radius, dx, dy, dz, self.datasets[atom].compensation_radius,
-                L, M, potential=potential)
+                L, M, potential=potential, real=self.real_harmonics)
             W[(atom, L, M)] = (np.conj(psi) * v) @ psi.T * self.grid.dV
         index = {c: i for i, c in enumerate(channels)}
         per_atom: dict = {}
         for atom, L, M in channels:
             per_atom.setdefault(atom, []).append((L, M))
-        U = np.zeros((len(channels), len(channels)), dtype=complex)
+        U = np.zeros((len(channels), len(channels)),
+                     dtype=float if self.real_harmonics else complex)
         for a, levels_a in per_atom.items():
             for b, levels_b in per_atom.items():
                 displacement = (np.asarray(self._potentials.nuclei[b][1])
@@ -2717,7 +2781,8 @@ class PAWIntegrals(MolecularIntegrals):
                 block = multipole_coulomb_matrix(
                     self.datasets[a].compensation_radius, levels_a,
                     self.datasets[b].compensation_radius, levels_b,
-                    displacement, potential=potential)
+                    displacement, potential=potential,
+                    real=self.real_harmonics)
                 for i, la in enumerate(levels_a):
                     for j, lb in enumerate(levels_b):
                         U[index[(a,) + la], index[(b,) + lb]] = block[i, j]
@@ -2741,15 +2806,9 @@ class PAWIntegrals(MolecularIntegrals):
             return None
         W, U = self.long_range_compensation(omega)
         channels = self.multipole_channels()
-        M_ = self.n_orbitals
-        out = np.zeros((M_, M_, M_, M_), dtype=complex)
-        for i, channel in enumerate(channels):
-            # Q (W + U Q / 2) + (W + U Q / 2) Q: U is symmetric.
-            T = W[channel] + 0.5 * sum(U[i, j] * Qs[other]
-                                       for j, other in enumerate(channels))
-            out += np.einsum("pr,qs->pqrs", Qs[channel], T)
-            out += np.einsum("pr,qs->pqrs", T, Qs[channel])
-        return out
+        # Q (W + U Q / 2) + (W + U Q / 2) Q carries U through its symmetric
+        # part, (U + U^T) / 2, on the Q x Q block.
+        return _channel_augmentation(channels, Qs, W, 0.5 * (U + U.T))
 
     def one_center_hybrid(self, omega: float, fraction: float):
         r"""The one-center terms of a screened hybrid
@@ -2762,6 +2821,18 @@ class PAWIntegrals(MolecularIntegrals):
         return OneCenterHybrid(self.kb_projectors, self.datasets, omega,
                                fraction)
 
+
+
+def _channel_augmentation(channels, Q, W, U) -> PairAugmentation:
+    """``[Q..., W...]`` with the coupling ``[[U, 1], [1, 0]]``: the
+    compensation terms of :meth:`PAWIntegrals.two_body_augmentation`."""
+    n = len(channels)
+    factors = np.stack([Q[c] for c in channels] + [W[c] for c in channels])
+    coupling = np.zeros((2 * n, 2 * n), dtype=np.result_type(U, np.float64))
+    coupling[:n, :n] = U
+    coupling[:n, n:] = np.eye(n)
+    coupling[n:, :n] = np.eye(n)
+    return PairAugmentation(factors, coupling)
 
 
 def paw_library_path(directory=None, xc: str = DEFAULT_XC, *,

@@ -245,3 +245,87 @@ def _sector_ground_state(H, n_particles):
     idx = [i for i in range(2 ** n) if bin(i).count("1") == n_particles]
     block = mat[np.ix_(idx, idx)]
     return float(np.linalg.eigvalsh(block).min())
+
+
+# --- spin-orbital terms without the spin-orbital tensor ---
+
+def _whole_array_terms(h, g, tol=1e-12):
+    """``from_integrals`` as one whole-array ``nonzero`` scan wrote it."""
+    terms = {}
+    for p, q in zip(*np.nonzero(np.abs(h) > tol)):
+        key = ((int(p), True), (int(q), False))
+        terms[key] = terms.get(key, 0j) + complex(h[p, q])
+    for p, q, r, s in zip(*np.nonzero(np.abs(g) > tol)):
+        key = ((int(p), True), (int(q), True), (int(s), False), (int(r), False))
+        terms[key] = terms.get(key, 0j) + 0.5 * complex(g[p, q, r, s])
+    return terms
+
+
+def _spatial(m, seed, complex_eri):
+    rng = np.random.default_rng(seed)
+    h = rng.standard_normal((m, m))
+    h = h + h.T
+    eri = rng.standard_normal((m,) * 4)
+    if complex_eri:
+        eri = eri + 1j * rng.standard_normal((m,) * 4)
+    # Zeros and sub-threshold entries, so the scan has something to skip.
+    eri[rng.random((m,) * 4) < 0.3] = 0.0
+    eri[0, 1, 1, 0] = 1e-14
+    return h, eri
+
+
+class TestSpatialIntegrals:
+    @pytest.mark.parametrize("complex_eri", [False, True])
+    def test_terms_and_their_order_match_the_spin_blocked_tensor(
+            self, complex_eri):
+        from mandacaru.core.hamiltonian import spin_block_integrals
+
+        h, eri = _spatial(4, seed=5, complex_eri=complex_eri)
+        reference = Fermion.from_integrals(*spin_block_integrals(h, eri))
+        built = Fermion.from_spatial_integrals(h, eri)
+        # The same keys, values and insertion order: every later sum over
+        # the terms (the mapping included) runs in the same order.
+        assert list(built.terms.items()) == list(reference.terms.items())
+        assert built.n_modes() == reference.n_modes() == 8
+        assert (built.map_to_qubits("jordan_wigner").terms
+                == reference.map_to_qubits("jordan_wigner").terms)
+
+    def test_a_spin_orbit_term_enters_the_one_body_block(self):
+        from mandacaru.core.hamiltonian import spin_block_integrals
+
+        h, eri = _spatial(3, seed=6, complex_eri=False)
+        rng = np.random.default_rng(7)
+        h_spin = rng.standard_normal((6, 6)) + 1j * rng.standard_normal((6, 6))
+        h_spin = h_spin + h_spin.conj().T
+        reference = Fermion.from_integrals(*spin_block_integrals(h, eri, h_spin))
+        built = Fermion.from_spatial_integrals(h, eri, h_spin)
+        assert list(built.terms.items()) == list(reference.terms.items())
+        with pytest.raises(ValueError, match="h_spin"):
+            Fermion.from_spatial_integrals(h, eri, h_spin[:4, :4])
+
+    def test_the_slab_scan_is_the_whole_array_scan(self):
+        rng = np.random.default_rng(8)
+        h = rng.standard_normal((5, 5))
+        g = rng.standard_normal((5,) * 4) + 1j * rng.standard_normal((5,) * 4)
+        g[rng.random((5,) * 4) < 0.5] = 0.0
+        assert (list(Fermion.from_integrals(h, g).terms.items())
+                == list(_whole_array_terms(h, g).items()))
+
+    def test_no_spin_orbital_tensor_is_allocated(self):
+        import tracemalloc
+
+        # A sparse tensor keeps the terms dictionary small, so the peak is
+        # what the build allocates around it.
+        M = 12
+        h = np.eye(M)
+        eri = np.zeros((M,) * 4)
+        eri[np.arange(M), np.arange(M), np.arange(M), np.arange(M)] = 1.0
+        tracemalloc.start()
+        try:
+            built = Fermion.from_spatial_integrals(h, eri)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert len(built.terms) == 2 * M + 4 * M
+        # The complex (2M)^4 tensor alone would be 5.3 MB.
+        assert peak < 16 * (2 * M) ** 4 / 10

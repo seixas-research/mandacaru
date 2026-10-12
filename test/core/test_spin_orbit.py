@@ -23,10 +23,12 @@ from mandacaru.core.spin_orbit import (ALPHA, BETA, breaks_spin_symmetry,
 
 
 class Projector:
-    """The four labels the assembly reads off a KBProjector."""
+    """The labels the assembly reads off a KBProjector: a molecule's
+    projectors use real harmonics."""
 
-    def __init__(self, atom_index, l, m, index):
+    def __init__(self, atom_index, l, m, index, real=True):
         self.atom_index, self.l, self.m, self.index = atom_index, l, m, index
+        self.real = real
 
 
 def channel(atom=0, l=1, n_radial=2):
@@ -34,38 +36,59 @@ def channel(atom=0, l=1, n_radial=2):
             for m in range(-l, l + 1) for i in range(n_radial)]
 
 
+def lz(l, real):
+    """``L_z`` over ``m = -l..l`` in the real or complex harmonics."""
+    from mandacaru.basis._angular import real_harmonic_transform
+
+    Lz = np.diag(np.arange(-l, l + 1, dtype=float)).astype(complex)
+    if real:
+        U = np.conj(real_harmonic_transform(l))
+        Lz = U @ Lz @ U.conj().T
+    return Lz
+
+
 def angular_momentum_operators(projectors):
-    """``(L_z, S_z)`` over the spin-orbital ordering ``P = p + sigma M``."""
+    """``(L_z, S_z)`` over the spin-orbital ordering ``P = p + sigma M``, in
+    the projectors' (real) harmonics."""
     M = len(projectors)
-    m_of = np.array([p.m for p in projectors], dtype=float)
-    Lz = np.diag(np.concatenate([m_of, m_of]))
+    l = projectors[0].l
+    one = lz(l, projectors[0].real)
+    Lz_p = np.zeros((M, M), dtype=complex)
+    for a, pa in enumerate(projectors):
+        for b, pb in enumerate(projectors):
+            if pa.index == pb.index and pa.atom_index == pb.atom_index:
+                Lz_p[a, b] = one[pa.m + l, pb.m + l]
+    Lz = np.kron(np.eye(2), Lz_p)
     Sz = np.diag(np.concatenate([np.full(M, 0.5), np.full(M, -0.5)]))
     return Lz, Sz
 
 
 class TestTheBareOperator:
+    @pytest.mark.parametrize("real", [True, False])
     @pytest.mark.parametrize("l", [1, 2, 3, 4])
-    def test_its_spectrum_is_the_two_j_levels(self, l):
-        eigenvalues = np.linalg.eigvalsh(ls_matrix(l))
+    def test_its_spectrum_is_the_two_j_levels(self, l, real):
+        eigenvalues = np.linalg.eigvalsh(ls_matrix(l, real=real))
         up, down = l / 2.0, -(l + 1) / 2.0
         assert np.sum(np.abs(eigenvalues - up) < 1e-12) == 2 * l + 2
         assert np.sum(np.abs(eigenvalues - down) < 1e-12) == 2 * l
 
+    @pytest.mark.parametrize("real", [True, False])
     @pytest.mark.parametrize("l", [0, 1, 2, 3])
-    def test_it_is_hermitian_and_traceless(self, l):
-        operator = ls_matrix(l)
-        assert np.array_equal(operator, operator.conj().T)
+    def test_it_is_hermitian_and_traceless(self, l, real):
+        operator = ls_matrix(l, real=real)
+        assert np.allclose(operator, operator.conj().T, atol=1e-15)
         assert np.trace(operator) == pytest.approx(0.0, abs=1e-14)
 
     def test_an_s_channel_has_no_spin_orbit_coupling(self):
-        assert np.count_nonzero(ls_matrix(0)) == 0
+        for real in (True, False):
+            assert np.count_nonzero(ls_matrix(0, real=real)) == 0
 
+    @pytest.mark.parametrize("real", [True, False])
     @pytest.mark.parametrize("l", [1, 2])
-    def test_it_conserves_jz_but_not_sz(self, l):
-        operator = ls_matrix(l)
+    def test_it_conserves_jz_but_not_sz(self, l, real):
+        operator = ls_matrix(l, real=real)
         size = 2 * l + 1
-        m = np.arange(-l, l + 1, dtype=float)
-        Lz = np.diag(np.concatenate([m, m]))
+        Lz = np.kron(np.eye(2), lz(l, real))
         Sz = np.diag(np.concatenate([np.full(size, 0.5), np.full(size, -0.5)]))
         Jz = Lz + Sz
         assert np.allclose(operator @ Jz, Jz @ operator, atol=1e-14)
@@ -75,9 +98,23 @@ class TestTheBareOperator:
         """<m+1, beta| L.S |m, alpha> = sqrt(l(l+1) - m(m+1)) / 2."""
         l, m = 2, 0
         size = 2 * l + 1
-        element = ls_matrix(l)[BETA * size + (m + 1 + l), ALPHA * size + (m + l)]
+        element = ls_matrix(l, real=False)[BETA * size + (m + 1 + l),
+                                           ALPHA * size + (m + l)]
         assert element == pytest.approx(
             0.5 * np.sqrt(l * (l + 1) - m * (m + 1)))
+
+
+    @pytest.mark.parametrize("l", [1, 2, 3])
+    def test_the_real_operator_is_the_complex_one_transformed(self, l):
+        """<S_m sigma|L.S|S_m' sigma'> = conj(U) (L.S) U^T per spin block,
+        and purely imaginary in the real harmonics' L_z part."""
+        from mandacaru.basis._angular import real_harmonic_transform
+
+        U = np.kron(np.eye(2), np.conj(real_harmonic_transform(l)))
+        assert np.allclose(ls_matrix(l, real=True),
+                           U @ ls_matrix(l, real=False) @ U.conj().T,
+                           atol=1e-14)
+        assert np.abs(lz(l, True).real).max() < 1e-14
 
 
 class TestTheAssembledOneBodyMatrix:

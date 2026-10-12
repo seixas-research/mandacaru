@@ -339,6 +339,30 @@ Limits of this version:
   $3.5\times10^{-3}$ eV/Å. The Hellmann–Feynman/Pulay breakdown is not
   reported: it needs the full two-body tensor.
 
+## Large bases with the other selectors: the integral-direct route
+
+`"energy"` and `"mp2"` on a closed shell can be built the same way, without
+the four-index tensor: the RHF runs on direct Coulomb and exchange, MP2 reads
+only the $\langle ij|ab\rangle$ block it needs ($ov$ Poisson solves), the
+frozen core is folded in from its own Coulomb and exchange, and the
+two-electron integrals of the active orbitals alone are formed. The
+Hamiltonian is the tensor route's to round-off: $10^{-14}$ Ha per coefficient
+on water PAW-LCAO-SZP, once the orbital phases the two eigensolvers chose are
+aligned.
+
+A run takes this route by itself only when it would otherwise not fit: a
+closed-shell active space is set (a frozen core or a truncation) and the
+tensor route's
+three $M^4$ arrays -- atomic-orbital, orthonormal and molecular-orbital,
+$48 M^4$ bytes -- would claim more than a quarter of the machine's memory (or
+its cgroup's limit). Below that the tensor route is kept, because on a small
+basis it is much faster (water PAW-LCAO-SZP, $M = 17$: 3 s against 34 s).
+The `[ACTIVE SPACE]` block's `two_body_integrals` line says which route a run
+took. Open shells and spin-orbit Hamiltonians stay on the tensor route: an
+open shell's UHF has soft modes, so the two routes' coefficients agree only to
+the SCF tolerance (1e-8 Ha on OH, the active energies to 1e-11 Ha). Forces of an integral-direct build are the central difference of the
+rebuilt reduced Hamiltonian, as for `"dlpno-mp2"` above.
+
 ## Occupied orbitals are chosen by energy, always
 
 `active_space`'s `"method"` never decides *which* occupied orbitals are frozen:
@@ -520,6 +544,7 @@ cut can be checked against the spectrum it was made on:
     correlating_pairs: off
     symmetry: off
     spatial_orbitals: 12 (0 frozen, 4 active, 8 deleted)
+    two_body_integrals: four-index tensor, transformed to the active orbitals
     mp2_correlation_energy_Ha: -0.02189456
     occupation: eigenvalues of the MP2 one-particle density (natural orbitals); frozen rows are its diagonal, since frozen orbitals are not rotated
     orbitals:

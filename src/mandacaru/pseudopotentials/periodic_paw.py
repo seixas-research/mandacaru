@@ -139,7 +139,7 @@ class BasisGradient:
         away = r >= 1e-12
         if np.any(away):
             Y, gradient = spherical_harmonic_gradient(
-                self.l, self.m, dx[away], dy[away], dz[away])
+                self.l, self.m, dx[away], dy[away], dz[away], real=False)
             ra = r[away]
             offset = (dx, dy, dz)[self.axis][away]
             out[away] = (radial_slope(self.parent, ra) * offset / ra * Y
@@ -395,7 +395,8 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
                 radial = first.radial(r)
                 for mu in members:
                     values[mu].append(radial * spherical_harmonic(
-                        functions[mu].l, functions[mu].m, theta, phi))
+                        functions[mu].l, functions[mu].m, theta, phi,
+                        real=False))
             else:
                 for mu in members:
                     values[mu].append(functions[mu].evaluate(
@@ -547,7 +548,7 @@ def _harmonic_rotation(R, L: int) -> np.ndarray:
     def harmonics(v):
         theta = np.arccos(np.clip(v[:, 2], -1.0, 1.0))
         phi = np.arctan2(v[:, 1], v[:, 0])
-        return np.stack([spherical_harmonic(L, M, theta, phi)
+        return np.stack([spherical_harmonic(L, M, theta, phi, real=False)
                          for M in range(-L, L + 1)], axis=1)
 
     Y = harmonics(u)
@@ -1236,7 +1237,8 @@ class PeriodicPAW:
             theta = np.arccos(np.clip(dirs[2], -1.0, 1.0))
             phi = np.arctan2(dirs[1], dirs[0])
             density = (shape_function(r, r_g, L)[:, None]
-                       * spherical_harmonic(L, M, theta, phi)[None, :]).ravel()
+                       * spherical_harmonic(L, M, theta, phi,
+                                            real=False)[None, :]).ravel()
             x = np.stack(points, axis=1)
             total = 0.0j
             for other, dataset in enumerate(self.datasets):
@@ -1489,14 +1491,16 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
     ghosts = validate_ghosts(ghosts, len(symbols))
     real = [i for i in range(len(symbols)) if i not in ghosts]
     real_symbols = [symbols[i] for i in real]
+    # A crystal's Bloch sums, its C kernel and its Wannier code index the
+    # harmonics by m: complex ones, where a molecule uses real ones.
     basis, atom_of_orbital = pseudo_basis(
         symbols, positions, potentials, filter_cutoff=k_c,
         **pseudo_basis_arguments(family, options, confinement=confinement,
-                                 polarization=polarization))
+                                 polarization=polarization), real=False)
     projectors = paw_projectors(
         real_symbols, positions[real], potentials,
         projector_basis=options.get("projector_basis",
-                                    DEFAULT_PROJECTOR_BASIS))
+                                    DEFAULT_PROJECTOR_BASIS), real=False)
     datasets = [potentials[s] for s in real_symbols]
     size, gamma, mesh = monkhorst_pack_kpts(kpts)
     if full_mesh:

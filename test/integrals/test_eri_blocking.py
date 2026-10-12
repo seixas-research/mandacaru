@@ -24,11 +24,16 @@ from mandacaru.integrals import Grid, IntegralEngine, PoissonFFTSolver
 from mandacaru.integrals import engine as engine_mod
 
 
-def _engine():
+def _engine(real=False):
+    """Complex p functions by default (a crystal's harmonics), where the
+    conjugation bookkeeping of the flipped pairs matters; ``real=True`` is a
+    molecule's basis, whose tensor is real."""
     c = (0.6, 0.2, -0.3)
-    fns = [HydrogenicAtomicOrbital(1, 0, 0), HydrogenicAtomicOrbital(2, 0, 0, center=c),
-           HydrogenicAtomicOrbital(2, 1, 1, center=c),
-           HydrogenicAtomicOrbital(2, 1, -1, center=c), HydrogenicAtomicOrbital(2, 1, 0)]
+    fns = [HydrogenicAtomicOrbital(1, 0, 0, real=real),
+           HydrogenicAtomicOrbital(2, 0, 0, center=c, real=real),
+           HydrogenicAtomicOrbital(2, 1, 1, center=c, real=real),
+           HydrogenicAtomicOrbital(2, 1, -1, center=c, real=real),
+           HydrogenicAtomicOrbital(2, 1, 0, real=real)]
     return IntegralEngine(fns, Grid(box_size=6.0, h=0.5, center=(0, 0, 0)))
 
 
@@ -41,12 +46,61 @@ def _dense_reference(eng):
 
 
 class TestBlockedHermitianERI:
-    @pytest.mark.parametrize("budget_mb", [None, 1e-3, 0.3, 1e6])
-    def test_matches_the_dense_contraction(self, budget_mb):
+    @pytest.mark.parametrize("budget_mb, route", [(None, "cached"),
+                                                  (1e-3, "streamed"),
+                                                  (0.3, "streamed"),
+                                                  (1e6, "cached")])
+    def test_matches_the_dense_contraction(self, budget_mb, route):
+        """Both contractions -- the streamed products and the kept pair
+        densities -- give the dense contraction in every entry."""
         eng = _engine()
         ref = _dense_reference(eng)
         eri = eng.two_body(energy_units="Ha", max_memory_mb=budget_mb)
+        assert eng.two_body_profile["route"] == route
         assert np.abs(eri - ref).max() < 1e-12
+
+    @pytest.mark.parametrize("budget_mb", [None, 1e-3])
+    def test_a_real_basis_gives_the_real_tensor(self, budget_mb):
+        """A molecule's real harmonics: real pair densities through the real
+        transforms, a float64 tensor equal to the dense contraction and to
+        the complex basis's tensor rotated shell by shell."""
+        from mandacaru.basis._angular import real_harmonic_transform
+
+        real = _engine(real=True)
+        eri = real.two_body(energy_units="Ha", max_memory_mb=budget_mb)
+        assert real._psi.dtype == np.float64 and eri.dtype == np.float64
+        assert real.two_body_profile["real"]
+        assert np.abs(eri - _dense_reference(real)).max() < 1e-12
+        complex_ = _engine(real=False).two_body(energy_units="Ha")
+        U = np.eye(5, dtype=complex)
+        U[2:4, 2:4] = real_harmonic_transform(1)[[2, 0]][:, [2, 0]]
+        # The p shell on center c is (m = +1, -1); its m = 0 partner sits on
+        # the origin, a different shell, so the 2x2 block of (x, y) is it.
+        # S_m = sum U_mk Y_k, so the real functions are the complex ones
+        # times B = U^T.
+        B = U.T
+        rotated = np.einsum("ap,bq,cr,ds,abcd->pqrs", B.conj(), B.conj(), B,
+                            B, complex_, optimize=True)
+        assert np.abs(rotated - eri).max() < 1e-12
+
+    def test_a_periodic_cell_matches_the_dense_contraction(self):
+        """The circular kernel of a crystal: the same slab-by-slab tensor."""
+        from mandacaru.integrals.poisson import PeriodicPoissonSolver
+
+        fns = [HydrogenicAtomicOrbital(1, 0, 0),
+               HydrogenicAtomicOrbital(2, 1, 1, center=(0.5, 0.0, 0.2)),
+               HydrogenicAtomicOrbital(2, 1, -1, center=(0.5, 0.0, 0.2))]
+        grid = Grid(box_size=5.0, h=0.5, center=(0, 0, 0))
+        eng = IntegralEngine(fns, grid)
+        solver = PeriodicPoissonSolver(grid.shape, step=grid.step)
+        psi, M = eng._psi, len(fns)
+        pairs = (np.conj(psi)[:, None, :] * psi[None, :, :]).reshape(M * M, -1)
+        R = (pairs @ solver.solve_stack(pairs).T) * grid.dV
+        ref = R.reshape(M, M, M, M).transpose(0, 2, 1, 3)
+        for budget in (None, 1e-3):
+            eri = eng.two_body(energy_units="Ha", max_memory_mb=budget,
+                               solver=solver)
+            assert np.abs(eri - ref).max() < 1e-12
 
     def test_block_size_follows_the_budget(self):
         eng = _engine()
@@ -78,19 +132,22 @@ class TestTheTensorItselfIsBudgeted:
     """``max_memory_mb`` bounds the Poisson blocks; the ``M^4`` result and
     its Gram blocks are checked against memory before any solve runs."""
 
-    def test_the_estimate_counts_the_result_and_the_gram_blocks(self):
+    def test_the_estimate_counts_the_result_without_gram_blocks(self):
+        """The result is written in place from each block's contraction: no
+        ``U x U`` Gram block and no assembly temporaries remain."""
         from mandacaru.integrals.engine import eri_peak_bytes
 
         M = 100
         U = M * (M + 1) // 2
-        assert eri_peak_bytes(M) >= 16 * (M ** 4 + 2 * U * U)
+        assert eri_peak_bytes(M) >= 16 * M ** 4
+        assert eri_peak_bytes(M) < 16 * (M ** 4 + 2 * U * U)
         assert eri_peak_bytes(M) / 2 ** 30 > 1.49          # the report's figure
 
     def test_an_unaffordable_tensor_is_refused_up_front(self, monkeypatch):
         from mandacaru.core import matrix_free
         from mandacaru.integrals.engine import refuse_unaffordable_eri
 
-        monkeypatch.setattr(matrix_free, "physical_memory_bytes",
+        monkeypatch.setattr(matrix_free, "available_memory_bytes",
                             lambda: 10 ** 6)
         with pytest.raises(MemoryError, match="two-electron tensor"):
             refuse_unaffordable_eri(40)

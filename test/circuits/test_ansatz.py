@@ -59,7 +59,7 @@ class TestCustomAnsatz:
                                              maxiter=1000, tol=1e-12))
         result = calc.run()
         assert result.optimal_energy == pytest.approx(-1.0, abs=1e-4)
-        assert calc.checkpoint is None
+        assert calc.solver.checkpoint is None
 
     def test_asking_for_a_checkpoint_is_refused_before_the_optimization(
             self, tmp_path):

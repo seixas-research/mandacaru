@@ -68,6 +68,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..integrals import reciprocal as rc
+from ..integrals.fft import workspace
 from ..units import HARTREE_TO_EV
 
 #: Radius (Bohr^-1) of the vectors q + G the Coulomb integrals are summed
@@ -463,8 +464,9 @@ def transition_densities(crystal, first, second, holes, particles, q, g):
     psi2, a2 = second[0], second[1]
     product = np.conj(psi1[holes]) * psi2[particles] * np.exp(
         -1j * (np.asarray(q) @ r))[None, :]
-    transform = np.fft.fftn(product.reshape(-1, *shape),
-                            axes=(1, 2, 3)).reshape(len(holes), -1)
+    # In place on the grid's FFT workspace (the product is a temporary).
+    transform = workspace(shape).forward(
+        product.reshape(-1, *shape)).reshape(len(holes), -1)
     rho = transform[:, fft_index] * to_G[None, :]
     transforms = crystal.compensation_transforms(qG)
     for c, (atom, L, M) in enumerate(crystal.channels):

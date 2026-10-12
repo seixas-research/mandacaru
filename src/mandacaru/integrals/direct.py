@@ -54,7 +54,8 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["DirectCoulomb"]
+__all__ = ["DirectCoulomb", "augmentation_coulomb", "augmentation_exchange",
+           "augmentation_tensor"]
 
 #: Pair densities solved per Poisson batch.  Each batch holds two
 #: ``(block, G)`` complex stacks; 64 keeps benzene DZP under 100 MB.
@@ -108,6 +109,58 @@ def pivoted_cholesky(A, tolerance: float = 1e-12) -> np.ndarray:
         d[p] = 0.0
     return (np.array(columns).T if columns
             else np.zeros((n, 0), dtype=A.dtype))
+
+
+def augmentation_coulomb(augmentation, D) -> np.ndarray:
+    r"""The family augmentation's :math:`J[D]` (AO basis): with
+    :math:`t^Q_c = \mathrm{tr}(Q^c D)` and :math:`t^W_c` alike,
+    :math:`\sum_c Q^c (t^W_c + (U t^Q)_c) + W^c t^Q_c`."""
+    Qs, Ws, U = augmentation
+    D = np.asarray(D)
+    tQ = np.array([np.sum(Q * D.T) for Q in Qs])
+    tW = np.array([np.sum(W * D.T) for W in Ws])
+    coupled = U @ tQ
+    J = 0.0
+    for c, (Q, W) in enumerate(zip(Qs, Ws)):
+        J = J + Q * (tW[c] + coupled[c]) + W * tQ[c]
+    return J
+
+
+def augmentation_exchange(augmentation, D) -> np.ndarray:
+    r"""The family augmentation's :math:`K[D]` (AO basis),
+    :math:`\sum_c Q^c D W^c + W^c D Q^c + \sum_{cd} U_{cd} Q^c D Q^d`."""
+    Qs, Ws, U = augmentation
+    D = np.asarray(D)
+    QD = [Q @ D for Q in Qs]
+    K = 0.0
+    for c, (Q, W) in enumerate(zip(Qs, Ws)):
+        K = K + QD[c] @ W + W @ D @ Q
+        for d, Qd in enumerate(Qs):
+            if U[c, d] != 0:
+                K = K + U[c, d] * (QD[c] @ Qd)
+    return K
+
+
+def augmentation_tensor(augmentation, C) -> np.ndarray:
+    r"""The family augmentation's :math:`\Delta\langle pq|rs\rangle` over
+    the orbitals ``C`` (AO columns): each channel matrix is transformed,
+    :math:`C^\dagger Q^c C`, and the low-rank sum of the module docstring
+    is formed in those orbitals only."""
+    Qs, Ws, U = augmentation
+    C = np.asarray(C)
+    n = C.shape[1]
+    Cd = C.conj().T
+    Qt = [Cd @ Q @ C for Q in Qs]
+    Wt = [Cd @ W @ C for W in Ws]
+    eri = np.zeros((n, n, n, n), dtype=np.result_type(*Qt, *Wt, U, float))
+    for c, (Q, W) in enumerate(zip(Qt, Wt)):
+        eri += np.einsum("pr,qs->pqrs", Q, W)
+        eri += np.einsum("pr,qs->pqrs", W, Q)
+        coupled = sum(U[c, d] * Qd for d, Qd in enumerate(Qt)
+                      if U[c, d] != 0)
+        if not np.isscalar(coupled):
+            eri += np.einsum("pr,qs->pqrs", Q, coupled)
+    return eri
 
 
 class DirectCoulomb:
@@ -169,25 +222,35 @@ class DirectCoulomb:
 
     # -- Coulomb and exchange ---------------------------------------------- #
 
-    def potential(self, densities) -> np.ndarray:
-        """Hartree potentials of a ``(k, G)`` stack of densities."""
-        return self.solver.solve_stack(np.ascontiguousarray(densities))
+    def _potential_dtype(self, density_dtype):
+        """The dtype the solver returns for densities of ``density_dtype``:
+        real for real densities on an even (real) kernel."""
+        real = (not np.issubdtype(density_dtype, np.complexfloating)
+                and bool(getattr(self.solver, "even", False)))
+        return np.float64 if real else np.complex128
+
+    def potential(self, densities, out=None) -> np.ndarray:
+        """Hartree potentials of a ``(k, G)`` stack of densities, written to
+        ``out`` when given (see
+        :meth:`~mandacaru.integrals.poisson.PoissonFFTSolver.solve_stack`)."""
+        return self.solver.solve_stack(np.ascontiguousarray(densities),
+                                       out=out)
 
     def coulomb(self, D) -> np.ndarray:
-        r""":math:`J_{pq} = \sum_{rs} D_{sr}\langle pr|qs\rangle` (AO basis)."""
+        r""":math:`J_{pq} = \sum_{rs} D_{sr}\langle pr|qs\rangle` (AO basis).
+
+        The density of a Hermitian ``D`` is real, and is solved through the
+        real transforms."""
         D = np.asarray(D)
         psi = self.psi
         density = np.sum((D.T @ psi) * np.conj(psi), axis=0)
+        if np.array_equal(D, D.conj().T):
+            density = np.ascontiguousarray(density.real)
         V = self.potential(density[None, :])[0]
         J = (np.conj(psi) * V) @ psi.T * self.dV
         aug = self.augmentation()
         if aug is not None:
-            Qs, Ws, U = aug
-            tQ = np.array([np.sum(Q * D.T) for Q in Qs])
-            tW = np.array([np.sum(W * D.T) for W in Ws])
-            coupled = U @ tQ
-            for c, (Q, W) in enumerate(zip(Qs, Ws)):
-                J = J + Q * (tW[c] + coupled[c]) + W * tQ[c]
+            J = J + augmentation_coulomb(aug, D)
         return J
 
     def exchange(self, D) -> np.ndarray:
@@ -205,22 +268,23 @@ class DirectCoulomb:
         floor = OCCUPATION_FLOOR * max(float(np.max(np.abs(weights))), 1.0)
         keep = np.abs(weights) > floor
         psi = self.psi
-        K = np.zeros((self.n_basis, self.n_basis), dtype=complex)
+        dtype = np.result_type(psi, vectors, float)
+        K = np.zeros((self.n_basis, self.n_basis), dtype=dtype)
+        rho = np.empty((min(POISSON_BLOCK, self.n_basis), psi.shape[1]),
+                       dtype=dtype)
+        potentials = np.empty_like(rho, dtype=self._potential_dtype(dtype))
         for w, c in zip(weights[keep], vectors[:, keep].T):
             phi = c @ psi
             left = np.conj(psi) * phi
+            np.conjugate(phi, out=phi)
             for q0 in range(0, self.n_basis, POISSON_BLOCK):
-                block = self.potential(np.conj(phi) * psi[q0:q0 + POISSON_BLOCK])
-                K[:, q0:q0 + POISSON_BLOCK] += w * (left @ block.T) * self.dV
+                n = min(POISSON_BLOCK, self.n_basis - q0)
+                np.multiply(phi, psi[q0:q0 + n], out=rho[:n])
+                block = self.potential(rho[:n], out=potentials[:n])
+                K[:, q0:q0 + n] += w * (left @ block.T) * self.dV
         aug = self.augmentation()
         if aug is not None:
-            Qs, Ws, U = aug
-            QD = [Q @ D for Q in Qs]
-            for c, (Q, W) in enumerate(zip(Qs, Ws)):
-                K = K + QD[c] @ W + W @ D @ Q
-                for d, Qd in enumerate(Qs):
-                    if U[c, d] != 0:
-                        K = K + U[c, d] * (QD[c] @ Qd)
+            K = K + augmentation_exchange(aug, D)
         return K
 
     # -- local boxes ------------------------------------------------------- #
@@ -324,7 +388,7 @@ class DirectCoulomb:
         factors = self.local_factors(D)
         shape = self.grid.shape
         M = self.n_basis
-        K = np.zeros((M, M), dtype=complex)
+        K = np.zeros((M, M), dtype=np.result_type(self.psi, factors, float))
         psi3 = self.psi.reshape((M,) + shape)
         phis = factors.T @ self.psi                            # (o, G)
         # Product screening: the pair density phi_k^* chi_q matters only
@@ -350,7 +414,7 @@ class DirectCoulomb:
             chi_box = psi3[(near,) + box].reshape(len(near), -1)
             solver = self._box_solver(tuple(b.stop - b.start for b in box))
             left = np.conj(chi_box) * phi_box
-            block = np.zeros((len(near), len(near)), dtype=complex)
+            block = np.zeros((len(near), len(near)), dtype=K.dtype)
             for q0 in range(0, len(near), POISSON_BLOCK):
                 potentials = solver.solve_stack(
                     np.conj(phi_box) * chi_box[q0:q0 + POISSON_BLOCK])
@@ -358,13 +422,7 @@ class DirectCoulomb:
             K[np.ix_(near, near)] += block
         aug = self.augmentation()
         if aug is not None:
-            Qs, Ws, U = aug
-            QD = [Q @ D for Q in Qs]
-            for c, (Q, W) in enumerate(zip(Qs, Ws)):
-                K = K + QD[c] @ W + W @ D @ Q
-                for d, Qd in enumerate(Qs):
-                    if U[c, d] != 0:
-                        K = K + U[c, d] * (QD[c] @ Qd)
+            K = K + augmentation_exchange(aug, D)
         return K
 
     def fock_two_electron(self, D, exact: bool = False) -> np.ndarray:
@@ -399,7 +457,8 @@ class DirectCoulomb:
         occupied, virtual = np.asarray(occupied), np.asarray(virtual)
         phi_i = occupied.T @ self.psi
         phi_a = virtual.T @ self.psi
-        out = np.zeros((phi_i.shape[0], phi_a.shape[0]), dtype=complex)
+        out = np.zeros((phi_i.shape[0], phi_a.shape[0]),
+                       dtype=np.result_type(phi_i, phi_a, float))
         for i, left in enumerate(phi_i):
             for a0 in range(0, phi_a.shape[0], POISSON_BLOCK):
                 rho = np.conj(left) * phi_a[a0:a0 + POISSON_BLOCK]
@@ -419,48 +478,44 @@ class DirectCoulomb:
     def orbital_integrals(self, C) -> np.ndarray:
         r""":math:`\langle pq|rs\rangle` over the orbitals ``C`` (AO columns).
 
-        :math:`n^2/2` pair densities are solved (the Hermitian half) and the
-        tensor is assembled from their Gram matrices, as the full engine does;
+        :math:`n^2/2` pair densities are solved (the Hermitian half), a block
+        at a time, and each potential's slab of the tensor is one product, as
+        the full engine does (:func:`~mandacaru.integrals.engine.contract_pair_potentials`);
         the augmentation is transformed into the orbitals first.  Cost
         :math:`n^2` solves and :math:`n^4 G`, with :math:`n` the number of
-        orbitals rather than of basis functions.
+        orbitals rather than of basis functions, and grid memory of one
+        block.
         """
+        from .engine import contract_pair_potentials
+
         C = np.asarray(C)
         phi = C.T @ self.psi                                  # (n, G)
         n = phi.shape[0]
         iu, ju = np.triu_indices(n)
-        index = np.empty((n, n), dtype=np.int64)
-        index[iu, ju] = np.arange(iu.size)
-        index[ju, iu] = np.arange(iu.size)
-        densities = np.conj(phi[iu]) * phi[ju]                # rho_{ij}, i <= j
-        potentials = np.concatenate([
-            self.potential(densities[k:k + POISSON_BLOCK])
-            for k in range(0, iu.size, POISSON_BLOCK)]) if iu.size else \
-            np.zeros((0, phi.shape[1]), dtype=complex)
-        # Gram blocks: <a b|c d> = sum_g rho_ac Phi_bd dV.  rho_ca = conj(rho_ac)
-        # and Phi_db = conj(Phi_bd), so two Gram matrices cover every case.
-        G1 = densities @ potentials.T * self.dV               # rho_u . Phi_v
-        G2 = np.conj(densities) @ potentials.T * self.dV      # conj(rho_u) . Phi_v
-        u = index.reshape(-1)                                 # over (a, c)
-        lower = (np.arange(n)[:, None] > np.arange(n)[None, :]).reshape(-1)
-        left, right = lower[:, None], lower[None, :]          # a > c, b > d
-        g1, g2 = G1[np.ix_(u, u)], G2[np.ix_(u, u)]
-        R = np.where(left, np.where(right, np.conj(g1), g2),
-                     np.where(right, np.conj(g2), g1))        # R[(a,c),(b,d)]
-        eri = R.reshape(n, n, n, n).transpose(0, 2, 1, 3).copy()
+        # The engine's contraction, block by block: the potential of rho_bd
+        # gives the whole slab eri[:, b, :, d] = (conj(phi) Phi_bd) phi^T dV,
+        # and its flip eri[:, d, :, b] the conjugate transpose.
+        dtype = np.result_type(phi, float)
+        rho = np.empty((min(POISSON_BLOCK, max(iu.size, 1)), phi.shape[1]),
+                       dtype=dtype)
+        potentials = np.empty_like(rho, dtype=self._potential_dtype(dtype))
+        eri = np.empty((n, n, n, n), dtype=potentials.dtype)
+        real = not np.iscomplexobj(eri)
+        conj_phi = np.conj(phi)
+        for v0 in range(0, iu.size, POISSON_BLOCK):
+            b, d = iu[v0:v0 + POISSON_BLOCK], ju[v0:v0 + POISSON_BLOCK]
+            k = b.size
+            np.multiply(conj_phi[b], phi[d], out=rho[:k])
+            self.potential(rho[:k], out=potentials[:k])
+            X = contract_pair_potentials(conj_phi, phi, potentials[:k],
+                                         self.solver.workers)
+            X *= self.dV
+            flipped = X.transpose(0, 2, 1)
+            eri[:, d, :, b] = flipped if real else np.conj(flipped)
+            eri[:, b, :, d] = X
         aug = self.augmentation()
         if aug is not None:
-            Qs, Ws, U = aug
-            Cd = C.conj().T
-            Qt = [Cd @ Q @ C for Q in Qs]
-            Wt = [Cd @ W @ C for W in Ws]
-            for c, (Q, W) in enumerate(zip(Qt, Wt)):
-                eri += np.einsum("pr,qs->pqrs", Q, W)
-                eri += np.einsum("pr,qs->pqrs", W, Q)
-                coupled = sum(U[c, d] * Qd for d, Qd in enumerate(Qt)
-                              if U[c, d] != 0)
-                if not np.isscalar(coupled):
-                    eri += np.einsum("pr,qs->pqrs", Q, coupled)
+            eri += augmentation_tensor(aug, C)
         return eri
 
     def exchange_blocks(self, occupied, functions, pairs) -> dict:
@@ -471,8 +526,9 @@ class DirectCoulomb:
         PAOs); ``pairs`` maps ``(i, j)`` to the function indices of the pair's
         domain.  Grouped by ``j``: the potentials of
         :math:`\phi_j^*\tilde\chi_b` over the union of ``j``'s domains are
-        solved once, and every pair contracts its own densities against them,
-        so the work is the sum of the domain sizes, not :math:`o M`.
+        solved once, a block at a time, and every pair contracts its own
+        densities against each block, so the work is the sum of the domain
+        sizes, not :math:`o M`, and the grid memory one block's.
         """
         occupied, functions = np.asarray(occupied), np.asarray(functions)
         phi = occupied.T @ self.psi                            # (o, G)
@@ -503,13 +559,25 @@ class DirectCoulomb:
                     tuple(b.stop - b.start for b in box)).solve_stack
             take = (lambda array: array) if box is None else (
                 lambda array: array[..., keep])
-            potentials = np.concatenate([
-                solve(take(np.conj(phi[j]) * chi[union[k:k + POISSON_BLOCK]]))
-                for k in range(0, len(union), POISSON_BLOCK)])
+            # The union's potentials a block at a time (never the whole
+            # union resident): each block is contracted into every member
+            # whose domain reaches it.
+            blocks = {i: np.zeros((len(domain), len(domain)),
+                                  dtype=np.result_type(phi, chi, float))
+                      for i, domain in members}
+            for k0 in range(0, len(union), POISSON_BLOCK):
+                chunk = union[k0:k0 + POISSON_BLOCK]
+                potentials = solve(take(np.conj(phi[j]) * chi[chunk]))
+                for i, domain in members:
+                    inside = [n for n, b in enumerate(domain)
+                              if k0 <= where[b] < k0 + len(chunk)]
+                    if not inside:
+                        continue
+                    rho = take(np.conj(phi[i]) * chi[domain])  # rho_ia
+                    rows = [where[domain[n]] - k0 for n in inside]
+                    blocks[i][:, inside] = rho @ potentials[rows].T * self.dV
             for i, domain in members:
-                rho = take(np.conj(phi[i]) * chi[domain])      # rho_ia
-                cols = [where[b] for b in domain]
-                K = rho @ potentials[cols].T * self.dV
+                K = blocks[i]
                 if aug is not None:
                     Qs, Ws, U = aug
                     for c, (Q, W) in enumerate(zip(Qs, Ws)):

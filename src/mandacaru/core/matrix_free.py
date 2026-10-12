@@ -35,13 +35,17 @@ sum is a Walsh-Hadamard transform of the coefficients placed at their ``z``
 masks, :math:`O(n\,2^n)` instead of :math:`O(T_f\,2^n)`.
 
 **Memory.**  The operator holds its groups as integer masks and coefficients
--- polynomial in the register -- plus a cache bounded by ``cache_bytes``: the
-first groups, as many as fit, stored as one CSR block.  With every group
-cached the product is a CSR product; past the bound, each product recomputes
-the remaining groups and only a few vectors of the state's length are
-allocated for them.  The state vector
-itself is the one exponential object left, :math:`16 \cdot 2^n` bytes on the
-full register (4 GB at 28 qubits, 1 TB at 36) or :math:`16 \cdot \dim` in a
+-- polynomial in the register -- and reads the basis-state index array of its
+simulation space: one read-only array shared by every operator on that space
+(:func:`register_indices`, or the sector's indices), so a pool of ``K``
+generators holds one, not ``K``.  On top of that it keeps a cache bounded by
+``cache_bytes``: the first groups, as many as fit, stored as one CSR block.
+With every group cached the product is a CSR product; past the bound, each
+product recomputes the remaining groups and only a few vectors of the state's
+length are allocated for them.  The state vectors and the one index array
+are the exponential objects left, :math:`16 \cdot 2^n` and
+:math:`8 \cdot 2^n` bytes on the full register (4 GB per vector at 28 qubits,
+1 TB at 36) or :math:`16 \cdot \dim` per vector in a
 :class:`~mandacaru.core.sector.ParticleSector`.  No representation of the
 operator removes that bound: a 100-qubit register can be built, mapped and
 differentiated symbolically (:mod:`mandacaru.core.pauli_algebra`) but not
@@ -49,6 +53,9 @@ simulated.
 """
 
 from __future__ import annotations
+
+import threading
+import weakref
 
 import numpy as np
 
@@ -63,8 +70,9 @@ MATRIX_FREE_CACHE_BYTES = 256 * 2 ** 20
 MAX_MATRIX_FREE_QUBITS = 62
 #: The ``sparse=`` value that selects this module's operators.
 MATRIX_FREE = "matrix-free"
-#: Share of the physical memory the stored (CSR) operators may claim before
-#: ``sparse="auto"`` switches to matrix-free products.
+#: Share of the memory limit (:func:`memory_limit_bytes`) the stored (CSR)
+#: operators may claim before ``sparse="auto"`` switches to matrix-free
+#: products.
 STORED_MEMORY_FRACTION = 0.25
 #: State vectors an adaptive run holds at once: the state, ``H psi``, one
 #: generator image, the optimizer's gradient images and the product's
@@ -73,12 +81,36 @@ STORED_MEMORY_FRACTION = 0.25
 STATE_VECTOR_COPIES = 8
 
 
+#: The basis-state indices ``0 .. 2^n - 1`` of each full register in use, one
+#: read-only array per width, alive while an operator holds it.
+_REGISTER_INDICES: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+_REGISTER_LOCK = threading.Lock()
+
+
+def register_indices(n_qubits: int) -> np.ndarray:
+    """The basis-state indices of an ``n_qubits`` register, shared.
+
+    Every full-register :class:`PauliOperator` of the same width reads the
+    same read-only ``int64`` array (``8 * 2^n`` bytes), so a pool of ``K``
+    generators holds one index array, not ``K``.  The array is freed with
+    the last operator that holds it.
+    """
+    n = int(n_qubits)
+    with _REGISTER_LOCK:
+        indices = _REGISTER_INDICES.get(n)
+        if indices is None:
+            indices = np.arange(1 << n, dtype=np.int64)
+            indices.flags.writeable = False
+            _REGISTER_INDICES[n] = indices
+    return indices
+
+
 def statevector_bytes(dim: int, columns: int = 1) -> int:
     """Bytes of ``columns`` complex state vectors of ``dim`` amplitudes."""
     return 16 * int(dim) * int(columns)
 
 
-def physical_memory_bytes() -> int:
+def _installed_memory_bytes() -> int:
     """Installed memory of this machine (``sysconf``), or 16 GiB if unknown."""
     import os
 
@@ -86,6 +118,104 @@ def physical_memory_bytes() -> int:
         return int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES"))
     except (ValueError, OSError, AttributeError):
         return 16 * 2 ** 30
+
+
+def _read_bytes(path) -> int | None:
+    """An integer file of the cgroup interface, ``None`` for ``max``/absent."""
+    try:
+        with open(path) as handle:
+            text = handle.read().strip()
+    except OSError:
+        return None
+    if not text or text == "max":
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def cgroup_memory(root: str = "/sys/fs/cgroup",
+                  membership: str = "/proc/self/cgroup"):
+    """``(limit, usage)`` of this process's memory cgroup, in bytes.
+
+    cgroup v2 (``memory.max`` and ``memory.current``, the tightest limit of
+    the process's group and its ancestors) or v1 (``memory.limit_in_bytes``,
+    ``memory.usage_in_bytes``); ``(None, None)`` outside a limited group.  A
+    v1 "no limit" (a page-rounded ``2^63``) is reported as ``None``.
+    """
+    import os
+
+    try:
+        with open(membership) as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return None, None
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        _id, controllers, path = parts
+        if controllers == "":                                   # v2
+            path = path.strip("/")
+            limit = None
+            current = os.path.join(root, path) if path else root
+            usage = _read_bytes(os.path.join(current, "memory.current"))
+            while True:
+                value = _read_bytes(os.path.join(current, "memory.max"))
+                if value is not None:
+                    limit = value if limit is None else min(limit, value)
+                if os.path.normpath(current) == os.path.normpath(root):
+                    break
+                current = os.path.dirname(current)
+            return limit, usage
+        if "memory" in controllers.split(","):                  # v1
+            base = os.path.join(root, "memory", path.strip("/"))
+            limit = _read_bytes(os.path.join(base, "memory.limit_in_bytes"))
+            if limit is not None and limit >= 2 ** 62:
+                limit = None
+            return limit, _read_bytes(os.path.join(base,
+                                                   "memory.usage_in_bytes"))
+    return None, None
+
+
+def memory_limit_bytes() -> int:
+    """Memory this process may hold: the installed memory, capped by its
+    cgroup's limit (a container, a batch job).
+
+    A property of where the run is placed, not of the moment: what chooses a
+    *representation* (stored or matrix-free operators) reads this, so the
+    choice does not change with the machine's load.
+    """
+    limit, _usage = cgroup_memory()
+    installed = _installed_memory_bytes()
+    return installed if limit is None else min(installed, limit)
+
+
+def available_memory_bytes() -> int:
+    """Memory that can be allocated now, in bytes.
+
+    ``MemAvailable`` of ``/proc/meminfo`` (free plus reclaimable cache: what
+    the kernel can hand out without swapping), capped by what the process's
+    cgroup has left (limit minus usage).  :func:`memory_limit_bytes` where
+    neither can be read.  The memory guards (:func:`refuse_unaffordable_state`,
+    :func:`~mandacaru.integrals.engine.refuse_unaffordable_eri`) compare
+    against this, not the installed memory: other processes' memory is not
+    there to take.
+    """
+    candidates = []
+    try:
+        with open("/proc/meminfo") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    candidates.append(int(line.split()[1]) * 1024)
+                    break
+    except (OSError, ValueError, IndexError):
+        pass
+    limit, usage = cgroup_memory()
+    if limit is not None:
+        candidates.append(max(0, limit - (usage or 0)))
+    return min(candidates) if candidates else memory_limit_bytes()
 
 
 def format_bytes(n: float) -> str:
@@ -121,12 +251,14 @@ def refuse_unaffordable_state(n_qubits: int, dim: int,
     """Raise :class:`MemoryError` when the run's state vectors cannot fit.
 
     No representation of the operators helps then: the state itself is the
-    exponential object.  The message gives the arithmetic, so a 100-qubit
-    request fails with a number rather than an allocation error deep in
-    NumPy.
+    exponential object.  The space's basis-state index array (``8 * dim``
+    bytes, one per space however many operators read it,
+    :attr:`PauliOperator.index_bytes`) is counted with the vectors.  The
+    message gives the arithmetic, so a 100-qubit request fails with a number
+    rather than an allocation error deep in NumPy.
     """
-    needed = statevector_bytes(dim, STATE_VECTOR_COPIES)
-    available = physical_memory_bytes()
+    needed = statevector_bytes(dim, STATE_VECTOR_COPIES) + 8 * int(dim)
+    available = available_memory_bytes()
     if needed <= available:
         return
     space = (f"its particle-number sector has {dim:,} states" if in_sector
@@ -134,9 +266,9 @@ def refuse_unaffordable_state(n_qubits: int, dim: int,
     raise MemoryError(
         f"a {n_qubits}-qubit simulation cannot fit: {space}, "
         f"{format_bytes(statevector_bytes(dim))} each and ~{STATE_VECTOR_COPIES} "
-        f"held at once ({format_bytes(needed)}) against "
-        f"{format_bytes(available)} of memory.  The Hamiltonian, the pool and "
-        f"their commutators are still available symbolically (PauliSum, "
+        f"held at once, with the basis-state indices ({format_bytes(needed)}) "
+        f"against {format_bytes(available)} of available memory.  The "
+        f"Hamiltonian, the pool and their commutators are still available symbolically (PauliSum, "
         f"PauliSum.commutator); exact state-vector simulation ends near 30 "
         f"qubits on the full register")
 
@@ -237,8 +369,11 @@ class PauliOperator:
             self._groups.append((int(flip), phases, factors))
         self._budget = int(MATRIX_FREE_CACHE_BYTES if cache_bytes is None
                            else cache_bytes)
+        # The basis states the operator acts on: the sector's own index
+        # array, or the one array every full-register operator of this
+        # width shares (:func:`register_indices`).
         self._states = (sector.indices if sector is not None
-                        else np.arange(self.dim, dtype=np.int64))
+                        else register_indices(n))
         # Built on the first product: the cached groups as one CSR block,
         # and the groups past the budget, recomputed on every product.
         self._stored = None
@@ -259,11 +394,25 @@ class PauliOperator:
 
     @property
     def cached_bytes(self) -> int:
-        """Bytes kept between products (the CSR block of the cached groups)."""
+        """Bytes kept between products (the CSR block of the cached groups).
+
+        The basis-state index array is not in it: it belongs to the
+        simulation space, not to the operator (:attr:`index_bytes`).
+        """
         if self._stored is None:
             return 0
         return int(self._stored.data.nbytes + self._stored.indices.nbytes
                    + self._stored.indptr.nbytes)
+
+    @property
+    def index_bytes(self) -> int:
+        """Bytes of the basis-state index array this operator reads.
+
+        One array per simulation space -- the sector's indices, or the
+        register's shared :func:`register_indices` -- however many operators
+        read it, so a space counts it once (:func:`refuse_unaffordable_state`).
+        """
+        return int(self._states.nbytes)
 
     def _group_entries(self, index: int):
         r"""``(rows, columns, weights)`` of group ``index``.

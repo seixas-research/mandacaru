@@ -11,7 +11,8 @@ r"""Where the active-space selection gets its integrals from.
 Choosing an active space needs a handful of molecular-orbital quantities --
 the Fock diagonal, the pair-excitation couplings :math:`\langle ii|aa\rangle`
 of :func:`~mandacaru.algorithms.active_space.correlating_partners`, and for
-canonical MP2 the whole tensor.  Two providers answer the same questions:
+canonical MP2 the :math:`\langle ij|ab\rangle` block.  Two providers answer
+the same questions:
 
 * :class:`TensorOrbitalIntegrals` holds :math:`h` and :math:`\langle pq|rs\rangle`
   in the molecular orbitals, as the standard build always has;
@@ -63,10 +64,9 @@ class _LocalBasis:
         r"""Differential overlap of each orbital with each real basis part.
 
         :math:`\mathrm{DOI}_{i\mu} = (\int \phi_i^2 \chi_\mu^2)^{1/2}` on
-        the grid, for MO-basis orbital columns ``occupied`` and the real and
-        imaginary parts of every orthonormal basis function (in that order:
-        the ``M`` real parts, then the ``M`` imaginary parts), the functions
-        a local method builds its PAOs from.
+        the grid, for MO-basis orbital columns ``occupied`` and every
+        orthonormal basis function (real, as the real harmonics make them),
+        the functions a local method builds its PAOs from.
         """
         self._require_basis()
         ints = self.integrals
@@ -77,8 +77,7 @@ class _LocalBasis:
         chi = X.T @ psi
         dV = ints.grid.dV
         dens = np.abs(phi) ** 2                                # (n, G)
-        parts = np.concatenate([np.real(chi), np.imag(chi)]) ** 2
-        return np.sqrt(np.maximum(dens @ parts.T * dV, 0.0))
+        return np.sqrt(np.maximum(dens @ (np.abs(chi) ** 2).T * dV, 0.0))
 
     def atom_of(self) -> np.ndarray:
         """The atom of each orthonormal basis function."""
@@ -106,7 +105,7 @@ class TensorOrbitalIntegrals(_LocalBasis):
         """The full Fock matrix in the molecular orbitals for occupations
         ``weights``."""
         h, eri = np.asarray(self.h_mo), np.asarray(self.eri_mo)
-        F = h.copy().astype(complex)
+        F = h.astype(np.result_type(h, eri, float))
         for k, n_k in enumerate(weights):
             if n_k:
                 F += 0.5 * n_k * (2.0 * eri[:, k, :, k] - eri[:, k, k, :])
@@ -178,7 +177,9 @@ class DirectOrbitalIntegrals(_LocalBasis):
     def __init__(self, integrals, orbitals):
         self.integrals = integrals
         self.orbitals = np.asarray(orbitals)
-        self.direct = integrals.direct_coulomb()
+        # The grid's DirectCoulomb, or the Cholesky factors when the
+        # integrals are factored: the same interface.
+        self.direct = integrals.two_electron_operator()
         self.X = (integrals._lowdin_x() if integrals.orthogonalize
                   else np.eye(self.orbitals.shape[0]))
         self.h = integrals.one_body()                 # orthonormal basis
@@ -223,6 +224,36 @@ class DirectOrbitalIntegrals(_LocalBasis):
         D = (C * weights[None, :]) @ C.conj().T
         F = C.conj().T @ (self.h + self.two_electron(D)) @ C
         return 0.5 * (F + F.conj().T)
+
+    def mp2_natural_orbitals(self, n_occ: int):
+        r"""Closed-shell MP2 frozen natural orbitals
+        (:func:`~mandacaru.algorithms.mp2.mp2_natural_orbitals`) from the
+        :math:`\langle ij|ab\rangle` block alone.
+
+        The Fock matrix comes from the direct Coulomb and exchange, its
+        semicanonical orbitals from :func:`~mandacaru.algorithms.mp2.semicanonical_rotation`,
+        and the :math:`o^2 v^2` integrals from
+        :meth:`~mandacaru.integrals.direct.DirectCoulomb.exchange_blocks`
+        (:math:`o v` Poisson solves), so the :math:`M^4` tensor the canonical
+        route reads is never formed.  Equal to that route to round-off.
+        """
+        from .mp2 import mp2_natural_orbitals_from_block, semicanonical_rotation
+
+        n_occ = int(n_occ)
+        M = self.n_orbitals
+        if not 0 < n_occ < M:
+            raise ValueError(
+                f"MP2 needs at least one occupied and one virtual orbital, "
+                f"got {n_occ} occupied of {M}")
+        weights = [2.0] * n_occ + [0.0] * (M - n_occ)
+        canonical, energies = semicanonical_rotation(self.fock(weights), n_occ)
+        C = self.X @ self.orbitals @ canonical
+        virtual = range(M - n_occ)
+        pairs = {(i, j): virtual for i in range(n_occ) for j in range(n_occ)}
+        blocks = self.direct.exchange_blocks(C[:, :n_occ], C[:, n_occ:], pairs)
+        oovv = np.array([[blocks[(i, j)] for j in range(n_occ)]
+                         for i in range(n_occ)])
+        return mp2_natural_orbitals_from_block(oovv, energies, n_occ, canonical)
 
     def exchange_blocks(self, occupied, functions, pairs) -> dict:
         """As :meth:`TensorOrbitalIntegrals.exchange_blocks`, on the grid."""

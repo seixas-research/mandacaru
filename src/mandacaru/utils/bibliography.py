@@ -287,6 +287,18 @@ _ALGORITHMS = [
   doi     = {10.1103/PhysRevB.65.035109}
 }""", "the disentanglement of entangled bands (wannier with windows)",
          verified=False, topics=("wannier",)),
+    _ref("Sakuma2013", """
+@article{Sakuma2013,
+  author  = {Sakuma, Rei},
+  title   = {Symmetry-adapted {W}annier functions in the maximal
+             localization procedure},
+  journal = {Phys. Rev. B},
+  volume  = {87},
+  pages   = {235109},
+  year    = {2013},
+  doi     = {10.1103/PhysRevB.87.235109}
+}""", "the symmetry-adapted disentanglement (wannier with windows, "
+         "symmetrize=True)", verified=False, topics=("wannier",)),
     _ref("Aryasetiawan2004", """
 @article{Aryasetiawan2004,
   author  = {Aryasetiawan, F. and Imada, M. and Georges, A. and Kotliar, G.
@@ -678,6 +690,43 @@ _ALGORITHMS = [
   doi     = {10.1002/qute.201900070}
 }""", "the expressibility diagnostic", verified=False,
          topics=("expressivity",)),
+    _ref("BeebeLinderberg1977", """
+@article{BeebeLinderberg1977,
+  author  = {Beebe, Nelson H. F. and Linderberg, Jan},
+  title   = {Simplifications in the generation and transformation of
+             two-electron integrals in molecular calculations},
+  journal = {Int. J. Quantum Chem.},
+  volume  = {12},
+  pages   = {683--705},
+  year    = {1977},
+  doi     = {10.1002/qua.560120408}
+}""", "Cholesky-factored two-electron integrals (two_body cholesky)",
+         verified=False, topics=("cholesky", "integrals")),
+    _ref("Koch2003", """
+@article{Koch2003,
+  author  = {Koch, Henrik and S{\\'a}nchez de Mer{\\'a}s, Alfredo and
+             Pedersen, Thomas Bondo},
+  title   = {Reduced scaling in electronic structure calculations using
+             {C}holesky decompositions},
+  journal = {J. Chem. Phys.},
+  volume  = {118},
+  pages   = {9481--9484},
+  year    = {2003},
+  doi     = {10.1063/1.1578621}
+}""", "Cholesky-factored two-electron integrals (two_body cholesky)",
+         verified=False, topics=("cholesky", "integrals")),
+    _ref("Folkestad2019", """
+@article{Folkestad2019,
+  author  = {Folkestad, Sarai D. and Kj{\\o}nstad, Eirik F. and Koch, Henrik},
+  title   = {An efficient algorithm for {C}holesky decomposition of electron
+             repulsion integrals},
+  journal = {J. Chem. Phys.},
+  volume  = {150},
+  pages   = {194112},
+  year    = {2019},
+  doi     = {10.1063/1.5083802}
+}""", "the batched two-step pivots of the Cholesky integrals (two_body "
+         "cholesky)", verified=False, topics=("cholesky", "integrals")),
 ]
 
 # --------------------------------------------------------------------------- #

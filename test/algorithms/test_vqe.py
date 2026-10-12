@@ -159,7 +159,7 @@ class TestVQE:
     def test_reference_energy_matches_hf_expectation(self, h2_hamiltonian):
         vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                         ansatz=UCCSD(2, (1, 1)))
-        assert np.isclose(vqe.reference_energy(), vqe.energy_at(np.zeros(3)))
+        assert np.isclose(vqe.solver.reference_energy(), vqe.solver.energy_at(np.zeros(3)))
 
     def test_qubit_count_mismatch_raises(self, h2_hamiltonian):
         # A 4-qubit qubit Hamiltonian against a 6-qubit ansatz must be rejected.
@@ -178,7 +178,7 @@ class TestVQEMirrorsADAPT:
     def test_default_optimizer_is_cobyla(self, h2_hamiltonian):
         vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                         ansatz=UCCSD(2, (1, 1)))
-        assert vqe.optimizer.method == DEFAULT_OPTIMIZER
+        assert vqe.solver.optimizer.method == DEFAULT_OPTIMIZER
 
     @pytest.mark.parametrize(
         "name",
@@ -186,13 +186,13 @@ class TestVQEMirrorsADAPT:
     def test_named_optimizers_build(self, h2_hamiltonian, name):
         vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                         ansatz=UCCSD(2, (1, 1)), optimizer=name)
-        assert vqe.optimizer.method == name
+        assert vqe.solver.optimizer.method == name
 
     def test_optimizer_instance_passthrough(self, h2_hamiltonian):
         opt = LBFGS
         vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                         ansatz=UCCSD(2, (1, 1)), optimizer=opt)
-        assert vqe.optimizer is opt
+        assert vqe.solver.optimizer is opt
 
     def test_unknown_optimizer_rejected(self, h2_hamiltonian):
         with pytest.raises(ValueError):
@@ -396,7 +396,7 @@ class TestVQEKPoints:
     def test_default_is_gamma(self, h2_hamiltonian):
         vqe = Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                         ansatz=UCCSD(2, (1, 1)))
-        assert vqe.kpts == (1, 1, 1) and len(vqe.kpoints) == 1
+        assert vqe.solver.kpts == (1, 1, 1) and len(vqe.kpoints) == 1
 
     def test_mesh_from_ase(self):
         from ase.dft.kpoints import monkhorst_pack
@@ -412,7 +412,7 @@ class TestVQEKPoints:
     def test_dict_gamma_centering(self):
         vqe = Mandacaru(method="vqe", basis="HAO",
                         kpts={"size": (2, 2, 2), "gamma": True})
-        assert vqe.kpts == (2, 2, 2) and vqe.kpts_gamma is True
+        assert vqe.solver.kpts == (2, 2, 2) and vqe.solver.kpts_gamma is True
         assert any(np.allclose(k, [0, 0, 0]) for k in vqe.kpoints)
 
 
@@ -421,15 +421,15 @@ class TestVQEKPoints:
 class TestVQESpinAndInitialState:
     def test_spin_default_false(self, h2_hamiltonian):
         assert Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
-                         ansatz=UCCSD(2, (1, 1))).spin is False
+                         ansatz=UCCSD(2, (1, 1))).solver.spin is False
 
     def test_spin_flag_stored(self, h2_hamiltonian):
         assert Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
-                         ansatz=UCCSD(2, (1, 1)), spin=True).spin is True
+                         ansatz=UCCSD(2, (1, 1)), spin=True).solver.spin is True
 
     def test_initial_state_default_and_validation(self, h2_hamiltonian):
         assert Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
-                         ansatz=UCCSD(2, (1, 1))).initial_state == "hartree-fock"
+                         ansatz=UCCSD(2, (1, 1))).solver.initial_state == "hartree-fock"
         with pytest.raises(ValueError):
             Mandacaru(method="vqe", hamiltonian=h2_hamiltonian,
                       ansatz=UCCSD(2, (1, 1)), initial_state="excited")

@@ -80,14 +80,14 @@ class TestProviderRegistry:
             Mandacaru(method="adapt-vqe", backend_provider="rigetti")
 
     def test_execute_circuits_defaults_per_provider(self):
-        assert Mandacaru(method="adapt-vqe", backend_provider="qiskit").execute_circuits is False
-        assert Mandacaru(method="adapt-vqe", backend_provider="braket").execute_circuits is True
-        assert Mandacaru(method="adapt-vqe", backend_provider="cirq").execute_circuits is True
+        assert Mandacaru(method="adapt-vqe", backend_provider="qiskit").solver.execute_circuits is False
+        assert Mandacaru(method="adapt-vqe", backend_provider="braket").solver.execute_circuits is True
+        assert Mandacaru(method="adapt-vqe", backend_provider="cirq").solver.execute_circuits is True
         # ... and is overridable in both directions.
         assert Mandacaru(method="adapt-vqe", backend_provider="qiskit",
-                         execute_circuits=True).execute_circuits is True
+                         execute_circuits=True).solver.execute_circuits is True
         assert Mandacaru(method="adapt-vqe", backend_provider="cirq",
-                         execute_circuits=False).execute_circuits is False
+                         execute_circuits=False).solver.execute_circuits is False
 
 
 class TestAnglesMatchGenerators:

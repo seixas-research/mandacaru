@@ -525,6 +525,22 @@ class TestTheSpectrum:
         with pytest.raises(ValueError, match="spin"):
             calc.get_eigenvalues(0, spin=1)
 
+    def test_ase_band_tools_read_the_calculator(self, silicon):
+        """ASE's band gap, band structure and DOS take the calculator as is."""
+        from ase.dft.bandgap import bandgap
+        from ase.dft.dos import DOS
+        from ase.spectrum.band_structure import get_band_structure
+
+        atoms, _energy = silicon
+        calc = atoms.calc
+        gap, _vbm, _cbm = bandgap(calc)
+        assert gap > 0.0
+        structure = get_band_structure(atoms=atoms, calc=calc)
+        assert structure.energies.shape[:2] == (1, len(calc.get_ibz_k_points()))
+        assert structure.reference == pytest.approx(calc.get_fermi_level())
+        dos = DOS(calc, width=0.1)
+        assert dos.get_dos().max() > 0.0
+
 
 def _oxygen_box():
     """O2 in a periodic box, both moments up: a spin crystal at Gamma."""

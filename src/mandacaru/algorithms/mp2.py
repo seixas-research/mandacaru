@@ -394,9 +394,35 @@ def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
         fock_matrix(h_mo, eri_mo, n_occ), n_occ)
     if not np.allclose(canonical, np.eye(M)):
         h_mo, eri_mo = rotate_integrals(h_mo, eri_mo, canonical)
+    occupied, virtual = slice(0, n_occ), slice(n_occ, M)
+    return mp2_natural_orbitals_from_block(
+        eri_mo[occupied, occupied, virtual, virtual], energies, n_occ,
+        canonical)
 
-    correlation = mp2_energy(eri_mo, energies, n_occ)
-    d_oo, d_vv = mp2_density(eri_mo, energies, n_occ)
+
+def mp2_natural_orbitals_from_block(oovv: np.ndarray, energies: np.ndarray,
+                                    n_occ: int,
+                                    canonical: np.ndarray) -> MP2Result:
+    r""":func:`mp2_natural_orbitals` from the only integrals it reads.
+
+    ``oovv`` is :math:`\langle ij|ab\rangle` (``(o, o, v, v)``, i.e. the
+    chemists' :math:`(ia|jb)`) in the semicanonical basis that ``canonical``
+    takes the input orbitals to, and ``energies`` its orbital energies
+    (:func:`semicanonical_rotation`).  :math:`o^2 v^2` numbers, which an
+    integral-direct build forms without the :math:`M^4` tensor
+    (:meth:`~mandacaru.algorithms.orbital_integrals.DirectOrbitalIntegrals.mp2_natural_orbitals`);
+    the arithmetic is :func:`mp2_energy` and :func:`mp2_density` on it.
+    """
+    n_occ = int(n_occ)
+    M = np.asarray(canonical).shape[0]
+    integrals = np.real(np.asarray(oovv))
+    t = integrals / _denominators(energies, n_occ)
+    tt = _tilde(t)
+    correlation = float(np.einsum("ijab,ijab->", tt, integrals,
+                                  optimize=True))
+    d_vv = 2.0 * np.einsum("ijac,ijbc->ab", tt, t, optimize=True)
+    d_oo = -2.0 * np.einsum("ikab,jkab->ij", tt, t, optimize=True)
+    d_oo, d_vv = 0.5 * (d_oo + d_oo.T), 0.5 * (d_vv + d_vv.T)
 
     # Descending, so the virtuals an active space should keep come first.
     vir_values, vir_vectors = np.linalg.eigh(np.real(d_vv))

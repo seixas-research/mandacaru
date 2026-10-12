@@ -183,10 +183,19 @@ class TestTrialOrbitals:
             resolve_guess("d", atoms)
 
 
+#: Silicon's grid spacing (A): 12^3 nodes per cell, a multiple of four, so
+#: the grid carries all 48 operations of Fd-3m, the 24 that swap the two
+#: atoms (a quarter-cell translation) included.  At 0.35 (11^3) those 24
+#: are broken at the 1e-6 level and the two sites of a bond differ by
+#: 2.4e-6 Ha in their on-site energies.
+SILICON_SPACING = 0.32
+
+
 @pytest.fixture(scope="module")
 def silicon():
     atoms = bulk("Si", "diamond", a=5.43)
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.35, trace=False,
+    atoms.calc = Mandacaru(method="dft", xc="lda", h=SILICON_SPACING,
+                           trace=False,
                            basis={"name": "PAW-LCAO", "size": "SZP"},
                            kpts={"size": (3, 3, 3), "gamma": True},
                            smearing={"method": "fermi-dirac", "width": 0.001})
@@ -355,6 +364,32 @@ class TestDisentanglement:
                                                       rel=1e-7)
         assert "Souza2001" in atoms.calc.citation_keys()
 
+    def test_the_subspace_keeps_the_space_group(self, silicon_sp3):
+        """Every operation of Fd-3m keeps the subspace, the 24 that swap
+        the atoms included."""
+        atoms, _windows, w = silicon_sp3
+        assert w.symmetry_operations == 48
+        assert "Sakuma2013" in atoms.calc.citation_keys()
+        assert "48 operations" in w.summary()
+
+    @pytest.mark.slow
+    def test_the_subspace_does_not_depend_on_the_frozen_edge(
+            self, silicon_sp3):
+        """A conduction state just above the frozen edge: freezing it too
+        changes neither Omega_I nor the functions."""
+        atoms, windows, w = silicon_sp3
+        fermi = atoms.calc.get_fermi_level()
+        solver = atoms.calc.solver._periodic_solver
+        B = rc.reciprocal_vectors(solver.crystal.lattice)
+        direct = np.asarray(solver.bands(w.kpoints @ B.T)[0]) * HARTREE_TO_EV
+        edge = fermi + FROZEN_ABOVE_FERMI
+        assert np.any((direct > edge) & (direct < edge + 0.2))
+        wider = dict(windows, frozen=(-20.0, edge + 0.2))
+        other = atoms.calc.wannier(8, guess="sp3", windows=wider)
+        assert other.omega_invariant == pytest.approx(w.omega_invariant,
+                                                      rel=1e-7)
+        assert np.allclose(other.spreads, w.spreads, rtol=1e-5)
+
     def test_the_hybrids_are_real_up_to_a_phase(self, silicon_sp3):
         _atoms, _windows, w = silicon_sp3
         assert max(w.imaginary_ratio(n) for n in range(8)) < 1e-6
@@ -431,7 +466,7 @@ def exact_ground_state(problem, num_particles):
 
 
 #: A cheap screening for the plumbing: 12 of the 18 bands, |q + G| below
-#: 2 Bohr^-1 (U moves by 0.12 eV and 11 meV from the full ones).
+#: 2 Bohr^-1 (U moves by 0.13 eV and J by 16 meV from the full ones).
 CHEAP_SCREENING = {"screening_bands": 12, "screening_cutoff": 2.0}
 
 
@@ -637,14 +672,18 @@ class TestCopperDShell:
         assert np.allclose(fock, problem.kohn_sham, atol=1e-10)
 
     @pytest.mark.slow
-    def test_the_interpolation_is_within_10_mev_on_an_8_mesh(self, copper):
-        """Between the points of an 8^3 mesh the interpolated bands stay
+    def test_the_interpolation_is_within_10_mev_on_a_10_mesh(self, copper):
+        """Between the points of a 10^3 mesh the interpolated bands stay
         within 10 meV of the true ones inside the frozen window, d bands
-        and the s band crossing them alike."""
+        and the s band crossing them alike.  An 8^3 mesh no longer does
+        with the K21 copper: 15.5 meV at the bottom of the s band, with a
+        trivial disentanglement (nine bands, nine functions) and a
+        converged gauge, so the functions' tails, not the algorithm, need
+        the denser mesh; 10^3 gives 2.8 meV."""
         atoms, _w = copper
         windows = copper_windows(atoms)
         w = atoms.calc.wannier(guess={"Cu": ["s", "p", "d"]},
-                               windows=windows, kpts=(8, 8, 8))
+                               windows=windows, kpts=(10, 10, 10))
         solver = atoms.calc.solver._periodic_solver
         B = rc.reciprocal_vectors(solver.crystal.lattice)
         kpoints = np.random.default_rng(3).random((30, 3))
@@ -984,7 +1023,8 @@ def test_the_unpolarized_limit_is_the_restricted_result(silicon):
     atoms, restricted = silicon
     spin = bulk("Si", "diamond", a=5.43)
     spin.set_initial_magnetic_moments([0.2, 0.2])
-    spin.calc = Mandacaru(method="dft", xc="lda", h=0.35, trace=False,
+    spin.calc = Mandacaru(method="dft", xc="lda", h=SILICON_SPACING,
+                          trace=False,
                           basis={"name": "PAW-LCAO", "size": "SZP"},
                           kpts={"size": (3, 3, 3), "gamma": True},
                           smearing={"method": "fermi-dirac", "width": 0.001})

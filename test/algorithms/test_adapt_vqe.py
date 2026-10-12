@@ -93,7 +93,7 @@ class TestHartreeFock:
         H = h2_integrals.molecular_hamiltonian(mo_basis=True, n_electrons=2)
         adapt = _adapt(H, "fermionic")
         total_hf = rhf.electronic_energy + h2_integrals.nuclear_repulsion
-        assert np.isclose(adapt.reference_energy(), total_hf, atol=1e-9)
+        assert np.isclose(adapt.solver.reference_energy(), total_hf, atol=1e-9)
 
     def test_mo_orbital_energies_are_ordered(self, h2_integrals):
         rhf = h2_integrals.hartree_fock(2)
@@ -170,9 +170,9 @@ class TestGradientSelection:
         # Brillouin: at the HF reference, single-excitation gradients vanish and
         # the double dominates -- the symmetry-allowed correlating excitation.
         adapt = _adapt(h2_hamiltonian, "fermionic")
-        ref = AdaptAnsatz(4, adapt.pool.occupied_orbitals).reference_state()
-        grads = adapt._gradients(ref)
-        pool = adapt.pool.operators()
+        ref = AdaptAnsatz(4, adapt.solver.pool.occupied_orbitals).reference_state()
+        grads = adapt.solver._gradients(ref)
+        pool = adapt.solver.pool.operators()
         for op, g in zip(pool, grads):
             if op.kind == "fermionic-single":
                 assert abs(g) < 1e-6
@@ -381,9 +381,9 @@ class TestArgumentSurface:
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False,
                           max_iterations=3, convergence={"gradient": 1e-2})
-        assert adapt.max_iterations == 3
-        assert adapt.convergence.gradient == 1e-2
-        assert adapt.convergence.energy is None
+        assert adapt.solver.max_iterations == 3
+        assert adapt.solver.convergence.gradient == 1e-2
+        assert adapt.solver.convergence.energy is None
         res = adapt.run()                       # no args -> uses the defaults
         assert res.num_operators <= 3
 
@@ -416,7 +416,7 @@ class TestOptimizerOption:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False)
-        assert adapt.optimizer.method == DEFAULT_OPTIMIZER
+        assert adapt.solver.optimizer.method == DEFAULT_OPTIMIZER
 
     @pytest.mark.parametrize(
         "name",
@@ -425,14 +425,14 @@ class TestOptimizerOption:
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False, optimizer=name)
-        assert adapt.optimizer.method == name
+        assert adapt.solver.optimizer.method == name
 
     def test_optimizer_instance_passthrough(self, h2_hamiltonian):
         opt = LBFGS
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=False, optimizer=opt)
-        assert adapt.optimizer is opt
+        assert adapt.solver.optimizer is opt
 
     def test_unknown_optimizer_rejected(self, h2_hamiltonian):
         with pytest.raises(ValueError):

@@ -109,13 +109,13 @@ class TestRecord:
     def test_reproduces_the_driver_state_and_round_trips(self, tmp_path,
                                                          h2_run):
         driver, _ = h2_run
-        record = driver.checkpoint                  # written at the end of run()
+        record = driver.solver.checkpoint                  # written at the end of run()
         assert isinstance(record, WavefunctionCheckpoint)
         assert record.labels == driver.result.operators
         assert record.method == "adapt-vqe"
         assert record.status["complete"] is True
 
-        psi = driver.ansatz.state(driver.result.optimal_parameters)
+        psi = driver.solver.ansatz.state(driver.result.optimal_parameters)
         assert abs(abs(np.vdot(psi, record.state_vector())) - 1) < 1e-12
         assert record.expectation() == pytest.approx(
             driver.result.in_units("Ha"), abs=1e-10)
@@ -134,7 +134,7 @@ class TestRecord:
 
     def test_the_circuit_prepares_the_same_state(self, h2_run):
         from qiskit.quantum_info import Statevector
-        record = h2_run[0].checkpoint
+        record = h2_run[0].solver.checkpoint
         qc = record.circuit()
         assert qc.num_qubits == 4
         amplitudes = np.asarray(Statevector(qc).data)
@@ -254,7 +254,7 @@ class TestAdaptResume:
         atoms = h2()
         atoms.calc = adapt(max_iterations=3, resume=fermionic)
         atoms.get_total_energy()
-        first = atoms.calc.ansatz.operators[0]
+        first = atoms.calc.solver.ansatz.operators[0]
         assert first.label == "QD(0,2->1,3)"                # the pool's own
         assert first.generator.simplify().terms == \
             load(fermionic).generators[0].simplify().terms
@@ -269,7 +269,7 @@ class TestAdaptResume:
         atoms = h2()
         atoms.calc = adapt(max_iterations=4, resume=pauli)
         energy = atoms.get_total_energy()
-        first = atoms.calc.ansatz.operators[0]
+        first = atoms.calc.solver.ansatz.operators[0]
         assert first.label == stored.labels[0] and first.kind == stored.kinds[0]
         assert first.generator.simplify().terms == \
             stored.generators[0].simplify().terms
@@ -300,8 +300,8 @@ def _configured(atoms):
     """The driver configured for ``atoms`` without running (direct ``run``)."""
     driver = atoms.calc
     driver.atoms = atoms.copy()
-    hamiltonian, particles, n_orb = driver._build_hamiltonian(atoms)
-    driver._configure(hamiltonian, particles, n_orb)
+    hamiltonian, particles, n_orb = driver.solver._build_hamiltonian(atoms)
+    driver.solver._configure(hamiltonian, particles, n_orb)
     return driver
 
 
@@ -473,7 +473,7 @@ class TestCheckpointRecordsThePreparation:
                          optimizer=KeepInitial(), trace=False,
                          atomic_units=True)
         result = calc.run(initial_parameters=ANGLES)
-        record = calc.checkpoint
+        record = calc.solver.checkpoint
         assert record.preparation == form
         fidelity = abs(np.vdot(ansatz.state(ANGLES), record.state_vector())) ** 2
         assert fidelity == pytest.approx(1.0, abs=1e-12)    # it was 0.9422
@@ -533,7 +533,7 @@ class TestCheckpointRecordsThePreparation:
                          trace=False)
         calc.run(initial_parameters=ANGLES)
         with pytest.raises(ValueError, match="trotter=True"):
-            calc.measured_energy(QiskitProvider())
+            calc.solver.measured_energy(QiskitProvider())
 
     def test_qpe_takes_an_exact_ucc_checkpoint_as_a_state(self):
         from mandacaru.algorithms import QuantumPhaseEstimation

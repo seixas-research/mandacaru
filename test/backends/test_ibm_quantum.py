@@ -129,22 +129,22 @@ class TestDriverConfiguration:
         driver = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                            device="ibm_kingston", shots=1024, trace=False,
                            backend_options={"instance": "crn:x"})
-        assert driver.backend_provider == "qiskit"
-        assert driver.execute_circuits is True
-        provider = driver.circuit_provider()
+        assert driver.solver.backend_provider == "qiskit"
+        assert driver.solver.execute_circuits is True
+        provider = driver.solver.circuit_provider()
         assert isinstance(provider, QiskitProvider)
         assert provider.is_ibm_device and provider.shots == 1024
         assert provider.instance == "crn:x"
         assert provider.precision == pytest.approx(1 / 32)
-        assert driver.ansatz_provider() is None     # ansatz stays internal
+        assert driver.solver.ansatz_provider() is None     # ansatz stays internal
 
     def test_exact_qiskit_path_is_unchanged(self):
         driver = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                            trace=False)
-        assert driver.shots == 0 and driver.circuit_provider() is None
+        assert driver.solver.shots == 0 and driver.solver.circuit_provider() is None
         exact = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                           trace=False, execute_circuits=True)
-        assert exact.circuit_provider() is build_provider("qiskit")
+        assert exact.solver.circuit_provider() is build_provider("qiskit")
 
     def test_shots_refused_for_cirq(self):
         with pytest.raises(NotImplementedError, match="qiskit"):
@@ -157,15 +157,15 @@ class TestEstimatorEnergies:
         provider = QiskitProvider()                  # shots = 0, exact
         exact = h2_run.result.optimal_energy
         assert provider.precision == 0.0
-        assert h2_run.measured_energy(provider) == pytest.approx(exact, abs=1e-9)
+        assert h2_run.solver.measured_energy(provider) == pytest.approx(exact, abs=1e-9)
         # The Estimator route (energies) gives the same number -- in the
         # Hamiltonian's own Hartree, which the driver converts to eV.
-        assert provider.energies([h2_run.ansatz_problem()])[0] == \
+        assert provider.energies([h2_run.solver.ansatz_problem()])[0] == \
             pytest.approx(exact / HARTREE_TO_EV, abs=1e-9)
 
     def test_sampled_estimator_converges(self, h2_run):
         provider = QiskitProvider(shots=4096)
-        energy = h2_run.measured_energy(provider)
+        energy = h2_run.solver.measured_energy(provider)
         assert abs(energy - h2_run.result.optimal_energy) < 0.05 * HARTREE_TO_EV
 
     def test_fake_processor_transpiles_and_estimates(self):
@@ -173,8 +173,8 @@ class TestEstimatorEnergies:
         # tolerance is loose; the checks are the layout and the plumbing.
         out = _isolated(_H2_RUN + """
     provider = QiskitProvider(device="fake_manila", shots=4096)
-    energy = calc.measured_energy(provider)
-    isa, observable, *_angles = provider.pub(*calc.ansatz_problem())
+    energy = calc.solver.measured_energy(provider)
+    isa, observable, *_angles = provider.pub(*calc.solver.ansatz_problem())
     print(provider.backend().name, isa.layout is not None,
           observable.num_qubits == provider.backend().num_qubits,
           abs(energy - exact) < 0.4 * HARTREE_TO_EV)
@@ -191,7 +191,7 @@ class TestEstimatorEnergies:
         assert float(provider.last_result[0].data.stds) >= 0.0   # exact sampler reports 0
 
     def test_statevector_refused_when_it_cannot_exist(self, h2_run):
-        problem = h2_run.ansatz_problem()[:4]
+        problem = h2_run.solver.ansatz_problem()[:4]
         with pytest.raises(ValueError, match="state vector"):
             QiskitProvider(shots=100).statevector(*problem)
         with pytest.raises(ValueError, match="state vector"):
@@ -200,19 +200,19 @@ class TestEstimatorEnergies:
     def test_processor_needs_shots(self, h2_run):
         with pytest.raises(ValueError, match="shots > 0"):
             QiskitProvider(device="fake_manila", shots=0).energies(
-                [h2_run.ansatz_problem()])
+                [h2_run.solver.ansatz_problem()])
 
     def test_physical_qubits_pin_the_layout(self):
         out = _isolated(_H2_RUN + """
     provider = QiskitProvider(device="fake_manila", shots=1024,
                               physical_qubits=[3, 4, 1, 2])
-    isa, observable, *_angles = provider.pub(*calc.ansatz_problem())
+    isa, observable, *_angles = provider.pub(*calc.solver.ansatz_problem())
     # Mandacaru qubit k -> physical_qubits[k]; wire n-1-k carries qubit k.
     # (The *initial* layout is what the pin fixes; routing may permute the
     # final one, which apply_layout accounts for.)
     layout = isa.layout.initial_index_layout(filter_ancillas=True)
     print([layout[4 - 1 - k] for k in range(4)])
-    energy = calc.measured_energy(provider)
+    energy = calc.solver.measured_energy(provider)
     print(abs(energy - exact) < 0.4 * HARTREE_TO_EV)
 """)
         assert out.split("\n")[0] == "[3, 4, 1, 2]"
@@ -311,7 +311,7 @@ class TestDriversEndToEnd:
                                shots=4096, optimizer=COBYLA_OPT,
                                backend_options={"seed": 1234})
         atoms.get_total_energy()
-        provider = atoms.calc.circuit_provider()
+        provider = atoms.calc.solver.circuit_provider()
         assert isinstance(provider, QiskitProvider) and provider.seed == 1234
         assert abs(atoms.calc.result.optimal_energy
                    - h2_run.result.optimal_energy) < 0.05 * HARTREE_TO_EV
@@ -324,7 +324,7 @@ class TestDriversEndToEnd:
                            optimizer=Optimizer(method="COBYLA",
                                                maxiter=2000, tol=1e-12))
     atoms.get_total_energy()
-    print(atoms.calc.circuit_provider().backend().name,
+    print(atoms.calc.solver.circuit_provider().backend().name,
           abs(atoms.calc.result.optimal_energy - exact) < 0.4 * HARTREE_TO_EV)
 """)
         assert out.split() == ["fake_manila", "True"]

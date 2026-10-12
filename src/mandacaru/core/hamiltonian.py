@@ -42,12 +42,46 @@ import numpy as np
 
 from ..basis import HydrogenicAtomicOrbital
 from ..integrals import Grid, IntegralEngine, Potentials
+from ..integrals.cholesky import TwoBodySpec, resolve_two_body
 from ..units import to_bohr
 from .mapping import Fermion
 
 #: Active-space methods whose Hamiltonian is built integral-direct: they
 #: exist to avoid the two-body tensor, so the build never forms it.
 DIRECT_METHODS: tuple[str, ...] = ("dlpno-mp2",)
+
+#: The selectors a default build may run integral-direct when the tensor
+#: route does not fit (:meth:`MolecularIntegrals._integral_direct_route`):
+#: closed shell only.  The direct RHF follows the tensor SCF's iterates, so
+#: the Hamiltonians agree to round-off (1e-14 Ha per coefficient).  An open
+#: shell builds direct on request (``direct=True``: the direct UHF's natural
+#: orbitals, ``"energy"`` and ``"natural"``), but UHF's soft modes leave the
+#: two routes' coefficients apart by the SCF tolerance (1e-8 Ha on OH, its
+#: active energies within 1e-11 Ha), so a default run keeps the tensor.
+DIRECT_ROUTE_SELECTORS: tuple[str, ...] = ("energy", "mp2")
+
+#: Share of the memory limit the tensor route's ``M^4`` arrays
+#: (:func:`dense_route_bytes`) may claim before a default build with an
+#: active space turns integral-direct.  Below it the tensor route is kept:
+#: the same Hamiltonian, and on a small basis many times faster (water
+#: PAW-LCAO-SZP, M = 17: 3 s against 34 s).
+DIRECT_ROUTE_MEMORY_FRACTION = 0.25
+
+
+#: Why the Cholesky integrals refuse a spinor (GHF, spin-orbit) problem.
+CHOLESKY_SPINOR_REFUSAL = (
+    "two_body={'method': 'cholesky'} covers the spatial RHF and UHF "
+    "routes; a generalized (spinor) Hartree-Fock or a spin-orbit "
+    "Hamiltonian builds the spin-orbital tensor from the dense one.  Use "
+    "two_body='dense' (the default) for method='ghf' or a lda-dirac basis")
+
+
+def dense_route_bytes(n_orbitals: int) -> int:
+    """Bytes of the ``M^4`` tensors the tensor route of
+    :meth:`MolecularIntegrals.molecular_hamiltonian` keeps: the atomic-orbital
+    tensor, the orthonormal one and the molecular-orbital one, complex."""
+    M = int(n_orbitals)
+    return 3 * 16 * M ** 4
 
 if TYPE_CHECKING:
     from ..algorithms.hartree_fock import RHFResult, UHFResult
@@ -71,6 +105,10 @@ def _radial_norm(fn) -> float:
 RESOLUTION_TOLERANCE = 0.25
 
 
+#: Cartesian axis of each real L = 1 compensation channel, by ``m``: the real
+#: harmonics are ordered (y, z, x) (:mod:`mandacaru.basis._angular`).
+DIPOLE_AXIS = {-1: 1, 0: 2, 1: 0}
+
 #: Grid points per block when the dipole matrices are accumulated: bounds the
 #: working set to M x block complex numbers.
 DIPOLE_GRID_BLOCK = 65536
@@ -87,6 +125,9 @@ class MeanFieldMixin:
         MO coefficients, orbital energies and MO-basis integrals.
         """
         from ..algorithms.hartree_fock import RHF
+        if self.cholesky_integrals:
+            # The factors' Coulomb and exchange: no M^4 tensor at all.
+            return self.direct_hartree_fock(n_electrons)
         cached = getattr(self, "_last_rhf_result", None)
         if cached is not None and cached[0] == int(n_electrons):
             return cached[1]
@@ -106,6 +147,24 @@ class MeanFieldMixin:
                                             None))
         return self._direct
 
+    @property
+    def cholesky_integrals(self) -> bool:
+        """Whether the two-body integrals are Cholesky factors
+        (``two_body={"method": "cholesky", ...}``) rather than the tensor."""
+        spec = getattr(self, "two_body_spec", None)
+        return bool(spec is not None and spec.cholesky)
+
+    def two_electron_operator(self):
+        """What the integral-direct route contracts densities and orbitals
+        with: the :class:`~mandacaru.integrals.cholesky.CholeskyERI` factors
+        when they were asked for, else the grid's
+        :class:`~mandacaru.integrals.direct.DirectCoulomb`.  Both offer the
+        same ``coulomb``, ``exchange``, ``fock_two_electron``,
+        ``pair_exchange``, ``exchange_blocks`` and ``orbital_integrals``."""
+        if self.cholesky_integrals:
+            return self.cholesky_two_body()
+        return self.direct_coulomb()
+
     def direct_hartree_fock(self, n_electrons: int) -> RHFResult:
         """Restricted Hartree-Fock with integral-direct Fock builds.
 
@@ -122,7 +181,7 @@ class MeanFieldMixin:
             return cached[1]
         from ..integrals.direct import DirectCoulomb
 
-        direct = self.direct_coulomb()
+        direct = self.two_electron_operator()
         X = self._lowdin_x() if self.orthogonalize else None
 
         def builder(coulomb):
@@ -148,6 +207,36 @@ class MeanFieldMixin:
         self._last_direct_rhf_result = (int(n_electrons), result)
         return result
 
+    def direct_open_shell_hartree_fock(self, n_alpha: int,
+                                       n_beta: int) -> UHFResult:
+        """Unrestricted Hartree-Fock with integral-direct Fock builds.
+
+        The SCF of :meth:`open_shell_hartree_fock`, its iterates to
+        round-off, with :math:`J` and :math:`K` from
+        :class:`~mandacaru.integrals.direct.DirectCoulomb` (exact exchange)
+        instead of the two-body tensor
+        (:class:`~mandacaru.algorithms.hartree_fock.DirectUHF`); the
+        result's ``eri_mo`` is ``None``.
+        """
+        from ..algorithms.hartree_fock import DirectUHF
+
+        particles = (int(n_alpha), int(n_beta))
+        cached = getattr(self, "_last_direct_uhf_result", None)
+        if cached is not None and cached[0] == particles:
+            return cached[1]
+        direct = self.two_electron_operator()
+        X = self._lowdin_x() if self.orthogonalize else None
+
+        def orthonormal(operator):
+            if X is None:
+                return operator
+            return lambda D: X.conj().T @ operator(X @ D @ X.conj().T) @ X
+
+        result = DirectUHF(self.one_body(), orthonormal(direct.coulomb),
+                           orthonormal(direct.exchange), *particles).solve()
+        self._last_direct_uhf_result = (particles, result)
+        return result
+
     def open_shell_hartree_fock(self, n_alpha: int,
                                n_beta: int) -> UHFResult:
         """Unrestricted Hartree-Fock for ``(n_alpha, n_beta)`` electrons.
@@ -159,6 +248,9 @@ class MeanFieldMixin:
         handled.
         """
         from ..algorithms.hartree_fock import UHF
+        if self.cholesky_integrals:
+            # The factors' Coulomb and exchange: no M^4 tensor at all.
+            return self.direct_open_shell_hartree_fock(n_alpha, n_beta)
         particles = (int(n_alpha), int(n_beta))
         cached = getattr(self, "_last_uhf_result", None)
         if cached is not None and cached[0] == particles:
@@ -180,6 +272,8 @@ class MeanFieldMixin:
         starting determinants.
         """
         from ..algorithms.hartree_fock import GHF
+        if self.cholesky_integrals:
+            raise NotImplementedError(CHOLESKY_SPINOR_REFUSAL)
         particles = (int(n_alpha), int(n_beta))
         cached = getattr(self, "_last_ghf_result", None)
         if cached is not None and cached[0] == particles:
@@ -342,6 +436,16 @@ class MolecularIntegrals(MeanFieldMixin):
         #: ``molecular_hamiltonian(mo_basis=True)`` -- which spatial orbitals
         #: were frozen, kept and deleted.  ``None`` until one has been built.
         self.active_space = None
+        #: Whether the last ``molecular_hamiltonian(mo_basis=True)`` was
+        #: built integral-direct (:meth:`_direct_mo_problem`): no two-body
+        #: tensor, only the active orbitals' integrals.
+        self.integral_direct = False
+        #: The two-body representation
+        #: (:class:`~mandacaru.integrals.cholesky.TwoBodySpec`): the dense
+        #: tensor, or Cholesky factors (set by :meth:`molecular_hamiltonian`'s
+        #: ``two_body``).
+        self.two_body_spec = TwoBodySpec()
+        self._cholesky = None
 
     @property
     def n_orbitals(self) -> int:
@@ -427,14 +531,17 @@ class MolecularIntegrals(MeanFieldMixin):
     def conjugation_matrix(self):
         r"""Complex conjugation of the orbital basis, :math:`\chi^* = \chi K`.
 
-        Spherical harmonics satisfy :math:`Y_{lm}^* = (-1)^m Y_{l,-m}`, so a basis
-        holding every :math:`m` of a shell is closed under conjugation and
-        :math:`K` is unitary with :math:`K K^* = 1`.  Returned in the orthonormal
-        (Löwdin) basis the integrals are expressed in, or ``None`` when the basis
-        is not orthogonalized.  Every operator here is real, so
-        :math:`A^* = K^\dagger A K` for each of them.
+        Complex spherical harmonics satisfy :math:`Y_{lm}^* = (-1)^m
+        Y_{l,-m}`, so a complex basis holding every :math:`m` of a shell (a
+        crystal's, at the Gamma point) is closed under conjugation and
+        :math:`K` is unitary with :math:`K K^* = 1`.  Returned in the
+        orthonormal (Löwdin) basis the integrals are expressed in.  Every
+        operator here is real, so :math:`A^* = K^\dagger A K` for each of
+        them.  ``None`` when there is nothing to conjugate -- a molecule's
+        real harmonics, whose real SCF already gives real orbitals -- or the
+        basis is not orthogonalized.
         """
-        if not self.orthogonalize:
+        if not self.orthogonalize or self._engine.real:
             return None
         self.one_body()                                   # samples the basis
         psi = self._engine._psi
@@ -476,7 +583,7 @@ class MolecularIntegrals(MeanFieldMixin):
         if self._C is None:
             M = len(self.basis)
             if not self.kb_projectors:
-                self._C = np.zeros((M, 0), dtype=complex)
+                self._C = np.zeros((M, 0), dtype=self._engine._psi.dtype)
                 return self._C
             from ..integrals import _backend
 
@@ -586,7 +693,7 @@ class MolecularIntegrals(MeanFieldMixin):
         """
         M = len(self.basis)
         if not self.kb_projectors:
-            return np.zeros((M, M), dtype=complex)
+            return np.zeros((M, M), dtype=self._engine._psi.dtype)
         C = self.projections()
         D = self.nonlocal_coupling_matrix()
         return C @ D @ C.conj().T
@@ -633,9 +740,12 @@ class MolecularIntegrals(MeanFieldMixin):
         A hook for families whose pair densities carry more than the product
         of two basis functions -- the PAW-LCAO compensation charges
         (:class:`mandacaru.pseudopotentials.paw.PAWIntegrals`)
-        return the ``(M, M, M, M)`` tensor of the extra Coulomb terms in the
-        same physicists' layout as :meth:`two_body`.  The plain basis has
-        nothing to add.
+        return the extra Coulomb terms as a
+        :class:`~mandacaru.core.augmentation.PairAugmentation`: a few
+        ``(M, M)`` factors in the physicists' layout of :meth:`two_body`,
+        added to a tensor in place (``add_to``), transformed factor by factor
+        (``transformed``), and written out as ``(M, M, M, M)`` only on request
+        (``dense``).  The plain basis has nothing to add.
         """
         return None
 
@@ -746,7 +856,7 @@ class MolecularIntegrals(MeanFieldMixin):
                                     solver=solver)
         augmentation = self.two_body_augmentation()
         if augmentation is not None:
-            eri = eri + np.asarray(augmentation)
+            augmentation.add_to(eri)
         if self.orthogonalize:
             X = self._lowdin_x()
             # The same conjugation pattern as _compute_two_body: bra indices
@@ -812,8 +922,8 @@ class MolecularIntegrals(MeanFieldMixin):
             eri = self._engine.two_body(energy_units="Ha",
                                         solver=solver)
             if augmentation is not None:
-                eri = eri + np.asarray(augmentation)
-                eri = eri - np.asarray(self.long_range_augmentation(omega))
+                augmentation.add_to(eri)
+                self.long_range_augmentation(omega).add_to(eri, scale=-1.0)
         if self.orthogonalize:
             X = self._lowdin_x()
             # The conjugation pattern of _compute_two_body.
@@ -859,7 +969,7 @@ class MolecularIntegrals(MeanFieldMixin):
         coords = [np.asarray(c, dtype=float).reshape(-1)
                   for c in (grid.X, grid.Y, grid.Z)]
         M = psi.shape[0]
-        out = np.zeros((3, M, M), dtype=complex)
+        out = np.zeros((3, M, M), dtype=psi.dtype)
         block = DIPOLE_GRID_BLOCK
         for start in range(0, psi.shape[1], block):
             chunk = psi[:, start:start + block]
@@ -872,18 +982,15 @@ class MolecularIntegrals(MeanFieldMixin):
         positions = [np.asarray(c, dtype=float)
                      for _z, c in self._potentials.nuclei]
         root4 = np.sqrt(4.0 * np.pi)
-        root8 = np.sqrt(8.0 * np.pi / 3.0)
+        root3 = np.sqrt(4.0 * np.pi / 3.0)
         for (atom, L, m), Q in channels.items():
             Q = np.asarray(Q)
             if L == 0:
                 out += root4 * positions[atom][:, None, None] * Q
-            elif L == 1 and m == 0:
-                out[2] += np.sqrt(4.0 * np.pi / 3.0) * Q
             elif L == 1:
-                # d_x = root8 (q_{1,-1} - q_{11}) / 2, d_y = root8 (q_{1,-1}
-                # + q_{11}) / 2i.
-                out[0] += (-1.0 if m == 1 else 1.0) * root8 / 2.0 * Q
-                out[1] += root8 / 2.0j * Q
+                # The real L = 1 channels are y, z, x (m = -1, 0, 1), each
+                # sqrt(3/4pi) times its coordinate over r.
+                out[DIPOLE_AXIS[m]] += root3 * Q
         # Hermitian: the real trace against any density matrix is unchanged.
         return 0.5 * (out + np.conj(np.swapaxes(out, 1, 2)))
 
@@ -925,17 +1032,47 @@ class MolecularIntegrals(MeanFieldMixin):
         """``(eri, augmentation)`` in the atomic-orbital basis, cached.
 
         ``eri`` includes the augmentation; ``augmentation`` is the family's
-        correction alone (``None`` without one).  Kept because the nuclear
-        gradient needs the tensor before the orthonormalization, and the FFT
-        build is the most expensive step of the whole Hamiltonian.
+        correction alone, structured
+        (:class:`~mandacaru.core.augmentation.PairAugmentation`, ``None``
+        without one).  The augmentation is added to the grid tensor in place,
+        so this is the one ``M^4`` array of the atomic-orbital basis.  Kept
+        because the nuclear gradient needs the tensor before the
+        orthonormalization, and the FFT build is the most expensive step of
+        the whole Hamiltonian.
         """
         if self._eri_ao is None:
             eri = self._engine.two_body(energy_units="Ha")
             augmentation = self.two_body_augmentation()
             if augmentation is not None:
-                eri = eri + np.asarray(augmentation)
+                augmentation.add_to(eri)
             self._eri_ao, self._augmentation_ao = eri, augmentation
         return self._eri_ao, self._augmentation_ao
+
+    def cholesky_two_body(self):
+        """The Cholesky factors of the two-body integrals
+        (:func:`~mandacaru.integrals.cholesky.cholesky_two_body`) at the
+        tolerance of :attr:`two_body_spec`, with the family augmentation kept
+        structured beside them; built once (timed as the "two-body
+        integrals (cholesky)" stage)."""
+        from ..integrals.cholesky import cholesky_two_body
+        from ..integrals.poisson import PoissonFFTSolver
+
+        if self.periodic:
+            raise NotImplementedError(
+                "the Cholesky two-body integrals are molecular only: a "
+                "crystal's Coulomb kernel is periodic and its pair densities "
+                "carry Bloch phases.  Use two_body='dense' for a periodic "
+                "calculation")
+        tolerance = self.two_body_spec.tolerance
+        if self._cholesky is None or self._cholesky.tolerance != tolerance:
+            grid = self.grid
+            solver = PoissonFFTSolver(grid.shape, step=grid.step)
+            augmentation = self.direct_coulomb().augmentation()
+            with self._engine.timings.time("two-body integrals (cholesky)"):
+                self._cholesky = cholesky_two_body(
+                    self._engine._psi, solver, tolerance,
+                    augmentation=augmentation)
+        return self._cholesky
 
     def ao_two_body(self) -> np.ndarray:
         r"""Two-body tensor over the atomic orbitals, augmentation included
@@ -987,7 +1124,8 @@ class MolecularIntegrals(MeanFieldMixin):
                               num_particles=None,
                               open_shell: bool | None = None,
                               active_space=None,
-                              direct: bool | None = None) -> Fermion:
+                              direct: bool | None = None,
+                              two_body=None) -> Fermion:
         """Assemble the second-quantized :class:`Fermion` Hamiltonian.
 
         Spin-orbitals are ordered alpha-block then beta-block, so the parity
@@ -1028,28 +1166,64 @@ class MolecularIntegrals(MeanFieldMixin):
         left on :attr:`active_space` for the density and the run log.
 
         ``direct=True`` builds the same Hamiltonian **integral-direct**: an
-        RHF with grid-built Fock matrices, a selection that asks
+        RHF (or, for an open shell, UHF) with grid-built Fock matrices, a
+        selection that asks
         :class:`~mandacaru.algorithms.orbital_integrals.DirectOrbitalIntegrals`
         for its integrals, the frozen core folded in from its own Coulomb and
         exchange, and the two-body integrals of the active orbitals only --
         the :math:`M^4` tensor is never formed (:meth:`_direct_mo_problem`).
-        ``None`` (default) chooses it exactly when the active-space method
-        needs it.
+        ``None`` (default) chooses it when the active-space method needs it
+        (:data:`DIRECT_METHODS`), or when a closed-shell active space is
+        set, its selector runs integral-direct
+        (:data:`DIRECT_ROUTE_SELECTORS`) and the tensor route's arrays would
+        not fit
+        (:meth:`_integral_direct_route`).  A closed shell gets the same
+        Hamiltonian to round-off on both routes.
+
+        ``two_body`` (:func:`~mandacaru.integrals.cholesky.resolve_two_body`,
+        kept on :attr:`two_body_spec`) chooses the two-body representation.
+        ``"dense"`` is the tensor and the routes above.  Cholesky factors
+        (``{"method": "cholesky", "tolerance": ...}``) always take the
+        integral-direct route, with their own Coulomb and exchange in the SCF
+        (RHF, or UHF for an open shell) and the active integrals from the
+        factors, so no :math:`M^4` array is formed unless every orbital is
+        active.  A spin-orbit (spinor) Hamiltonian and the atomic-orbital
+        one (``mo_basis=False``) need the dense tensor and are refused.
         """
         from ..algorithms.active_space import resolve_active_space_spec
 
+        if two_body is not None:
+            self.two_body_spec = resolve_two_body(two_body)
         spec = resolve_active_space_spec(active_space)
-        if direct is None:
-            direct = spec is not None and spec.method in DIRECT_METHODS
         frozen = _frozen_indices(spec)
+        if self.cholesky_integrals:
+            if self.spin_orbit_coupling:
+                raise NotImplementedError(CHOLESKY_SPINOR_REFUSAL)
+            if not mo_basis:
+                raise ValueError(
+                    "the Cholesky two-body integrals build the molecular-"
+                    "orbital Hamiltonian (mo_basis=True); the atomic-orbital "
+                    "one is the dense tensor (two_body='dense')")
+            direct = True
+        if direct is None:
+            direct = mo_basis and self._integral_direct_route(
+                spec, frozen, n_electrons, num_particles, open_shell)
+        self.integral_direct = bool(mo_basis and direct
+                                    and not self.spin_orbit_coupling)
         core_energy = 0.0
         self.active_space = None
+        # `h, g` are spatial integrals, spin-blocked as the operator is
+        # written out (Fermion.from_spatial_integrals: no (2M)^4 tensor),
+        # except for the GHF spinor basis, whose integrals are already
+        # spin-orbital.
+        spin_blocked, h_spin = True, None
         if mo_basis and self.spin_orbit_coupling:
-            h_so, g_so, core_energy, space = self._spinor_problem(
+            h, g, core_energy, space = self._spinor_problem(
                 n_electrons, num_particles, open_shell, frozen, spec)
             self.active_space = space
+            spin_blocked = False
         elif mo_basis and direct:
-            h_so, g_so, core_energy, space = self._direct_mo_problem(
+            h, g, core_energy, space = self._direct_mo_problem(
                 n_electrons, num_particles, open_shell, frozen, spec)
         elif mo_basis:
             h_mo, eri_mo, self.mo_coefficients = molecular_orbital_integrals(
@@ -1071,7 +1245,7 @@ class MolecularIntegrals(MeanFieldMixin):
             if frozen or len(active) != self.n_orbitals:
                 h_mo, eri_mo, core_energy = freeze_core_integrals(
                     h_mo, eri_mo, frozen, active)
-            h_so, g_so = spin_block_integrals(h_mo, eri_mo)
+            h, g = h_mo, eri_mo
         else:
             if spec is not None:
                 raise ValueError(
@@ -1079,24 +1253,68 @@ class MolecularIntegrals(MeanFieldMixin):
                     "a frozen core included -- is a choice among molecular "
                     "orbitals, and the atomic-orbital Hamiltonian has none to "
                     "choose from")
-            h_so, g_so = self.spin_orbital_integrals()
-        H = Fermion.from_integrals(h_so, g_so)
+            h, g = self.one_body(), self.two_body()
+            if self.spin_orbit_coupling:
+                h_spin = self.spin_orbit_matrix()
+        H = (Fermion.from_spatial_integrals(h, g, h_spin) if spin_blocked
+             else Fermion.from_integrals(h, g))
+        n_modes = 2 * h.shape[0] if spin_blocked else h.shape[0]
         const = core_energy + self.constant_energy + (
             self.nuclear_repulsion if include_nuclear_repulsion else 0.0)
-        if mo_basis and space is not None and space.deleted:
+        if mo_basis and space is not None and (space.deleted
+                                               or self.integral_direct):
             # Reuse the *reduced* integrals for finite-difference forces.  They
             # already contain the frozen-core potential and the selected virtual
-            # space, before mapping and optional Z2 tapering.
-            self.active_h_so = h_so
-            self.active_g_so = g_so
+            # space, before mapping and optional Z2 tapering.  An
+            # integral-direct build has no tensor for the analytic gradient,
+            # so its forces always come from these.
+            self.active_one_body = h
+            self.active_two_body = g
+            self.active_spin_blocked = spin_blocked
             self.active_constant = float(np.real(const))
         if abs(const) > 1e-14:
-            H = H + Fermion({(): complex(const)}, n_modes=h_so.shape[0])
+            H = H + Fermion({(): complex(const)}, n_modes=n_modes)
         return H
+
+    def _integral_direct_route(self, spec, frozen, n_electrons, num_particles,
+                               open_shell) -> bool:
+        """Whether a default (``direct=None``) build goes integral-direct.
+
+        Always for a method that exists to avoid the tensor
+        (:data:`DIRECT_METHODS`).  Otherwise only with an active space (a
+        frozen core or a truncation, so the tensor would be cut down
+        anyway), a closed shell and a selector of
+        :data:`DIRECT_ROUTE_SELECTORS`, a molecule without spin-orbit
+        coupling, and when the tensor route's ``M^4`` arrays (:func:`dense_route_bytes`)
+        would claim more than :data:`DIRECT_ROUTE_MEMORY_FRACTION` of the
+        memory limit.  The limit
+        (:func:`~mandacaru.core.matrix_free.memory_limit_bytes`) is the
+        machine's or its cgroup's, not the momentary free memory, so the
+        route does not change with the machine's load.
+        """
+        from .matrix_free import memory_limit_bytes
+
+        if spec is None:
+            return False
+        if spec.method in DIRECT_METHODS:
+            return True
+        if not (frozen or spec.truncates):
+            return False
+        if self.periodic or self.spin_orbit_coupling:
+            return False
+        if n_electrons is None:
+            return False
+        _n, _na, _nb, open_ = resolve_reference(n_electrons, num_particles,
+                                                open_shell)
+        if open_ or spec.method not in DIRECT_ROUTE_SELECTORS:
+            return False
+        return (dense_route_bytes(self.n_orbitals)
+                > DIRECT_ROUTE_MEMORY_FRACTION * memory_limit_bytes())
 
     def _direct_mo_problem(self, n_electrons, num_particles, open_shell,
                            frozen, spec):
-        r"""``(h_so, g_so, core_energy, space)`` without the two-body tensor.
+        r"""``(h, eri, core_energy, space)`` of the active spatial orbitals,
+        without the full two-body tensor.
 
         The integral-direct counterpart of the tensor path above, equal to it
         to round-off:
@@ -1114,31 +1332,46 @@ class MolecularIntegrals(MeanFieldMixin):
         4. the two-body integrals of the active orbitals alone,
            :math:`n^2/2` Poisson solves.
 
-        Closed shell only in this version.
+        An open shell takes the direct UHF
+        (:meth:`direct_open_shell_hartree_fock`) and its natural orbitals,
+        as the tensor path does.
         """
         from ..algorithms.orbital_integrals import DirectOrbitalIntegrals
 
         from ..integrals.direct import LOCAL_BOX_THRESHOLD
 
-        # The SCF runs its bulk on local exchange boxes and finishes on the
-        # exact exchange (DirectRHF's two stages), so the orbitals are the
-        # exact SCF's: C16H34 PAW-LCAO-SZ converged in 584 s against 866 s,
-        # to the same energy.  A caller can set `direct_box_threshold`
-        # itself (None for the exact exchange throughout).
+        # For DLPNO-MP2 the SCF runs its bulk on local exchange boxes and
+        # finishes on the exact exchange (DirectRHF's two stages), so the
+        # orbitals are the exact SCF's: C16H34 PAW-LCAO-SZ converged in 584 s
+        # against 866 s, to the same energy.  Every other selector keeps the
+        # exact exchange throughout: the SCF then follows the tensor route's
+        # iterates, and the Hamiltonian equals that route's to round-off
+        # (water PAW-LCAO-SZP: 1e-14 Ha per coefficient, against 2e-10 Ha
+        # through the boxes' different path).  A caller can set
+        # `direct_box_threshold` itself.
         if not hasattr(self, "direct_box_threshold"):
-            self.direct_box_threshold = LOCAL_BOX_THRESHOLD
+            self.direct_box_threshold = (
+                LOCAL_BOX_THRESHOLD if spec is not None
+                and spec.method in DIRECT_METHODS else None)
             self._direct = None
         n_el, n_alpha, n_beta, open_shell = resolve_reference(
             n_electrons, num_particles, open_shell)
-        if open_shell:
-            raise NotImplementedError(
-                "the integral-direct build is closed-shell (RHF) only; an "
-                "open-shell reference needs a direct UHF, not written yet")
         if self.periodic:
             raise NotImplementedError(
                 "the integral-direct build is molecular only")
-        rhf = self.direct_hartree_fock(n_el)
-        orbitals = self.real_orbitals(rhf.mo_coefficients, (n_el // 2,))
+        occupations = None
+        if open_shell:
+            uhf = self.direct_open_shell_hartree_fock(n_alpha, n_beta)
+            orbitals = self.real_orbitals(
+                uhf.natural_orbitals,
+                (min(n_alpha, n_beta), max(n_alpha, n_beta)))
+            if (spec is not None and spec.truncates
+                    and spec.method == "natural"):
+                occupations = np.real(np.asarray(uhf.natural_occupations,
+                                                 dtype=float))
+        else:
+            rhf = self.direct_hartree_fock(n_el)
+            orbitals = self.real_orbitals(rhf.mo_coefficients, (n_el // 2,))
         self.mo_coefficients = np.asarray(orbitals)
         provider = DirectOrbitalIntegrals(self, self.mo_coefficients)
         space = None
@@ -1148,7 +1381,7 @@ class MolecularIntegrals(MeanFieldMixin):
             space = resolve_active_space(
                 None, None, n_orbitals=self.n_orbitals,
                 num_particles=(n_alpha, n_beta), spec=spec, frozen=frozen,
-                open_shell=False,
+                reference_occupations=occupations, open_shell=open_shell,
                 orbital_symmetry=(self._orbital_symmetry_provider()
                                   if spec is not None and spec.symmetry
                                   else None),
@@ -1173,8 +1406,7 @@ class MolecularIntegrals(MeanFieldMixin):
         h_act = np.real_if_close(h_mo[np.ix_(active, active)])
         eri_act = np.real_if_close(provider.direct.orbital_integrals(
             provider.X @ C[:, active]))
-        h_so, g_so = spin_block_integrals(h_act, eri_act)
-        return h_so, g_so, core_energy, space
+        return h_act, eri_act, core_energy, space
 
     def _spinor_problem(self, n_electrons, num_particles, open_shell, frozen,
                         spec):
@@ -1415,11 +1647,15 @@ def assemble_block_matrix(projectors, blocks, diagonal=None) -> np.ndarray:
     per projector.
     """
     P = len(projectors)
-    out = np.zeros((P, P), dtype=complex)
+    dtype = np.result_type(float, *(np.asarray(b) for b in
+                                    (blocks or {}).values()),
+                           *(() if diagonal is None
+                             else (np.asarray(list(diagonal)),)))
+    out = np.zeros((P, P), dtype=dtype)
     if blocks is None:
         if diagonal is None:
             raise ValueError("either blocks or a diagonal must be given")
-        diagonal = np.asarray(list(diagonal), dtype=complex)
+        diagonal = np.asarray(list(diagonal), dtype=dtype)
         if diagonal.shape != (P,):
             raise ValueError(f"expected {P} diagonal entries, got "
                              f"{diagonal.shape}")
@@ -1435,7 +1671,7 @@ def assemble_block_matrix(projectors, blocks, diagonal=None) -> np.ndarray:
             "nonlocal blocks do not match the projector channels: "
             f"missing {missing}, unmatched {extra}")
     for key, positions in groups.items():
-        block = np.asarray(normalized[key], dtype=complex)
+        block = np.asarray(normalized[key], dtype=dtype)
         n = len(positions)
         if block.shape != (n, n):
             raise ValueError(
@@ -1580,31 +1816,25 @@ def spin_block_integrals(h: np.ndarray, eri: np.ndarray,
     which in this code means spin-orbit coupling and nothing else
     (:meth:`MolecularIntegrals.spin_orbit_matrix`).  It is the one way the
     one-body matrix acquires an alpha-beta block.
+
+    The ``(2M)^4`` tensor is 16 times the spatial one; the Hamiltonian itself
+    is built without it (:meth:`~mandacaru.core.mapping.Fermion.from_spatial_integrals`).
     """
     h = np.asarray(h)
     eri = np.asarray(eri)
     M = h.shape[0]
     n_so = 2 * M
 
-    def spin(P):
-        return P // M
-
-    def orb(P):
-        return P % M
-
-    h_so = np.zeros((n_so, n_so), dtype=complex)
-    for P in range(n_so):
-        for Q in range(n_so):
-            if spin(P) == spin(Q):
-                h_so[P, Q] = h[orb(P), orb(Q)]
-
-    g_so = np.zeros((n_so,) * 4, dtype=complex)
-    for P in range(n_so):
-        for Q in range(n_so):
-            for R in range(n_so):
-                for S in range(n_so):
-                    if spin(P) == spin(R) and spin(Q) == spin(S):
-                        g_so[P, Q, R, S] = eri[orb(P), orb(Q), orb(R), orb(S)]
+    dtype = np.result_type(h, eri, float)
+    h_so = np.zeros((n_so, n_so), dtype=np.result_type(dtype, *(
+        () if h_spin is None else (np.asarray(h_spin),))))
+    g_so = np.zeros((n_so,) * 4, dtype=dtype)
+    for sigma in range(2):
+        a = slice(sigma * M, (sigma + 1) * M)
+        h_so[a, a] = h
+        for tau in range(2):
+            b = slice(tau * M, (tau + 1) * M)
+            g_so[a, b, a, b] = eri
     if h_spin is not None:
         h_spin = np.asarray(h_spin)
         if h_spin.shape != (n_so, n_so):
@@ -1652,7 +1882,7 @@ def freeze_core_integrals(h_mo: np.ndarray, eri_mo: np.ndarray,
             core_energy += 2.0 * eri_mo[i, j, i, j] - eri_mo[i, j, j, i]
 
     n_act = len(active)
-    h_eff = np.zeros((n_act, n_act), dtype=complex)
+    h_eff = np.zeros((n_act, n_act), dtype=np.result_type(h_mo, eri_mo, float))
     for a, p in enumerate(active):
         for b, q in enumerate(active):
             val = h_mo[p, q]
@@ -1692,7 +1922,8 @@ def freeze_spin_orbital_integrals(h: np.ndarray, g: np.ndarray,
     for i in frozen:
         for j in frozen:
             core_energy += 0.5 * (g[i, j, i, j] - g[i, j, j, i])
-    h_eff = np.asarray(h, dtype=complex)[np.ix_(active, active)].copy()
+    h_eff = np.asarray(h, dtype=np.result_type(h, g, float))[
+        np.ix_(active, active)].copy()
     if frozen:
         coulomb = np.einsum("piqi->pq", g[np.ix_(active, frozen, active,
                                                  frozen)])

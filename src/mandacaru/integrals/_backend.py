@@ -48,6 +48,8 @@ import numpy as np
 from numpy.ctypeslib import ndpointer
 from threadpoolctl import threadpool_limits
 
+from .. import backend_policy
+
 _PKG_DIR = Path(__file__).resolve().parent
 
 # ndpointer specs reused across signatures (C-contiguous, correct dtype).
@@ -233,20 +235,6 @@ class BackendStatus:
         if self.n_threads and self.n_threads > 1:
             return f"C (OpenMP, {self.n_threads} threads)"
         return "C (serial)"
-
-
-def backend_preference() -> str:
-    """The ``MANDACARU_BACKEND`` policy: ``"auto"`` (default), ``"c"`` or ``"numpy"``.
-
-    ``"auto"`` prefers the C library and compiles it when it is missing;
-    ``"c"`` does the same but raises when no C backend can be had;
-    ``"numpy"`` forces the reference NumPy kernels (benchmarks, debugging).
-    """
-    value = os.environ.get("MANDACARU_BACKEND", "auto").strip().lower() or "auto"
-    if value not in ("auto", "c", "numpy"):
-        raise ValueError(
-            f"MANDACARU_BACKEND={value!r} is not one of 'auto', 'c', 'numpy'")
-    return value
 
 
 def _reload() -> bool:
@@ -477,7 +465,7 @@ def ensure_backend(*, build: bool = True, verbose: bool = False) -> BackendStatu
     """Make sure the C integral backend is available, compiling it if needed.
 
     Call this before integrating.  The policy is ``MANDACARU_BACKEND``
-    (:func:`backend_preference`): under ``"auto"`` (default) and ``"c"`` a
+    (:func:`mandacaru.backend_policy.backend_preference`): under ``"auto"`` (default) and ``"c"`` a
     missing or stale library is compiled once per process with
     :func:`build_backend` and loaded on the spot; the NumPy reference kernels
     are used only when that compile fails (``"c"`` raises instead).
@@ -488,7 +476,7 @@ def ensure_backend(*, build: bool = True, verbose: bool = False) -> BackendStatu
     BackendStatus
     """
     global _build_attempted
-    preference = backend_preference()
+    preference = backend_policy.backend_preference()
     if preference == "numpy":
         if HAS_C_BACKEND:
             _unload()
@@ -657,8 +645,12 @@ def one_body_matrices(psi_stack, Vext, grid):
         ``mandacaru_one_body_general`` C path.  Without the C library the
         vectorized NumPy kernel (which mirrors both C kernels) is used instead.
     """
-    psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
     Vext = np.ascontiguousarray(Vext, dtype=np.float64)
+    if not np.iscomplexobj(psi_stack):
+        return _one_body_real(np.ascontiguousarray(psi_stack,
+                                                   dtype=np.float64),
+                              Vext, grid)
+    psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
     nx, ny, nz = grid.shape
     M = psi_stack.shape[0]
     T = np.zeros((M, M), dtype=np.complex128)
@@ -695,8 +687,17 @@ def kb_projections(psi_stack, chi_stack, dV):
 
     Uses the C backend when available; the NumPy fallback is a single BLAS
     ``gemm`` and is already close to optimal, so the two differ mainly in
-    threading.
+    threading.  Real samples on both sides (a molecule's real harmonics)
+    are one real ``gemm``, and a real ``(M, P)`` result.
     """
+    if not (np.iscomplexobj(psi_stack) or np.iscomplexobj(chi_stack)):
+        psi_stack = np.asarray(psi_stack, dtype=np.float64)
+        chi_stack = np.asarray(chi_stack, dtype=np.float64)
+        if chi_stack.shape[1] != psi_stack.shape[1]:
+            raise ValueError(
+                f"projectors are sampled on {chi_stack.shape[1]} points but "
+                f"the basis on {psi_stack.shape[1]}")
+        return (psi_stack @ chi_stack.T) * float(dV)
     psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
     chi_stack = np.ascontiguousarray(chi_stack, dtype=np.complex128)
     M, ngrid = psi_stack.shape
@@ -831,6 +832,35 @@ def _laplacian_general(field3d, ginv):
             mm = _shifted(_shifted(field3d, a, -1), b, -1)
             lap += c * (pp - pm - mp + mm)
     return lap
+
+
+#: Functions whose finite-difference Laplacians are formed together by the
+#: real one-body path (bounds its working set to this many grids).
+REAL_LAPLACIAN_BLOCK = 32
+
+
+def _one_body_real(psi_stack, Vext, grid):
+    r"""``(T, V)`` of real samples (a molecule's real harmonics): the
+    finite-difference Laplacian of the C kernels (:func:`_laplacian_general`,
+    the same stencil and boundary), then two real matrix products.  Both
+    matrices are real symmetric to round-off."""
+    nx, ny, nz = grid.shape
+    M, ngrid = psi_stack.shape
+    _check_samples(psi_stack, nx * ny * nz, "one_body_matrices")
+    if Vext.size != ngrid:
+        raise ValueError(f"one_body_matrices: the external potential has "
+                         f"{Vext.size} values for a {ngrid}-node grid")
+    ginv = np.asarray(grid.metric_inverse(), dtype=np.float64)
+    dV = float(grid.dV)
+    T = np.empty((M, M))
+    for b0 in range(0, M, REAL_LAPLACIAN_BLOCK):
+        block = psi_stack[b0:b0 + REAL_LAPLACIAN_BLOCK]
+        lap = np.stack([_laplacian_general(row.reshape(nx, ny, nz),
+                                           ginv).reshape(-1)
+                        for row in block])
+        T[:, b0:b0 + REAL_LAPLACIAN_BLOCK] = (psi_stack @ lap.T) * (-0.5 * dV)
+    V = ((psi_stack * Vext) @ psi_stack.T) * dV
+    return T, V
 
 
 def _one_body_numpy(psi_stack, Vext, ginv, dV, shape):

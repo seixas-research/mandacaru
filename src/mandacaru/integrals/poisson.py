@@ -54,15 +54,33 @@ The same split gives the screened kernel :math:`\operatorname{erfc}(\omega
 r)/r` of a range-separated hybrid (``omega > 0``).
 
 ``scipy.fft`` (pocketfft) runs the transforms in threaded C; ``workers=-1``
-uses all cores, so this path is parallel without any custom kernel.
+uses all cores, so this path is parallel without any custom kernel.  The
+transforms run on the grid's shared :class:`~mandacaru.integrals.fft.FFTWorkspace`
+(in place, pruned to the box, batched), and ``solve_stack(rho, out=...)``
+writes into a caller's buffer.
+
+**The isolated kernel is made even, so its transform is real.**  The smooth
+part is sampled at signed node offsets, and an offset in the *gap* between
+the box and its image (``n <= m <= L - n``) has no symmetric partner: the
+array is not even and its transform is complex.  Those gap values never
+reach the box -- a box-to-box convolution only uses offsets below ``n`` in
+magnitude -- so the gap is filled symmetrically instead, which changes no
+potential inside the box (``test_poisson.py`` checks it to round-off) and
+makes the whole kernel even whenever its spectral part is, which it is on
+every orthogonal grid.  A real kernel halves its memory, turns the product
+into a real multiply and lets a real density go through ``rfft``.  On a
+skewed grid the spectral part's Nyquist planes are not symmetric, and the
+complex transform is kept as it was.
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
+from collections import OrderedDict
 
 import numpy as np
 from scipy import fft as sfft
+
+from .fft import workspace
 
 #: Average of 1/r over a unit cube centered at the origin (see module docstring).
 #: Kept as a reference value; :func:`cell_self_potential` is the closed form.
@@ -190,9 +208,10 @@ SPLIT_RESOLUTION = 1.0 / np.sqrt(4.0 * np.log(1e10))
 #: the reach of the spectral part, which the padding keeps clear of images.
 SPLIT_REACH = 4.572
 
-#: Kernel transforms kept (:func:`_kernel_transform`): a molecule's grid and
-#: a few local-exchange boxes.
-KERNEL_CACHE_SIZE = 8
+#: Bytes of kernel transforms kept (:func:`_kernel_transform`): a molecule's
+#: grid and a few local-exchange boxes.  The most recent one is always kept,
+#: whatever its size.
+KERNEL_CACHE_BYTES = 256 * 2 ** 20
 
 
 class PoissonFFTSolver:
@@ -280,37 +299,87 @@ class PoissonFFTSolver:
         self._Gk = _kernel_transform(self.shape, self.L,
                                      tuple(self.step.ravel()), self.split,
                                      self.omega, self.workers)
+        #: True when the kernel's transform is real (an even kernel: every
+        #: orthogonal grid), which enables the real-input route.
+        self.even = not np.iscomplexobj(self._Gk)
+        #: The shared FFT workspace of this grid and padding.
+        self.workspace = workspace(self.shape, self.L, self.workers)
 
     def solve(self, rho_flat: np.ndarray) -> np.ndarray:
         """Coulomb potential of a single density on the grid (flattened)."""
         return self.solve_stack(rho_flat[None, :])[0]
 
-    def solve_stack(self, rho_stack: np.ndarray) -> np.ndarray:
+    def solve_stack(self, rho_stack: np.ndarray,
+                    out: np.ndarray | None = None) -> np.ndarray:
         """Coulomb potentials of a stack of ``P`` densities.
 
         Parameters
         ----------
-        rho_stack : (P, nx*ny*nz) complex
-            Densities sampled on the flattened grid.
+        rho_stack : (P, nx*ny*nz) array
+            Densities sampled on the flattened grid.  A real stack on an even
+            kernel goes through the real transforms.
+        out : (P, nx*ny*nz) array, optional
+            C-contiguous buffer the potentials are written to (complex, or
+            real for a real stack on an even kernel); allocated when omitted.
 
         Returns
         -------
-        (P, nx*ny*nz) complex
-            The corresponding Coulomb potentials ``Phi``.
+        (P, nx*ny*nz) array
+            The corresponding Coulomb potentials ``Phi`` (``out``; real for a
+            real stack on an even kernel, complex otherwise, when it is
+            allocated here).
         """
-        (nx, ny, nz), dV = self.shape, self.dV
-        ngrid = nx * ny * nz
-        rho_stack = np.ascontiguousarray(rho_stack, dtype=np.complex128)
-        P = rho_stack.shape[0]
-        out = np.empty((P, ngrid), dtype=np.complex128)
-        pad = np.zeros(self.L, dtype=np.complex128)
-        for p in range(P):
-            pad[:] = 0.0
-            pad[:nx, :ny, :nz] = rho_stack[p].reshape(nx, ny, nz)
-            spec = sfft.fftn(pad, workers=self.workers)
-            phi = sfft.ifftn(spec * self._Gk, workers=self.workers)
-            out[p] = phi[:nx, :ny, :nz].reshape(-1) * dV
-        return out
+        return convolve_stack(self, rho_stack, out, self.dV)
+
+    def self_energies(self, rho_stack: np.ndarray) -> np.ndarray:
+        r""":math:`\iint \rho_p v \rho_p` of each real density in a
+        ``(P, G)`` stack, by Parseval: forward transforms only.
+
+        :math:`dV \sum_x \rho\Phi = dV^2 H^{-1}\sum_k |\hat\rho(k)|^2
+        \hat K(k)` exactly, because :math:`\rho` vanishes outside the box
+        of the padded mesh (``H`` points).  Needs the even (real) kernel.
+        """
+        if not self.even:
+            raise ValueError(
+                "self_energies needs the even (real) kernel of an "
+                "orthogonal grid; solve the densities instead")
+        rho = np.ascontiguousarray(rho_stack, dtype=float)
+        half = self._Gk[..., :self.workspace.half]
+        scale = self.dV * self.dV / float(np.prod(self.L))
+        return self.workspace.power(rho, half) * scale
+
+
+def convolve_stack(solver, rho_stack, out, scale):
+    """``out = scale * (K * rho)`` for a ``(P, G)`` stack on ``solver``'s
+    FFT workspace -- the ``solve_stack`` of every grid solver here.
+
+    ``solver`` carries ``shape``, ``workspace``, ``even`` and its kernel
+    transform (``_kernel``, or ``_Gk`` for the isolated solver).  A real stack
+    on an even kernel goes through the real transforms and its potentials are
+    real (``out`` allocated real, or a complex one filled); anything else is
+    convolved as complex.
+    """
+    rho = np.asarray(rho_stack)
+    if rho.ndim != 2 or rho.shape[1] != int(np.prod(solver.shape)):
+        raise ValueError(f"densities must be (P, {int(np.prod(solver.shape))})"
+                         f", got {rho.shape}")
+    real = solver.even and not np.iscomplexobj(rho)
+    if out is None:
+        out = np.empty(rho.shape, dtype=np.float64 if real else np.complex128)
+    elif out.shape != rho.shape or not out.flags.c_contiguous:
+        raise ValueError(f"out must be a C-contiguous {rho.shape} array")
+    elif not (real or np.iscomplexobj(out)):
+        raise ValueError("a real out needs a real density stack on an even "
+                         "kernel")
+    kernel = getattr(solver, "_kernel", None)
+    if kernel is None:
+        kernel = solver._Gk
+    if real:
+        half = kernel[..., :solver.workspace.half]
+        return solver.workspace.convolve_real(
+            np.ascontiguousarray(rho, dtype=float), half, out, scale)
+    return solver.workspace.convolve(
+        np.ascontiguousarray(rho, dtype=np.complex128), kernel, out, scale)
 
 
 def _quadratic_form(metric, axes) -> np.ndarray:
@@ -328,13 +397,36 @@ def _quadratic_form(metric, axes) -> np.ndarray:
     return out
 
 
-@lru_cache(maxsize=KERNEL_CACHE_SIZE)
+_KERNELS: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+
+
+def _reflected(array: np.ndarray) -> np.ndarray:
+    """``array[-i, -j, -k]`` with the indices taken modulo each length."""
+    return np.roll(array[::-1, ::-1, ::-1], 1, axis=(0, 1, 2))
+
+
 def _kernel_transform(shape, L, step, mu, omega, workers) -> np.ndarray:
     """The kernel's transform on the padded grid: the smooth part sampled at
     the node distances plus the spectral singular one, over ``dV``
     (:meth:`PoissonFFTSolver.solve_stack` multiplies by it).  Cached per
-    grid -- a workflow rebuilds solvers for the same grid many times -- and
-    read-only, since every solver on that grid shares it."""
+    grid -- a workflow rebuilds solvers for the same grid many times -- in at
+    most :data:`KERNEL_CACHE_BYTES`, and read-only, since every solver on
+    that grid shares it.  Real (float) when the kernel is even, see the
+    module docstring."""
+    key = (tuple(shape), tuple(L), tuple(step), float(mu), float(omega))
+    cached = _KERNELS.pop(key, None)
+    if cached is None:
+        cached = _build_kernel_transform(shape, L, step, mu, omega, workers)
+    _KERNELS[key] = cached
+    held = sum(k.nbytes for k in _KERNELS.values())
+    for other in list(_KERNELS):
+        if held <= KERNEL_CACHE_BYTES or other == key:
+            continue
+        held -= _KERNELS.pop(other).nbytes
+    return cached
+
+
+def _build_kernel_transform(shape, L, step, mu, omega, workers):
     from scipy.special import erf
 
     step = np.asarray(step, dtype=float).reshape(3, 3)
@@ -350,12 +442,21 @@ def _kernel_transform(shape, L, step, mu, omega, workers) -> np.ndarray:
             smooth -= erf(omega * dist)
         np.divide(smooth, dist, out=smooth, where=dist > 0.0)
     smooth[0, 0, 0] = 2.0 * (mu - omega) / np.sqrt(np.pi)
-    transform = sfft.fftn(smooth, workers=workers)
     # Wave vectors of the padded cell: G = B m, |G|^2 = m^T (B^T B) m.
     B = 2.0 * np.pi * np.linalg.inv(step @ np.diag(np.asarray(L, float))).T
     frequencies = [np.fft.fftfreq(m, d=1.0 / m) for m in L]
-    transform += short_range_coulomb_kernel(
+    spectral = short_range_coulomb_kernel(
         _quadratic_form(B.T @ B, frequencies), mu) / dV
+    if np.array_equal(spectral, _reflected(spectral)):
+        # An even spectral part (every orthogonal grid): fill the gap
+        # symmetrically.  The offsets below n in magnitude are already
+        # exactly symmetric, so only gap values change -- values no
+        # box-to-box convolution reads -- and the transform is real.
+        smooth = 0.5 * (smooth + _reflected(smooth))
+        transform = sfft.fftn(smooth, workers=workers).real
+    else:
+        transform = sfft.fftn(smooth, workers=workers)
+    transform += spectral
     transform.setflags(write=False)
     return transform
 
@@ -746,6 +847,10 @@ ho(\mathbf G), \qquad
         else:
             self.axis = None
         self._kernel = self._build_kernel()
+        #: Every periodic kernel here is real and even.
+        self.even = True
+        #: The shared FFT workspace of this grid.
+        self.workspace = workspace(self.shape, None, self.workers)
 
     def _build_kernel(self) -> np.ndarray:
         """The reciprocal-space kernel this solver convolves with.
@@ -768,19 +873,14 @@ ho(\mathbf G), \qquad
         """Periodic Coulomb potential of one density on the grid (flattened)."""
         return self.solve_stack(rho_flat[None, :])[0]
 
-    def solve_stack(self, rho_stack: np.ndarray) -> np.ndarray:
+    def solve_stack(self, rho_stack: np.ndarray,
+                    out: np.ndarray | None = None) -> np.ndarray:
         """Periodic Coulomb potentials of a stack of ``P`` densities.
 
         The FFT normalization works out so that no volume factor is needed: with
         ``rho(G) = fftn(rho)/N`` and ``Phi(r) = sum_G Phi(G) e^{iGr}``, the
-        forward and inverse ``1/N`` cancel.
+        forward and inverse ``1/N`` cancel.  ``out`` is an optional
+        C-contiguous ``(P, G)`` buffer to write into (real allowed for a real
+        stack), as for :meth:`PoissonFFTSolver.solve_stack`.
         """
-        nx, ny, nz = self.shape
-        rho_stack = np.ascontiguousarray(rho_stack, dtype=np.complex128)
-        out = np.empty((rho_stack.shape[0], nx * ny * nz), dtype=np.complex128)
-        for index in range(rho_stack.shape[0]):
-            spectrum = sfft.fftn(rho_stack[index].reshape(nx, ny, nz),
-                                 workers=self.workers)
-            phi = sfft.ifftn(spectrum * self._kernel, workers=self.workers)
-            out[index] = phi.reshape(-1)
-        return out
+        return convolve_stack(self, rho_stack, out, 1.0)

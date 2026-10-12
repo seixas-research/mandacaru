@@ -515,6 +515,18 @@ class Mandacaru(Calculator):
         unknown key is refused as the typo it is.  A pre-built
         :class:`~mandacaru.optimizers.Optimizer` works as well and is what the
         dict builds.
+    two_body : str or dict
+        How the two-electron integrals are held.  ``"dense"`` (the default)
+        is the exact tensor.  ``{"method": "cholesky", "tolerance": 1e-8}``
+        (or ``"cholesky"`` at the default tolerance) generates Cholesky
+        factors on the grid instead and builds the SCF and the active-space
+        integrals from them, trading generation time for memory: about
+        ``8 M^2 R`` bytes against the tensor's ``16 M^4``, with ``R`` a few
+        times ``M``.  The tolerance (Hartree) bounds every integral's error,
+        not an energy's; see the "Memory and scale" guide for what it does to
+        energies.  Molecules, energies and active spaces only: crystals,
+        forces, ``method="dft"`` and ``"ghf"`` and a spin-orbit basis need
+        the dense tensor and are refused.
     charge, active_space, mapping, pool, ... :
         Forwarded to the solver selected by ``method``.
     dry_run : bool
@@ -528,7 +540,12 @@ class Mandacaru(Calculator):
     Every ``calculate`` runs a full variational optimization, so an ASE
     relaxation step costs one complete solver run.  The converged result of the
     most recent evaluation is available on :attr:`result`, the solver instance
-    on :attr:`solver`, and the force breakdown on :attr:`force_result`.
+    on :attr:`solver`, and the force breakdown on :attr:`force_result`.  The
+    calculator forwards nothing implicitly: the band, spectrum and k-point
+    members (:meth:`bands`, :meth:`dos`, :meth:`get_fermi_level`, ...) are
+    explicit and raise an error naming the methods that provide them, and the
+    solver's own attributes (``pool``, ``ansatz``, ...) are read on
+    :attr:`solver`.
 
     With ``txt=<path>`` (forwarded to the solver) every step **appends** its
     own block to that one file -- the iteration table, then the forces of that
@@ -551,7 +568,16 @@ class Mandacaru(Calculator):
                  trace: bool | None = None,
                  population=None, **solver_kwargs):
         Calculator.__init__(self)
+        self._attached_atoms = None      # the geometry ASE attached (set_atoms)
         self.method, self._solver_class = resolve_method(method)
+        from ..integrals.cholesky import resolve_two_body
+        if resolve_two_body(solver_kwargs.get("two_body")).cholesky \
+                and self.method in ("dft", "ghf", *BLOCH_METHODS):
+            raise NotImplementedError(
+                f"method={self.method!r} does not take the Cholesky two-body "
+                f"integrals: Kohn-Sham DFT has its own Hartree term, GHF a "
+                f"spinor tensor and a crystal a periodic kernel.  Use "
+                f"two_body='dense' (the default)")
         if self.method in ("rhf", "uhf", "ghf", "dft") \
                 and measurement_provider is not None:
             raise ValueError("classical RHF/UHF/GHF/DFT has no quantum state to "
@@ -642,6 +668,9 @@ class Mandacaru(Calculator):
         self._grid = grid
         #: :class:`~mandacaru.algorithms.forces.ForceResult` of the most recent step.
         self.force_result = None
+        #: :class:`~mandacaru.algorithms.volumetric.DipoleMoment` of the last
+        #: :meth:`get_dipole_moment` (``None`` before one).
+        self.dipole_result = None
         #: One entry per geometry at which forces were computed -- the
         #: trajectory, as :meth:`write_optimization_summary` reports it.
         self.trajectory: list[dict] = []
@@ -668,7 +697,8 @@ class Mandacaru(Calculator):
 
         For a direct-mode problem (``hamiltonian=`` / ``load_hamiltonian=``)
         building it configures the problem -- pool, Hamiltonian matrix -- so
-        ``calc.n_qubits``, ``calc.pool`` ... are available without a run; an
+        ``calc.n_qubits``, ``calc.solver.pool`` ... are available without a
+        run; an
         invalid *problem* (a non-Hermitian operator, say) is refused at that
         point, an invalid *option* already by the constructor.
         """
@@ -712,18 +742,6 @@ class Mandacaru(Calculator):
         self.solver = solver
         return estimate
 
-    def __getattr__(self, name):
-        # Only reached for names Mandacaru itself does not define: the solver's
-        # own attributes (``pool``, ``ansatz``, ``kpoints``, ``energy_at``...)
-        # are readable on the calculator, which is the single entry point.
-        if "_solver" in self.__dict__ and not name.startswith("__"):
-            try:
-                return getattr(self.solver, name)
-            except AttributeError:
-                pass
-        raise AttributeError(
-            f"{type(self).__name__!r} object has no attribute {name!r}")
-
     def _require_solver(self):
         if getattr(self.solver, "hamiltonian", None) is None:
             raise RuntimeError(
@@ -760,10 +778,10 @@ class Mandacaru(Calculator):
     def band_structure(self, *args, **kwargs):
         """The solver's band structure when it defines one, else ASE's.
 
-        ASE's ``Calculator`` already defines ``band_structure``, so it shadows
-        the solver's and ``__getattr__`` never fires for it; the periodic
-        drivers are reached explicitly here.  Every other solver attribute is
-        delegated by ``__getattr__`` as usual.
+        ``method="dft"`` gives the non-self-consistent Kohn-Sham bands along a
+        high-symmetry path (``path=None, npoints=100``); a Bloch method refuses
+        it (its supercell has no continuous path -- use :meth:`bands`); any
+        other method falls back to ASE's, which reads the getters below.
         """
         from ase.calculators.calculator import Calculator as _ASECalculator
 
@@ -771,6 +789,248 @@ class Mandacaru(Calculator):
         if own is not None and own is not _ASECalculator.band_structure:
             return own(self.solver, *args, **kwargs)
         return _ASECalculator.band_structure(self, *args, **kwargs)
+
+    # -- the solver's user API, made explicit ------------------------------ #
+    # Each member below delegates to the solver of the current method.  A
+    # method whose solver does not provide it raises an error naming the
+    # methods that do; any other unknown attribute is a plain AttributeError.
+
+    #: What provides each member: named by the error of a method without it.
+    _NEEDS_DFT = "method='dft'"
+    _NEEDS_CRYSTAL_DFT = "a periodic method='dft' calculation (kpts=...)"
+    _NEEDS_BLOCH = "method='bloch-vqe' or 'bloch-adapt-vqe'"
+    _NEEDS_BANDS = ("method='dft' or a Bloch method ('bloch-vqe', "
+                    "'bloch-adapt-vqe')")
+    _NEEDS_SOLVER = "a solver that records its citations"
+
+    def _solver_member(self, name: str, supported_by: str, *,
+                       error: type = NotImplementedError):
+        """The solver's ``name``, or ``error`` naming what provides it."""
+        solver = self.solver
+        if hasattr(type(solver), name) or name in vars(solver):
+            return getattr(solver, name)
+        raise self._unsupported(name, supported_by, error)
+
+    def _unsupported(self, name: str, supported_by: str,
+                     error: type = NotImplementedError) -> Exception:
+        call = "" if error is AttributeError else "()"
+        return error(f"{name}{call} needs {supported_by}; "
+                     f"method={self.method!r} does not provide it")
+
+    # ASE's band-structure getters (``ase.dft.bandgap``,
+    # ``ase.spectrum.band_structure``, ``ase.dft.dos``).
+
+    def get_fermi_level(self, *args, **kwargs) -> float:
+        """The Fermi level (eV).
+
+        ``method="dft"``: the Kohn-Sham Fermi level, midway between HOMO and
+        LUMO for a molecule; it takes no arguments.  Bloch methods: the
+        interacting chemical potential from ``A(E, k)``, taking ``spectral=``,
+        ``atoms=`` and the keywords of :meth:`get_spectral_function`.
+        """
+        return self._solver_member("get_fermi_level", self._NEEDS_BANDS)(
+            *args, **kwargs)
+
+    def get_number_of_spins(self) -> int:
+        """Spin channels of the last run: 2 when spin-polarized, else 1."""
+        return self._solver_member("get_number_of_spins", self._NEEDS_DFT)()
+
+    def get_eigenvalues(self, kpt: int = 0, spin: int = 0) -> np.ndarray:
+        """Kohn-Sham eigenvalues (eV) at the ``kpt``-th irreducible k-point
+        and spin channel ``spin``."""
+        return self._solver_member("get_eigenvalues", self._NEEDS_DFT)(
+            kpt=kpt, spin=spin)
+
+    def get_ibz_k_points(self) -> np.ndarray:
+        """The irreducible k-points, fractional (Gamma for a molecule)."""
+        return self._solver_member("get_ibz_k_points", self._NEEDS_BANDS)()
+
+    def get_bz_k_points(self) -> np.ndarray:
+        """Every k-point of a Bloch method's mesh, fractional."""
+        return self._solver_member("get_bz_k_points", self._NEEDS_BLOCH)()
+
+    def get_k_point_weights(self) -> np.ndarray:
+        """Weights of :meth:`get_ibz_k_points`, summing to one."""
+        return self._solver_member("get_k_point_weights", self._NEEDS_BANDS)()
+
+    # The k-point mesh and the lattice.
+
+    @property
+    def kpoints(self) -> np.ndarray:
+        """The resolved k-point mesh, ``(nk, 3)``: Gamma alone unless
+        ``kpts=`` asks for more."""
+        return self._solver_member("kpoints", "a solver with a k-point mesh",
+                                   error=AttributeError)
+
+    @property
+    def n_bands(self) -> int:
+        """Bands of a Bloch method: spatial orbitals per primitive cell,
+        available before anything is run."""
+        return self._solver_member("n_bands", self._NEEDS_BLOCH,
+                                   error=AttributeError)
+
+    @property
+    def dimension(self) -> int:
+        """Number of periodic directions (1, 2 or 3) of a Bloch method's
+        geometry."""
+        return self._solver_member("dimension", self._NEEDS_BLOCH,
+                                   error=AttributeError)
+
+    def symmetry(self, symprec: float = None, atoms=None):
+        """The space group of the primitive cell
+        (:class:`~mandacaru.core.symmetry.SymmetryInfo`), from spglib;
+        available before anything is run."""
+        return self._solver_member("symmetry", self._NEEDS_BLOCH)(
+            symprec=symprec, atoms=atoms)
+
+    def irreducible_zone(self, symprec: float = None,
+                         time_reversal: bool = True, atoms=None):
+        """The k-point mesh reduced to the irreducible Brillouin zone
+        (:class:`~mandacaru.core.symmetry.IrreducibleZone`).
+
+        A cost reduction for :meth:`get_spectral_function`; the supercell,
+        and so the qubit count, is unchanged.
+        """
+        return self._solver_member("irreducible_zone", self._NEEDS_BLOCH)(
+            symprec=symprec, time_reversal=time_reversal, atoms=atoms)
+
+    def band_path(self, path=None, atoms=None, warn: bool = True):
+        """The mesh k-points lying on a high-symmetry path
+        (:class:`~mandacaru.algorithms.kpath.KPointPath`); nothing is
+        interpolated, and a point the mesh lacks is listed in ``missing``."""
+        return self._solver_member("band_path", self._NEEDS_BLOCH)(
+            path=path, atoms=atoms, warn=warn)
+
+    # Correlated bands of the Bloch methods.
+
+    def get_spectral_function(self, energies=None, eta: float = 0.2,
+                              points: int = 400, atoms=None, path=None,
+                              irreducible: bool = False,
+                              symprec: float = None,
+                              time_reversal: bool = True):
+        """The interacting band structure ``A(E, k)`` by Lehmann
+        representation (:class:`~mandacaru.algorithms.bloch.SpectralFunction`),
+        built from the correlated ground state of the run.
+
+        ``path=`` restricts it to a high-symmetry path (:meth:`band_path`) and
+        ``irreducible=True`` computes only the symmetry-inequivalent k-points.
+        """
+        return self._solver_member("get_spectral_function", self._NEEDS_BLOCH)(
+            energies=energies, eta=eta, points=points, atoms=atoms, path=path,
+            irreducible=irreducible, symprec=symprec,
+            time_reversal=time_reversal)
+
+    def bands(self, spectral=None, atoms=None, **kwargs) -> np.ndarray:
+        """Quasiparticle bands: the dominant pole of ``A(E, k)`` per orbital,
+        ``(nk, n_bands)`` in eV from the N-electron ground state.
+
+        Read them with :meth:`band_weights`; extra keywords go to
+        :meth:`get_spectral_function`.
+        """
+        return self._solver_member("bands", self._NEEDS_BLOCH)(
+            spectral=spectral, atoms=atoms, **kwargs)
+
+    def band_weights(self, spectral=None, atoms=None, **kwargs) -> np.ndarray:
+        """Spectral weight (0 to 1) carried by each peak of :meth:`bands`."""
+        return self._solver_member("band_weights", self._NEEDS_BLOCH)(
+            spectral=spectral, atoms=atoms, **kwargs)
+
+    # Kohn-Sham spectra and band analysis (method="dft").
+
+    def dos(self, width: float = 0.1, npoints: int = 2001, kpts=None,
+            energies=None):
+        """Gaussian-broadened density of states, ``(energies, dos)``, in eV
+        and states/eV per cell (per molecule), both spins.
+
+        ``width`` is the Gaussian's standard deviation; a crystal's ``kpts``
+        is diagonalized non-self-consistently (``None``: the SCF mesh).
+        """
+        return self._solver_member("dos", self._NEEDS_DFT)(
+            width=width, npoints=npoints, kpts=kpts, energies=energies)
+
+    def pdos(self, width: float = 0.1, npoints: int = 2001, kpts=None,
+             energies=None):
+        """:meth:`dos` projected on atomic shells, ``(energies, pdos)``;
+        ``pdos[(atom, l)]`` is a shell's Loewdin share and the shells sum to
+        the total."""
+        return self._solver_member("pdos", self._NEEDS_DFT)(
+            width=width, npoints=npoints, kpts=kpts, energies=energies)
+
+    def fat_bands(self, path=None, npoints: int = 100):
+        """:meth:`band_structure` plus each state's Loewdin weight on each
+        atomic shell: ``(band_structure, weights)``."""
+        return self._solver_member("fat_bands", self._NEEDS_CRYSTAL_DFT)(
+            path=path, npoints=npoints)
+
+    def fermi_surface(self, size) -> np.ndarray:
+        """Band energies (eV) on the full Gamma-centered ``size`` mesh,
+        ``(n_bands, n1, n2, n3)`` (a leading spin axis when spin-polarized)."""
+        return self._solver_member("fermi_surface", self._NEEDS_CRYSTAL_DFT)(
+            size)
+
+    def write_fermi_surface(self, path, size, *, spin=None,
+                            bands=None) -> str:
+        """Write :meth:`fermi_surface` as an XCrySDen ``.bxsf`` file and
+        return the path written."""
+        return self._solver_member("write_fermi_surface",
+                                   self._NEEDS_CRYSTAL_DFT)(
+            path, size, spin=spin, bands=bands)
+
+    def get_polarization(self, kpts=None) -> np.ndarray:
+        """The Berry-phase polarization of an insulating crystal (C/m^2), on
+        the branch nearest zero; the whole result is on
+        :attr:`polarization_result`."""
+        return self._solver_member("get_polarization",
+                                   self._NEEDS_CRYSTAL_DFT)(kpts=kpts)
+
+    @property
+    def polarization_result(self):
+        """:class:`~mandacaru.algorithms.berry_phase.Polarization` of the last
+        :meth:`get_polarization` (``None`` before one)."""
+        if not hasattr(type(self.solver), "get_polarization"):
+            raise self._unsupported("polarization_result",
+                                    self._NEEDS_CRYSTAL_DFT, AttributeError)
+        return getattr(self.solver, "polarization_result", None)
+
+    def projectabilities(self, guess, *, kpts=None, bands=None):
+        """Each Bloch state's projectability onto target atomic orbitals
+        (:class:`~mandacaru.algorithms.band_selection.Projectabilities`);
+        ``guess`` names the targets as for :meth:`wannier`."""
+        return self._solver_member("projectabilities",
+                                   self._NEEDS_CRYSTAL_DFT)(
+            guess, kpts=kpts, bands=bands)
+
+    def wannier(self, n_functions=None, *, guess="bonds", windows=None,
+                bands=None, kpts=None, trial_radial="gaussian", **options):
+        """Maximally localized Wannier functions of a crystal's bands
+        (:func:`~mandacaru.algorithms.wannier.wannier_functions`).
+
+        Without ``windows`` the ``bands`` (default: an insulator's occupied
+        bands) are an isolated group, one function per band; with
+        ``windows`` -- ``{"outer": ..., "frozen": ...}`` in eV, or chosen by
+        what the states are (``"auto"``, ``"scdm"``, ``"rpa"``) --
+        ``n_functions`` are disentangled.  ``guess`` gives one trial orbital
+        per function: ``"bonds"``, ``"sp3"``, orbitals on atoms such as
+        ``{"V": "t2g"}``, or centers.  A spin-polarized crystal returns a
+        :class:`~mandacaru.algorithms.wannier.SpinWannierResult`.
+        """
+        return self._solver_member("wannier", self._NEEDS_CRYSTAL_DFT)(
+            n_functions, guess=guess, windows=windows, bands=bands, kpts=kpts,
+            trial_radial=trial_radial, **options)
+
+    # The references a run rests on.
+
+    def citation_keys(self) -> list:
+        """Bibliography keys for this run's configuration -- for a script that
+        assembles its own bibliography."""
+        return self._solver_member("citation_keys", self._NEEDS_SOLVER)()
+
+    def write_references(self, path=None) -> str | None:
+        """Write the run's ``references.bib`` (to ``path``, or where the
+        ``references=`` option points) and return the path, or ``None`` when
+        neither names a file."""
+        return self._solver_member("write_references",
+                                   self._NEEDS_SOLVER)(path)
 
     def _check_solver_options(self) -> None:
         """Refuse options the selected method would accept and ignore.
@@ -854,12 +1114,9 @@ class Mandacaru(Calculator):
         # A periodic driver keeps the primitive cell aside (its own `atoms`
         # becomes the supercell once it runs); hand over the attached geometry
         # so the band structure is available without a calculation.
-        # Read through __dict__, not getattr: an attribute this class does not
-        # define reaches __getattr__, which delegates to `self.solver` -- and
-        # building that solver lands back here, recursing forever.
-        attached = self.__dict__.get("_attached_atoms")
+        attached = self._attached_atoms
         if attached is None:
-            attached = self.__dict__.get("atoms")
+            attached = self.atoms
         if attached is not None and hasattr(solver, "_primitive"):
             solver._primitive = attached.copy()
         return solver
@@ -1061,6 +1318,13 @@ class Mandacaru(Calculator):
                 "classical SCF result")
         if want_forces:
             self._require_atom_centered_basis(self.basis)
+            if getattr(getattr(self.solver, "two_body", None), "cholesky",
+                       False):
+                raise NotImplementedError(
+                    "nuclear forces are not available with the Cholesky "
+                    "two-body integrals: the gradient of a truncated "
+                    "factorization needs its own derivation.  Use "
+                    "two_body='dense' (the default) for forces")
             # Forces measure the RDMs: a provider that cannot return many
             # expectation values of one state is refused now, before the
             # optimization it would otherwise fail after.
@@ -1444,8 +1708,9 @@ class Mandacaru(Calculator):
 
         Needs the molecular integrals, so it exists exactly when the run built
         a basis (not in direct mode, not for a loaded Hamiltonian, not for an
-        integral-direct active space such as ``"dlpno-mp2"``).  Cheap --
-        an ``eigh`` of an ``M^2 x M^2`` matrix, 0.1 s at 24 spin orbitals.
+        integral-direct build such as a ``"dlpno-mp2"`` active space).
+        Cheap -- an ``eigh`` of an ``M^2 x M^2`` matrix, 0.1 s at 24 spin
+        orbitals.
 
         The **constant** is whatever the driver's qubit Hamiltonian carries
         beyond the electronic operator (the nuclear repulsion): a scalar, read
@@ -1456,11 +1721,9 @@ class Mandacaru(Calculator):
         context = getattr(solver, "_gradient_context", None)
         if not context or context.get("integrals") is None:
             return None
-        from ..core.hamiltonian import DIRECT_METHODS
-        spec = getattr(solver, "active_space", None)
-        if spec is not None and spec.method in DIRECT_METHODS:
-            # An integral-direct run holds no two-body tensor, and building
-            # the full one here would undo the point of the method.
+        if getattr(context["integrals"], "integral_direct", False):
+            # An integral-direct build holds no two-body tensor, and building
+            # the full one here would undo the point of the route.
             return None
         from ..backends.factorization import double_factorization
         from ..core.hamiltonian import (molecular_orbital_integrals,
@@ -1755,9 +2018,9 @@ class Mandacaru(Calculator):
                 self._project_translation(result)
             return result
 
-        from ..core.hamiltonian import DIRECT_METHODS
-        spec = getattr(solver, "active_space", None)
-        if spec is not None and spec.method in DIRECT_METHODS:
+        if getattr(context.get("integrals"), "integral_direct", False):
+            # No tensor for the analytic gradient: the reduced Hamiltonian's
+            # central difference, each geometry rebuilt the same way.
             return self._direct_active_space_gradient(
                 solver, context, rdms, reference_energy)
 
@@ -1896,7 +2159,8 @@ class Mandacaru(Calculator):
 
     def _direct_active_space_gradient(self, solver, context, rdms,
                                       reference_energy):
-        """Forces of an integral-direct active space (``"dlpno-mp2"``).
+        """Forces of an integral-direct active space (``"dlpno-mp2"``, or a
+        build that took the direct route for memory).
 
         The whole gradient is the central difference of the reduced
         Hamiltonian (:func:`~mandacaru.algorithms.active_space_forces.active_space_gradient`),
@@ -1917,7 +2181,7 @@ class Mandacaru(Calculator):
         from .pseudo_forces import ENERGY_CHECK_TOLERANCE
 
         integrals = context["integrals"]
-        if getattr(integrals, "active_h_so", None) is None:
+        if getattr(integrals, "active_one_body", None) is None:
             raise NotImplementedError(
                 "forces of an integral-direct active space need the reduced "
                 "Hamiltonian, which a build without deleted virtual orbitals "

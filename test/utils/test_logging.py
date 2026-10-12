@@ -67,7 +67,7 @@ def _h2_adapt(hamiltonian, **kwargs):
 class TestAdaptOutputProtocol:
     def test_default_optimizer_is_cobyla(self, h2_hamiltonian):
         # Requirement 6: the default classical optimizer must be COBYLA.
-        assert _h2_adapt(h2_hamiltonian).optimizer.method == \
+        assert _h2_adapt(h2_hamiltonian).solver.optimizer.method == \
             DEFAULT_OPTIMIZER
 
     def test_output_file_written_and_parseable(self, h2_hamiltonian, tmp_path):
@@ -118,7 +118,7 @@ class TestAdaptOutputProtocol:
         text = open(out, encoding="utf-8").read()
         setup, table = text.split("[ITERATIONS]", 1)
         # Pool type and size before the table, each stated once.
-        assert f"pool_size: {len(adapt._pool_ops)}" in setup
+        assert f"pool_size: {len(adapt.solver._pool_ops)}" in setup
         assert "pool: " in setup and "pool_class: " in setup
         # The table names the selected operator per row and nothing else.
         assert "operator_pool:" not in text
@@ -139,13 +139,13 @@ class TestAdaptOutputProtocol:
                           verbose_operators=str(pool_file))
         adapt.run()
         payload = json.loads(pool_file.read_text())
-        assert payload["pool"] == adapt.pool.name
-        assert payload["pool_size"] == len(adapt._pool_ops) == \
+        assert payload["pool"] == adapt.solver.pool.name
+        assert payload["pool_size"] == len(adapt.solver._pool_ops) == \
             len(payload["operators"])
         assert payload["n_qubits"] == adapt.n_qubits
         first = payload["operators"][0]
-        assert first["label"] == adapt._pool_ops[0].label
-        assert first["kind"] == adapt._pool_ops[0].kind
+        assert first["label"] == adapt.solver._pool_ops[0].label
+        assert first["kind"] == adapt.solver._pool_ops[0].kind
         assert first["generator"] and all(
             set(term["pauli"]) <= set("IXYZ") for term in first["generator"])
 
@@ -574,6 +574,10 @@ class TestBasisBlock:
         (dataset,) = block["datasets"]
         assert dataset["symbol"] == "H" and dataset["Z_ion"] == 1
         assert dataset["source"] in ("H.parquet", "H.json")
+        # The digest of the bytes that were read, not of the name.
+        import hashlib
+        with open(get_paw("H").source, "rb") as handle:
+            assert dataset["sha256"] == hashlib.sha256(handle.read()).hexdigest()
         (orbital,) = block["orbitals"]
         expected = confined_orbital(get_paw("H"), 0, 0.1)
         assert orbital["l"] == 0 and orbital["zetas"] == 2
@@ -1347,7 +1351,7 @@ class TestVerbosePauliOutput:
         assert "ZIII" in adapt.hamiltonian.simplify().terms
         # Nor is the pool listed: its name and size are all the trace carries.
         assert "pool: ceo" in out
-        assert f"pool_size: {len(adapt._pool_ops)}" in out
+        assert f"pool_size: {len(adapt.solver._pool_ops)}" in out
         assert "operator_pool" not in out
 
     def test_iterations_are_single_aligned_lines(self, h2_hamiltonian,

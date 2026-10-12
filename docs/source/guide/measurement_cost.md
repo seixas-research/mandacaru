@@ -216,7 +216,8 @@ $$\langle\psi|P|\psi\rangle = i^{\text{odd}}\,\psi^{T} R\, \psi = 0$$
 
 **exactly** — an identity, not an approximation. Mandacaru checks the premise
 rather than assuming it (the Hamiltonian must be a real matrix, and so must
-every ansatz generator; a complex basis would break it) and then sets those
+every ansatz generator; a molecule's real harmonics guarantee the first,
+and a spin-orbit term would break it) and then sets those
 expectations to zero without measuring them. On LiH/PAW-LCAO-DZ that is 472 of 981
 labels: the RDM job halves, and the energy, the RDMs and the forces come out
 bit-for-bit identical.

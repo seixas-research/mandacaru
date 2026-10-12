@@ -292,24 +292,24 @@ class TestSubspaceExportFollowsTheSortedLevels:
     def test_the_ground_state_is_not_the_hartree_fock_branch(self, swapped):
         assert swapped.result.energies.tolist() == [-1.0, 1.0]
         hf = UCCSD(2, (1, 1)).reference_qubits()
-        assert swapped.ansatz_problem()[1] != hf
-        assert swapped.ansatz_problem(state=1)[1] == hf
+        assert swapped.solver.ansatz_problem()[1] != hf
+        assert swapped.solver.ansatz_problem(state=1)[1] == hf
 
     def test_the_measured_energy_is_the_reported_one(self, swapped):
         provider = QiskitProvider()
-        assert swapped.measured_energy(provider) == pytest.approx(-1.0)   # was +1
-        assert swapped.measured_energy(provider, state=1) == pytest.approx(1.0)
+        assert swapped.solver.measured_energy(provider) == pytest.approx(-1.0)   # was +1
+        assert swapped.solver.measured_energy(provider, state=1) == pytest.approx(1.0)
 
     def test_an_unknown_level_is_refused(self, swapped):
         with pytest.raises(IndexError):
-            swapped.ansatz_problem(state=2)
+            swapped.solver.ansatz_problem(state=2)
 
     def test_the_grown_ansatz_is_kept_for_export(self):
         atoms = h2()
         atoms.calc = Mandacaru(method="subspace-adapt-vqe", h=0.4, trace=False,
                                profile=False, max_iterations=2)
         atoms.get_potential_energy()
-        n, occupied, generators, theta, _h = atoms.calc.ansatz_problem()
+        n, occupied, generators, theta, _h = atoms.calc.solver.ansatz_problem()
         assert n == 4 and len(generators) == len(theta)   # it raised AttributeError
 
 

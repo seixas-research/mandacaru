@@ -43,9 +43,28 @@ def reduced_energy(integrals: MolecularIntegrals, gamma: np.ndarray,
     ``rotation`` maps the displaced active orbitals into the reference orbital
     gauge.  The integral arrays already contain the core effective potential;
     ``active_constant`` includes core, ionic, and one-center energies.
+
+    Spatial integrals (``active_spin_blocked``) are contracted with the
+    spin-summed RDMs, :math:`\sum_{\sigma\tau}\Gamma_{p\sigma q\tau
+    r\sigma s\tau}`, which is the spin-blocked contraction without its
+    ``(2n)^4`` tensor; a GHF spinor basis keeps spin-orbital integrals.
     """
-    h = np.asarray(integrals.active_h_so)
-    g = np.asarray(integrals.active_g_so)
+    h = np.asarray(integrals.active_one_body)
+    g = np.asarray(integrals.active_two_body)
+    gamma = np.asarray(gamma)
+    gamma2 = np.asarray(gamma2)
+    if integrals.active_spin_blocked:
+        n = h.shape[0]
+        if rotation is not None:
+            h = rotation.conj().T @ h @ rotation
+            g = np.einsum("ap,bq,cr,ds,abcd->pqrs", rotation.conj(),
+                          rotation.conj(), rotation, rotation, g,
+                          optimize=True)
+        one = np.einsum("apaq->pq", gamma.reshape(2, n, 2, n))
+        two = np.einsum("apbqarbs->pqrs", gamma2.reshape((2, n) * 4))
+        energy = (np.einsum("pq,pq->", h, one, optimize=True)
+                  + 0.5 * np.einsum("pqrs,pqrs->", g, two, optimize=True))
+        return float(np.real(energy) + integrals.active_constant)
     if rotation is not None:
         n = rotation.shape[0]
         u = np.zeros((2 * n, 2 * n), dtype=complex)

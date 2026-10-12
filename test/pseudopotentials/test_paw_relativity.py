@@ -344,11 +344,20 @@ class TestSpinOrbitInTheMolecularHamiltonian:
         return index, matrix[np.ix_(index, index)]
 
     def test_the_term_conserves_j_z(self, integrals):
-        m = np.array([f.m for f in integrals.basis], dtype=float)
+        """J_z = L_z + S_z on the p shell, L_z in the real harmonics of a
+        molecule (p_y, p_z, p_x): purely imaginary, off the diagonal."""
+        from mandacaru.basis._angular import real_harmonic_transform
+
         index, block = self._p_block(integrals,
                                      integrals.spin_orbit_matrix())
-        jz = np.concatenate([m + 0.5, m - 0.5])[index]
-        commutator = block * (jz[None, :] - jz[:, None])
+        p = [mu for mu, f in enumerate(integrals.basis) if f.l == 1]
+        assert [integrals.basis[mu].m for mu in p] == [-1, 0, 1]
+        U = np.conj(real_harmonic_transform(1))
+        lz = U @ np.diag([-1.0, 0.0, 1.0]) @ U.conj().T
+        assert np.abs(lz.real).max() < 1e-15
+        jz = (np.kron(np.eye(2), lz)
+              + np.kron(np.diag([0.5, -0.5]), np.eye(3)))
+        commutator = jz @ block - block @ jz
         # Only the cubic grid mixes m (6e-5 here at h = 0.25 Angstrom); a
         # wrong L.S or basis would break it at order one.
         assert np.linalg.norm(commutator) < 1e-3 * np.linalg.norm(block)

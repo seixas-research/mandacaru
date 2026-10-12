@@ -107,9 +107,10 @@ O₂, anything beyond LiH), and they are fixed:
 
 - the Löwdin orthogonalization transformed the two-electron tensor with the
   wrong conjugation pattern, which breaks the tensor's symmetries whenever
-  the overlap matrix is complex (the spherical harmonics are complex, so any
-  p shell off a symmetry plane does it); water's Hartree–Fock energy moved by
-  33 eV;
+  the overlap matrix is complex (complex spherical harmonics, then used by
+  every basis, make it so for any p shell off a symmetry plane; a molecule
+  now uses real ones, a crystal still complex ones); water's Hartree–Fock
+  energy moved by 33 eV;
 - the Fock build contracted the density with its indices transposed, the
   complex conjugate of the right density.
 

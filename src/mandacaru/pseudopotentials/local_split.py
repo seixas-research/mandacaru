@@ -302,8 +302,11 @@ def _atom_matrices(basis, center, weight, radii, directions, *,
                    gradients: bool, delta: float, block: int):
     """``I`` (and ``G``) of one sphere, accumulated block of shells at a time."""
     M = len(basis)
-    I = np.zeros((M, M), dtype=complex)
-    G = np.zeros((M, M, 3), dtype=complex) if gradients else None
+    # Real functions (a molecule's real harmonics) give real matrices.
+    dtype = (float if all(getattr(fn, "real", False) for fn in basis)
+             else complex)
+    I = np.zeros((M, M), dtype=dtype)
+    G = np.zeros((M, M, 3), dtype=dtype) if gradients else None
     center = np.asarray(center, dtype=float)
     # Only functions whose support reaches this sphere contribute; the rest
     # are exactly zero on every one of its points.  Without this every atom

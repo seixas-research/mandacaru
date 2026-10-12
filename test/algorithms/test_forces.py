@@ -56,7 +56,7 @@ def run_vqe(atoms, grid):
     work.calc = Mandacaru(method="vqe", basis="HAO", grid=grid, trace=False)
     work.get_potential_energy()
     driver = work.calc
-    psi = driver.ansatz.state(driver.result.optimal_parameters)
+    psi = driver.solver.ansatz.state(driver.result.optimal_parameters)
     return driver, psi
 
 
@@ -99,7 +99,7 @@ class TestReducedDensityMatrices:
         gamma = one_rdm(psi, driver.n_qubits, driver.mapping)
         gamma2 = two_rdm(psi, driver.n_qubits, driver.mapping)
 
-        integrals = driver._gradient_context["integrals"]
+        integrals = driver.solver._gradient_context["integrals"]
         rhf = integrals.hartree_fock(2)
         h_so, g_so = spin_block_integrals(rhf.h_mo, rhf.eri_mo)
         energy = (electronic_energy(gamma, gamma2, h_so, g_so)
@@ -128,7 +128,7 @@ class TestJaxEnergyLayer:
         driver, psi = run_vqe(h2(0.74), fixed_grid)
         gamma = one_rdm(psi, driver.n_qubits, driver.mapping)
         gamma2 = two_rdm(psi, driver.n_qubits, driver.mapping)
-        integrals = driver._gradient_context["integrals"]
+        integrals = driver.solver._gradient_context["integrals"]
         S, h, eri = self._raw_integrals(integrals)
 
         energy = energy_from_integrals(
@@ -142,7 +142,7 @@ class TestJaxEnergyLayer:
         driver, psi = run_vqe(h2(0.74), fixed_grid)
         gamma = one_rdm(psi, driver.n_qubits, driver.mapping)
         gamma2 = two_rdm(psi, driver.n_qubits, driver.mapping)
-        integrals = driver._gradient_context["integrals"]
+        integrals = driver.solver._gradient_context["integrals"]
         S, h, eri = self._raw_integrals(integrals)
 
         _ds, dh, _dg = integral_gradients(S, h, eri, gamma, gamma2,
@@ -156,7 +156,7 @@ class TestJaxEnergyLayer:
         driver, psi = run_vqe(h2(0.74), fixed_grid)
         gamma = one_rdm(psi, driver.n_qubits, driver.mapping)
         gamma2 = two_rdm(psi, driver.n_qubits, driver.mapping)
-        integrals = driver._gradient_context["integrals"]
+        integrals = driver.solver._gradient_context["integrals"]
         S, h, eri = self._raw_integrals(integrals)
 
         ds, _dh, _dg = integral_gradients(S, h, eri, gamma, gamma2,
@@ -171,7 +171,7 @@ class TestJaxEnergyLayer:
 def analytic_forces(atoms, grid):
     """Converged VQE forces for ``atoms`` on ``grid``."""
     driver, psi = run_vqe(atoms, grid)
-    context = driver._gradient_context
+    context = driver.solver._gradient_context
     gamma = one_rdm(psi, driver.n_qubits, driver.mapping)
     gamma2 = two_rdm(psi, driver.n_qubits, driver.mapping)
     return nuclear_gradient(
@@ -247,7 +247,7 @@ class TestPulayContribution:
         full = analytic_forces(atoms, fixed_grid)
 
         driver, psi = run_vqe(atoms, fixed_grid)
-        context = driver._gradient_context
+        context = driver.solver._gradient_context
         bare = nuclear_gradient(
             context["integrals"],
             one_rdm(psi, driver.n_qubits, driver.mapping),
@@ -394,7 +394,7 @@ class TestByPartsMode:
         """
         atoms = h2(0.74)
         driver, psi = run_vqe(atoms, fixed_grid)
-        context = driver._gradient_context
+        context = driver.solver._gradient_context
         gamma = one_rdm(psi, driver.n_qubits, driver.mapping)
         gamma2 = two_rdm(psi, driver.n_qubits, driver.mapping)
         common = dict(n_electrons=context["n_electrons"],
@@ -414,7 +414,7 @@ class TestByPartsMode:
     def test_recorded_in_the_result(self, fixed_grid):
         atoms = h2(0.74)
         driver, psi = run_vqe(atoms, fixed_grid)
-        context = driver._gradient_context
+        context = driver.solver._gradient_context
         result = nuclear_gradient(
             context["integrals"],
             one_rdm(psi, driver.n_qubits, driver.mapping),
@@ -663,3 +663,97 @@ class TestTheKineticCrossBlock:
             one_body_cross(psi, psi, vext, grid, "fourier")
         with pytest.raises(ValueError, match="laplacian"):
             one_body_cross(psi, psi, vext, grid, "spectral")
+
+
+class TestStreamedPairPotentials:
+    """The two-body Pulay term streams the pair potentials a block at a time:
+    the same numbers as the whole ``M^2 G`` stack, a peak set by the block."""
+
+    @staticmethod
+    def _orbitals(M=4, seed=0):
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.0, h=0.4, units="bohr")
+        rng = np.random.default_rng(seed)
+        r2 = (grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2).ravel()
+        psi = np.stack([np.exp(-(0.6 + 0.3 * m) * r2)
+                        * (rng.normal(size=r2.size) * 0.05 + 1.0
+                           + 1j * rng.normal(size=r2.size) * 0.05)
+                        for m in range(M)])
+        return grid, psi
+
+    def test_blocks_are_the_whole_stack(self, monkeypatch):
+        from mandacaru.algorithms.forces import pair_potential_blocks
+        from mandacaru.integrals.poisson import PoissonFFTSolver
+
+        grid, psi = self._orbitals()
+        M, G = psi.shape
+        whole = PoissonFFTSolver(grid.shape, step=grid.step).solve_stack(
+            (np.conj(psi)[:, None, :] * psi[None, :, :]).reshape(M * M, G))
+        # A budget of three pairs per block: 16 G (2 + 2M) bytes each.
+        monkeypatch.setenv("MANDACARU_ERI_MEMORY_MB",
+                           str(3 * 16 * G * (2 + 2 * M) / 2 ** 20))
+        sizes = []
+        for start, stop, phi in pair_potential_blocks(psi, grid):
+            sizes.append(stop - start)
+            assert np.abs(phi - whole[start:stop]).max() < 1e-12
+        assert sizes[:-1] == [3] * (len(sizes) - 1) and sum(sizes) == M * M
+
+    def test_the_gradient_is_the_dense_contraction(self, monkeypatch):
+        from mandacaru.algorithms.forces import _two_body_pulay
+        from mandacaru.integrals.poisson import PoissonFFTSolver
+
+        grid, psi = self._orbitals(seed=1)
+        M, G = psi.shape
+        rng = np.random.default_rng(2)
+        derivatives = rng.normal(size=(3, M, G)) * psi[None]
+        de_dg = rng.normal(size=(M,) * 4)
+        owner = [0, 0, 1, 1]
+        # What the gradient was before streaming: all pair potentials held.
+        phi = PoissonFFTSolver(grid.shape, step=grid.step).solve_stack(
+            (np.conj(psi)[:, None, :] * psi[None, :, :]).reshape(M * M, G)
+        ).reshape(M, M, G)
+        A = np.einsum("mnls,nsg->mlg", de_dg, phi)
+        B = np.einsum("mnls,mlg->nsg", de_dg, phi)
+        expected = np.zeros((2, 3))
+        for atom in range(2):
+            for k in range(3):
+                dpsi = np.where((np.asarray(owner) == atom)[:, None],
+                                derivatives[k], 0.0)
+                drho = (dpsi.conj()[:, None, :] * psi[None, :, :]
+                        + psi.conj()[:, None, :] * dpsi[None, :, :])
+                expected[atom, k] = np.real(
+                    np.einsum("mlg,mlg->", drho, A)
+                    + np.einsum("nsg,nsg->", drho, B)) * grid.dV
+        monkeypatch.setenv("MANDACARU_ERI_MEMORY_MB",
+                           str(2 * 16 * G * (2 + 2 * M) / 2 ** 20))
+        streamed = _two_body_pulay(psi, derivatives, grid, de_dg, owner, 2)
+        assert np.abs(streamed - expected).max() < 1e-10 * np.abs(
+            expected).max()
+
+    def test_the_peak_follows_the_block(self, monkeypatch):
+        import tracemalloc
+
+        from mandacaru.algorithms.forces import _two_body_pulay
+
+        from mandacaru.integrals.poisson import PoissonFFTSolver
+
+        grid, psi = self._orbitals(M=12, seed=3)
+        M, G = psi.shape
+        rng = np.random.default_rng(4)
+        derivatives = rng.normal(size=(3, M, G)) * psi[None]
+        de_dg = rng.normal(size=(M,) * 4)
+        owner = [0] * 6 + [1] * 6
+        # One pair per block.
+        monkeypatch.setenv("MANDACARU_ERI_MEMORY_MB",
+                           str(16 * G * (2 + 2 * M) / 2 ** 20))
+        # The kernel and the FFT workspace are cached per grid: build them
+        # first, so the measurement is what the gradient allocates.
+        PoissonFFTSolver(grid.shape, step=grid.step).solve(np.abs(psi[0]) ** 2)
+        tracemalloc.start()
+        try:
+            _two_body_pulay(psi, derivatives, grid, de_dg, owner, 2)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        # The whole stack of pair potentials alone would be 16 M^2 G bytes;
+        # a block is its pair's density, potential and two (M, G) products.
+        assert peak < 16 * M * M * G / 2

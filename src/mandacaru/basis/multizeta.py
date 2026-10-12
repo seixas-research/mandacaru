@@ -68,6 +68,7 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 
 from ..units import to_bohr
+from ._angular import sample_dtype as _dtype
 from ._angular import spherical_coords, spherical_harmonic
 from .base import BasisFunction
 
@@ -274,11 +275,13 @@ class TabulatedOrbital(BasisFunction):
     """
 
     def __init__(self, table: RadialTable, m: int, center=None,
-                 units: str = "angstrom"):
+                 units: str = "angstrom", *, real: bool = True):
         if abs(int(m)) > int(table.l):
             raise ValueError(f"require |m| <= l, got l={table.l}, m={m}")
         self.table = table
         self.n, self.l, self.m = int(table.n), int(table.l), int(m)
+        #: Real (molecule) or complex (crystal) spherical harmonics.
+        self.real = bool(real)
         self.zeta = int(table.zeta)
         self.polarization = bool(table.polarization)
         self.center = (np.zeros(3) if center is None
@@ -310,8 +313,9 @@ class TabulatedOrbital(BasisFunction):
     def evaluate(self, x, y, z) -> np.ndarray:
         r, theta, phi = spherical_coords(x, y, z, self.center)
         return np.asarray(self.radial(r)
-                          * spherical_harmonic(self.l, self.m, theta, phi),
-                          dtype=np.complex128)
+                          * spherical_harmonic(self.l, self.m, theta, phi,
+                                               real=self.real),
+                          dtype=_dtype(self.real))
 
     def __repr__(self) -> str:
         kind = "pol" if self.polarization else f"zeta{self.zeta}"
@@ -416,11 +420,14 @@ def build_shells(valence, solver, n_zeta: int = 1, n_polarization: int = 0,
 
 
 def orbitals_from_tables(tables, center=(0.0, 0.0, 0.0),
-                         units: str = "angstrom") -> list[BasisFunction]:
-    """Expand radial tables over all ``m`` into basis functions."""
+                         units: str = "angstrom", *,
+                         real: bool = True) -> list[BasisFunction]:
+    """Expand radial tables over all ``m`` into basis functions, with real
+    spherical harmonics (a molecule) or complex ones (``real=False``, a
+    crystal)."""
     orbitals: list[BasisFunction] = []
     for table in tables:
         for m in range(-table.l, table.l + 1):
             orbitals.append(TabulatedOrbital(table, m, center=center,
-                                             units=units))
+                                             units=units, real=real))
     return orbitals

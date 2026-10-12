@@ -6,11 +6,12 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Unified factory for building localized basis sets.
+"""Factory for the all-electron localized basis sets.
 
-``BasisSet.build`` selects a basis-set family and returns an object that turns
-elements/geometries into lists of :class:`~mandacaru.basis.base.BasisFunction`
-ready for :class:`~mandacaru.integrals.IntegralEngine`:
+``BasisSet.build`` selects an **all-electron** basis-set family and returns an
+object that turns elements/geometries into lists of
+:class:`~mandacaru.basis.base.BasisFunction` ready for
+:class:`~mandacaru.integrals.IntegralEngine`:
 
 .. code-block:: python
 
@@ -23,6 +24,14 @@ ready for :class:`~mandacaru.integrals.IntegralEngine`:
 The GTO family is generated from scratch (see :mod:`mandacaru.basis.sto_ng`): a
 least-squares STO-nG fit of Gaussians to Slater-type orbitals, so it needs no
 tabulated basis-set data.
+
+Not every name ``Mandacaru(basis=...)`` accepts is built here.  The
+pseudopotential families (``"PAW-LCAO"``, ``"UPAW-LCAO"``) need their
+datasets and build their valence basis from them, and plane waves (``"PW"``)
+are not atom-centered; the calculator's resolver
+(:func:`mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis` with the
+family registry of :mod:`mandacaru.pseudopotentials.families`) routes those
+names, and every other name comes here.
 """
 
 from __future__ import annotations
@@ -65,7 +74,7 @@ class BasisSet:
 
     @staticmethod
     def build(method, **kwargs) -> "BasisSet":
-        """Construct a basis set of the requested ``method``.
+        """Construct an all-electron basis set of the requested ``method``.
 
         ``method`` may also be a **per-element mapping** -- a dict of chemical
         symbol (or ``"*"`` for the default) to a basis spec, each a name or a
@@ -86,6 +95,10 @@ class BasisSet:
         (``"cc-pVDZ"`` ... ``"cc-pV5Z"``, ``"aug-cc-pVDZ"``, ``"cc-pCVDZ"``)
         and the Karlsruhe ``"def2-..."`` sets -- all generated natively with the
         published shell structure (see :mod:`mandacaru.basis.gaussian_families`).
+
+        The pseudopotential families and plane waves are not built here (see
+        the module docstring); their names are refused with a pointer to
+        ``Mandacaru(basis=...)``.
         """
         if isinstance(method, dict):
             if kwargs:
@@ -120,22 +133,29 @@ class BasisSet:
                 f"unknown basis method {method!r}; use 'HAO', 'NAO', 'NAO-AE', "
                 f"'GTO', an STO-nG name, or a named Gaussian family such as "
                 f"'6-31+G*', '6-311+G(2df,2p)', 'cc-pVTZ', 'aug-cc-pVDZ' or "
-                f"'def2-TZVP'") from error
+                f"'def2-TZVP'.  The pseudopotential families (PAW-LCAO, "
+                f"UPAW-LCAO) and plane waves (PW) are not built by "
+                f"BasisSet.build: select them with Mandacaru(basis=...)"
+            ) from error
         return GaussianBasisSet(recipe, **kwargs)
 
     # -- interface --------------------------------------------------------- #
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
-             units: str = "angstrom") -> list[BasisFunction]:
-        """Basis functions for one atom (``element`` symbol or Z) at ``center``."""
+             units: str = "angstrom", *,
+             real: bool = True) -> list[BasisFunction]:
+        """Basis functions for one atom (``element`` symbol or Z) at ``center``,
+        with real spherical harmonics (a molecule) or, ``real=False``,
+        complex ones (a crystal's Bloch sums)."""
         raise NotImplementedError
 
     def molecule(self, symbols: Sequence, positions: Sequence,
                  units: str = "angstrom") -> list[BasisFunction]:
-        """Concatenated basis functions for a whole geometry."""
+        """Concatenated basis functions for a whole geometry (real
+        harmonics)."""
         basis: list[BasisFunction] = []
         for sym, pos in zip(symbols, positions):
-            basis.extend(self.atom(sym, center=pos, units=units))
+            basis.extend(self.atom(sym, center=pos, units=units, real=True))
         return basis
 
 
@@ -192,9 +212,10 @@ class PerElementBasisSet(BasisSet):
         return self._sets[symbol]
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
-             units: str = "angstrom") -> list[BasisFunction]:
+             units: str = "angstrom", *,
+             real: bool = True) -> list[BasisFunction]:
         return self.family_for(element).atom(element, center=center,
-                                             units=units)
+                                             units=units, real=real)
 
     def __repr__(self) -> str:
         return f"PerElementBasisSet({self.mapping!r})"
@@ -283,7 +304,8 @@ class NAOBasisSet(BasisSet):
         return solve
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
-             units: str = "angstrom") -> list[BasisFunction]:
+             units: str = "angstrom", *,
+             real: bool = True) -> list[BasisFunction]:
         Z = _to_atomic_number(element)
         if self.n_zeta == 1 and self.n_polarization == 0:
             # Single zeta, no polarization: the original path, unchanged.
@@ -293,7 +315,7 @@ class NAOBasisSet(BasisSet):
                 for m in range(-l, l + 1):
                     orbitals.append(NumericalAtomicOrbital(
                         n, l, m, Z=z_eff, r_c=self.r_c, center=center,
-                        units=units, n_grid=self.n_grid))
+                        units=units, n_grid=self.n_grid, real=real))
             return orbitals
 
         tables = build_shells(valence_subshells(Z), self._solver(Z),
@@ -303,7 +325,8 @@ class NAOBasisSet(BasisSet):
                                           if self.split_norm is None
                                           else self.split_norm),
                               tail_norms=self.tail_norms)
-        return orbitals_from_tables(tables, center=center, units=units)
+        return orbitals_from_tables(tables, center=center, units=units,
+                                    real=real)
 
     def __repr__(self) -> str:
         return (f"NAOBasisSet(size={self.size!r}, "
@@ -393,9 +416,10 @@ class NAOAEBasisSet(BasisSet):
         return nao_ae.radial_tables(self.species(element), self.wall_radius)
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
-             units: str = "angstrom") -> list[BasisFunction]:
+             units: str = "angstrom", *,
+             real: bool = True) -> list[BasisFunction]:
         return orbitals_from_tables(self.tables(element), center=center,
-                                    units=units)
+                                    units=units, real=real)
 
     def describe(self, element) -> str:
         """Human-readable listing of the radial functions of ``element``."""
@@ -443,13 +467,15 @@ class GTOBasisSet(BasisSet):
                              "occupied subshell")
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
-             units: str = "angstrom") -> list[BasisFunction]:
+             units: str = "angstrom", *,
+             real: bool = True) -> list[BasisFunction]:
         Z = _to_atomic_number(element)
         orbitals: list[BasisFunction] = []
         for (_n, l, exps, coeffs) in sto_ng_shells(Z, self.n_gaussians):
             for m in range(-l, l + 1):
                 orbitals.append(GaussianOrbital(
-                    l, m, exps, coeffs, center=center, units=units))
+                    l, m, exps, coeffs, center=center, units=units,
+                    real=real))
         return orbitals
 
     def __repr__(self) -> str:
@@ -537,13 +563,15 @@ class HAOBasisSet(BasisSet):
         return sum(2 * l + 1 for (_n, l) in self.subshells(element))
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
-             units: str = "angstrom") -> list[BasisFunction]:
+             units: str = "angstrom", *,
+             real: bool = True) -> list[BasisFunction]:
         Z = _to_atomic_number(element)
         orbitals: list[BasisFunction] = []
         for (n, l) in self.subshells(element):
             for m in range(-l, l + 1):
-                orbitals.append(HydrogenicAtomicOrbital(n, l, m, Z=float(Z),
-                                                  center=center, units=units))
+                orbitals.append(HydrogenicAtomicOrbital(
+                    n, l, m, Z=float(Z), center=center, units=units,
+                    real=real))
         return orbitals
 
     def __repr__(self) -> str:
@@ -596,12 +624,14 @@ class GaussianBasisSet(BasisSet):
         return shell_notation(_to_atomic_number(element), self.recipe)
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
-             units: str = "angstrom") -> list[BasisFunction]:
+             units: str = "angstrom", *,
+             real: bool = True) -> list[BasisFunction]:
         orbitals: list[BasisFunction] = []
         for (l, exps, coeffs) in self.shells(element):
             for m in range(-l, l + 1):
                 orbitals.append(GaussianOrbital(l, m, exps, coeffs,
-                                                center=center, units=units))
+                                                center=center, units=units,
+                                                real=real))
         return orbitals
 
     def to_dict(self, elements) -> dict:
@@ -655,13 +685,15 @@ class Pople631GBasisSet(BasisSet):
                                 if self.polarization else ""))
 
     def atom(self, element, center=(0.0, 0.0, 0.0),
-             units: str = "angstrom") -> list[BasisFunction]:
+             units: str = "angstrom", *,
+             real: bool = True) -> list[BasisFunction]:
         Z = _to_atomic_number(element)
         orbitals: list[BasisFunction] = []
         for (l, exps, coeffs) in pople_631g_shells(Z, self.polarization):
             for m in range(-l, l + 1):
                 orbitals.append(GaussianOrbital(l, m, exps, coeffs,
-                                                center=center, units=units))
+                                                center=center, units=units,
+                                                real=real))
         return orbitals
 
     def __repr__(self) -> str:

@@ -368,8 +368,8 @@ class TestDriverFileFormats:
         assert loaded.optimal_energy == pytest.approx(built, abs=1e-9 * HARTREE_TO_EV)
 
     def test_default_format_is_parquet(self):
-        assert Mandacaru(method="adapt-vqe").hamiltonian_format == DEFAULT_FORMAT == "parquet"
-        assert Mandacaru(method="vqe").hamiltonian_format == "parquet"
+        assert Mandacaru(method="adapt-vqe").solver.hamiltonian_format == DEFAULT_FORMAT == "parquet"
+        assert Mandacaru(method="vqe").solver.hamiltonian_format == "parquet"
 
     def test_format_selects_the_default_filename(self, tmp_path, monkeypatch,
                                                  h2_atoms):
@@ -581,10 +581,10 @@ class TestDriverLoadsHamiltonian:
         loaded = Mandacaru(method="adapt-vqe", pool="ceo",
                            load_hamiltonian=path, trace=False)
         # Direct mode without ever touching an Atoms object.
-        assert loaded._configured
+        assert loaded.solver._configured
         assert loaded.n_qubits == 4
         assert loaded.num_particles == (1, 1)
-        assert loaded._integration_profile is None      # no integrals were run
+        assert loaded.solver._integration_profile is None      # no integrals were run
 
     def test_loading_bypasses_the_integral_engine(self, h2_cache, monkeypatch):
         """No one- or two-body integral may be computed on the load path."""
@@ -623,8 +623,8 @@ class TestDriverLoadsHamiltonian:
     def test_vqe_rebuilds_its_uccsd_ansatz_from_the_file(self, h2_cache):
         path, built_energy = h2_cache
         vqe = Mandacaru(method="vqe", load_hamiltonian=path, trace=False)
-        assert vqe.ansatz.n_qubits == 4
-        assert vqe.ansatz.num_particles == (1, 1)
+        assert vqe.solver.ansatz.n_qubits == 4
+        assert vqe.solver.ansatz.num_particles == (1, 1)
         # UCCSD reaches the same ground state as the (converged) ADAPT run.
         assert vqe.run().optimal_energy == pytest.approx(
             built_energy, abs=1e-6 * HARTREE_TO_EV)

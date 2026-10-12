@@ -624,12 +624,11 @@ potential outright rather than differentiating an energy nobody evaluated.
 
 Holding $V$ fixed is exact for a state that is stationary under orbital
 rotations, which a converged ADAPT-VQE run over all orbitals is;
-`force_result.details["orbital_gradient"]` reports the residual. Because the
-DZP basis has complex $Y_{lm}$ functions, the molecular orbitals are first made
-**conjugation-real** (`core.hamiltonian.conjugation_real_orbitals`, same
-determinant): with the phases the SCF happens to return, the MO integrals are
-complex and the real excitation operators of every pool stall above the ground
-state (62 meV on H₂ PAW-LCAO-DZP). H₂ and LiH in PAW-LCAO-DZP are 20-qubit problems,
+`force_result.details["orbital_gradient"]` reports the residual. The basis
+functions use real spherical harmonics, so the SCF's molecular orbitals and
+the MO integrals are real, which the real excitation operators of every pool
+need (with complex harmonics, orbitals left with the SCF's phases stalled
+ADAPT 62 meV above the ground state on H₂ PAW-LCAO-DZP). H₂ and LiH in PAW-LCAO-DZP are 20-qubit problems,
 solved exactly in their (1, 1) particle-number sector (`core.sector`, 100
 states).
 

@@ -1794,7 +1794,8 @@ def reference_bound_state(r, potential, l, n_nodes, energy_guess, z_eff,
 def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
                     energy_offset, defaults=None, treatment: str = "none",
                     kappa: int | None = None, extra_l: int = 0,
-                    extra_energy: float | None = None):
+                    extra_energy: float | None = None,
+                    second_references: dict | None = None):
     """``(per_l, cutoffs, references)`` -- the all-electron input of a channel.
 
     ``per_l[l]`` lists every occupied valence state ``(n, energy, R, occupancy)``
@@ -1803,6 +1804,9 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
     ``references[l] = (waves, energies)`` are the two partial waves each family
     pseudizes -- the bound state(s) plus, when there is only one, the scattering
     state ``energy_offset`` above it, normalized inside the sphere.
+    ``second_references`` (``{l: energy}``, Hartree) places that second
+    reference at an absolute energy instead, for the listed channels with one
+    bound state.
 
     ``treatment`` and ``kappa`` select the radial equation
     (:mod:`mandacaru.basis.relativity`); ``kappa`` is required for
@@ -1862,6 +1866,13 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
         energies = [e for _n, e, _w, _o in states]
         if len(states) == 1:
             energy_2 = energies[0] + float(energy_offset)
+            if second_references and l in second_references:
+                energy_2 = float(second_references[l])
+                if not energy_2 > energies[0]:
+                    raise ValueError(
+                        f"{symbol} l={l}: the second reference energy "
+                        f"{energy_2:+.4f} Ha is not above the bound state "
+                        f"({energies[0]:+.4f} Ha)")
             u2 = scattering_wave(r, v_ae, l, energy_2, z_eff, treatment,
                                  kappa_of_l(l))
             inside = r <= cutoffs[l]

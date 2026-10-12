@@ -28,8 +28,8 @@ from mandacaru.pseudopotentials.onecenter import (OneCenterHybrid,
                                                   radial_coulomb)
 
 
-def orbital(l, m):
-    return SimpleNamespace(l=l, m=m)
+def orbital(l, m, real=True):
+    return SimpleNamespace(l=l, m=m, real=real)
 
 
 class TestRadialCoulomb:
@@ -56,11 +56,48 @@ class TestAngularCoupling:
         assert angular_coupling(1, s, s, s, s) == 0
         assert angular_coupling(2, s, s, s, s) == 0
 
-    def test_sp_transition_density_is_a_dipole(self):
+    @pytest.mark.parametrize("real", [True, False])
+    def test_sp_transition_density_is_a_dipole(self, real):
         """4 pi / (2L+1) sum_M G G for the s-p pair density: 1/3 at L = 1."""
-        s, p = orbital(0, 0), orbital(1, 0)
+        s, p = orbital(0, 0, real), orbital(1, 0, real)
         assert angular_coupling(1, s, p, s, p) == pytest.approx(1.0 / 3.0)
         assert angular_coupling(0, s, p, s, p) == 0          # no monopole
+
+    def test_the_real_coupling_is_the_complex_one_transformed(self):
+        """Every four-orbital coupling of s, p and d functions, the real
+        harmonics against the complex ones rotated shell by shell."""
+        from mandacaru.basis._angular import real_harmonic_transform
+
+        shells = [0, 1, 2]
+        U = {l: real_harmonic_transform(l) for l in shells}
+        rng = np.random.default_rng(4)
+        for _ in range(12):
+            la, lb, lc, ld = rng.choice(shells, 4)
+            ma, mb, mc, md = (int(rng.integers(-l, l + 1))
+                              for l in (la, lb, lc, ld))
+            for L in range(0, 5):
+                real = angular_coupling(L, *(orbital(l, m) for l, m in
+                                             zip((la, lb, lc, ld),
+                                                 (ma, mb, mc, md))))
+                # (ab|cd) carries conj on a and c: S_a = sum U_am Y_m, so
+                # the complex couplings are summed with conj(U) on a, c.
+                total = 0.0 + 0.0j
+                for na in range(-la, la + 1):
+                    for nb in range(-lb, lb + 1):
+                        for nc in range(-lc, lc + 1):
+                            for nd in range(-ld, ld + 1):
+                                weight = (np.conj(U[la][ma + la, na + la])
+                                          * U[lb][mb + lb, nb + lb]
+                                          * np.conj(U[lc][mc + lc, nc + lc])
+                                          * U[ld][md + ld, nd + ld])
+                                if weight == 0:
+                                    continue
+                                total += weight * angular_coupling(
+                                    L, orbital(la, na, False),
+                                    orbital(lb, nb, False),
+                                    orbital(lc, nc, False),
+                                    orbital(ld, nd, False))
+                assert abs(real - total) < 1e-12
 
 
 class TestOnAPAWDataset:

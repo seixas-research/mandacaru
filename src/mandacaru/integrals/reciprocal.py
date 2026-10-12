@@ -479,7 +479,7 @@ def multipole_transform(G, center, radial, L: int, M: int) -> np.ndarray:
 
     _norm, theta, phi = spherical(G)
     return (4.0 * np.pi * (-1j) ** int(L)
-            * spherical_harmonic(int(L), int(M), theta, phi)
+            * spherical_harmonic(int(L), int(M), theta, phi, real=False)
             * radial * structure_factor(G, center))
 
 

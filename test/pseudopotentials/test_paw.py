@@ -720,6 +720,24 @@ class TestAtomic:
         assert pp.channels[2].reference_energies[0] == pytest.approx(
             pp.channels[0].reference_energies[1], abs=1e-6)
 
+    def test_a_second_reference_can_be_placed_per_channel(self):
+        """``second_reference={l: energy}`` moves one channel's scattering
+        reference to an absolute energy and leaves the others at the bound
+        state plus ``energy_offset``; one at or below the bound state is
+        refused (DEFAULT_SECOND_REFERENCES, the 4f of W-Hg)."""
+        atom = generated("O").atom
+        default = generate_paw("O", atom=atom, ghosts="keep")
+        moved = generate_paw("O", atom=atom, ghosts="keep",
+                             second_reference={1: 0.5})
+        assert moved.channels[1].reference_energies[1] == pytest.approx(0.5)
+        assert moved.channels[1].reference_energies[0] == pytest.approx(
+            default.channels[1].reference_energies[0])
+        assert np.allclose(moved.channels[0].reference_energies,
+                           default.channels[0].reference_energies)
+        with pytest.raises(ValueError, match="not above the bound state"):
+            generate_paw("O", atom=atom, ghosts="keep",
+                         second_reference={1: -2.0})
+
     def test_report_runs_generated_and_loaded(self):
         text = report_paw(generated("H"))
         assert "l=0x2" in text and "|dL|" in text and "E_1c" in text
@@ -782,6 +800,23 @@ class TestLibrary:
         # A file has no all-electron atom: its projected channels only.
         assert partial_waves.ghost_errors(get_paw(symbol), paw._paw_levels,
                                           with_atom=False) == {}
+
+    @pytest.mark.parametrize("symbol", ["Tc", "Ta", "W", "Re", "Os", "Ir",
+                                        "Pt", "Au", "Hg"])
+    def test_no_compact_channel_binds_an_excited_ghost(self, symbol):
+        """The 4f of W-Hg, the 4p of Tc and the semicore 5p of Ta bound a
+        second level 1 Ha above their state (W -0.15 ... Hg -2.5 Ha, Tc
+        -0.60, Ta -0.46) that the atom does not have: their second
+        reference sat below zero.  None of these atoms binds a second f or
+        p level below -EXCITED_GHOST_MARGIN, so a file-only check suffices
+        (DEFAULT_SECOND_REFERENCES)."""
+        from mandacaru.pseudopotentials.partial_waves import \
+            EXCITED_GHOST_MARGIN
+        pp = get_paw(symbol)
+        for l, channel in pp.channels.items():
+            if sum(1 for o in channel.occupations if o > 0.0) != 1:
+                continue
+            assert paw_spectrum(pp, l)[1] > -EXCITED_GHOST_MARGIN, l
 
     def test_lithium_smooth_waves_are_nodeless(self):
         """The PBE lithium shipped until 2026-09-27 had both 2s partial waves
@@ -1202,7 +1237,7 @@ class TestOverlap:
     def test_augmented_two_body_tensor(self):
         _H, _p, _n, _pr, context = _build("H2", "paw-lcao")
         ints = context["integrals"]
-        aug = ints.two_body_augmentation()
+        aug = ints.two_body_augmentation().dense()
         assert aug.shape == (2, 2, 2, 2) and np.abs(aug).max() > 1e-3
         # Hermitian pair densities: <pq|rs> = <rs|pq>^* and <pq|rs> = <qp|sr>.
         assert np.abs(aug - np.conj(aug.transpose(2, 3, 0, 1))).max() < 1e-12

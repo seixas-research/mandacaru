@@ -262,9 +262,9 @@ class TestAgainstRealRuns:
         # Direct-mode drivers estimate from the operator they hold.
         driver = Mandacaru(method="adapt-vqe", pool="fermionic",
                            load_hamiltonian=path, trace=False, profile=False)
-        assert driver.estimate_qubits().n_qubits == 4
+        assert driver.solver.estimate_qubits().n_qubits == 4
         vqe = Mandacaru(method="vqe", load_hamiltonian=path, trace=False)
-        assert vqe.estimate_qubits().num_particles == (1, 1)
+        assert vqe.solver.estimate_qubits().num_particles == (1, 1)
 
     def test_frozen_core_estimate_equals_the_active_space(self):
         lih = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7.0] * 3)

@@ -12,8 +12,9 @@ Four things are pinned here, each found by chasing an interaction energy that
 would not converge with the grid spacing:
 
 * the Loewdin transform of the two-electron tensor must keep the tensor's
-  physicists'-notation symmetries even when the overlap is complex (any
-  molecule with p or d functions off a symmetry plane);
+  physicists'-notation symmetries even when the overlap is complex (a basis
+  of complex harmonics, as a crystal's; a molecule's real harmonics make it
+  real);
 * the SCF must converge, and to the lowest of the stationary points it can
   reach (DIIS, level shift, two starting points);
 * the spectral kinetic operator must be exact for resolved functions and
@@ -47,12 +48,14 @@ from mandacaru.optimizers import Optimizer
 LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-12)
 
 
-def _water_integrals(h=0.30, orthogonalize=True, **kw):
+def _water_integrals(h=0.30, orthogonalize=True, real=True, **kw):
+    """Water in HAO; ``real=False`` builds it in complex harmonics, the
+    convention of a crystal, so the conjugation pattern is exercised."""
     water = molecule("H2O"); water.set_cell([8.0, 8.0, 8.0]); water.center()
     pos = coherent_positions(water); bset = BasisSet.build("HAO")
     fns, nuclei = [], []
     for Z, s, p in zip(water.get_atomic_numbers(), water.get_chemical_symbols(), pos):
-        fns += bset.atom(s, center=p); nuclei.append((float(Z), p))
+        fns += bset.atom(s, center=p, real=real); nuclei.append((float(Z), p))
     grid = Grid(center=water.cell.diagonal() / 2, box_size=0.0, h=h,
                 units="angstrom", cell=water.cell)
     return MolecularIntegrals(nuclei, fns, grid, softening=0.3,
@@ -70,20 +73,24 @@ def _symmetry_defects(t):
 # --------------------------------------------------------------------------- #
 
 class TestLoewdinTransform:
-    def test_water_overlap_is_complex(self):
-        mi = _water_integrals(orthogonalize=False)
+    def test_a_molecule_is_real_and_complex_harmonics_are_not(self):
+        real = _water_integrals(orthogonalize=False)
+        assert real.overlap().dtype == np.float64
+        assert real._lowdin_x().dtype == np.float64
+        mi = _water_integrals(orthogonalize=False, real=False)
         assert np.abs(mi.overlap().imag).max() > 1e-3
         assert np.abs(mi._lowdin_x().imag).max() > 1e-3
 
-    def test_transformed_tensor_keeps_its_symmetries(self):
-        mi = _water_integrals()
+    @pytest.mark.parametrize("real", [True, False])
+    def test_transformed_tensor_keeps_its_symmetries(self, real):
+        mi = _water_integrals(real=real)
         swap, herm = _symmetry_defects(mi.two_body())
         assert swap < 1e-10 and herm < 1e-10
 
     def test_wrong_conjugation_pattern_would_break_them(self):
         # The historical (X*, X, X*, X) pattern: documented so the regression
         # is recognizable if it ever comes back.
-        mi = _water_integrals(orthogonalize=False)
+        mi = _water_integrals(orthogonalize=False, real=False)
         X = mi._lowdin_x()
         wrong = np.einsum("ap,bq,cr,ds,abcd->pqrs", X.conj(), X, X.conj(), X,
                           mi.two_body(), optimize=True)
@@ -95,8 +102,8 @@ class TestLoewdinTransform:
         (non-orthogonal) AO matrices, with no transform in between.  Both
         latent bugs -- the transform's conjugation pattern and the Fock
         build's transposed density -- broke this for complex orbitals."""
-        raw = _water_integrals(orthogonalize=False)
-        orth = _water_integrals()
+        raw = _water_integrals(orthogonalize=False, real=False)
+        orth = _water_integrals(real=False)
         r = orth.hartree_fock(10)
         c = orth._lowdin_x() @ r.mo_coefficients[:, :5]        # AO coefficients
         S = raw.overlap()

@@ -15,6 +15,7 @@ from scipy import fft as sfft
 
 from mandacaru.integrals.poisson import (SPLIT_REACH, PoissonFFTSolver,
                                          short_range_coulomb_kernel)
+from mandacaru.integrals import poisson as poisson_mod
 
 H = 0.25
 N = 40
@@ -104,3 +105,97 @@ class TestKernels:
         assert kernel[1] == pytest.approx(np.pi / omega ** 2, rel=1e-9)
         expected = 4 * np.pi / g2[2:] * (1 - np.exp(-g2[2:] / (4 * omega ** 2)))
         np.testing.assert_allclose(kernel[2:], expected, rtol=1e-14)
+
+
+def _gap(shape, L):
+    """Mask of the padded mesh points with an offset in the gap on some axis
+    (``n <= m <= L - n``): no box-to-box convolution reads them."""
+    masks = []
+    for n, m in zip(shape, L):
+        index = np.arange(m)
+        masks.append((index >= n) & (index <= m - n))
+    return (masks[0][:, None, None] | masks[1][None, :, None]
+            | masks[2][None, None, :])
+
+
+class TestTheEvenKernel:
+    """The isolated kernel is filled symmetrically in the gap, which makes
+    its transform real; the box never sees the gap."""
+
+    SHAPE = (9, 11, 7)
+    STEP = np.diag([0.4, 0.35, 0.5])
+
+    def _densities(self, real=False):
+        rng = np.random.default_rng(11)
+        G = int(np.prod(self.SHAPE))
+        rho = rng.normal(size=(4, G))
+        return rho if real else rho + 1j * rng.normal(size=(4, G))
+
+    @pytest.mark.parametrize("omega", [0.0, 0.3])
+    def test_the_transform_is_real_on_an_orthogonal_grid(self, omega):
+        solver = PoissonFFTSolver(self.SHAPE, step=self.STEP, omega=omega)
+        assert solver.even and solver._Gk.dtype == np.float64
+
+    def test_gap_values_never_reach_the_box(self):
+        """Replace every gap value of the real-space kernel by noise: the
+        box potentials do not move (to round-off)."""
+        solver = PoissonFFTSolver(self.SHAPE, step=self.STEP)
+        kernel = np.fft.ifftn(solver._Gk)
+        noisy = kernel.copy()
+        gap = _gap(self.SHAPE, solver.L)
+        noisy[gap] = np.random.default_rng(3).normal(size=int(gap.sum()))
+        rho = self._densities()
+        reference = solver.solve_stack(rho)
+        nx, ny, nz = self.SHAPE
+        transform = np.fft.fftn(noisy)
+        for p, row in enumerate(rho):
+            pad = np.zeros(solver.L, dtype=complex)
+            pad[:nx, :ny, :nz] = row.reshape(self.SHAPE)
+            value = np.fft.ifftn(np.fft.fftn(pad) * transform)
+            box = value[:nx, :ny, :nz].reshape(-1) * solver.dV
+            assert np.abs(box - reference[p]).max() < 1e-12 * np.abs(
+                reference[p]).max()
+
+    def test_real_densities_take_the_real_route_to_the_same_potentials(self):
+        solver = PoissonFFTSolver(self.SHAPE, step=self.STEP)
+        rho = self._densities(real=True)
+        as_complex = solver.solve_stack(rho.astype(complex))
+        out = np.empty_like(rho)
+        assert solver.solve_stack(rho, out=out) is out
+        assert np.abs(out - as_complex.real).max() < 1e-13 * np.abs(
+            out).max()
+
+    def test_a_skewed_grid_keeps_its_complex_transform(self):
+        """On a skewed grid the spectral part's Nyquist planes are not
+        symmetric, so the kernel is not even and nothing is symmetrized."""
+        step = np.array([[0.4, 0.1, 0.0], [0.0, 0.38, 0.05],
+                         [0.02, 0.0, 0.41]])
+        solver = PoissonFFTSolver((8, 9, 10), step=step)
+        assert not solver.even and np.iscomplexobj(solver._Gk)
+        with pytest.raises(ValueError, match="even"):
+            solver.self_energies(np.ones((1, 720)))
+
+    def test_self_energies_by_parseval(self):
+        solver = PoissonFFTSolver(self.SHAPE, step=self.STEP)
+        rho = self._densities(real=True)
+        direct = np.sum(rho * solver.solve_stack(rho).real, axis=1) * solver.dV
+        np.testing.assert_allclose(solver.self_energies(rho), direct,
+                                   rtol=1e-12)
+
+    def test_out_must_be_a_contiguous_buffer_of_the_stack_shape(self):
+        solver = PoissonFFTSolver(self.SHAPE, step=self.STEP)
+        rho = self._densities()
+        with pytest.raises(ValueError, match="C-contiguous"):
+            solver.solve_stack(rho, out=np.empty((rho.shape[1], 4),
+                                                 complex).T)
+        with pytest.raises(ValueError, match="real out"):
+            solver.solve_stack(rho, out=np.empty(rho.shape))
+
+    def test_the_kernel_cache_is_bounded_in_bytes(self, monkeypatch):
+        monkeypatch.setattr(poisson_mod, "_KERNELS",
+                            type(poisson_mod._KERNELS)())
+        monkeypatch.setattr(poisson_mod, "KERNEL_CACHE_BYTES", 1)
+        first = PoissonFFTSolver(6, spacing=H)
+        PoissonFFTSolver(7, spacing=H)
+        assert len(poisson_mod._KERNELS) == 1
+        assert PoissonFFTSolver(6, spacing=H)._Gk is not first._Gk

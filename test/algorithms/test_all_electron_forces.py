@@ -43,7 +43,7 @@ def fixed_state_energy(atoms, basis, grid, h, algebra, **options):
     two = integrals._engine.two_body(energy_units="Ha")
     augmentation = integrals.two_body_augmentation()
     if augmentation is not None:
-        two = two + np.asarray(augmentation)
+        augmentation.add_to(two)
     return (algebra(integrals.overlap(), 0.5 * (one + one.conj().T), two)
             + integrals.nuclear_repulsion + integrals.constant_energy)
 

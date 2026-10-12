@@ -423,6 +423,17 @@ def qubit_excitation(modes_out, modes_in, n_modes: int,
 FermionTerm = tuple[tuple[int, bool], ...]
 
 
+
+def _one_body_terms(h: np.ndarray, tol: float) -> dict:
+    """``{((p, True), (q, False)): h_pq}`` over the entries above ``tol``,
+    in ``(p, q)`` lexicographic order."""
+    terms: dict = {}
+    for p, q in zip(*np.nonzero(np.abs(h) > tol)):
+        key = ((int(p), True), (int(q), False))
+        terms[key] = terms.get(key, 0j) + complex(h[p, q])
+    return terms
+
+
 class Fermion:
     """A linear combination of products of fermionic ladder operators.
 
@@ -526,22 +537,76 @@ class Fermion:
         """
         h_pq = np.asarray(h_pq)
         m = h_pq.shape[0]
-        terms: dict[FermionTerm, complex] = {}
-        # Only the entries above ``tol`` are visited: np.nonzero returns them
-        # in the same (p, q[, r, s]) lexicographic order the nested loops over
-        # every entry did, so the terms -- and every sum over them -- keep
-        # their order, but a 100-spin-orbital tensor (10^8 entries) no longer
-        # costs a Python iteration per entry.
-        for p, q in zip(*np.nonzero(np.abs(h_pq) > tol)):
-            key = ((int(p), True), (int(q), False))
-            terms[key] = terms.get(key, 0j) + complex(h_pq[p, q])
+        terms = _one_body_terms(h_pq, tol)
         if g_pqrs is not None:
             g = np.asarray(g_pqrs)
-            for p, q, r, s in zip(*np.nonzero(np.abs(g) > tol)):
-                key = ((int(p), True), (int(q), True), (int(s), False),
-                       (int(r), False))
-                terms[key] = terms.get(key, 0j) + 0.5 * complex(g[p, q, r, s])
+            # Only the entries above ``tol`` are visited, one slab g[p] at a
+            # time: np.nonzero returns them in the same (p, q, r, s)
+            # lexicographic order the nested loops over every entry did, so
+            # the terms -- and every sum over them -- keep their order, and
+            # the magnitude, mask and index arrays are the slab's size, not
+            # the tensor's.
+            for p in range(g.shape[0]):
+                slab = g[p]
+                q, r, s = np.nonzero(np.abs(slab) > tol)
+                for qq, rr, ss, value in zip(q.tolist(), r.tolist(),
+                                             s.tolist(), slab[q, r, s].tolist()):
+                    key = ((p, True), (qq, True), (ss, False), (rr, False))
+                    terms[key] = terms.get(key, 0j) + 0.5 * complex(value)
         return cls(terms, n_modes=m)
+
+    @classmethod
+    def from_spatial_integrals(cls, h: np.ndarray, eri: np.ndarray | None = None,
+                               h_spin: np.ndarray | None = None,
+                               tol: float = 1e-12) -> "Fermion":
+        r"""The spin-orbital Hamiltonian of spatial integrals ``(h, <pq|rs>)``.
+
+        Term by term and in the same order, the operator
+        ``from_integrals(*spin_block_integrals(h, eri, h_spin))`` returns
+        (:func:`~mandacaru.core.hamiltonian.spin_block_integrals`): spin-orbital
+        ``P = p + sigma M``, the one-body term diagonal in spin plus the
+        spin-orbital ``h_spin``, and :math:`\langle PQ|RS\rangle =
+        \langle pq|rs\rangle` when ``spin(P) == spin(R)`` and
+        ``spin(Q) == spin(S)``.  The ``(2M)^4`` spin-orbital tensor is never
+        formed: the nonzero entries of each spatial slab ``eri[p]`` are found
+        once and written out for the four spin blocks they populate.
+        """
+        h = np.asarray(h)
+        M = h.shape[0]
+        n = 2 * M
+        h_so = np.zeros((n, n), dtype=complex)
+        h_so[:M, :M] = h
+        h_so[M:, M:] = h
+        if h_spin is not None:
+            h_spin = np.asarray(h_spin)
+            if h_spin.shape != (n, n):
+                raise ValueError(
+                    f"h_spin must be ({n}, {n}) for {M} spatial orbitals, "
+                    f"got {h_spin.shape}")
+            h_so = h_so + h_spin
+        terms = _one_body_terms(h_so, tol)
+        if eri is not None:
+            eri = np.asarray(eri)
+            entries = []
+            for p in range(M):
+                slab = eri[p]
+                q, r, s = np.nonzero(np.abs(slab) > tol)
+                entries.append((q.tolist(), r.tolist(), s.tolist(),
+                                [0.5 * complex(v) for v in
+                                 slab[q, r, s].tolist()]))
+            for P in range(n):
+                # Row P of the spin-orbital tensor: electron 1 keeps P's spin
+                # (R in its block), electron 2 runs over both spins with
+                # Q and S in the same block -- alpha first, the C order.
+                sigma, p = divmod(P, M)
+                q, r, s, values = entries[p]
+                shift_r = sigma * M
+                for shift in (0, M):
+                    for qq, rr, ss, value in zip(q, r, s, values):
+                        key = ((P, True), (qq + shift, True),
+                               (ss + shift, False), (rr + shift_r, False))
+                        terms[key] = terms.get(key, 0j) + value
+        return cls(terms, n_modes=n)
 
     # -- mapping to qubits ------------------------------------------------- #
 

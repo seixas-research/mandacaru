@@ -63,10 +63,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy import fft
-
 from ..integrals import reciprocal as rc
 from ..integrals._backend import grid_blas_threads
+from ..integrals.fft import workspace
 from ..integrals.poisson import short_range_coulomb_kernel
 
 #: Occupations (electrons per state) below this carry no exchange.
@@ -315,7 +314,8 @@ class PeriodicExchange:
                                         c.G)).ravel()
         G = c.G
         nodes = self._nodes
-        workers = grid_blas_threads()
+        # The pair transforms run in place on the grid's FFT workspace.
+        space = workspace(shape, None, grid_blas_threads())
         blocks = [(np.asarray(c.projector_columns(ch[0])), blk)
                   for ch, blk in c.multipole_blocks.items()]
         out = []
@@ -344,9 +344,9 @@ class PeriodicExchange:
                     # pair through the FFT, the compensation charges by
                     # their moments times the shapes' transforms.
                     pairs = (part.conj()[:, None, :] * psi[None, :, :]
-                             * phase).reshape(n, M, *shape)
-                    T = (fft.fftn(pairs, axes=(2, 3, 4), workers=workers)
-                         .reshape(n, M, -1) * (origin * dV))
+                             * phase).reshape(n * M, *shape)
+                    T = (space.forward(pairs).reshape(n, M, -1)
+                         * (origin * dV))
                     moments = np.stack([
                         proj[start:start + block][:, own] @ blk
                         @ C_k[:, own].conj().T for own, blk in blocks]) \
@@ -406,7 +406,7 @@ class PeriodicExchange:
         shape, dV = grid.shape, grid.dV
         origin = np.exp(-1j * np.einsum("c,cxyz->xyz", rc.grid_origin(grid),
                                         c.G)).ravel()
-        workers = grid_blas_threads()
+        space = workspace(shape, None, grid_blas_threads())
         channel_atom = np.array([ch[0] for ch in c.channels])
         blocks = [(np.asarray(c.projector_columns(ch[0])), blk)
                   for ch, blk in c.multipole_blocks.items()]
@@ -435,9 +435,9 @@ class PeriodicExchange:
                 n = len(part)
                 wf = w * f[start:start + block]
                 pairs = (part.conj()[:, None, :] * psi[None, :, :]
-                         * phase).reshape(n, M, *shape)
-                T = (fft.fftn(pairs, axes=(2, 3, 4), workers=workers)
-                     .reshape(n, M, -1) * (origin * dV))
+                         * phase).reshape(n * M, *shape)
+                T = (space.forward(pairs).reshape(n, M, -1)
+                     * (origin * dV))
                 left = proj[start:start + block]
                 moments = np.stack([left[:, own] @ blk @ C_k[:, own].conj().T
                                     for own, blk in blocks])

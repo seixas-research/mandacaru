@@ -115,6 +115,23 @@ class TestMolecularHamiltonian:
                           atol=1e-7)
 
 
+    def test_it_is_the_spin_blocked_tensor_term_by_term(self, h2_integrals):
+        # Built from the spatial integrals (Fermion.from_spatial_integrals),
+        # never from the (2M)^4 spin-orbital tensor -- and the same operator,
+        # term for term and in the same order, as the one that tensor gave.
+        from mandacaru.core.hamiltonian import (molecular_orbital_integrals,
+                                                spin_block_integrals)
+        from mandacaru.core.mapping import Fermion
+
+        H = h2_integrals.molecular_hamiltonian(mo_basis=True, n_electrons=2)
+        h_mo, eri_mo, _ = molecular_orbital_integrals(h2_integrals, 2)
+        constant = (h2_integrals.nuclear_repulsion
+                    + h2_integrals.constant_energy)
+        reference = (Fermion.from_integrals(*spin_block_integrals(h_mo, eri_mo))
+                     + Fermion({(): complex(constant)}, n_modes=4))
+        assert list(H.terms.items()) == list(reference.terms.items())
+
+
 def _herm(m):
     return 0.5 * (m + m.conj().T)
 
@@ -159,3 +176,157 @@ class TestShortRangeTwoBody:
     def test_negative_omega_is_refused(self, h2_integrals):
         with pytest.raises(ValueError, match="omega"):
             h2_integrals.short_range_two_body(-0.1)
+
+
+def _molecule_integrals(name, basis, h=0.35, vacuum=2.5):
+    """Fresh integrals (nothing built yet) and the electron count."""
+    import warnings
+
+    from ase.build import molecule
+
+    from mandacaru.algorithms._hamiltonian_from_atoms import \
+        build_basis_hamiltonian
+
+    atoms = molecule(name)
+    atoms.center(vacuum=vacuum)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        context = build_basis_hamiltonian(atoms, basis, None, h, 0, None,
+                                          hamiltonian=False)[4]
+    return context["integrals"], context["n_electrons"]
+
+
+def _both_routes(name, basis, active_space, **options):
+    """``[(H, active space, integrals), ...]`` for the tensor and the
+    integral-direct route."""
+    built = []
+    for direct in (False, True):
+        integrals, n_electrons = _molecule_integrals(name, basis, **options)
+        H = integrals.molecular_hamiltonian(
+            mo_basis=True, n_electrons=n_electrons,
+            active_space=active_space, direct=direct)
+        built.append((H, integrals.active_space, integrals))
+    return built
+
+
+class TestEarlyActiveSpace:
+    """An active space built integral-direct: the same Hamiltonian as the
+    tensor route, without the ``M^4`` tensor."""
+
+    @pytest.mark.parametrize("name, basis, spec", [
+        ("H2O", {"name": "PAW-LCAO", "size": "SZ"},
+         {"frozen": 1, "orbitals": 4}),
+        ("LiH", {"name": "PAW-LCAO", "size": "DZ"}, {"orbitals": 3}),
+        # Closed-shell MP2 from the <ij|ab> block alone.
+        ("LiH", {"name": "PAW-LCAO", "size": "DZ"},
+         {"orbitals": 3, "method": "mp2"}),
+    ])
+    def test_the_active_hamiltonian_is_the_tensor_route(self, name, basis,
+                                                         spec, monkeypatch):
+        # The two Fock builds agree to 4e-15 at a common density, but near
+        # convergence DIIS solves an ill-conditioned system that amplifies
+        # that round-off, so at the default SCF tolerance (1e-9) the two
+        # SCFs can take different last steps and stop 3.8e-10 apart in the
+        # density (water).  Both are converged to 1e-12 here, so what is
+        # compared is the routes, not where each SCF stopped.
+        from mandacaru.algorithms.hartree_fock import RHF
+
+        run = RHF.run
+        monkeypatch.setattr(RHF, "run", lambda self, **kw: run(
+            self, **{**kw, "tol": 1e-12}))
+        (_tensor, tensor_space, dense), (_direct, direct_space, grid) = \
+            _both_routes(name, basis, spec)
+        self._check(dense, tensor_space, grid, direct_space, 1e-10)
+
+    @pytest.mark.parametrize("method", ["energy", "natural"])
+    def test_an_open_shell_builds_direct_on_request(self, method):
+        # The direct UHF's natural orbitals.  UHF's soft modes leave the
+        # coefficients apart by the SCF tolerance, not round-off; the
+        # active energies agree to round-off.
+        from mandacaru.core.sector import ParticleSector
+
+        built = _both_routes("OH", {"name": "PAW-LCAO", "size": "SZ"},
+                             {"orbitals": 4, "method": method})
+        (_t, tensor_space, dense), (_d, direct_space, grid) = built
+        self._check(dense, tensor_space, grid, direct_space, 1e-7)
+        energies = []
+        for H, _space, _integrals in built:
+            P = H.map_to_qubits("jordan_wigner")
+            sector = ParticleSector(P.num_qubits, (4, 3))
+            energies.append(np.linalg.eigvalsh(
+                sector.restrict(P).toarray()).min())
+        assert abs(energies[0] - energies[1]) < 1e-10
+
+    @staticmethod
+    def _check(dense, tensor_space, grid, direct_space, tolerance):
+        assert not dense.integral_direct and grid.integral_direct
+        assert grid._eri is None and grid._eri_ao is None
+        assert direct_space.active == tensor_space.active
+        assert direct_space.frozen == tensor_space.frozen
+        # The same active space, each orbital up to the phase its
+        # eigensolver chose, and a degenerate set (OH's pi pair) up to a
+        # rotation inside it: the two SCFs differ by round-off, which is
+        # what decides those.  Bring the direct integrals to the tensor
+        # route's orbitals, C_direct = C_tensor U.
+        active = list(tensor_space.active)
+        U = (np.asarray(dense.mo_coefficients)[:, active].conj().T
+             @ np.asarray(grid.mo_coefficients)[:, active])
+        assert np.abs(U.conj().T @ U - np.eye(len(active))).max() < 1e-8
+        h = U @ grid.active_one_body @ U.conj().T
+        g = np.einsum("pa,qb,rc,sd,abcd->pqrs", U, U, U.conj(), U.conj(),
+                      grid.active_two_body, optimize=True)
+        assert np.abs(h - dense.active_one_body).max() < tolerance
+        assert np.abs(g - dense.active_two_body).max() < tolerance
+        assert abs(grid.active_constant - dense.active_constant) < tolerance
+
+    def test_no_four_index_tensor_at_a_fixed_active_space(self):
+        import tracemalloc
+
+        # Ethane in DZP on a coarse grid: M = 56, so one complex M^4 tensor
+        # is 157 MB while the sampled basis is 2 MB.
+        integrals, n_electrons = _molecule_integrals(
+            "C2H6", {"name": "PAW-LCAO", "size": "DZP"}, h=0.45, vacuum=2.0)
+        integrals.one_body()                       # samples the basis
+        M = integrals.n_orbitals
+        tracemalloc.start()
+        try:
+            H = integrals.molecular_hamiltonian(
+                mo_basis=True, n_electrons=n_electrons,
+                active_space={"orbitals": {"occupied": 2, "virtual": 2}},
+                direct=True)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert H.n_modes() == 8 and integrals.integral_direct
+        # The SCF's own working set (DIIS, the exchange's pair blocks, the
+        # projections) is a few tens of MB; no M^4 array is in it.
+        assert peak < 16 * M ** 4 / 2
+
+    def test_the_default_route_follows_the_memory_limit(self, monkeypatch):
+        from mandacaru.algorithms.active_space import resolve_active_space_spec
+        from mandacaru.core import hamiltonian, matrix_free
+
+        integrals, n_electrons = _molecule_integrals("LiH", "HAO")
+        monkeypatch.setattr(matrix_free, "memory_limit_bytes",
+                            lambda: 2 ** 40)
+        spec = {"orbitals": 3}
+        integrals.molecular_hamiltonian(mo_basis=True,
+                                        n_electrons=n_electrons,
+                                        active_space=spec)
+        assert not integrals.integral_direct
+        # A machine too small for the tensor route's three M^4 arrays.
+        monkeypatch.setattr(
+            matrix_free, "memory_limit_bytes",
+            lambda: hamiltonian.dense_route_bytes(integrals.n_orbitals))
+        integrals.molecular_hamiltonian(mo_basis=True,
+                                        n_electrons=n_electrons,
+                                        active_space=spec)
+        assert integrals.integral_direct
+        # An open shell keeps the tensor route (its coefficients would agree
+        # only to the UHF tolerance).
+        assert not integrals._integral_direct_route(
+            resolve_active_space_spec(spec), [], n_electrons, (3, 1), None)
+        # Without an active space nothing is cut, so the tensor is built.
+        integrals.molecular_hamiltonian(mo_basis=True,
+                                        n_electrons=n_electrons)
+        assert not integrals.integral_direct

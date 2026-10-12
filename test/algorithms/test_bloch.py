@@ -157,7 +157,7 @@ class TestConstructorRefusesBadOptions:
     def test_a_mesh_that_already_contains_gamma_is_accepted(self, mesh):
         """An odd Monkhorst-Pack mesh is Gamma-centered on its own."""
         assert Mandacaru(method="bloch-vqe", kpts=mesh,
-                         basis="HAO").kpts == mesh
+                         basis="HAO").solver.kpts == mesh
 
     def test_a_malformed_kpts_is_refused(self):
         with pytest.raises(ValueError):
@@ -198,7 +198,7 @@ class TestMolecularKPointsAreUnchanged:
 
     def test_a_bare_triple_is_still_accepted(self):
         """The Gamma-centering rule is the periodic methods' own."""
-        assert Mandacaru(method="vqe", kpts=(2, 2, 1), basis="HAO").kpts == (2, 2, 1)
+        assert Mandacaru(method="vqe", kpts=(2, 2, 1), basis="HAO").solver.kpts == (2, 2, 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -441,7 +441,7 @@ class TestTwoDimensional:
                                basis="HAO", h=0.40, trace=False,
                                optimizer=SLSQP)
         assert atoms.calc.dimension == 2
-        assert atoms.calc.n_supercells == 4
+        assert atoms.calc.solver.n_supercells == 4
         atoms.get_potential_energy()
         # Four commensurate k-points, one orbital per primitive cell.
         assert atoms.calc.bands().shape == (4, 1)
@@ -646,7 +646,7 @@ class TestBandPathsNeedNoRun:
     def test_the_wedge_does_not_shrink_the_register(self):
         """The saving is in A(E, k); the supercell is fixed by the full mesh."""
         calc = square_lattice().calc
-        assert calc.n_supercells == 4
+        assert calc.solver.n_supercells == 4
         assert len(calc.irreducible_zone().points) == 3
         assert calc.dry_run(square_lattice()).n_qubits == 8
 

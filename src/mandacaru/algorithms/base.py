@@ -45,7 +45,7 @@ from ..backends.hardware import (device_arn, device_provider, is_aws_device,
 from ..backends.providers import build_provider, normalize_provider
 from ..core.mapping import Fermion, PauliSum
 from ..core.matrix_free import (MATRIX_FREE, STORED_MEMORY_FRACTION,
-                                PauliOperator, physical_memory_bytes,
+                                PauliOperator, memory_limit_bytes,
                                 refuse_unaffordable_state,
                                 stored_operator_bytes)
 from ..core.serialization import (DEFAULT_FORMAT, EXTENSION_FORMATS,
@@ -315,7 +315,7 @@ class VariationalDriver(Calculator):
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
                  kinetic: str | None = None, ghosts=None,
-                 electric_field=None,
+                 electric_field=None, two_body=None,
                  atomic_units: bool = False,
                  checkpoint: str | None = None, checkpoint_every: int = 1,
                  resume: str | None = None, references="auto",
@@ -404,6 +404,15 @@ class VariationalDriver(Calculator):
             raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
                              "'fd', 'spectral' or None")
         self.kinetic = kinetic
+        # The two-body representation: the dense tensor or Cholesky factors
+        # (`two_body={"method": "cholesky", "tolerance": ...}`), validated now.
+        from ..integrals.cholesky import resolve_two_body
+        self.two_body = resolve_two_body(two_body)
+        if self.two_body.cholesky and self.periodic_hamiltonian:
+            raise NotImplementedError(
+                "the Cholesky two-body integrals are molecular only in this "
+                "version: a crystal's pair densities carry Bloch phases and "
+                "a periodic kernel.  Use two_body='dense' (the default)")
         self.initial_state = resolve_initial_state(initial_state)
         # Monkhorst-Pack mesh (ASE); the engine is Gamma-point (molecular), so a
         # denser mesh is stored on ``kpoints`` but rejected at run time.
@@ -625,7 +634,8 @@ class VariationalDriver(Calculator):
         state per flip group (:func:`stored_operator_bytes`), which the real
         matrix never exceeds -- summed over the Hamiltonian and ``operators``
         (the pool) has to stay under :data:`STORED_MEMORY_FRACTION` of the
-        physical memory.  Below that the stored matrices are kept, since they
+        memory limit (:func:`~mandacaru.core.matrix_free.memory_limit_bytes`:
+        the installed memory, or the cgroup's limit).  Below that the stored matrices are kept, since they
         are several times faster to apply.
         """
         spec = self.sparse
@@ -636,7 +646,7 @@ class VariationalDriver(Calculator):
         bound = stored_operator_bytes(qubit_h, dim) + sum(
             stored_operator_bytes(getattr(op, "generator", op), dim)
             for op in operators)
-        return bound > STORED_MEMORY_FRACTION * physical_memory_bytes()
+        return bound > STORED_MEMORY_FRACTION * memory_limit_bytes()
 
     #: Whether this driver can run a Hamiltonian that breaks S_z (spin-orbit
     #: coupling).  Only ADAPT-VQE can, with the ``"spin-orbit"`` pool.
@@ -1116,6 +1126,7 @@ class VariationalDriver(Calculator):
                     self.active_space.method
                     if self.active_space is not None
                     and self.active_space.truncates else None),
+                "two_body": self.two_body.method,
                 "extras": tuple(sorted(self._citation_extras))}
 
     def citation_keys(self) -> list:
@@ -1743,7 +1754,8 @@ class VariationalDriver(Calculator):
             periodic=self.periodic_hamiltonian,
             commensurate=self._grid_commensurate(),
             active_space=self._active_space_request(), ghosts=self.ghosts,
-            electric_field=self.electric_field)
+            electric_field=self.electric_field,
+            two_body=self.two_body if self.two_body.cholesky else None)
         self._integration_profile = profile
         # Kept for the nuclear gradient: the integral engine that produced this
         # Hamiltonian, and which atom each basis function belongs to.
@@ -2105,6 +2117,14 @@ class VariationalDriver(Calculator):
         fields["spatial_orbitals"] = (
             f"{space.n_orbitals} ({len(space.frozen)} frozen, "
             f"{space.n_active} active, {len(space.deleted)} deleted)")
+        # How the two-body integrals were reached: this block owns the
+        # route, since only an active space can take the direct one.
+        integrals = (getattr(self, "_gradient_context", None) or {}).get(
+            "integrals")
+        fields["two_body_integrals"] = (
+            "integral-direct (active orbitals only, no four-index tensor)"
+            if getattr(integrals, "integral_direct", False)
+            else "four-index tensor, transformed to the active orbitals")
         if space.point_group is not None:
             fields["point_group"] = space.point_group
         if space.correlation_energy is not None:
@@ -2182,7 +2202,8 @@ def measure_energies(drivers, provider) -> list[float]:
     driver's output units (eV by default; Hartree for ``atomic_units=True``),
     while the provider measures the Hartree qubit Hamiltonian.
     """
-    drivers = list(drivers)
+    # A Mandacaru calculator is measured through its solver.
+    drivers = [getattr(d, "solver", d) for d in drivers]
     problems = [d.ansatz_problem() for d in drivers]
     if hasattr(provider, "energies"):
         energies = provider.energies(problems)
@@ -2192,9 +2213,6 @@ def measure_energies(drivers, provider) -> list[float]:
 
 
 def _driver_units(driver):
-    """The Hartree -> output-unit converter of a driver or ``Mandacaru`` wrapper."""
+    """The Hartree -> output-unit converter of a driver."""
     convert = getattr(driver, "_to_energy_units", None)
-    if convert is None:                       # a Mandacaru wrapper: ask the solver
-        convert = getattr(getattr(driver, "solver", None), "_to_energy_units",
-                          None)
     return convert if convert is not None else (lambda e: from_hartree(e, "eV"))

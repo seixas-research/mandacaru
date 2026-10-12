@@ -153,7 +153,7 @@ def target_vectors(crystal, trials) -> np.ndarray:
             shell = shell_functions(crystal, int(trial.atom), int(l))
             values = real_harmonic(l, m, *local)
             for m_basis, mu in shell.items():
-                Y = spherical_harmonic(l, m_basis, theta, phi)
+                Y = spherical_harmonic(l, m_basis, theta, phi, real=False)
                 T[mu, j] += c * np.sum(weights * np.conj(Y) * values)
     norms = np.linalg.norm(T, axis=0)
     if np.any(norms < 1e-8):

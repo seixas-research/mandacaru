@@ -23,7 +23,7 @@ from mandacaru.backends import (available_devices, is_simulator,
 class TestDeviceRegistry:
     def test_aer_is_default_and_simulator(self):
         adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO")
-        assert adapt.device == "AER_simulator"
+        assert adapt.solver.device == "AER_simulator"
         assert is_simulator("AER_simulator")
 
     def test_aliases_normalize(self):

@@ -165,3 +165,83 @@ class TestOutputCollisions:
         calc.run(initial_parameters=ANGLES)
         assert load_hamiltonian(str(tmp_path / "h.json")).num_qubits == 4
         assert WavefunctionCheckpoint.load(str(tmp_path / "state.json"))
+
+
+class TestCholeskyTwoBody:
+    """``two_body={"method": "cholesky", ...}``: the same energies as the
+    dense tensor, without it; and the cases that need the tensor refused."""
+
+    @staticmethod
+    def _water():
+        from ase.build import molecule
+
+        atoms = molecule("H2O")
+        atoms.center(vacuum=3.0)
+        return atoms
+
+    def test_energies_match_the_dense_tensor(self):
+        """RHF, then ADAPT-VQE in a 4-orbital active space, PAW-LCAO water:
+        a tight tolerance gives the dense energies to 1e-7 Ha, and the
+        factored run never forms the tensor."""
+        from mandacaru.units import to_hartree
+
+        basis = {"name": "PAW-LCAO", "size": "SZP"}
+        energies = {}
+        for two_body in ("dense", {"method": "cholesky", "tolerance": 1e-9}):
+            key = "dense" if two_body == "dense" else "cholesky"
+            atoms = self._water()
+            atoms.calc = Mandacaru(method="rhf", basis=basis, h=0.35,
+                                   trace=False, two_body=two_body)
+            rhf = to_hartree(atoms.get_potential_energy(), "eV")
+            integrals = atoms.calc.solver._gradient_context["integrals"]
+            assert (integrals._eri_ao is None) == (key == "cholesky")
+            atoms = self._water()
+            atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, h=0.35,
+                                   trace=False, two_body=two_body,
+                                   active_space={"orbitals": 4},
+                                   pool="fermionic",
+                                   optimizer={"method": "SLSQP",
+                                              "maxiter": 500, "tol": 1e-10})
+            adapt = to_hartree(atoms.get_potential_energy(), "eV")
+            energies[key] = (rhf, adapt)
+        assert energies["cholesky"][0] == pytest.approx(energies["dense"][0],
+                                                        abs=1e-7)
+        assert energies["cholesky"][1] == pytest.approx(energies["dense"][1],
+                                                        abs=1e-7)
+
+    def test_the_option_is_validated(self):
+        with pytest.raises(ValueError, match="unknown two_body method"):
+            Mandacaru(method="rhf", two_body="cd", trace=False)
+        with pytest.raises(ValueError, match="positive"):
+            Mandacaru(method="rhf", trace=False,
+                      two_body={"method": "cholesky", "tolerance": -1.0})
+        with pytest.raises(ValueError, match="no tolerance"):
+            Mandacaru(method="rhf", trace=False,
+                      two_body={"method": "dense", "tolerance": 1e-6})
+
+    @pytest.mark.parametrize("method", ["dft", "ghf"])
+    def test_methods_that_need_the_tensor_are_refused(self, method):
+        with pytest.raises(NotImplementedError, match="dense"):
+            Mandacaru(method=method, trace=False, two_body="cholesky")
+
+    def test_forces_are_refused(self):
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
+                      cell=[6] * 3)
+        atoms.calc = Mandacaru(method="adapt-vqe", h=0.35, trace=False,
+                               two_body="cholesky")
+        with pytest.raises(NotImplementedError, match="forces"):
+            atoms.get_forces()
+
+    def test_a_crystal_is_refused(self):
+        from mandacaru.algorithms.bloch import BLOCH_METHODS
+
+        with pytest.raises(NotImplementedError, match="dense"):
+            Mandacaru(method=BLOCH_METHODS[0], trace=False,
+                      two_body="cholesky")
+
+    def test_the_run_cites_the_factorization(self):
+        calc = Mandacaru(method="rhf", trace=False, two_body="cholesky")
+        assert {"BeebeLinderberg1977", "Koch2003",
+                "Folkestad2019"} <= set(calc.solver.citation_keys())
+        dense = Mandacaru(method="rhf", trace=False)
+        assert "Koch2003" not in dense.solver.citation_keys()

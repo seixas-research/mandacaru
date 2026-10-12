@@ -50,7 +50,8 @@ How each piece is obtained
   stacked ``[phi; dphi]`` basis, so the finite-difference Laplacian matches the
   one the energy used.  The two-body derivative never builds a
   :math:`\partial g` tensor: it is contracted on the fly against the Coulomb
-  potentials of the pair densities (see :func:`_two_body_pulay`).
+  potentials of the pair densities, streamed a block at a time (see
+  :func:`_two_body_pulay`).
 * **Algebraic response.** :math:`\partial E/\partial S`, :math:`\partial E/\partial h`
   and :math:`\partial E/\partial g` come from automatic differentiation of the
   Löwdin / SCF / transform stack -- see :mod:`mandacaru.algorithms._jax_energy` for
@@ -146,7 +147,9 @@ def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None):
 
     Returns a ``(3, M, ngrid)`` array; row ``k`` is the derivative with respect to
     Cartesian direction ``k``.  Rows for orbitals *not* centered on ``atom`` are
-    zero, since only that atom's functions move.
+    zero, since only that atom's functions move.  ``atom=None`` moves every
+    function with its own center: each row is the one its atom's array
+    carries (:func:`atom_rows` takes an atom's array back out of it).
 
     Because :math:`\phi_\mu(\mathbf r) = f(\mathbf r - \mathbf R_A)`, displacing
     the center by :math:`+\delta` equals evaluating the unchanged function at
@@ -161,12 +164,19 @@ def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None):
         shift = [np.zeros_like(X), np.zeros_like(Y), np.zeros_like(Z)]
         shift[k] = np.full_like(X, delta)
         for mu, fn in enumerate(basis):
-            if atom_of_orbital[mu] != atom:
+            if atom is not None and atom_of_orbital[mu] != atom:
                 continue
             plus = fn.evaluate(X - shift[0], Y - shift[1], Z - shift[2])
             minus = fn.evaluate(X + shift[0], Y + shift[1], Z + shift[2])
             out[k, mu] = ((plus - minus) / (2.0 * delta)).ravel()
     return out
+
+
+def atom_rows(derivatives, atom_of_orbital, atom):
+    """``orbital_derivatives(..., atom)`` from the every-function array
+    (``atom=None``): the rows of ``atom``'s functions, zeros elsewhere."""
+    own = np.asarray(atom_of_orbital) == atom
+    return np.where(own[None, :, None], derivatives, 0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -559,37 +569,139 @@ def _one_body_pulay(engine, psi_grid, dpsi, vext, grid, de_dh, de_ds,
     return (float(np.sum(de_dh * dh)), float(np.sum(de_ds * ds)))
 
 
-def _pair_potentials(psi_grid, grid):
-    """Coulomb potentials ``Phi_ij`` of every pair density ``conj(phi_i) phi_j``."""
+def _pair_block_size(n_orbitals: int, ngrid: int, n_pairs: int,
+                     max_memory_mb: float | None = None) -> int:
+    """Pairs per block so the block's working set stays in the two-body
+    budget (:func:`~mandacaru.integrals.engine.eri_memory_budget_mb`): per
+    pair its density and potential plus the two ``(M, G)`` products
+    :func:`pair_derivative_integrals` forms, complex.  At most ``M`` pairs,
+    so a small system's block (``2 M^2 G`` products) is never larger than
+    the pair-potential stack it replaces."""
+    from ..integrals.engine import eri_memory_budget_mb
+
+    budget = (eri_memory_budget_mb() if max_memory_mb is None
+              else float(max_memory_mb)) * 2 ** 20
+    per_pair = 16.0 * ngrid * (2 + 2 * n_orbitals)
+    return int(max(1, min(n_pairs, n_orbitals, budget // per_pair)))
+
+
+def pair_potential_blocks(psi_grid, grid, solver=None,
+                          max_memory_mb: float | None = None):
+    r"""Coulomb potentials :math:`\Phi_{cd}` of the ordered pair densities
+    :math:`\phi_c^*\phi_d`, a block of pairs at a time.
+
+    Yields ``(start, stop, phi)``: ``phi[j - start]`` is the potential of
+    pair ``j = c M + d`` (the C order of an ``(M, M)`` array).  The density
+    and potential buffers are allocated once and reused -- ``phi`` is
+    overwritten by the next block, so a consumer contracts it first -- and
+    the block size follows the two-body memory budget, so the ``M^2 G``
+    stack of all pair potentials never exists.  ``solver`` defaults to the
+    isolated :class:`~mandacaru.integrals.poisson.PoissonFFTSolver` of
+    ``grid``; it solves on its shared FFT workspace into ``phi``
+    (``solve_stack(rho, out=...)``).
+    """
     M, ngrid = psi_grid.shape
-    pairs = (np.conj(psi_grid)[:, None, :]
-             * psi_grid[None, :, :]).reshape(M * M, ngrid)
-    solver = PoissonFFTSolver(grid.shape, step=grid.step)
-    return solver.solve_stack(pairs).reshape(M, M, ngrid)
+    if solver is None:
+        solver = PoissonFFTSolver(grid.shape, step=grid.step)
+    n_pairs = M * M
+    size = _pair_block_size(M, ngrid, n_pairs, max_memory_mb)
+    rho = np.empty((size, ngrid), dtype=complex)
+    phi = np.empty((size, ngrid), dtype=complex)
+    conj = np.conj(psi_grid)
+    for start in range(0, n_pairs, size):
+        stop = min(start + size, n_pairs)
+        n = stop - start
+        c, d = np.divmod(np.arange(start, stop), M)
+        np.multiply(conj[c], psi_grid[d], out=rho[:n])
+        solver.solve_stack(rho[:n], out=phi[:n])
+        yield start, stop, phi[:n]
 
 
-def _two_body_pulay(psi_grid, dpsi, phi_pairs, grid, de_dg):
-    r"""``<dE/dg, dg/dR>`` without ever forming ``dg``.
+def pair_derivative_integrals(psi_grid, derivatives, phi):
+    r"""``(T1, T2)``: one block of pair potentials against the orbital
+    derivatives, ``(3, M, M, n)`` each.
+
+    :math:`T_1[k, a, b, j] = \sum_g \partial_k\phi_a^*\,\phi_b\,\Phi_j`
+    and :math:`T_2[k, a, b, j] = \sum_g \phi_a^*\,\partial_k\phi_b\,
+    \Phi_j` (no volume element), with ``derivatives`` the every-function
+    array of :func:`orbital_derivatives`.  The derivative of a pair density
+    :math:`\rho_{ab}` contracted with :math:`\Phi_j` is ``T1`` on the rows
+    of the moving atom plus ``T2`` on its columns.  Two ``(n M, G)``
+    products are the only temporaries.
+    """
+    M, ngrid = psi_grid.shape
+    n = phi.shape[0]
+    right = (phi[:, None, :] * psi_grid[None, :, :]).reshape(n * M, ngrid)
+    left = (phi[:, None, :] * np.conj(psi_grid)[None, :, :]).reshape(n * M,
+                                                                     ngrid)
+    T1 = np.empty((3, M, M, n), dtype=complex)
+    T2 = np.empty((3, M, M, n), dtype=complex)
+    for k in range(3):
+        T1[k] = (np.conj(derivatives[k]) @ right.T).reshape(M, n, M
+                                                            ).transpose(0, 2, 1)
+        T2[k] = (left @ derivatives[k].T).reshape(n, M, M).transpose(1, 2, 0)
+    return T1, T2
+
+
+def pair_derivative_tensors(psi_grid, derivatives, grid, solver=None):
+    r"""``(T1, T2)`` of :func:`pair_derivative_integrals` over every pair,
+    ``(3, M, M, M^2)`` each, times the volume element.
+
+    What a caller needs when it forms each atom's two-body derivative
+    tensor itself (the PAW-LCAO gradient,
+    :func:`~mandacaru.algorithms.pseudo_forces.pseudo_nuclear_gradient`):
+    :math:`\int\partial\rho_{ab}\Phi_{cd}` for a move of atom ``A`` is
+    ``T1[k, a, b, cd]`` on ``a``'s in ``A`` plus ``T2[k, a, b, cd]`` on
+    ``b``'s in ``A``.  ``6 M^4`` complex numbers, filled from streamed blocks
+    of pair potentials, in place of the ``M^2 G`` potential stack.
+    """
+    M = psi_grid.shape[0]
+    T1 = np.empty((3, M, M, M * M), dtype=complex)
+    T2 = np.empty((3, M, M, M * M), dtype=complex)
+    for start, stop, phi in pair_potential_blocks(psi_grid, grid, solver):
+        block1, block2 = pair_derivative_integrals(psi_grid, derivatives, phi)
+        T1[..., start:stop] = block1
+        T2[..., start:stop] = block2
+    T1 *= grid.dV
+    T2 *= grid.dV
+    return T1, T2
+
+
+def _two_body_pulay(psi_grid, derivatives, grid, de_dg, atom_of_orbital,
+                    n_atoms, solver=None):
+    r"""``<dE/dg, dg/dR>`` of every atom and direction, without ``dg``.
 
     With ``g[m,n,l,s] = <mn|ls> = int rho_ml(1) Phi_ns(1)``, the derivative has
-    four terms; two act on electron 1 and two on electron 2.  Using the symmetry
-    of the Coulomb kernel, both reduce to contracting a *derivative pair density*
-    against a potential that is already available:
+    four terms; two act on electron 1 and two on electron 2.  Using the
+    symmetry of the Coulomb kernel, both reduce to contracting a *derivative
+    pair density* against a potential that is already available:
+    :math:`\sum_{ab} \int \partial\rho_{ab} \sum_{cd} K_{ab,cd}\Phi_{cd}`
+    with :math:`K_{ab,cd} = \partial E/\partial g_{acbd} + \partial
+    E/\partial g_{cadb}`.
 
-    ``A_ml(r) = sum_ns dE/dg[m,n,l,s] Phi_ns(r)``  (electron 1) and
-    ``B_ns(r) = sum_ml dE/dg[m,n,l,s] Phi_ml(r)``  (electron 2).
-
-    Cost is one ``M^4 x ngrid`` contraction and no extra Poisson solves.
+    The pair potentials are streamed (:func:`pair_potential_blocks`) and
+    each block is contracted into every atom's gradient at once
+    (:func:`pair_derivative_integrals`): one pass of ``M^2`` Poisson solves
+    for the whole gradient, and no ``M^2 G`` array.  Returns ``(n_atoms,
+    3)``.
     """
-    # Derivative of the pair density: d(conj(phi_m) phi_l).
-    drho = (dpsi.conj()[:, None, :] * psi_grid[None, :, :]
-            + psi_grid.conj()[:, None, :] * dpsi[None, :, :])       # (M, M, g)
-
-    A = np.einsum("mnls,nsg->mlg", de_dg, phi_pairs, optimize=True)
-    B = np.einsum("mnls,mlg->nsg", de_dg, phi_pairs, optimize=True)
-    value = (np.einsum("mlg,mlg->", drho, A, optimize=True)
-             + np.einsum("nsg,nsg->", drho, B, optimize=True))
-    return float(np.real(value)) * grid.dV
+    M = psi_grid.shape[0]
+    K = (np.einsum("acbd->abcd", de_dg)
+         + np.einsum("cadb->abcd", de_dg)).reshape(M, M, M * M)
+    rows = np.zeros((3, M), dtype=complex)          # derivative on a
+    columns = np.zeros((3, M), dtype=complex)       # derivative on b
+    for start, stop, phi in pair_potential_blocks(psi_grid, grid, solver):
+        T1, T2 = pair_derivative_integrals(psi_grid, derivatives, phi)
+        block = K[:, :, start:stop]
+        rows += np.einsum("kabj,abj->ka", T1, block)
+        columns += np.einsum("kabj,abj->kb", T2, block)
+    out = np.zeros((n_atoms, 3))
+    owner = np.asarray(atom_of_orbital)
+    for atom in range(n_atoms):
+        own = owner == atom
+        out[atom] = np.real(rows[:, own].sum(axis=1)
+                            + columns[:, own].sum(axis=1)) * grid.dV
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -694,12 +806,16 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
 
     pulay = np.zeros_like(hf)
     if include_pulay:
-        phi_pairs = _pair_potentials(psi_grid, grid)
         laplacian = (integrals._engine.spectral_laplacian(psi_grid)
                      if kinetic == "spectral" else None)
+        # Every function moving with its own center: one sampling, read by
+        # atom below, and the pair potentials streamed once for all atoms.
+        derivatives = orbital_derivatives(basis, grid, atom_of_orbital, None,
+                                          orbital_delta)
+        two = _two_body_pulay(psi_grid, derivatives, grid, de_dg,
+                              atom_of_orbital, len(charges))
         for atom in range(len(charges)):
-            dstack = orbital_derivatives(basis, grid, atom_of_orbital, atom,
-                                         orbital_delta)
+            dstack = atom_rows(derivatives, atom_of_orbital, atom)
             if not np.any(dstack):
                 continue                        # no basis function on this atom
             for k in range(3):
@@ -707,8 +823,7 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
                 one_h, one_s = _one_body_pulay(integrals._engine, psi_grid,
                                                dpsi, vext, grid, de_dh, de_ds,
                                                kinetic, laplacian)
-                two = _two_body_pulay(psi_grid, dpsi, phi_pairs, grid, de_dg)
-                pulay[atom, k] = one_h + one_s + two
+                pulay[atom, k] = one_h + one_s + two[atom, k]
 
     # The single Hartree/Bohr -> eV/Angstrom boundary of the force path.
     hf = hf * HA_BOHR_TO_EV_ANGSTROM

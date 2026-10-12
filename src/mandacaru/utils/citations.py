@@ -195,13 +195,21 @@ def _pseudo_keys(family, options) -> list:
     return keys
 
 
+#: What a ``two_body`` representation cites: the dense tensor is the
+#: integrals themselves; the Cholesky factors have their papers.
+_TWO_BODY_KEYS = {
+    "dense": (),
+    "cholesky": ("BeebeLinderberg1977", "Koch2003", "Folkestad2019"),
+}
+
+
 def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
                   basis=None,
                   family=None, basis_options=None, optimizer=None,
                   backend_provider=None, shots=0, execute_circuits=False,
                   profile=False, tetris=False, prune=False,
                   has_geometry=True, built_basis=True, extras=(),
-                  datasets=(), active_method=None) -> list:
+                  datasets=(), active_method=None, two_body=None) -> list:
     """The bibliography keys a run with this configuration should cite.
 
     Every argument is optional: what is not known is not cited.  ``family`` and
@@ -228,6 +236,7 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
     keys += list(_MAPPING_KEYS.get(_key(mapping), ()))
     keys += list(_OPTIMIZER_KEYS.get(_key(optimizer), ()))
     keys += list(_ACTIVE_METHOD_KEYS.get(_key(active_method), ()))
+    keys += list(_TWO_BODY_KEYS.get(_key(two_body), ()))
 
     options = dict(basis_options or {})
     if family:

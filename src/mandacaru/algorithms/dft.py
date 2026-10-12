@@ -101,7 +101,6 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from ..core.hamiltonian import spin_block_integrals
 from ..core.mapping import Fermion
 from ..integrals import exchange_correlation as xc_grid
 from ..units import to_bohr
@@ -369,9 +368,8 @@ class LazyHamiltonian:
         self.constant = complex(constant)
 
     def build(self) -> Fermion:
-        h_so, g_so = spin_block_integrals(self.scf.h_mo, self.scf.eri_mo)
-        n_modes = h_so.shape[0]
-        return (Fermion.from_integrals(h_so, g_so)
+        n_modes = 2 * np.asarray(self.scf.h_mo).shape[0]
+        return (Fermion.from_spatial_integrals(self.scf.h_mo, self.scf.eri_mo)
                 + Fermion({(): self.constant}, n_modes=n_modes))
 
 
@@ -459,11 +457,14 @@ class KohnSham:
                  functional: str = DEFAULT_XC, core_density=None,
                  relativistic: bool = False, core_tau=None,
                  short_range_eri=None, screening=None, one_center=None):
-        self.h = np.asarray(h, dtype=complex)
+        # Real matrices (a molecule's real harmonics) keep a real SCF and
+        # real Kohn-Sham orbitals.
+        self.h = np.asarray(h, dtype=np.result_type(np.asarray(h), float))
         #: The Poisson route's Hartree builder, or ``None`` with a tensor.
         self.poisson = eri if isinstance(eri, PoissonHartree) else None
         self.eri = (None if self.poisson is not None
-                    else np.asarray(eri, dtype=complex))
+                    else np.asarray(eri, dtype=np.result_type(
+                        np.asarray(eri), float)))
         self.orbitals = np.asarray(orbitals)
         self.grid = grid
         self.M = self.h.shape[0]
@@ -479,11 +480,14 @@ class KohnSham:
             self.screening = tuple(float(v) for v in (
                 screening if screening is not None
                 else xc_grid.HYBRIDS[self.functional]))
-            self.short_range_eri = np.asarray(short_range_eri, dtype=complex)
+            self.short_range_eri = np.asarray(
+                short_range_eri,
+                dtype=np.result_type(np.asarray(short_range_eri), float))
         self.one_center = None
         if one_center is not None and self.screening is not None:
             projections, terms = one_center
-            self.one_center = (np.asarray(projections, dtype=complex), terms)
+            self.one_center = (np.asarray(projections, dtype=np.result_type(
+                np.asarray(projections), float)), terms)
         #: The exact-exchange part of the last exchange-correlation energy.
         self.exact_exchange_energy = 0.0
         self.core_density = (None if core_density is None

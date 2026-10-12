@@ -133,12 +133,14 @@ class DIIS:
         n = len(self._focks)
         if n < 2:
             return F
-        B = np.zeros((n + 1, n + 1), dtype=complex)
+        # Real Fock matrices (a molecule's real orbitals) keep a real DIIS.
+        dtype = np.result_type(*self._errors, float)
+        B = np.zeros((n + 1, n + 1), dtype=dtype)
         for i in range(n):
             for j in range(n):
                 B[i, j] = np.vdot(self._errors[i], self._errors[j])
         B[n, :n] = B[:n, n] = -1.0
-        rhs = np.zeros(n + 1, dtype=complex)
+        rhs = np.zeros(n + 1, dtype=dtype)
         rhs[n] = -1.0
         try:
             coeff = np.linalg.solve(B, rhs)[:n]
@@ -189,8 +191,11 @@ class RHF:
     """
 
     def __init__(self, h: np.ndarray, eri: np.ndarray, n_electrons: int):
-        self.h = np.asarray(h, dtype=complex)
-        self.eri = np.asarray(eri, dtype=complex)
+        # Real integrals (a molecule's real harmonics) keep a real SCF, and
+        # with it real molecular orbitals.
+        dtype = np.result_type(np.asarray(h), np.asarray(eri), float)
+        self.h = np.asarray(h, dtype=dtype)
+        self.eri = np.asarray(eri, dtype=dtype)
         self.M = self.h.shape[0]
         if n_electrons % 2 != 0:
             raise ValueError("RHF requires an even number of electrons")
@@ -327,7 +332,7 @@ class DirectRHF(RHF):
 
     def __init__(self, h: np.ndarray, two_electron, n_electrons: int,
                  coarse_two_electron=None):
-        self.h = np.asarray(h, dtype=complex)
+        self.h = np.asarray(h, dtype=np.result_type(np.asarray(h), float))
         self.eri = None
         self._exact = two_electron
         self._coarse = coarse_two_electron
@@ -452,8 +457,9 @@ class UHF:
 
     def __init__(self, h: np.ndarray, eri: np.ndarray,
                  n_alpha: int, n_beta: int):
-        self.h = np.asarray(h, dtype=complex)
-        self.eri = np.asarray(eri, dtype=complex)
+        dtype = np.result_type(np.asarray(h), np.asarray(eri), float)
+        self.h = np.asarray(h, dtype=dtype)
+        self.eri = np.asarray(eri, dtype=dtype)
         self.M = self.h.shape[0]
         self.na, self.nb = int(n_alpha), int(n_beta)
         if max(self.na, self.nb) > self.M:
@@ -461,7 +467,8 @@ class UHF:
 
     def _density(self, C: np.ndarray, n: int) -> np.ndarray:
         Cocc = C[:, :n]
-        return Cocc @ Cocc.conj().T if n else np.zeros((self.M, self.M), complex)
+        return (Cocc @ Cocc.conj().T if n
+                else np.zeros((self.M, self.M), self.h.dtype))
 
     def _coulomb(self, D: np.ndarray) -> np.ndarray:
         # D enters as D_sr (see RHF._fock): complex orbitals need it.
@@ -480,6 +487,10 @@ class UHF:
         return float(np.real(0.5 * (
             np.sum((Da + Db) * self.h.T)
             + np.sum(Da * Fa.T) + np.sum(Db * Fb.T))))
+
+    def _mo_integrals(self, C: np.ndarray):
+        """``(h_mo, eri_mo)`` in the orbitals ``C``."""
+        return transform_integrals(self.h, self.eri, C)
 
     def run(self, max_iter: int = 300, tol: float = 1e-9) -> float:
         """Run the SCF loop; return the electronic energy ``<H_elec>`` (Hartree)."""
@@ -564,7 +575,7 @@ class UHF:
         epsb, Cb = np.linalg.eigh(Fb)
         energy = self._energy(Da, Db, Fa, Fb)
         occ, C_no = natural_orbitals(Da + Db)
-        h_mo, eri_mo = transform_integrals(self.h, self.eri, C_no)
+        h_mo, eri_mo = self._mo_integrals(C_no)
 
         # Energy of the reference determinant in the natural-orbital basis:
         # the first n_alpha (n_beta) NOs spin-up (spin-down).
@@ -577,8 +588,43 @@ class UHF:
             mo_energies_alpha=np.real(epsa), mo_energies_beta=np.real(epsb),
             mo_coefficients_alpha=Ca, mo_coefficients_beta=Cb,
             natural_occupations=occ, natural_orbitals=C_no,
-            h_mo=np.real_if_close(h_mo), eri_mo=np.real_if_close(eri_mo),
+            h_mo=np.real_if_close(h_mo),
+            eri_mo=None if eri_mo is None else np.real_if_close(eri_mo),
             converged=converged, n_iterations=it, reference_energy=reference)
+
+
+class DirectUHF(UHF):
+    r"""Unrestricted Hartree-Fock whose Fock matrices are built without the
+    two-body tensor.
+
+    The same SCF as :class:`UHF` (the same starts, DIIS and level shift);
+    only :math:`J[D]` and :math:`K[D]` come from ``coulomb(D)`` and
+    ``exchange(D)``, orthonormal-basis builders on the grid
+    (:class:`~mandacaru.integrals.direct.DirectCoulomb`), so the iterates
+    follow the tensor SCF's to round-off.  The result's ``eri_mo`` is
+    ``None``: an integral-direct build asks for the integrals of the
+    orbitals it keeps instead.
+    """
+
+    def __init__(self, h: np.ndarray, coulomb, exchange,
+                 n_alpha: int, n_beta: int):
+        self.h = np.asarray(h, dtype=np.result_type(np.asarray(h), float))
+        self.eri = None
+        self._direct_coulomb = coulomb
+        self._direct_exchange = exchange
+        self.M = self.h.shape[0]
+        self.na, self.nb = int(n_alpha), int(n_beta)
+        if max(self.na, self.nb) > self.M:
+            raise ValueError("more electrons of one spin than spatial orbitals")
+
+    def _coulomb(self, D: np.ndarray) -> np.ndarray:
+        return self._direct_coulomb(D)
+
+    def _exchange(self, D: np.ndarray) -> np.ndarray:
+        return self._direct_exchange(D)
+
+    def _mo_integrals(self, C: np.ndarray):
+        return C.conj().T @ self.h @ C, None
 
 
 @dataclass

@@ -36,7 +36,7 @@ def h2_hamiltonian():
 class TestKPoints:
     def test_default_is_gamma(self):
         adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO")
-        assert adapt.kpts == (1, 1, 1)
+        assert adapt.solver.kpts == (1, 1, 1)
         assert len(adapt.kpoints) == 1
         np.testing.assert_allclose(adapt.kpoints[0], [0.0, 0.0, 0.0])
 
@@ -61,12 +61,12 @@ class TestKPoints:
         # ASE dict form {"size": ..., "gamma": True}: Gamma-centered mesh.
         adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                           kpts={"size": (2, 2, 1), "gamma": True})
-        assert adapt.kpts == (2, 2, 1)
-        assert adapt.kpts_gamma is True
+        assert adapt.solver.kpts == (2, 2, 1)
+        assert adapt.solver.kpts_gamma is True
         # Gamma-centering shifts the even-axis mesh so it includes the Gamma point.
         assert any(np.allclose(k, [0, 0, 0]) for k in adapt.kpoints)
 
     def test_dict_gamma_only(self):
         adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                           kpts={"size": (1, 1, 1), "gamma": True})
-        assert len(adapt.kpoints) == 1 and adapt.kpts_gamma is True
+        assert len(adapt.kpoints) == 1 and adapt.solver.kpts_gamma is True

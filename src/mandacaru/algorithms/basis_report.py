@@ -148,7 +148,10 @@ def _pseudo_report(name, context, symbols, fields, tables):
     else:
         fields["directory"] = f"none ({IN_MEMORY})"
 
-    datasets = [("symbol", "Z", "Z_ion", "l_max", "r_cut_Bohr", "source")]
+    # The file's name says where a dataset came from, its digest which bytes
+    # it was: a library is a checkout that can be rebuilt under the same names.
+    datasets = [("symbol", "Z", "Z_ion", "l_max", "r_cut_Bohr", "source",
+                 "sha256")]
     for symbol in sorted(set(symbols), key=symbols.index):
         pp = potentials[symbol]
         r_cut = max(float(c.r_cut) for c in pp.channels.values())
@@ -157,7 +160,8 @@ def _pseudo_report(name, context, symbols, fields, tables):
             f"{float(pp.valence_charge):g}", max(pp.channels),
             f"{r_cut:.4f}",
             os.path.basename(str(getattr(pp, "source", IN_MEMORY)))
-            .replace(" ", "_")))
+            .replace(" ", "_"),
+            getattr(pp, "source_sha256", None) or "none"))
     tables["datasets"] = datasets
 
     confined = context.get("confinement") or {}

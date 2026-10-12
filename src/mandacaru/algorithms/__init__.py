@@ -15,9 +15,14 @@ VQE (whose circuit, UCCSD or the Hamiltonian variational ansatz, is its
 (``"mcas-vqe"``, a Markov-chain search over ansatz structures) and **VALQA**
 (``"valqa"``, the same search with a learned operator proposal) -- are
 reached **only** through :class:`Mandacaru` with their
-``method`` names.  The solver classes themselves are
-the internal layer and are deliberately **not exported**; what is exported is
-the calculator and the result types the solvers return.  The periodic
+``method`` names.  The solver classes that a ``method`` name builds (the
+method drivers) are the internal layer and are deliberately **not
+exported**.  What is exported is the calculator, the result types the
+solvers return, and the building blocks that act on an integrals object
+rather than on a geometry: the mean-field routines :class:`RHF`,
+:class:`UHF` and :class:`GHF` (which the ``"rhf"`` and ``"uhf"`` methods
+run through their own, unexported drivers), the
+active-space and MP2 helpers, and the property functions.  The periodic
 methods ``"bloch-vqe"`` and ``"bloch-adapt-vqe"`` are reached the same way, with
 ``kpts``.  Solvers outside the stable API plug in through
 :func:`register_method`.

@@ -127,7 +127,8 @@ found automatically on Linux, and on macOS comes from `brew install libomp`.
 
 `MANDACARU_BACKEND=auto` selects the default policy. Use `MANDACARU_BACKEND=c` to
 require the compiled backend (it raises rather than falling back), or
-`MANDACARU_BACKEND=numpy` to select NumPy.
+`MANDACARU_BACKEND=numpy` to select NumPy. Any other value raises a
+`ValueError` rather than being read as `auto`.
 
 The same variable also selects the backend for a second, separate compiled
 library: the radial kernels (tridiagonal eigenpairs and Numerov recursions)

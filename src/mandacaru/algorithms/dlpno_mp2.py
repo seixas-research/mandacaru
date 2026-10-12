@@ -226,18 +226,14 @@ def dlpno_mp2(integrals, n_doubly: int, *, frozen=(), domains: str = "local",
     F_occ = lmo.T @ F @ lmo                                # (n, n)
 
     # PAOs: the basis functions with every occupied orbital projected out,
-    # in the molecular orbitals.  The molecular orbitals are real functions;
-    # a complex basis function (a complex spherical harmonic) is replaced by
-    # its real and imaginary parts, two real functions on the same atom, so
-    # everything below is real.  The set is redundant, which the per-pair
-    # orthonormalization removes.
-    basis = integrals.basis_in_mo()                        # (M, M)
+    # in the molecular orbitals.  The basis functions (real spherical
+    # harmonics) and the molecular orbitals are real, so everything below
+    # is real.  The set is redundant, which the per-pair orthonormalization
+    # removes.
+    basis = np.real(integrals.basis_in_mo())               # (M, M)
     atom_of = np.asarray(integrals.atom_of())
-    parts = np.concatenate([np.real(basis), np.imag(basis)], axis=1)
-    owners = np.concatenate([atom_of, atom_of])
-    doi = integrals.differential_overlap(lmo)              # (n, 2M)
-    alive = np.linalg.norm(parts, axis=0) > 1e-10
-    parts, owners, doi = parts[:, alive], owners[alive], doi[:, alive]
+    parts, owners = basis, atom_of
+    doi = integrals.differential_overlap(lmo)              # (n, M)
     virtual_projector = np.diag([0.0] * o + [1.0] * (M - o))
     paos = virtual_projector @ parts
     norms = np.linalg.norm(paos, axis=0)

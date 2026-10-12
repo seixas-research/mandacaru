@@ -90,7 +90,7 @@ class TestSectorGuard:
         # The problem is configured on first use, which is where the sector is
         # resolved and the fallback announced.
         with pytest.warns(RuntimeWarning, match="full register"):
-            assert solver._sector is None
+            assert solver.solver._sector is None
         assert np.isfinite(solver.run().optimal_energy)
 
     def test_automatic_sector_is_used_for_a_conserving_pool(self, monkeypatch):
@@ -99,7 +99,7 @@ class TestSectorGuard:
         sector_solver = driver(pool="qeb", sector="auto", max_iterations=3)
         full_solver = driver(pool="qeb", sector=False, max_iterations=3)
         sector_result, full_result = sector_solver.run(), full_solver.run()
-        assert sector_solver._sector is not None and full_solver._sector is None
+        assert sector_solver.solver._sector is not None and full_solver.solver._sector is None
         # Same ansatz, same minimum -- only the state representation differs
         # (9 sector amplitudes against 64 full-register ones).
         assert sector_result.operators == full_result.operators
@@ -136,9 +136,9 @@ class TestAdaptEndToEndStillWorks:
                                pool="fermionic", trace=False, profile=False,
                                convergence={"gradient": 1e-6})
         energy = atoms.get_potential_energy()
-        exact = np.linalg.eigvalsh(atoms.calc._h_matrix if isinstance(
-            atoms.calc._h_matrix, np.ndarray)
-            else atoms.calc._h_matrix.toarray())[0]
+        exact = np.linalg.eigvalsh(atoms.calc.solver._h_matrix if isinstance(
+            atoms.calc.solver._h_matrix, np.ndarray)
+            else atoms.calc.solver._h_matrix.toarray())[0]
         from mandacaru.units import HARTREE_TO_EV
         assert atoms.calc.result.converged
         assert energy == pytest.approx(exact * HARTREE_TO_EV, abs=1e-6)

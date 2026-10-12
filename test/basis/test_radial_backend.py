@@ -112,3 +112,19 @@ def test_the_python_policy_uses_the_reference_kernels(monkeypatch):
     value, _v = tridiagonal_eigenpair(diag, off, 0)
     values, _vs = eigh_tridiagonal(diag, off, select="i", select_range=(0, 0))
     assert value == values[0]
+
+
+@pytest.mark.parametrize("value", ["fortran", "python"])
+def test_an_invalid_policy_is_refused_as_the_integrals_refuse_it(monkeypatch,
+                                                                 value):
+    """One parser for both libraries: a value the integral backend refuses is
+    not read as ``auto`` by the radial one (``python`` is the spelling of
+    ``mandacaru-build --backend``, not of the variable)."""
+    from mandacaru.integrals import ensure_backend
+
+    monkeypatch.setenv("MANDACARU_BACKEND", value)
+    with pytest.raises(ValueError, match="MANDACARU_BACKEND") as radial:
+        radial_backend_status()
+    with pytest.raises(ValueError, match="MANDACARU_BACKEND") as integrals:
+        ensure_backend()
+    assert str(radial.value) == str(integrals.value)

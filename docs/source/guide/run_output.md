@@ -334,10 +334,10 @@ read off the left margin:
     directory: lda-sr (/data/mandacaru-paw/lda-sr)
     basis_functions: 6
     datasets:
-        symbol  Z  Z_ion  l_max  r_cut_Bohr  source
-        ---------------------------------------------------
-        O       8  6      1      1.4499      O.parquet
-        H       1  1      0      1.2998      H.parquet
+        symbol  Z  Z_ion  l_max  r_cut_Bohr  source     sha256
+        -----------------------------------------------------------
+        O       8  6      1      1.4499      O.parquet  3f0c...e91a
+        H       1  1      0      1.2998      H.parquet  a74b...07d2
     orbitals:
         symbol  n  l  zetas  polarization  r_c_Bohr  r_c_Angstrom  eps_free_eV  eps_basis_eV  shift_eV
         ----------------------------------------------------------------------------------------------
@@ -428,7 +428,11 @@ defaults left alone (a PAW-LCAO basis is Fourier-filtered and its local potentia
 range-separated unless told otherwise), the cutoff radius an `energy_shift`
 gave each orbital together with the eigenvalue shift actually achieved, the
 folder the datasets were read from (`directory`: the folder's name, such as
-`lda` or `pbe`, and its path), the file of every dataset, the functional the
+`lda` or `pbe`, and its path), the file of every dataset and the SHA-256 of
+its bytes (`sha256`, read when the file was loaded: a library is a checkout
+that can be rebuilt under the same file names, and the digest says which
+bytes the run used, 64 hexadecimal digits, shortened in the example above;
+`none` for a dataset generated in the session), the functional the
 datasets record (`dataset_xc`) and the function count per element are all
 decided below the calculator. It is the block a comparison against another code
 is made from. Its three tables -- `datasets`, `orbitals`, `functions` -- read
@@ -449,7 +453,10 @@ the register has no such block. It names the selector (`method`: `mp2`,
 was asked for (`orbitals_requested`, `threshold`, `frozen_requested`,
 `correlating_pairs`, `symmetry`), the
 partition that was actually built -- a count can freeze more than `frozen`
-asked for -- and, for MP2, the correlation energy in the full virtual space.
+asked for -- how the two-body integrals were reached (`two_body_integrals`:
+the four-index tensor transformed to the active orbitals, or integral-direct,
+the active orbitals' integrals alone; see {doc}`active_space`) and, for MP2,
+the correlation energy in the full virtual space.
 Its `orbitals` table lists every spatial orbital, in the selector's ranked
 basis, with its occupancy in the reference (`occupied`, `singly` or
 `virtual`), where it went (`frozen`, `active` or `deleted`) and its occupation
@@ -467,6 +474,7 @@ PAW-LCAO-DZP on eight orbitals, both constraints on:
     correlating_pairs: on (the ranked selection already satisfied it)
     symmetry: on (the ranked selection already satisfied it)
     spatial_orbitals: 23 (0 frozen, 8 active, 15 deleted)
+    two_body_integrals: four-index tensor, transformed to the active orbitals
     point_group: C2v
     mp2_correlation_energy_Ha: -0.13424985
     occupation: eigenvalues of the MP2 one-particle density (natural orbitals); frozen rows are its diagonal, since frozen orbitals are not rotated

@@ -63,7 +63,7 @@ def test_compensation_keeps_the_copper_coulomb_tensor_positive():
         spin=True)
     integrals = context["integrals"]
     grid = np.asarray(integrals._engine.two_body(energy_units="Ha"))
-    total = grid + np.asarray(integrals.two_body_augmentation())
+    total = grid + integrals.two_body_augmentation().dense()
 
     def lowest(tensor):
         matrix = tensor.transpose(0, 2, 1, 3).reshape(n * n, n * n)
@@ -72,3 +72,54 @@ def test_compensation_keeps_the_copper_coulomb_tensor_positive():
     assert lowest(total) > lowest(grid) - 0.05
     energy = integrals.open_shell_hartree_fock(6, 5).electronic_energy
     assert -60.0 < energy < -30.0
+
+
+class TestRealAngularTables:
+    """The real-harmonic Gaunt coefficients and multipole Coulomb matrix of a
+    molecule are the complex ones (a crystal's) transformed shell by shell."""
+
+    def test_every_gaunt_coefficient_up_to_d(self):
+        from mandacaru.basis._angular import real_harmonic_transform
+        from mandacaru.pseudopotentials.multipoles import gaunt
+
+        U = {l: real_harmonic_transform(l) for l in range(5)}
+        for l1 in range(3):
+            for l2 in range(3):
+                for L in range(abs(l1 - l2), l1 + l2 + 1):
+                    for M in range(-L, L + 1):
+                        for m1 in range(-l1, l1 + 1):
+                            for m2 in range(-l2, l2 + 1):
+                                total = 0.0 + 0.0j
+                                for K in range(-L, L + 1):
+                                    for k1 in range(-l1, l1 + 1):
+                                        for k2 in range(-l2, l2 + 1):
+                                            total += (
+                                                np.conj(U[L][M + L, K + L])
+                                                * np.conj(U[l1][m1 + l1,
+                                                                k1 + l1])
+                                                * U[l2][m2 + l2, k2 + l2]
+                                                * gaunt(L, K, l1, k1, l2, k2,
+                                                        real=False))
+                                value = gaunt(L, M, l1, m1, l2, m2, real=True)
+                                assert isinstance(value, float)
+                                assert abs(value - total) < 1e-12
+
+    def test_the_multipole_coulomb_matrix(self):
+        from mandacaru.basis._angular import real_harmonic_transform
+        from mandacaru.pseudopotentials.multipoles import \
+            multipole_coulomb_matrix
+
+        levels = [(L, M) for L in range(3) for M in range(-L, L + 1)]
+        displacement = np.array([0.9, -1.4, 2.1])
+        real = multipole_coulomb_matrix(1.1, levels, 0.9, levels,
+                                        displacement, real=True)
+        complex_ = multipole_coulomb_matrix(1.1, levels, 0.9, levels,
+                                            displacement, real=False)
+        T = np.zeros((len(levels), len(levels)), dtype=complex)
+        offset = 0
+        for L in range(3):
+            T[offset:offset + 2 * L + 1, offset:offset + 2 * L + 1] = \
+                real_harmonic_transform(L)
+            offset += 2 * L + 1
+        assert np.isrealobj(real)
+        assert np.abs(T @ complex_ @ T.T - real).max() < 1e-10

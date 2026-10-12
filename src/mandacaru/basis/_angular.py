@@ -6,13 +6,31 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Shared angular machinery for ``R(r) Y_lm(theta, phi)`` basis functions.
+r"""Shared angular machinery for ``R(r) Y_lm(theta, phi)`` functions.
 
-Both the numerical atomic orbitals and the Gaussian orbitals factorize as a
-radial function times a spherical harmonic, differing only in the radial part.
-The Cartesian->spherical conversion and the (orthonormal, complex) spherical
-harmonic live here so those classes share exactly one implementation, matching
-the convention already used by :class:`~mandacaru.basis.hao.HydrogenicAtomicOrbital`.
+Every atom-centered function in Mandacaru -- basis functions of every family,
+projectors, compensation multipoles -- factorizes as a radial function times a
+spherical harmonic.  The Cartesian->spherical conversion and the harmonics
+live here, in two conventions, and every caller states which one it uses:
+
+* **real** (``real=True``), the harmonics of a molecule:
+
+  .. math::
+
+      S_{lm} = \sqrt2\,(-1)^m\,\mathrm{Re}\,Y_l^m \;(m > 0),\qquad
+      S_{l0} = Y_l^0,\qquad
+      S_{lm} = \sqrt2\,(-1)^m\,\mathrm{Im}\,Y_l^{|m|} \;(m < 0),
+
+  ordered :math:`m = -l \ldots l`, so a p shell is :math:`(p_y, p_z, p_x)`
+  and a d shell :math:`(d_{xy}, d_{yz}, d_{z^2}, d_{xz}, d_{x^2-y^2})`, each
+  positive along its own lobe;
+* **complex** (``real=False``), the Condon-Shortley :math:`Y_l^m` of
+  :func:`scipy.special.sph_harm_y`, the harmonics of a crystal (whose Bloch
+  sums are complex anyway, and whose C kernel and Wannier code index them by
+  :math:`m`).
+
+The two are related, shell by shell, by the unitary of
+:func:`real_harmonic_transform`.
 """
 
 from __future__ import annotations
@@ -38,13 +56,45 @@ def spherical_coords(x, y, z, center):
     return r, theta, phi
 
 
-def spherical_harmonic(l: int, m: int, theta, phi) -> np.ndarray:
-    r"""Orthonormal complex spherical harmonic ``Y_l^m(theta, phi)``.
+def sample_dtype(real: bool):
+    """The dtype a function with real (``float64``) or complex
+    (``complex128``) harmonics samples as."""
+    return np.float64 if real else np.complex128
 
-    The convention of :func:`scipy.special.sph_harm_y` (Condon-Shortley
-    phase, :math:`Y_l^{-m} = (-1)^m \overline{Y_l^m}`), evaluated by the
-    standard stable recurrence for the fully normalized associated Legendre
-    functions:
+
+def real_harmonic_transform(l: int) -> np.ndarray:
+    r"""``(2l+1, 2l+1)`` unitary :math:`U` with :math:`S_{lm} = \sum_{m'}
+    U_{mm'} Y_l^{m'}`, rows and columns indexed by ``m + l``.
+
+    :math:`U_{m,m} = (-1)^m/\sqrt2` and :math:`U_{m,-m} = 1/\sqrt2` for
+    :math:`m > 0`; :math:`U_{-\mu,-\mu} = i/\sqrt2` and
+    :math:`U_{-\mu,\mu} = -i(-1)^\mu/\sqrt2` for :math:`\mu > 0`;
+    :math:`U_{00} = 1`.  An operator in the complex harmonics, :math:`A`, is
+    :math:`U A U^\dagger` in the real ones.
+    """
+    l = int(l)
+    U = np.zeros((2 * l + 1, 2 * l + 1), dtype=complex)
+    U[l, l] = 1.0
+    root = 1.0 / np.sqrt(2.0)
+    for m in range(1, l + 1):
+        sign = (-1) ** m
+        U[l + m, l + m] = sign * root
+        U[l + m, l - m] = root
+        U[l - m, l - m] = 1j * root
+        U[l - m, l + m] = -1j * sign * root
+    return U
+
+
+def spherical_harmonic(l: int, m: int, theta, phi, *,
+                       real: bool) -> np.ndarray:
+    r"""Orthonormal spherical harmonic of degree ``l`` and order ``m``:
+    real :math:`S_{lm}` (``real=True``, a float array) or complex
+    :math:`Y_l^m` (``real=False``); see the module docstring.
+
+    The complex one is the convention of :func:`scipy.special.sph_harm_y`
+    (Condon-Shortley phase, :math:`Y_l^{-m} = (-1)^m \overline{Y_l^m}`),
+    evaluated by the standard stable recurrence for the fully normalized
+    associated Legendre functions:
 
     .. math::
 
@@ -68,7 +118,8 @@ def spherical_harmonic(l: int, m: int, theta, phi) -> np.ndarray:
     theta = np.asarray(theta, dtype=float)
     phi = np.asarray(phi, dtype=float)
     if order > l:
-        return np.zeros(np.broadcast(theta, phi).shape, dtype=complex)
+        return np.zeros(np.broadcast(theta, phi).shape,
+                        dtype=float if real else complex)
     cos_t = np.cos(theta)
     # sin(theta) itself, not sqrt(1 - cos^2): the latter loses digits at the
     # poles.  theta lies in [0, pi], so it is never negative.
@@ -84,15 +135,24 @@ def spherical_harmonic(l: int, m: int, theta, phi) -> np.ndarray:
             b = np.sqrt(((degree - 1.0) ** 2 - order * order)
                         / (4.0 * (degree - 1.0) ** 2 - 1.0))
             previous, legendre = legendre, a * (cos_t * legendre - b * previous)
+    if real:
+        if m == 0:
+            return np.broadcast_to(legendre, np.broadcast(theta, phi).shape
+                                   ).copy()
+        # sqrt(2) (-1)^m P_l^m cos(m phi) (m > 0) or sin(|m| phi) (m < 0):
+        # the Condon-Shortley (-1)^m inside P cancels the outer one.
+        trig = np.cos(order * phi) if m > 0 else np.sin(order * phi)
+        return np.sqrt(2.0) * (-1) ** order * legendre * trig
     value = legendre * np.exp(1j * order * phi)
     if m < 0:
         value = (-1) ** order * np.conj(value)
     return value
 
 
-def spherical_harmonic_gradient(l: int, m: int, x, y, z):
+def spherical_harmonic_gradient(l: int, m: int, x, y, z, *, real: bool):
     r"""``(Y, (dY/dx, dY/dy, dY/dz))`` of :func:`spherical_harmonic` at the
-    Cartesian offsets ``x, y, z`` (``r > 0``), analytically.
+    Cartesian offsets ``x, y, z`` (``r > 0``), analytically, in the
+    convention ``real`` states.
 
     Written as :math:`Y_l^m = Q_{lm}(z/r)\,((x + iy)/r)^m` for
     :math:`m \ge 0` -- :math:`Q_{lm}` the normalized associated Legendre
@@ -133,6 +193,15 @@ def spherical_harmonic_gradient(l: int, m: int, x, y, z):
         e = (1.0, 1j, 0.0)[axis]
         dw = (e - w * xa / r) / r
         gradient.append(dQ * du * wm + Q * order * wm1 * dw)
+    if real:
+        # S_lm = sqrt2 (-1)^m Re Y_l^|m| (m > 0) or Im (m < 0): the same parts
+        # of the complex value and gradient.
+        if m == 0:
+            return np.real(value), tuple(np.real(g) for g in gradient)
+        part = np.real if m > 0 else np.imag
+        scale = np.sqrt(2.0) * (-1) ** order
+        return (scale * part(value),
+                tuple(scale * part(g) for g in gradient))
     if m < 0:
         sign = (-1) ** order
         value = sign * np.conj(value)

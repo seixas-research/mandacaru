@@ -32,6 +32,7 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 
 from ..units import to_bohr
+from ..basis._angular import sample_dtype as _dtype
 from ..basis._angular import spherical_coords, spherical_harmonic
 from ..basis.base import BasisFunction
 
@@ -40,10 +41,12 @@ class _RadialTabulated(BasisFunction):
     """Shared machinery: spline a radial table and attach an angular factor."""
 
     def __init__(self, r, radial, l: int, m: int, center=None,
-                 units: str = "angstrom"):
+                 units: str = "angstrom", *, real: bool):
         if abs(int(m)) > int(l):
             raise ValueError(f"require |m| <= l, got l={l}, m={m}")
         self.l, self.m = int(l), int(m)
+        #: Real (molecule) or complex (crystal) spherical harmonics.
+        self.real = bool(real)
         self.center = (np.zeros(3) if center is None
                        else to_bohr(center, units))
         self._r = np.asarray(r, dtype=float)
@@ -74,8 +77,9 @@ class _RadialTabulated(BasisFunction):
         """Sample the function on Cartesian coordinates (Bohr)."""
         r, theta, phi = spherical_coords(x, y, z, self.center)
         return np.asarray(self.radial(r)
-                          * spherical_harmonic(self.l, self.m, theta, phi),
-                          dtype=np.complex128)
+                          * spherical_harmonic(self.l, self.m, theta, phi,
+                                               real=self.real),
+                          dtype=_dtype(self.real))
 
 
 class PseudoAtomicOrbital(_RadialTabulated):
@@ -106,12 +110,12 @@ class PseudoAtomicOrbital(_RadialTabulated):
 
     def __init__(self, pseudopotential, l: int, m: int, center=None,
                  units: str = "angstrom", radial=None, index: int = 0,
-                 eigenvalue: float | None = None):
+                 eigenvalue: float | None = None, *, real: bool = True):
         channel = pseudopotential.channels[int(l)]
         index = int(index)
         super().__init__(pseudopotential.r,
                          channel.pseudo_waves[index] if radial is None
-                         else radial, l, m, center, units)
+                         else radial, l, m, center, units, real=real)
         self.symbol = pseudopotential.symbol
         self.n = int(channel.n) + index
         self.eigenvalue = float(channel.reference_energies[index]
@@ -144,9 +148,11 @@ class KBProjector(_RadialTabulated):
 
     def __init__(self, pseudopotential, l: int, m: int, center=None,
                  units: str = "angstrom", atom_index: int = 0,
-                 index: int = 0, *, radial, kb_energy: float):
+                 index: int = 0, *, radial, kb_energy: float,
+                 real: bool = True):
         chi = np.asarray(radial, dtype=float)
-        super().__init__(pseudopotential.r, chi, l, m, center, units)
+        super().__init__(pseudopotential.r, chi, l, m, center, units,
+                         real=real)
         self.symbol = pseudopotential.symbol
         self.kb_energy = float(kb_energy)
         self.atom_index = int(atom_index)
@@ -184,8 +190,10 @@ class KBProjector(_RadialTabulated):
 
 def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                  size="SZ", split_norm=None, filter_cutoff=None,
-                 first_zeta=None, tail_norms=None, polarization_shape=None):
-    """Valence pseudo-atomic basis for a molecule.
+                 first_zeta=None, tail_norms=None, polarization_shape=None,
+                 *, real: bool = True):
+    """Valence pseudo-atomic basis for a molecule (real spherical
+    harmonics) or, ``real=False``, a crystal (complex ones).
 
     Returns ``(functions, atom_of_orbital)``: the orbitals and which atom each
     belongs to.
@@ -340,7 +348,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                 for m in range(-l, l + 1):
                     functions.append(PseudoAtomicOrbital(
                         pp, l, m, center=position, units=units, radial=radial,
-                        index=state.index, eigenvalue=state.level))
+                        index=state.index, eigenvalue=state.level,
+                        real=real))
                     owners.append(index)
             continue
 
@@ -400,7 +409,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                                              table))
 
         atom_functions = orbitals_from_tables(tables, center=position,
-                                              units=units)
+                                              units=units, real=real)
         functions.extend(atom_functions)
         owners.extend([index] * len(atom_functions))
     return functions, owners

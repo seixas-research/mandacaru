@@ -36,7 +36,8 @@ What is here
   :math:`g_L` and its Coulomb potential, for any :math:`L`;
 * :func:`gaunt` -- the angular coupling
   :math:`\int Y^*_{LM} Y^*_{l_1m_1} Y_{l_2m_2}\,d\Omega`, by quadrature, so no
-  Wigner-symbol dependency is needed;
+  Wigner-symbol dependency is needed, for real harmonics (a molecule) or
+  complex ones (a crystal);
 * :func:`radial_moments` -- :math:`\Delta^{(L)}_{ij} = \int (R_iR_j -
   \tilde R_i\tilde R_j)\,r^{L+2}\,dr` between any two partial waves of a
   dataset, reconstructed from what the dataset already stores;
@@ -170,31 +171,45 @@ def _angular_grid(polar: int = GAUNT_POLAR_POINTS,
 _GAUNT_CACHE: dict = {}
 
 
-def gaunt(L: int, M: int, l1: int, m1: int, l2: int, m2: int) -> complex:
-    r"""``int Y*_{LM} Y*_{l1 m1} Y_{l2 m2} dOmega``.
+def gaunt(L: int, M: int, l1: int, m1: int, l2: int, m2: int, *,
+          real: bool):
+    r"""``int Y*_{LM} Y*_{l1 m1} Y_{l2 m2} dOmega`` in the convention
+    ``real`` states: a float for the real harmonics
+    (:math:`\int S_{LM}S_{l_1m_1}S_{l_2m_2}`), complex for the complex ones.
 
     The angular factor of the multipole moment of the pair density
     :math:`\phi^*_1\phi_2`.  Evaluated by a product quadrature that is exact
     for these integrands, which keeps the module free of any Wigner-symbol
-    dependency.  Zero unless ``M = m2 - m1`` and the triangle/parity rules of
-    the three momenta are met; those cases short-circuit.
+    dependency.  Zero unless the triangle/parity rules of the three momenta
+    are met, and, for complex harmonics, unless ``M = m2 - m1``; those cases
+    short-circuit.
     """
     L, M, l1, m1, l2, m2 = (int(L), int(M), int(l1), int(m1), int(l2), int(m2))
-    if M != m2 - m1:
-        return 0.0 + 0.0j
+    zero = 0.0 if real else 0.0 + 0.0j
+    if not real and M != m2 - m1:
+        return zero
     if L < abs(l1 - l2) or L > l1 + l2 or (L + l1 + l2) % 2:
-        return 0.0 + 0.0j
-    key = (L, M, l1, m1, l2, m2)
+        return zero
+    key = (bool(real), L, M, l1, m1, l2, m2)
     cached = _GAUNT_CACHE.get(key)
     if cached is not None:
         return cached
     theta, phi, weights = _angular_grid()
-    value = complex(np.sum(weights
-                           * np.conj(spherical_harmonic(L, M, theta, phi))
-                           * np.conj(spherical_harmonic(l1, m1, theta, phi))
-                           * spherical_harmonic(l2, m2, theta, phi)))
+    if real:
+        value = float(np.sum(weights
+                             * spherical_harmonic(L, M, theta, phi, real=True)
+                             * spherical_harmonic(l1, m1, theta, phi,
+                                                  real=True)
+                             * spherical_harmonic(l2, m2, theta, phi,
+                                                  real=True)))
+    else:
+        value = complex(np.sum(
+            weights
+            * np.conj(spherical_harmonic(L, M, theta, phi, real=False))
+            * np.conj(spherical_harmonic(l1, m1, theta, phi, real=False))
+            * spherical_harmonic(l2, m2, theta, phi, real=False)))
     if abs(value) < 1e-12:
-        value = 0.0 + 0.0j
+        value = zero
     _GAUNT_CACHE[key] = value
     return value
 
@@ -270,14 +285,15 @@ def radial_moments(dataset, l1: int, l2: int, L: int) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 
 
-def _harmonics(channels, theta, phi) -> np.ndarray:
+def _harmonics(channels, theta, phi, *, real: bool) -> np.ndarray:
     """``(n_channels, n_points)`` table of ``Y_LM`` on given directions."""
-    return np.stack([spherical_harmonic(L, M, theta, phi) for L, M in channels])
+    return np.stack([spherical_harmonic(L, M, theta, phi, real=real)
+                     for L, M in channels])
 
 
 def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
                              displacement, points: int = 50,
-                             potential=None) -> np.ndarray:
+                             potential=None, *, real: bool) -> np.ndarray:
     r"""All ``int int g_A,LM(1) g_B,L'M'(2)/r_12`` at once.
 
     Returns ``(len(channels_a), len(channels_b))``.  The per-pair form would
@@ -292,7 +308,9 @@ def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
 
     ``potential(radius, r_g, L)`` replaces the Coulomb potential of the A
     shapes (:func:`shape_potential`) -- a screened hybrid passes the
-    long-range one, :func:`~.onecenter.long_range_shape_potential`.
+    long-range one, :func:`~.onecenter.long_range_shape_potential`.  The
+    channels' harmonics are real or complex as ``real`` states (a real matrix
+    for real ones).
     """
     displacement = np.asarray(displacement, dtype=float)
     channels_a, channels_b = list(channels_a), list(channels_b)
@@ -313,10 +331,10 @@ def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
     # Potentials of every A multipole at the B quadrature points.
     potential = shape_potential if potential is None else potential
     v_a = np.stack([potential(dist, r_a, L)
-                    * spherical_harmonic(L, M, polar_a, azimuth_a)
+                    * spherical_harmonic(L, M, polar_a, azimuth_a, real=real)
                     for L, M in channels_a])                    # (na, nr, nang)
     # Densities of every B multipole on the same points.
-    y_b = _harmonics(channels_b, theta, phi)                    # (nb, nang)
+    y_b = _harmonics(channels_b, theta, phi, real=real)         # (nb, nang)
     g_b = np.stack([shape_function(rp, r_b, L) for L, _M in channels_b])
     density_b = g_b[:, :, None] * y_b[:, None, :]               # (nb, nr, nang)
 

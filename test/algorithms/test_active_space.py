@@ -761,7 +761,7 @@ class TestThroughTheCalculator:
         estimate = Mandacaru(
             method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "TZP"},
             h=0.3, active_space={"orbitals": 4, "method": "mp2"},
-            dry_run=True, trace=False).estimate_qubits(atoms)
+            dry_run=True, trace=False).solver.estimate_qubits(atoms)
         assert estimate.n_qubits == atoms.calc.solver.n_qubits
         assert estimate.n_spatial_orbitals == 4
         assert estimate.n_deleted_orbitals == 8

@@ -274,22 +274,27 @@ def long_range_shape_potential(radius, r_g: float, L: int,
     return cached[1](radius)
 
 
-def angular_coupling(L: int, a, b, c, d) -> complex:
-    r"""``sum_M (-1)^M G(L,M;a,b) G(L,-M;c,d) * 4 pi/(2L+1)``.
+def angular_coupling(L: int, a, b, c, d):
+    r"""The angular factor multiplying :func:`radial_coulomb` for the pair
+    densities :math:`\phi_a^*\phi_b` and :math:`\phi_c^*\phi_d`, in the
+    harmonics the functions carry (their ``real``):
 
-    The angular factor multiplying :func:`radial_coulomb` for the pair
-    densities :math:`\phi_a^*\phi_b` and :math:`\phi_c^*\phi_d`, from
-    :math:`\int Y_{LM}Y_{L-M}d\Omega = (-1)^M`.
+    * real: :math:`\tfrac{4\pi}{2L+1}\sum_M G(L,M;a,b)\,G(L,M;c,d)`, from
+      :math:`\sum_M S_{LM}(1)S_{LM}(2)`, the addition theorem;
+    * complex: :math:`\tfrac{4\pi}{2L+1}\sum_M (-1)^M G(L,M;a,b)\,
+      G(L,-M;c,d)`, from :math:`\int Y_{LM}Y_{L-M}d\Omega = (-1)^M`.
     """
-    total = 0.0 + 0.0j
+    real = bool(a.real)
+    total = 0.0 if real else 0.0 + 0.0j
     for M in range(-int(L), int(L) + 1):
-        left = gaunt(L, M, a.l, a.m, b.l, b.m)
+        left = gaunt(L, M, a.l, a.m, b.l, b.m, real=real)
         if left == 0:
             continue
-        right = gaunt(L, -M, c.l, c.m, d.l, d.m)
-        if right == 0:
-            continue
-        total += (-1.0) ** M * left * right
+        if real:
+            total += left * gaunt(L, M, c.l, c.m, d.l, d.m, real=True)
+        else:
+            right = gaunt(L, -M, c.l, c.m, d.l, d.m, real=False)
+            total += (-1.0) ** M * left * right
     return total * 4.0 * np.pi / (2 * int(L) + 1)
 
 
@@ -390,13 +395,14 @@ def _one_center_tensor(dataset, projectors, basis: str, omega=None,
             angular_cache[key] = angular_coupling(L, a, b, c, d)
         return angular_cache[key]
 
-    out = np.zeros((n, n, n, n), dtype=complex)
+    real = all(bool(p.real) for p in projectors)
+    out = np.zeros((n, n, n, n), dtype=float if real else complex)
     for ia, a in enumerate(projectors):
         for ib, b in enumerate(projectors):
             levels_ab = multipole_range(a.l, b.l)
             for ic, c in enumerate(projectors):
                 for id_, d in enumerate(projectors):
-                    total = 0.0 + 0.0j
+                    total = 0.0
                     for L in multipole_range(c.l, d.l):
                         if L not in levels_ab:
                             continue
@@ -454,7 +460,7 @@ def one_center_exchange_tensor(dataset, projectors, omega: float,
     if omega < 0.0:
         raise ValueError(f"omega must be >= 0, got {omega!r}")
     basis = _projector_basis(projectors, basis)
-    layout = tuple((p.l, p.m, p.index) for p in projectors)
+    layout = tuple((p.l, p.m, p.index, bool(p.real)) for p in projectors)
     cache = dataset.__dict__.setdefault("_one_center_exchange_cache", {})
     key = (omega, basis, layout)
     if key not in cache:
@@ -590,7 +596,7 @@ class OneCenterHybrid:
             basis = _projector_basis(own, None)
             W = one_center_exchange_tensor(dataset, own, self.omega, basis)
             frozen, per_l = frozen_exchange_terms(dataset, self.omega, basis)
-            V = np.zeros((len(own), len(own)), dtype=complex)
+            V = np.zeros((len(own), len(own)))
             for i, a in enumerate(own):
                 for j, b in enumerate(own):
                     if (a.l, a.m) == (b.l, b.m):
@@ -618,7 +624,9 @@ class OneCenterHybrid:
                  else [np.asarray(density), np.asarray(density_down)])
         scale = 0.25 if density_down is None else 0.5
         total = sum(spins)
-        operators = [np.zeros((self.n_projectors,) * 2, dtype=complex)
+        dtype = np.result_type(*spins, *(W for _m, W, _V in self.blocks),
+                               float)
+        operators = [np.zeros((self.n_projectors,) * 2, dtype=dtype)
                      for _ in spins]
         exact = 0.0
         linear = 0.0

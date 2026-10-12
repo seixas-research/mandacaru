@@ -44,6 +44,12 @@ class BasisFunction(ABC):
     #: Cartesian center of the function in Bohr, shape ``(3,)``.
     center: np.ndarray
 
+    #: Whether the function is real: an ``R(r) S_lm`` with real spherical
+    #: harmonics (every molecular basis) samples as ``float64``; anything
+    #: else (complex harmonics of a crystal, a Wannier function) as
+    #: ``complex128``.
+    real: bool = False
+
     @abstractmethod
     def evaluate(self, x, y, z) -> np.ndarray:
         """Sample the (possibly complex) function on Cartesian coordinates.
@@ -63,14 +69,15 @@ class BasisFunction(ABC):
     def sample(self, grid) -> np.ndarray:
         """Evaluate on a :class:`~mandacaru.integrals.grid.Grid`, flattened.
 
-        Returns a contiguous ``complex128`` vector of length ``grid.size`` ready
-        to be handed (zero-copy) to the C backend.
+        Returns a contiguous vector of length ``grid.size``: ``float64`` for a
+        real function, ``complex128`` otherwise.
         """
+        dtype = np.float64 if self.real else np.complex128
         radius = self.support_radius
         if radius is None:
             values = self.evaluate(grid.X, grid.Y, grid.Z)
             return np.ascontiguousarray(np.broadcast_to(values, grid.shape),
-                                        dtype=np.complex128).reshape(-1)
+                                        dtype=dtype).reshape(-1)
         # A confined function is exactly zero beyond its radius: evaluate the
         # radial spline and the harmonic only inside, so sampling a basis
         # costs its functions' volumes rather than M whole grids (the largest
@@ -82,7 +89,7 @@ class BasisFunction(ABC):
         dx, dy, dz = X - center[0], Y - center[1], Z - center[2]
         inside = np.flatnonzero(dx * dx + dy * dy + dz * dz
                                 <= radius * radius)
-        out = np.zeros(grid.size, dtype=np.complex128)
+        out = np.zeros(grid.size, dtype=dtype)
         if inside.size:
             out[inside] = self.evaluate(X[inside], Y[inside], Z[inside])
         return out

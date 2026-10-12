@@ -217,20 +217,21 @@ None of these change the picture, which is the point:
 * a **particle-number sector** run keeps its state on the sector, and the
   ladder operators are applied there.
 
-## Complex orbitals
+## Real and complex orbitals
 
 A cube file holds real numbers. Densities are real by construction (the density
 matrix is Hermitian) and Mandacaru verifies that rather than assuming it.
 
-Orbitals are another matter. The basis carries complex spherical harmonics
-$Y_{lm}$, and although the molecular path rotates the orbitals to
-conjugation-real form, a natural orbital of a degenerate pair can still come out
-genuinely complex. `component="auto"` (the default) removes the global phase,
-checks that the residual imaginary part is numerical noise, and writes the real
-part; if it is not noise it raises and asks you to choose
-`component="modulus"`, `"real"` or `"imag"` deliberately. Note also that the
-orbitals *within* a degenerate set are fixed only up to a rotation, so which
-member of a π pair you get is arbitrary -- as it is in any code.
+A molecule's basis functions use **real** spherical harmonics (p is
+$p_y, p_z, p_x$; d is $d_{xy}, d_{yz}, d_{z^2}, d_{xz}, d_{x^2-y^2}$), so its
+Hartree-Fock and Kohn-Sham orbitals are real and are written as they are. A
+spin-orbit (`lda-dirac`) molecule and a crystal's Bloch orbitals are genuinely
+complex. `component="auto"` (the default) removes the global phase, checks
+that the residual imaginary part is numerical noise, and writes the real part;
+if it is not noise it raises and asks you to choose `component="modulus"`,
+`"real"` or `"imag"` deliberately. Note also that the orbitals *within* a
+degenerate set are fixed only up to a rotation, so which member of a π pair
+you get is arbitrary -- as it is in any code.
 
 ## Pictures and animations in Python: `Viewer3D`
 

@@ -48,7 +48,7 @@ class TestTheRun:
         assert result.method == "dft"
         assert energy == pytest.approx(result.optimal_energy)
         assert result.scf.xc_energy < 0.0 < result.scf.hartree_energy
-        assert atoms.calc.ansatz is None
+        assert atoms.calc.solver.ansatz is None
 
     def test_the_energy_is_stationary_in_the_density_matrix(self, converged):
         r"""``F`` is the derivative of ``E``: ``dE = sum F^T dD``.

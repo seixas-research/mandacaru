@@ -72,15 +72,15 @@ import numpy as np
 ALPHA, BETA = 0, 1
 
 
-def ls_matrix(l: int) -> np.ndarray:
-    r""":math:`\mathbf{L}\cdot\mathbf{S}` in the :math:`|lm\sigma\rangle` basis.
+def ls_matrix(l: int, *, real: bool) -> np.ndarray:
+    r""":math:`\mathbf{L}\cdot\mathbf{S}` in the :math:`|lm\sigma\rangle` basis
+    of the real (a molecule's) or complex (``real=False``) harmonics.
 
     Ordered spin-major -- index ``sigma * (2l + 1) + (m + l)`` -- so the
     :math:`\alpha\alpha`, :math:`\alpha\beta`, :math:`\beta\alpha` and
     :math:`\beta\beta` blocks are the four quadrants.  With complex spherical
-    harmonics (which is what :mod:`mandacaru.basis._angular` builds)
-    :math:`L_z` is diagonal and :math:`L_\pm` are the textbook ladder
-    operators:
+    harmonics :math:`L_z` is diagonal and :math:`L_\pm` are the textbook
+    ladder operators:
 
     .. math::
 
@@ -93,6 +93,13 @@ def ls_matrix(l: int) -> np.ndarray:
     The eigenvalues are :math:`l/2` with multiplicity :math:`2l+2` and
     :math:`-(l+1)/2` with multiplicity :math:`2l` -- the two :math:`j` levels,
     which is what ``test/core/test_spin_orbit.py`` checks.
+
+    In the real harmonics :math:`S_m = \sum_k U_{mk} Y_k`
+    (:func:`~mandacaru.basis._angular.real_harmonic_transform`) the elements
+    :math:`\langle S_m\sigma|\mathbf L\cdot\mathbf S|S_{m'}\sigma'\rangle`
+    are :math:`U^* (\mathbf L\cdot\mathbf S) U^T` in each spin block:
+    purely imaginary in :math:`L_z`, so the spin-orbit matrix of a molecule is
+    complex while every other matrix of it is real.
     """
     l = int(l)
     size = 2 * l + 1
@@ -109,6 +116,11 @@ def ls_matrix(l: int) -> np.ndarray:
             element = 0.5 * np.sqrt(l * (l + 1) - m * (m + 1))
             out[at(BETA, m + 1), at(ALPHA, m)] = element
             out[at(ALPHA, m), at(BETA, m + 1)] = element
+    if real:
+        from ..basis._angular import real_harmonic_transform
+
+        W = np.kron(np.eye(2), np.conj(real_harmonic_transform(l)))
+        out = W @ out @ W.conj().T
     return out
 
 
@@ -189,7 +201,8 @@ def spin_orbit_pair(left, right, projectors, blocks) -> np.ndarray:
                 C_al[:, a, b] = C[:, positions[(m, i)]]
                 R_al[:, a, b] = R[:, positions[(m, i)]]
 
-        LS = ls_matrix(l)
+        LS = ls_matrix(l, real=bool(projectors[positions[(ms[0], radial[0])]]
+                                    .real))
         size = 2 * l + 1
         if len(ms) != size:
             raise ValueError(

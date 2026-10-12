@@ -89,7 +89,7 @@ class TestPoolDump:
         payload = json.loads((tmp_path / POOL_FILE).read_text())
         assert payload["pool"] == "fermionic"
         assert payload["pool_class"] == "FermionicPool"
-        assert payload["pool_size"] == len(adapt._pool_ops)
+        assert payload["pool_size"] == len(adapt.solver._pool_ops)
         assert payload["n_qubits"] == 4
         assert payload["mapping"] == "jordan_wigner"
         assert payload["num_particles"] == [1, 1]
@@ -100,8 +100,8 @@ class TestPoolDump:
         adapt = _adapt(h2_hamiltonian, verbose_operators=str(target))
         adapt.run()
         payload = json.loads(target.read_text())
-        assert len(payload["operators"]) == len(adapt._pool_ops)
-        for entry, op in zip(payload["operators"], adapt._pool_ops):
+        assert len(payload["operators"]) == len(adapt.solver._pool_ops)
+        for entry, op in zip(payload["operators"], adapt.solver._pool_ops):
             assert entry["label"] == op.label and entry["kind"] == op.kind
             assert entry["support"] == list(op.support)
             terms = op.generator.simplify().terms
@@ -232,14 +232,14 @@ class TestExpressivityColumn:
 
     def test_it_is_a_plain_boolean(self, h2_hamiltonian):
         adapt = _adapt(h2_hamiltonian)
-        assert adapt._expressivity_wanted(True) is True
-        assert adapt._expressivity_wanted(False) is False
+        assert adapt.solver._expressivity_wanted(True) is True
+        assert adapt.solver._expressivity_wanted(False) is False
 
     @pytest.mark.parametrize("bad", ["auto", "sometimes", 1, 0, None])
     def test_anything_else_is_rejected(self, h2_hamiltonian, bad):
         """No automatic middle setting: the caller decides once."""
         with pytest.raises(ValueError, match="log_expressivity"):
-            _adapt(h2_hamiltonian)._expressivity_wanted(bad)
+            _adapt(h2_hamiltonian).solver._expressivity_wanted(bad)
 
     def test_a_skipped_column_is_absent_not_blank(self, h2_hamiltonian,
                                                   capsys):

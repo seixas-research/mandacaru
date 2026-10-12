@@ -50,8 +50,17 @@ optional inner, *frozen* window are kept as they are, and the rest of the
 subspace is the leading eigenvectors of
 :math:`Z(\mathbf k) = \sum_b w_b M(\mathbf k,\mathbf b) P(\mathbf k+\mathbf
 b) M(\mathbf k,\mathbf b)^\dagger` over the window's other states, mixed
-between iterations.  The gauge within the subspace is then minimized as for
-an isolated group.
+between iterations.  :math:`\Omega_I` need not be lowest on a subspace with
+the crystal's symmetry: a symmetric subspace can be a saddle point, which
+the iteration leaves for a lower, symmetry-broken one.  The subspace is
+therefore kept symmetric (Sakuma 2013): the starting projector and every
+:math:`Z(\mathbf k)` are averaged over the space group,
+:math:`\bar Z(g\mathbf k) = |G|^{-1}\sum_g d_g(\mathbf k) Z(\mathbf k)
+d_g(\mathbf k)^\dagger` with :math:`d_g(\mathbf k)` the operation's matrix
+between the Bloch states of :math:`\mathbf k` and :math:`g\mathbf k`
+(:func:`band_representations`), so the iteration stays on symmetric
+subspaces and reaches the same one from any trial orbitals.  The gauge
+within the subspace is then minimized as for an isolated group.
 
 **The Hamiltonian in the Wannier basis** is
 :math:`H_{mn}(\mathbf R) = \langle w_{m\mathbf 0}|H|w_{n\mathbf R}\rangle`
@@ -109,6 +118,14 @@ DISENTANGLE_MIXING = 0.5
 #: Convergence of the disentanglement: the change of Omega_I (Bohr^2) per
 #: iteration.
 DISENTANGLE_TOLERANCE = 1e-10
+
+#: Largest departure from unitarity, on the states of the windows, of a
+#: space-group operation's matrix between the Bloch states of two k-points
+#: for the operation to take part in the symmetry-adapted disentanglement
+#: (:func:`symmetry_operations`).  An operation the grid carries is unitary
+#: to 1e-13; one the grid breaks (silicon's atom-swapping operations at h
+#: 0.35 A) to 1e-6; a window that cuts a degenerate set breaks it at O(1).
+SYMMETRY_TOLERANCE = 1e-4
 
 #: Relative tolerance below which two replicas of a pair count as equally
 #: near (:func:`nearest_replicas`).
@@ -374,7 +391,9 @@ class WannierResult:
     degeneracy already divided out.  ``windows`` are the outer
     and frozen energy windows (eV) of a disentanglement, ``None`` for an
     isolated group; ``disentanglement`` the Omega_I (Angstrom^2) per
-    iteration of the subspace selection.
+    iteration of the subspace selection; ``symmetry_operations`` how many
+    space-group operations kept that subspace symmetric (1: none beyond the
+    identity).
     """
 
     centers: np.ndarray
@@ -392,6 +411,7 @@ class WannierResult:
     history: list = field(default_factory=list)
     windows: dict | None = None
     disentanglement: list = field(default_factory=list)
+    symmetry_operations: int = 1
     size: tuple = ()
     #: The trial orbital each function started from, by name
     #: (:attr:`Trial.label`): ``"Cu0:dxy"``, say.
@@ -458,7 +478,8 @@ class WannierResult:
                 lines.append(f"  frozen window {frozen[0]:.3f} .. "
                              f"{frozen[1]:.3f} eV")
             lines.append(f"  disentanglement {len(self.disentanglement)} "
-                         "iterations")
+                         "iterations, symmetric under "
+                         f"{self.symmetry_operations} operations")
         lines += [f"  Omega_I  {self.omega_invariant:.6f} A^2",
                   f"  Omega_OD {self.omega_offdiagonal:.6f} A^2",
                   f"  Omega_D  {self.omega_diagonal:.6f} A^2",
@@ -835,9 +856,9 @@ def gaussian_trials(centers) -> list:
 
 def real_harmonic(l: int, m: int, x, y, z) -> np.ndarray:
     r"""The real spherical harmonic :math:`S_{lm}` at the Cartesian offsets
-    ``x, y, z``, built from the complex :math:`Y_l^m` of
-    :func:`~mandacaru.basis._angular.spherical_harmonic` (Condon-Shortley
-    phase):
+    ``x, y, z``: :func:`~mandacaru.basis._angular.spherical_harmonic` with
+    ``real=True``, the harmonics of every molecular basis, from the
+    Condon-Shortley :math:`Y_l^m`:
 
     .. math::
 
@@ -856,11 +877,7 @@ def real_harmonic(l: int, m: int, x, y, z) -> np.ndarray:
     if abs(m) > l:
         raise ValueError(f"require |m| <= l; got l={l}, m={m}")
     _r, theta, phi = spherical_coords(x, y, z, (0.0, 0.0, 0.0))
-    Y = spherical_harmonic(l, abs(m), theta, phi)
-    if m == 0:
-        return Y.real
-    sign = np.sqrt(2.0) * (-1.0) ** abs(m)
-    return sign * (Y.real if m > 0 else Y.imag)
+    return spherical_harmonic(l, m, theta, phi, real=True)
 
 
 def gaussian_radial(l: int, r, width: float = TRIAL_WIDTH) -> np.ndarray:
@@ -961,6 +978,240 @@ def loewdin_unitary(A) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
+# The crystal's symmetry on the Bloch states.
+# --------------------------------------------------------------------------- #
+
+def space_group(crystal, moments=None, symprec: float | None = None):
+    """``(rotations, translations)``: the space group of the crystal's atoms
+    (spglib), on fractional coordinates.  Atoms are told apart by their
+    dataset and, with ``moments``, their initial magnetic moment, so an
+    operation exchanging opposite moments is not one."""
+    from ase import Atoms
+
+    from ..core.symmetry import DEFAULT_SYMPREC, crystal_symmetry
+
+    centers = np.asarray(crystal.centers, dtype=float)
+    moments = (np.zeros(len(centers)) if moments is None
+               else np.broadcast_to(np.asarray(moments, dtype=float),
+                                    (len(centers),)))
+    keys = [(id(dataset), round(float(m), 6))
+            for dataset, m in zip(crystal.datasets, moments)]
+    kinds = list(dict.fromkeys(keys))
+    lattice = np.asarray(crystal.lattice, dtype=float)       # columns, Bohr
+    atoms = Atoms(numbers=[kinds.index(key) + 1 for key in keys],
+                  positions=centers * BOHR_TO_ANGSTROM,
+                  cell=lattice.T * BOHR_TO_ANGSTROM, pbc=True)
+    info = crystal_symmetry(atoms, DEFAULT_SYMPREC if symprec is None
+                            else symprec)
+    return (np.asarray(info.rotations, dtype=float),
+            np.asarray(info.translations, dtype=float))
+
+
+def _atom_shells(crystal):
+    """Each atom's basis functions as whole shells ``(l, [mu, ...])`` in
+    the basis' order (consecutive functions of one atom and one l, every m
+    once), or ``None`` when a function is not a harmonic centered on one of
+    the crystal's atoms (a ghost's, say)."""
+    centers = np.asarray(crystal.centers, dtype=float)
+    shells: dict = {atom: [] for atom in range(len(centers))}
+    current = None
+    for mu, (function, atom) in enumerate(zip(crystal.basis,
+                                              crystal.atom_of_orbital)):
+        atom = int(atom)
+        l, m = getattr(function, "l", None), getattr(function, "m", None)
+        if (l is None or m is None or not 0 <= atom < len(centers)
+                or not np.allclose(function.center, centers[atom],
+                                   atol=1e-8)):
+            return None
+        if (current is None or current[0] != atom or current[1] != l
+                or m in current[2]):
+            current = (atom, int(l), {})
+            shells[atom].append((int(l), []))
+        current[2][m] = mu
+        shells[atom][-1][1].append(mu)
+    for atom_shells in shells.values():
+        for l, members in atom_shells:
+            if sorted(crystal.basis[mu].m for mu in members) \
+                    != list(range(-l, l + 1)):
+                return None
+    return shells
+
+
+def band_representations(crystal, data, vectors, fractional, size,
+                         operations, used):
+    r"""``(images, matrices, kept)`` of the space-group ``operations``
+    (``(rotations, translations)``, fractional) on a full mesh:
+    ``images[s, k]`` the mesh index of :math:`g_s\mathbf k`,
+    ``matrices[s, k]`` :math:`d_{mn} = \langle\psi_{m, g\mathbf k}|\hat
+    g|\psi_{n\mathbf k}\rangle` between the ``used`` columns of
+    ``vectors`` (PAW overlap of :math:`g\mathbf k`), and ``kept`` the
+    operations that map the mesh onto itself.  ``None`` when the basis is
+    not whole shells of atom-centered harmonics.
+
+    An operation :math:`\mathbf r \to R\mathbf r + \mathbf t` takes the
+    Bloch sum of atom A's :math:`Y_{lm}` at :math:`\mathbf k` to
+    :math:`e^{-iR\mathbf k\cdot\mathbf L}\sum_{m'}\chi_{A'lm',
+    R\mathbf k}\,T_{m'm}`, with :math:`R\tau_A + \mathbf t = \tau_{A'} +
+    \mathbf L` and :math:`Y_{lm}(R^{-1}\hat u) = \sum_{m'}Y_{lm'}(\hat
+    u)T_{m'm}`.
+    """
+    from ..pseudopotentials.periodic_paw import _harmonic_rotation
+
+    shells = _atom_shells(crystal)
+    if shells is None:
+        return None
+    lattice = np.asarray(crystal.lattice, dtype=float)       # columns, Bohr
+    inverse = np.linalg.inv(lattice)
+    B = rc.reciprocal_vectors(lattice)
+    size = np.asarray(size, dtype=int)
+    kc = np.asarray(fractional, dtype=float) @ B.T
+    centers = np.asarray(crystal.centers, dtype=float)
+    kinds = [id(dataset) for dataset in crystal.datasets]
+    M = len(crystal.basis)
+    used = np.asarray(used, dtype=int)
+    images, matrices, kept = [], [], []
+    for s, (W, t) in enumerate(zip(*operations)):
+        R = lattice @ np.asarray(W, dtype=float) @ inverse
+        Rk = kc @ R.T
+        kf = Rk @ np.linalg.inv(B).T * size
+        if np.abs(kf - np.round(kf)).max() > 1e-6:
+            continue                       # the mesh does not carry it
+        image = np.ravel_multi_index(tuple((np.round(kf).astype(int)
+                                            % size).T), tuple(size))
+        D = np.zeros((M, M), dtype=complex)
+        shift = np.zeros((M, 3))
+        harmonics: dict = {}
+        mapped = True
+        for atom, atom_shells in shells.items():
+            x = R @ centers[atom] + lattice @ np.asarray(t, dtype=float)
+            offset = inverse @ (x[:, None] - centers.T)
+            match = [b for b in range(len(centers)) if kinds[b] == kinds[atom]
+                     and np.abs(offset[:, b]
+                                - np.round(offset[:, b])).max() < 1e-5]
+            if len(match) != 1 or len(shells[match[0]]) != len(atom_shells):
+                mapped = False
+                break
+            target = match[0]
+            L = x - centers[target]
+            for (l, members), (l_target, images_of) in zip(atom_shells,
+                                                           shells[target]):
+                if l != l_target:
+                    mapped = False
+                    break
+                if l not in harmonics:
+                    harmonics[l] = _harmonic_rotation(np.linalg.inv(R), l)
+                T = harmonics[l]
+                for mu in members:
+                    shift[mu] = L
+                    for nu in images_of:
+                        D[nu, mu] = T[crystal.basis[nu].m + l,
+                                      crystal.basis[mu].m + l]
+            if not mapped:
+                break
+        if not mapped:
+            continue
+        rows = []
+        for k in range(len(kc)):
+            phase = np.exp(-1j * (shift @ Rk[k]))
+            target = image[k]
+            rows.append(np.conj(vectors[target][:, used]).T
+                        @ data[target].overlap @ (D * phase[None, :])
+                        @ vectors[k][:, used])
+        images.append(image)
+        matrices.append(np.array(rows))
+        kept.append(s)
+    return np.array(images), np.array(matrices), kept
+
+
+def symmetry_operations(crystal, data, vectors, fractional, size, inside,
+                        fixed, moments=None,
+                        tolerance: float = SYMMETRY_TOLERANCE):
+    r"""The space group as the symmetry-adapted disentanglement uses it
+    (:func:`disentangle`'s ``symmetry``): ``(images, matrices, used)``, or
+    ``None`` when nothing beyond the identity survives.
+
+    ``used`` are the band indices inside the window at some k-point and
+    ``matrices[s, k]`` the operation's :math:`d_g(\mathbf k)` between them,
+    zero outside the windows' states and made exactly unitary on them
+    (polar decomposition).  An operation is kept when it maps the mesh onto
+    itself and, at every k-point, the window's states onto the window's
+    and the frozen states onto the frozen, unitarily, within ``tolerance``
+    (:data:`SYMMETRY_TOLERANCE`): a window that cuts a degenerate set, or
+    trial-chosen states (``masks``) that are not symmetric, leave out the
+    operations they break.  The kept operations must form a group.
+    """
+    used = np.flatnonzero(np.any(inside, axis=0))
+    operations = space_group(crystal, moments)
+    if len(operations[0]) <= 1:
+        return None
+    found = band_representations(crystal, data, vectors, fractional, size,
+                                 operations, used)
+    if found is None:
+        return None
+    images, matrices, kept = found
+    inside_u, fixed_u = inside[:, used], fixed[:, used]
+    keep = []
+    for s in range(len(kept)):
+        departure = 0.0
+        for k in range(len(fractional)):
+            d, target = matrices[s, k], images[s, k]
+            cols, rows = inside_u[k], inside_u[target]
+            block = d[np.ix_(rows, cols)]
+            departure = max(
+                departure,
+                np.abs(block.conj().T @ block - np.eye(block.shape[1])).max()
+                if block.size else 0.0,
+                np.abs(d[np.ix_(~rows, cols)]).max(initial=0.0),
+                np.abs(d[np.ix_(~fixed_u[target], fixed_u[k])]).max(
+                    initial=0.0))
+            if rows.sum() != cols.sum() or departure > tolerance:
+                departure = np.inf
+                break
+        if departure <= tolerance:
+            keep.append(s)
+    rotations = operations[0][[kept[s] for s in keep]]
+    translations = operations[1][[kept[s] for s in keep]]
+    if len(keep) <= 1 or not _is_group(rotations, translations):
+        return None
+    images, matrices = images[keep], matrices[keep]
+    for s in range(len(keep)):
+        for k in range(len(fractional)):
+            cols, rows = inside_u[k], inside_u[images[s, k]]
+            u, _sv, vh = np.linalg.svd(matrices[s, k][np.ix_(rows, cols)])
+            matrices[s, k] = 0.0
+            matrices[s, k][np.ix_(rows, cols)] = u @ vh
+    return images, matrices, used
+
+
+def _is_group(rotations, translations) -> bool:
+    """Whether the operations ``(W, t)`` are closed under composition."""
+    elements = list(zip(rotations, translations))
+
+    def find(W, t):
+        return any(np.array_equal(W, W2) and np.abs(
+            (t - t2) - np.round(t - t2)).max() < 1e-5 for W2, t2 in elements)
+
+    return all(find(W1 @ W2, W1 @ t2 + t1)
+               for W1, t1 in elements for W2, t2 in elements)
+
+
+def symmetrized(X, symmetry) -> np.ndarray:
+    r""":math:`\bar X(g\mathbf k) = |G|^{-1}\sum_g d_g(\mathbf k)
+    X(\mathbf k) d_g(\mathbf k)^\dagger` of the band matrices ``X`` (``(nk,
+    nb, nb)``) over the ``symmetry`` of :func:`symmetry_operations`; the
+    rows and columns of bands it does not use are left as they are."""
+    images, matrices, used = symmetry
+    block = X[:, used[:, None], used[None, :]]
+    total = np.zeros_like(block)
+    for image, d in zip(images, matrices):
+        total[image] += np.einsum("kab,kbc,kdc->kad", d, block, np.conj(d),
+                                  optimize=True)
+    out = np.array(X, copy=True)
+    out[:, used[:, None], used[None, :]] = total / len(images)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Disentanglement.
 # --------------------------------------------------------------------------- #
 
@@ -995,10 +1246,31 @@ def resolve_windows(windows) -> tuple:
     return outer, frozen
 
 
+def window_sets(energies, outer, frozen=None, masks=None) -> tuple:
+    """``(inside, fixed)``, boolean ``(nk, nb)``: the states of the
+    ``outer`` window and those of the ``frozen`` one (Hartree), or the two
+    ``masks`` as given (the frozen states inside)."""
+    if masks is not None:
+        inside, fixed = (np.asarray(m, dtype=bool) for m in masks)
+        return inside, fixed & inside
+    inside = (energies >= outer[0]) & (energies <= outer[1])
+    fixed = np.zeros_like(inside)
+    if frozen is not None:
+        fixed = inside & (energies >= frozen[0]) & (energies <= frozen[1])
+    return inside, fixed
+
+
+def _leading(block, count: int) -> np.ndarray:
+    """The ``count`` eigenvectors of the Hermitian part of ``block`` with
+    the largest eigenvalues."""
+    _values, vectors = np.linalg.eigh(0.5 * (block + block.conj().T))
+    return vectors[:, block.shape[0] - count:]
+
+
 def disentangle(M, neighbors, weights, energies, A, n_functions, outer,
                 frozen=None, *, mixing: float = DISENTANGLE_MIXING,
                 max_iter: int = 5000, tol: float = DISENTANGLE_TOLERANCE,
-                masks=None):
+                masks=None, symmetry=None):
     r"""The ``n_functions``-dimensional subspace per k-point that minimizes
     :math:`\Omega_I` (Souza, Marzari and Vanderbilt 2001).
 
@@ -1010,21 +1282,19 @@ def disentangle(M, neighbors, weights, energies, A, n_functions, outer,
     ``masks`` -- boolean ``(inside, fixed)``, ``(nk, nb)`` each -- give the
     two sets state by state instead of by energy (the projectability
     windows of :mod:`~mandacaru.algorithms.band_selection`).
+    ``symmetry`` (:func:`symmetry_operations`) keeps the subspace symmetric
+    (Sakuma 2013): the trials' projector and every :math:`Z(\mathbf k)`
+    are averaged over the operations (:func:`symmetrized`) before their
+    leading eigenvectors are taken, so a symmetric saddle point of
+    :math:`\Omega_I` is not left for a symmetry-broken subspace and every
+    trial set reaches the same symmetric one.
     Returns ``(S, history)``: ``S[k]`` ``(nb, n_functions)`` orthonormal
     columns in the band basis (zero outside the window) and Omega_I (Bohr^2)
     per iteration.
     """
     nk, nb = energies.shape
     J = int(n_functions)
-    if masks is not None:
-        inside, fixed = (np.asarray(m, dtype=bool) for m in masks)
-        fixed = fixed & inside
-    else:
-        inside = (energies >= outer[0]) & (energies <= outer[1])
-        fixed = np.zeros_like(inside)
-        if frozen is not None:
-            fixed = inside & (energies >= frozen[0]) \
-                & (energies <= frozen[1])
+    inside, fixed = window_sets(energies, outer, frozen, masks)
     counts, n_fixed = inside.sum(axis=1), fixed.sum(axis=1)
     if counts.min() < J:
         k = int(np.argmin(counts))
@@ -1043,6 +1313,20 @@ def disentangle(M, neighbors, weights, energies, A, n_functions, outer,
         if rest:
             u, _s, _vh = np.linalg.svd(A[k][free[k]], full_matrices=False)
             S[k, free[k], len(f):] = u[:, :rest]
+
+    def update(X):
+        # The free part of the subspace: the leading eigenvectors of X's
+        # block over the free states, X averaged over the space group.
+        if symmetry is not None:
+            X = symmetrized(X, symmetry)
+        for k in range(nk):
+            rest = J - int(n_fixed[k])
+            if rest:
+                S[k, free[k], int(n_fixed[k]):] = _leading(
+                    X[k][np.ix_(free[k], free[k])], rest)
+
+    if symmetry is not None:
+        update(np.einsum("kmj,knj->kmn", S, np.conj(S)))
     history: list = []
     Z_in = None
     for _it in range(max_iter):
@@ -1056,13 +1340,7 @@ def disentangle(M, neighbors, weights, energies, A, n_functions, outer,
         Z = np.einsum("b,kbmj,kbnj->kmn", weights, X, np.conj(X),
                       optimize=True)
         Z_in = Z if Z_in is None else mixing * Z + (1.0 - mixing) * Z_in
-        for k in range(nk):
-            rest = J - int(n_fixed[k])
-            if not rest:
-                continue
-            block = Z_in[k][np.ix_(free[k], free[k])]
-            _values, vecs = np.linalg.eigh(0.5 * (block + block.conj().T))
-            S[k, free[k], int(n_fixed[k]):] = vecs[:, -rest:]
+        update(Z_in)
     return S, history
 
 
@@ -2005,7 +2283,7 @@ def wannier_functions(solver, size, bands, trials, *, n_functions=None,
                       windows=None, fermi_level=None,
                       replicas: str = "centers",
                       width: float = TRIAL_WIDTH, max_iter: int = 2000,
-                      cite=None):
+                      symmetrize: bool = True, cite=None):
     """Maximally localized Wannier functions of the ``bands`` of a converged
     crystal: a :class:`WannierResult`, or for a spin-polarized crystal a
     :class:`SpinWannierResult` with one per spin channel, each from its own
@@ -2025,15 +2303,18 @@ def wannier_functions(solver, size, bands, trials, *, n_functions=None,
     in the distance between the functions' centers
     (:func:`nearest_replicas`), ``"cells"`` on the supercell's Wigner-Seitz
     vectors between cell origins (:func:`wigner_seitz_vectors`, shared by
-    degeneracy).  ``cite`` records the references a later
-    :meth:`WannierResult.downfold` uses.
+    degeneracy).  ``symmetrize`` keeps the disentangled subspace symmetric
+    under the crystal's space group (:func:`disentangle`, Sakuma 2013);
+    ``False`` lets Omega_I break the symmetry where that lowers it.
+    ``cite`` records the references a later :meth:`WannierResult.downfold`
+    uses.
     """
     if replicas not in ("centers", "cells"):
         raise ValueError(f"replicas must be 'centers' or 'cells'; got "
                          f"{replicas!r}")
     n_spins = int(solver.n_spins)
     options = dict(fermi_level=fermi_level, replicas=replicas, width=width,
-                   max_iter=max_iter, cite=cite)
+                   max_iter=max_iter, symmetrize=symmetrize, cite=cite)
     channels = [
         channel_wannier_functions(solver, spin, size, b, trials,
                                   n_functions=n, windows=w, **options)
@@ -2050,7 +2331,7 @@ def channel_wannier_functions(solver, spin, size, bands, trials, *,
                               n_functions=None, windows=None,
                               fermi_level=None, replicas: str = "centers",
                               width: float = TRIAL_WIDTH,
-                              max_iter: int = 2000,
+                              max_iter: int = 2000, symmetrize: bool = True,
                               cite=None) -> WannierResult:
     """:func:`wannier_functions` of one spin channel (``spin`` 0 for a
     restricted crystal)."""
@@ -2077,14 +2358,31 @@ def channel_wannier_functions(solver, spin, size, bands, trials, *,
                           width=width)
     record = None
     disentanglement: list = []
+    operations = 1
     if entangled:
         from .band_selection import resolve_selection, select_states
+
+        def subspace(sets):
+            # Omega_I's subspace, kept symmetric under the operations that
+            # map the windows' states onto themselves.
+            nonlocal operations
+            if symmetrize:
+                symmetry = symmetry_operations(
+                    crystal, data, vectors, fractional, size, *sets,
+                    moments=getattr(solver, "initial_moments", None))
+                operations = 1 if symmetry is None else len(symmetry[0])
+                if symmetry is not None and cite is not None:
+                    cite("Sakuma2013")
+            else:
+                symmetry = None
+            return disentangle(M0, neighbors, weights, energies, A, J, None,
+                               masks=sets, symmetry=symmetry)
 
         selection = resolve_selection(windows)
         if selection is None:
             outer, frozen = resolve_windows(windows)
-            S, disentanglement = disentangle(M0, neighbors, weights,
-                                             energies, A, J, outer, frozen)
+            S, disentanglement = subspace(window_sets(energies, outer,
+                                                      frozen))
             record = {"outer": tuple(x * HARTREE_TO_EV for x in outer),
                       "frozen": None if frozen is None
                       else tuple(x * HARTREE_TO_EV for x in frozen)}
@@ -2094,9 +2392,8 @@ def channel_wannier_functions(solver, spin, size, bands, trials, *,
                 energies=energies, trials=trials, n_functions=J,
                 bands=bands, fermi_level=fermi_level)
             if kind == "masks":
-                S, disentanglement = disentangle(M0, neighbors, weights,
-                                                 energies, A, J, None,
-                                                 masks=chosen)
+                S, disentanglement = subspace(window_sets(energies, None,
+                                                          masks=chosen))
             else:
                 S = chosen
         # The Hamiltonian's eigenstates within the subspace.
@@ -2143,7 +2440,8 @@ def channel_wannier_functions(solver, spin, size, bands, trials, *,
         lattice_vectors=R, hamiltonian_R=H_R * HARTREE_TO_EV,
         lattice=lattice.T * BOHR_TO_ANGSTROM, bands=bands,
         iterations=len(history), history=history, windows=record,
-        disentanglement=[x * a2 for x in disentanglement], size=size,
+        disentanglement=[x * a2 for x in disentanglement],
+        symmetry_operations=operations, size=size,
         labels=tuple(t.label for t in trials),
         spin=spin if solver.n_spins == 2 else None,
         _hamiltonian_bvk=H_bvk, _density_bvk=rho_bvk, _crystal=crystal,

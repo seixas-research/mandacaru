@@ -126,3 +126,79 @@ processor for every pool operator. Mandacaru optimizes on the local state
 vector and sends only the optimized state to hardware for one measurement
 ({doc}`measurement_cost`), so a 100-qubit problem can be prepared, mapped and
 costed here, but not solved.
+
+## The two-electron integrals
+
+The classical preparation has a memory limit of its own, set by the basis
+size `M` rather than by the register. The two-electron tensor
+`<ab|cd>` holds `M^4` complex numbers, `16 M^4` bytes: 1.3 MB for water in
+PAW-LCAO-SZP (`M = 17`), 2.2 GB for benzene in DZP (`M = 108`), 13 GB for
+naphthalene in DZP (`M = 170`). It is built from the `M(M+1)/2` pair
+densities `psi_b^* psi_d`, one Poisson solve each. Every solve's potential
+gives a whole slab of the tensor, `eri[:, b, :, d]`, from one matrix product,
+so the build needs the result plus a working set. The working set is bounded
+by `MANDACARU_ERI_MEMORY_MB` (256 MB by default). Every grid convolution
+(Poisson solves, the spectral Laplacian, pair transforms) runs on one shared
+FFT workspace per grid ({mod}`mandacaru.integrals.fft`). The workspace
+transforms in place and prunes the zero padding of an isolated solve. Real
+densities go through real transforms.
+
+A small active space does not need the whole tensor. A closed-shell energy or
+MP2 selection goes integral-direct when the tensor route would not fit
+({doc}`active_space`). When a reusable representation of all the integrals
+is wanted, the **Cholesky option** factors them instead:
+
+```python
+from mandacaru.algorithms import Mandacaru
+
+calc = Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZP"},
+                 active_space={"orbitals": 8},
+                 two_body={"method": "cholesky", "tolerance": 1e-7})
+```
+
+The command line spells it `--two-body cholesky --cholesky-tolerance 1e-7`.
+
+The integrals are the Coulomb inner products of pair densities, a positive
+semidefinite matrix of low numerical rank. A pivoted Cholesky decomposition
+writes them as `(ac|bd) = sum_r B^r_ac B^r_bd`. The pivots are batched in
+two steps (Folkestad, Kjonstad and Koch 2019), and the decomposition runs on
+the grid without ever forming the matrix:
+
+- the functions are made real by the unitary their conjugation closure
+  allows, so the pair densities, their potentials and the factors are real;
+- the exact diagonal comes from Parseval, forward transforms only;
+- pairs whose sampled supports do not meet are skipped;
+- each pivot's column is one matrix product.
+
+The rank `R` is a few times `M`, so the factors take about `8 M^2 R` bytes
+instead of `16 M^4`. The SCF builds its Coulomb and exchange from the
+factors (RHF, or UHF for an open shell). The active-space integrals come from
+the factors too, so the tensor is formed only when every orbital is active.
+The PAW-LCAO compensation charges stay in their structured form beside the
+factors, exactly.
+
+**The tolerance bounds every integral, not the energy.** Each residual
+Coulomb self-energy left out is below it, which bounds every integral's error
+(Cauchy-Schwarz). An energy sums many integrals, though. Measured against the
+dense tensor on the same grid (h = 0.3 Angstrom), the largest energy error
+over the RHF, MP2 and active-space FCI energies of water (DZP), N2 (SZP) and
+LiH (DZP), and the RHF energy of benzene (DZP), was:
+
+| `tolerance` (Ha) | Largest energy error (Ha) | `R / M`, water / benzene |
+|---|---|---|
+| 1e-6 | 3.1e-6 | 7.0 / 7.5 |
+| 3e-7 | 1.1e-6 | 7.9 / 8.7 |
+| **1e-7** (default) | 2.3e-7 | 8.4 / 9.9 |
+| 1e-8 | 7.0e-8 | 9.9 / 12.5 |
+
+The default, 1e-7 Ha, is the loosest tolerance that kept every one of these
+energies within 1e-6 Ha. A larger molecule accumulates more: confirm the
+tolerance on your own system. For benzene at 1e-7 Ha the factors and the
+compensation terms take 73 MB, against 2.2 GB for the tensor.
+
+The first version is for molecules, energies and active spaces. The cases
+that need the dense tensor are refused with the reason: a crystal (a periodic
+kernel and Bloch phases), forces (the gradient of a truncated factorization
+needs its own derivation), `method="dft"` (its Hartree term is a Poisson
+solve of the density), GHF and a spin-orbit (`lda-dirac`) basis (a spinor
+tensor), and the plane-wave basis.

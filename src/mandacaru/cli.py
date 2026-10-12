@@ -203,6 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .backends.hardware import available_devices
     from .circuits.pools import available_pools
     from .core.mapping import MAPPINGS
+    from .integrals.cholesky import TWO_BODY_METHODS
     from .integrals.exchange_correlation import GRID_FUNCTIONALS
     from .optimizers.optim import DEFAULT_OPTIMIZER, NAMED_OPTIMIZERS
 
@@ -379,6 +380,15 @@ def build_parser() -> argparse.ArgumentParser:
                             "orbital sets whole and the irreducible "
                             "representations the target states need. The "
                             "register keeps its size")
+    basis.add_argument("--two-body", default=None,
+                       choices=TWO_BODY_METHODS,
+                       help="two-electron integrals: the dense tensor "
+                            "(default) or Cholesky factors, which hold "
+                            "about 8 M^2 R bytes instead of 16 M^4")
+    basis.add_argument("--cholesky-tolerance", type=float, default=None,
+                       metavar="HARTREE",
+                       help="truncation of the Cholesky factors (Hartree; "
+                            "implies --two-body cholesky)")
     basis.add_argument("--mapping", default="jordan_wigner",
                        choices=MAPPINGS,
                        help="fermion-to-qubit mapping (default jordan_wigner)")
@@ -648,6 +658,11 @@ def solver_options(args) -> dict:
         if getattr(args, flag) is not None}
     if active:
         options["active_space"] = active
+    if args.two_body is not None or args.cholesky_tolerance is not None:
+        two_body = {"method": args.two_body or "cholesky"}
+        if args.cholesky_tolerance is not None:
+            two_body["tolerance"] = args.cholesky_tolerance
+        options["two_body"] = two_body
     criteria = {name: getattr(args, f"convergence_{name}")
                 for name in ("gradient", "energy")
                 if getattr(args, f"convergence_{name}") is not None}

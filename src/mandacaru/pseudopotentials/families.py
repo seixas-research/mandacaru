@@ -299,7 +299,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                               spin_orbit_projectors=None,
                               integrals_class=None,
                               potentials_keyword: str = "pseudos",
-                              ghosts=(), electric_field=None):
+                              ghosts=(), electric_field=None, two_body=None):
     """The driver 5-tuple of a pseudopotential family -- the part every family
     shares.
 
@@ -392,7 +392,8 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     # DFT): no RHF orbitals, no MO transform, no second-quantized operator.
     hamiltonian = (integrals.molecular_hamiltonian(
         mo_basis=True, n_electrons=n_el, num_particles=num_particles,
-        active_space=active_space) if hamiltonian else None)
+        active_space=active_space, two_body=two_body)
+        if hamiltonian else None)
     _warn_unresolved(integrals, basis_fns, h)
 
     # A valence-only basis has no core to freeze, but it does have virtual

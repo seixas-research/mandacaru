@@ -42,19 +42,19 @@ class TestSparsePool:
 
     def test_auto_enables_sparse_beyond_10_qubits(self):
         adapt = Mandacaru(method="adapt-vqe")
-        assert adapt._resolve_sparse("auto", 10) is True
-        assert adapt._resolve_sparse("auto", 8) is False
-        assert adapt._resolve_sparse(True, 4) is True
-        assert adapt._resolve_sparse(False, 20) is False
-        assert adapt._resolve_sparse("matrix-free", 4) is True
+        assert adapt.solver._resolve_sparse("auto", 10) is True
+        assert adapt.solver._resolve_sparse("auto", 8) is False
+        assert adapt.solver._resolve_sparse(True, 4) is True
+        assert adapt.solver._resolve_sparse(False, 20) is False
+        assert adapt.solver._resolve_sparse("matrix-free", 4) is True
         with pytest.raises(ValueError, match="matrix-free"):
-            adapt._resolve_sparse("lazy", 4)
+            adapt.solver._resolve_sparse("lazy", 4)
 
     def test_sparse_flag_stored(self, lih):
         lih.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="HAO",
                              h=0.5, sparse=True, trace=False, max_iterations=2)
         lih.get_total_energy()
-        assert lih.calc._sparse is True
+        assert lih.calc.solver._sparse is True
 
 
 class TestMatrixFree:
@@ -75,6 +75,11 @@ class TestMatrixFree:
         stored = self._run(lih, sparse=True, sector=sector)
         free = self._run(lih, sparse="matrix-free", sector=sector)
         assert lih.calc.solver._matrix_free is True
+        # The Hamiltonian and every pool generator read one index array.
+        solver = lih.calc.solver
+        owners = {id(op._states) for op in solver._pool_matrices}
+        owners.add(id(solver._h_matrix._states))
+        assert len(owners) == 1
         assert free == pytest.approx(stored, abs=1e-8)
 
     def test_auto_goes_matrix_free_when_the_matrices_cannot_fit(
@@ -83,7 +88,7 @@ class TestMatrixFree:
         # 64 KiB of "memory": a quarter of it is below the 6-qubit problem's
         # 30 KiB CSR bound (Hamiltonian plus pool).  The state-vector guard
         # reads the real machine, so only the choice of form is affected.
-        monkeypatch.setattr(base, "physical_memory_bytes", lambda: 2 ** 16)
+        monkeypatch.setattr(base, "memory_limit_bytes", lambda: 2 ** 16)
         lih.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="HAO",
                              h=0.5, trace=False, max_iterations=1)
         lih.get_total_energy()

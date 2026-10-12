@@ -125,6 +125,10 @@ REAL_DENSITY_TOLERANCE = 1e-8
 #: it and hides the problem.
 RDM_HERMITICITY_TOLERANCE = 1e-8
 
+#: Largest imaginary part (relative) of a one-RDM taken as round-off: below
+#: it a molecule's RDM (real orbitals, real state) is diagonalized as real.
+REAL_RDM_TOLERANCE = 1e-12
+
 #: The quantities :func:`volumetric_field` knows how to build.
 QUANTITIES = ("density", "alpha_density", "beta_density", "spin_density",
               "difference_density", "natural_orbital", "molecular_orbital")
@@ -330,20 +334,18 @@ class OrbitalExpansion:
         #: :func:`spin_resolved_rdm` has already rotated into them.
         X = integrals._lowdin_x()
         self.mo = (X if getattr(integrals, "spinor_basis", False)
-                   else X @ np.asarray(integrals.mo_coefficients,
-                                       dtype=complex))
+                   else X @ np.asarray(integrals.mo_coefficients))
         if grid is None or grid is integrals.grid:
             # The engine sampled every function once when it was built; that is
             # the same (M, G) array the integrals were computed from.
             self.samples = integrals._engine._psi
         else:
             self.samples = np.ascontiguousarray(
-                np.stack([fn.sample(self.grid) for fn in integrals.basis]),
-                dtype=np.complex128)
+                np.stack([fn.sample(self.grid) for fn in integrals.basis]))
 
     def orbital(self, coefficients) -> np.ndarray:
         r""":math:`\sum_\mu c_\mu \chi_\mu(\mathbf r)` for AO coefficients ``c``."""
-        return np.asarray(coefficients, dtype=complex) @ self.samples
+        return np.asarray(coefficients) @ self.samples
 
     def natural_orbitals(self, D) -> NaturalOrbitals:
         r"""Diagonalize a spatial one-RDM into occupations and orbitals.
@@ -356,7 +358,12 @@ class OrbitalExpansion:
         :math:`\psi_i` are orthonormal, so the occupations sum to the electron
         count.
         """
-        D = np.asarray(D, dtype=complex)
+        D = np.asarray(D)
+        # A molecule's real orbitals and real state give a real RDM: keep it
+        # real, so its natural orbitals are real functions.
+        if np.iscomplexobj(D) and np.abs(D.imag).max(initial=0.0) <= \
+                REAL_RDM_TOLERANCE * max(np.abs(D).max(initial=0.0), 1.0):
+            D = D.real
         w, U = np.linalg.eigh(0.5 * (D + D.conj().T))
         order = np.argsort(w)[::-1]
         mo_coefficients = np.conj(U[:, order])
@@ -755,12 +762,10 @@ def dipole_moment(integrals, gamma, *, frozen=(), active=None,
     ``gamma`` (the arguments are :func:`volumetric_field`'s).
 
     The augmentation moments come from the PAW compensation channels
-    :math:`Q^{A}_{LM}` (complex harmonics, each shape carrying a unit
+    :math:`Q^{A}_{LM}` (real harmonics, each shape carrying a unit
     :math:`LM` multipole): :math:`q^A_{LM} = \sum_{pr} Q^{A,LM}_{pr}
     D_{rp}`, the atom's charge :math:`\sqrt{4\pi}\,q^A_{00}` and its dipole
-    :math:`d_z = \sqrt{4\pi/3}\,q_{10}`,
-    :math:`d_x = \sqrt{8\pi/3}\,(q_{1,-1} - q_{11})/2`,
-    :math:`d_y = \sqrt{8\pi/3}\,(q_{1,-1} + q_{11})/2i`.
+    :math:`(d_x, d_y, d_z) = \sqrt{4\pi/3}\,(q_{11}, q_{1,-1}, q_{10})`.
     """
     expansion = OrbitalExpansion(integrals)
     M = int(len(integrals.basis) if n_spatial_orbitals is None
@@ -788,13 +793,8 @@ def dipole_moment(integrals, gamma, *, frozen=(), active=None,
         q = {key: complex(np.sum(Q * D_ao.T)) for key, Q in channels.items()}
         for atom in {key[0] for key in q}:
             charge = np.sqrt(4.0 * np.pi) * q.get((atom, 0, 0), 0.0)
-            q10 = q.get((atom, 1, 0), 0.0)
-            q11 = q.get((atom, 1, 1), 0.0)
-            q1m = q.get((atom, 1, -1), 0.0)
-            local = np.array([
-                np.sqrt(8.0 * np.pi / 3.0) * (q1m - q11) / 2.0,
-                np.sqrt(8.0 * np.pi / 3.0) * (q1m + q11) / 2.0j,
-                np.sqrt(4.0 * np.pi / 3.0) * q10])
+            local = np.sqrt(4.0 * np.pi / 3.0) * np.array([
+                q.get((atom, 1, m), 0.0) for m in (1, -1, 0)])
             augmentation += np.real(charge) * positions[atom] \
                 + np.real(local)
             held += float(np.real(charge))
