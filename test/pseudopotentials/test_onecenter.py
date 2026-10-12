@@ -3,14 +3,13 @@
 
 """The PAW-LCAO one-center two-body machinery (:mod:`mandacaru.pseudopotentials.onecenter`).
 
-The Coulomb correction is validated machinery that is deliberately **not**
-wired into the Hamiltonian: it measured the term the linearized one-center
-treatment drops (0.08-0.33 eV on oxygen) and thereby ruled it out as the cause
-of the p-valence binding failure.  These tests pin the pieces against closed
-forms so the measurement stays reproducible.  Its short-range counterpart and
-the frozen semilocal exchange are the one-center terms of the HSE06 hybrid
-(:class:`~mandacaru.pseudopotentials.onecenter.OneCenterHybrid`), which are
-wired in.
+The Coulomb correction is the two-body operator of every wave-function
+Hamiltonian's spheres (:class:`~mandacaru.pseudopotentials.onecenter.OneCenterExact`,
+since 2026-10-12); before that it was measured machinery only (0.08-0.33 eV
+on oxygen, the term the linearized treatment drops).  These tests pin the
+pieces against closed forms.  Its short-range counterpart and the frozen
+semilocal exchange are the one-center terms of the HSE06 hybrid
+(:class:`~mandacaru.pseudopotentials.onecenter.OneCenterHybrid`).
 """
 
 from types import SimpleNamespace
@@ -18,8 +17,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from mandacaru.pseudopotentials.onecenter import (OneCenterHybrid,
+from mandacaru.pseudopotentials.onecenter import (OneCenterExact,
+                                                  OneCenterHybrid,
+                                                  _three_j_squared,
                                                   angular_coupling,
+                                                  core_orbitals,
+                                                  exact_one_center_terms,
                                                   frozen_exchange_terms,
                                                   long_range_radial_kernel,
                                                   long_range_shape_potential,
@@ -278,3 +281,76 @@ class TestOneCenterExchange:
         off = OneCenterHybrid(projectors, datasets, 0.11, 0.0).evaluate(D)
         assert off.energy == 0.0
         assert not np.any(off.operators[0])
+
+
+class TestOneCenterExact:
+    """The exact one-center terms of a Hartree-Fock PAW-LCAO Hamiltonian."""
+
+    def test_three_j_symbols(self):
+        assert _three_j_squared(1, 1, 0) == pytest.approx(1 / 3)
+        assert _three_j_squared(0, 1, 1) == pytest.approx(1 / 3)
+        assert _three_j_squared(1, 1, 2) == pytest.approx(2 / 15)
+        assert _three_j_squared(2, 2, 2) == pytest.approx(2 / 35)
+        assert _three_j_squared(1, 1, 1) == 0.0          # odd sum
+        assert _three_j_squared(0, 0, 2) == 0.0          # triangle
+
+    def test_the_factors_reproduce_the_tensor(self, water_projectors):
+        """sum_k lambda_k U^k (x) U^k is Delta W, with the antisymmetric pairs
+        as the only null space: rank 33 of oxygen's 64 pairs, 3 of
+        hydrogen's 4."""
+        projectors, datasets = water_projectors
+        exact = OneCenterExact(projectors, datasets)
+        ranks = [len(entry["values"]) for entry in exact.atoms]
+        assert ranks == [33, 3, 3] and exact.rank == 39
+        for entry in exact.atoms:
+            U, lam, W = entry["factors"], entry["values"], entry["W"]
+            rebuilt = np.einsum("k,kab,kcd->abcd", lam, U, U)
+            assert np.abs(rebuilt - W).max() < 1e-9 * np.abs(W).max()
+            assert np.allclose(U, U.transpose(0, 2, 1))
+
+    def test_the_one_body_blocks_are_spherical(self, water_projectors):
+        """-V - Delta W.D0 + K couples only equal (l, m), with the same block
+        for every m of a channel."""
+        projectors, datasets = water_projectors
+        exact = OneCenterExact(projectors, datasets)
+        oxygen = exact.atoms[0]
+        own = oxygen["projectors"]
+        coupling = oxygen["coupling"]
+        for i, a in enumerate(own):
+            for j, b in enumerate(own):
+                if (a.l, a.m) != (b.l, b.m):
+                    assert abs(coupling[i, j]) < 1e-9
+        blocks = exact.coupling_blocks()
+        p = [blocks[(0, 1, m)] for m in (-1, 0, 1)]
+        assert np.allclose(p[0], p[1], atol=1e-10)
+        assert np.allclose(p[1], p[2], atol=1e-10)
+
+    def test_the_core_and_its_exchange(self, water_projectors):
+        """The re-solved reference atom gives back the stored core density,
+        and the core exchange is attractive on the bound partial waves."""
+        _projectors, datasets = water_projectors
+        oxygen = datasets[0]
+        core = core_orbitals(oxygen)
+        assert [(n, l, f) for n, l, f, _R in core] == [(1, 0, 2.0)]
+        assert oxygen._core_density_error < 1e-3
+        assert core_orbitals(datasets[1]) == []            # hydrogen
+        terms = exact_one_center_terms(oxygen, "dual")
+        for l, (V, K, D0) in terms.items():
+            assert np.allclose(V, V.T) and np.allclose(K, K.T)
+            assert K[0, 0] < 0.0
+        # The reference occupations: 2 in the 2s, 4 / 3 per 2p orbital.
+        assert terms[0][2][0, 0] == pytest.approx(2.0)
+        assert terms[1][2][0, 0] == pytest.approx(4.0 / 3.0)
+
+    def test_the_spheres_cancel_a_lone_electron(self, water_projectors):
+        """Hartree and exchange of one electron in one sphere cancel exactly:
+        1/2 D D DeltaW - 1/2 D D DeltaW for a pure-state D."""
+        projectors, datasets = water_projectors
+        exact = OneCenterExact(projectors, datasets)
+        entry = exact.atoms[0]
+        W = entry["W"]
+        c = np.random.default_rng(5).normal(size=W.shape[0])
+        D = np.outer(c, c)
+        hartree = 0.5 * np.einsum("ab,cd,abcd->", D, D, W)
+        exchange = -0.5 * np.einsum("ad,cb,abcd->", D, D, W)
+        assert hartree + exchange == pytest.approx(0.0, abs=1e-12)

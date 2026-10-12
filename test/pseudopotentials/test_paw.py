@@ -7,7 +7,8 @@
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
 """The PAW-LCAO family (experimental): Bloechl's projector augmented-wave method
-in its frozen-core, linearized one-center form.
+in its frozen-core form, with exact one-center terms for wave-function methods
+and linearized ones for Kohn-Sham.
 
 Atomic checks (radial, cheap) on freshly generated H, Li and O -- projector
 duality, the generalized eigenproblem, the reconstruction of the all-electron
@@ -151,22 +152,37 @@ N_PROJECTORS = {"H2": 4, "LiH": 10}
 #:   PAW_FILTER_ONLY          LiH -0.767286 / -0.775564 -> -0.761814 / -0.769327
 #:   PAW_EXACT_LOCAL_ONLY     LiH -0.767757 / -0.776009 -> -0.762302 / -0.769787
 #:   PAW_BEFORE_BASIS_FILTER  LiH -0.767796 / -0.776045 -> -0.762339 / -0.769822
-PAW = {"H2": {"rhf": -1.093006, "adapt": -1.107128},
-       "LiH": {"rhf": -0.761836, "adapt": -0.769347}}
+#:
+#: Re-measured 2026-10-12: the spheres of a wave-function Hamiltonian became
+#: exact (the one-center Coulomb tensor in the two-body operator, the frozen
+#: LDA functional out of D^ion, the core's exchange in, no one-center
+#: constant; HISTORY.md "PAW-LCAO Hamiltonian: one-center exact exchange").
+#: Absolute energies move by +29 mHa (H2) and +16 mHa (LiH); the
+#: correlation energies by -0.6 (H2) and -2.3 mHa (LiH).  Old -> new, rhf / adapt:
+#:   PAW                      H2 -1.093006 / -1.107128 -> -1.063691 / -1.078462
+#:                            LiH -0.761836 / -0.769347 -> -0.745519 / -0.755279
+#:   PAW_FILTER_ONLY          H2 -1.093052 / -1.107175 -> -1.063737 / -1.078509
+#:                            LiH -0.761814 / -0.769327 -> -0.745498 / -0.755261
+#:   PAW_EXACT_LOCAL_ONLY     H2 -1.093020 / -1.107156 -> -1.063765 / -1.078565
+#:                            LiH -0.762302 / -0.769787 -> -0.745941 / -0.755682
+#:   PAW_BEFORE_BASIS_FILTER  H2 -1.093013 / -1.107148 -> -1.063758 / -1.078557
+#:                            LiH -0.762339 / -0.769822 -> -0.745976 / -0.755714
+PAW = {"H2": {"rhf": -1.063691, "adapt": -1.078462},
+       "LiH": {"rhf": -0.745519, "adapt": -0.755279}}
 #: The filter alone (``exact_local_potential = False``).
 PAW_FILTER_ONLY = {
-    "H2": {"rhf": -1.093052, "adapt": -1.107175},
-    "LiH": {"rhf": -0.761814, "adapt": -0.769327}}
+    "H2": {"rhf": -1.063737, "adapt": -1.078509},
+    "LiH": {"rhf": -0.745498, "adapt": -0.755261}}
 #: The exact local potential alone (``filter=False``).
 PAW_EXACT_LOCAL_ONLY = {
-    "H2": {"rhf": -1.093020, "adapt": -1.107156},
-    "LiH": {"rhf": -0.762302, "adapt": -0.769787}}
+    "H2": {"rhf": -1.063765, "adapt": -1.078565},
+    "LiH": {"rhf": -0.745941, "adapt": -0.755682}}
 #: Neither: ``filter=False`` and ``exact_local_potential = False`` -- the
 #: pre-2026-09-20 model.  Not wrong, just grid-sampled throughout; pinned so
 #: both flips are auditable.
 PAW_BEFORE_BASIS_FILTER = {
-    "H2": {"rhf": -1.093013, "adapt": -1.107148},
-    "LiH": {"rhf": -0.762339, "adapt": -0.769822}}
+    "H2": {"rhf": -1.063758, "adapt": -1.078557},
+    "LiH": {"rhf": -0.745976, "adapt": -0.755714}}
 #: The family's **default basis** since 2026-09-20: the four tables above with
 #: the first zeta *confined* (``energy_shift = 0.1`` eV; H 1s at
 #: 6.68 Bohr, Li 2s at 11.20).  A mild confinement lowers a minimal basis's
@@ -186,10 +202,13 @@ PAW_BEFORE_BASIS_FILTER = {
 #: and its ``rhf`` bound, which the shift left below the ADAPT energy,
 #: re-measured with the confined basis: -0.773118 -> -0.761345.  With this
 #: lithium the confinement lowers LiH by only 0.26 mHa.
-#: The H2 ``rhf`` entry is only an upper bound (``PIN_TOL``) and was not
-#: re-measured.
-PAW_DEFAULT = {"H2": {"rhf": -1.118043, "adapt": -1.126352},
-               "LiH": {"rhf": -0.761345, "adapt": -0.769610}}
+#: The H2 ``rhf`` entry was only an upper bound (``PIN_TOL``) and not
+#: re-measured until 2026-10-12, when the exact spheres moved both entries
+#: (as above; ``rhf`` with the confined basis):
+#:   H2  rhf -1.118043 -> -1.080995, adapt -1.126352 -> -1.096169
+#:   LiH rhf -0.761345 -> -0.745614, adapt -0.769610 -> -0.756290
+PAW_DEFAULT = {"H2": {"rhf": -1.080995, "adapt": -1.096169},
+               "LiH": {"rhf": -0.745614, "adapt": -0.756290}}
 #: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
 PAW_BEFORE_COMPENSATION_ATTRACTION = {
     "H2": {"rhf": -1.053292, "adapt": -1.067402},
@@ -1202,7 +1221,9 @@ class TestOverlap:
                 == pytest.approx(q11, abs=1e-4)
         assert np.allclose(sum(moments.values()) * SQRT_4PI,
                            C @ ints.nonlocal_overlap_matrix() @ C.conj().T)
-        assert ints.constant_energy == pytest.approx(2 * pp.one_center_energy)
+        # A wave-function Hamiltonian's spheres carry no one-center constant
+        # (2026-10-12; it was 2 * pp.one_center_energy, which Kohn-Sham keeps).
+        assert ints.one_center == "exact" and ints.constant_energy == 0.0
 
     def test_the_filtered_projections_stay_close_and_stay_real(self):
         """The default (filtered) basis is a *different* function, so
@@ -1402,3 +1423,123 @@ class TestMolecular:
         assert np.allclose(fn.radial(r), np.interp(r, pp.r, want), atol=2e-4)
         raw = np.interp(r, pp.r, pp.channels[0].pseudo_radial)
         assert np.abs(fn.radial(r) - raw).max() > 1e-3
+
+
+# --------------------------------------------------------------------------- #
+# The spheres of a Hartree-Fock Hamiltonian (one_center="exact").
+# --------------------------------------------------------------------------- #
+
+def _atom_integrals(symbol, size, h, vacuum, one_center, kinetic=None):
+    atoms = Atoms(symbol, positions=[(0.0, 0.0, 0.0)])
+    atoms.center(vacuum=vacuum)
+    *_, context = paw.build_paw(atoms, None, h, 0, 0,
+                                {"size": size, "energy_shift": None},
+                                kinetic=kinetic, hamiltonian=False,
+                                one_center=one_center)
+    return context["integrals"], context["n_electrons"]
+
+
+def _mom_uhf(h, eri, n_alpha, n_beta, start, hole):
+    """UHF with maximum-overlap occupations and DIIS, the beta hole in start
+    orbital ``hole``: an open p shell oscillates under aufbau filling."""
+    J = lambda D: np.einsum("sr,prqs->pq", D, eri)        # noqa: E731
+    K = lambda D: np.einsum("sr,prsq->pq", D, eri)        # noqa: E731
+    oa = start[:, :n_alpha]
+    ob = start[:, [i for i in range(n_alpha) if i != hole][:n_beta]]
+    history, errors, last = [], [], None
+    for _ in range(300):
+        Da, Db = oa @ oa.T, ob @ ob.T
+        Jt = J(Da + Db)
+        Fa, Fb = h + Jt - K(Da), h + Jt - K(Db)
+        energy = 0.5 * (np.sum((Da + Db) * h) + np.sum(Da * Fa)
+                        + np.sum(Db * Fb))
+        error = np.concatenate([(Fa @ Da - Da @ Fa).ravel(),
+                                (Fb @ Db - Db @ Fb).ravel()])
+        if last is not None and abs(energy - last) < 1e-11 \
+                and np.linalg.norm(error) < 1e-7:
+            return energy
+        last = energy
+        history, errors = (history + [(Fa, Fb)])[-8:], (errors + [error])[-8:]
+        n = len(errors)
+        if n > 1:
+            B = -np.ones((n + 1, n + 1))
+            B[n, n] = 0.0
+            B[:n, :n] = [[e1 @ e2 for e2 in errors] for e1 in errors]
+            rhs = np.zeros(n + 1)
+            rhs[n] = -1.0
+            c = np.linalg.solve(B, rhs)[:n]
+            Fa = sum(ci * f[0] for ci, f in zip(c, history))
+            Fb = sum(ci * f[1] for ci, f in zip(c, history))
+        Va, Vb = np.linalg.eigh(Fa)[1], np.linalg.eigh(Fb)[1]
+        pa = np.sum((oa.T @ Va) ** 2, axis=0)
+        pb = np.sum((ob.T @ Vb) ** 2, axis=0)
+        oa = Va[:, np.sort(np.argsort(-pa)[:n_alpha])]
+        ob = Vb[:, np.sort(np.argsort(-pb)[:n_beta])]
+    raise AssertionError("the open-shell UHF did not converge")
+
+
+def _electron_affinity(symbol, one_center):
+    """UHF Delta-SCF affinity (eV) of a halogen, DZP unconfined, h 0.25."""
+    integrals, n = _atom_integrals(symbol, "DZP", 0.25, 5.0, one_center)
+    h, eri = integrals.one_body(), integrals.two_body()
+    anion = integrals.hartree_fock(n + 1)
+    start = anion.mo_coefficients
+    neutral = min(_mom_uhf(h, eri, (n + 1) // 2, n // 2, start, hole)
+                  for hole in range(n // 2 - 2, (n + 1) // 2))
+    return ((neutral - anion.electronic_energy) * HARTREE_TO_EV,
+            anion.homo_energy * HARTREE_TO_EV)
+
+
+class TestExactSpheres:
+    """What the spheres carry for Hartree-Fock: the one-center Coulomb tensor
+    and the core's exchange instead of the dataset's frozen functional
+    (HISTORY.md, 2026-10-12)."""
+
+    def test_hydrogen_is_free_of_self_interaction(self):
+        """One electron: the energy is its orbital energy, and with the
+        spectral kinetic operator that is -1/2 Ha to the basis error.  The
+        frozen LDA spheres put it 0.38 eV too deep (h -> 0)."""
+        integrals, n = _atom_integrals("H", "QZ2P", 0.2, 5.0, "exact",
+                                       kinetic="spectral")
+        assert integrals.constant_energy == 0.0
+        result = integrals.open_shell_hartree_fock(1, 0)
+        energy = result.electronic_energy
+        epsilon = float(np.min(result.mo_energies_alpha))
+        assert energy == pytest.approx(epsilon, abs=1e-8)
+        assert -0.5 < energy < -0.499
+        frozen, _n = _atom_integrals("H", "QZ2P", 0.2, 5.0, "frozen",
+                                     kinetic="spectral")
+        stock = frozen.open_shell_hartree_fock(1, 0)
+        assert stock.electronic_energy + frozen.constant_energy < -0.51
+
+    def test_the_fluorine_affinity_comes_down(self):
+        """F: 2.8 eV with the frozen LDA spheres, 1.0 exact (all-electron UHF
+        1.18 eV at aug-cc-pVQZ; this basis has no diffuse shell)."""
+        exact, homo = _electron_affinity("F", "exact")
+        frozen, _homo = _electron_affinity("F", "frozen")
+        assert exact == pytest.approx(EXACT_SPHERES_EA["F"], abs=2e-3)
+        assert frozen > 2.3 and 0.8 < exact < 1.2
+        assert -5.0 < homo < -4.0
+
+    def test_the_chlorine_affinity_does_not_move(self):
+        """Cl's 3p lives outside its sphere: the two treatments agree to
+        0.1 eV (2.15 / 2.20; all-electron 2.37 eV at aug-cc-pVQZ)."""
+        exact, _homo = _electron_affinity("Cl", "exact")
+        frozen, _homo = _electron_affinity("Cl", "frozen")
+        assert exact == pytest.approx(EXACT_SPHERES_EA["Cl"], abs=2e-3)
+        assert abs(exact - frozen) < 0.1
+
+    def test_kohn_sham_keeps_the_frozen_spheres(self):
+        """DFT asks for the dataset's own functional; nothing new is built."""
+        frozen, _n = _atom_integrals("O", "SZ", 0.3, 3.0, "frozen")
+        assert frozen.one_center_factors() is None
+        assert frozen.constant_energy == pytest.approx(
+            get_paw("O").one_center_energy)
+        G, values = frozen.one_center_channels()
+        assert G.shape[0] == 0 and values.size == 0
+        with pytest.raises(ValueError, match="one_center"):
+            _atom_integrals("O", "SZ", 0.3, 3.0, "lda")
+
+
+#: UHF Delta-SCF affinities (eV) of `_electron_affinity`, measured 2026-10-12.
+EXACT_SPHERES_EA = {"F": 1.0157, "Cl": 2.1539}

@@ -331,6 +331,7 @@ read off the left margin:
     filter_cutoff: 16.6244 Bohr^-1 (3760.30 eV)
     local_potential: range-separated: long range on the grid, short range on atom-centered quadrature (sigma = 0.2646 Bohr)
     dataset_xc: LDA (atomic reference only; the valence interaction is the bare Coulomb operator)
+    one_center: exact: one-center Coulomb and exchange in the two-body operator, frozen-core exchange
     directory: lda-sr (/data/mandacaru-paw/lda-sr)
     basis_functions: 6
     datasets:
@@ -433,7 +434,10 @@ its bytes (`sha256`, read when the file was loaded: a library is a checkout
 that can be rebuilt under the same file names, and the digest says which
 bytes the run used, 64 hexadecimal digits, shortened in the example above;
 `none` for a dataset generated in the session), the functional the
-datasets record (`dataset_xc`) and the function count per element are all
+datasets record (`dataset_xc`), what the augmentation spheres carry
+(`one_center`: `exact` one-center Coulomb and exchange for a wave-function
+method, the dataset's functional linearized at the reference atom
+(`frozen`) for Kohn-Sham DFT) and the function count per element are all
 decided below the calculator. It is the block a comparison against another code
 is made from. Its three tables -- `datasets`, `orbitals`, `functions` -- read
 back from `parse_output(path)["basis"]` as lists of rows keyed by the column

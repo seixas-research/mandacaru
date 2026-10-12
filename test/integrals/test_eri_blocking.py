@@ -128,6 +128,53 @@ class TestBlockedHermitianERI:
             engine_mod.eri_memory_budget_mb()
 
 
+class TestTheThreadedContractions:
+    """The contractions split over threads, each with one-core BLAS: the
+    same slabs as the single-threaded and the kept-density products."""
+
+    @pytest.mark.parametrize("complex_", [False, True])
+    def test_the_streamed_pair_products_match_the_kept_ones(self, monkeypatch,
+                                                           complex_):
+        monkeypatch.setattr(engine_mod, "PARALLEL_MIN_VALUES", 0)
+        rng = np.random.default_rng(3)
+        M, G, nv = 7, 230, 5
+        psi = rng.normal(size=(M, G))
+        phi = rng.normal(size=(nv, G))
+        if complex_:
+            psi = psi + 1j * rng.normal(size=(M, G))
+            phi = phi + 1j * rng.normal(size=(nv, G))
+        iu, ju = np.triu_indices(M)
+        ref = IntegralEngine._contract_cached(np.conj(psi[iu]) * psi[ju],
+                                              phi.copy(), M, iu, ju)
+        dense = np.einsum("ag,vg,cg->vac", np.conj(psi), phi, psi)
+        assert np.abs(ref - dense).max() < 1e-12
+        for width, workers in ((G, 1), (17, 3), (1, 4)):
+            X = IntegralEngine._contract_streamed(psi, phi, iu, ju, width,
+                                                  workers)
+            assert np.abs(X - ref).max() < 1e-12
+
+    def test_the_potential_products_match_on_threads(self, monkeypatch):
+        monkeypatch.setattr(engine_mod, "PARALLEL_MIN_VALUES", 0)
+        monkeypatch.setattr(engine_mod, "CONTRACTION_TILE_BYTES", 8 * 40)
+        monkeypatch.setattr(engine_mod, "CONTRACTION_TILE_ROWS", 4)
+        rng = np.random.default_rng(4)
+        psi = rng.normal(size=(6, 150)) + 1j * rng.normal(size=(6, 150))
+        phi = rng.normal(size=(4, 150))
+        dense = np.einsum("ag,vg,cg->vac", np.conj(psi), phi, psi)
+        for workers in (1, 3):
+            X = engine_mod.contract_pair_potentials(np.conj(psi), psi, phi,
+                                                    workers)
+            assert np.abs(X - dense).max() < 1e-12
+
+    def test_the_tile_width_follows_the_budget(self):
+        width = IntegralEngine._pair_tile_width
+        U, G = 5886, 27930
+        w = width(U, G, 256 * 2 ** 20, 8)
+        assert 8 * U * w <= engine_mod.PAIR_TILE_SHARE * 256 * 2 ** 20
+        assert width(U, G, 512 * 2 ** 20, 8) > w
+        assert width(U, G, 1.0, 8) == 1 and width(3, G, 1e12, 8) == G
+
+
 class TestTheTensorItselfIsBudgeted:
     """``max_memory_mb`` bounds the Poisson blocks; the ``M^4`` result and
     its Gram blocks are checked against memory before any solve runs."""

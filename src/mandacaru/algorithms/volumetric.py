@@ -531,7 +531,14 @@ def _real_part(values, component: str, what: str):
         raise ValueError(f"component must be one of {COMPONENTS}, "
                          f"got {component!r}")
     if not np.iscomplexobj(values):
-        return np.asarray(values, dtype=float), "real"
+        # A real orbital (a molecule's real harmonics and real SCF): every
+        # component is defined, the imaginary one is zero.
+        values = np.asarray(values, dtype=float)
+        if component == "modulus":
+            return np.abs(values), "modulus"
+        if component == "imag":
+            return np.zeros_like(values), "imag"
+        return values, "real"
     largest = values.flat[int(np.argmax(np.abs(values)))]
     if abs(largest) > 0:
         values = values * np.exp(-1j * np.angle(largest))
@@ -549,9 +556,9 @@ def _real_part(values, component: str, what: str):
             f"{residual:.2e} after removing the global phase), so writing its "
             f"real part would discard part of it.  Pass component='modulus' "
             f"(the amplitude), 'real' or 'imag' to say which real function to "
-            f"write.  Degenerate orbitals of a shell with l > 0 are the usual "
-            f"cause: the complex spherical harmonics mix them into a pair that "
-            f"no global phase makes real.")
+            f"write.  A spin-orbit term or a crystal's Bloch phases are the "
+            f"usual cause: they make the orbital complex in a way no global "
+            f"phase removes.")
     return np.real(values), "real"
 
 

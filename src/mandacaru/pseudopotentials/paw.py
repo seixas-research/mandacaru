@@ -123,8 +123,11 @@ integrals are evaluated radially (exactly :math:`1/R_{AB}` for disjoint
 spheres).
 
 What is frozen or omitted relative to Blöchl's full method (see the guide):
-the one-center Hartree and xc terms are linearized at the reference (fixed
-:math:`D^0`, no self-consistent :math:`D_{ij}[\rho_{ij}]`); the
+for Kohn-Sham DFT the one-center Hartree and xc terms are linearized at the
+reference (fixed :math:`D^0`, no self-consistent :math:`D_{ij}[\rho_{ij}]`),
+while a wave-function method's spheres carry the exact one-center Coulomb
+and exchange and the frozen core's exchange
+(:class:`PAWIntegrals`, ``one_center="exact"``); the
 compensation multipoles stop at :math:`L \le 2 l_{max}` of the valence
 channels (:mod:`.multipoles`); the core
 is frozen; the one-center terms are those of the functional the reference
@@ -2375,16 +2378,51 @@ class PAWIntegrals(MolecularIntegrals):
 
     with :math:`W^A_{qs} = \int \tilde\phi_q^*\tilde\phi_s V_{g_A}` (grid)
     and :math:`U_{AB}` the compensation-compensation Coulomb integrals
-    (:func:`compensation_coulomb`).  ``constant_energy`` carries the sum
-    of the species' frozen one-center energies.
+    (:func:`compensation_coulomb`).
+
+    ``one_center`` chooses what happens inside the spheres
+    (:data:`~.onecenter.ONE_CENTER_TREATMENTS`):
+
+    * ``"exact"`` (the default; Hartree-Fock and every correlated method):
+      the one-center Coulomb tensor :math:`\Delta W` joins the two-body
+      operator (:meth:`one_center_channels`, carried by
+      :meth:`two_body_augmentation` and the integral-direct and Cholesky
+      routes), so the spheres' Hartree and exchange are exact at any
+      density; the dataset's frozen one-center exchange-correlation and
+      linearized one-center Hartree leave :math:`D^{ion}`, the frozen core's
+      exchange joins it, and ``constant_energy`` is zero
+      (:class:`~.onecenter.OneCenterExact`);
+    * ``"frozen"`` (Kohn-Sham DFT): the dataset's one-center terms as
+      generated, linearized at the reference atom in its own functional,
+      with ``constant_energy`` the sum of the species' frozen one-center
+      energies.
     """
 
-    def __init__(self, nuclei, basis, grid, *, datasets, **kwargs):
+    def __init__(self, nuclei, basis, grid, *, datasets,
+                 one_center: str = "exact", **kwargs):
+        from .onecenter import ONE_CENTER_TREATMENTS, OneCenterExact
+
+        if one_center not in ONE_CENTER_TREATMENTS:
+            raise ValueError(f"unknown one_center treatment {one_center!r}; "
+                             f"use one of {ONE_CENTER_TREATMENTS}")
         super().__init__(nuclei, basis, grid, pseudos=datasets,
                          **kwargs)
         self.datasets = list(datasets)
-        self.constant_energy = float(sum(d.one_center_energy
-                                         for d in self.datasets))
+        #: What the spheres carry: ``"exact"`` or ``"frozen"`` (see above).
+        self.one_center = one_center
+        self._one_center_exact = None
+        self._G = None
+        if one_center == "exact" and self.kb_projectors:
+            self._one_center_exact = OneCenterExact(self.kb_projectors,
+                                                    self.datasets)
+            blocks = dict(self.nonlocal_coupling or {})
+            for key, block in self._one_center_exact.coupling_blocks().items():
+                blocks[key] = np.asarray(blocks[key], dtype=float) + block
+            self.nonlocal_coupling = blocks
+            self.constant_energy = 0.0
+        else:
+            self.constant_energy = float(sum(d.one_center_energy
+                                             for d in self.datasets))
         self._Q = None
         self._W = None
         self._U = None
@@ -2729,12 +2767,34 @@ class PAWIntegrals(MolecularIntegrals):
         place or transforms the factors.
         """
         Qs = self.compensation_moments()
-        if not Qs:
+        G, values = self.one_center_channels()
+        if not Qs and not len(values):
             return None
-        Ws = self.compensation_potentials()
-        U = self.compensation_coulomb()
-        channels = self.multipole_channels()
-        return _channel_augmentation(channels, Qs, Ws, U)
+        Ws = self.compensation_potentials() if Qs else {}
+        U = self.compensation_coulomb() if Qs else np.zeros((0, 0))
+        channels = self.multipole_channels() if Qs else []
+        return _channel_augmentation(channels, Qs, Ws, U, G, values)
+
+    # -- the exact one-center terms ------------------------------------------ #
+
+    def one_center_factors(self):
+        """The :class:`~.onecenter.OneCenterExact` of an ``"exact"``
+        Hamiltonian, or ``None``."""
+        return self._one_center_exact
+
+    def one_center_channels(self):
+        r"""``(G, lambda)``: the spheres' Coulomb tensor as
+        :math:`\sum_k \lambda_k G^k \otimes G^k`, ``G`` ``(k, M, M)`` in the
+        atomic-orbital basis (:meth:`~.onecenter.OneCenterExact.channels`);
+        empty for a ``"frozen"`` Hamiltonian.  Cached."""
+        if self._G is None:
+            exact = self._one_center_exact
+            M = self.n_orbitals
+            if exact is None:
+                self._G = (np.zeros((0, M, M)), np.zeros(0))
+            else:
+                self._G = exact.channels(self.projections())
+        return self._G
 
     # -- a screened hybrid's exchange ---------------------------------------- #
 
@@ -2823,15 +2883,24 @@ class PAWIntegrals(MolecularIntegrals):
 
 
 
-def _channel_augmentation(channels, Q, W, U) -> PairAugmentation:
-    """``[Q..., W...]`` with the coupling ``[[U, 1], [1, 0]]``: the
-    compensation terms of :meth:`PAWIntegrals.two_body_augmentation`."""
+def _channel_augmentation(channels, Q, W, U, G=None,
+                          values=None) -> PairAugmentation:
+    """``[Q..., W..., G...]`` with the coupling ``[[U, 1, 0], [1, 0, 0],
+    [0, 0, diag(values)]]``: the compensation terms of
+    :meth:`PAWIntegrals.two_body_augmentation`, plus the exact one-center
+    factors ``G`` (:meth:`PAWIntegrals.one_center_channels`) when given."""
     n = len(channels)
-    factors = np.stack([Q[c] for c in channels] + [W[c] for c in channels])
-    coupling = np.zeros((2 * n, 2 * n), dtype=np.result_type(U, np.float64))
+    k = 0 if values is None else len(values)
+    stack = ([Q[c] for c in channels] + [W[c] for c in channels]
+             + ([G[i] for i in range(k)] if k else []))
+    dtype = np.result_type(U, np.float64, *(stack[:1]))
+    factors = np.stack(stack)
+    coupling = np.zeros((2 * n + k, 2 * n + k), dtype=dtype)
     coupling[:n, :n] = U
-    coupling[:n, n:] = np.eye(n)
-    coupling[n:, :n] = np.eye(n)
+    coupling[:n, n:2 * n] = np.eye(n)
+    coupling[n:2 * n, :n] = np.eye(n)
+    if k:
+        coupling[2 * n:, 2 * n:] = np.diag(np.asarray(values, dtype=float))
     return PairAugmentation(factors, coupling)
 
 
@@ -3325,7 +3394,7 @@ def _register():
     return register_family(FamilySpec(
         name=FAMILY,
         description="projector augmented wave (Bloechl 1994), frozen core, "
-                    "linearized one-center terms, multipole compensation",
+                    "multipole compensation",
         generate=lambda symbol, **options: generate_paw(symbol, **options),
         get=get_paw,
         build=build_paw,

@@ -169,6 +169,21 @@ class TestTheCache:
             FFTWorkspace((8, 8, 8), (8, 7, 8))
 
 
+def test_the_pool_holds_blas_to_one_thread():
+    """A pass on the pool runs its matrix products on one core each, so
+    BLAS threads never compete with the pool's."""
+    from threadpoolctl import threadpool_info
+
+    seen = []
+
+    def probe(lo, hi):
+        seen.extend(pool["num_threads"] for pool in threadpool_info()
+                    if pool["user_api"] == "blas")
+
+    fft_mod.parallel_chunks(4, probe, 2)
+    assert seen and set(seen) == {1}
+
+
 def test_scipy_transforms_in_place_on_views():
     """What the pruned transforms rely on: ``overwrite_x`` on a strided view
     of a complex buffer writes the result into that view."""

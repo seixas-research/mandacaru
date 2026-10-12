@@ -533,7 +533,8 @@ def _warn_unresolved(integrals, basis_fns, h):
 def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
                                  options, kinetic=None, active_space=None,
                                  hamiltonian: bool = True, ghosts=(),
-                                 electric_field=None, two_body=None):
+                                 electric_field=None, two_body=None,
+                                 one_center=None):
     """Valence-only Hamiltonian from a pseudopotential **family**.
 
     A thin dispatcher: ``family`` is the
@@ -565,6 +566,8 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
         extra["electric_field"] = electric_field
     if two_body is not None:
         extra["two_body"] = two_body
+    if one_center is not None:
+        extra["one_center"] = one_center
     return family.build(atoms, grid, h, charge, spin, dict(options), kinetic,
                         active_space=active_space, hamiltonian=hamiltonian,
                         **extra)
@@ -595,7 +598,8 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                             kinetic=None, periodic: bool = False,
                             commensurate=None, active_space=None,
                             hamiltonian: bool = True, ghosts=(),
-                            electric_field=None, two_body=None):
+                            electric_field=None, two_body=None,
+                            one_center=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``hamiltonian=False`` stops after the integrals: the first element of the
@@ -656,6 +660,13 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
     selects the two-body representation of the molecular Hamiltonian: the
     dense tensor (``None`` / ``"dense"``) or Cholesky factors; see
     :meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.molecular_hamiltonian`.
+
+    ``one_center`` (a pseudopotential family only) chooses what the
+    augmentation spheres carry
+    (:data:`~mandacaru.pseudopotentials.onecenter.ONE_CENTER_TREATMENTS`):
+    ``None`` / ``"exact"`` is the Hartree-Fock one-center Coulomb and
+    exchange every wave-function method uses, ``"frozen"`` the dataset's own
+    functional, which is what Kohn-Sham DFT asks for.
     """
     from .active_space import resolve_active_space_spec
 
@@ -693,7 +704,8 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         return _pseudopotential_hamiltonian(
             atoms, grid, h, charge, spin, family, options, kinetic=kinetic,
             active_space=spec, hamiltonian=hamiltonian, ghosts=ghosts,
-            electric_field=electric_field, two_body=two_body)
+            electric_field=electric_field, two_body=two_body,
+            one_center=one_center)
 
     real = [i for i in range(len(symbols)) if i not in ghosts]
     numbers = atoms.get_atomic_numbers()

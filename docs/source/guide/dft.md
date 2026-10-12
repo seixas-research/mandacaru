@@ -471,7 +471,12 @@ papers, the functional that ran and, with `dispersion="d4"`, the D4 paper.
 The converged orbitals are exported as the Hartree-Fock ones are: the result
 carries the many-body Hamiltonian, with the bare Coulomb interaction, written
 in the Kohn-Sham orbitals, and its reference state is the Kohn-Sham
-determinant.
+determinant. With a PAW-LCAO basis that Hamiltonian is built from the
+Kohn-Sham run's integrals, so its augmentation spheres are the *frozen* ones
+(the dataset's functional, linearized), not the exact one-center Coulomb and
+exchange a wave-function method builds for itself
+([PAW-LCAO](pseudopotentials.md)); a correlated energy on Kohn-Sham orbitals
+and one on Hartree-Fock orbitals therefore differ by more than the orbitals.
 
 ```python
 dft = atoms.calc.result

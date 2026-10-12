@@ -590,6 +590,28 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                                         c[1], c[2],
                                         real=integrals.real_harmonics)
                   for c in channels}
+    # -- PAW-LCAO exact spheres: the one-center Coulomb tensor --
+    # sum_k lambda_k G^k (x) G^k with G^k = C_A U^k C_A^T moves only with the
+    # projections; the one-body part (frozen functional out, core exchange
+    # in) is already inside the nonlocal coupling D_nl.
+    factors = getattr(integrals, "one_center_factors", None)
+    spheres = factors() if factors is not None and P else None
+    if spheres is not None and spheres.rank:
+        G_sph, lam_sph = integrals.one_center_channels()
+    else:
+        spheres = None
+
+    def sphere_derivative(dC):
+        """``dg`` of the spheres' Coulomb tensor for a change of the
+        projections."""
+        out = np.zeros((M, M, M, M), dtype=complex)
+        dG = spheres.channel_derivatives(C, dC)
+        for k, value in enumerate(lam_sph):
+            if np.any(dG[k]):
+                out += value * (_outer(dG[k], G_sph[k])
+                                + _outer(G_sph[k], dG[k]))
+        return out
+
     exact_projections = bool(getattr(integrals, "exact_projections", False)) and P > 0
     if exact_projections:
         from ..pseudopotentials.paw import atom_centered_projection_gradients
@@ -793,6 +815,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                         dS = dS + dS_aug
                 R = pair_derivative(pair_terms, k)
                 dg = R.reshape(M, M, M, M).transpose(0, 2, 1, 3)
+                if spheres is not None:
+                    dg = dg + sphere_derivative(dC)
                 dg_sr = None
                 if exchange is not None:
                     R = pair_derivative(pair_terms_sr, k)
@@ -860,6 +884,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dC = _backend.kb_projections(psi, dchi, dV)
                 dh_nl, dS = nonlocal_terms(dC)
                 dh = dh + dh_nl
+                if spheres is not None:
+                    dg = sphere_derivative(dC)
                 if paw:
                     from ..pseudopotentials.multipoles import (
                         multipole_coulomb_matrix)
@@ -909,7 +935,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     # its ionic potential moves under everyone else's shape.
                     dV_ion = _ionic_shift(integrals, centers, atom, k, step)
                     dQ = moment_derivatives(dC)
-                    dg = augmentation_derivative(dQ, dW, dU)
+                    dg_aug = augmentation_derivative(dQ, dW, dU)
+                    dg = dg_aug if dg is None else dg + dg_aug
                     dh = dh + ionic_derivative(dQ, dV_ion)
                     if exchange is not None:
                         dg_sr = dg - long_range_augmentation_derivative(

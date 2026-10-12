@@ -402,9 +402,29 @@ def thread_count(workers) -> int:
     return max(1, int(workers))
 
 
+_BLAS = None
+
+
+def _blas_controller():
+    """The process's BLAS thread pools (:mod:`threadpoolctl`), inspected
+    once, on the first parallel pass (NumPy's BLAS is loaded by then)."""
+    global _BLAS
+    if _BLAS is None:
+        from threadpoolctl import ThreadpoolController
+
+        _BLAS = ThreadpoolController()
+    return _BLAS
+
+
 def parallel_chunks(count: int, function, threads: int) -> None:
     """``function(lo, hi)`` over contiguous chunks of ``range(count)``,
-    on a shared thread pool (NumPy releases the GIL in its loops)."""
+    on a shared thread pool (NumPy releases the GIL in its loops).
+
+    While the pool runs, BLAS is held to one thread: a matrix product inside
+    ``function`` is then one core's work, and BLAS threads left spinning
+    after an earlier product never compete with the pool for the cores.
+    The pool's ``threads`` are the whole parallelism of the pass.
+    """
     global _POOL
     threads = min(int(threads), int(count))
     if threads <= 1:
@@ -419,10 +439,11 @@ def parallel_chunks(count: int, function, threads: int) -> None:
         _POOL = ThreadPoolExecutor(max_workers=threads,
                                    thread_name_prefix="mandacaru-fft")
     edges = np.linspace(0, count, threads + 1).astype(int)
-    futures = [_POOL.submit(function, int(lo), int(hi))
-               for lo, hi in zip(edges[:-1], edges[1:]) if hi > lo]
-    for future in futures:
-        future.result()
+    with _blas_controller().limit(limits=1, user_api="blas"):
+        futures = [_POOL.submit(function, int(lo), int(hi))
+                   for lo, hi in zip(edges[:-1], edges[1:]) if hi > lo]
+        for future in futures:
+            future.result()
 
 
 _WORKSPACES: "OrderedDict[tuple, FFTWorkspace]" = OrderedDict()

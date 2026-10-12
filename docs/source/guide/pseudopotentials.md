@@ -126,7 +126,8 @@ them projector augmented waves.
    shooting (`bound_state`) so it satisfies the radial equation to fourth
    order; $\varphi_2$ is a second bound state of that $l$ if the atom has one,
    otherwise the scattering state at $\varepsilon_2 = \varepsilon_1 + \Delta$
-   (`energy_offset`), integrated outward and normalized to one inside $r_c$.
+   (`energy_offset`), integrated outward and normalized to one inside $r_c$
+   (at an absolute energy for the channels `second_reference` names).
 2. **Smooth partial waves.** Inside $r_c$, $\tilde\varphi_i = \sum_{n=1}^{8}
    c_{in}\,j_l(q_n r)$ with the $q_n$ the interleaved zeros of $j_l$ and
    $j_l'$ at $r_c$ (`bessel_wavevectors`). The RRKJ choice — every basis
@@ -163,9 +164,10 @@ them projector augmented waves.
    a channel may not hold more bound levels (below −0.1 Ha) than the atom
    has valence states of its $l$: a compact semicore channel whose second
    reference energy is still bound can put a spurious level just above it,
-   outside every scattering window (the 4f of W–Hg, the 4p of Tc; the
-   installed datasets of these elements and the LDA Ta predate the check
-   and carry one, unflagged). A failing candidate is repaired first by a shorter local radius with no shift, then by local
+   outside every scattering window (the 4f of W–Hg, the 4p of Tc and the
+   LDA 5p of Ta, −0.15 to −2.5 Ha). These channels take their second
+   reference at +0.25 Ha instead (`second_reference={l: energy}`, by default
+   `DEFAULT_SECOND_REFERENCES`), and their datasets were rebuilt that way. A failing candidate is repaired first by a shorter local radius with no shift, then by local
    shifts and cutoff adjustments. The order matters: a shift acts on every
    angular momentum the projectors do not cover, and aluminum's former 5 Ha
    shift scattered d 0.52 rad off and put fcc Al 12 % too large. What cannot
@@ -475,10 +477,10 @@ through Löwdin, RHF and UHF.
    f_v\varepsilon_v - E_H[n_v] - \int n_v v_{xc}[n_v] + E_{xc}[n_v]$:
    $E_{1c} = (E_H[\tilde n_v + \hat n] - E_H[n_v]) + (\int\tilde n v_{xc}[\tilde n]
    - E_{xc}[\tilde n]) - (\int n_v v_{xc}[n_v] - E_{xc}[n_v])$ — H +0.0021,
-   Li +0.0006, C +0.030, N +0.053, O −0.107, F −0.570 Ha. It enters every
-   molecular Hamiltonian through the new
-   `MolecularIntegrals.constant_energy` (next to the nuclear repulsion, also
-   in `hartree_fock_hamiltonian`).
+   Li +0.0006, C +0.030, N +0.053, O −0.107, F −0.570 Ha. It enters the
+   Kohn-Sham Hamiltonian through `MolecularIntegrals.constant_energy` (next
+   to the nuclear repulsion). A Hartree-Fock or correlated Hamiltonian does
+   not use it: see *The spheres of a wave-function method*, below.
 
 ### In a molecule (`build_paw`, `PAWIntegrals`)
 
@@ -587,6 +589,66 @@ the reported grid resolution ratio differs (H at h = 0.25 Å: raw 0.90/0.78,
 dual 0.78/0.77). The local potential is interpolated with a cubic spline
 (`PAWDataset.local_potential`), so its derivatives are continuous.
 
+### The spheres of a wave-function method
+
+What a sphere carries depends on the method. Kohn-Sham DFT keeps the
+dataset's one-center terms as generated: the functional's one-center
+Hartree and exchange-correlation energies, linearized at the reference atom
+inside $D^{ion}$ and the constant $E_{1c}$. Hartree-Fock (RHF, UHF, GHF),
+FCI, VQE, ADAPT-VQE and every other wave-function method cannot use them: a
+functional's exchange-correlation is not part of their Hamiltonian, and an
+exchange operator frozen at the spherical neutral atom treats every
+electron of a channel alike, which exact exchange does not. Their
+Hamiltonian (`PAWIntegrals(..., one_center="exact")`, the default; Kohn-Sham
+asks for `"frozen"`) therefore carries, per sphere $A$:
+
+* **the one-center Coulomb tensor in the two-body operator.** Blöchl's
+  electron-electron correction inside the sphere is
+  $\Delta W_{abcd} = (\phi_a\phi_b|\phi_c\phi_d) -
+  (\tilde\phi_a\tilde\phi_b + \hat n_{ab}|\tilde\phi_c\tilde\phi_d + \hat
+  n_{cd})$ (`one_center_coulomb`), and it enters the two-body integrals as
+  $\Delta\langle pq|rs\rangle = \sum_{abcd} C_{pa}C_{rb}\,\Delta W_{abcd}\,
+  C_{qc}C_{sd}$, kept as the low-rank sum $\sum_k\lambda_k G^k\otimes G^k$
+  with $G^k = C_A U^k C_A^T$ from the eigenvectors of $\Delta W$ as a
+  pair-pair matrix (rank 33 for an s+p atom's eight projectors, 3 for
+  hydrogen). Every consumer of the two-body operator -- the dense tensor,
+  the integral-direct route, the Cholesky factors, the active space, DLPNO,
+  the qubit Hamiltonian -- gets the sphere's Hartree and exchange exactly,
+  at any density;
+* **the dataset's frozen functional removed** from $D^{ion}$:
+  $V_{ij} = \int v_{xc}[n_c + n^1_0]\,\phi_i\phi_j - \int v_{xc}[\tilde n^1_0
+  + \tilde n_c]\,\tilde\phi_i\tilde\phi_j$, together with the linearized
+  one-center Hartree term $\Delta W\cdot D^0$ that the quadratic one
+  replaces;
+* **the frozen core's exchange** added to $D^{ion}$,
+  $K_{ij} = -\sum_c f_c(2l_c+1)\sum_L
+  \begin{pmatrix} l_c & L & l\\ 0&0&0\end{pmatrix}^2 R^L(\phi_i\phi_c,
+  \phi_c\phi_j)$ per spin, $f_c$ the per-spin occupation of each orbital of
+  core subshell $c$. The files store the core density, not its orbitals, so
+  the reference atom is solved again when the first Hamiltonian of a process
+  needs a species (`partial_waves.reference_atom`, cached per dataset
+  file): 0.5 s for H, 2-4 s for C-F, 8 s for Cl, 16-20 s for Fe and Cu,
+  30-70 s for Br-I and about 3 minutes for Au;
+* **no constant.** $E_{1c}$ is the double counting of the linearized
+  Hartree term and of the functional; with the Hartree term quadratic and no
+  functional left nothing remains, and `constant_energy` is zero.
+
+`mandacaru.pseudopotentials.onecenter.OneCenterExact` builds the three
+terms; the forces differentiate them through the projections. What this
+changes (HISTORY.md, 2026-10-12):
+
+| | frozen spheres | exact spheres | all-electron reference |
+| :--- | ---: | ---: | ---: |
+| H atom, UHF 1s (eV), spectral kinetic | -14.2 (h → 0: -13.98) | -13.59 | -13.606 |
+| F UHF electron affinity (eV), QZ2P + diffuse shells | 2.39 | 1.05-1.20 | 1.18 (aug-cc-pVQZ) |
+| Cl UHF electron affinity (eV), same | 2.37 | 2.36 | 2.37 (aug-cc-pVQZ) |
+| water RHF $\alpha$ (a.u.), DZP + diffuse shells, spectral kinetic | 7.41 | 8.60 | 8.64 (aug-cc-pVQZ) |
+| hydrogen fluoride RHF bond length (Å), DZP | 0.853 | 0.906 | 0.897 (HF limit) |
+
+Cl does not move because its 3p lives outside its sphere, in the smooth
+part, where exchange was always exact; F's compact 2p puts a third of an
+hartree of exchange inside it.
+
 ### Forces (`algorithms/pseudo_forces.py`)
 
 `atoms.get_forces()` with `basis="PAW-LCAO"` returns the
@@ -665,18 +727,20 @@ to 1e-15, smooth = AE beyond $r_c$ to 1e-14.
 
 Molecular (H₂ 0.74 Å at h = 0.25 Å, LiH 1.6 Å
 at h = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4
-iterations; energies in eV as the user sees them, Hartree in parentheses):
+iterations, unconfined; energies in eV as the user sees them, Hartree in
+parentheses; measured 2026-10-12 with the exact one-center spheres and pinned
+by `test_paw.py`):
 
 | | PAW-LCAO RHF | PAW-LCAO FCI = ADAPT |
 |---|---|---|
-| H₂ | −28.662 eV (−1.053292) | −29.046 eV (−1.067402) |
-| LiH | −20.693 eV (−0.760451) | −20.924 eV (−0.768954) |
+| H₂ | −28.945 eV (−1.063691) | −29.346 eV (−1.078462) |
+| LiH | −20.287 eV (−0.745519) | −20.552 eV (−0.755279) |
 
 On H₂ the augmented
 overlap has eigenvalues 0.203 / 1.809 (bare 0.199 / 1.757), the
 Löwdin-orthonormalized overlap is the identity to 1e-16, and the augmented
 two-body tensor keeps the pair-density symmetries to 1e-12. DZ on H₂ (8
-qubits, RHF −1.1399 Ha) is variational against SZ.
+qubits) is variational against SZ.
 
 **Hardness at h = 0.25 Å** (`resolution_ratios` of the basis,
 `kb_resolution_ratios` of the raw projectors): H₂ basis 0.98,
@@ -811,18 +875,20 @@ nothing to correct.
 
 ### What is frozen or omitted relative to Blöchl's full method
 
-* **Linearized one-center terms.** The one-center Hartree and xc energies are
-  expanded to first order in the density matrix $\rho_{ij}$ around the LDA
-  reference atom: a fixed $D^0 = D^{ion}$ per species plus the constant
-  $E_{1c}$. The full method recomputes $D_{ij}[\rho_{ij}]$ self-consistently
-  from $n^1 - \tilde n^1$ every SCF step; here the error is second order in
-  $\rho - \rho^{ref}$.
+* **Linearized one-center terms (Kohn-Sham DFT).** The one-center Hartree
+  and xc energies are expanded to first order in the density matrix
+  $\rho_{ij}$ around the reference atom: a fixed $D^0 = D^{ion}$ per species
+  plus the constant $E_{1c}$. The full method recomputes
+  $D_{ij}[\rho_{ij}]$ self-consistently from $n^1 - \tilde n^1$ every SCF
+  step; here the error is second order in $\rho - \rho^{ref}$. A
+  wave-function method does not linearize: its spheres are exact (below).
 * **Compensation multipoles up to $L = 2l_{max}$.** Each pair density carries
   the multipoles $\hat n^{LM}$ of its augmentation charge (`multipoles.py`; an
   s-valence atom has only $L = 0$, oxygen has $L = 0, 1, 2$), and the
   compensation charge is attracted to the other ions as well as repelled by
-  the electrons. What is still omitted is the *one-center* two-body
-  correction beyond the linearization -- measured at 0.08-0.33 eV for oxygen.
+  the electrons. Kohn-Sham DFT still omits the *one-center* two-body
+  correction beyond the linearization -- measured at 0.08-0.33 eV for oxygen;
+  a wave-function Hamiltonian carries it in full.
 * **Frozen core.** The core density is frozen (stored as `core_density`).
   The unscreening includes the smooth core when
   `nlcc=True` (the default), which is the nonlinear core correction: PAW-LCAO
@@ -831,9 +897,14 @@ nothing to correct.
   than constructing a second one. What remains frozen is the linearized
   treatment of the one-center core–valence xc, reported in
   `energies["core_valence_xc_omitted"]` (Li −1.54, O −4.60 Ha).
-* **HF/FCI valence with LDA-generated datasets.** The molecule's exchange and
-  correlation are exact within the augmented Coulomb tensor, while the
-  one-center xc corrections were linearized at the LDA level.
+* **Wave-function methods on datasets generated with a functional.** The
+  partial waves, projectors and frozen core come from the LDA (or PBE)
+  reference atom; everything electron-electron in the Hamiltonian of
+  Hartree-Fock, FCI, VQE and the other wave-function methods is exact, inside
+  the spheres too (*The spheres of a wave-function method*, below). The
+  remaining error of this transfer is the partial waves' and the frozen
+  core's: the F⁻ affinity comes within 0.0-0.13 eV of the all-electron UHF
+  value.
 * **Two partial waves per channel**, at $\varepsilon_1$ and
   $\varepsilon_1 + \Delta$ (a per-dataset $\Delta$ only where a repair
   needed one; a semicore $s$ channel's are both bound states), no
@@ -1302,8 +1373,9 @@ Mandacaru give, in Bohr:
 (pinned by `test/pseudopotentials/test_paw_energy_shift.py::TestTheReferenceRecipe`).
 Compare trends and differences between the two methods rather than absolute
 energies, use LDA datasets on the other side, and remember that Mandacaru's
-Hamiltonian
-has the bare Coulomb interaction -- the functional enters its datasets only.
+wave-function Hamiltonian
+has the bare Coulomb interaction, inside the augmentation spheres too -- the
+functional enters its datasets' partial waves and frozen core only.
 
 #### Split-valence zetas: `first_zeta` or `last_zeta`
 

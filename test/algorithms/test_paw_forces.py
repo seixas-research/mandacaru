@@ -24,6 +24,7 @@ from ase import Atoms
 
 from mandacaru import Mandacaru
 from mandacaru.optimizers import Optimizer
+from mandacaru.units import HARTREE_TO_EV
 
 # The classical optimizer used below, with its budget and tolerance written
 # out.  `tol` is deliberately looser than the library default (1e-12): these
@@ -120,16 +121,24 @@ def test_hellmann_feynman_and_pulay(h2):
     # is the history of the basis: 0.807 A before the compensation charge
     # gained its electron-ion attraction (< -1), 0.712 A with the last_zeta
     # split and free-atom orbitals (> 1.0; kept reproducible below), 0.760 A
-    # with the first_zeta split alone (< 0).
-    assert 0.3 < bond_force(forces) < 1.2
+    # with the first_zeta split alone (< 0).  Since 2026-10-12 the spheres of
+    # a wave-function Hamiltonian are exact, and the minimum moved out to
+    # 0.772 A (h = 0.25, FCI): the frozen LDA spheres had put H2 26 mHa below
+    # the exact energy and the exact ones put it 16 mHa above, the excess
+    # growing as the two hydrogen spheres (r_c 1.30 Bohr) overlap -- 1 mHa at
+    # R = 2.6 Bohr, 16 at 1.4 (HISTORY.md "PAW-LCAO Hamiltonian: one-center
+    # exact exchange").  0.75 A is now *inside* the minimum.
+    assert -1.2 < bond_force(forces) < -0.5
 
 
 def test_the_last_zeta_split_is_still_available():
     atoms = dimer("H2", 0.75, 8.0)
     atoms.calc = calculator(h=0.25, basis={**BASIS, "split_norm": 0.15,
                                            "energy_shift": None})
-    # Outside that basis's minimum (0.711 A): the pre-2026-09-20 behavior.
-    assert bond_force(atoms.get_forces()) > 1.0
+    # Outside that basis's minimum (0.711 A) with the frozen spheres, the
+    # pre-2026-09-20 behavior (> 1.0); with the exact spheres (2026-10-12) the
+    # minimum moved past 0.75 A (-0.22 eV/Angstrom), as for the default basis.
+    assert -0.5 < bond_force(atoms.get_forces()) < 0.0
 
 
 @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])
@@ -339,7 +348,9 @@ def test_forces_respect_the_c2v_symmetry(h2o):
     assert forces[0, 1] == pytest.approx(forces[0, 2], abs=5e-3)   # O
     assert forces[1, 1] == pytest.approx(forces[2, 2], abs=5e-3)   # H1 <-> H2
     assert forces[1, 2] == pytest.approx(forces[2, 1], abs=5e-3)
-    assert abs(forces[0, 1]) > 1.0            # a real force, not a coincidence
+    # A real force, not a coincidence: 0.71 eV/Angstrom since the exact
+    # spheres (2026-10-12; it was > 1).
+    assert abs(forces[0, 1]) > 0.5
     assert np.abs(forces[:, 0]).max() < 1e-3  # x is empty for this geometry
 
 
@@ -418,3 +429,53 @@ def test_projection_cannot_increase_the_error_against_a_zero_sum_force(h2o):
         np.linalg.norm(raw - reference) + 1e-12
     # And it is a strict improvement whenever the residual is nonzero at all.
     assert np.abs(raw.sum(axis=0)).max() > 1e-6
+
+
+def test_exact_spheres_force_is_the_derivative_of_the_energy():
+    """The one-center Coulomb tensor of a Hartree-Fock Hamiltonian moves with
+    the projections; its derivative is 1.3 eV/Angstrom of this force.
+
+    HF (hydrogen fluoride) in SZ, the RHF determinant: orbital-stationary, so
+    the gradient at fixed orbitals is the derivative of the RHF energy on the
+    frozen grid.  The 2.5e-4 eV/Angstrom left is the step and the grid's, and
+    the frozen-sphere Hamiltonian shows the same.
+    """
+    from mandacaru.algorithms._hamiltonian_from_atoms import (
+        build_basis_hamiltonian, grid_from_cell)
+    from mandacaru.algorithms.pseudo_forces import (AlgebraicEnergy,
+                                                    pseudo_nuclear_gradient)
+
+    basis, h = {"name": "PAW-LCAO", "size": "SZ"}, 0.25
+    atoms = Atoms("FH", positions=[[3.013, 2.979, 3.007],
+                                   [3.323, 2.979, 3.877]], cell=[6.0] * 3)
+    grid = grid_from_cell(atoms, h)
+
+    def build(geometry):
+        context = build_basis_hamiltonian(geometry, basis, grid, h, 0,
+                                          None)[4]
+        integrals = context["integrals"]
+        n = context["n_electrons"]
+        energy = (integrals.hartree_fock(n).electronic_energy
+                  + integrals.nuclear_repulsion + integrals.constant_energy)
+        return energy, integrals, context, n
+
+    _energy, integrals, context, n = build(atoms)
+    assert integrals.one_center_factors().rank > 0
+    V = integrals.mo_coefficients
+    M = V.shape[0]
+    D = np.zeros((M, M))
+    D[np.arange(n // 2), np.arange(n // 2)] = 2.0
+    G = (np.einsum("pr,qs->pqrs", D, D)
+         - 0.5 * np.einsum("ps,qr->pqrs", D, D))
+    result = pseudo_nuclear_gradient(
+        integrals, None, None, atom_of_orbital=context["atom_of_orbital"],
+        energy=AlgebraicEnergy(V, D, G))
+    step = 0.002
+    energies = []
+    for sign in (1, -1):
+        moved = atoms.copy()
+        moved.positions[0, 2] += sign * step
+        energies.append(build(moved)[0])
+    numerical = -(energies[0] - energies[1]) / (2 * step) * HARTREE_TO_EV
+    assert abs(result.forces[0, 2]) > 2.0
+    assert result.forces[0, 2] == pytest.approx(numerical, abs=1e-3)

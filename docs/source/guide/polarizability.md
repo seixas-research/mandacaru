@@ -93,10 +93,16 @@ Water (PAW-LCAO, h = 0.2 Å, 5 Å of vacuum), isotropic $\alpha$ in a.u.
 
 | basis | PBE | Hartree–Fock |
 | :--- | ---: | ---: |
-| DZP, confined (the default) | 5.62 (3.78, 7.45, 5.64) | |
+| DZP, confined (the default) | 5.62 (3.78, 7.45, 5.64) | 5.42 (3.61, 7.30, 5.36) |
 | TZP, confined | 5.83 (3.99, 7.65, 5.87) | |
 | DZP, unconfined | 8.56 (7.83, 9.59, 8.25) | |
-| TZP, unconfined | 8.88 (8.34, 9.74, 8.55) | 6.62 (5.76, 7.74, 6.35) |
+| TZP, unconfined | 8.88 (8.34, 9.74, 8.55) | 7.64 (6.88, 8.73, 7.29) |
+
+The Hartree-Fock column is measured with the exact one-center Coulomb and
+exchange inside the PAW-LCAO spheres (2026-10-12; with the dataset's frozen
+LDA terms it was 4.88 and 6.62, see [Pseudopotentials](pseudopotentials.md)).
+Both columns use the finite-difference kinetic operator, which at
+h = 0.2 Å costs about 0.7 a.u.; `kinetic="spectral"` removes it.
 
 The confinement costs a third of the polarizability, and the
 out-of-plane component $\alpha_{xx}$ half of it. Even unconfined, an

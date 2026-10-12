@@ -8,7 +8,12 @@ atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
                        h=0.25,
-                       active_space={"orbitals": 4, "method": "mp2"},
+                       # Five MP2 natural orbitals: the bonding and
+                       # antibonding pair, the next sigma and the whole pi
+                       # pair.  Four would split the degenerate pi pair, and
+                       # the selection would jump when the sigma level crosses
+                       # it along the trajectory.
+                       active_space={"orbitals": 5, "method": "mp2"},
                        transfer=True)
 
 dynamics = VelocityVerlet(atoms, timestep=0.5 * units.fs)

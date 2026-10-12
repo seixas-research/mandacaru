@@ -112,9 +112,18 @@ def refuse_unaffordable_eri(n_orbitals: int, real: bool = False) -> None:
 #: by tiles).
 MAX_PAIR_BLOCK = 1024
 
-#: Target bytes of one contraction tile ``conj(psi) * Phi`` (a few MB keeps
-#: it in cache while the matrix product reads it).
-CONTRACTION_TILE_BYTES = 8 * 2 ** 20
+#: Bytes of the products ``conj(psi) * Phi`` one thread of
+#: :func:`contract_pair_potentials` forms at a time (a few MB, so they stay
+#: in cache while the matrix product reads them).
+CONTRACTION_TILE_BYTES = 2 * 2 ** 20
+
+#: Rows ``(v, a)`` of one such tile: enough for an efficient one-core
+#: matrix product against the ``M`` columns of ``psi``.
+CONTRACTION_TILE_ROWS = 256
+
+#: Share of the two-body budget (:func:`eri_memory_budget_mb`) the grid tile
+#: of pair densities of the streamed contraction may take.
+PAIR_TILE_SHARE = 0.25
 
 
 def contract_pair_potentials(conj_psi, psi, phi, workers: int = -1) -> np.ndarray:
@@ -122,42 +131,48 @@ def contract_pair_potentials(conj_psi, psi, phi, workers: int = -1) -> np.ndarra
     potentials ``phi`` ``(nv, G)`` over the functions ``psi`` ``(M, G)``
     (``conj_psi`` is ``conj(psi)``, passed in so a caller forms it once).
 
-    Tile by tile over the grid: each tile ``conj(psi) * Phi_v`` for a few
-    ``v`` (:data:`CONTRACTION_TILE_BYTES`) is one matrix product with
-    ``psi^T``, so no ``M x G`` product per potential is ever resident.  Not
-    scaled by the volume element.  Real functions and potentials give a real
-    ``X``.  ``workers`` threads form the tiles (``-1``: every core), as the
-    FFT workers of the solver that made ``phi``.
+    The ``nv M`` rows ``(v, a)`` of ``X`` are split over ``workers`` threads
+    (``-1``: every core, as the FFT workers of the solver that made
+    ``phi``).  Each thread forms its rows' products ``conj(psi_a) Phi_v``
+    a grid tile at a time (:data:`CONTRACTION_TILE_BYTES`) and multiplies
+    the tile by ``psi^T`` on one core, so no ``M x G`` product per
+    potential is ever resident and BLAS never competes with the threads
+    (:func:`~mandacaru.integrals.fft.parallel_chunks`).  Not scaled by the
+    volume element.  Real functions and potentials give a real ``X``.
     """
     M, ngrid = psi.shape
     nv = phi.shape[0]
     dtype = np.result_type(conj_psi, psi, phi)
     X = np.zeros((nv, M, M), dtype=dtype)
-    rows = max(1, min(nv, 4096 // max(M, 1)))
-    width = int(max(256, min(ngrid, CONTRACTION_TILE_BYTES
-                             // (dtype.itemsize * rows * M))))
-    tile = np.empty(rows * M * width, dtype=dtype)
-    part = np.empty((rows * M, M), dtype=dtype)
-    threads = (1 if rows * M * width < PARALLEL_MIN_VALUES
-               else thread_count(workers))
-    for v0 in range(0, nv, rows):
-        v1 = min(v0 + rows, nv)
-        k = v1 - v0
-        for g0 in range(0, ngrid, width):
-            g1 = min(g0 + width, ngrid)
-            w = g1 - g0
-            t = tile[:k * M * w].reshape(k, M, w)
+    flat = X.reshape(nv * M, M)
+    count = nv * M
+    threads = (1 if count * ngrid < PARALLEL_MIN_VALUES
+               else min(thread_count(workers), count))
+    rows = max(1, min(CONTRACTION_TILE_ROWS, -(-count // threads)))
+    width = int(max(64, min(ngrid, CONTRACTION_TILE_BYTES
+                            // (dtype.itemsize * rows))))
 
-            def form(lo, hi):
-                # The element-wise product is single-threaded in NumPy;
-                # its rows are split over threads (the product is not).
-                np.multiply(conj_psi[None, :, g0:g1],
-                            phi[v0 + lo:v0 + hi, None, g0:g1], out=t[lo:hi])
+    def contract(lo, hi):
+        tile = np.empty((rows, width), dtype=dtype)
+        part = np.empty((rows, M), dtype=dtype)
+        for r0 in range(lo, hi, rows):
+            r1 = min(r0 + rows, hi)
+            for g0 in range(0, ngrid, width):
+                g1 = min(g0 + width, ngrid)
+                t = tile[:r1 - r0, :g1 - g0]
+                # Rows of one potential v are consecutive a's.
+                r = r0
+                while r < r1:
+                    v, a = divmod(r, M)
+                    end = min(r1, (v + 1) * M)
+                    np.multiply(conj_psi[a:a + end - r, g0:g1],
+                                phi[v, g0:g1], out=t[r - r0:end - r0])
+                    r = end
+                out = part[:r1 - r0]
+                np.matmul(t, psi[:, g0:g1].T, out=out)
+                flat[r0:r1] += out
 
-            parallel_chunks(k, form, threads)
-            out = part[:k * M]
-            np.matmul(t.reshape(k * M, w), psi[:, g0:g1].T, out=out)
-            X[v0:v1] += out.reshape(k, M, M)
+    parallel_chunks(count, contract, threads)
     return X
 
 
@@ -510,13 +525,16 @@ class IntegralEngine:
 
         **Blocking.**  The potentials are solved ``B`` pairs at a time into
         one reused ``B x G`` buffer, bounded by ``max_memory_mb`` (default
-        :data:`ERI_MEMORY_MB`, env ``MANDACARU_ERI_MEMORY_MB``).  The products
-        ``conj(psi) * Phi`` are formed tile by tile over the grid, so they
-        never take more than a few MB.  When all ``U`` pair densities fit in
-        half that budget they are formed once and kept, and the block's
-        whole contraction is two matrix products against them
-        (:meth:`_contract_cached`); otherwise the streamed products above
-        (:func:`contract_pair_potentials`).  Both give the dense contraction to
+        :data:`ERI_MEMORY_MB`, env ``MANDACARU_ERI_MEMORY_MB``).  The slabs
+        come from the pair products ``E[u, v] = sum_g rho_u Phi_v`` over the
+        pairs ``u = (a, c)``, ``a <= c`` (the entries ``a > c`` are
+        ``sum_g conj(rho_u) Phi_v``, needed only for complex functions).
+        When all ``U`` pair densities fit in half the budget they are formed
+        once and kept, and a block's ``E`` is one matrix product against
+        them (:meth:`_contract_cached`).  Otherwise they are formed again
+        for each block, a grid tile of ``w`` points at a time, ``w`` chosen so
+        the ``U x w`` tile takes :data:`PAIR_TILE_SHARE` of the budget
+        (:meth:`_contract_streamed`).  Both give the dense contraction to
         round-off.
 
         ``two_body_profile`` holds the seconds of each stage of the last
@@ -546,11 +564,15 @@ class IntegralEngine:
         budget = (eri_memory_budget_mb() if max_memory_mb is None
                   else float(max_memory_mb)) * 2 ** 20
         cached = itemsize * U * ngrid <= 0.5 * budget
+        width = (ngrid if cached else
+                 self._pair_tile_width(U, ngrid, budget, psi.dtype.itemsize))
         B = self._eri_block_size(U, ngrid, solver, max_memory_mb,
-                                 cached=cached, itemsize=itemsize)
+                                 cached=cached, itemsize=itemsize, M=M,
+                                 tile_bytes=(0 if cached else
+                                             psi.dtype.itemsize * U * width))
         profile = {"pair densities": 0.0, "poisson": 0.0, "contraction": 0.0,
                    "route": "cached" if cached else "streamed",
-                   "pair_block": B, "real": real}
+                   "pair_block": B, "tile_width": width, "real": real}
         eri = np.empty((M, M, M, M), dtype=dtype)
         rho = (None if cached
                else np.empty((B, ngrid), dtype=psi.dtype))       # reused
@@ -561,7 +583,6 @@ class IntegralEngine:
             densities = np.empty((U, ngrid), dtype=psi.dtype)
             self._pair_block(psi, iu, ju, densities, workers)
             profile["pair densities"] += perf_counter() - t0
-        conj_psi = None if cached else (psi if real else np.conj(psi))
         for v0 in range(0, U, B):
             v1 = min(v0 + B, U)
             nv = v1 - v0
@@ -577,7 +598,8 @@ class IntegralEngine:
             if cached:
                 X = self._contract_cached(densities, phi[:nv], M, iu, ju)
             else:
-                X = contract_pair_potentials(conj_psi, psi, phi[:nv], workers)
+                X = self._contract_streamed(psi, phi[:nv], iu, ju, width,
+                                            workers)
             X *= dV
             b, d = iu[v0:v1], ju[v0:v1]
             # The flipped pair first, so a diagonal pair (b == d) keeps X.
@@ -599,17 +621,84 @@ class IntegralEngine:
         of a second product with ``conj(Phi)`` (conjugated in place).  Real
         densities and potentials need the first product only."""
         upper = densities @ phi.T                                 # (U, nv)
-        index = np.empty((M, M), dtype=np.int64)
-        index[iu, ju] = np.arange(iu.size)
-        index[ju, iu] = np.arange(iu.size)
         if not (np.iscomplexobj(densities) or np.iscomplexobj(phi)):
-            return upper.T[:, index]
+            return IntegralEngine._slabs(upper, None, M, iu, ju)
         np.conjugate(phi, out=phi)
         lower = np.conj(densities @ phi.T)
         np.conjugate(phi, out=phi)
+        return IntegralEngine._slabs(upper, lower, M, iu, ju)
+
+    @staticmethod
+    def _slabs(upper, lower, M, iu, ju) -> np.ndarray:
+        """``X[v, a, c]`` from the pair products: ``upper[u, v]`` for
+        ``u = (a, c)``, ``a <= c``, and ``lower[u, v]`` for its flip ``(c, a)``
+        (``None``: the same, real functions)."""
+        index = np.empty((M, M), dtype=np.int64)
+        index[iu, ju] = np.arange(iu.size)
+        index[ju, iu] = np.arange(iu.size)
+        if lower is None:
+            return upper.T[:, index]
         below = (np.arange(M)[:, None] > np.arange(M)[None, :])
-        X = np.where(below[None], lower.T[:, index], upper.T[:, index])
-        return X
+        return np.where(below[None], lower.T[:, index], upper.T[:, index])
+
+    @staticmethod
+    def _contract_streamed(psi, phi, iu, ju, width, workers=-1) -> np.ndarray:
+        r"""The same ``X`` with the pair densities formed a grid tile at a
+        time: for each tile of ``width`` points, ``rho_u = conj(psi_a) psi_c``
+        for every pair ``u`` and ``E[u, v] += rho_u Phi_v^T`` (and, for
+        complex functions, ``conj(rho_u) Phi_v^T`` for the flipped pairs).
+
+        The pairs are split over ``workers`` threads; each forms its own
+        rows of the shared ``U x width`` tile and multiplies them on one core
+        (:func:`~mandacaru.integrals.fft.parallel_chunks` holds BLAS to one
+        thread meanwhile), so threads and BLAS never oversubscribe the
+        cores.
+        """
+        M, ngrid = psi.shape
+        U, nv = iu.size, phi.shape[0]
+        complex_ = np.iscomplexobj(psi) or np.iscomplexobj(phi)
+        dtype = np.result_type(psi, phi)
+        conj_psi = np.conj(psi) if np.iscomplexobj(psi) else psi
+        tile = np.empty((U, width), dtype=psi.dtype)
+        part = np.empty((U, nv), dtype=dtype)
+        upper = np.zeros((U, nv), dtype=dtype)
+        lower = np.zeros((U, nv), dtype=dtype) if complex_ else None
+        # The pairs of row a are u = first[a] .. first[a] + M - a - 1.
+        first = np.concatenate(([0], np.cumsum(np.arange(M, 0, -1))))
+
+        def contract(lo, hi):
+            out = part[lo:hi]
+            for g0 in range(0, ngrid, width):
+                g1 = min(g0 + width, ngrid)
+                t = tile[lo:hi, :g1 - g0]
+                u = lo
+                while u < hi:
+                    a = int(iu[u])
+                    end = min(hi, int(first[a + 1]))
+                    c = int(ju[u])
+                    np.multiply(conj_psi[a, g0:g1], psi[c:c + end - u, g0:g1],
+                                out=t[u - lo:end - lo])
+                    u = end
+                np.matmul(t, phi[:, g0:g1].T, out=out)
+                upper[lo:hi] += out
+                if complex_:
+                    np.conjugate(t, out=t)
+                    np.matmul(t, phi[:, g0:g1].T, out=out)
+                    lower[lo:hi] += out
+
+        threads = (1 if U * width < PARALLEL_MIN_VALUES
+                   else thread_count(workers))
+        parallel_chunks(U, contract, threads)
+        return IntegralEngine._slabs(upper, lower, M, iu, ju)
+
+    @staticmethod
+    def _pair_tile_width(n_pairs: int, ngrid: int, budget_bytes: float,
+                         itemsize: int) -> int:
+        """Grid points per tile of the streamed contraction: the ``n_pairs x
+        w`` tile of pair densities takes :data:`PAIR_TILE_SHARE` of the
+        budget (at least one point, at most the grid)."""
+        width = int(PAIR_TILE_SHARE * budget_bytes // (itemsize * n_pairs))
+        return max(1, min(width, ngrid))
 
     @staticmethod
     def _pair_block(psi, rows_i, rows_j, out, workers: int = -1):
@@ -628,22 +717,26 @@ class IntegralEngine:
 
     @staticmethod
     def _eri_block_size(n_pairs: int, ngrid: int, solver, max_memory_mb,
-                        cached: bool = False, itemsize: int = 16) -> int:
+                        cached: bool = False, itemsize: int = 16,
+                        M: int = 0, tile_bytes: int = 0) -> int:
         """Pairs per Poisson block that keep the two-body step within budget.
 
-        Resident per block: the density buffer and the potentials (``2 B
-        ngrid`` complex values; with the densities kept, only the potentials
-        and the kept stack itself), plus the solver's FFT workspace and one
-        contraction tile, independent of ``B``.
+        Resident per block of ``B`` pairs: the potentials and (unless the
+        densities are kept) the density buffer, ``B ngrid`` values each; the
+        pair products ``E`` and their partial sums, ``B U`` values each
+        (twice for complex functions); the slabs ``X``, ``B M^2``.  Beside
+        them, independent of ``B``: the solver's FFT workspace, the grid
+        tile of pair densities (``tile_bytes``) or the kept densities.
         """
         budget = eri_memory_budget_mb() if max_memory_mb is None else float(max_memory_mb)
         space = getattr(solver, "workspace", None)
         fixed = (space.batch_bytes if space is not None
                  else 3 * int(np.prod(solver.L)) * 16)
-        fixed += CONTRACTION_TILE_BYTES
+        fixed += tile_bytes
         if cached:
             fixed += itemsize * n_pairs * ngrid
-        per_pair = (1 if cached else 2) * ngrid * itemsize
+        products = (2 if itemsize == 8 else 4) * n_pairs
+        per_pair = ((1 if cached else 2) * ngrid + products + M * M) * itemsize
         avail = budget * 2 ** 20 - fixed
         B = int(avail // per_pair) if avail > 0 else 1
         return max(1, min(B, n_pairs, MAX_PAIR_BLOCK))

@@ -133,9 +133,24 @@ def _pseudo_report(name, context, symbols, fields, tables):
     # pointed at the pbe/ folder once printed "LDA" beside PBE datasets.
     functionals = sorted({str(getattr(potentials[s], "xc", "lda")).upper()
                           for s in set(symbols)})
-    fields["dataset_xc"] = (f"{', '.join(functionals)} (atomic reference "
-                            "only; the valence interaction is the bare "
-                            "Coulomb operator)")
+    # What the augmentation spheres carry (PAWIntegrals.one_center): exact
+    # Coulomb and exchange for a wave-function method, the dataset's
+    # functional linearized at the reference atom for Kohn-Sham.
+    one_center = getattr(integrals, "one_center", None)
+    if one_center == "frozen":
+        fields["dataset_xc"] = (f"{', '.join(functionals)} (atomic reference "
+                                "and the one-center terms, linearized at the "
+                                "reference atom)")
+    else:
+        fields["dataset_xc"] = (f"{', '.join(functionals)} (atomic reference "
+                                "only; the valence interaction is the bare "
+                                "Coulomb operator)")
+    if one_center == "exact":
+        fields["one_center"] = ("exact: one-center Coulomb and exchange in the "
+                                "two-body operator, frozen-core exchange")
+    elif one_center == "frozen":
+        fields["one_center"] = ("frozen: the dataset's functional, linearized "
+                                "at the reference atom")
     # Where the datasets were read from, once; the table below names only
     # the files.
     sources = [str(getattr(potentials[s], "source", IN_MEMORY))

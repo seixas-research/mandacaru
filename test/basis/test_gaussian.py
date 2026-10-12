@@ -45,7 +45,11 @@ class TestGaussianOrbital:
         x = np.linspace(-2, 2, 5)
         X, Y, Z = np.meshgrid(x, x, x, indexing="ij")
         out = orb.evaluate(X, Y, Z)
-        assert out.shape == X.shape and out.dtype == np.complex128
+        # Real harmonics (a molecule's): real samples; complex ones on request.
+        assert out.shape == X.shape and out.dtype == np.float64
+        complex_ = GaussianOrbital(1, 1, [0.8, 0.2], [0.5, 0.5], units="bohr",
+                                   real=False).evaluate(X, Y, Z)
+        assert complex_.dtype == np.complex128
 
     def test_length_mismatch_raises(self):
         with pytest.raises(ValueError):

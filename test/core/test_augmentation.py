@@ -52,6 +52,12 @@ def dense_compensation(integrals):
     return aug
 
 
+def dense_spheres(integrals):
+    """The exact one-center Coulomb tensor, sum_k lambda_k G^k (x) G^k."""
+    G, values = integrals.one_center_channels()
+    return np.einsum("k,kpr,kqs->pqrs", values, G, G)
+
+
 def dense_long_range(integrals, omega):
     """The long-range compensation terms as the dense loop wrote them."""
     Q = integrals.compensation_moments()
@@ -115,15 +121,22 @@ class TestPAWAugmentation:
         aug = water_paw.two_body_augmentation()
         assert isinstance(aug, PairAugmentation)
         M = water_paw.n_orbitals
-        assert aug.nbytes < 16 * M ** 4
-        assert np.abs(aug.dense() - dense_compensation(water_paw)).max() < 1e-12
+        # k M^2 numbers: the compensation channels' Q and W, and the exact
+        # spheres' factors (rank 33 for O, 3 per H; HISTORY.md 2026-10-12).
+        # At M = 6 that is more than the M^4 tensor; it grows as M^2.
+        k = (2 * len(water_paw.multipole_channels())
+             + water_paw.one_center_factors().rank)
+        assert aug.factors.shape == (k, M, M)
+        assert aug.nbytes == 8 * (k * M * M + k * k)
+        assert np.abs(aug.dense() - dense_compensation(water_paw)
+                      - dense_spheres(water_paw)).max() < 1e-12
         omega = 0.11
         assert np.abs(water_paw.long_range_augmentation(omega).dense()
                       - dense_long_range(water_paw, omega)).max() < 1e-12
 
     def test_the_tensors_equal_the_dense_route(self, water_paw):
         grid = water_paw._engine.two_body(energy_units="Ha")
-        dense_ao = grid + dense_compensation(water_paw)
+        dense_ao = grid + dense_compensation(water_paw) + dense_spheres(water_paw)
         assert np.abs(water_paw.ao_two_body() - dense_ao).max() < 1e-12
         X = water_paw._lowdin_x()
         reference = lowdin(dense_ao, X)

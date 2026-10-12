@@ -134,7 +134,8 @@ def augmentation_exchange(augmentation, D) -> np.ndarray:
     QD = [Q @ D for Q in Qs]
     K = 0.0
     for c, (Q, W) in enumerate(zip(Qs, Ws)):
-        K = K + QD[c] @ W + W @ D @ Q
+        if np.any(W):
+            K = K + QD[c] @ W + W @ D @ Q
         for d, Qd in enumerate(Qs):
             if U[c, d] != 0:
                 K = K + U[c, d] * (QD[c] @ Qd)
@@ -154,8 +155,9 @@ def augmentation_tensor(augmentation, C) -> np.ndarray:
     Wt = [Cd @ W @ C for W in Ws]
     eri = np.zeros((n, n, n, n), dtype=np.result_type(*Qt, *Wt, U, float))
     for c, (Q, W) in enumerate(zip(Qt, Wt)):
-        eri += np.einsum("pr,qs->pqrs", Q, W)
-        eri += np.einsum("pr,qs->pqrs", W, Q)
+        if np.any(W):
+            eri += np.einsum("pr,qs->pqrs", Q, W)
+            eri += np.einsum("pr,qs->pqrs", W, Q)
         coupled = sum(U[c, d] * Qd for d, Qd in enumerate(Qt)
                       if U[c, d] != 0)
         if not np.isscalar(coupled):
@@ -206,18 +208,41 @@ class DirectCoulomb:
     # -- the family augmentation ------------------------------------------- #
 
     def augmentation(self):
-        """``(Q, W, U)`` per multipole channel (AO basis), or ``None``."""
+        r"""``(Q, W, U)`` per channel (AO basis), or ``None``.
+
+        The compensation multipoles, then -- for a PAW-LCAO Hamiltonian with
+        exact spheres -- the one-center Coulomb factors
+        (:meth:`~mandacaru.pseudopotentials.paw.PAWIntegrals.one_center_channels`)
+        as channels of their own with :math:`W = 0` and a diagonal block of
+        ``U``: :math:`\sum_k \lambda_k G^k\otimes G^k` is the ``U`` term of
+        the module docstring's sum."""
         if self._augmentation is None:
             moments = getattr(self.integrals, "compensation_moments", None)
             channels = moments() if moments is not None else {}
-            if not channels:
+            spheres = getattr(self.integrals, "one_center_channels", None)
+            G, values = spheres() if spheres is not None else ((), ())
+            if not channels and not len(values):
                 self._augmentation = False
             else:
-                Ws = self.integrals.compensation_potentials()
-                U = np.asarray(self.integrals.compensation_coulomb())
-                order = self.integrals.multipole_channels()
-                self._augmentation = ([np.asarray(channels[c]) for c in order],
-                                      [np.asarray(Ws[c]) for c in order], U)
+                Qs, Ws = [], []
+                U = np.zeros((0, 0))
+                if channels:
+                    Wd = self.integrals.compensation_potentials()
+                    U = np.asarray(self.integrals.compensation_coulomb())
+                    order = self.integrals.multipole_channels()
+                    Qs = [np.asarray(channels[c]) for c in order]
+                    Ws = [np.asarray(Wd[c]) for c in order]
+                if len(values):
+                    n, k = len(Qs), len(values)
+                    zero = np.zeros_like(np.asarray(G[0]))
+                    Qs = Qs + [np.asarray(g) for g in G]
+                    Ws = Ws + [zero] * k
+                    extended = np.zeros((n + k, n + k),
+                                        dtype=np.result_type(U, float))
+                    extended[:n, :n] = U
+                    extended[n:, n:] = np.diag(np.asarray(values, dtype=float))
+                    U = extended
+                self._augmentation = (Qs, Ws, U)
         return self._augmentation or None
 
     # -- Coulomb and exchange ---------------------------------------------- #

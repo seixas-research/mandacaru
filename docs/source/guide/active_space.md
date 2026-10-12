@@ -505,9 +505,9 @@ a spatial orbital would. `"frozen"` counts the lowest pairs and `"orbitals"`
 the pairs kept, lowest first. The spinor energy is the only ranking:
 `"method": "mp2"`, `"threshold"` and the occupied/virtual forms rank spatial
 orbitals and are refused. On HI (PAW-LCAO-SZ, `directory="lda-dirac"`, 18
-electrons in 10 pairs), freezing one pair costs 0.11 mHa, two pairs 0.11 mHa
-and four pairs 0.23 mHa. Keeping only the occupied pairs leaves the GHF
-determinant, 17.8 mHa above the full space. Forces are available with a
+electrons in 10 pairs), freezing one pair costs 0.040 mHa, two pairs
+0.040 mHa and four pairs 0.075 mHa. Keeping only the occupied pairs leaves the
+GHF determinant, 18.6 mHa above the full space. Forces are available with a
 frozen core. With deleted pairs they are refused, because the
 finite-difference path aligns spatial orbitals between geometries.
 

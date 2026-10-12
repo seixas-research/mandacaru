@@ -299,7 +299,8 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                               spin_orbit_projectors=None,
                               integrals_class=None,
                               potentials_keyword: str = "pseudos",
-                              ghosts=(), electric_field=None, two_body=None):
+                              ghosts=(), electric_field=None, two_body=None,
+                              one_center=None):
     """The driver 5-tuple of a pseudopotential family -- the part every family
     shares.
 
@@ -319,6 +320,10 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     ``ghosts`` are atom indices that keep their basis functions but carry no
     dataset, nucleus, projectors or electrons -- the counterpoise correction
     (:func:`~mandacaru.algorithms.interaction.interaction_energy`).
+
+    ``one_center`` is handed to the integral class when given (PAW-LCAO's
+    ``"exact"`` or ``"frozen"`` spheres,
+    :class:`~mandacaru.pseudopotentials.paw.PAWIntegrals`).
     """
     from ..algorithms._hamiltonian_from_atoms import (
         DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
@@ -385,6 +390,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
         spin_orbit_coupling=spin_orbit_blocks,
         spin_orbit_projectors=so_projectors or None,
         kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"],
+        **({} if one_center is None else {"one_center": one_center}),
         **{potentials_keyword: [potentials[s] for s in real_symbols]})
     if electric_field is not None:
         integrals.apply_electric_field(electric_field)

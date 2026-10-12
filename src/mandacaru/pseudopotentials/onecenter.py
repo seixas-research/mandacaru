@@ -34,10 +34,12 @@ Writing :math:`E(D) = \tfrac12 D D \Delta W` and expanding about :math:`D^0`,
     E(D) = \underbrace{E(D^0) + (D - D^0)\,D^0 \Delta W}_{\text{the linearization}}
          + \underbrace{\tfrac12 (D-D^0)(D-D^0)\,\Delta W}_{\text{what was missing}},
 
-so the omission is exactly the second-order term.  The Hartree version of it
-(:func:`one_center_coulomb`) is measured machinery, **not** wired into the
-Hamiltonian: 0.08-0.33 eV on oxygen, ruled out as the cause of an old binding
-failure.
+so the omission is exactly the second-order term.  A Kohn-Sham calculation
+keeps that linearization (0.08-0.33 eV on oxygen for the Hartree part).  A
+wave-function Hamiltonian does not linearize at all: :class:`OneCenterExact`
+puts :math:`\Delta W` itself into its two-body operator, which makes the
+spheres' Hartree *and* exchange exact at any density, and takes the
+dataset's frozen functional out (see the last section of this module).
 
 :math:`\Delta W` itself is
 :math:`(\phi_a^*\phi_b|\phi_c^*\phi_d) - (\tilde\phi_a^*\tilde\phi_b + \hat n_{ab}
@@ -640,3 +642,371 @@ class OneCenterHybrid:
         semilocal = self.constant - a * linear
         return OneCenterTerms(energy=exact + semilocal, exact_exchange=exact,
                               semilocal=semilocal, operators=tuple(operators))
+
+
+# --------------------------------------------------------------------------- #
+# The exact one-center terms of a Hartree-Fock (and correlated) Hamiltonian.
+# --------------------------------------------------------------------------- #
+
+#: The one-center electron-electron treatments of a molecular PAW-LCAO
+#: Hamiltonian (:class:`~mandacaru.pseudopotentials.paw.PAWIntegrals`):
+#: ``"exact"`` -- the one-center Coulomb tensor in the two-body operator and
+#: the frozen core's exchange, what Hartree-Fock and every correlated method
+#: use; ``"frozen"`` -- the dataset's own functional, linearized at the
+#: reference atom, what a Kohn-Sham calculation uses.
+ONE_CENTER_TREATMENTS = ("exact", "frozen")
+
+#: Eigenvalues of a sphere's pair-pair matrix ``Delta W[(ab), (cd)]`` below
+#: this fraction of the largest are dropped from its factors (round-off: the
+#: matrix of a real basis has the antisymmetric pairs as an exact null space).
+ONE_CENTER_RANK_FLOOR = 1e-10
+
+#: Core orbitals of the re-solved reference atoms, keyed by the dataset file
+#: (``source``, ``source_sha256``): one solve per file and process.
+_CORE_ORBITALS: dict = {}
+
+
+def _three_j_squared(a: int, b: int, c: int) -> float:
+    r""":math:`\begin{pmatrix} a & b & c\\ 0 & 0 & 0\end{pmatrix}^2`."""
+    from math import factorial
+
+    J = a + b + c
+    if J % 2 or c < abs(a - b) or c > a + b:
+        return 0.0
+    g = J // 2
+    value = (factorial(J - 2 * a) * factorial(J - 2 * b) * factorial(J - 2 * c)
+             / factorial(J + 1))
+    value *= (factorial(g) / (factorial(g - a) * factorial(g - b)
+                              * factorial(g - c))) ** 2
+    return float(value)
+
+
+def _dataset_file_key(dataset):
+    source = getattr(dataset, "source", None)
+    digest = getattr(dataset, "source_sha256", None)
+    if source is None or digest is None:
+        return None
+    return (str(source), str(digest))
+
+
+def core_orbitals(dataset) -> list:
+    r"""``[(n, l, occupation, R_nl)]`` of the dataset's frozen core, ``R`` on
+    ``dataset.r``.
+
+    The files store the core *density*, not its orbitals, so the reference
+    atom is solved again from the dataset's record
+    (:func:`~.partial_waves.reference_atom`) unless the dataset still carries
+    the one it was generated from.  The core subshells are the generator's:
+    the aufbau split of that atom with the dataset's ``frozen_subshells``
+    moved into the core and its ``semicore_subshells`` out of it.  Cached on
+    the dataset and, for a dataset read from a file, per file
+    (``source``, ``source_sha256``).  The orbitals reproduce the stored
+    ``core_density`` (``dataset._core_density_error`` records the
+    difference, in electrons).
+    """
+    cached = dataset.__dict__.get("_core_orbitals")
+    if cached is not None:
+        return cached
+    key = _dataset_file_key(dataset)
+    if key is not None and key in _CORE_ORBITALS:
+        result, error = _CORE_ORBITALS[key]
+    else:
+        from .dataset import _valence_configuration
+
+        atom = getattr(dataset, "atom", None)
+        if atom is None or not getattr(atom, "orbitals", None):
+            from .partial_waves import reference_atom
+            atom = reference_atom(dataset)
+        valence, core = _valence_configuration(
+            int(dataset.atomic_number), configuration=atom.occupations)
+        for orbital in dataset.frozen_subshells or ():
+            orbital = (int(orbital[0]), int(orbital[1]))
+            core[orbital] = valence.pop(orbital)
+        for orbital in dataset.semicore_subshells or ():
+            orbital = (int(orbital[0]), int(orbital[1]))
+            valence[orbital] = core.pop(orbital)
+        r = np.asarray(dataset.r, dtype=float)
+        r_atom = np.asarray(atom.r, dtype=float)
+        same = r_atom.shape == r.shape and np.allclose(r_atom, r)
+        result = []
+        density = np.zeros_like(r)
+        for (n, l), occupation in sorted(core.items()):
+            u = np.asarray(atom.orbitals[(n, l)], dtype=float)
+            if not same:
+                u = np.interp(r, r_atom, u)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                R = np.where(r > 0.0, u / np.where(r > 0.0, r, 1.0), 0.0)
+            if r[0] <= 0.0 and r.size > 1:
+                R[0] = R[1] if l == 0 else 0.0
+            result.append((int(n), int(l), float(occupation), R))
+            density += float(occupation) * R * R / (4.0 * np.pi)
+        stored = np.asarray(dataset.core_density, dtype=float)
+        error = float(np.trapezoid(np.abs(density - stored) * 4.0 * np.pi
+                                   * r * r, r)) if result else 0.0
+        if key is not None:
+            _CORE_ORBITALS[key] = (result, error)
+    dataset.__dict__["_core_orbitals"] = result
+    dataset.__dict__["_core_density_error"] = error
+    return result
+
+
+def _core_extent(r, orbitals, tail: float = 1e-14) -> int:
+    """Grid points that hold every core orbital to ``tail`` of its norm."""
+    if not orbitals:
+        return 0
+    last = 0
+    for _n, _l, _f, R in orbitals:
+        weight = R * R * r * r
+        cumulative = np.concatenate([[0.0], cumulative_trapezoid(weight, r)])
+        total = cumulative[-1]
+        inside = np.nonzero(cumulative >= (1.0 - tail) * total)[0]
+        last = max(last, int(inside[0]) if inside.size else r.size - 1)
+    return min(r.size, last + 2)
+
+
+def _smooth_xc_core(dataset):
+    """The core density the dataset unscreened its smooth xc with."""
+    r = np.asarray(dataset.r, dtype=float)
+    record = dataset.nlcc or {}
+    if not record.get("applied"):
+        return np.zeros_like(r)
+    if record.get("source") == "smooth_core" or record.get("r_nlcc") is None:
+        return np.asarray(dataset.smooth_core_density, dtype=float)
+    from .core_correction import partial_core_density
+    density, _details = partial_core_density(
+        r, np.asarray(dataset.core_density, dtype=float),
+        np.asarray(dataset.valence_density, dtype=float),
+        r_nlcc=float(record["r_nlcc"]))
+    return density
+
+
+def exact_one_center_terms(dataset, basis: str = "raw") -> dict:
+    r"""``{l: (V, K, D0)}`` -- the one-body pieces that turn the dataset's
+    one-center terms into Hartree-Fock ones, per channel, in the projector
+    ``basis`` (the same block for every ``m``).
+
+    ``V``: the dataset's one-center exchange-correlation, linearized at the
+    reference atom and frozen into :math:`D^{ion}`,
+
+    .. math::
+
+        V_{ij} = \int v_{xc}[n_c + n^1_0]\,\phi_i\phi_j
+               - \int v_{xc}[\tilde n^1_0 + \tilde n_c]\,\tilde\phi_i\tilde\phi_j ,
+
+    in the functional, relativistic exchange and core correction the dataset
+    was unscreened with (all-electron core plus valence density, smooth
+    valence plus the smooth core of the nonlinear core correction).
+
+    ``K``: the frozen core's exchange, one spin's worth,
+    :math:`K_{ij} = -\sum_c f_c\,(2l_c+1)\sum_L
+    \begin{pmatrix} l_c & L & l\\ 0&0&0\end{pmatrix}^2
+    R^L(\phi_i R_c, R_c\phi_j)`, with :math:`f_c` the per-spin occupation of
+    each of the :math:`2l_c+1` orbitals of core subshell ``c``
+    (:func:`core_orbitals`) and :math:`R^L` the radial Slater integral
+    (:func:`radial_coulomb`).
+
+    ``D0``: the reference atom's projected density matrix per ``m`` (both
+    spins), the point the dataset's one-center Hartree term is linearized
+    about.  Cached on the dataset per ``basis``.
+    """
+    cache = dataset.__dict__.setdefault("_exact_one_center_cache", {})
+    if basis in cache:
+        return cache[basis]
+    from ..basis.xc import xc_potential
+
+    r = np.asarray(dataset.r, dtype=float)
+    channels = sorted(dataset.channels)
+    waves = {l: partial_waves(dataset, l) for l in channels}
+    all_electron = np.asarray(dataset.core_density, dtype=float).copy()
+    for l in channels:
+        for i, occupation in enumerate(_occupations(dataset, l)):
+            all_electron += occupation * waves[l][0][i] ** 2 / (4.0 * np.pi)
+    smooth = (np.asarray(dataset.valence_density, dtype=float)
+              + _smooth_xc_core(dataset))
+    relativistic = bool(getattr(dataset, "relativistic_exchange", False))
+    _e, v_ae = xc_potential(r, all_electron, dataset.xc,
+                            relativistic=relativistic)
+    _e, v_ps = xc_potential(r, smooth, dataset.xc, relativistic=relativistic)
+    core = core_orbitals(dataset)
+    extent = _core_extent(r, core)
+    rc = r[:extent]
+    out = {}
+    for l in channels:
+        ae, ps = waves[l]
+        size = len(ae)
+        V = np.zeros((size, size))
+        K = np.zeros((size, size))
+        for i in range(size):
+            for j in range(size):
+                V[i, j] = float(np.trapezoid((v_ae * ae[i] * ae[j]
+                                              - v_ps * ps[i] * ps[j]) * r * r,
+                                             r))
+                total = 0.0
+                for _n, lc, occupation, R in core:
+                    per_spin = occupation / (2.0 * (2 * lc + 1))
+                    for L in range(abs(l - lc), l + lc + 1):
+                        weight = _three_j_squared(lc, L, l)
+                        if weight == 0.0:
+                            continue
+                        Rc = R[:extent]
+                        total += (per_spin * (2 * lc + 1) * weight
+                                  * radial_coulomb(rc, ae[i][:extent] * Rc,
+                                                   Rc * ae[j][:extent], L))
+                K[i, j] = -total
+        D0 = np.zeros((size, size))
+        for i, occupation in enumerate(_occupations(dataset, l)):
+            D0[i, i] = occupation / (2 * l + 1)
+        V = 0.5 * (V + V.T)
+        K = 0.5 * (K + K.T)
+        transform = _basis_transform(dataset, l, str(basis))
+        if transform is not None:
+            inverse = np.linalg.inv(transform)
+            V = transform @ V @ transform.T
+            K = transform @ K @ transform.T
+            D0 = inverse.T @ D0 @ inverse
+        out[l] = (V, K, D0)
+    cache[basis] = out
+    return out
+
+
+class OneCenterExact:
+    r"""The exact one-center electron-electron terms of a molecular PAW-LCAO
+    Hamiltonian, in projector space.
+
+    Blöchl's electron-electron energy inside sphere ``A`` is
+    :math:`\tfrac12\sum D_{ab}D_{cd}\,\Delta W_{abcd}` (Hartree) minus
+    :math:`\tfrac12\sum_\sigma\sum D^\sigma_{ad}D^\sigma_{cb}\,\Delta
+    W_{abcd}` (exchange), :math:`\Delta W` being :func:`one_center_coulomb`.
+    Both are the two-body operator
+    :math:`\Delta\langle pq|rs\rangle = \sum_{abcd} C_{pa}C_{rb}\,
+    \Delta W_{abcd}\,C_{qc}C_{sd}`, so they go into the two-body tensor and
+    every consumer of it -- a Hartree-Fock SCF, a frozen core, an active
+    space, a qubit Hamiltonian -- gets the sphere's Coulomb and exchange
+    exactly, at any density.  Written as the pair-pair matrix
+    :math:`\Delta W_{(ab),(cd)} = \sum_k \lambda_k U^k_{ab}U^k_{cd}`, it is
+    the low-rank sum :math:`\sum_k\lambda_k\,G^k\otimes G^k` with
+    :math:`G^k = C_A U^k C_A^T` (:meth:`channels`): rank 33 for oxygen's
+    eight projectors, 3 for hydrogen.
+
+    What the dataset froze into :math:`D^{ion}` for the same sphere is then
+    removed, and the frozen core's exchange added, as one block per
+    ``(atom, l, m)`` of the nonlocal coupling (:meth:`coupling_blocks`):
+    :math:`-V - \Delta W\cdot D^0 + K` with ``V``, ``K`` and ``D0`` of
+    :func:`exact_one_center_terms` (``Delta W . D0`` is the linearized
+    one-center Hartree term the quadratic one replaces).
+
+    The constant that goes with it is **zero**.  The dataset's
+    ``one_center_energy`` is :math:`-(E_H[n^1_0] - E_H[\tilde n^1_0 + \hat
+    n_0]) + X^0`, the double counting of the linearized Hartree term and the
+    functional's :math:`X^0 = (E_{xc} - \int n v_{xc})[n^1_0] - (\ldots)
+    [\tilde n^1_0]`; with the Hartree term quadratic and no functional left,
+    nothing remains: the one-center energy is exactly
+    :math:`\tfrac12 DD\Delta W - \tfrac12\sum_\sigma D^\sigma D^\sigma\Delta
+    W + \mathrm{tr}(K D)` (``D`` both spins), in the valence-only convention
+    of the datasets (the frozen core's own energy is left out, as before).
+
+    Molecules only: real spherical harmonics (crystals use complex ones and
+    have no such path).
+    """
+
+    def __init__(self, projectors, datasets):
+        positions: dict = {}
+        for p, projector in enumerate(projectors):
+            positions.setdefault(int(projector.atom_index), []).append(p)
+        if any(not bool(p.real) for p in projectors):
+            raise NotImplementedError(
+                "the exact one-center terms are built for real spherical "
+                "harmonics (molecules); complex projectors belong to a "
+                "crystal, which has no Hartree-Fock path")
+        self.n_projectors = len(projectors)
+        self.atoms = []
+        for atom, members in sorted(positions.items()):
+            dataset = datasets[atom]
+            own = [projectors[p] for p in members]
+            basis = _projector_basis(own, None)
+            W = one_center_exchange_tensor(dataset, own, 0.0, basis)
+            terms = exact_one_center_terms(dataset, basis)
+            n = len(own)
+            V = np.zeros((n, n))
+            K = np.zeros((n, n))
+            D0 = np.zeros((n, n))
+            for i, a in enumerate(own):
+                for j, b in enumerate(own):
+                    if (a.l, a.m) == (b.l, b.m):
+                        block_V, block_K, block_D = terms[a.l]
+                        V[i, j] = block_V[a.index, b.index]
+                        K[i, j] = block_K[a.index, b.index]
+                        D0[i, j] = block_D[a.index, b.index]
+            hartree = np.einsum("ijkl,kl->ij", W, D0)
+            hartree = 0.5 * (hartree + hartree.T)
+            coupling = -V - hartree + K
+            pair = W.reshape(n * n, n * n)
+            pair = 0.5 * (pair + pair.T)
+            values, vectors = np.linalg.eigh(pair)
+            floor = ONE_CENTER_RANK_FLOOR * max(float(np.abs(values).max(
+                initial=0.0)), 1e-300)
+            keep = np.abs(values) > floor
+            factors = vectors[:, keep].T.reshape(-1, n, n)
+            factors = 0.5 * (factors + factors.transpose(0, 2, 1))
+            self.atoms.append({"atom": atom, "members": np.asarray(members),
+                               "projectors": own, "W": W, "V": V, "K": K,
+                               "D0": D0, "coupling": coupling,
+                               "values": values[keep], "factors": factors})
+
+    @property
+    def rank(self) -> int:
+        """Number of two-body factors over all spheres."""
+        return int(sum(len(a["values"]) for a in self.atoms))
+
+    def coupling_blocks(self) -> dict:
+        """``{(atom, l, m): block}`` to add to the nonlocal coupling."""
+        out = {}
+        for entry in self.atoms:
+            own = entry["projectors"]
+            groups: dict = {}
+            for i, projector in enumerate(own):
+                groups.setdefault((projector.l, projector.m), []).append(
+                    (projector.index, i))
+            for (l, m), members in groups.items():
+                members = sorted(members)
+                rows = [i for _index, i in members]
+                out[(entry["atom"], l, m)] = entry["coupling"][
+                    np.ix_(rows, rows)]
+        return out
+
+    def channels(self, C) -> tuple:
+        r"""``(G, lambda)``: the ``(k, M, M)`` factors :math:`C_A U^k C_A^T`
+        of the projections ``C`` and their weights."""
+        C = np.asarray(C)
+        G, values = [], []
+        for entry in self.atoms:
+            Ca = C[:, entry["members"]]
+            for U, value in zip(entry["factors"], entry["values"]):
+                G.append(Ca @ U @ Ca.T)
+                values.append(value)
+        M = C.shape[0]
+        if not G:
+            return np.zeros((0, M, M), dtype=C.dtype), np.zeros(0)
+        return np.stack(G), np.asarray(values, dtype=float)
+
+    def channel_derivatives(self, C, dC) -> np.ndarray:
+        r"""``(k, M, M)``: :math:`dC_A U^k C_A^T + C_A U^k dC_A^T` for every
+        factor of :meth:`channels` (zeros where ``dC`` does not touch the
+        sphere)."""
+        C = np.asarray(C)
+        dC = np.asarray(dC)
+        M = C.shape[0]
+        out = []
+        for entry in self.atoms:
+            idx = entry["members"]
+            Ca, dCa = C[:, idx], dC[:, idx]
+            moving = bool(np.any(dCa))
+            for U in entry["factors"]:
+                if moving:
+                    left = dCa @ U @ Ca.T
+                    out.append(left + left.T)
+                else:
+                    out.append(np.zeros((M, M), dtype=np.result_type(C, dC)))
+        if not out:
+            return np.zeros((0, M, M), dtype=np.result_type(C, dC))
+        return np.stack(out)

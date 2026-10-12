@@ -201,14 +201,19 @@ class TestBasis:
 #: the continuous PZ81; HISTORY 2026-10-04/05): free -30.227857 -> -30.187777,
 #: confined -30.694972 -> -30.651012 (gain 0.4632 eV), DZP Gaussian
 #: -33.354485 -> -33.290822, DZP unconfined -32.871708 -> -32.805738.
-UNCONFINED_EV = -30.187777
-CONFINED_EV = -30.651012
+#: Re-measured 2026-10-12, when a wave-function Hamiltonian's spheres became
+#: exact (HISTORY.md "PAW-LCAO Hamiltonian: one-center exact exchange"):
+#: free -30.187777 -> -29.408554, confined -30.651012 -> -29.829699 (gain
+#: 0.4632 -> 0.4211 eV), DZP Gaussian -33.290822 -> -32.146900, DZP
+#: unconfined -32.805738 -> -31.707244.
+UNCONFINED_EV = -29.408554
+CONFINED_EV = -29.829699
 #: The same molecule in the DZP basis with a Gaussian polarization shell,
 #: 20 qubits.  Re-measured in the same rebuild: -33.374833 -> -33.360087.
-DZP_GAUSSIAN_EV = -33.290822
+DZP_GAUSSIAN_EV = -32.146900
 #: The same, with the confinement switched off (orbital polarization).
 #: -32.884195 -> -32.869555 in the same rebuild.
-DZP_UNCONFINED_EV = -32.805738
+DZP_UNCONFINED_EV = -31.707244
 
 
 @needs_library
@@ -242,7 +247,7 @@ class TestMolecule:
         confined, _ = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})
         assert free == pytest.approx(UNCONFINED_EV, abs=2e-5)
         assert confined == pytest.approx(CONFINED_EV, abs=2e-5)
-        assert free - confined == pytest.approx(0.4632, abs=1e-3)
+        assert free - confined == pytest.approx(0.4211, abs=1e-3)
 
     def test_the_context_reports_the_radii(self):
         _, atoms = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})

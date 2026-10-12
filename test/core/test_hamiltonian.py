@@ -239,15 +239,27 @@ class TestEarlyActiveSpace:
         self._check(dense, tensor_space, grid, direct_space, 1e-10)
 
     @pytest.mark.parametrize("method", ["energy", "natural"])
-    def test_an_open_shell_builds_direct_on_request(self, method):
+    def test_an_open_shell_builds_direct_on_request(self, method,
+                                                    monkeypatch):
         # The direct UHF's natural orbitals.  UHF's soft modes leave the
         # coefficients apart by the SCF tolerance, not round-off; the
-        # active energies agree to round-off.
+        # active energies agree to round-off.  Both SCFs are converged to
+        # 1e-12, as in the closed-shell test, and given the iterations to get
+        # there: with the exact one-center spheres (2026-10-12) OH's pi-hole
+        # mode is softer, the default 300 iterations stop short of
+        # convergence, and the two unconverged stopping points were 2.4e-7
+        # apart in the active one-body block.
+        from mandacaru.algorithms.hartree_fock import UHF
         from mandacaru.core.sector import ParticleSector
 
+        solve = UHF.solve
+        monkeypatch.setattr(UHF, "solve", lambda self, **kw: solve(
+            self, **{**kw, "tol": 1e-12, "max_iter": 3000}))
         built = _both_routes("OH", {"name": "PAW-LCAO", "size": "SZ"},
                              {"orbitals": 4, "method": method})
         (_t, tensor_space, dense), (_d, direct_space, grid) = built
+        assert dense._last_uhf_result[1].converged
+        assert grid._last_direct_uhf_result[1].converged
         self._check(dense, tensor_space, grid, direct_space, 1e-7)
         energies = []
         for H, _space, _integrals in built:
