@@ -342,41 +342,41 @@ def load_pseudopotential(path, format: str | None = None,
 # Library access.
 # --------------------------------------------------------------------------- #
 
-def library_file(symbol: str, directory,
+def library_file(symbol: str, paw_dataset,
                  format: str | None = None) -> str:
-    """Path of ``symbol``'s file in the library directory.
+    """Path of ``symbol``'s file in the dataset folder ``paw_dataset``.
 
     With no ``format``, an existing file wins (either extension); otherwise the
     default format's extension is used.
     """
-    directory = os.fspath(directory)
+    paw_dataset = os.fspath(paw_dataset)
     if format is None:
         for candidate in (DEFAULT_FORMAT, *PSEUDO_FORMATS):
-            path = os.path.join(directory,
+            path = os.path.join(paw_dataset,
                                 f"{symbol}{FILE_EXTENSIONS[candidate]}")
             if os.path.exists(path):
                 return path
         format = DEFAULT_FORMAT
-    return os.path.join(directory,
+    return os.path.join(paw_dataset,
                         f"{symbol}{FILE_EXTENSIONS[resolve_format(format)]}")
 
 
 #: The relativistic treatment of the datasets a library folder holds, by the
-#: suffix of its name (``lda-sr/``, ``lda-dirac/``;
+#: suffix of its name (``lda-sr/``, ``lda-fr/``;
 #: :data:`.environment.LIBRARY_FOLDERS`).
-FOLDER_RELATIVITY = {"sr": "scalar", "dirac": "dirac"}
+FOLDER_RELATIVITY = {"sr": "scalar", "fr": "dirac"}
 
 
 def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
                          *, label: str, noun: str, builder: str):
     """Load ``symbol`` from the library ``folder`` (cached), or explain.
 
-    ``folder`` comes from :func:`.environment.library_directory`, which has
+    ``folder`` comes from :func:`.environment.paw_dataset_folder`, which has
     already refused an unset or wrong variable.  An **empty** folder gets the
     recipe to fill it; one that lacks the element names what it does hold.  A
     file of another family is refused, and so is one whose functional or
     relativistic treatment is not the one its folder names (``lda-sr/``,
-    ``lda-dirac/``, ``pbe/``, ...).
+    ``lda-fr/``, ``pbe/``, ...).
 
     The cache is keyed by the file and its identity (modification time and
     size), so a dataset replaced on disk -- a library rebuilt under a running
@@ -417,7 +417,7 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
                          f"{family!r}")
     # A library folder named for a functional (`pbe/`, or `lda-sr/` whose
     # first part names it) holds only that functional's datasets:
-    # `directory="pbe"` must not silently run an LDA file copied into it.
+    # `paw_dataset="pbe"` must not silently run an LDA file copied into it.
     # Folders with any other name are the caller's own.
     from .environment import FUNCTIONALS
     name = os.path.basename(os.path.normpath(folder)).lower()
@@ -428,7 +428,7 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
                          f"{folder_xc}/ folder; regenerate it with --xc "
                          f"{folder_xc} or move it to {dataset_xc}/")
     # The same for the treatment its suffix names: a scalar file copied into
-    # `lda-dirac/` would silently drop the spin-orbit term a calculation
+    # `lda-fr/` would silently drop the spin-orbit term a calculation
     # selecting that folder asked for, and a Dirac file in `lda-sr/` would
     # add one nobody asked for.
     wanted = FOLDER_RELATIVITY.get(suffix) if folder_xc in FUNCTIONALS else None
@@ -446,12 +446,12 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
     return pp
 
 
-def available_elements(directory) -> list[str]:
-    """Elements present in the library directory, in either format."""
-    if not os.path.isdir(directory):
+def available_elements(paw_dataset) -> list[str]:
+    """Elements present in the dataset folder, in either format."""
+    if not os.path.isdir(paw_dataset):
         return []
     found = set()
-    for name in os.listdir(directory):
+    for name in os.listdir(paw_dataset):
         stem, extension = os.path.splitext(name)
         if extension.lower() in _EXTENSION_FORMATS:
             found.add(stem)

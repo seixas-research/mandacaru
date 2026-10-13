@@ -238,7 +238,7 @@ smooth energy, with the compensation charges in the Hartree term and the
 dataset's smooth core density in the functional, the way the dataset was
 unscreened. The library ships a scalar-relativistic **LDA** set and a
 scalar-relativistic **PBE** set, and each functional reads its own set
-unless `directory=` names another:
+unless `paw_dataset=` names another:
 
 | `xc` | datasets read by default |
 |---|---|
@@ -255,7 +255,7 @@ atoms.calc = Mandacaru(method="dft", xc="pbe",       # reads pbe-sr/
 HSE06 and r2SCAN on the PBE datasets still use a functional in the molecule
 that is not the one in the datasets' cores and one-center terms; PBE is the
 nearest set, not an exact match. A folder of another set
-(`directory="lda-sr"` with PBE, `directory="pbe-sr"` with LDA) mixes the two
+(`paw_dataset="lda-sr"` with PBE, `paw_dataset="pbe-sr"` with LDA) mixes the two
 further, and the calculation emits a `RuntimeWarning` naming the folder of
 the functional's own set. The mixed numbers are still useful for trends, but
 they are not the answer of a consistent calculation.

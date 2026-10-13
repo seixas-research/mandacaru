@@ -157,10 +157,10 @@ def _pseudo_report(name, context, symbols, fields, tables):
     folders = list(dict.fromkeys(os.path.dirname(source) for source in sources
                                  if source != IN_MEMORY))
     if folders:
-        fields["directory"] = "; ".join(
+        fields["paw_dataset"] = "; ".join(
             f"{os.path.basename(folder)} ({folder})" for folder in folders)
     else:
-        fields["directory"] = f"none ({IN_MEMORY})"
+        fields["paw_dataset"] = f"none ({IN_MEMORY})"
 
     # The file's name says where a dataset came from, its digest which bytes
     # it was: a library is a checkout that can be rebuilt under the same names.

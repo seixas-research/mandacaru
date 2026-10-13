@@ -331,7 +331,7 @@ read off the left margin:
     local_potential: range-separated: long range on the grid, short range on atom-centered quadrature (sigma = 0.2646 Bohr)
     dataset_xc: LDA (atomic reference only; the valence interaction is the bare Coulomb operator)
     one_center: exact: one-center Coulomb and exchange in the two-body operator, frozen-core exchange
-    directory: lda-sr (/data/mandacaru-paw/lda-sr)
+    paw_dataset: lda-sr (/data/mandacaru-paw/lda-sr)
     basis_functions: 6
     datasets:
         symbol  Z  Z_ion  l_max  r_cut_Bohr  source     sha256
@@ -427,7 +427,7 @@ the options that were typed: a basis here is built at run time, so the family
 defaults left alone (a PAW-LCAO basis is Fourier-filtered and its local potential is
 range-separated unless told otherwise), the cutoff radius an `energy_shift`
 gave each orbital together with the eigenvalue shift actually achieved, the
-folder the datasets were read from (`directory`: the folder's name, such as
+folder the datasets were read from (`paw_dataset`: the folder's name, such as
 `lda` or `pbe`, and its path), the file of every dataset and the SHA-256 of
 its bytes (`sha256`, read when the file was loaded: a library is a checkout
 that can be rebuilt under the same file names, and the digest says which

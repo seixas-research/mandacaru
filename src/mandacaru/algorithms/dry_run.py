@@ -337,8 +337,8 @@ def _pseudo_basis_count(atoms, family, options):
 
     options = family.resolved_options(options)
     symbols = list(atoms.get_chemical_symbols())
-    directory = options.get("directory")
-    potentials = {s: family.get(s, directory) for s in set(symbols)}
+    folder = options.get("paw_dataset")
+    potentials = {s: family.get(s, folder) for s in set(symbols)}
     positions = coherent_positions(atoms)
     # The run's own construction: a Gaussian polarization shell can have a
     # different angular momentum (and so a different function count) than the

@@ -1467,7 +1467,7 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
     atoms.wrap()
     positions = np.asarray(atoms.get_positions(), dtype=float)
     cell = np.asarray(atoms.get_cell(), dtype=float)
-    potentials = {s: load(s, options.get("directory")) for s in set(symbols)}
+    potentials = {s: load(s, options.get("paw_dataset")) for s in set(symbols)}
     if grid is None:
         g = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=grid_spacing,
                  units="angstrom", cell=cell, periodic=True)

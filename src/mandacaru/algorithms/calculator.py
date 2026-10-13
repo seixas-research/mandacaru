@@ -396,16 +396,15 @@ class Mandacaru(Calculator):
         pseudopotential families ``"PAW-LCAO"`` / ``"UPAW-LCAO"``
         (``{"name": "PAW-LCAO", "size": "DZP"}``), which replace the all-electron
         problem by a valence-only one.
-    directory : str, optional
-        The folder of the pseudopotential library the datasets are read
-        from, relative to the family's library variable.  By default the
+    paw_dataset : str, optional
+        The PAW dataset set the pseudopotentials are read from: one folder
+        of the family's library, relative to its variable.  By default the
         set of the functional: ``"pbe-sr"`` (``$MANDACARU_PAW_PATH/pbe-sr/``,
         scalar-relativistic PBE) for ``method="dft"`` with ``xc="pbe"``,
         ``"hse06"``, ``"r2scan"`` or ``"r2scan-rvv10"``, and ``"lda-sr"``
         (scalar-relativistic LDA) for LDA and every other method.
-        ``"lda-dirac"`` reads the PAW-LCAO set with the spin-orbit term.  A
-        basis that names its own ``directory`` option keeps it.  Not ASE's working directory: the
-        calculator's ``directory`` attribute is left to ASE.
+        ``"lda-fr"`` reads the PAW-LCAO set with the spin-orbit term.  A
+        basis that names its own ``paw_dataset`` option keeps it.
     grid_spacing : float
         Grid spacing in Angstrom (default ``0.20``), used both for the
         per-geometry grid built from ``atoms.cell`` and for the frozen force
@@ -559,7 +558,7 @@ class Mandacaru(Calculator):
                               "charges", "magmoms", "magmom"]
 
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="HAO",
-                 directory: str | None = None,
+                 paw_dataset: str | None = None,
                  grid_spacing: float = DEFAULT_GRID_SPACING, grid=None,
                  include_pulay: bool = True, force_method: str = "rdm",
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
@@ -590,19 +589,18 @@ class Mandacaru(Calculator):
             if spec is not None and spec.evolution == "exact":
                 raise ValueError("HVA circuit measurement requires "
                                  "evolution='trotter'")
-        # The library folder, stored under its own name: ASE's `directory`
-        # attribute is the calculator's working directory.  Unnamed, it is
-        # the set of the functional that runs (`pbe-sr` for PBE, HSE06 and
-        # r2SCAN), which a basis without a library simply does not use.
-        named = directory is not None
+        # The PAW dataset set.  Unnamed, it is the set of the functional
+        # that runs (`pbe-sr` for PBE, HSE06 and r2SCAN), which a basis
+        # without a library simply does not use.
+        named = paw_dataset is not None
         if not named:
             functional = None
             if self.method == "dft":
                 from ..integrals.exchange_correlation import resolve_functional
                 functional = resolve_functional(
                     solver_kwargs.get("xc") or "lda")
-            directory = default_library_folder(functional)
-        self.library_folder = str(directory)
+            paw_dataset = default_library_folder(functional)
+        self.library_folder = str(paw_dataset)
         if self.library_folder != DEFAULT_LIBRARY_FOLDER:
             from ._hamiltonian_from_atoms import with_library_folder
             basis = with_library_folder(basis, self.library_folder,

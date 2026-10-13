@@ -8,7 +8,7 @@ from mandacaru.pseudopotentials.io import load_pseudopotential
 
 @pytest.fixture(autouse=True)
 def _outside_the_repository(tmp_path, monkeypatch):
-    """Every test runs from a temporary directory: without ``--output``,
+    """Every test runs from a temporary folder: without ``--output``,
     ``mandacaru-build`` writes into ``./<family>/``, and a test that
     generates by mistake must not leave datasets in the checkout."""
     monkeypatch.chdir(tmp_path)

@@ -309,7 +309,7 @@ class TestPBELibrary:
         atoms = Atoms(symbol, positions=[[3.5, 3.5, 3.5]], cell=[7.0] * 3)
         _H, _p, _n, _profile, context = build_basis_hamiltonian(
             atoms, {"name": "PAW-LCAO", "size": "SZ",
-                    "projector_basis": "dual", "directory": folder},
+                    "projector_basis": "dual", "paw_dataset": folder},
             None, 0.20, 0, None, spin=True)
         integrals = context["integrals"]
         C = np.asarray(integrals.projections())
@@ -329,7 +329,7 @@ class TestPBELibrary:
         assert not np.allclose(lda.v_local[:100], pbe.v_local[:100])
 
     def test_the_calculator_reads_it_by_folder_name(self):
-        """``Mandacaru(directory="pbe-sr")`` puts the PBE datasets under a
+        """``Mandacaru(paw_dataset="pbe-sr")`` puts the PBE datasets under a
         PBE Kohn-Sham calculation without the mismatch warning."""
         import warnings
 
@@ -343,7 +343,7 @@ class TestPBELibrary:
         atoms.center()
         atoms.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=0.3,
                                basis={"name": "PAW-LCAO", "size": "SZ"},
-                               directory="pbe-sr")
+                               paw_dataset="pbe-sr")
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             energy = atoms.get_potential_energy()
@@ -366,17 +366,17 @@ class TestLibraryLoader:
         return target
 
     def test_a_scalar_dataset_in_a_dirac_folder_is_refused(self, tmp_path):
-        """A scalar file copied into ``lda-dirac/`` would silently drop the
+        """A scalar file copied into ``lda-fr/`` would silently drop the
         spin-orbit term that folder promises."""
-        folder = self._copy(tmp_path, "lda-dirac")
+        folder = self._copy(tmp_path, "lda-fr")
         with pytest.raises(ValueError, match="relativity='scalar' in the "
-                                             "lda-dirac/ folder"):
-            get_paw("H", directory=str(folder))
+                                             "lda-fr/ folder"):
+            get_paw("H", paw_dataset=str(folder))
 
     def test_a_matching_folder_and_a_folder_of_ones_own_load(self, tmp_path):
-        assert get_paw("H", directory=str(self._copy(
+        assert get_paw("H", paw_dataset=str(self._copy(
             tmp_path, "lda-sr"))).relativity == "scalar"
-        assert get_paw("H", directory=str(self._copy(
+        assert get_paw("H", paw_dataset=str(self._copy(
             tmp_path, "mine"))).relativity == "scalar"
 
     def test_a_replaced_file_is_read_again(self, tmp_path):
@@ -385,14 +385,14 @@ class TestLibraryLoader:
         from dataclasses import replace
 
         folder = self._copy(tmp_path, "lda-sr")
-        first = get_paw("H", directory=str(folder))
-        assert get_paw("H", directory=str(folder)) is first
+        first = get_paw("H", paw_dataset=str(folder))
+        assert get_paw("H", paw_dataset=str(folder)) is first
         path = save_pseudopotential(
             replace(first, one_center_energy=first.one_center_energy + 1.0),
             folder / "H.parquet")
         stamp = os.stat(path).st_mtime_ns + 10 ** 9
         os.utime(path, ns=(stamp, stamp))
-        second = get_paw("H", directory=str(folder))
+        second = get_paw("H", paw_dataset=str(folder))
         assert second is not first
         assert second.one_center_energy == pytest.approx(
             first.one_center_energy + 1.0)

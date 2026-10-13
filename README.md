@@ -41,10 +41,10 @@ mandacaru --pseudo-status             # each variable, where it points, and how 
 
 Datasets sit one folder per set inside the checkout
 (`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic LDA set);
-PAW-LCAO also has `lda-dirac/` (spin-orbit) and `pbe-sr/` (PBE). A
+PAW-LCAO also has `lda-fr/` (spin-orbit) and `pbe-sr/` (PBE). A
 calculation reads the set of its functional — `pbe-sr/` for PBE, HSE06 and
 r2SCAN, `lda-sr/` for LDA and every other method — and another folder with
-`Mandacaru(..., directory="lda-dirac")`; a dataset whose
+`Mandacaru(..., paw_dataset="lda-fr")`; a dataset whose
 own functional disagrees with the folder it is loaded from is refused. The
 all-electron bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need none
 of this. See the
@@ -125,7 +125,7 @@ from mandacaru import Mandacaru
 atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="dft",
-                       xc="pbe",                              # "lda" (default) | "pbe" | "r2scan" | "hse06"
+                       xc="pbe",                              # "lda" (default) | "pbe" | "r2scan" | "hse06" | "r2scan-rvv10"
                        dispersion="d4",                       # None | "d4" (PBE and r2SCAN; pip install 'mandacaru[dispersion]')
                        basis={"name": "PAW-LCAO",
                               "size": "DZP"},

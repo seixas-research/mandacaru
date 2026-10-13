@@ -38,7 +38,7 @@ radial atomic solver (`mandacaru.basis.atomic_solver`):
 
 Names are case-insensitive. Each family accepts the options `size`,
 `zeta_split` (`"first_zeta"` by default, or `"last_zeta"`; the scheme fixes
-its own split radii), `directory` (an alternative library folder) and
+its own split radii), `paw_dataset` (an alternative dataset folder) and
 `filter_cutoff` (*Fourier filtering*, below); PAW-LCAO and UPAW-LCAO also take
 `projector_basis="raw"|"dual"`, `energy_shift`, `confinement_potential` and
 `polarization_method` (*Confined orbitals*, below). Any other key — or an
@@ -99,7 +99,7 @@ A new family is added by registering a `FamilySpec`:
 register_family(FamilySpec(name="gth", description="...",
                            generate=..., get=..., build=...,
                            norm_conserving=True, aliases=("goedecker",),
-                           options=("size", "zeta_split", "directory",
+                           options=("size", "zeta_split", "paw_dataset",
                                     "filter_cutoff"),
                            default_options={"filter_cutoff": "auto"}))
 ```
@@ -259,7 +259,7 @@ The `xc` argument belongs to the dataset. It is not the functional of a later
 calculation: `Mandacaru(method="dft", xc=...)` chooses its own, and with it
 the set it reads (see {doc}`dft`): the PBE set (*The pseudopotential
 libraries*, below) for PBE, HSE06 and r2SCAN, the LDA set for LDA. Datasets
-of another set, named with `directory=`, are warned about.
+of another set, named with `paw_dataset=`, are warned about.
 
 A gradient-corrected reference potential is a cubic spline through its
 derivative nodes (`GGA_DERIVATIVE_STEP` apart), so the derivatives the local
@@ -757,8 +757,8 @@ nonsense.
 
 `$MANDACARU_PAW_PATH/lda-sr/{H,Li,C,N,O,F}.parquet` (100–385 kB, decimated to
 0.02 Bohr; 9.6 s to regenerate with `build_paw_library()`; `get_paw(symbol,
-directory, xc)` is the family's loader, `paw_library_path()` its directory
-(`$MANDACARU_PAW_PATH/lda-sr` by default, `lda-dirac` for
+paw_dataset, xc)` is the family's loader, `paw_library_path()` its folder
+(`$MANDACARU_PAW_PATH/lda-sr` by default, `lda-fr` for
 `relativity="dirac"`, `pbe-sr` for `xc="pbe"`). The record is `PAWDataset` (a `PseudoPotential` subclass:
 `channels[l]` are `PAWChannel`s with `reference_energies`, `ae_waves`,
 `pseudo_waves`, `projectors` (dual), `raw_projectors`, `overlap_correction`
@@ -842,7 +842,7 @@ for the $j$ average. Both $j$ levels are then shifted together by the gap
 between the scalar-relativistic level and the Dirac atom's $j$ average: below
 0.5 mHa for light and 4d/5f shells, 1–2 mHa for 5p and 5d, 3.7–6.8 mHa for the
 6p of Tl–Bi. The splitting itself is kept. The installed Dirac datasets are
-read with `directory="lda-dirac"`. The term breaks $S_z$, so only ADAPT-VQE
+read with `paw_dataset="lda-fr"`. The term breaks $S_z$, so only ADAPT-VQE
 with `pool="spin-orbit"` runs it, and not with the `parity_reduced` mapping.
 The molecular orbitals are then the GHF spinors, and an `active_space`
 freezes and deletes Kramers pairs of them (see the active-space guide).
@@ -1010,14 +1010,14 @@ and, finding nothing there (including when `MANDACARU_UPAW_PATH` is unset),
 **generates the dataset on the fly**, caches it in memory and warns once —
 generation is 0.4–2.2 s per element, so an interactive run pays a fraction of
 a second and a scan pays nothing after the first geometry. Naming a
-`directory` explicitly is a statement that the library is there, and a
+`paw_dataset` explicitly is a statement that the library is there, and a
 missing element then raises with the `build_upaw_library` recipe:
 
 ```python
 from mandacaru.pseudopotentials.paw import build_upaw_library
 
 build_upaw_library(("H", "C", "N", "O"))          # into $MANDACARU_UPAW_PATH/lda/
-build_upaw_library(("H", "O"), directory="/data/upaw")
+build_upaw_library(("H", "O"), paw_dataset="/data/upaw")
 ```
 
 or from the command line, which writes the same place:
@@ -1122,7 +1122,7 @@ shell. Inside a checkout the datasets sit one folder per set:
 | folder | set | elements |
 |---|---|---|
 | `lda-sr/` | scalar-relativistic LDA, the default for LDA and every method without a functional | H–U (92) |
-| `lda-dirac/` | LDA with the spin-orbit term | H–U without Pa (91) |
+| `lda-fr/` | LDA with the spin-orbit term | H–U without Pa (91) |
 | `pbe-sr/` | scalar-relativistic PBE, the default for PBE, HSE06 and r2SCAN | H–U (92) |
 
 There is no PBE Dirac set. In the PBE set the reference atom, the
@@ -1130,8 +1130,8 @@ unscreening and the one-center energies are PBE (Perdew-Wang 1992 correlation,
 MacDonald-Vosko relativistic exchange), so it is the set for
 `Mandacaru(method="dft", xc="pbe")` and the hybrid built on PBE, which read
 it by default (r2SCAN too, having no set of its own); on the LDA set, named
-with `directory="lda-sr"`, a PBE calculation runs but warns that the
-functionals differ, and the warning names `directory="pbe-sr"`. The PBE set flags 27
+with `paw_dataset="lda-sr"`, a PBE calculation runs but warns that the
+functionals differ, and the warning names `paw_dataset="pbe-sr"`. The PBE set flags 27
 elements, none for a ghost: La–Yb, Ac, Pa and U (no projectors under their
 $4f$/$5f$), Cs, Ba, Fr and Ra (no $p$ or $f$), and Lu, Hf, W, Ag, Cd and Ir
 (an empty $p$ 0.21–0.67 rad off, Lu also an intruding-1s miss of 2.25);
@@ -1143,54 +1143,53 @@ demand without it (*Datasets* above).
 
 A calculation reads the set of its functional -- `pbe-sr/` for
 `method="dft"` with PBE, HSE06 or r2SCAN, `lda-sr/` for LDA and every other
-method -- unless the calculator names another folder with `directory=`,
+method -- unless the calculator names another folder with `paw_dataset=`,
 resolved against the family's own variable:
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
-                       directory="lda-dirac")   # $MANDACARU_PAW_PATH/lda-dirac/
+                       paw_dataset="lda-fr")   # $MANDACARU_PAW_PATH/lda-fr/
 
 atoms.calc = Mandacaru(method="dft", xc="pbe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
-                       directory="lda-sr")      # LDA datasets under PBE: warns
+                       paw_dataset="lda-sr")      # LDA datasets under PBE: warns
 ```
 
-On the command line the same folder is `--directory lda-sr`.
+On the command line the same folder is `--paw-dataset lda-sr`.
 
 A per-element basis mapping has each of its library
 entries pointed at the same folder name; with the `lda-sr` set every entry
-reads the scalar-relativistic LDA set unchanged. `directory=` takes the name
-of one folder inside the checkout, not a path; a missing folder raises
+reads the scalar-relativistic LDA set unchanged. `paw_dataset=` takes the
+name of one folder inside the checkout, not a path; a missing folder raises
 `LibraryPathError` listing the ones present, and naming a folder with a basis
 that reads no library is refused (the functional's own set is simply unused
-by such a basis). It is not ASE's working directory, which
-the calculator leaves as it is.
+by such a basis).
 
 Each family's own module is the loader —
-`get_paw(symbol, directory, xc)`, `get_upaw(symbol, directory, xc)` — both
-accepting `directory=None` to fall back to the library variable and its
-default `lda-sr/` set (`get_paw(symbol, xc="pbe")` reads `pbe-sr/`); `available_elements(directory)` (from
-`mandacaru.pseudopotentials.io`) lists what a directory holds. The PAW-LCAO
+`get_paw(symbol, paw_dataset, xc)`, `get_upaw(symbol, paw_dataset, xc)` — both
+accepting `paw_dataset=None` to fall back to the library variable and its
+default `lda-sr/` set (`get_paw(symbol, xc="pbe")` reads `pbe-sr/`); `available_elements(paw_dataset)` (from
+`mandacaru.pseudopotentials.io`) lists what a dataset folder holds. The PAW-LCAO
 datasets cover **every element with Z ≤ 92** (H through U),
 generated from scratch by Mandacaru's own radial atomic solver, in LDA and
 in PBE.
 
 A folder named for a set is a promise about its files: a dataset whose
 functional or relativistic treatment is not the one the name says (a scalar
-file copied into `lda-dirac/`, which would silently drop the spin-orbit term)
+file copied into `lda-fr/`, which would silently drop the spin-orbit term)
 is refused with the folder named; a folder with any other name is the
 caller's own and is read as it is. A loaded dataset is cached for the
 process by its file and that file's modification time and size, so a file
 replaced on disk -- a set rebuilt under a running session -- is read again.
 
 A calculation that needs a variable that is unset, or that names something
-that is not a directory, raises `LibraryPathError`
+that is not a folder, raises `LibraryPathError`
 (`mandacaru.pseudopotentials.environment`) naming the `--set-*` command that
 fixes it; the command line prints it and exits 2. A basis option
-`directory=...` (unlike the calculator's) bypasses the variable for one run,
+`paw_dataset=...` (unlike the calculator's) bypasses the variable for one run,
 and wins over the calculator's folder: it names the folder
-holding the `<Symbol>.parquet` files itself, with no functional subdirectory,
+holding the `<Symbol>.parquet` files itself, with no functional subfolder,
 and the loaders raise `FileNotFoundError` rather than `LibraryPathError` when
 that folder is missing or empty.
 

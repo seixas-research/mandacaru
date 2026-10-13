@@ -169,7 +169,7 @@ def test_ghf_finds_the_spin_orbit_ground_configuration_of_lead():
 
     atom = Atoms("Pb", positions=[[0, 0, 0]], cell=[9.0] * 3)
     atom.center()
-    atom.calc = Mandacaru(method="ghf", grid_spacing=0.25, directory="lda-dirac",
+    atom.calc = Mandacaru(method="ghf", grid_spacing=0.25, paw_dataset="lda-fr",
                           basis={"name": "PAW-LCAO", "size": "SZ"},
                           trace=False)
     energy = atom.get_potential_energy()

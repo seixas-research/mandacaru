@@ -133,7 +133,7 @@ Two numbers measure the classical cost, and they are not interchangeable:
 * **cost evaluations** — energy evaluations, which is what a QPU is billed for.
 
 A gradient-based method takes few steps and spends many evaluations on each one
-(a finite-difference gradient costs `2N`, plus a line search); a direct search
+(a finite-difference gradient costs `N + 1`, plus a line search); a direct search
 takes many cheap steps. Reporting only one of them flatters one family and
 slanders the other, so a run reports both: the `steps` column of the
 `[ITERATIONS]` table is the per-growth-step count, and the summary block's
@@ -148,6 +148,33 @@ result.iterations[0].optimizer_steps      # ... and per growth step
 
 The same count is on every {class}`~mandacaru.optimizers.OptimizeResult` as
 `nit`, for a bare optimizer used outside a driver.
+
+## The exact gradient
+
+On an exact objective (`shots = 0`, the internal state vector), ADAPT-VQE
+hands the gradient methods the **exact gradient** of the energy in the ansatz
+parameters instead of letting them difference it. It comes from the adjoint
+method: one preparation of $\psi = U_N \cdots U_1 |\mathrm{HF}\rangle$ and
+$\lambda = H\psi$, then one backward sweep that undoes each
+$U_k = e^{\theta_k A_k}$ on both and reads off
+
+$$
+\frac{\partial E}{\partial\theta_k} = 2\,\mathrm{Re}\,\langle\lambda_k|A_k|\psi_k\rangle .
+$$
+
+The whole gradient costs about three state preparations, against `N + 1`
+energies for a finite difference, so the saving grows with the ansatz: water
+in PAW-LCAO-DZP on 16 qubits, 30 QEB operators, needs 482 evaluations instead
+of 4851 for the same energy, and the parameter optimization runs four to five
+times faster. Each call counts as one evaluation. The `[OPTIMIZATION SETUP]`
+block's `parameter_gradient` line says which gradient ran.
+
+It is used with `gradient="analytic"` (the default) and a gradient method;
+COBYLA, Nelder-Mead and SPSA use no gradient. `gradient="finite_difference"`
+or `"parameter_shift"` keeps the optimizer's own finite difference, and so does
+a shot-based objective or a circuit provider, which give no amplitudes to
+sweep back. The tables below were measured with the finite difference, which
+`gradient="finite_difference"` reproduces.
 
 ## Measured: a small system
 

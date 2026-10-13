@@ -19,9 +19,9 @@ family                variable                    set it with
 ``upaw-lcao``         ``MANDACARU_UPAW_PATH``     ``mandacaru --set-upaw DIR``
 ====================  ==========================  ==========================
 
-Inside a checkout the datasets sit one directory per set, named for its
+Inside a checkout the datasets sit one folder per set, named for its
 functional and relativistic treatment (:data:`LIBRARY_FOLDERS`): PAW-LCAO
-ships ``lda-sr/`` (scalar-relativistic LDA), ``lda-dirac/`` (with the
+ships ``lda-sr/`` (scalar-relativistic LDA), ``lda-fr/`` (with the
 spin-orbit term) and ``pbe-sr/`` (scalar-relativistic PBE).  A calculation
 reads the set of its functional (:func:`default_library_folder`): ``pbe-sr/``
 for PBE, HSE06, r2SCAN and r2SCAN+rVV10, ``lda-sr/`` for LDA and every
@@ -36,7 +36,7 @@ The variables are read at the moment a dataset is needed, never cached, so a
 calculation that needs a library and cannot find it fails in the
 :class:`~mandacaru.algorithms.Mandacaru` constructor (whose dry-run build
 loads every dataset) with a :class:`LibraryPathError` that names the command
-to run.  A basis option ``directory=...`` bypasses the variable for one run:
+to run.  A basis option ``paw_dataset=...`` bypasses the variable for one run:
 it names the folder that holds the ``<Symbol>.parquet`` files itself.
 """
 
@@ -54,14 +54,14 @@ REPOSITORIES = {"paw-lcao": "mandacaru-paw", "upaw-lcao": "mandacaru-upaw"}
 #: Families that work without their variable: UPAW-LCAO is generated on
 #: demand when there is no library to read.
 OPTIONAL_FAMILIES = ("upaw-lcao",)
-#: Exchange-correlation functionals a checkout may hold a directory for.
+#: Exchange-correlation functionals a checkout may hold a folder for.
 FUNCTIONALS = ("lda", "pbe")
 #: The functional of every dataset loaded without saying which.
 DEFAULT_XC = "lda"
 #: The folder of a set inside a family's checkout, where it is not simply
 #: named for its functional.
 LIBRARY_FOLDERS = {("paw-lcao", "lda", "scalar"): "lda-sr",
-                   ("paw-lcao", "lda", "dirac"): "lda-dirac",
+                   ("paw-lcao", "lda", "dirac"): "lda-fr",
                    ("paw-lcao", "pbe", "scalar"): "pbe-sr"}
 #: The folder a calculation without a functional (Hartree-Fock, the
 #: quantum solvers) or with LDA reads, the scalar-relativistic LDA set.
@@ -109,7 +109,7 @@ def library_folder_name(family: str, xc: str = DEFAULT_XC,
 
 def default_library_folder(functional: str | None = None) -> str:
     """The PAW-LCAO folder a calculation with the Kohn-Sham ``functional``
-    (a canonical name) reads unless ``Mandacaru(directory=...)`` names
+    (a canonical name) reads unless ``Mandacaru(paw_dataset=...)`` names
     another: the scalar-relativistic set of :data:`DATASET_FUNCTIONALS`.
     ``None``, a method without a functional, reads
     :data:`DEFAULT_LIBRARY_FOLDER`."""
@@ -141,7 +141,7 @@ def repository_path(family: str) -> str:
     ------
     LibraryPathError
         When the variable is unset or empty, or names something that is not
-        a directory.
+        a folder.
     """
     key = _family(family)
     variable = FAMILY_VARIABLES[key]
@@ -153,27 +153,27 @@ def repository_path(family: str) -> str:
     path = os.path.abspath(os.path.expanduser(value))
     if not os.path.isdir(path):
         raise LibraryPathError(
-            f"{variable}={value!r} is not a directory, so Mandacaru cannot "
+            f"{variable}={value!r} is not a folder, so Mandacaru cannot "
             f"find the {key} pseudopotential library.  Point it at a checkout "
             f"of {REPOSITORIES[key]}:\n"
             f"    mandacaru {SET_FLAGS[key]} /path/to/{REPOSITORIES[key]}")
     return path
 
 
-def library_directory(family: str, xc: str = DEFAULT_XC, directory=None, *,
+def paw_dataset_folder(family: str, xc: str = DEFAULT_XC, paw_dataset=None, *,
                       must_exist: bool = True,
                       relativity: str = "scalar") -> str:
     """The folder holding ``family``'s ``<Symbol>.parquet`` files for ``xc``.
 
-    ``directory`` is the caller's own folder, returned as given (no variable,
-    no set subdirectory).  Otherwise it is ``<checkout>/<folder>`` of
+    ``paw_dataset`` is the caller's own folder, returned as given (no variable,
+    no set subfolder).  Otherwise it is ``<checkout>/<folder>`` of
     :func:`repository_path`, the folder :func:`library_folder_name` names; with
     ``must_exist`` (the default, for loading) a missing folder is an error,
     and without it (for writing) it is simply returned for the caller to
     create.
     """
-    if directory is not None:
-        return os.fspath(directory)
+    if paw_dataset is not None:
+        return os.fspath(paw_dataset)
     key = _family(family)
     name = library_folder_name(key, xc, relativity)
     root = repository_path(key)
@@ -188,7 +188,7 @@ def library_directory(family: str, xc: str = DEFAULT_XC, directory=None, *,
 
 
 #: Families whose library is laid out as ``<checkout>/<folder>/``, the folder
-#: a calculation selects with ``Mandacaru(directory=...)``.  UPAW-LCAO is
+#: a calculation selects with ``Mandacaru(paw_dataset=...)``.  UPAW-LCAO is
 #: generated on demand into its own library and is not one of them.
 FOLDER_FAMILIES = ("paw-lcao",)
 
@@ -196,16 +196,16 @@ FOLDER_FAMILIES = ("paw-lcao",)
 def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
     """``<checkout>/<folder>`` of ``family``'s library, which must exist.
 
-    ``folder`` is one directory name inside the checkout -- ``"lda-sr"``,
-    ``"lda-dirac"``, or any other set placed beside them -- not a path: a
+    ``folder`` is one folder name inside the checkout -- ``"lda-sr"``,
+    ``"lda-fr"``, or any other set placed beside them -- not a path: a
     separator, ``"."`` or ``".."`` is refused, so a calculation cannot reach
     outside the library its variable names.  A caller's own folder anywhere
-    on disk is the basis option ``directory=`` instead.
+    on disk is the basis option ``paw_dataset=`` instead.
 
     Raises
     ------
     ValueError
-        When ``folder`` is not a plain directory name.
+        When ``folder`` is not a plain folder name.
     LibraryPathError
         When the variable is unset, or the folder is not in the checkout; the
         message lists the folders that are.
@@ -214,11 +214,11 @@ def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
     if (not name or name in (".", "..") or os.sep in name
             or (os.altsep and os.altsep in name) or os.path.isabs(name)):
         raise ValueError(
-            f"directory must be the name of one folder inside the "
-            f"pseudopotential library, such as 'lda-sr', 'lda-dirac' or 'pbe-sr', "
+            f"paw_dataset must be the name of one folder inside the "
+            f"pseudopotential library, such as 'lda-sr', 'lda-fr' or 'pbe-sr', "
             f"not "
             f"{folder!r}; to load datasets from a folder elsewhere, pass it "
-            f"as the basis option, basis={{'name': ..., 'directory': path}}")
+            f"as the basis option, basis={{'name': ..., 'paw_dataset': path}}")
     key = _family(family)
     root = repository_path(key)
     path = os.path.join(root, name)
@@ -227,21 +227,21 @@ def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
         raise LibraryPathError(
             f"the {key} library at {root!r} has no {name}/ folder (it has: "
             f"{', '.join(present) or 'none'}).  Choose one of those with "
-            f"directory=, or generate the datasets into it with "
+            f"paw_dataset=, or generate the datasets into it with "
             f"mandacaru-build --pp {key} ... --install")
     return path
 
 
-def upaw_directory(xc: str = DEFAULT_XC, directory=None) -> str | None:
+def upaw_dataset_folder(xc: str = DEFAULT_XC, paw_dataset=None) -> str | None:
     """The UPAW-LCAO library folder, ``$MANDACARU_UPAW_PATH/<xc>``, or
     ``None`` when there is none to use.
 
     UPAW-LCAO is generated on demand, so an unset ``MANDACARU_UPAW_PATH`` is
     not an error here: it only means there is no library to read from.  A
-    set variable that names no directory still is.
+    set variable that names no folder still is.
     """
-    if directory is not None:
-        return os.fspath(directory)
+    if paw_dataset is not None:
+        return os.fspath(paw_dataset)
     if not os.environ.get(FAMILY_VARIABLES["upaw-lcao"], "").strip():
         return None
     return os.path.join(repository_path("upaw-lcao"), _functional(xc))

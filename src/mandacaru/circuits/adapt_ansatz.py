@@ -218,22 +218,67 @@ class AdaptAnsatz:
         if self.provider is not None:
             out = self._evolve_on_provider(theta, out)
             return out[:, 0] if single else out
-        if self.sparse:
-            for angle, (A, A2, rodrigues) in zip(theta, self._sparse_ops):
-                if rodrigues:
-                    out = (out + np.sin(angle) * (A @ out)
-                           + (1.0 - np.cos(angle)) * (A2 @ out))
-                elif self.matrix_free:
-                    from scipy.sparse.linalg import expm_multiply
-                    out = expm_multiply(angle * A.as_linear_operator(), out,
-                                        traceA=angle * A.trace())
-                else:
-                    from scipy.sparse.linalg import expm_multiply
-                    out = expm_multiply(angle * A, out)
-        else:
-            for angle, (w, V) in zip(theta, self._eig):
-                out = V @ (np.exp(1j * angle * w)[:, None] * (V.conj().T @ out))
+        for k, angle in enumerate(theta):
+            out = self._exponential(k, angle, out)
         return out[:, 0] if single else out
+
+    def _exponential(self, k: int, angle: float, out: np.ndarray) -> np.ndarray:
+        """``exp(angle A_k) out`` for a stack of column vectors ``out``."""
+        if self.sparse:
+            A, A2, rodrigues = self._sparse_ops[k]
+            if rodrigues:
+                return (out + np.sin(angle) * (A @ out)
+                        + (1.0 - np.cos(angle)) * (A2 @ out))
+            from scipy.sparse.linalg import expm_multiply
+            if self.matrix_free:
+                return expm_multiply(angle * A.as_linear_operator(), out,
+                                     traceA=angle * A.trace())
+            return expm_multiply(angle * A, out)
+        w, V = self._eig[k]
+        return V @ (np.exp(1j * angle * w)[:, None] * (V.conj().T @ out))
+
+    def _generator(self, k: int, out: np.ndarray) -> np.ndarray:
+        """``A_k out`` for a stack of column vectors ``out``."""
+        if self.sparse:
+            return self._sparse_ops[k][0] @ out
+        # A = i V diag(w) V^dag (see `append`).
+        w, V = self._eig[k]
+        return 1j * (V @ (w[:, None] * (V.conj().T @ out)))
+
+    def energy_and_gradient(self, theta, apply_hamiltonian):
+        r"""``(E, dE/dtheta)`` of ``E = <psi|H|psi>``, by the adjoint method.
+
+        ``apply_hamiltonian(v)`` returns ``H v`` for a stack of column vectors.
+        One forward pass prepares :math:`\psi = U_N \cdots U_1 |HF\rangle` and
+        :math:`\lambda = H\psi`; one backward sweep then undoes
+        :math:`U_k = e^{\theta_k A_k}` on both, reading off
+
+        .. math::
+
+            \frac{\partial E}{\partial\theta_k}
+            = 2\,\mathrm{Re}\,\langle\lambda_k| A_k |\psi_k\rangle,
+            \qquad \psi_k = U_k\cdots U_1|HF\rangle,\;
+            \lambda_k = U_{k+1}^\dagger\cdots U_N^\dagger H\psi,
+
+        since :math:`U_k^\dagger = e^{-\theta_k A_k}` for an anti-Hermitian
+        generator.  The whole gradient costs about three state preparations
+        and one product with :math:`H`, against :math:`N + 1` energies for a
+        finite difference.  ``None`` on a circuit provider, which returns no
+        amplitudes to sweep back.
+        """
+        if self.provider is not None:
+            return None
+        theta = np.asarray(theta, dtype=float).ravel()
+        psi = self.evolve(theta, self._hf[:, None])
+        lam = apply_hamiltonian(psi)
+        energy = float(np.real(np.vdot(psi, lam)))
+        gradient = np.empty(theta.size)
+        for k in range(theta.size - 1, -1, -1):
+            gradient[k] = 2.0 * float(np.real(
+                np.vdot(lam, self._generator(k, psi))))
+            psi = self._exponential(k, -theta[k], psi)
+            lam = self._exponential(k, -theta[k], lam)
+        return energy, gradient
 
     def _evolve_on_provider(self, theta, refs: np.ndarray) -> np.ndarray:
         """Run the ansatz circuit once per reference column on the SDK simulator.

@@ -243,13 +243,13 @@ class TestPAWLCAO:
     def test_another_set_warns_and_names_the_functional_s_own(self):
         # The warning names the folder of the PBE datasets.
         with pytest.warns(RuntimeWarning, match="different functionals; "
-                          r"Mandacaru\(directory='pbe-sr'\)"):
+                          r"Mandacaru\(paw_dataset='pbe-sr'\)"):
             _run(h2(), xc="r2scan", grid_spacing=0.3, basis={"name": "PAW-LCAO"},
-                 directory="lda-sr")
+                 paw_dataset="lda-sr")
         with pytest.warns(RuntimeWarning, match="different functionals; "
-                          r"Mandacaru\(directory='lda-sr'\)"):
+                          r"Mandacaru\(paw_dataset='lda-sr'\)"):
             _run(h2(), xc="lda", grid_spacing=0.3, basis={"name": "PAW-LCAO"},
-                 directory="pbe-sr")
+                 paw_dataset="pbe-sr")
 
 
 def lih():

@@ -319,7 +319,7 @@ class TestSpinOrbitCoupling:
 
 
 class TestSpinOrbitInTheMolecularHamiltonian:
-    """Option (a) of DIRAC.md: the scalar Hamiltonian plus the L.S term
+    """Option (a) of mandacaru-paw/FR.md: the scalar Hamiltonian plus the L.S term
     through the union projectors, on an O atom."""
 
     @pytest.fixture(scope="class")
@@ -334,7 +334,7 @@ class TestSpinOrbitInTheMolecularHamiltonian:
             warnings.simplefilter("ignore")
             _h, _n, _m, _p, context = build_paw(
                 atoms, None, 0.25, 0, None, {"size": "SZ"},
-                loader=lambda symbol, directory: oxygen_dirac)
+                loader=lambda symbol, paw_dataset: oxygen_dirac)
         return context["integrals"]
 
     def _p_block(self, integrals, matrix):
@@ -402,7 +402,7 @@ class TestKramersPairActiveSpaces:
             H, particles, pairs, _p, context = build_paw(
                 atoms, None, 0.25, 0, None,
                 {"size": "SZ",
-                 "directory": library_folder(FAMILY, "lda-dirac")},
+                 "paw_dataset": library_folder(FAMILY, "lda-fr")},
                 active_space=active_space)
         sector = ParticleSector(2 * pairs, tuple(particles), "jordan_wigner",
                                 spin_conserving=False)

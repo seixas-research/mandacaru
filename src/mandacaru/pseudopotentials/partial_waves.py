@@ -734,7 +734,7 @@ def read_defects(record) -> dict:
 
 def warn_defects(dataset, family: str) -> None:
     """Raise the :class:`GhostStateWarning` of a dataset that has defects,
-    on every load -- the library, a path or a user's own directory."""
+    on every load -- the library, a path or a user's own folder."""
     import warnings
 
     if getattr(dataset, "defects", None):

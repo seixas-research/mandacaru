@@ -863,7 +863,7 @@ class TestLibrary:
             atoms = Atoms("CuH", positions=[[0, 0, 0], [0, 0, distance]],
                           cell=[8.0] * 3)
             atoms.center()
-            atoms.calc = Mandacaru(method="rhf", grid_spacing=0.20, directory="lda-sr",
+            atoms.calc = Mandacaru(method="rhf", grid_spacing=0.20, paw_dataset="lda-sr",
                                    basis={"name": "PAW-LCAO", "size": "SZ"})
             energies[distance] = atoms.get_potential_energy()
         assert energies[1.6] < energies[1.3] < energies[1.6] + 5.0
@@ -900,7 +900,7 @@ class TestLibrary:
         _H, _p, _n, _profile, context = build_basis_hamiltonian(
             atoms, {"name": "PAW-LCAO", "size": "SZ",
                     "projector_basis": "dual",
-                    "directory": os.path.dirname(pp.source)},
+                    "paw_dataset": os.path.dirname(pp.source)},
             None, 0.20, 0, None, spin=True)
         integrals = context["integrals"]
         C = np.asarray(integrals.projections())
@@ -926,7 +926,7 @@ class TestLibrary:
                           cell=[7.0] * 3)
             _H, _p, _n, _profile, context = build_basis_hamiltonian(
                 atoms, {"name": "PAW-LCAO", "size": "SZ",
-                        "directory": os.path.dirname(pp.source)},
+                        "paw_dataset": os.path.dirname(pp.source)},
                 None, 0.20, 0, None, spin=True)
             integrals = context["integrals"]
             electrons = context["n_electrons"]
@@ -1010,7 +1010,7 @@ class TestLibrary:
         paw._CACHE.clear()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            get_paw("O", directory=str(tmp_path))
+            get_paw("O", paw_dataset=str(tmp_path))
         hits = [w for w in caught if "M-weighted" in str(w.message)]
         assert hits, [str(w.message) for w in caught]
         assert "regenerate" in str(hits[0].message)
@@ -1018,7 +1018,7 @@ class TestLibrary:
 
     def test_a_missing_dataset_names_the_family(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="PAW-LCAO"):
-            get_paw("Xe", directory=str(tmp_path))
+            get_paw("Xe", paw_dataset=str(tmp_path))
 
 
 # --------------------------------------------------------------------------- #
@@ -1100,7 +1100,7 @@ class TestResolution:
         spec = PSEUDO_FAMILIES["paw-lcao"]
         assert spec.norm_conserving is False and spec.aliases == ()
         assert spec.label == "PAW-LCAO"
-        assert spec.options == ("size", "zeta_split", "directory",
+        assert spec.options == ("size", "zeta_split", "paw_dataset",
                                 "filter_cutoff", "projector_basis",
                                 "energy_shift", "confinement_potential",
                                 "polarization_method")

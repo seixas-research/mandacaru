@@ -2153,7 +2153,7 @@ def paw_spin_orbit_blocks(projectors, symbols, datasets) -> dict:
 
     The L.S part of the j-resolved term, unscreened like the scalar
     :math:`D^{ion}` (the molecule screens both).  Its (2j+1) average is not
-    used: the scalar channel stands in for it (DIRAC.md, option (a)), which
+    used: the scalar channel stands in for it (mandacaru-paw/FR.md, option (a)), which
     keeps the overlap, the compensation charges, the basis and the forces
     those of the scalar channel.  The price, measured on the atom's radial
     operator: the 6p of Pb and Bi 0.6-1.6 mHa off at the centroid, up to
@@ -2904,39 +2904,39 @@ def _channel_augmentation(channels, Q, W, U, G=None,
     return PairAugmentation(factors, coupling)
 
 
-def paw_library_path(directory=None, xc: str = DEFAULT_XC, *,
+def paw_library_path(paw_dataset=None, xc: str = DEFAULT_XC, *,
                      must_exist: bool = True,
                      relativity: str = "scalar") -> str:
-    """The PAW-LCAO library folder: ``directory`` when given, else
-    ``$MANDACARU_PAW_PATH/lda-sr`` (``lda-dirac`` for ``relativity="dirac"``;
-    :func:`.environment.library_directory`)."""
-    from .environment import library_directory
-    return library_directory(FAMILY, xc, directory, must_exist=must_exist,
+    """The PAW-LCAO library folder: ``paw_dataset`` when given, else
+    ``$MANDACARU_PAW_PATH/lda-sr`` (``lda-fr`` for ``relativity="dirac"``;
+    :func:`.environment.paw_dataset_folder`)."""
+    from .environment import paw_dataset_folder
+    return paw_dataset_folder(FAMILY, xc, paw_dataset, must_exist=must_exist,
                              relativity=relativity)
 
 
 _CACHE: dict = {}
 
 
-def get_paw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
-    """Load ``symbol`` from the PAW-LCAO library (cached): ``directory``, or
+def get_paw(symbol: str, paw_dataset=None, xc: str = DEFAULT_XC) -> PAWDataset:
+    """Load ``symbol`` from the PAW-LCAO library (cached): ``paw_dataset``, or
     ``$MANDACARU_PAW_PATH/lda-sr``."""
     from .io import load_library_dataset
 
     return load_library_dataset(
-        symbol, paw_library_path(directory, xc), FAMILY, _CACHE,
+        symbol, paw_library_path(paw_dataset, xc), FAMILY, _CACHE,
         label="PAW-LCAO", noun="dataset", builder="build_paw_library")
 
 
 def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
-                      directory=None, *, verbose: bool = True,
+                      paw_dataset=None, *, verbose: bool = True,
                       format: str | None = None, stride: int | None = None,
                       **generation_options):
     """Generate and save PAW-LCAO datasets for ``elements``; returns the paths."""
     from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
 
     folder = paw_library_path(
-        directory, generation_options.get("xc", DEFAULT_XC), must_exist=False,
+        paw_dataset, generation_options.get("xc", DEFAULT_XC), must_exist=False,
         relativity=generation_options.get("relativity", "scalar"))
     os.makedirs(folder, exist_ok=True)
     format = DEFAULT_FORMAT if format is None else format
@@ -2978,15 +2978,15 @@ def generate_upaw(symbol: str, **options) -> PAWDataset:
     return replace(dataset, family=UPAW_FAMILY)
 
 
-def upaw_library_path(directory=None, xc: str = DEFAULT_XC) -> str | None:
-    """The UPAW-LCAO library folder: ``directory`` when given, else
+def upaw_library_path(paw_dataset=None, xc: str = DEFAULT_XC) -> str | None:
+    """The UPAW-LCAO library folder: ``paw_dataset`` when given, else
     ``$MANDACARU_UPAW_PATH/<xc>``, or ``None`` when that variable is unset
     (UPAW-LCAO is then generated on demand)."""
-    from .environment import upaw_directory
-    return upaw_directory(xc, directory)
+    from .environment import upaw_dataset_folder
+    return upaw_dataset_folder(xc, paw_dataset)
 
 
-def get_upaw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
+def get_upaw(symbol: str, paw_dataset=None, xc: str = DEFAULT_XC) -> PAWDataset:
     """Load ``symbol`` from the UPAW-LCAO library, **or generate it** (cached).
 
     Unlike PAW-LCAO, UPAW-LCAO has no shipped library: there is no
@@ -2998,7 +2998,7 @@ def get_upaw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
     """
     from .io import library_file, load_pseudopotential
 
-    folder = upaw_library_path(directory, xc)
+    folder = upaw_library_path(paw_dataset, xc)
     key = f"{symbol}@{folder}@{xc}@{UPAW_FAMILY}"
     cached = _CACHE.get(key)
     if cached is not None:
@@ -3011,10 +3011,10 @@ def get_upaw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
             raise ValueError(f"{path!r} belongs to family {family!r}, not "
                              f"{UPAW_FAMILY!r}")
     else:
-        if directory is not None:
+        if paw_dataset is not None:
             raise FileNotFoundError(
                 f"no UPAW-LCAO dataset for {symbol!r} at {path!r}; build one with "
-                f"build_upaw_library([{symbol!r}], directory={directory!r})")
+                f"build_upaw_library([{symbol!r}], paw_dataset={paw_dataset!r})")
         where = ("MANDACARU_UPAW_PATH is not set" if folder is None
                  else f"no library at {folder!r}")
         warnings.warn(
@@ -3028,13 +3028,13 @@ def get_upaw(symbol: str, directory=None, xc: str = DEFAULT_XC) -> PAWDataset:
 
 
 def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
-                       directory=None, *, verbose: bool = True,
+                       paw_dataset=None, *, verbose: bool = True,
                        format: str | None = None, stride: int | None = None,
                        **generation_options):
     """Generate and save UPAW-LCAO datasets for ``elements``; returns the paths."""
     from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
 
-    folder = upaw_library_path(directory,
+    folder = upaw_library_path(paw_dataset,
                                generation_options.get("xc", DEFAULT_XC))
     if folder is None:
         from .environment import repository_path

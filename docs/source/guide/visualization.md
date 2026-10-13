@@ -225,7 +225,7 @@ matrix is Hermitian) and Mandacaru verifies that rather than assuming it.
 A molecule's basis functions use **real** spherical harmonics (p is
 $p_y, p_z, p_x$; d is $d_{xy}, d_{yz}, d_{z^2}, d_{xz}, d_{x^2-y^2}$), so its
 Hartree-Fock and Kohn-Sham orbitals are real and are written as they are. A
-spin-orbit (`lda-dirac`) molecule and a crystal's Bloch orbitals are genuinely
+spin-orbit (`lda-fr`) molecule and a crystal's Bloch orbitals are genuinely
 complex. `component="auto"` (the default) removes the global phase, checks
 that the residual imaginary part is numerical noise, and writes the real part;
 if it is not noise it raises and asks you to choose `component="modulus"`,

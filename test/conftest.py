@@ -176,5 +176,5 @@ def pytest_sessionstart(session):
     if missing and reporter is not None:
         reporter.write_line(
             f"pseudopotential libraries: {', '.join(missing)} unset or not a "
-            "directory -- tests that load those datasets will fail "
+            "folder -- tests that load those datasets will fail "
             "(mandacaru --pseudo-status)", yellow=True)

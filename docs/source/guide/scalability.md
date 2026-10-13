@@ -209,7 +209,7 @@ compensation terms take 73 MB, against 2.2 GB for the tensor.
 The first version is for molecules, energies and active spaces. The cases
 that need the dense tensor are refused with the reason: a crystal (a periodic
 kernel and Bloch phases), `method="dft"` (its Hartree term is a Poisson
-solve of the density), GHF and a spin-orbit (`lda-dirac`) basis (a spinor
+solve of the density), GHF and a spin-orbit (`lda-fr`) basis (a spinor
 tensor), and the plane-wave basis.
 
 ### Forces from the factors

@@ -906,7 +906,7 @@ def _warn_functional_mismatch(datasets, functional: str) -> None:
     """Warn when the datasets were not generated with the functional
     ``functional`` reads (:data:`.environment.DATASET_FUNCTIONALS`), and
     name the library folder of those datasets when the PAW-LCAO library
-    ships one (``directory="pbe-sr"`` for PBE, HSE06 and r2SCAN)."""
+    ships one (``paw_dataset="pbe-sr"`` for PBE, HSE06 and r2SCAN)."""
     from ..pseudopotentials.environment import (DATASET_FUNCTIONALS,
                                                 LIBRARY_FOLDERS)
 
@@ -922,7 +922,7 @@ def _warn_functional_mismatch(datasets, functional: str) -> None:
                                        relativity.pop()))
                   if families == {"paw-lcao"} and len(relativity) == 1
                   else None)
-        hint = (f"; Mandacaru(directory={folder!r}) reads the PAW-LCAO "
+        hint = (f"; Mandacaru(paw_dataset={folder!r}) reads the PAW-LCAO "
                 f"datasets generated with {expected.upper()}"
                 if folder is not None else "")
         warnings.warn(

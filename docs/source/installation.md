@@ -71,21 +71,21 @@ different value; open a new terminal, or `source` the file, for the variable
 to take effect in your shell. Inside a checkout the datasets sit one folder
 per set (`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic
 LDA set); PAW-LCAO also has
-`lda-dirac/` (the spin-orbit set) and `pbe-sr/` (the scalar-relativistic
+`lda-fr/` (the spin-orbit set) and `pbe-sr/` (the scalar-relativistic
 PBE set). A calculation reads the set of its functional — `pbe-sr/` for
 `method="dft"` with PBE, HSE06 or r2SCAN, `lda-sr/` for LDA and every other
-method — unless the calculator names another folder (`--directory` on the
+method — unless the calculator names another folder (`--paw-dataset` on the
 command line):
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO",
-                       directory="lda-dirac")  # $MANDACARU_PAW_PATH/lda-dirac/
+                       paw_dataset="lda-fr")  # $MANDACARU_PAW_PATH/lda-fr/
 ```
 
 Without this, `basis="PAW-LCAO"` raises a
 `LibraryPathError` that repeats the matching `--set-*` command; the all-electron
 bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need nothing extra. A
-basis option `directory=...` (a full path) overrides the variable for one run.
+basis option `paw_dataset=...` (a full path) overrides the variable for one run.
 A PAW-LCAO dataset whose own recorded functional disagrees with
 the folder it was loaded from is refused, so a file cannot be
 read as the wrong functional by being copied into the wrong folder.

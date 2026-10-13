@@ -562,7 +562,7 @@ class TestBasisBlock:
         assert block["local_potential"].startswith("range-separated")
         assert block["dataset_xc"].startswith("LDA")
         # The folder is stated once, by name and path; the table names files.
-        assert block["directory"].startswith("lda-sr (")
+        assert block["paw_dataset"].startswith("lda-sr (")
         assert block["basis_functions"] == "4"
 
     def test_the_tables_read_back_typed(self, paw):
@@ -660,7 +660,8 @@ class TestOptimizationSetupBlock:
               # it executes: the log is the only record when the
               # standard-output header is off.
               "growth", "pruning",
-              "reoptimize_all_parameters", "state_vector_backend", "device",
+              "reoptimize_all_parameters", "parameter_gradient",
+              "state_vector_backend", "device",
               "backend_provider", "circuit_execution", "shots",
               "circuit_profiling",
               "energy_unit", "reference_energy_eV")

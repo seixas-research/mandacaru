@@ -144,6 +144,11 @@ _SCIPY_ALIASES = {"L-BFGS": "L-BFGS-B"}
 #: ``options={"gtol": ...}`` is left alone.
 _GRADIENT_NORM_METHODS = ("BFGS", "CG")
 
+#: Methods that use a gradient, and so take one from the caller
+#: (:meth:`Optimizer.minimize`'s ``gradient``) instead of differencing the
+#: cost: one evaluation per parameter per gradient otherwise.
+_GRADIENT_METHODS = ("SLSQP", "BFGS", "L-BFGS", "CG")
+
 
 #: Keys a ``dict`` form of ``optimizer=`` may carry -- the :class:`Optimizer`
 #: constructor's own arguments.  ``method`` / ``maxiter`` / ``tol`` are the
@@ -290,19 +295,28 @@ class Optimizer:
         return None
 
     def minimize(self, cost: Callable[[np.ndarray], float],
-                 x0: Sequence[float], callback=None) -> OptimizeResult:
+                 x0: Sequence[float], callback=None,
+                 gradient=None) -> OptimizeResult:
         """Minimize ``cost`` starting from ``x0``.
 
         ``callback(x, value, nfev)``, if given, is invoked after **every** cost
         evaluation with the point, its cost and the running evaluation count --
         the hook a driver uses to checkpoint its best-so-far parameters
         mid-optimization, independent of which method is running.
+
+        ``gradient(x) -> (value, grad)``, if given, is the cost together with
+        its exact gradient.  The gradient methods (:data:`_GRADIENT_METHODS`)
+        then use it instead of a finite difference, and each call counts as
+        one evaluation; the gradient-free ones ignore it.
         """
         x0 = np.asarray(x0, dtype=float).ravel()
         history: list[float] = []
 
         def wrapped(x):
-            value = float(cost(x))
+            return wrapped_value(x, cost(x))
+
+        def wrapped_value(x, value):
+            value = float(value)
             if not np.isfinite(value):
                 # A NaN/inf cost makes every downstream decision meaningless:
                 # the optimizer would wander and report an arbitrary point.
@@ -352,8 +366,19 @@ class Optimizer:
             # A gradient-norm test of the same strength as a function-value
             # one of `tol`; see _GRADIENT_NORM_METHODS.
             tol = float(np.sqrt(tol))
-        res = minimize(wrapped, x0, method=_SCIPY_ALIASES.get(self.method,
-                                                              self.method),
+        fun, jac = wrapped, None
+        if gradient is not None and self.method in _GRADIENT_METHODS:
+            def fun(x):
+                value, grad = gradient(x)
+                grad = np.asarray(grad, dtype=float).ravel()
+                if not np.all(np.isfinite(grad)):
+                    raise ValueError(
+                        f"the gradient is not finite at {np.asarray(x)}; "
+                        "the optimization cannot continue")
+                return wrapped_value(x, value), grad
+            jac = True
+        res = minimize(fun, x0, jac=jac,
+                       method=_SCIPY_ALIASES.get(self.method, self.method),
                        tol=tol, options=options, callback=count_step)
         reported = getattr(res, "nit", None)
         return OptimizeResult(

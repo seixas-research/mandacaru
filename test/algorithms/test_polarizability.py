@@ -142,7 +142,7 @@ class TestThePolarizability:
         # datasets (the dataset follows the functional, W4).
         assert seen["method"] == "dft" and seen["basis"] == calc.basis
         named = dict(seen["basis"])
-        assert os.path.basename(named.pop("directory")) == "pbe-sr"
+        assert os.path.basename(named.pop("paw_dataset")) == "pbe-sr"
         assert named == PAW_SZP
         assert seen["grid_spacing"] == 0.3 and seen["xc"] == "pbe"
         assert seen["field"] == 1e-3

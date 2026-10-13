@@ -306,3 +306,90 @@ class TestAShotObjectiveGetsANoiseTolerantOptimizer:
         with pytest.raises(ValueError, match="shot noise"):
             Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4, shots=1000,
                       optimizer="SLSQP", trace=False).solver
+
+
+class TestAnExactGradient:
+    """``minimize(..., gradient=)``: the gradient methods take the caller's
+    exact gradient instead of differencing the cost; the others ignore it."""
+
+    @staticmethod
+    def value_and_gradient(x):
+        x = np.asarray(x, dtype=float)
+        return quadratic(x), 2.0 * (x - 0.3)
+
+    @pytest.mark.parametrize("method", ["SLSQP", "BFGS", "L-BFGS", "CG"])
+    def test_a_gradient_method_uses_it(self, method):
+        x0 = np.zeros(8)
+        optimizer = Optimizer(method=method, maxiter=200, tol=1e-12)
+        differenced = optimizer.minimize(quadratic, x0)
+        exact = optimizer.minimize(quadratic, x0,
+                                   gradient=self.value_and_gradient)
+        assert np.allclose(exact.x, 0.3, atol=1e-5)
+        assert exact.fun == pytest.approx(differenced.fun, abs=1e-9)
+        assert exact.nfev < differenced.nfev / 3
+        assert exact.nfev == len(exact.history)
+
+    @pytest.mark.parametrize("method", ["COBYLA", "Nelder-Mead", "SPSA"])
+    def test_a_gradient_free_method_never_calls_it(self, method):
+        def gradient(_x):
+            raise AssertionError("a gradient-free method asked for a gradient")
+
+        result = Optimizer(method=method, maxiter=50, tol=1e-8).minimize(
+            quadratic, np.zeros(2), gradient=gradient)
+        assert result.nfev > 0
+
+    def test_a_nonfinite_gradient_is_refused(self):
+        with pytest.raises(ValueError, match="gradient is not finite"):
+            Optimizer(method="L-BFGS", maxiter=10, tol=1e-12).minimize(
+                quadratic, np.zeros(2),
+                gradient=lambda x: (quadratic(x), np.array([np.nan, 0.0])))
+
+
+class TestTheDriverUsesTheAdjointGradient:
+    """ADAPT-VQE's inner optimizations take the adjoint gradient by default:
+    the same energy as the optimizer's own finite difference, with a fraction
+    of the evaluations, and the log says which one ran."""
+
+    def test_same_energy_far_fewer_evaluations(self, tmp_path):
+        runs = {}
+        for gradient in ("analytic", "finite_difference"):
+            atoms = lih()
+            out = str(tmp_path / f"{gradient}.txt")
+            atoms.calc = adapt(pool="qeb", max_iterations=5,
+                               optimizer=LBFGS, gradient=gradient, txt=out)
+            energy = atoms.get_potential_energy()
+            runs[gradient] = (energy, atoms.calc.result.num_evaluations,
+                              parse_output(out)["setup"]["parameter_gradient"])
+        assert runs["analytic"][0] == pytest.approx(runs["finite_difference"][0],
+                                                    abs=1e-7)
+        assert runs["analytic"][1] < runs["finite_difference"][1] / 2
+        assert runs["analytic"][2].startswith("analytic (adjoint")
+        assert runs["finite_difference"][2].startswith("finite difference")
+
+    def test_a_gradient_free_optimizer_says_so(self, tmp_path):
+        out = str(tmp_path / "cobyla.txt")
+        atoms = lih()
+        atoms.calc = adapt(optimizer=COBYLA_OPT, max_iterations=2, txt=out)
+        atoms.get_potential_energy()
+        assert parse_output(out)["setup"]["parameter_gradient"].startswith(
+            "none (COBYLA")
+
+
+class TestACustomOptimizer:
+    """An :class:`Optimizer` subclass whose ``minimize`` takes no
+    ``gradient`` keeps working: the driver offers the adjoint gradient only
+    to a ``minimize`` that accepts one."""
+
+    class Plain(Optimizer):
+        def minimize(self, cost, x0, callback=None):
+            return Optimizer(method="COBYLA", maxiter=500,
+                             tol=1e-10).minimize(cost, x0, callback=callback)
+
+    def test_adapt_runs_with_it_and_differences(self, tmp_path):
+        out = str(tmp_path / "plain.txt")
+        atoms = lih()
+        atoms.calc = adapt(optimizer=self.Plain(method="L-BFGS"),
+                           max_iterations=2, txt=out)
+        assert np.isfinite(atoms.get_potential_energy())
+        assert not parse_output(out)["setup"]["parameter_gradient"].startswith(
+            "analytic")

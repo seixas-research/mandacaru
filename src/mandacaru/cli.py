@@ -316,9 +316,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="basis option, repeatable (size=DZP, "
                             "energy_shift=0.03, n_gaussians=3, "
                             "energy_cutoff=300, ...)")
-    basis.add_argument("--directory", default=None, metavar="FOLDER",
+    basis.add_argument("--paw-dataset", default=None, metavar="FOLDER",
                        help="PAW-LCAO dataset folder inside the library: "
-                            "lda-sr, lda-dirac (spin-orbit) or pbe-sr (PBE "
+                            "lda-sr, lda-fr (spin-orbit) or pbe-sr (PBE "
                             "datasets); default: the functional's own set, "
                             "pbe-sr for --xc pbe, hse06 and r2scan, lda-sr "
                             "otherwise")
@@ -626,8 +626,8 @@ def solver_options(args) -> dict:
                    verbose_hamiltonian=args.verbose_hamiltonian,
                    verbose_operators=args.verbose_operators,
                    dry_run=args.dry_run)
-    if args.directory is not None:
-        options["directory"] = args.directory
+    if args.paw_dataset is not None:
+        options["paw_dataset"] = args.paw_dataset
     # Whatever the user typed is forwarded, for *every* method: an option the
     # selected solver does not take is then refused by `Mandacaru` (and turned
     # into a parser error by `main`) instead of vanishing here -- `--method vqe
@@ -783,7 +783,7 @@ def build_backend_command() -> int:
 def set_library_command(settings: dict) -> int:
     """``mandacaru --set-paw DIR`` / ``--set-upaw DIR``.
 
-    ``settings`` maps a family to the directory given for it.  Each directory
+    ``settings`` maps a family to the folder given for it.  Each folder
     must exist; it is recorded, absolute, as the family's variable in the
     shell configuration (:func:`~mandacaru.utils.shell_config.set_shell_variable`,
     which asks before replacing a different value), and set in this process
@@ -798,7 +798,7 @@ def set_library_command(settings: dict) -> int:
         variable = FAMILY_VARIABLES[family]
         path = os.path.abspath(os.path.expanduser(source))
         if not os.path.isdir(path):
-            print(f"{variable}: {source!r} is not a directory; nothing was "
+            print(f"{variable}: {source!r} is not a folder; nothing was "
                   "written.")
             failed = True
             continue

@@ -30,7 +30,7 @@ from .families import (COMMON_OPTIONS, DEFAULT_FAMILY, PSEUDO_FAMILIES,
                        family_names, lookup_family, register_family,
                        resolve_family, unregister_family)
 from .environment import (FAMILY_VARIABLES, LibraryPathError,
-                          library_directory)
+                          paw_dataset_folder)
 from .dataset import Channel, PseudoPotential
 from .io import (FORMAT_VERSION, LIBRARY_ELEMENTS, LIBRARY_Z_MAX,
                  available_elements, library_file, load_pseudopotential,
@@ -53,7 +53,7 @@ __all__ = [
     "canonical_family_name", "family_listing", "family_names",
     "lookup_family", "register_family", "resolve_family",
     "unregister_family",
-    "FAMILY_VARIABLES", "LibraryPathError", "library_directory",
+    "FAMILY_VARIABLES", "LibraryPathError", "paw_dataset_folder",
     "Channel", "PseudoPotential",
     "FORMAT_VERSION", "LIBRARY_ELEMENTS", "LIBRARY_Z_MAX",
     "available_elements", "library_file", "load_pseudopotential",

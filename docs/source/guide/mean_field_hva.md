@@ -49,7 +49,7 @@ allocated only when requested.
 two-component spinors, with no assumption that an orbital has a definite
 $S_z$. It is the one mean field that puts spin-orbit coupling into its
 self-consistent Fock operator, so it is the reference for a Dirac dataset
-(`directory="lda-dirac"`). Without spin-orbit coupling a closed shell gives
+(`paw_dataset="lda-fr"`). Without spin-orbit coupling a closed shell gives
 the RHF determinant back; an open shell ends at or below UHF, since GHF may
 break collinearity. The SCF starts from the core and screened-core guesses and
 from the RHF and UHF determinants written as spinors, so its energy is at or
@@ -58,7 +58,7 @@ below theirs in the same Hamiltonian.
 ```python
 atoms = Atoms("Pb", positions=[[0, 0, 0]], cell=[9, 9, 9])
 atoms.calc = Mandacaru(method="ghf", basis={"name": "PAW-LCAO", "size": "SZ"},
-                       directory="lda-dirac", grid_spacing=0.25)
+                       paw_dataset="lda-fr", grid_spacing=0.25)
 ghf = atoms.calc.result
 correlated = Mandacaru(method="adapt-vqe", pool="spin-orbit",
                        **ghf.as_quantum_problem()).run()
@@ -81,7 +81,7 @@ the scalar reference it is 1.7 mHa above.
 
 The quantum methods use the same basis without being asked. A spin-orbit
 Hamiltonian built from atoms is always written in these GHF spinors
-(`Mandacaru(method="adapt-vqe", pool="spin-orbit", directory="lda-dirac",
+(`Mandacaru(method="adapt-vqe", pool="spin-orbit", paw_dataset="lda-fr",
 ...)`), so its reference is the GHF determinant, and `active_space` freezes
 and deletes Kramers pairs of spinors (see the active-space guide).
 

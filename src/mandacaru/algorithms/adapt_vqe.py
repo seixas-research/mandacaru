@@ -353,6 +353,11 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         estimators are opt-in, for studying the estimator itself.  The method
         actually used is reported as ``gradient_method`` in the
         ``[OPTIMIZATION SETUP]`` block of the ``output.txt`` log.
+        ``"analytic"`` also gives a gradient optimizer (SLSQP, BFGS, L-BFGS,
+        CG) the exact gradient in the ansatz parameters on an exact objective
+        (:meth:`~mandacaru.circuits.adapt_ansatz.AdaptAnsatz.energy_and_gradient`,
+        the adjoint method); the other two leave it the optimizer's own finite
+        difference.  The log's ``parameter_gradient`` line says which ran.
     device : str
         Execution device -- ``"AER_simulator"`` (default; ideal simulator),
         a noiseless fake backend (``"fake_kingston"``, ...), an IBM Quantum
@@ -900,7 +905,8 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         for op in ops:
             trial.append(op)
         relaxed = self._optimize_all(lambda t: self.ansatz_energy(trial, t),
-                                     np.asarray(angles, dtype=float))
+                                     np.asarray(angles, dtype=float),
+                                     gradient=self._energy_gradient(trial))
         energy = float(relaxed.fun)
         if not energy < ref_energy:
             return None, (f"empty ansatz (the relaxed transferred ansatz, "
@@ -1084,6 +1090,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                 "pruning": ("on (drop one irrelevant operator per step)"
                             if self.prune else "off"),
                 "reoptimize_all_parameters": str(self.quenching),
+                "parameter_gradient": self._parameter_gradient_description(),
                 "state_vector_backend": self._backend_description(),
                 "device": str(self.device),
                 "backend_provider": str(self.backend_provider),
@@ -1249,7 +1256,8 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                 # re-select operators the ansatz already has.  Relax them
                 # first, then screen.
                 relaxed = self._optimize_all(
-                    lambda t: self.ansatz_energy(ansatz, t), params)
+                    lambda t: self.ansatz_energy(ansatz, t), params,
+                    gradient=self._energy_gradient(ansatz))
                 params = np.asarray(relaxed.x, dtype=float)
                 restored["parameters"] = params
                 restored["energy"] = float(relaxed.fun)
@@ -1365,7 +1373,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                 with timings.time("parameter optimization"):
                     result = self._optimize_grown(
                         lambda t: self.ansatz_energy(ansatz, t), params,
-                        n_new=n_new)
+                        n_new=n_new, gradient=self._energy_gradient(ansatz))
                 params = np.asarray(result.x, dtype=float)
                 previous_energy = energy
                 energy = float(result.fun)
@@ -1788,6 +1796,18 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
 
     #: Width of the label column in the run-configuration block.
     HEADER_LABEL_WIDTH = 24
+
+    def _parameter_gradient_description(self) -> str:
+        """How the classical optimizer gets the gradient of the energy in the
+        ansatz parameters (the ``parameter_gradient`` setup line)."""
+        from ..optimizers.optim import _GRADIENT_METHODS
+
+        if self.optimizer.method not in _GRADIENT_METHODS:
+            return f"none ({self.optimizer.method} uses no gradient)"
+        if self._energy_gradient(self._new_ansatz()) is not None:
+            return ("analytic (adjoint: one forward preparation and one "
+                    "backward sweep)")
+        return "finite difference (by the optimizer, one energy per parameter)"
 
     def _gradient_description(self) -> tuple[str, str]:
         """``(how the screening gradient is evaluated, why)``.

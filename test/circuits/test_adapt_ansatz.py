@@ -132,3 +132,66 @@ class TestClosedFormAnsatz:
             free.append(op)
         theta = np.array([0.31, -0.72, 0.15])
         assert np.allclose(dense.state(theta), free.state(theta), atol=1e-10)
+
+
+class TestAdjointGradient:
+    """``energy_and_gradient``: the adjoint sweep against a central finite
+    difference of the same energy, on every evaluation backend."""
+
+    @staticmethod
+    def _problem():
+        from mandacaru.circuits.pools import build_pool
+
+        pool = build_pool("fermionic", 3, (1, 1), mapping="jordan_wigner")
+        ops = pool.operators()[:5]
+        # Hermitian and number-conserving: i A and A^2 of anti-Hermitian,
+        # number-conserving generators, with random weights.
+        rng = np.random.default_rng(7)
+        hamiltonian = None
+        for op in pool.operators():
+            term = (op.generator * (1j * rng.normal())
+                    + op.generator.compose(op.generator) * rng.normal())
+            hamiltonian = term if hamiltonian is None else hamiltonian + term
+        theta = np.array([0.31, -0.72, 0.15, 0.48, -0.23])
+        return pool, ops, hamiltonian.simplify(), theta
+
+    @pytest.mark.parametrize("backend", ["dense", "sparse", "matrix-free",
+                                         "sector"])
+    def test_it_matches_a_central_difference(self, backend):
+        from mandacaru.circuits import AdaptAnsatz
+        from mandacaru.core.sector import ParticleSector
+
+        pool, ops, hamiltonian, theta = self._problem()
+        options = {"dense": {}, "sparse": {"sparse": True},
+                   "matrix-free": {"matrix_free": True},
+                   "sector": {"sector": ParticleSector(pool.n_qubits, (1, 1),
+                                                       "jordan_wigner")}}
+        kwargs = options[backend]
+        ansatz = AdaptAnsatz(pool.n_qubits, pool.occupied_orbitals,
+                             "jordan_wigner", **kwargs)
+        for op in ops:
+            ansatz.append(op)
+        H = (kwargs["sector"].restrict(hamiltonian) if "sector" in kwargs
+             else hamiltonian.to_sparse_matrix())
+
+        def energy(t):
+            psi = ansatz.state(t)
+            return float(np.real(np.vdot(psi, H @ psi)))
+
+        value, gradient = ansatz.energy_and_gradient(theta, lambda v: H @ v)
+        step = 1e-6
+        central = np.array([
+            (energy(theta + step * e) - energy(theta - step * e)) / (2 * step)
+            for e in np.eye(theta.size)])
+        assert value == pytest.approx(energy(theta), abs=1e-12)
+        assert np.abs(gradient - central).max() < 1e-7
+        assert np.abs(gradient).max() > 1e-2
+
+    def test_a_circuit_provider_has_no_amplitudes_to_sweep(self):
+        from mandacaru.circuits import AdaptAnsatz
+
+        pool, ops, hamiltonian, theta = self._problem()
+        ansatz = AdaptAnsatz(pool.n_qubits, pool.occupied_orbitals,
+                             "jordan_wigner")
+        ansatz.provider = object()
+        assert ansatz.energy_and_gradient(theta[:0], lambda v: v) is None

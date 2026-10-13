@@ -157,6 +157,26 @@ def _checked_field(field):
                          f"(Hartree per e Bohr); got {field!r}")
     return tuple(float(x) for x in values)
 
+def _accepts_gradient(optimizer) -> bool:
+    """Whether ``optimizer.minimize`` takes a ``gradient`` -- an
+    :class:`~mandacaru.optimizers.Optimizer` subclass may override it
+    without one."""
+    import inspect
+
+    try:
+        parameters = inspect.signature(optimizer.minimize).parameters
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return "gradient" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+
+
+def _gradient_keyword(gradient) -> dict:
+    """``{"gradient": gradient}`` when there is one, else nothing: an
+    optimizer of the caller's own may have no ``gradient`` parameter."""
+    return {} if gradient is None else {"gradient": gradient}
+
+
 class VariationalDriver(Calculator):
     """Base ASE calculator for the variational state-vector eigensolvers.
 
@@ -795,6 +815,28 @@ class VariationalDriver(Calculator):
         r"""Expectation value ``<psi| H |psi>`` (real) for a state vector ``psi``."""
         return float(np.real(np.vdot(psi, self._h_matrix @ psi)))
 
+    def _energy_gradient(self, ansatz):
+        """``theta -> (E, dE/dtheta)`` of :meth:`ansatz_energy` by the adjoint
+        method, or ``None`` where it does not apply.
+
+        It applies where the energy is the exact contraction of a prepared
+        state: no shots, no circuit provider, an ansatz that can sweep back
+        (:meth:`~mandacaru.circuits.adapt_ansatz.AdaptAnsatz.energy_and_gradient`),
+        ``gradient="analytic"`` (the default) and an optimizer whose
+        ``minimize`` takes a ``gradient``.  A ``"finite_difference"`` or
+        ``"parameter_shift"`` request, or an optimizer that overrides
+        ``minimize`` without one, keeps its finite difference.
+        """
+        if (self.shots or self.circuit_provider() is not None
+                or not _accepts_gradient(self.optimizer)
+                or getattr(self, "gradient", "analytic") != "analytic"
+                or not hasattr(ansatz, "energy_and_gradient")
+                or getattr(ansatz, "provider", None) is not None):
+            return None
+        h_matrix = self._h_matrix
+        return lambda theta: ansatz.energy_and_gradient(
+            theta, lambda vectors: h_matrix @ vectors)
+
     def ansatz_energy(self, ansatz, theta) -> float:
         r"""Energy of ``ansatz`` at parameters ``theta`` on the configured backend.
 
@@ -1418,7 +1460,7 @@ class VariationalDriver(Calculator):
     # -- optimization policy (quenching) ---------------------------------- #
 
     def _optimize_grown(self, cost, previous_parameters,
-                        n_new: int = 1) -> OptimizeResult:
+                        n_new: int = 1, gradient=None) -> OptimizeResult:
         """Optimize after appending ``n_new`` parameters, honoring :attr:`quenching`.
 
         ``quenching=True`` (default) hands **all** parameters to the classical
@@ -1434,20 +1476,25 @@ class VariationalDriver(Calculator):
 
         ``cost`` takes the **full** parameter vector in both cases; the returned
         :class:`~mandacaru.optimizers.optim.OptimizeResult` also carries the full
-        vector, so callers need no branching.
+        vector, so callers need no branching.  ``gradient(theta) -> (value,
+        grad)`` is the cost with its exact gradient over the full vector
+        (:meth:`_energy_gradient`), used by a joint (quenched) optimization.
         """
         cost, best = self._budget_tracked(cost)
         try:
-            return self._optimize_grown_inner(cost, previous_parameters, n_new)
+            return self._optimize_grown_inner(cost, previous_parameters, n_new,
+                                              gradient)
         except RunBudgetExceeded as exc:
             return self._budget_stop(exc, best)
 
-    def _optimize_grown_inner(self, cost, previous_parameters, n_new):
+    def _optimize_grown_inner(self, cost, previous_parameters, n_new,
+                              gradient=None):
         previous = np.asarray(previous_parameters, dtype=float).ravel()
         n_new = int(n_new)
         x0 = np.concatenate([previous, np.zeros(n_new)])
         if self.quenching:
-            return self.optimizer.minimize(cost, x0)
+            return self.optimizer.minimize(cost, x0,
+                                           **_gradient_keyword(gradient))
 
         def last_only(tail):
             return cost(np.concatenate(
@@ -1460,7 +1507,8 @@ class VariationalDriver(Calculator):
                               history=result.history, success=result.success,
                               message=result.message, nit=result.nit)
 
-    def _optimize_all(self, cost, x0, callback=None) -> OptimizeResult:
+    def _optimize_all(self, cost, x0, callback=None,
+                      gradient=None) -> OptimizeResult:
         """Optimize a fixed-size parameter vector, honoring :attr:`quenching`.
 
         ``quenching=True`` (default) is a single joint minimization over every
@@ -1468,10 +1516,11 @@ class VariationalDriver(Calculator):
         order -- parameter ``k`` is optimized alone with ``0..k-1`` frozen at their
         already-optimized values and ``k+1..`` held at their starting values --
         the fixed-ansatz analog of freezing previous growth steps.
+        ``gradient`` is as for :meth:`_optimize_grown`.
         """
         cost, best = self._budget_tracked(cost)
         try:
-            return self._optimize_all_inner(cost, x0, callback)
+            return self._optimize_all_inner(cost, x0, callback, gradient)
         except RunBudgetExceeded as exc:
             return self._budget_stop(exc, best)
 
@@ -1505,10 +1554,12 @@ class VariationalDriver(Calculator):
                               history=list(best["history"]), success=False,
                               message=f"run budget exhausted: {exc}")
 
-    def _optimize_all_inner(self, cost, x0, callback=None) -> OptimizeResult:
+    def _optimize_all_inner(self, cost, x0, callback=None,
+                            gradient=None) -> OptimizeResult:
         x0 = np.asarray(x0, dtype=float).ravel()
         if self.quenching or x0.size <= 1:
-            return self.optimizer.minimize(cost, x0, callback=callback)
+            return self.optimizer.minimize(cost, x0, callback=callback,
+                                           **_gradient_keyword(gradient))
 
         params = x0.copy()
         history: list[float] = []

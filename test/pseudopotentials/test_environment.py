@@ -15,8 +15,8 @@ import pytest
 
 from mandacaru.pseudopotentials import environment
 from mandacaru.pseudopotentials.environment import (
-    FAMILY_VARIABLES, LibraryPathError, library_directory, library_folder,
-    repository_path, status_lines, upaw_directory)
+    FAMILY_VARIABLES, LibraryPathError, paw_dataset_folder, library_folder,
+    repository_path, status_lines, upaw_dataset_folder)
 
 
 @pytest.fixture
@@ -33,56 +33,56 @@ def test_an_unset_variable_names_the_command_that_sets_it(monkeypatch, family,
                                                           flag):
     monkeypatch.delenv(FAMILY_VARIABLES[family], raising=False)
     with pytest.raises(LibraryPathError, match=f"mandacaru {flag}") as error:
-        library_directory(family)
+        paw_dataset_folder(family)
     assert f"{FAMILY_VARIABLES[family]} is not set" in str(error.value)
 
 
 def test_names_are_case_insensitive(monkeypatch, checkout):
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(checkout))
-    assert library_directory("PAW-LCAO") == os.path.join(str(checkout), "lda-sr")
+    assert paw_dataset_folder("PAW-LCAO") == os.path.join(str(checkout), "lda-sr")
 
 
-def test_a_path_that_is_not_a_directory_is_refused(monkeypatch, tmp_path):
+def test_a_path_that_is_not_a_folder_is_refused(monkeypatch, tmp_path):
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(tmp_path / "nowhere"))
-    with pytest.raises(LibraryPathError, match="is not a directory"):
-        library_directory("paw-lcao")
+    with pytest.raises(LibraryPathError, match="is not a folder"):
+        paw_dataset_folder("paw-lcao")
 
 
-def test_the_functional_picks_the_subdirectory(monkeypatch, checkout):
+def test_the_functional_picks_the_subfolder(monkeypatch, checkout):
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(checkout))
-    assert library_directory("paw-lcao") == os.path.join(str(checkout),
+    assert paw_dataset_folder("paw-lcao") == os.path.join(str(checkout),
                                                          "lda-sr")
     with pytest.raises(LibraryPathError,
                        match=r"has no pbe-sr/ folder \(it has: lda-sr\)"):
-        library_directory("paw-lcao", "pbe")
+        paw_dataset_folder("paw-lcao", "pbe")
     # For writing, a missing set folder is simply where to create it.
-    assert library_directory("paw-lcao", "PBE", must_exist=False) == \
+    assert paw_dataset_folder("paw-lcao", "PBE", must_exist=False) == \
         os.path.join(str(checkout), "pbe-sr")
     # A set without a folder of its own (a PBE Dirac set is not shipped)
     # sits in the folder named for the functional.
-    assert library_directory("paw-lcao", "pbe", must_exist=False,
+    assert paw_dataset_folder("paw-lcao", "pbe", must_exist=False,
                              relativity="dirac") == \
         os.path.join(str(checkout), "pbe")
     with pytest.raises(ValueError, match="xc must be one of"):
-        library_directory("paw-lcao", "b3lyp")
+        paw_dataset_folder("paw-lcao", "b3lyp")
 
 
 def test_paw_ships_scalar_and_dirac_lda_and_scalar_pbe(monkeypatch,
                                                       paw_checkout):
     """PAW-LCAO's folders are named for the set, not the functional: the
-    scalar-relativistic ``lda-sr/`` is the default, ``lda-dirac/`` carries
+    scalar-relativistic ``lda-sr/`` is the default, ``lda-fr/`` carries
     the spin-orbit term and ``pbe-sr/`` is the scalar-relativistic PBE set.
     There is no ``lda/`` or ``pbe/`` alias."""
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    assert library_directory("paw-lcao") == str(paw_checkout / "lda-sr")
-    assert library_directory("paw-lcao", relativity="dirac") == \
-        str(paw_checkout / "lda-dirac")
+    assert paw_dataset_folder("paw-lcao") == str(paw_checkout / "lda-sr")
+    assert paw_dataset_folder("paw-lcao", relativity="dirac") == \
+        str(paw_checkout / "lda-fr")
     (paw_checkout / "pbe-sr").mkdir()
-    assert library_directory("paw-lcao", "pbe") == str(paw_checkout / "pbe-sr")
+    assert paw_dataset_folder("paw-lcao", "pbe") == str(paw_checkout / "pbe-sr")
     (paw_checkout / "lda").mkdir()
     (paw_checkout / "pbe").mkdir()
-    assert library_directory("paw-lcao") == str(paw_checkout / "lda-sr")
-    assert library_directory("paw-lcao", "pbe") == str(paw_checkout / "pbe-sr")
+    assert paw_dataset_folder("paw-lcao") == str(paw_checkout / "lda-sr")
+    assert paw_dataset_folder("paw-lcao", "pbe") == str(paw_checkout / "pbe-sr")
 
 
 def test_the_variable_is_read_when_it_is_needed(monkeypatch, checkout,
@@ -90,14 +90,14 @@ def test_the_variable_is_read_when_it_is_needed(monkeypatch, checkout,
     other = tmp_path_factory.mktemp("other")
     (other / "lda-sr").mkdir()
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(checkout))
-    first = library_directory("paw-lcao")
+    first = paw_dataset_folder("paw-lcao")
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(other))
-    assert library_directory("paw-lcao") != first
+    assert paw_dataset_folder("paw-lcao") != first
 
 
-def test_a_directory_option_bypasses_the_variable(monkeypatch, tmp_path):
+def test_a_paw_dataset_option_bypasses_the_variable(monkeypatch, tmp_path):
     monkeypatch.delenv("MANDACARU_PAW_PATH", raising=False)
-    assert library_directory("paw-lcao", directory=tmp_path) == str(tmp_path)
+    assert paw_dataset_folder("paw-lcao", paw_dataset=tmp_path) == str(tmp_path)
 
 
 def test_a_user_path_is_expanded(monkeypatch, checkout):
@@ -109,17 +109,17 @@ def test_a_user_path_is_expanded(monkeypatch, checkout):
 def test_upaw_is_generated_on_demand_without_the_variable(monkeypatch,
                                                          checkout, tmp_path_factory):
     monkeypatch.delenv("MANDACARU_UPAW_PATH", raising=False)
-    assert upaw_directory() is None
+    assert upaw_dataset_folder() is None
     monkeypatch.setenv("MANDACARU_UPAW_PATH", str(checkout))
-    assert upaw_directory() == os.path.join(str(checkout), "lda")
+    assert upaw_dataset_folder() == os.path.join(str(checkout), "lda")
     # UPAW-LCAO keeps one folder per functional; the scalar-relativistic
     # ``lda-sr/`` naming is for the shipped library.
-    # Optional does not mean unchecked: a variable that names no directory
+    # Optional does not mean unchecked: a variable that names no folder
     # is still an error.
     monkeypatch.setenv("MANDACARU_UPAW_PATH",
                        str(tmp_path_factory.mktemp("u") / "missing"))
     with pytest.raises(LibraryPathError, match="--set-upaw"):
-        upaw_directory()
+        upaw_dataset_folder()
 
 
 def test_status_reports_every_family(monkeypatch, paw_checkout,
@@ -130,7 +130,7 @@ def test_status_reports_every_family(monkeypatch, paw_checkout,
     lines = {line.split()[0]: line for line in status_lines()}
     assert set(lines) == {"paw-lcao", "upaw-lcao"}
     assert "lda-sr/: 1 datasets" in lines["paw-lcao"]
-    assert "lda-dirac/: 1 datasets" in lines["paw-lcao"]
+    assert "lda-fr/: 1 datasets" in lines["paw-lcao"]
     assert "NOT A DIRECTORY" in lines["upaw-lcao"]
     monkeypatch.delenv("MANDACARU_PAW_PATH")
     lines = {line.split()[0]: line for line in status_lines()}
@@ -169,13 +169,13 @@ def test_no_library_ships_inside_the_package():
 
 
 # --------------------------------------------------------------------------- #
-# Mandacaru(directory=...): the library folder a calculation reads.
+# Mandacaru(paw_dataset=...): the library folder a calculation reads.
 # --------------------------------------------------------------------------- #
 
 @pytest.fixture
 def paw_checkout(tmp_path):
-    """A fake PAW-LCAO checkout: ``lda-sr/`` and ``lda-dirac/``, each with H."""
-    for name in ("lda-sr", "lda-dirac"):
+    """A fake PAW-LCAO checkout: ``lda-sr/`` and ``lda-fr/``, each with H."""
+    for name in ("lda-sr", "lda-fr"):
         (tmp_path / name).mkdir()
         (tmp_path / name / "H.parquet").write_bytes(b"")
     return tmp_path
@@ -183,12 +183,12 @@ def paw_checkout(tmp_path):
 
 def test_a_folder_is_resolved_inside_the_checkout(monkeypatch, paw_checkout):
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    assert library_folder("PAW-LCAO", "lda-dirac") == \
-        str(paw_checkout / "lda-dirac")
+    assert library_folder("PAW-LCAO", "lda-fr") == \
+        str(paw_checkout / "lda-fr")
     assert library_folder("paw-lcao", "lda-sr") == str(paw_checkout / "lda-sr")
 
 
-@pytest.mark.parametrize("folder", ["../lda-sr", "/tmp", "lda-sr/lda-dirac", "..", ""])
+@pytest.mark.parametrize("folder", ["../lda-sr", "/tmp", "lda-sr/lda-fr", "..", ""])
 def test_a_folder_is_a_name_not_a_path(monkeypatch, paw_checkout, folder):
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
     with pytest.raises(ValueError, match="name of one folder"):
@@ -197,8 +197,8 @@ def test_a_folder_is_a_name_not_a_path(monkeypatch, paw_checkout, folder):
 
 def test_a_missing_folder_lists_the_ones_present(monkeypatch, paw_checkout):
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    with pytest.raises(LibraryPathError, match=r"no dirac/ folder \(it has: lda-dirac, lda-sr\)"):
-        library_folder("paw-lcao", "dirac")
+    with pytest.raises(LibraryPathError, match=r"no fr/ folder \(it has: lda-fr, lda-sr\)"):
+        library_folder("paw-lcao", "fr")
 
 
 def test_the_calculator_points_the_basis_at_the_folder(monkeypatch,
@@ -207,18 +207,17 @@ def test_the_calculator_points_the_basis_at_the_folder(monkeypatch,
 
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
     calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "size": "SZ"},
-                     directory="lda-dirac")
+                     paw_dataset="lda-fr")
     assert calc.basis == {"name": "PAW-LCAO", "size": "SZ",
-                          "directory": str(paw_checkout / "lda-dirac")}
-    assert calc.library_folder == "lda-dirac"
-    assert calc.directory == "."        # ASE's working directory, untouched
+                          "paw_dataset": str(paw_checkout / "lda-fr")}
+    assert calc.library_folder == "lda-fr"
 
 
 def test_the_default_folder_leaves_the_basis_alone(monkeypatch, paw_checkout):
     from mandacaru import Mandacaru
 
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    for kwargs in ({}, {"directory": "lda-sr"}):
+    for kwargs in ({}, {"paw_dataset": "lda-sr"}):
         calc = Mandacaru(method="rhf", basis="PAW-LCAO", **kwargs)
         assert calc.basis == "PAW-LCAO"
 
@@ -228,7 +227,7 @@ def test_the_default_folder_leaves_the_basis_alone(monkeypatch, paw_checkout):
     ("hse06", "pbe-sr"), ("r2scan", "pbe-sr"), ("r2SCAN+rVV10", "pbe-sr")])
 def test_the_functional_picks_its_own_set(monkeypatch, paw_checkout, xc,
                                           folder):
-    """Without ``directory=``, Kohn-Sham reads the set of its functional:
+    """Without ``paw_dataset=``, Kohn-Sham reads the set of its functional:
     ``pbe-sr`` for PBE and the functionals with no datasets of their own,
     ``lda-sr`` for LDA."""
     from mandacaru import Mandacaru
@@ -239,7 +238,7 @@ def test_the_functional_picks_its_own_set(monkeypatch, paw_checkout, xc,
     calc = Mandacaru(method="dft", basis="PAW-LCAO", **kwargs)
     assert calc.library_folder == folder
     expected = ("PAW-LCAO" if folder == "lda-sr" else
-                {"name": "PAW-LCAO", "directory": str(paw_checkout / folder)})
+                {"name": "PAW-LCAO", "paw_dataset": str(paw_checkout / folder)})
     assert calc.basis == expected
 
 
@@ -248,7 +247,7 @@ def test_a_named_folder_wins_over_the_functional(monkeypatch, paw_checkout):
 
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
     calc = Mandacaru(method="dft", xc="pbe", basis="PAW-LCAO",
-                     directory="lda-sr")
+                     paw_dataset="lda-sr")
     assert (calc.library_folder, calc.basis) == ("lda-sr", "PAW-LCAO")
 
 
@@ -262,21 +261,21 @@ def test_methods_without_a_functional_read_the_lda_set(monkeypatch,
 
 def test_the_functional_s_set_leaves_a_basis_without_a_library_alone():
     """``xc="pbe"`` on an all-electron basis chose the ``pbe-sr`` folder for
-    nothing: unlike a named ``directory=``, it is not an error."""
+    nothing: unlike a named ``paw_dataset=``, it is not an error."""
     from mandacaru import Mandacaru
 
     calc = Mandacaru(method="dft", xc="pbe", basis="HAO")
     assert calc.basis == "HAO"
     with pytest.raises(ValueError, match="reads none"):
-        Mandacaru(method="dft", xc="pbe", basis="HAO", directory="pbe-sr")
+        Mandacaru(method="dft", xc="pbe", basis="HAO", paw_dataset="pbe-sr")
 
 
-def test_an_explicit_basis_directory_wins(monkeypatch, paw_checkout, tmp_path):
+def test_an_explicit_basis_paw_dataset_wins(monkeypatch, paw_checkout, tmp_path):
     from mandacaru import Mandacaru
 
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    own = {"name": "PAW-LCAO", "directory": str(tmp_path)}
-    assert Mandacaru(method="rhf", basis=own, directory="lda-dirac").basis == own
+    own = {"name": "PAW-LCAO", "paw_dataset": str(tmp_path)}
+    assert Mandacaru(method="rhf", basis=own, paw_dataset="lda-fr").basis == own
 
 
 def test_a_per_element_basis_rewrites_only_its_library_entries(
@@ -285,9 +284,9 @@ def test_a_per_element_basis_rewrites_only_its_library_entries(
 
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
     calc = Mandacaru(method="rhf", basis={"H": "PAW-LCAO", "*": "HAO"},
-                     directory="lda-dirac")
+                     paw_dataset="lda-fr")
     assert calc.basis == {"H": {"name": "PAW-LCAO",
-                                "directory": str(paw_checkout / "lda-dirac")},
+                                "paw_dataset": str(paw_checkout / "lda-fr")},
                           "*": "HAO"}
 
 
@@ -295,12 +294,12 @@ def test_a_folder_needs_a_library_basis():
     from mandacaru import Mandacaru
 
     with pytest.raises(ValueError, match="reads none"):
-        Mandacaru(method="rhf", basis="HAO", directory="lda-dirac")
+        Mandacaru(method="rhf", basis="HAO", paw_dataset="lda-fr")
 
 
 def test_a_dataset_in_the_wrong_functional_folder_is_refused(tmp_path):
     """An LDA file copied into ``pbe/`` would otherwise run silently as the
-    PBE dataset ``directory="pbe"`` asked for."""
+    PBE dataset ``paw_dataset="pbe"`` asked for."""
     import shutil
 
     from mandacaru.pseudopotentials.paw import get_paw
@@ -313,4 +312,4 @@ def test_a_dataset_in_the_wrong_functional_folder_is_refused(tmp_path):
     folder.mkdir()
     shutil.copy(source, folder / "H.parquet")
     with pytest.raises(ValueError, match="LDA dataset in the pbe/ folder"):
-        get_paw("H", directory=str(folder))
+        get_paw("H", paw_dataset=str(folder))

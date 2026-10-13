@@ -41,12 +41,12 @@ class TestCommandLineOptions:
         assert options.get("convergence") == expected
 
     def test_the_library_folder_reaches_the_calculator(self):
-        """``--directory pbe-sr`` selects the PBE PAW-LCAO datasets, as
-        ``Mandacaru(directory="pbe-sr")`` does; without it nothing is
+        """``--paw-dataset pbe-sr`` selects the PBE PAW-LCAO datasets, as
+        ``Mandacaru(paw_dataset="pbe-sr")`` does; without it nothing is
         forwarded and the calculator keeps its ``lda-sr`` default."""
-        assert "directory" not in self._options("--basis", "PAW-LCAO")
-        options = self._options("--basis", "PAW-LCAO", "--directory", "pbe-sr")
-        assert options["directory"] == "pbe-sr"
+        assert "paw_dataset" not in self._options("--basis", "PAW-LCAO")
+        options = self._options("--basis", "PAW-LCAO", "--paw-dataset", "pbe-sr")
+        assert options["paw_dataset"] == "pbe-sr"
 
     @pytest.mark.parametrize("argv, expected", [
         ([], None),
@@ -343,9 +343,9 @@ class TestLibraryVariables:
         assert os.environ["MANDACARU_PROPOSAL_DATA"] == str(store)
         assert "added to" in capsys.readouterr().out
 
-    def test_a_missing_directory_writes_nothing(self, home, capsys):
+    def test_a_missing_folder_writes_nothing(self, home, capsys):
         assert main(["--set-paw", str(home / "nowhere")]) == 1
-        assert "is not a directory" in capsys.readouterr().out
+        assert "is not a folder" in capsys.readouterr().out
         assert not (home / ".zshrc").exists()
 
     def test_an_existing_value_is_replaced_after_confirmation(self, home,

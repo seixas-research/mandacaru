@@ -73,7 +73,7 @@ CHOLESKY_SPINOR_REFUSAL = (
     "two_body={'method': 'cholesky'} covers the spatial RHF and UHF "
     "routes; a generalized (spinor) Hartree-Fock or a spin-orbit "
     "Hamiltonian builds the spin-orbital tensor from the dense one.  Use "
-    "two_body='dense' (the default) for method='ghf' or a lda-dirac basis")
+    "two_body='dense' (the default) for method='ghf' or a lda-fr basis")
 
 
 def dense_route_bytes(n_orbitals: int) -> int:

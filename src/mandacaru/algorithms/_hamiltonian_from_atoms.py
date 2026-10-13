@@ -190,13 +190,13 @@ def resolve_basis(basis):
 
 def with_library_folder(basis, folder: str, *, required: bool = True):
     """``basis`` with every library-backed pseudopotential entry pointed at
-    ``<checkout>/<folder>`` of its family (``Mandacaru(directory=folder)``).
+    ``<checkout>/<folder>`` of its family (``Mandacaru(paw_dataset=folder)``).
 
     The PAW-LCAO entries -- a name, a ``{"name": ...}``
     dict, or the values of a per-element mapping -- gain the basis option
-    ``directory`` set to that folder, resolved against the family's own
+    ``paw_dataset`` set to that folder, resolved against the family's own
     library variable (``MANDACARU_PAW_PATH`` for PAW-LCAO).  An entry that
-    already names its ``directory`` keeps it: the explicit folder wins.
+    already names its ``paw_dataset`` keeps it: the explicit folder wins.
     Other bases are returned unchanged.
 
     Raises
@@ -220,17 +220,17 @@ def with_library_folder(basis, folder: str, *, required: bool = True):
         if family not in FOLDER_FAMILIES:
             return spec
         found.append(family)
-        if "directory" in options:
+        if "paw_dataset" in options:
             return spec
         return {"name": name, **options,
-                "directory": library_folder(family, folder)}
+                "paw_dataset": library_folder(family, folder)}
 
     result = rewrite(basis)
     if not found and required:
         raise ValueError(
-            f"directory={folder!r} selects a folder of a pseudopotential "
+            f"paw_dataset={folder!r} selects a folder of a pseudopotential "
             f"library, but basis={basis!r} reads none; use a PAW-LCAO "
-            f"basis, or omit directory=")
+            f"basis, or omit paw_dataset=")
     return result
 
 
@@ -376,7 +376,7 @@ def resolve_pseudo_basis(name, options, symbols):
     when it is all-electron.
 
     A single family name passes its options through (``size``,
-    ``zeta_split``, ``directory``, ... -- validated against
+    ``zeta_split``, ``paw_dataset``, ... -- validated against
     ``family.options`` by :func:`_pseudopotential_hamiltonian`).  A
     **per-element mapping** must name one pseudopotential family for every
     element (the ``"*"`` default counts): the first zeta of each atom is the

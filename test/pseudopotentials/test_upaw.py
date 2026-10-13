@@ -160,7 +160,7 @@ class TestFamilyRegistration:
     def test_it_is_not_norm_conserving_and_takes_the_paw_options(self):
         spec = resolve_family("UPAW-LCAO")
         assert spec.norm_conserving is False
-        assert {"size", "zeta_split", "directory", "projector_basis"} \
+        assert {"size", "zeta_split", "paw_dataset", "projector_basis"} \
             <= set(spec.options)
 
     def test_the_generator_refuses_a_norm_deficit(self):
@@ -182,9 +182,9 @@ class TestFamilyRegistration:
         with pytest.raises(ValueError, match="family"):
             get_upaw("H", str(tmp_path))
 
-    def test_a_missing_dataset_in_a_named_directory_is_not_generated(self,
+    def test_a_missing_dataset_in_a_named_paw_dataset_is_not_generated(self,
                                                                      tmp_path):
-        # An explicit directory is a statement that the library is there.
+        # An explicit paw_dataset is a statement that the library is there.
         with pytest.raises(FileNotFoundError, match="build_upaw_library"):
             get_upaw("Li", str(tmp_path))
 
@@ -220,7 +220,7 @@ class TestCalculatorPath:
     def test_a_built_library_is_used_instead_of_generating(self, tmp_path):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            written = build_upaw_library(("H",), directory=str(tmp_path),
+            written = build_upaw_library(("H",), paw_dataset=str(tmp_path),
                                          verbose=False)
         assert len(written) == 1
         # From the library: no generation warning this time.

@@ -504,7 +504,7 @@ $2k$ and $2k+1$ (by energy) form pair $k$, and the pair occupies the two slots
 a spatial orbital would. `"frozen"` counts the lowest pairs and `"orbitals"`
 the pairs kept, lowest first. The spinor energy is the only ranking:
 `"method": "mp2"`, `"threshold"` and the occupied/virtual forms rank spatial
-orbitals and are refused. On HI (PAW-LCAO-SZ, `directory="lda-dirac"`, 18
+orbitals and are refused. On HI (PAW-LCAO-SZ, `paw_dataset="lda-fr"`, 18
 electrons in 10 pairs), freezing one pair costs 0.040 mHa, two pairs
 0.040 mHa and four pairs 0.075 mHa. Keeping only the occupied pairs leaves the
 GHF determinant, 18.6 mHa above the full space. Forces are available with a

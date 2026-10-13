@@ -18,10 +18,10 @@ the uniform-grid radial equation and the Numerov recursions -- run in C
 python`` selects the reference kernels instead, which give the same numbers
 more slowly.
 
-A dataset is written to ``--output`` (default: the current directory, one
-subdirectory per family) at the library stride.  ``--install`` writes into
+A dataset is written to ``--output`` (default: the current folder, one
+subfolder per family) at the library stride.  ``--install`` writes into
 Mandacaru's own library for the family instead -- the set's folder
-(``lda-sr/``, ``lda-dirac/``, ...) of the checkout its environment variable
+(``lda-sr/``, ``lda-fr/``, ...) of the checkout its environment variable
 names (``MANDACARU_PAW_PATH``, ``MANDACARU_UPAW_PATH``) -- and so replaces the dataset
 calculations load; it is never the default.
 
@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
                      action="store_const", const="none",
                      help="non-relativistic reference atom")
     parser.add_argument("--output", "-o", default=None, metavar="DIR",
-                        help="directory to write into (default: ./<family>/)")
+                        help="folder to write into (default: ./<family>/)")
     parser.add_argument("--install", action="store_true",
                         help="write into the family's library, <checkout>/<xc>/ "
                              "of the checkout its MANDACARU_*_PATH variable "
@@ -165,14 +165,14 @@ def build_backend_command() -> int:
     return 1
 
 
-def _directory(family: str, output, install: bool, xc: str = "lda",
+def _paw_dataset(family: str, output, install: bool, xc: str = "lda",
                relativity: str = "scalar") -> str:
     """Where the datasets go; ``--install`` resolves (and validates) the
     family's library variable and the set's folder (:mod:`.environment`:
-    ``lda-sr/`` or ``lda-dirac/`` for PAW-LCAO)."""
+    ``lda-sr/`` or ``lda-fr/`` for PAW-LCAO)."""
     if install:
-        from .environment import library_directory
-        return library_directory(family, xc, must_exist=False,
+        from .environment import paw_dataset_folder
+        return paw_dataset_folder(family, xc, must_exist=False,
                                  relativity=relativity)
     return os.path.join(output if output is not None else os.getcwd(), family)
 
@@ -190,7 +190,7 @@ def _levels_and_phase(family: str):
     return _paw_levels, log_derivative_paw
 
 
-def build_one(family: str, symbol: str, options: dict, directory: str,
+def build_one(family: str, symbol: str, options: dict, paw_dataset: str,
               fmt: str, check: bool) -> tuple[bool, str]:
     """Generate, write and check one dataset; ``(ok, report)``.
 
@@ -201,7 +201,7 @@ def build_one(family: str, symbol: str, options: dict, directory: str,
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("ignore", RuntimeWarning)
         warnings.simplefilter("always", UserWarning)
-        ok, report = _build_one(family, symbol, options, directory, fmt, check)
+        ok, report = _build_one(family, symbol, options, paw_dataset, fmt, check)
     notes = sorted({str(w.message) for w in caught
                     if not issubclass(w.category, RuntimeWarning)})
     if notes:
@@ -232,7 +232,7 @@ def _limit_threads(threads: int) -> None:
     threadpool_limits(threads)
 
 
-def _build_one(family: str, symbol: str, options: dict, directory: str,
+def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
                fmt: str, check: bool) -> tuple[bool, str]:
     from .io import STRIDE, library_file, load_pseudopotential, \
         save_pseudopotential
@@ -254,8 +254,8 @@ def _build_one(family: str, symbol: str, options: dict, directory: str,
     staged = None
     try:
         pp = _generate(family, symbol, options)
-        os.makedirs(directory, exist_ok=True)
-        path = library_file(symbol, directory, fmt)
+        os.makedirs(paw_dataset, exist_ok=True)
+        path = library_file(symbol, paw_dataset, fmt)
         # Written beside its final name and read back: what is released is
         # the file (its stride and digits), so that is what is checked, and
         # it replaces nothing until it passes.
@@ -341,7 +341,7 @@ def main(argv=None) -> int:
     ghosts = args.ghosts or "repair"
     options = {"xc": args.xc, "relativity": relativity, "ghosts": ghosts}
     try:
-        directory = _directory(family, args.output, args.install, args.xc,
+        paw_dataset = _paw_dataset(family, args.output, args.install, args.xc,
                                args.relativity or "scalar")
     except FileNotFoundError as error:
         print(f"mandacaru-build: {error}", file=sys.stderr)
@@ -357,10 +357,10 @@ def main(argv=None) -> int:
           f"relativity={relativity}, ghosts={ghosts}, "
           f"{len(symbols)} element(s), {args.workers} worker(s)")
     print(f"radial kernels: {message}")
-    print(f"writing to {directory}\n", flush=True)
+    print(f"writing to {paw_dataset}\n", flush=True)
 
     failures = flagged = 0
-    jobs = [(family, s, options, directory, args.format, args.check)
+    jobs = [(family, s, options, paw_dataset, args.format, args.check)
             for s in symbols]
     if args.workers <= 1 or len(jobs) == 1:
         for job in jobs:

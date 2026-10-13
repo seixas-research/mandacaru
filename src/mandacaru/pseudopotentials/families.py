@@ -70,11 +70,11 @@ from typing import Callable
 DEFAULT_FAMILY = "paw-lcao"
 
 #: Basis options every family accepts: the size hierarchy built on the
-#: pseudo-orbitals and its split-valence scheme, the library directory and the
+#: pseudo-orbitals and its split-valence scheme, the PAW dataset folder and the
 #: cutoff of the Fourier filter (:mod:`mandacaru.basis.filtering`) that
 #: removes from each radial function the wave-vectors the real-space grid
 #: cannot represent.
-COMMON_OPTIONS = ("size", "zeta_split", "directory", "filter_cutoff")
+COMMON_OPTIONS = ("size", "zeta_split", "paw_dataset", "filter_cutoff")
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,7 @@ class FamilySpec:
     generate : callable
         ``generate(symbol, **options) -> PseudoPotential``.
     get : callable
-        ``get(symbol, directory=None) -> PseudoPotential`` -- the (cached)
+        ``get(symbol, paw_dataset=None) -> PseudoPotential`` -- the (cached)
         library loader.
     build : callable
         ``build(atoms, grid, grid_spacing, charge, spin, options, kinetic, *,
@@ -303,7 +303,7 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
     shares.
 
     A family differs only in how a dataset is loaded (``load(symbol,
-    directory)``), which projectors it samples (``projectors(symbols, positions,
+    paw_dataset)``), which projectors it samples (``projectors(symbols, positions,
     potentials, options)``), their coupling blocks (``coupling(projectors,
     symbols, potentials)``), an optional overlap correction (``overlap``, same
     signature; PAW-LCAO), the spin-orbit blocks (``spin_orbit``, same
@@ -336,10 +336,10 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
     # same basis the calculator would give it.  Merging twice is a no-op.
     options = resolve_family(family).resolved_options(options)
 
-    directory = options.get("directory")
+    folder = options.get("paw_dataset")
     symbols = atoms.get_chemical_symbols()
     positions = coherent_positions(atoms)
-    potentials = {symbol: load(symbol, directory) for symbol in set(symbols)}
+    potentials = {symbol: load(symbol, folder) for symbol in set(symbols)}
     # A ghost lends its basis functions and nothing else: every physical term
     # below is built over the real atoms only.
     ghosts = frozenset(int(i) for i in ghosts)
